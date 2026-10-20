@@ -150,6 +150,8 @@ export interface ImportSpecifierSite {
   specifier: string;
   /** Quotes included; zero-based line, code-point columns. */
   span: SpecifierSpan;
+  /** UTF-16 offset of the opening quote in the source. */
+  offset: number;
 }
 
 /**
@@ -174,6 +176,7 @@ export function findImportSpecifiers(source: string): ImportSpecifierSite[] {
     .map((s) => ({
       specifier: s.specifier,
       span: { start: at(s.start), end: at(s.end) },
+      offset: s.start,
     }));
 }
 

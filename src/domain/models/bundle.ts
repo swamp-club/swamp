@@ -258,16 +258,17 @@ export function rejectZodV3Imports(js: string, origin?: string): void {
 // Match: import { ... } from "npm:zod...", "zod", or 'zod'
 // Handles both npm: prefixed specifiers (existing extensions) and
 // bare "zod" specifiers (when externalized via deno.json import map).
-// Matches any zod version; only declarations whose specifier passes
-// isZod4Specifier are rewritten — zod 3.x is detected separately at
+// Matches any zod version but an obvious 3.x (so a cached zod 3 bundle is
+// never parsed); only declarations whose specifier passes isZod4Specifier
+// are rewritten — zod 3.x is detected separately at
 // bundle-creation time via rejectZodV3Imports (not here, because
 // rewriteZodImports is also called at runtime on cached bundles).
 const ZOD_NAMED_IMPORT_RE =
-  /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@[^"']*)?["']\s*;?/g;
+  /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@(?![\^~=v]?3)[^"']*)?["']\s*;?/g;
 
 // Match: import * as <name> from "npm:zod..." or "zod"
 const ZOD_STAR_IMPORT_RE =
-  /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@[^"']*)?["']\s*;?/g;
+  /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@(?![\^~=v]?3)[^"']*)?["']\s*;?/g;
 
 /** Rewrites the text of one zod import declaration. */
 function rewriteZodImportDeclaration(declaration: string): string {

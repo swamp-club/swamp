@@ -1154,11 +1154,18 @@ the relative rewrites above:
 - The imports are the ones the dependency audit reads (`findImportSpecifiers`):
   string literals in import position, with comments and template literals
   blanked, so generated import text is never rewritten. Push audits every code
-  module it rewrites, JavaScript included.
+  module it rewrites, JavaScript included. A site is rewritten only when Babel
+  parses that exact literal as an import's module specifier (static import,
+  `export ... from`, `import()` or `typeof import()`), since the token scanner
+  can read a quote inside a regex literal as a string; a module that does not
+  parse gets no rewrite.
 - The target is written as the map writes it, version or range included,
   exactly as a specifier written out in source would ship. A `key/` target
   written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
-  the registry's parser reads at all.
+  the registry's parser reads at all. A zod target admitting only 4.x ships as
+  `npm:zod@4` (keeping a subpath): zod is never bundled or audited, every swamp
+  shares its own, and `npm:zod@4` is the spelling older swamp versions
+  externalize when they rebundle a pulled source.
 - Only `npm:`, `jsr:`, `node:` and `http(s):` targets are written. A target
   that is a local path is a local module edge the plan already places; any
   other bare import ships as written and raises the `bare-specifiers` finding.

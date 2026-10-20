@@ -25,13 +25,18 @@ import {
   relative as posixRelative,
 } from "@std/path/posix";
 import { markErrorPaths, UserError } from "../errors.ts";
-import { isBareSpecifier } from "../models/bundle.ts";
+import { isBareSpecifier, isZod4Specifier } from "../models/bundle.ts";
 import {
   findImportSpecifiers,
   type ImportMap,
   resolveBareImport,
 } from "./extension_dependency_extractor.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
+import {
+  type AstNode,
+  isNode,
+  parseExtensionSource,
+} from "./extension_source_ast.ts";
 import type {
   LocalEdge,
   SourceModuleGraph,
@@ -433,9 +438,89 @@ const REWRITABLE_TARGET_RE = /^(?:npm|jsr|node|https?):/;
 const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
 
 /**
+ * The offsets of the string literals Babel parses as the module specifier
+ * of an import: a static import or `export ... from`, a dynamic `import()`
+ * and a `typeof import()` type. Undefined when `source` does not parse. The
+ * token scanner cannot tell a regex literal from a string, so only a span
+ * the parser confirms is rewritten (swamp-club#3637).
+ */
+function importSourceOffsets(source: string): Set<number> | undefined {
+  const program = parseExtensionSource(source);
+  if (!program) return undefined;
+  const offsets = new Set<number>();
+  const add = (node: unknown) => {
+    if (
+      isNode(node) && node.type === "StringLiteral" &&
+      typeof node.start === "number"
+    ) {
+      offsets.add(node.start);
+    }
+  };
+  // Explicit stack: extension source can nest deeply.
+  const stack: AstNode[] = [program];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    switch (node.type) {
+      case "ImportDeclaration":
+      case "ExportNamedDeclaration":
+      case "ExportAllDeclaration":
+      case "ImportExpression":
+        add(node.source);
+        break;
+      case "CallExpression": {
+        const callee = node.callee;
+        const args = node.arguments;
+        if (isNode(callee) && callee.type === "Import" && Array.isArray(args)) {
+          add(args[0]);
+        }
+        break;
+      }
+      case "TSImportType": {
+        const argument = node.argument;
+        add(
+          isNode(argument) && argument.type === "TSLiteralType"
+            ? argument.literal
+            : argument,
+        );
+        break;
+      }
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        for (const item of value) if (isNode(item)) stack.push(item);
+      } else if (isNode(value)) {
+        stack.push(value);
+      }
+    }
+  }
+  return offsets;
+}
+
+/**
+ * Whether bare specifier text is one push rewrites at all: a package
+ * specifier never holds whitespace, `;` or parentheses (swamp-club#3637).
+ */
+function isRewritableSpecifierText(specifier: string): boolean {
+  return isBareSpecifier(specifier) && !/[\s;()]/.test(specifier);
+}
+
+/**
+ * The specifier a rewrite ships for an import-map target: the target as
+ * written, except that a zod target admitting only 4.x ships as `npm:zod@4`
+ * (keeping a subpath). Zod is never bundled or audited — every swamp shares
+ * its own zod 4 — and `npm:zod@4` is the spelling every swamp version, older
+ * ones included, recognises when it rebundles a pulled source.
+ */
+function shippedTarget(target: string): string {
+  const zod = /^npm:zod(?:@[^/]+)?(\/.*)?$/.exec(target);
+  return zod && isZod4Specifier(target) ? `npm:zod@4${zod[1] ?? ""}` : target;
+}
+
+/**
  * The rewrites that replace each bare import `source` writes with the
  * `npm:`, `jsr:`, `node:` or `http(s):` specifier the import map resolves
- * it to, as the map writes it (swamp-club#3637), so the archive's source
+ * it to, as the map writes it (a zod 4 target as `npm:zod@4`, see
+ * {@link shippedTarget}) (swamp-club#3637), so the archive's source
  * resolves without the project's `deno.json`. A `key/` target written
  * `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
  * the registry's specifier parser reads at all.
@@ -452,12 +537,17 @@ export function bareImportRewrites(
   imports: ImportMap,
   sourcePath: string,
 ): SpecifierRewrite[] {
+  const sites = findImportSpecifiers(source).filter((site) =>
+    isBareSpecifier(site.specifier)
+  );
+  if (sites.length === 0) return [];
+  // A module that does not parse gets no rewrite: the bundler has refused it.
+  const confirmed = importSourceOffsets(source);
+  if (!confirmed) return [];
   const rewrites: SpecifierRewrite[] = [];
-  for (const { specifier, span } of findImportSpecifiers(source)) {
-    // A package specifier never holds whitespace, `;` or parentheses; text
-    // that does is not an import the scanner read right (a regex literal
-    // can open what looks like a string), so it is never rewritten.
-    if (!isBareSpecifier(specifier) || /[\s;()]/.test(specifier)) continue;
+  for (const { specifier, span, offset } of sites) {
+    if (!confirmed.has(offset)) continue;
+    if (!isRewritableSpecifierText(specifier)) continue;
     const target = resolveBareImport(specifier, imports);
     if (target === undefined || !REWRITABLE_TARGET_RE.test(target)) continue;
     if (UNSAFE_TARGET_RE.test(target)) {
@@ -475,7 +565,7 @@ export function bareImportRewrites(
     rewrites.push({
       span,
       from: specifier,
-      to: target.replace(/^(npm|jsr):\//, "$1:"),
+      to: shippedTarget(target.replace(/^(npm|jsr):\//, "$1:")),
     });
   }
   return rewrites;
@@ -496,7 +586,7 @@ export function bareImportShipsAsWritten(
   specifier: string,
   imports: ImportMap | undefined,
 ): boolean {
-  if (!imports) return true;
+  if (!imports || !isRewritableSpecifierText(specifier)) return true;
   const target = resolveBareImport(specifier, imports);
   return target === undefined ||
     (!REWRITABLE_TARGET_RE.test(target) && !isLocalTarget(target));

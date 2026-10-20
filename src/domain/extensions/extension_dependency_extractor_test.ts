@@ -428,6 +428,7 @@ Deno.test("findImportSpecifiers: reports each import with its quoted span", () =
         start: { line: 0, character: 15 },
         end: { line: 0, character: 19 },
       },
+      offset: 15,
     },
     {
       specifier: "./x.ts",
@@ -435,6 +436,7 @@ Deno.test("findImportSpecifiers: reports each import with its quoted span", () =
         start: { line: 1, character: 18 },
         end: { line: 1, character: 26 },
       },
+      offset: 39,
     },
   ]);
 });

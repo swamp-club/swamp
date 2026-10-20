@@ -487,6 +487,47 @@ Deno.test("bareImportRewrites: never rewrites specifier text holding whitespace,
   );
 });
 
+Deno.test("bareImportRewrites: never rewrites a quote inside a regex literal the scanner reads as an import", () => {
+  const source = 'let x, s, t;\nx=/import"a/g,s="X";\nimport ms from "ms";\n';
+  assertEquals(
+    bareImportRewrites(source, {
+      ms: "npm:ms@2",
+      "a/g,s=": "npm:b/,globalThis.pwned=1,t=",
+    }, "/m.ts").map((r) => r.to),
+    ["npm:ms@2"],
+  );
+});
+
+Deno.test("bareImportRewrites: rewrites a typeof import() type", () => {
+  assertEquals(
+    rewritten('type M = typeof import("ms");\n'),
+    'type M = typeof import("npm:ms@^2");\n',
+  );
+});
+
+Deno.test("bareImportRewrites: rewrites nothing in a module that does not parse", () => {
+  assertEquals(
+    bareImportRewrites('import ms from "ms";\nconst = ;\n', IMPORTS, "/m.ts"),
+    [],
+  );
+});
+
+Deno.test("bareImportRewrites: a zod 4 target ships as npm:zod@4, keeping a subpath; zod 3 as written", () => {
+  const source = 'import { z } from "zod";\nimport { v } from "zod/v4";\n';
+  assertEquals(
+    bareImportRewrites(source, { zod: "npm:zod@^4.1.0" }, "/m.ts").map((r) =>
+      r.to
+    ),
+    ["npm:zod@4", "npm:zod@4/v4"],
+  );
+  assertEquals(
+    bareImportRewrites(source, { zod: "npm:zod@3.23.8" }, "/m.ts").map((r) =>
+      r.to
+    ),
+    ["npm:zod@3.23.8", "npm:zod@3.23.8/v4"],
+  );
+});
+
 Deno.test("mergeSpecifierRewrites: keeps the plan's rewrite at a shared span and sorts by position", () => {
   const span = (line: number, character: number) => ({
     start: { line, character },
@@ -509,4 +550,5 @@ Deno.test("bareImportShipsAsWritten: only imports the map neither rewrites nor r
   assertEquals(bareImportShipsAsWritten("unmapped", IMPORTS), true);
   assertEquals(bareImportShipsAsWritten("data", IMPORTS), true);
   assertEquals(bareImportShipsAsWritten("ms", undefined), true);
+  assertEquals(bareImportShipsAsWritten("a b", { "a b": "npm:x@1" }), true);
 });

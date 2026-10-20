@@ -287,7 +287,7 @@ Deno.test("extension push: ships each bare import as its import-map target, and 
     assertStringIncludes(rel, 'import { two } from "../lib/two.ts";');
     assertStringIncludes(
       files.get("models/_lib/schema.ts") ?? "",
-      'import { z } from "npm:zod@^4.1.0";',
+      'import { z } from "npm:zod@4";',
     );
     assert(
       ![...files.keys()].some((p) =>

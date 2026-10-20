@@ -201,9 +201,10 @@ const arbModuleLine = fc.constantFrom(
   "const n = 1;",
 );
 
-const arbModule = fc.array(arbModuleLine, { maxLength: 12 }).map((lines) =>
-  lines.join("\n")
-);
+// Unique lines, so no binding is declared twice and every module parses.
+const arbModule = fc.uniqueArray(arbModuleLine, { maxLength: 12 }).map((
+  lines,
+) => lines.join("\n"));
 
 Deno.test("bareImportRewrites: a rewritten module has no bare import the map resolves", () => {
   fc.assert(
