@@ -24,7 +24,7 @@
  * refuses supersedes nothing.
  */
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -52,6 +52,11 @@ import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { collect } from "../src/libswamp/testing.ts";
+import {
+  createWorkflowEvaluateDeps,
+  workflowEvaluate,
+} from "../src/libswamp/workflows/evaluate.ts";
+import { UserError } from "../src/domain/errors.ts";
 
 await initializeLogging({});
 
@@ -252,6 +257,92 @@ function suspendedRun(events: WorkflowRunEvent[]) {
   const event = events.find((e) => e.kind === "suspended");
   assertExists(event, JSON.stringify(events.map((e) => e.kind)));
   return event.run;
+}
+
+for (const key of ["__proto__", "prototype"]) {
+  Deno.test(`workflow --last-evaluated: ${key} stays pinned through evaluation, approval and resume`, async () => {
+    await withRepo(async (repo, dir, executions) => {
+      const expression = "${{ inputs[" + JSON.stringify(key) + "] }}";
+      const workflow = Workflow.create({
+        name: "pinned",
+        jobs: [Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval(expression),
+            }),
+            Step.create({
+              name: "deploy",
+              task: StepTask.model("consumer", "run", { value: expression }),
+              dependsOn: [{
+                step: "gate",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        })],
+      });
+      const inputs = Object.fromEntries([[key, "scratch"]]);
+      await repo.workflowRepo.save(workflow);
+      const evaluated = await collect(workflowEvaluate(
+        createLibSwampContext(),
+        createWorkflowEvaluateDeps(dir, repo.workflowRepo),
+        { workflowIdOrName: workflow.name, inputs },
+      ));
+      assertEquals(evaluated.at(-1)?.kind, "completed");
+      const cached = await new YamlEvaluatedWorkflowRepository(dir)
+        .findByNameWithProvenance(workflow.name);
+      assertEquals(cached?.evaluatedInputs, inputs);
+      const deps = await createWorkflowRunDeps(dir, repo, {
+        type: "filesystem",
+        path: join(dir, ".swamp"),
+      });
+      const replay = suspendedRun(await start(deps, { lastEvaluated: true }));
+      const saved = await repo.workflowRunRepo.findById(
+        workflow.id,
+        createWorkflowRunId(replay.id),
+      );
+      assertExists(saved);
+      assertEquals(saved.inputs, inputs);
+      const gate = saved.getJob("main")!.getStep("gate")!;
+      assertEquals(gate.approvalPrompt, "scratch");
+      gate.recordApprovalDecision({
+        approved: true,
+        decidedBy: "user:test",
+        decidedAt: new Date().toISOString(),
+      });
+      gate.succeed();
+      await repo.workflowRunRepo.save(workflow.id, saved);
+      const service = () =>
+        deps.createExecutionService(
+          repo.workflowRepo,
+          repo.workflowRunRepo,
+          dir,
+          repo.catalogStore,
+        );
+      const error = await assertRejects(
+        () =>
+          collect(
+            service().resume(workflow.name, replay.id, {
+              inputs: Object.fromEntries([[key, "protected"]]),
+            }),
+          ),
+        UserError,
+      );
+      assertEquals(error.code, "resume_input_immutable");
+      assertEquals(executions, []);
+      assertEquals(
+        (await repo.workflowRunRepo.findById(
+          workflow.id,
+          createWorkflowRunId(replay.id),
+        ))?.inputs,
+        inputs,
+      );
+      await collect(service().resume(workflow.name, replay.id, { inputs }));
+      assertEquals(executions, [{ value: "scratch" }]);
+    });
+  });
 }
 
 Deno.test("workflow --last-evaluated: superseding and execution use the one cache copy the start loaded (swamp-club#3583)", async () => {

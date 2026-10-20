@@ -30,6 +30,7 @@ import {
   DeferredExpressionSchema,
 } from "../expressions/deferred_expression.ts";
 import { z } from "zod";
+import { InputRecordSchema } from "../inputs/input_record.ts";
 import { createWorkflowRunId, type WorkflowRunId } from "./workflow_id.ts";
 import {
   isUnfinishedStatus,
@@ -308,7 +309,7 @@ export const WorkflowRunSchema = z.object({
   // Effective workflow inputs captured when a run suspends, so post-resume
   // steps can resolve `inputs.*`. Optional for backward compatibility with
   // runs persisted before this field existed.
-  inputs: z.record(z.string(), z.unknown()).optional(),
+  inputs: InputRecordSchema.optional(),
   // Key NAMES of inputs supplied at resume time, recorded for audit. Values are
   // deliberately NOT persisted to avoid writing secrets (e.g. a freshly minted
   // auth key) to the plaintext run record.

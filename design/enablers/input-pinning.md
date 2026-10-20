@@ -233,6 +233,10 @@ original child did; caller-supplied expression text stays data. An older cache
 containing deferred input references without their provenance is refused with
 instructions to rerun the parent or supply explicit inputs to a fresh run.
 
+Both cached inputs and run-record inputs use `InputRecordSchema`, which
+preserves every own key, including `__proto__`. Loading a record must never
+turn a pinned input into an absent key that a resume can supply anew.
+
 **When the cache recorded no inputs.** Three cases look alike today, since the
 `evaluatedInputs` field is simply absent. The cache tells them apart:
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { InputRecordSchema } from "../inputs/input_record.ts";
 import {
   holdsValue,
   type SecretBagRegistry,
@@ -335,15 +336,29 @@ export interface ProvenanceMapData {
   ranges: Record<string, [number, number][]>;
 }
 
+const DataRangesSchema = z.array(
+  z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
+    .refine(([s, e]) => s <= e, { message: "range start after end" }),
+);
+
 export const ProvenanceMapDataSchema = z.object({
   whole: z.array(z.string()),
-  ranges: z.record(
-    z.string(),
-    z.array(
-      z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()])
-        .refine(([s, e]) => s <= e, { message: "range start after end" }),
-    ),
-  ),
+  // A path may itself be __proto__. Dropping it would turn data-origin
+  // characters into authored text when persisted inputs are restored.
+  ranges: InputRecordSchema.transform((record, ctx) => {
+    const entries: [string, [number, number][]][] = [];
+    for (const [path, ranges] of Object.entries(record)) {
+      const parsed = DataRangesSchema.safeParse(ranges);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          ctx.addIssue({ ...issue, path: [path, ...issue.path] });
+        }
+        return z.NEVER;
+      }
+      entries.push([path, parsed.data]);
+    }
+    return Object.fromEntries(entries);
+  }),
 });
 
 /** Sorted, non-overlapping, non-empty ranges covering the same characters. */

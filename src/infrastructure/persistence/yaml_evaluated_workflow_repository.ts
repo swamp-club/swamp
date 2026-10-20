@@ -70,6 +70,7 @@ import {
 } from "../../domain/expressions/provenance_map.ts";
 import type { RecordedEvaluationInputs } from "../../domain/workflows/persisted_workflow.ts";
 import { UserError } from "../../domain/errors.ts";
+import { InputRecordSchema } from "../../domain/inputs/input_record.ts";
 
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
@@ -118,7 +119,7 @@ const CacheMetadataSchema = z.object({
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
-  evaluatedInputs: z.record(z.string(), z.unknown()).optional(),
+  evaluatedInputs: InputRecordSchema.optional(),
   evaluatedInputsProvenance: ProvenanceMapDataSchema.optional(),
   inheritedExpressions: z.array(z.string()).optional(),
   evaluatedInputsOmitted: z.literal("sensitive").optional(),
