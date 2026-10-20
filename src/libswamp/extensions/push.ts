@@ -40,7 +40,6 @@ import {
   MAX_EXTENSION_ARCHIVE_BYTES,
   MAX_EXTENSION_ARCHIVE_DECOMPRESSED_BYTES,
 } from "../../domain/extensions/extension_archive_limits.ts";
-import { isBareSpecifier } from "../../domain/models/bundle.ts";
 import {
   type CollectiveMismatch,
   collectiveMismatchesForTypes,
@@ -643,10 +642,7 @@ import {
   checkExtensionQuality,
   checkUpgradeChainConsistency,
 } from "../../domain/extensions/extension_quality_checker.ts";
-import {
-  extractDependencySpecifiers,
-  findImportSpecifiers,
-} from "../../domain/extensions/extension_dependency_extractor.ts";
+import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
 import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import {
@@ -675,8 +671,8 @@ import type { MissingLocalModule } from "../../domain/extensions/extension_sourc
 import {
   applySpecifierRewrites,
   bareImportRewrites,
-  bareImportShipsAsWritten,
   mergeSpecifierRewrites,
+  planBareImports,
   type SourceArchiveKind,
   type SourceArchivePlan,
 } from "../../domain/extensions/source_archive_plan.ts";
@@ -1973,13 +1969,8 @@ export async function runQualityFindings(
   for (const file of sourceFiles) {
     try {
       const src = await Deno.readTextFile(file);
-      for (const { specifier } of findImportSpecifiers(src)) {
-        if (
-          isBareSpecifier(specifier) &&
-          bareImportShipsAsWritten(specifier, imports)
-        ) {
-          bareSpecifiers.add(specifier);
-        }
+      for (const name of planBareImports(src, imports, file).shippedAsWritten) {
+        bareSpecifiers.add(name);
       }
     } catch {
       // File unreadable — skip.

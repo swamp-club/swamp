@@ -24,9 +24,9 @@ import type { LocalEdge, SourceModuleGraph } from "./extension_source_graph.ts";
 import {
   applySpecifierRewrites,
   bareImportRewrites,
-  bareImportShipsAsWritten,
   isReservedArchiveRootName,
   mergeSpecifierRewrites,
+  planBareImports,
   planSourceArchive,
   type SourceArchiveKindInput,
 } from "./source_archive_plan.ts";
@@ -512,13 +512,13 @@ Deno.test("bareImportRewrites: rewrites nothing in a module that does not parse"
   );
 });
 
-Deno.test("bareImportRewrites: a zod 4 target ships as npm:zod@4, keeping a subpath; zod 3 as written", () => {
+Deno.test("bareImportRewrites: a zod 4 target ships as npm:zod@4, at its root or /v4; zod 3 as written", () => {
   const source = 'import { z } from "zod";\nimport { v } from "zod/v4";\n';
   assertEquals(
     bareImportRewrites(source, { zod: "npm:zod@^4.1.0" }, "/m.ts").map((r) =>
       r.to
     ),
-    ["npm:zod@4", "npm:zod@4/v4"],
+    ["npm:zod@4", "npm:zod@4"],
   );
   assertEquals(
     bareImportRewrites(source, { zod: "npm:zod@3.23.8" }, "/m.ts").map((r) =>
@@ -554,12 +554,49 @@ Deno.test("mergeSpecifierRewrites: keeps the plan's rewrite at a shared span and
   assertEquals(merged.map((r) => r.to), ["npm:ms@2", "./a.ts"]);
 });
 
-Deno.test("bareImportShipsAsWritten: only imports the map neither rewrites nor resolves locally", () => {
-  assertEquals(bareImportShipsAsWritten("ms", IMPORTS), false);
-  assertEquals(bareImportShipsAsWritten("lodash/fp", IMPORTS), false);
-  assertEquals(bareImportShipsAsWritten("@/a.ts", IMPORTS), false);
-  assertEquals(bareImportShipsAsWritten("unmapped", IMPORTS), true);
-  assertEquals(bareImportShipsAsWritten("data", IMPORTS), true);
-  assertEquals(bareImportShipsAsWritten("ms", undefined), true);
-  assertEquals(bareImportShipsAsWritten("a b", { "a b": "npm:x@1" }), true);
+Deno.test("planBareImports: names the bare imports that ship as written, never a local mapping", () => {
+  const source = 'import ms from "ms";\nimport fp from "lodash/fp";\n' +
+    'import a from "@/a.ts";\nimport u from "unmapped";\n' +
+    'import d from "data";\nimport u2 from "unmapped";\n';
+  const plan = planBareImports(source, IMPORTS, "/m.ts");
+  assertEquals(plan.rewrites.map((r) => r.from), ["ms", "lodash/fp"]);
+  assertEquals(plan.shippedAsWritten, ["data", "unmapped"]);
+  assertEquals(
+    planBareImports(source, undefined, "/m.ts").shippedAsWritten,
+    ["@/a.ts", "data", "lodash/fp", "ms", "unmapped"],
+  );
+});
+
+Deno.test("planBareImports: a module that does not parse ships every bare import as written", () => {
+  const plan = planBareImports(
+    'import ms from "ms";\nconst = ;\n',
+    IMPORTS,
+    "/m.ts",
+  );
+  assertEquals(plan.rewrites, []);
+  assertEquals(plan.shippedAsWritten, ["ms"]);
+});
+
+Deno.test("planBareImports: a scanner site the parser shows is not an import is ignored", () => {
+  const plan = planBareImports(
+    'let x;\nx=/import"a/g;\n',
+    { "a/g;": "npm:b" },
+    "/m.ts",
+  );
+  assertEquals(plan, { rewrites: [], shippedAsWritten: [], unsafe: [] });
+});
+
+Deno.test("planBareImports: a .tsx module with JSX is parsed and rewritten", () => {
+  const source = 'import ms from "ms";\nexport const v = <div>{ms(1)}</div>;\n';
+  const plan = planBareImports(source, IMPORTS, "/reports/view.tsx");
+  assertEquals(plan.rewrites.map((r) => r.to), ["npm:ms@^2"]);
+  assertEquals(plan.shippedAsWritten, []);
+});
+
+Deno.test("planBareImports: specifier text holding a space ships as written", () => {
+  assertEquals(
+    planBareImports('import a from "a b";', { "a b": "npm:x@1" }, "/m.ts")
+      .shippedAsWritten,
+    ["a b"],
+  );
 });

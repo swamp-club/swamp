@@ -1157,15 +1157,19 @@ the relative rewrites above:
   module it rewrites, JavaScript included. A site is rewritten only when Babel
   parses that exact literal as an import's module specifier (static import,
   `export ... from`, `import()` or `typeof import()`), since the token scanner
-  can read a quote inside a regex literal as a string; a module that does not
-  parse gets no rewrite.
+  can read a quote inside a regex literal as a string. A `.tsx` or `.jsx`
+  module is parsed with JSX. A module that does not parse gets no rewrite, and
+  its bare imports count as shipping as written: the rewrite and the
+  `bare-specifiers` finding come from one plan (`planBareImports`).
 - The target is written as the map writes it, version or range included,
   exactly as a specifier written out in source would ship. A `key/` target
   written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
-  the registry's parser reads at all. A zod target admitting only 4.x ships as
-  `npm:zod@4` (keeping a subpath): zod is never bundled or audited, every swamp
-  shares its own, and `npm:zod@4` is the spelling older swamp versions
-  externalize when they rebundle a pulled source.
+  the registry's parser reads at all. A zod target the host shares (4.x at the
+  root or `/v4`, the same namespace) ships as `npm:zod@4`: zod is never bundled
+  or audited, every swamp shares its own, and `npm:zod@4` is the spelling older
+  swamp versions externalize when they rebundle a pulled source. Another zod
+  subpath (`/v4/core`, `/mini`) has its own exports, ships as the map writes
+  it, and is bundled.
 - Only `npm:`, `jsr:`, `node:` and `http(s):` targets are written. A target
   that is a local path is a local module edge the plan already places; any
   other bare import ships as written and raises the `bare-specifiers` finding.

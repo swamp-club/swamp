@@ -444,8 +444,11 @@ const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
  * token scanner cannot tell a regex literal from a string, so only a span
  * the parser confirms is rewritten (swamp-club#3637).
  */
-function importSourceOffsets(source: string): Set<number> | undefined {
-  const program = parseExtensionSource(source);
+function importSourceOffsets(
+  source: string,
+  jsx: boolean,
+): Set<number> | undefined {
+  const program = parseExtensionSource(source, { jsx });
   if (!program) return undefined;
   const offsets = new Set<number>();
   const add = (node: unknown) => {
@@ -506,90 +509,125 @@ function isRewritableSpecifierText(specifier: string): boolean {
 
 /**
  * The specifier a rewrite ships for an import-map target: the target as
- * written, except that a zod target admitting only 4.x ships as `npm:zod@4`
- * (keeping a subpath). Zod is never bundled or audited — every swamp shares
- * its own zod 4 — and `npm:zod@4` is the spelling every swamp version, older
- * ones included, recognises when it rebundles a pulled source.
+ * written, except that a zod target the host shares (zod 4 at its root or
+ * `/v4`, the same namespace) ships as `npm:zod@4`. Zod is never bundled or
+ * audited — every swamp shares its own zod 4 — and `npm:zod@4` is the
+ * spelling every swamp version, older ones included, recognises when it
+ * rebundles a pulled source.
  */
 function shippedTarget(target: string): string {
-  const zod = /^npm:zod(?:@[^/]+)?(\/.*)?$/.exec(target);
-  return zod && isZod4Specifier(target) ? `npm:zod@4${zod[1] ?? ""}` : target;
+  return target.startsWith("npm:zod") && isZod4Specifier(target)
+    ? "npm:zod@4"
+    : target;
+}
+
+/** How push ships the bare imports one module writes. */
+export interface BareImportPlan {
+  /** The rewrites {@link bareImportRewrites} applies. */
+  rewrites: SpecifierRewrite[];
+  /**
+   * The bare imports that ship as written, sorted and unique: no import
+   * map, no usable target, or a module the parser cannot read, so its sites
+   * cannot be confirmed. The bare-specifiers finding names these.
+   */
+  shippedAsWritten: string[];
+  /** Imports whose target could end or escape its string literal. */
+  unsafe: { specifier: string; target: string }[];
 }
 
 /**
- * The rewrites that replace each bare import `source` writes with the
- * `npm:`, `jsr:`, `node:` or `http(s):` specifier the import map resolves
- * it to, as the map writes it (a zod 4 target as `npm:zod@4`, see
- * {@link shippedTarget}) (swamp-club#3637), so the archive's source
- * resolves without the project's `deno.json`. A `key/` target written
- * `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
- * the registry's specifier parser reads at all.
+ * How push ships each bare import `source` writes (swamp-club#3637): those
+ * the import map resolves to an `npm:`, `jsr:`, `node:` or `http(s):`
+ * specifier are rewritten to it, as the map writes it (a zod 4 target as
+ * `npm:zod@4`, see {@link shippedTarget}); a `key/` target written
+ * `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and the
+ * registry's specifier parser reads at all. One the map resolves to a local
+ * path is a local module edge {@link planSourceArchive} places. Every other
+ * bare import ships as written.
  *
- * Bare imports the map does not resolve, or resolves to a local path (a
- * local module edge {@link planSourceArchive} already rewrites), get no
- * rewrite and ship as written.
- *
- * Throws a UserError when a target the source uses holds text that could
- * end or escape its string literal.
+ * A site is rewritten only when Babel parses that exact literal as an
+ * import's module specifier; a scanner site the parse shows is not one is
+ * not an import at all. When the module does not parse, nothing is
+ * rewritten and every bare import ships as written.
+ */
+export function planBareImports(
+  source: string,
+  imports: ImportMap | undefined,
+  sourcePath: string,
+): BareImportPlan {
+  const plan: BareImportPlan = {
+    rewrites: [],
+    shippedAsWritten: [],
+    unsafe: [],
+  };
+  const sites = findImportSpecifiers(source).filter((site) =>
+    isBareSpecifier(site.specifier)
+  );
+  if (sites.length === 0) return plan;
+  const confirmed = importSourceOffsets(source, /\.[jt]sx$/.test(sourcePath));
+  const asWritten = new Set<string>();
+  for (const { specifier, span, offset } of sites) {
+    if (confirmed && !confirmed.has(offset)) continue;
+    const target = imports && isRewritableSpecifierText(specifier)
+      ? resolveBareImport(specifier, imports)
+      : undefined;
+    if (target !== undefined && isLocalTarget(target)) continue;
+    if (
+      !confirmed || target === undefined || !REWRITABLE_TARGET_RE.test(target)
+    ) {
+      asWritten.add(specifier);
+      continue;
+    }
+    if (UNSAFE_TARGET_RE.test(target)) {
+      plan.unsafe.push({ specifier, target });
+      continue;
+    }
+    plan.rewrites.push({
+      span,
+      from: specifier,
+      to: shippedTarget(target.replace(/^(npm|jsr):\//, "$1:")),
+    });
+  }
+  plan.shippedAsWritten = [...asWritten].sort();
+  return plan;
+}
+
+/**
+ * The rewrites {@link planBareImports} plans for `source`. Throws a
+ * UserError when a target the source uses holds text that could end or
+ * escape its string literal: the gates read the source on disk, so the
+ * archived copy must hold no code they did not see.
  */
 export function bareImportRewrites(
   source: string,
   imports: ImportMap,
   sourcePath: string,
 ): SpecifierRewrite[] {
-  const sites = findImportSpecifiers(source).filter((site) =>
-    isBareSpecifier(site.specifier)
-  );
-  if (sites.length === 0) return [];
-  // A module that does not parse gets no rewrite: the bundler has refused it.
-  const confirmed = importSourceOffsets(source);
-  if (!confirmed) return [];
-  const rewrites: SpecifierRewrite[] = [];
-  for (const { specifier, span, offset } of sites) {
-    if (!confirmed.has(offset)) continue;
-    if (!isRewritableSpecifierText(specifier)) continue;
-    const target = resolveBareImport(specifier, imports);
-    if (target === undefined || !REWRITABLE_TARGET_RE.test(target)) continue;
-    if (UNSAFE_TARGET_RE.test(target)) {
-      throw markErrorPaths(
-        new UserError(
-          `The deno.json import map resolves ${JSON.stringify(specifier)} ` +
-            `(imported from ${sourcePath}) to ${JSON.stringify(target)}, ` +
-            `which holds a quote, backslash, backtick, line break or \${ ` +
-            `that push cannot write into the archive's source. Fix the ` +
-            `import map entry for ${JSON.stringify(specifier)}.`,
-        ),
-        [sourcePath],
-      );
-    }
-    rewrites.push({
-      span,
-      from: specifier,
-      to: shippedTarget(target.replace(/^(npm|jsr):\//, "$1:")),
-    });
+  const plan = planBareImports(source, imports, sourcePath);
+  const [unsafe] = plan.unsafe;
+  if (unsafe) {
+    throw markErrorPaths(
+      new UserError(
+        `The deno.json import map resolves ${
+          JSON.stringify(unsafe.specifier)
+        } ` +
+          `(imported from ${sourcePath}) to ${
+            JSON.stringify(unsafe.target)
+          }, ` +
+          `which holds a quote, backslash, backtick, line break or \${ ` +
+          `that push cannot write into the archive's source. Fix the ` +
+          `import map entry for ${JSON.stringify(unsafe.specifier)}.`,
+      ),
+      [sourcePath],
+    );
   }
-  return rewrites;
+  return plan.rewrites;
 }
 
 /** A target the module graph resolves to a local file, which the plan places. */
 function isLocalTarget(target: string): boolean {
   return target.startsWith("./") || target.startsWith("../") ||
     target.startsWith("/") || target.startsWith("file:");
-}
-
-/**
- * Whether push ships a bare import as written: no import map, or the map
- * resolves it neither to a target {@link bareImportRewrites} writes in its
- * place nor to a local module the plan places.
- */
-export function bareImportShipsAsWritten(
-  specifier: string,
-  imports: ImportMap | undefined,
-): boolean {
-  if (!imports || !isRewritableSpecifierText(specifier)) return true;
-  const target = resolveBareImport(specifier, imports);
-  return target === undefined ||
-    (!REWRITABLE_TARGET_RE.test(target) && !isLocalTarget(target));
 }
 
 /**
