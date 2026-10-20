@@ -21,6 +21,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import {
   isWorkflowEvaluateAllData,
   workflowEvaluate,
@@ -1230,7 +1231,10 @@ Deno.test("workflowEvaluate: the cache records the inputs it was evaluated with 
     }),
   );
   assertEquals(events.at(-1)?.kind, "completed");
-  assertEquals(recorded, [{ inputs: { target: "scratch" } }]);
+  assertEquals(recorded, [{
+    inputs: { target: "scratch" },
+    provenance: ProvenanceMap.authored().withWholeData("target"),
+  }]);
 });
 
 Deno.test("workflowEvaluate: the cache records schema defaults, with no expressions and no inputs too (swamp-club#3583)", async () => {
@@ -1265,7 +1269,10 @@ Deno.test("workflowEvaluate: the cache records schema defaults, with no expressi
     }),
   );
   assertEquals(events.at(-1)?.kind, "completed");
-  assertEquals(recorded, [{ inputs: { region: "us-east-1" } }]);
+  assertEquals(recorded, [{
+    inputs: { region: "us-east-1" },
+    provenance: ProvenanceMap.authored(),
+  }]);
 });
 
 for (const all of [false, true]) {
@@ -1297,7 +1304,12 @@ for (const all of [false, true]) {
       }));
     const events = await evaluate({ n: "3", cfg: '{"a":1}' });
     assertEquals(events.at(-1)?.kind, "completed");
-    assertEquals(saved, [{ inputs: { n: 3, cfg: { a: 1 }, enabled: false } }]);
+    assertEquals(saved, [{
+      inputs: { n: 3, cfg: { a: 1 }, enabled: false },
+      provenance: ProvenanceMap.authored().withWholeData("n").withWholeData(
+        "cfg.a",
+      ),
+    }]);
 
     for (const inputs of [{}, { n: "bad", cfg: "{}" }]) {
       const error = await assertRejects(

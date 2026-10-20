@@ -23,6 +23,7 @@ import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repos
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { fakeUnreadableLookup } from "./unreadable_records_test_helpers.ts";
 import { UserError } from "../../domain/errors.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 
 Deno.test("YamlEvaluatedWorkflowRepository: malformed input metadata gives recovery advice without dumping values", async () => {
   const tempDir = await Deno.makeTempDir();
@@ -36,6 +37,8 @@ Deno.test("YamlEvaluatedWorkflowRepository: malformed input metadata gives recov
       const metadata of [
         "evaluatedInputs: 42",
         "evaluatedInputsOmitted: private-test-value",
+        "evaluatedInputsProvenance: private-test-value",
+        "inheritedExpressions: private-test-value",
       ]
     ) {
       await Deno.writeTextFile(path, content + `\n${metadata}\n`);
@@ -465,7 +468,11 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
       new Set(),
       undefined,
       [],
-      { inputs: { target: "scratch", envs: ["a", "b"] } },
+      {
+        inputs: { target: "scratch", envs: ["a", "b"] },
+        provenance: ProvenanceMap.authored().withWholeData("target"),
+        inheritedExpressions: new Set(["${{ env.SOURCE }}"]),
+      },
     );
     const cached = await new YamlEvaluatedWorkflowRepository(tempDir)
       .findByNameWithProvenance(workflow.name);
@@ -474,6 +481,11 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
       envs: ["a", "b"],
     });
     assertEquals(cached?.evaluatedInputsOmitted, undefined);
+    assertEquals(cached?.evaluatedInputsProvenance?.toData(), {
+      whole: ["target"],
+      ranges: {},
+    });
+    assertEquals(cached?.inheritedExpressions, new Set(["${{ env.SOURCE }}"]));
     assertEquals(cached?.workflow.inputs, workflow.inputs);
 
     // Withheld for a sensitive value: the marker, and no inputs.
@@ -489,6 +501,8 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
       .findByNameWithProvenance(workflow.name);
     assertEquals(omitted?.evaluatedInputs, undefined);
     assertEquals(omitted?.evaluatedInputsOmitted, "sensitive");
+    assertEquals(omitted?.evaluatedInputsProvenance, undefined);
+    assertEquals(omitted?.inheritedExpressions, new Set());
 
     // A cache written before evaluation inputs were recorded has neither.
     await new YamlEvaluatedWorkflowRepository(tempDir).save(

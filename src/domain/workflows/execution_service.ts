@@ -3641,6 +3641,8 @@ export class WorkflowExecutionService {
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let authoredExpressions: ReadonlySet<string> = new Set();
+      let inheritedExpressions: ReadonlySet<string> =
+        options?.authoredExpressions ?? new Set();
       let authoredWorkflow: Workflow | undefined;
       let deferredExpressions = options?.deferredExpressions ?? [];
       let run: WorkflowRun;
@@ -3729,6 +3731,8 @@ export class WorkflowExecutionService {
           const replay = replayInputs(lastEvaluated, options?.inputs ?? {});
           if ("refusal" in replay) throw new UserError(replay.refusal);
           runInputs = replay.inputs;
+          inheritedExpressions = lastEvaluated.inheritedExpressions ??
+            new Set();
           // Sensitive values are cached as vault references: restore real
           // values into the workflow and sentinels into the step overlay.
           const vaultService = lastEvaluated.writtenReferences.length > 0
@@ -3792,13 +3796,14 @@ export class WorkflowExecutionService {
           }
           attachInputsProvenance(
             expressionContext,
-            options?.inputsProvenance ??
+            lastEvaluated.evaluatedInputsProvenance ??
+              options?.inputsProvenance ??
               vouchInherited(
                 workflowInputsProvenance(runInputs, found, {
                   webhook: options?.triggerSource === "webhook",
                 }),
                 runInputs,
-                options?.authoredExpressions ?? new Set(),
+                inheritedExpressions,
               ),
           );
         } else {
@@ -3860,7 +3865,11 @@ export class WorkflowExecutionService {
             authoredExpressions,
             persistedWorkflow.deferredExpressions,
             persistedWorkflow.writtenReferences,
-            recordableEvaluatedInputs(options?.inputs ?? {}, sensitiveValues),
+            recordableEvaluatedInputs(options?.inputs ?? {}, sensitiveValues, {
+              provenance: bindingProvenanceOf(expressionContext).inputs ??
+                ProvenanceMap.authored(),
+              inheritedExpressions,
+            }),
           );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
             persistedWorkflow.workflow,
@@ -3909,8 +3918,8 @@ export class WorkflowExecutionService {
         }
         // Only what a parent passed in: the run's own source is re-collected
         // on resume, so persisting it would keep deleted expressions vouched.
-        if (options?.authoredExpressions?.size) {
-          run.captureInheritedExpressions(options.authoredExpressions);
+        if (inheritedExpressions.size) {
+          run.captureInheritedExpressions(inheritedExpressions);
         }
         run.captureDeferredExpressions(deferredExpressions);
         if (options?.references) {

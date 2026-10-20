@@ -332,6 +332,7 @@ async function evaluateWorkflowInternal(
     }
   }
 
+  const inputsProvenance = workflowInputsProvenance(coercedInputs, workflow);
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
     await deps.saveEvaluatedWorkflow(
@@ -339,7 +340,7 @@ async function evaluateWorkflowInternal(
       ProvenanceMap.authored(),
       authoredExpressions,
       undefined,
-      { inputs: coercedInputs },
+      { inputs: coercedInputs, provenance: inputsProvenance },
     );
     return {
       id: workflow.id,
@@ -359,7 +360,7 @@ async function evaluateWorkflowInternal(
   // Where data sits in the inputs, as on the run path (swamp-club#3205).
   attachInputsProvenance(
     context,
-    workflowInputsProvenance(coercedInputs, workflow),
+    inputsProvenance,
   );
 
   // Collect forEach.in expressions to skip during evaluation
@@ -662,7 +663,9 @@ async function evaluateWorkflowInternal(
     expandedProvenance,
     authoredExpressions,
     persisted.writtenReferences,
-    recordableEvaluatedInputs(coercedInputs, sensitiveValues),
+    recordableEvaluatedInputs(coercedInputs, sensitiveValues, {
+      provenance: inputsProvenance,
+    }),
   );
 
   return {

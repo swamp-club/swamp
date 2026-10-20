@@ -89,7 +89,6 @@ Deno.test("vault call analysis: compatibility shim does not grant new remote aut
   for (
     const source of [
       "vault . get (prod, KEY)",
-      "vault.get(prod, inputs.key + '-suffix')",
       "self.vault.get('prod', 'KEY')",
       "literal('vault.get(prod, KEY)')",
     ]
@@ -103,6 +102,12 @@ Deno.test("vault call analysis: compatibility shim does not grant new remote aut
     staticRefs: [],
     hasDynamicRefs: true,
   });
+  // Balanced compound selectors are supported but cannot grant a static
+  // reference before the selector is evaluated in its run context.
+  assertEquals(
+    extractVaultReferences("${{ vault.get(prod, inputs.key + '-suffix') }}"),
+    { staticRefs: [], hasDynamicRefs: true },
+  );
   assertEquals(unresolvableVaultArguments("vault.get(prod, db..key)"), [
     "db..key",
   ]);
@@ -116,25 +121,25 @@ Deno.test("vault call analysis: compatibility shim does not grant new remote aut
   );
 });
 
-Deno.test("vault call analysis: multi-argument CEL cannot change a legacy match's reference identity", () => {
+Deno.test("vault call analysis: malformed calls cannot turn extra arguments into a reference identity", () => {
   for (
-    const [source, vaultName, secretKey] of [
-      ["vault.get(prod, 'a', 'b')", "prod", "a', 'b"],
-      ["vault.get('a', 'b', k)", "a', 'b", "k"],
+    const source of [
+      "vault.get(prod, 'a', 'b')",
+      "vault.get('a', 'b', k)",
     ]
   ) {
     const text = "${{ " + source + " }}";
     assertEquals(extractVaultReferences(text), {
-      staticRefs: [{ vaultName, secretKey }],
+      staticRefs: [],
       hasDynamicRefs: false,
     });
     assertEquals(
-      findVaultReferences(vaultName, {
+      findVaultReferences("prod", {
         definitions: [],
         workflows: [],
         datastoreConfig: text,
       }).references.length,
-      1,
+      0,
     );
   }
 });

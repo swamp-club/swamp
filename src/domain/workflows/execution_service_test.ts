@@ -21695,6 +21695,10 @@ async function runReservedTagWorkflow(
       await new YamlEvaluatedWorkflowRepository(tempDir).save(
         options.lastEvaluated,
         undefined,
+        undefined,
+        undefined,
+        [],
+        { inputs: {} },
       );
     }
     const workflowRepo = new InMemoryWorkflowRepository();

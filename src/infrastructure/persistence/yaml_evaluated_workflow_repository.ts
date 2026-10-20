@@ -64,7 +64,10 @@ import type {
   RunSnapshotInfo,
   RunSnapshotRepository,
 } from "../../domain/workflows/repositories.ts";
-import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import {
+  ProvenanceMap,
+  ProvenanceMapDataSchema,
+} from "../../domain/expressions/provenance_map.ts";
 import type { RecordedEvaluationInputs } from "../../domain/workflows/persisted_workflow.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -95,6 +98,10 @@ export interface EvaluatedWorkflowCache {
    * workflow's `inputs`, its schema.
    */
   evaluatedInputs?: Record<string, unknown>;
+  /** Origins of the recorded inputs, including expressions inherited from a parent. */
+  evaluatedInputsProvenance?: ProvenanceMap;
+  /** The parent's authored expressions to retain if the replay suspends. */
+  inheritedExpressions?: ReadonlySet<string>;
   /**
    * Why a cache written by a swamp that records inputs holds none: an input
    * held a sensitive value, which the file must not carry. Such a cache is
@@ -112,6 +119,8 @@ const CacheMetadataSchema = z.object({
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
   evaluatedInputs: z.record(z.string(), z.unknown()).optional(),
+  evaluatedInputsProvenance: ProvenanceMapDataSchema.optional(),
+  inheritedExpressions: z.array(z.string()).optional(),
   evaluatedInputsOmitted: z.literal("sensitive").optional(),
 });
 
@@ -124,6 +133,8 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
       sensitiveFormat?: unknown;
       provenance?: unknown;
       evaluatedInputs?: unknown;
+      evaluatedInputsProvenance?: unknown;
+      inheritedExpressions?: unknown;
       evaluatedInputsOmitted?: unknown;
     })
     | null;
@@ -135,6 +146,8 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     sensitiveFormat,
     provenance: provenanceData,
     evaluatedInputs,
+    evaluatedInputsProvenance,
+    inheritedExpressions,
     evaluatedInputsOmitted,
     ...workflowData
   } = data;
@@ -145,6 +158,8 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     sensitiveFormat,
     provenance: provenanceData,
     evaluatedInputs,
+    evaluatedInputsProvenance,
+    inheritedExpressions,
     evaluatedInputsOmitted,
   });
   if (!parsed.success) {
@@ -176,6 +191,10 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     writtenReferences: metadata.writtenReferences ?? [],
     sensitiveFormat: metadata.sensitiveFormat,
     evaluatedInputs: metadata.evaluatedInputs,
+    evaluatedInputsProvenance: metadata.evaluatedInputsProvenance === undefined
+      ? undefined
+      : ProvenanceMap.fromData(metadata.evaluatedInputsProvenance),
+    inheritedExpressions: new Set(metadata.inheritedExpressions),
     evaluatedInputsOmitted: metadata.evaluatedInputsOmitted,
   };
 }
@@ -399,6 +418,13 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       evaluatedInputs: recorded && "inputs" in recorded
         ? recorded.inputs
         : undefined,
+      evaluatedInputsProvenance: recorded && "inputs" in recorded
+        ? recorded.provenance?.toData()
+        : undefined,
+      inheritedExpressions:
+        recorded && "inputs" in recorded && recorded.inheritedExpressions
+          ? [...recorded.inheritedExpressions]
+          : undefined,
       evaluatedInputsOmitted: recorded && "omitted" in recorded
         ? recorded.omitted
         : undefined,

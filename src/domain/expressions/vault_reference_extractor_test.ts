@@ -211,6 +211,16 @@ Deno.test("extractVaultReferences: a call with one dotted bare argument is dynam
   assertEquals(result.hasDynamicRefs, true);
 });
 
+Deno.test("extractVaultReferences: double slashes in bare names stay literal", () => {
+  assertEquals(
+    extractVaultReferences("${{ vault.get(prod//us, team//token) }}"),
+    {
+      staticRefs: [{ vaultName: "prod//us", secretKey: "team//token" }],
+      hasDynamicRefs: false,
+    },
+  );
+});
+
 for (
   const argument of [
     "inputs.?keyName.orValue('missing')",

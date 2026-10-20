@@ -102,6 +102,26 @@ Deno.test("deferChildInputs: late vault selectors round-trip as constants withou
   });
 });
 
+Deno.test("deferChildInputs: literal vault arguments that resemble bindings stay literal", async () => {
+  await withTempDir((dir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(dir),
+      dir,
+    );
+    for (const key of ["inputs", "inputs-token"]) {
+      const expression = `\${{ vault.get(default, ${key}) }}`;
+      const deferred = service.deferChildInputs(
+        { token: expression },
+        { model: {}, env: {}, inputs: { token: "late" } },
+        new Set([expression]),
+        ["inputs.token"],
+      );
+      assertEquals(deferred.deferredExpressions[0].expression, expression);
+    }
+    return Promise.resolve();
+  });
+});
+
 Deno.test("deferChildInputs: binding one vault selector preserves comments in the other", async () => {
   await withTempDir((dir) => {
     const service = new ExpressionEvaluationService(

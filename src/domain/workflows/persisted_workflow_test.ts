@@ -25,6 +25,8 @@ import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
+import { deferredExpressionReference } from "../expressions/deferred_expression.ts";
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import {
   forEachNameWithoutSecrets,
   isIdentifierMapPath,
@@ -214,6 +216,44 @@ Deno.test("recordableEvaluatedInputs: inputs holding a sensitive value are withh
 });
 
 const gated = { name: "gated" };
+
+Deno.test("recordableEvaluatedInputs: origins accompany plain inputs and are withheld with sensitive ones", () => {
+  const origins = {
+    provenance: ProvenanceMap.authored().withWholeData("data"),
+    inheritedExpressions: new Set(["${{ env.SOURCE }}"]),
+  };
+  assertEquals(
+    recordableEvaluatedInputs({ data: "plain" }, recorded(), origins),
+    {
+      inputs: { data: "plain" },
+      ...origins,
+    },
+  );
+  assertEquals(
+    recordableEvaluatedInputs({ data: SECRET }, recorded(), origins),
+    {
+      omitted: "sensitive",
+    },
+  );
+});
+
+Deno.test("replayInputs: inherited deferred inputs need their recorded provenance", () => {
+  const inputs = { nested: [deferredExpressionReference(crypto.randomUUID())] };
+  const cache = { workflow: gated, evaluatedInputs: inputs };
+  const legacy = replayInputs(cache, {});
+  assert("refusal" in legacy);
+  assertStringIncludes(
+    legacy.refusal,
+    "inherited inputs without their provenance",
+  );
+  assertEquals(
+    replayInputs({
+      ...cache,
+      evaluatedInputsProvenance: ProvenanceMap.authored(),
+    }, {}),
+    { inputs },
+  );
+});
 
 Deno.test("replayInputs: a --last-evaluated run takes the inputs its cache recorded, under its own (swamp-club#3583)", () => {
   const recordedInputs = { target: "scratch", creds: { user: "u", key: "k" } };

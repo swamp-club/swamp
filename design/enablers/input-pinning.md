@@ -225,6 +225,14 @@ CLI and serve paths both do this (`src/cli/commands/workflow_run.ts`,
 Superseding matches on the inputs the run will record, which are the loaded
 cache's. A run the input comparison refuses supersedes nothing.
 
+The cache also records `evaluatedInputsProvenance` and the parent's
+`inheritedExpressions`. Replay restores those with the input values, and a
+replayed run retains them across suspension and resume. A behavior definition
+that reads an inherited runtime input directly therefore resolves it as the
+original child did; caller-supplied expression text stays data. An older cache
+containing deferred input references without their provenance is refused with
+instructions to rerun the parent or supply explicit inputs to a fresh run.
+
 **When the cache recorded no inputs.** Three cases look alike today, since the
 `evaluatedInputs` field is simply absent. The cache tells them apart:
 

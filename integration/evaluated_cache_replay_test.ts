@@ -50,6 +50,8 @@ import {
 } from "../src/libswamp/workflows/run.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { collect } from "../src/libswamp/testing.ts";
 
 await initializeLogging({});
 
@@ -61,6 +63,7 @@ async function withRepo(
     repo: RepositoryContext,
     dir: string,
     executions: unknown[],
+    type: ModelType,
   ) => Promise<void>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-cache-replay-" });
@@ -86,7 +89,7 @@ async function withRepo(
       type,
       Definition.create({ name: "consumer" }),
     );
-    await fn(repo, dir, executions);
+    await fn(repo, dir, executions, type);
   } finally {
     repo.catalogStore.close();
     if (Deno.build.os === "windows") {
@@ -95,6 +98,107 @@ async function withRepo(
       await Deno.remove(dir, { recursive: true });
     }
   }
+}
+
+for (const authored of [true, false]) {
+  Deno.test(`workflow --last-evaluated: inherited input provenance survives definition evaluation and resume (${authored ? "authored" : "data"})`, async () => {
+    await withRepo(async (repo, dir, executions, type) => {
+      await withMockedEnv(
+        { SWAMP_CACHED_INPUT: "resolved-parent-value" },
+        async () => {
+          await repo.definitionRepo.save(
+            type,
+            Definition.create({
+              name: "consumer",
+              methods: { run: { arguments: { value: "${{ inputs.value }}" } } },
+            }),
+          );
+          const child = Workflow.create({
+            name: "child",
+            jobs: [Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "before",
+                  task: StepTask.model("consumer", "run"),
+                }),
+                Step.create({
+                  name: "gate",
+                  task: StepTask.manualApproval("Continue?"),
+                  dependsOn: [{
+                    step: "before",
+                    condition: TriggerCondition.succeeded(),
+                  }],
+                }),
+                Step.create({
+                  name: "after",
+                  task: StepTask.model("consumer", "run"),
+                  dependsOn: [{
+                    step: "gate",
+                    condition: TriggerCondition.succeeded(),
+                  }],
+                }),
+              ],
+            })],
+          });
+          const expression = "${{ env.SWAMP_CACHED_INPUT }}";
+          const parent = Workflow.create({
+            name: "parent",
+            jobs: [Job.create({
+              name: "main",
+              steps: [Step.create({
+                name: "child",
+                task: StepTask.workflow(child.name, {
+                  value: authored ? expression : "${{ inputs.value }}",
+                }),
+              })],
+            })],
+          });
+          await repo.workflowRepo.save(child);
+          await repo.workflowRepo.save(parent);
+          const deps = await createWorkflowRunDeps(dir, repo, {
+            type: "filesystem",
+            path: join(dir, ".swamp"),
+          });
+          const service = () =>
+            deps.createExecutionService(
+              repo.workflowRepo,
+              repo.workflowRunRepo,
+              dir,
+              repo.catalogStore,
+            );
+          const original = await service().execute(parent.name, {
+            inputs: authored ? {} : { value: expression },
+          });
+          assertEquals(original.status, "suspended");
+          const expected = {
+            value: authored ? "resolved-parent-value" : expression,
+          };
+          assertEquals(executions, [expected]);
+          const replay = await service().execute(child.name, {
+            lastEvaluated: true,
+          });
+          assertEquals(replay.status, "suspended");
+          assertEquals(executions, [expected, expected]);
+          const gate = replay.getJob("main")!.getStep("gate")!;
+          gate.recordApprovalDecision({
+            approved: true,
+            decidedBy: "user:test",
+            decidedAt: new Date().toISOString(),
+          });
+          gate.succeed();
+          await repo.workflowRunRepo.save(child.id, replay);
+          await collect(service().resume(child.name, replay.id));
+          const resumed = await repo.workflowRunRepo.findById(
+            child.id,
+            replay.id,
+          );
+          assertEquals(resumed?.status, "succeeded");
+          assertEquals(executions, [expected, expected, expected]);
+        },
+      );
+    });
+  });
 }
 
 /** A step that captures `target`, then a gate that suspends the run. */

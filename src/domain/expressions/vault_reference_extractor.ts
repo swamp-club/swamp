@@ -44,11 +44,22 @@ function matchVaultGetCall(
   const argsStart = start + "vault.get(".length;
   const closing = [")"];
   let comma: number | undefined;
+  let argumentStarted = false;
   let state: LexState = LexState.Code;
   let pos = argsStart;
   while (pos < text.length) {
     if (state === LexState.Code) {
       const ch = text[pos];
+      if (closing.length === 1 && !argumentStarted && !/\s/.test(ch)) {
+        argumentStarted = true;
+        // Legacy bare names can contain // without starting a CEL comment.
+        // Consume a complete literal argument before entering the CEL lexer.
+        const bare = /^[^\s,)]+(?=\s*[,)])/.exec(text.slice(pos))?.[0];
+        if (bare && !isDynamicVaultArgument(bare) && !bare.startsWith("`")) {
+          pos += bare.length;
+          continue;
+        }
+      }
       // Backtick-quoted vault names predate CEL string syntax.
       if (ch === "`") {
         const end = text.indexOf("`", pos + 1);
@@ -74,6 +85,7 @@ function matchVaultGetCall(
       } else if (ch === "," && closing.length === 1) {
         if (comma !== undefined) return undefined;
         comma = pos;
+        argumentStarted = false;
       }
     }
     const [next, nextState] = lexStep(text, pos, state);

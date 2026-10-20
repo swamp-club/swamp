@@ -80,7 +80,10 @@ import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import { findVaultGetCalls } from "./vault_reference_extractor.ts";
+import {
+  findVaultGetCalls,
+  isDynamicVaultArgument,
+} from "./vault_reference_extractor.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
   type GraphNode,
@@ -912,6 +915,7 @@ export class ExpressionEvaluationService {
         label: string,
       ): string => {
         if (quoted !== undefined) return `${quote}${quoted}${quote}`;
+        if (!isDynamicVaultArgument(bare)) return bare;
         if (
           !referencedBindingPaths(bare).some((path) =>
             omitBindings.some((omitted) => overlaps(path, omitted))

@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DeferredExpression } from "../expressions/deferred_expression.ts";
+import {
+  type DeferredExpression,
+  isDeferredExpression,
+} from "../expressions/deferred_expression.ts";
+import type { ProvenanceMap } from "../expressions/provenance_map.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
@@ -44,15 +48,23 @@ import { Workflow, type WorkflowInput } from "./workflow.ts";
  * made replayable by running fresh once.
  */
 export type RecordedEvaluationInputs =
-  | { inputs: Record<string, unknown> }
+  | {
+    inputs: Record<string, unknown>;
+    provenance?: ProvenanceMap;
+    inheritedExpressions?: ReadonlySet<string>;
+  }
   | { omitted: "sensitive" };
 
 export function recordableEvaluatedInputs(
   inputs: Record<string, unknown>,
   values: RunSensitiveValues,
+  origins?: {
+    provenance: ProvenanceMap;
+    inheritedExpressions?: ReadonlySet<string>;
+  },
 ): RecordedEvaluationInputs {
   return canonicalJson(values.masked(inputs)) === canonicalJson(inputs)
-    ? { inputs }
+    ? { inputs, ...origins }
     : { omitted: "sensitive" };
 }
 
@@ -60,6 +72,7 @@ export function recordableEvaluatedInputs(
 export interface ReplayableCache {
   workflow: { name: string };
   evaluatedInputs?: Record<string, unknown>;
+  evaluatedInputsProvenance?: ProvenanceMap;
   evaluatedInputsOmitted?: "sensitive";
 }
 
@@ -92,6 +105,18 @@ export function replayInputs(
         `Run the workflow once without --last-evaluated, or evaluate it again (swamp workflow evaluate ${
           quoteShellWord(name)
         } --input ...); either rewrites the cache.`,
+    };
+  }
+  if (
+    cache.evaluatedInputsProvenance === undefined &&
+    extractExpressions(recorded).some((expr) =>
+      isDeferredExpression(expr.celExpression)
+    )
+  ) {
+    return {
+      refusal:
+        `The evaluated workflow cached for "${name}" holds inherited inputs without their provenance, so it cannot be replayed. ` +
+        "Run its parent workflow again, or run it without --last-evaluated with explicit inputs.",
     };
   }
   const merged = deepMerge({ ...recorded }, supplied);
