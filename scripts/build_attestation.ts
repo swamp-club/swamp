@@ -214,6 +214,10 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     jsonPath: ["scripts", "eval-claude-cli-provider"],
   },
   {
+    path: "evals/promptfoo/codex_cli_provider.mjs",
+    jsonPath: ["scripts", "eval-codex-cli-provider"],
+  },
+  {
     path: "evals/promptfoo/provider_route.ts",
     jsonPath: ["scripts", "eval-provider-route"],
   },

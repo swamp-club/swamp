@@ -32,6 +32,7 @@ import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
+  CLI_MODELS,
   cliProviderEntry,
   resolveRoute,
   type Route,
@@ -77,7 +78,9 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
   },
 };
 
-const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
+const VALID_MODELS = [
+  ...new Set([...Object.keys(PROVIDER_REGISTRY), ...Object.keys(CLI_MODELS)]),
+];
 
 const GUIDE_TOPICS: Record<string, string> = {
   "behavior": "Load this guide for behavior (model) operations — create, run, edit, delete, search types, method execution, behavior outputs",
@@ -119,8 +122,10 @@ interface PromptfooTest {
   assert: Array<{ type: string; value: string }>;
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(Deno.args, {
+export async function generateConfig(
+  argv: string[],
+): Promise<Record<string, unknown>> {
+  const args = parseArgs(argv, {
     string: ["model", "route"],
     default: { model: "sonnet" },
   });
@@ -235,7 +240,11 @@ async function main(): Promise<void> {
     description: `Swamp gateway internal routing evaluation (${modelAlias})`,
     prompts: ["{{query}}"],
     providers: route === "cli"
-      ? [cliProviderEntry(modelAlias, systemMessage, tools.map((t) => t.function.name))]
+      ? [
+        cliProviderEntry(
+          modelAlias, systemMessage, tools.map((t) => t.function.name), tools,
+        ),
+      ]
       : [
       {
         id: provider.id,
@@ -255,10 +264,9 @@ async function main(): Promise<void> {
   };
 
   // Suppress YAML anchors by pre-stringifying the config
-  const yamlStr = stringifyYaml(JSON.parse(JSON.stringify(config)), {
-    lineWidth: 200,
-  });
-  console.log(yamlStr);
+  return JSON.parse(JSON.stringify(config));
 }
 
-await main();
+if (import.meta.main) {
+  console.log(stringifyYaml(await generateConfig(Deno.args), { lineWidth: 200 }));
+}

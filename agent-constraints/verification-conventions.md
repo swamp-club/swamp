@@ -113,11 +113,12 @@ The skill verification workflow also needs:
 - **`TESSL_TOKEN`** — for `deno task review-skills` (calls `npx tessl`). Add it
   to `verify.env`. If missing, skill review **fails** (exit 1) — an incomplete
   verification is not a valid attestation.
-- **`deno task eval-skill-triggers`** needs no API key. It answers every eval
-  case through `claude -p` on your claude.ai login (the `cli` route). If the
-  `claude` CLI is missing or logged out, the preflight **fails** (exit 1) — the
-  evals never skip. The `ANTHROPIC_API_KEY` is only for the `api` route, which
-  CI uses.
+- **`deno task eval-skill-triggers`** needs no API key on the `cli` route.
+  By default it answers every case through `claude -p` on your claude.ai login. Set
+  `verify-skills` input `reviewer=codex` to use an authenticated Codex CLI
+  with `gpt-6-astra` instead. If the selected CLI is missing or logged out,
+  the preflight **fails** (exit 1); the evals never skip. The
+  `ANTHROPIC_API_KEY` is only for the `api` route, which CI uses.
 
 To create the env file, read the values out of 1Password:
 
@@ -175,7 +176,22 @@ skill files changed, both steps are skipped.
 | Step | Command | Env Var | Missing Behavior |
 | --- | --- | --- | --- |
 | skill-review | `deno task review-skills` | `TESSL_TOKEN` | **Fails** (exit 1) — must be configured |
-| skill-trigger-eval | `deno task eval-skill-triggers` | none (claude.ai login) | **Fails** (exit 1) if the `claude` CLI is unusable |
+| skill-trigger-eval | `deno task eval-skill-triggers --route cli --model <selected-model>` | none (selected CLI login) | **Fails** (exit 1) if the selected CLI is unusable |
+
+`verify-skills` defaults to `reviewer=claude` (`opus`). To use Codex for all
+three eval phases (trigger, routing, sufficiency):
+
+```bash
+SWAMP_WORKFLOWS_DIR=verification swamp workflow run verify-skills \
+  --input commit=<SHA> --input branch=<branch> --input reviewer=codex
+```
+
+This selects `gpt-6-astra` through `codex exec`; skill quality review still uses
+Tessl. Each case runs in a fresh temporary directory with a schema-constrained
+final answer. Missing answers, invalid choices, and failed processes count as
+eval errors. The Codex provider is hash-pinned in the attestation like the
+Claude provider. Choose the reviewer separately for `verify-reviews` and
+`verify-skills`.
 
 ## Running All Three in Parallel
 

@@ -17,6 +17,11 @@ inputs:
     branch:
       type: string
       description: Branch name being verified.
+    reviewer:
+      type: string
+      enum: [claude, codex]
+      default: claude
+      description: Eval CLI; Claude uses opus, Codex uses gpt-6-astra.
   required:
     - commit
     - branch
@@ -115,7 +120,7 @@ jobs:
           modelName: skills-trigger-eval-${{ run.id }}
           methodName: execute
           inputs:
-            run: "deno task eval-skill-triggers"
+            run: "deno task eval-skill-triggers --route cli --model ${{ inputs.reviewer == 'codex' ? 'gpt-6-astra' : 'opus' }}"
             workingDir: "/tmp/swamp-verify-skills-${{ run.id }}"
 
   # ── Cleanup ──────────────────────────────────────────────────

@@ -32,6 +32,7 @@ import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import {
+  CLI_MODELS,
   cliProviderEntry,
   resolveRoute,
   type Route,
@@ -77,7 +78,9 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
   },
 };
 
-const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
+const VALID_MODELS = [
+  ...new Set([...Object.keys(PROVIDER_REGISTRY), ...Object.keys(CLI_MODELS)]),
+];
 
 const GUIDE_DIRS: Record<string, string> = {
   "behavior": "references/behavior",
@@ -130,8 +133,10 @@ interface PromptfooTest {
   assert: Array<{ type: string; value: string }>;
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(Deno.args, {
+export async function generateConfig(
+  argv: string[],
+): Promise<Record<string, unknown>> {
+  const args = parseArgs(argv, {
     string: ["model", "route"],
     default: { model: "sonnet" },
   });
@@ -263,7 +268,11 @@ async function main(): Promise<void> {
     description: `Swamp guide sufficiency evaluation (${modelAlias})`,
     prompts: ["{{query}}\n\n---\n\nGuide content:\n\n{{guide_content}}"],
     providers: route === "cli"
-      ? [cliProviderEntry(modelAlias, systemMessage, tools.map((t) => t.function.name))]
+      ? [
+        cliProviderEntry(
+          modelAlias, systemMessage, tools.map((t) => t.function.name), tools,
+        ),
+      ]
       : [
       {
         id: provider.id,
@@ -282,10 +291,9 @@ async function main(): Promise<void> {
     tests,
   };
 
-  const yamlStr = stringifyYaml(JSON.parse(JSON.stringify(config)), {
-    lineWidth: 200,
-  });
-  console.log(yamlStr);
+  return JSON.parse(JSON.stringify(config));
 }
 
-await main();
+if (import.meta.main) {
+  console.log(stringifyYaml(await generateConfig(Deno.args), { lineWidth: 200 }));
+}

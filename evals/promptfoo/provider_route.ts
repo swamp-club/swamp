@@ -19,9 +19,8 @@
 
 
 /**
- * Chooses how the eval generators reach the model: the Anthropic Messages API
- * (CI, and every non-Anthropic provider) or the Claude Code CLI (`claude -p`),
- * which runs on a claude.ai login and needs no ANTHROPIC_API_KEY.
+ * Chooses how eval generators reach the model: provider APIs or an authenticated
+ * Claude/Codex CLI. Claude aliases retain their existing local and CI defaults.
  */
 
 export type Route = "api" | "cli";
@@ -29,26 +28,30 @@ export type Route = "api" | "cli";
 export const ROUTES: readonly Route[] = ["api", "cli"];
 
 interface CliModel {
-  /** Passed to `claude --model`; an alias resolves to the latest model. */
+  /** Passed to the selected CLI; Claude aliases resolve to the latest model. */
   model: string;
-  /** Passed to `claude --effort`; the CLI's counterpart of thinking budget. */
+  provider?: "codex";
+  /** Reasoning effort passed through the selected CLI's configuration. */
   effort: string;
 }
 
-/** Aliases the CLI route supports. Fable and non-Anthropic models are API-only. */
+/** Aliases the CLI route supports. Fable and the remaining GPT/Gemini models are API-only. */
 export const CLI_MODELS: Readonly<Record<string, CliModel>> = {
   sonnet: { model: "sonnet", effort: "low" },
   opus: { model: "opus", effort: "medium" },
+  "gpt-6-astra": { model: "gpt-6-astra", effort: "medium", provider: "codex" },
 };
 
 /**
  * The route used when `--route` is not given: the API in GitHub Actions, where
  * the CI secrets live, and the CLI everywhere else for models that support it.
+ * The opt-in Codex model is CLI-only, including in CI.
  */
 export function defaultRoute(
   alias: string,
   env: { GITHUB_ACTIONS?: string },
 ): Route {
+  if (CLI_MODELS[alias]?.provider === "codex") return "cli";
   if (env.GITHUB_ACTIONS) return "api";
   return alias in CLI_MODELS ? "cli" : "api";
 }
@@ -74,6 +77,9 @@ export function resolveRoute(
 
 /** Throws when `alias` cannot run on `route`. */
 export function assertRouteSupports(alias: string, route: Route): void {
+  if (route === "api" && CLI_MODELS[alias]?.provider === "codex") {
+    throw new Error(`model "${alias}" is CLI-only; use --route cli`);
+  }
   if (route === "cli" && !(alias in CLI_MODELS)) {
     throw new Error(
       `model "${alias}" has no CLI route; use --route api or one of: ${
@@ -88,15 +94,20 @@ export function cliProviderEntry(
   alias: string,
   systemPrompt: string,
   toolNames: string[],
+  tools: unknown[] = [],
 ): { id: string; config: Record<string, unknown> } {
+  assertRouteSupports(alias, "cli");
   const cli = CLI_MODELS[alias];
   return {
-    id: "file://claude_cli_provider.mjs",
+    id: cli.provider === "codex"
+      ? "file://codex_cli_provider.mjs"
+      : "file://claude_cli_provider.mjs",
     config: {
       model: cli.model,
       effort: cli.effort,
       systemPrompt,
       toolNames,
+      ...(cli.provider === "codex" ? { tools } : {}),
     },
   };
 }

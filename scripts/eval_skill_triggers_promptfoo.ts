@@ -26,10 +26,10 @@
  * Usage: deno run eval-skill-triggers [--model <alias>] [--route cli|api] [--concurrency <n>] [--threshold <0.0-1.0>]
  *
  * Supported models: opus (default), sonnet, fable, gpt-5.4, gemini-2.5-pro,
- * gemini-3.1-pro
+ * gemini-3.1-pro, gpt-6-astra (Codex CLI only)
  *
  * Routes: `cli` runs sonnet/opus through `claude -p`, so a claude.ai login is
- * enough and no API key is read. `api` calls the provider APIs directly. The
+ * enough and no API key is read. `gpt-6-astra` uses `codex exec`. `api` calls the provider APIs directly. The
  * default is `api` in GitHub Actions and for every model without a CLI route,
  * and `cli` otherwise.
  *
@@ -42,8 +42,10 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { installPromptfooDeps } from "./promptfoo_install.ts";
+import { callCodex } from "../evals/promptfoo/codex_cli_provider.mjs";
 import { ISOLATION_FLAGS } from "../evals/promptfoo/claude_cli_provider.mjs";
 import {
+  CLI_MODELS,
   resolveRoute,
   type Route,
 } from "../evals/promptfoo/provider_route.ts";
@@ -118,8 +120,23 @@ function buildPreflightRequest(
   }
 }
 
-/** Pings `claude -p` so a missing CLI or an expired login fails before the evals. */
+/** Pings the selected CLI so a missing executable or login fails before evals. */
 async function cliPreflightCheck(model: string): Promise<void> {
+  const cli = CLI_MODELS[model];
+  if (cli.provider === "codex") {
+    console.log(`Preflight: verifying ${model} through codex exec…`);
+    const result = await callCodex("hi", {
+      ...cli,
+      systemPrompt: "Select the ready tool.",
+      toolNames: ["ready"],
+    });
+    if (result.error) {
+      console.error(`Preflight failed for ${model}: ${result.error}. Install and authenticate the Codex CLI.`);
+      Deno.exit(1);
+    }
+    console.log(`Preflight: ${model} reachable through codex exec.`);
+    return;
+  }
   console.log(`Preflight: verifying ${model} through claude -p…`);
   const env = Deno.env.toObject();
   delete env.ANTHROPIC_API_KEY;
@@ -208,7 +225,9 @@ const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "gemini-3.1-pro": { prompt: 1.25, completion: 10.0 },
 };
 
-const VALID_MODELS = Object.keys(API_KEY_ENV);
+const VALID_MODELS = [
+  ...new Set([...Object.keys(API_KEY_ENV), ...Object.keys(CLI_MODELS)]),
+];
 
 interface EvalStats {
   successes: number;
@@ -447,7 +466,7 @@ async function main(): Promise<void> {
     Deno.exit(1);
   }
 
-  // Every case is a `claude -p` process on the subscription login, which
+  // Every CLI case is a process on the subscription login, which
   // rate-limits well below what the API tolerates.
   const concurrency = parseInt(args.concurrency ?? (route === "cli" ? "6" : "20"));
   const passThreshold = parseFloat(args.threshold);
