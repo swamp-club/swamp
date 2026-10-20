@@ -309,14 +309,14 @@ function unresolvedArgumentsOf(
 }
 
 /**
- * The typed run's merge with the parsed global arguments laid under it: a
- * global argument takes the value global validation parsed (its Zod defaults
- * and coercions, as the option-off merge has them), except that every leaf
- * holding a sentinel keeps its authored form, so a secret stays a sentinel
- * for the shell's fill while its siblings are parsed. A global whose parsed
- * value reads as an expression is left out, as every other merge leaves it
- * out. Method arguments stay as authored, as they always have in
- * `unresolvedMethodArgs`.
+ * The merge of a run that holds secrets with the parsed global arguments
+ * laid under it: a global argument takes the value global validation parsed
+ * (its Zod defaults and coercions, as the merge of a run with no secrets has
+ * them), except that every leaf holding a sentinel keeps its authored form,
+ * so a secret stays a sentinel for the shell's fill while its siblings are
+ * parsed. A global whose parsed value reads as an expression is left out, as
+ * every other merge leaves it out. Method arguments stay as authored, as
+ * they always have in `unresolvedMethodArgs`.
  */
 function withParsedGlobals(
   merged: Record<string, unknown>,
@@ -526,13 +526,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Merge raw (pre-vault-resolution) global args as fallback so vault
       // sentinel tokens from either source are preserved for env-var isolation.
       // Filter out unresolved ${{ }} expressions (same policy as the method
-      // args merge above). In a typed run the boundary built the merge before
-      // it resolved the global arguments (executeWorkflow) and hands it in
-      // through the context, since by now `definition` holds the values; any
-      // other caller's value is not trusted over the merge built here.
+      // args merge above). A run that holds secrets reaches this method
+      // through executeWorkflow, which built the merge before it resolved the
+      // global arguments and hands it in through the context, since by now
+      // `definition` holds the values (swamp-club#3627); a caller that hands
+      // in none gets the merge built here, and a run with no secrets never
+      // reads the context's.
       unresolvedMethodArgs:
-        (secretBag?.registry.typedSecrets && secretBag.resolvesAny &&
-          context.unresolvedMethodArgs) ||
+        (secretBag?.resolvesAny && context.unresolvedMethodArgs) ||
         { ...filteredRawGlobalArgs, ...rawMethodArgs },
     };
 
@@ -832,6 +833,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
 
+      // The merge as `unresolvedMethodArgs` carries it, built here while the
+      // global arguments still hold their sentinels, with or without the
+      // internal option: the resolution below writes values into them, and a
+      // method such as command/shell reads `run` from this merge wherever it
+      // was authored, so a secret under globalArguments is placed through
+      // the environment and never reaches the command line (swamp-club#3627).
+      // A run with no secrets has nothing to keep and builds no merge here.
+      const registry = context.vaultSecrets?.registry;
+      const secrets =
+        registry !== undefined && context.vaultSecrets?.resolvesAny === true
+          ? secretOccurrencesOf(registry)
+          : undefined;
+      const sentinelArguments = secrets !== undefined
+        ? unresolvedArgumentsOf(currentDefinition, methodName)
+        : undefined;
       // Refuse a secret at a destination that takes none, before any load
       // (design/enablers/typed-secrets.md Sections 6.3 and 7.1): a field
       // marked secrets: "refuse" in the global arguments or in the merged
@@ -839,25 +855,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // for a local placement. The decision reads the run's sentinels, never
       // a value, so a refused attempt reads no vault. Behind the internal
       // option, which only a typed run's registry carries.
-      const registry = context.vaultSecrets?.registry;
-      const typed = registry?.typedSecrets === true &&
-        context.vaultSecrets?.resolvesAny === true;
-      // The merge as `unresolvedMethodArgs` carries it, built here while the
-      // global arguments still hold their sentinels: the resolution below
-      // writes values into them, and a method such as command/shell reads
-      // `run` from this merge wherever it was authored.
-      const typedUnresolvedArguments = typed
-        ? unresolvedArgumentsOf(currentDefinition, methodName)
-        : undefined;
-      const typedSecrets = typed && registry !== undefined
-        ? secretOccurrencesOf(registry)
-        : undefined;
-      if (registry !== undefined && typedUnresolvedArguments !== undefined) {
+      if (
+        registry !== undefined && registry.typedSecrets &&
+        sentinelArguments !== undefined
+      ) {
         refuseSecretDestinations({
           modelDef,
           method,
           globalArguments: currentDefinition.globalArguments,
-          mergedArguments: typedUnresolvedArguments,
+          mergedArguments: sentinelArguments,
           registry,
           localPlacement: !isRemotePlacement,
         });
@@ -972,19 +978,22 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Build unresolvedMethodArgs for pre-flight checks so they can
       // validate method arguments. Mirrors the merge in execute():
       // per-method args override global args, with unresolved ${{ }}
-      // expressions filtered from global args.
+      // expressions filtered from global args. In a run that holds secrets
+      // it is the merge built before the resolution, with the values
+      // validation parsed laid under its non-secret globals.
       const checkUnresolvedMethodArgs =
-        typedUnresolvedArguments === undefined || typedSecrets === undefined
+        sentinelArguments === undefined || secrets === undefined
           ? unresolvedArgumentsOf(currentDefinition, methodName)
           : withParsedGlobals(
-            typedUnresolvedArguments,
+            sentinelArguments,
             currentDefinition,
             methodName,
-            typedSecrets,
+            secrets,
           );
-      if (typedUnresolvedArguments !== undefined) {
-        // In a typed run the checks and the method see this merge, with the
-        // sentinels in place, as `unresolvedMethodArgs` (Section 6.3).
+      if (sentinelArguments !== undefined) {
+        // The checks and the method see this merge, with the sentinels in
+        // place, as `unresolvedMethodArgs` (Section 6.3): execute() reads it
+        // from the context, since by then the definition holds the values.
         context = {
           ...context,
           unresolvedMethodArgs: checkUnresolvedMethodArgs,

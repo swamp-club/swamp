@@ -821,12 +821,15 @@ At the execution boundary the method execution service does three things:
 2. It loads the step's sentinels for the attempt (Section 3.3).
 3. It resolves sentinels in method and global arguments, then merges and
    validates them as today. Global arguments with unresolved expressions stay
-   excluded. In a typed run the merge of item 1, built before the resolution
-   wrote values into the global arguments, is what the checks and the method
-   receive as `unresolvedMethodArgs`, so a shell `run` authored under
-   `globalArguments` keeps its sentinels for the placement fill. The refusal
-   of a literal sensitive global argument stays where it lives, in the create
-   and save paths.
+   excluded. The merge of item 1, built before the resolution wrote values
+   into the global arguments and with the values validation parsed laid under
+   its non-secret globals, is what the checks and the method receive as
+   `unresolvedMethodArgs`, with or without the option, so a shell `run`
+   authored under `globalArguments` keeps its sentinels for the placement
+   fill (before swamp-club#3627 that merge was built from the resolved
+   definition, and such a `run` reached the command line as plaintext). The
+   refusal of a literal sensitive global argument stays where it lives, in
+   the create and save paths.
 
 Pre-flight checks run on the orchestrator before a local method. They receive
 resolved `globalArgs`, and method arguments with sentinels in
@@ -1240,12 +1243,16 @@ that skip authored keys, the NUL rejection before the launch, sentinel-derived
 stand-ins and masks in `RunSensitiveValues` and `SecretRedactor` (`hasSecrets`
 counts an attached typed registry), and `executionErrorFrom` for value-free
 output records. Integration tests wire the boundary from real components, with
-the shell cases on the host shell and the argv read from `/proc` on Linux. Two
-changes reach the option-off path, both stricter: a method boundary's failure
-record is redacted of the values the run loaded, and a shell resolution that
-fails (a sentinel no load filled) fails the step before any result is written. A
-redactor is created per run; one shared across runs would keep every typed
-registry it is handed. Carried over: the shell result record's `command`
+the shell cases on the host shell and the argv read from `/proc` on Linux. Three
+changes reach the option-off path, all stricter: a method boundary's failure
+record is redacted of the values the run loaded; a shell resolution that fails
+(a sentinel no load filled) fails the step before any result is written; and the
+merge the checks and the method receive as `unresolvedMethodArgs` is built
+before the resolution writes values into the global arguments, so a shell `run`
+or `env` authored under `globalArguments` is placed through the environment
+instead of reaching the command line as plaintext, an exposure that predates the
+slice. A redactor is created per run; one shared across runs would keep every
+typed registry it is handed. Carried over: the shell result record's `command`
 attribute is still the resolved command through the value redactor (a Phase 4
 data-record gate), and generated `__SWAMP_VAULT_N` variables are not stripped
 from a nested swamp's inherited environment. Entry points keep building untyped

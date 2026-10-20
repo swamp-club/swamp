@@ -5526,7 +5526,7 @@ Deno.test("executeWorkflow: a failed method's output record holds its error with
   assertEquals(failed?.error?.message.includes("s3cret-value"), false);
 });
 
-Deno.test("executeWorkflow: in a typed run the checks and the method receive the global arguments in unresolvedMethodArgs with their sentinels, as the shell needs; option off, they hold the values as today", async () => {
+Deno.test("executeWorkflow: the checks and the method receive the global arguments in unresolvedMethodArgs with their sentinels, as the shell needs, with the option on or off", async () => {
   const service = new DefaultMethodExecutionService();
   const seen: {
     method?: Record<string, unknown>;
@@ -5587,7 +5587,10 @@ Deno.test("executeWorkflow: in a typed run the checks and the method receive the
     await service.executeWorkflow(definition, model, "create", context, {
       secretLoader: loader,
     });
-    const expected = typedSecrets ? `echo ${sentinel}` : "echo s3cret-value";
+    // The merge is built before the boundary writes values into the global
+    // arguments, in either mode (swamp-club#3627): option off, a shell run
+    // under globalArguments used to reach the command line as plaintext.
+    const expected = `echo ${sentinel}`;
     for (const merge of [seen.method, seen.check]) {
       assertEquals(merge?.command, expected, `typed ${typedSecrets}`);
       // A global that holds no secret carries what validation parsed, in
@@ -5653,9 +5656,10 @@ Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with
   assertEquals(directError.destination, "an environment variable name");
 });
 
-Deno.test("executeWorkflow: in a typed run the merge keeps a sentinel leaf authored inside a global while its siblings are parsed, and leaves out a global whose value reads as an expression", async () => {
+Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a global while its siblings are parsed, and leaves out a global whose value reads as an expression, with the option on or off", async () => {
   const service = new DefaultMethodExecutionService();
-  let seen: Record<string, unknown> | undefined;
+  /** The merge the method received, one per mode. */
+  const seen: Record<string, unknown>[] = [];
   const model: ModelDefinition = {
     type: ModelType.create("test/leaf-overlay"),
     version: "2026.10.20.1",
@@ -5672,37 +5676,45 @@ Deno.test("executeWorkflow: in a typed run the merge keeps a sentinel leaf autho
         description: "Records the unresolved merge",
         arguments: z.object({}),
         execute: (_args, context) => {
-          seen = { ...context.unresolvedMethodArgs };
+          seen.push({ ...context.unresolvedMethodArgs });
           return Promise.resolve({});
         },
       },
     },
   };
-  const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets: true }));
-  const sentinel = bag.addSecret({ vaultName: "v", key: "token" }, "loc");
-  const shaped = bag.addSecret({ vaultName: "v", key: "shaped" }, "loc2");
-  const definition = Definition.create({
-    name: "d",
-    globalArguments: {
-      config: { token: sentinel, retries: "5" },
-      shaped,
-    },
-    methods: { create: { arguments: {} } },
-  });
-  // The second value resolves to text that reads as an expression, which
-  // every merge leaves out.
-  const { loader } = mockLoader({
-    token: "s3cret-value",
-    shaped: "${{ vault.get('v', 'k') }}",
-  });
-  const { context } = createTestContext({
-    modelType: model.type,
-    methodName: "create",
-    vaultSecrets: bag,
-  });
-  await service.executeWorkflow(definition, model, "create", context, {
-    secretLoader: loader,
-  });
-  assertEquals(seen?.config, { token: sentinel, retries: 5, verbose: false });
-  assertEquals(Object.hasOwn(seen ?? {}, "shaped"), false);
+  for (const [index, typedSecrets] of [true, false].entries()) {
+    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+    const sentinel = bag.addSecret({ vaultName: "v", key: "token" }, "loc");
+    const shaped = bag.addSecret({ vaultName: "v", key: "shaped" }, "loc2");
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: {
+        config: { token: sentinel, retries: "5" },
+        shaped,
+      },
+      methods: { create: { arguments: {} } },
+    });
+    // The second value resolves to text that reads as an expression, which
+    // every merge leaves out.
+    const { loader } = mockLoader({
+      token: "s3cret-value",
+      shaped: "${{ vault.get('v', 'k') }}",
+    });
+    const { context } = createTestContext({
+      modelType: model.type,
+      methodName: "create",
+      vaultSecrets: bag,
+    });
+    await service.executeWorkflow(definition, model, "create", context, {
+      secretLoader: loader,
+    });
+    const merge = seen[index];
+    assertEquals(seen.length, index + 1, `typed ${typedSecrets}`);
+    assertEquals(
+      merge?.config,
+      { token: sentinel, retries: 5, verbose: false },
+      `typed ${typedSecrets}`,
+    );
+    assertEquals(Object.hasOwn(merge ?? {}, "shaped"), false);
+  }
 });
