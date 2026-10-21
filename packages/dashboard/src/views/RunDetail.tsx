@@ -207,6 +207,14 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
     refetchHistory();
     refetchLogs();
   }, [refetchHistory, refetchLogs]);
+  // The clock re-reads join a read still in flight, so a slow serve never
+  // has more than one of each per page (swamp-club#3742).
+  const reloadHistory = historyReq.reload;
+  const reloadLogs = logsReq.reload;
+  const reloadLive = useCallback(
+    () => Promise.all([reloadHistory(), reloadLogs()]),
+    [reloadHistory, reloadLogs],
+  );
   const refetchRun = useCallback(() => {
     refetchLive();
     refetchRow();
@@ -227,15 +235,15 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
   const live = run !== null && LIVE_STATUSES.has(run.status);
   const tabVisible = useTabVisible();
   usePolling(
-    refetchLive,
+    reloadLive,
     visibleIntervalMs(live ? LIVE_POLL_MS : null, tabVisible),
   );
   const seenVisible = useRef(tabVisible);
   useEffect(() => {
     const returned = cameIntoView(seenVisible.current, tabVisible);
     seenVisible.current = tabVisible;
-    if (returned && live) refetchLive();
-  }, [tabVisible, live, refetchLive]);
+    if (returned && live) reloadLive().catch(() => {});
+  }, [tabVisible, live, reloadLive]);
   const seenStatus = useRef(run?.status);
   useEffect(() => {
     if (seenStatus.current === run?.status) return;
@@ -1198,12 +1206,17 @@ function ListGlyph() {
 // ── hooks ───────────────────────────────────────────────────────────────
 
 /** Calls `fn` every `intervalMs` while non-null. */
-function usePolling(fn: () => void, intervalMs: number | null): void {
+function usePolling(
+  fn: () => Promise<unknown>,
+  intervalMs: number | null,
+): void {
   const latest = useRef(fn);
   latest.current = fn;
   useEffect(() => {
     if (intervalMs === null) return;
-    const timer = setInterval(() => latest.current(), intervalMs);
+    const timer = setInterval(() => {
+      latest.current().catch(() => {});
+    }, intervalMs);
     return () => clearInterval(timer);
   }, [intervalMs]);
 }
