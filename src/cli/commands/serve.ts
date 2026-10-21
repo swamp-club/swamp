@@ -600,6 +600,7 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+  webhookCancelByRunId?: (id: string) => boolean;
   /** Recorded as the cancelled run's `cancel_reason`. */
   reason?: string;
   /**
@@ -756,12 +757,19 @@ export async function cancelExecution(
     found = deps.activeRunRegistry.cancel(executionId, deps.reason);
     abortedActive = found;
   }
-  let foundViaScheduled = false;
+  // Scheduled and webhook runs are aborted without waiting for them to end.
+  let foundViaTriggerRun = false;
   if (
     !found && executionType === "workflow-run" && deps.scheduledCancelByRunId
   ) {
     found = deps.scheduledCancelByRunId(executionId);
-    foundViaScheduled = found;
+    foundViaTriggerRun = found;
+  }
+  if (
+    !found && executionType === "workflow-run" && deps.webhookCancelByRunId
+  ) {
+    found = deps.webhookCancelByRunId(executionId);
+    foundViaTriggerRun = found;
   }
   if (
     !found && executionType === "workflow-run" && deps.cancelSuspended
@@ -839,10 +847,38 @@ export async function cancelExecution(
     }
     return { status: "cancelled", executionType, executionId };
   }
-  if (foundViaScheduled) {
+  if (foundViaTriggerRun) {
     return { status: "cancellation_requested", executionType, executionId };
   }
   return { status: "cancelled", executionType, executionId };
+}
+
+export interface CancelAllDeps {
+  cancelRegistry: RunCancelRegistry;
+  activeRunRegistry?: ActiveRunRegistry;
+  scheduledCancelAll?: (reason: string) => number;
+  webhookCancelAll?: (reason: string) => number;
+}
+
+/**
+ * Aborts every run this instance holds that matches `typeFilter`, for the bulk
+ * cancel route. Scheduled and webhook runs are workflow runs. Returns the
+ * number of runs aborted.
+ */
+export function cancelAllExecutions(
+  deps: CancelAllDeps,
+  typeFilter: ExecutionType | undefined,
+  reason: string,
+): number {
+  let count = deps.cancelRegistry.cancelAll(typeFilter, reason);
+  if (deps.activeRunRegistry) {
+    count += deps.activeRunRegistry.cancelAll(typeFilter, reason);
+  }
+  if (!typeFilter || typeFilter === "workflow-run") {
+    count += deps.scheduledCancelAll?.(reason) ?? 0;
+    count += deps.webhookCancelAll?.(reason) ?? 0;
+  }
+  return count;
 }
 
 /** The largest body a single-run cancel request may send. */
@@ -6428,6 +6464,9 @@ export const serveCommand = new Command()
                   scheduledCancelByRunId: scheduledExecution
                     ? (id) => scheduledExecution.cancelByRunId(id, reason)
                     : undefined,
+                  webhookCancelByRunId: webhookService
+                    ? (id) => webhookService!.cancelByRunId(id, reason)
+                    : undefined,
                   // The endpoint already required admin on every resource, so
                   // the run's own workflow needs no further check.
                   cancelSuspended: (id) =>
@@ -6489,16 +6528,20 @@ export const serveCommand = new Command()
             const reason = cancelReasonFor(
               cancelActor(cancelAuditPrincipal, connectionCtx),
             );
-            let count = cancelRegistry.cancelAll(typeFilter, reason);
-            if (activeRunRegistry) {
-              count += activeRunRegistry.cancelAll(typeFilter, reason);
-            }
-            if (
-              (!typeFilter || typeFilter === "workflow-run") &&
-              scheduledExecution
-            ) {
-              count += scheduledExecution.cancelAllRuns(reason);
-            }
+            const count = cancelAllExecutions(
+              {
+                cancelRegistry,
+                activeRunRegistry,
+                scheduledCancelAll: scheduledExecution
+                  ? (r) => scheduledExecution.cancelAllRuns(r)
+                  : undefined,
+                webhookCancelAll: webhookService
+                  ? (r) => webhookService!.cancelAllRuns(r)
+                  : undefined,
+              },
+              typeFilter,
+              reason,
+            );
             emitRunCancelAudit(connectionCtx, {
               action: "cancel.all",
               resourceKind: typeFilter === "method-run"

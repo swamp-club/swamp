@@ -31,6 +31,7 @@ import { WRITER_LEASE_PREFIX } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   assertOffLoopbackSecurity,
   authorizeCancelRequest,
+  cancelAllExecutions,
   type CancelAuthorizationRequest,
   cancelExecution,
   cancelSuccessBody,
@@ -1016,6 +1017,84 @@ Deno.test("cancelExecution: returns cancellation_requested for scheduled runs", 
   );
   assertEquals(result.status, "cancellation_requested");
   assertEquals(result.executionId, "sched-1");
+});
+
+Deno.test("cancelExecution: returns cancellation_requested for webhook runs (swamp-club#3740)", async () => {
+  const cancelled: string[] = [];
+  let suspendedTried = false;
+
+  const result = await cancelExecution(
+    "workflow-run",
+    "hook-1",
+    {
+      cancelRegistry: new RunCancelRegistry(),
+      activeRunRegistry: new ActiveRunRegistry(),
+      scheduledCancelByRunId: () => false,
+      webhookCancelByRunId: (id) => {
+        cancelled.push(id);
+        return id === "hook-1";
+      },
+      cancelSuspended: () => {
+        suspendedTried = true;
+        return Promise.resolve({ status: "not_suspended", message: "alive" });
+      },
+    },
+  );
+  assertEquals(result.status, "cancellation_requested");
+  assertEquals(cancelled, ["hook-1"]);
+  // A webhook run never reaches the persisted-run owner check.
+  assertEquals(suspendedTried, false);
+});
+
+Deno.test("cancelExecution: webhook lookup not checked for method-run type (swamp-club#3740)", async () => {
+  let webhookCalled = false;
+
+  const result = await cancelExecution(
+    "method-run",
+    "run-x",
+    {
+      cancelRegistry: new RunCancelRegistry(),
+      webhookCancelByRunId: () => {
+        webhookCalled = true;
+        return true;
+      },
+    },
+  );
+  assertEquals(result.status, "not_found");
+  assertEquals(webhookCalled, false);
+});
+
+Deno.test("cancelAllExecutions: counts every holder's runs, and webhook and scheduled runs only as workflow runs (swamp-club#3740)", () => {
+  const reasons: string[] = [];
+  const deps = () => {
+    const cancelRegistry = new RunCancelRegistry();
+    cancelRegistry.register("workflow-run", "ws-wf", new AbortController());
+    cancelRegistry.register("method-run", "ws-method", new AbortController());
+    return {
+      cancelRegistry,
+      activeRunRegistry: new ActiveRunRegistry(),
+      scheduledCancelAll: (reason: string) => {
+        reasons.push(`scheduled:${reason}`);
+        return 2;
+      },
+      webhookCancelAll: (reason: string) => {
+        reasons.push(`webhook:${reason}`);
+        return 3;
+      },
+    };
+  };
+
+  assertEquals(cancelAllExecutions(deps(), undefined, "r"), 7);
+  assertEquals(cancelAllExecutions(deps(), "workflow-run", "r"), 6);
+  assertEquals(reasons, [
+    "scheduled:r",
+    "webhook:r",
+    "scheduled:r",
+    "webhook:r",
+  ]);
+  reasons.length = 0;
+  assertEquals(cancelAllExecutions(deps(), "method-run", "r"), 1);
+  assertEquals(reasons, []);
 });
 
 Deno.test("cancelExecution: returns cancelled when run already left active registry", async () => {

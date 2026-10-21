@@ -125,6 +125,11 @@ export function ownerGoneDecider(
     // A row another host wrote says nothing here: its pid is not ours to
     // check. The run is then judged like one with no row.
     if (ctx.runTracker && tracked?.isLocalTo(liveness.hostname)) {
+      // This process drives the run, but no registry here holds it by this
+      // id: a nested run, or one whose start has not been recorded yet.
+      if (tracked.pid === Deno.pid) {
+        return { gone: false, why: OWNER_IS_THIS_PROCESS };
+      }
       if (!runHasDeadOwner(run, ctx.runTracker, liveness)) {
         return {
           gone: false,
@@ -163,6 +168,8 @@ export function ownerGoneDecider(
 // client that holds `run` on the workflow, not admin on the server.
 const OWNER_IS_THIS_INSTANCE =
   "this serve instance is running it. Cancel it again";
+const OWNER_IS_THIS_PROCESS =
+  "this serve instance is running it, but not as a run it can cancel by this id. Cancel the run that started it, or cancel this one again once it has started";
 const OWNER_PROCESS_ALIVE =
   "the process running it on the serve host is still alive. Stop that process, then cancel the run again";
 const OWNER_INSTANCE_ALIVE =

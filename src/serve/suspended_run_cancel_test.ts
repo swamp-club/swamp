@@ -533,8 +533,9 @@ Deno.test("ownerGoneDecider: a dead pid in the tracker row of a previous serve i
 
 Deno.test("ownerGoneDecider: a live pid in the tracker row keeps the owner, whatever the control plane says", async () => {
   await withTracker(async (tracker) => {
-    const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
-    tracker.register(trackerRow(run, Deno.pid, "old-instance"));
+    // The parent process is alive and is not this one.
+    const run = runningRun(makeWorkflow("deploy"), Deno.ppid, "old-instance");
+    tracker.register(trackerRow(run, Deno.ppid, "old-instance"));
 
     const gone = await ownerGoneDecider({
       activeRunRegistry: new ActiveRunRegistry(),
@@ -545,6 +546,26 @@ Deno.test("ownerGoneDecider: a live pid in the tracker row keeps the owner, what
 
     assertEquals(gone.gone, false);
     if (!gone.gone) assertStringIncludes(gone.why, "is still alive");
+  });
+});
+
+Deno.test("ownerGoneDecider: a tracker row naming this process never advises stopping it (swamp-club#3740)", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), Deno.pid, "this-instance");
+    tracker.register(trackerRow(run, Deno.pid, "this-instance"));
+
+    const gone = await ownerGoneDecider({
+      activeRunRegistry: new ActiveRunRegistry(),
+      runTracker: tracker,
+      instanceId: "this-instance",
+      controlPlaneStore: controlPlaneWith([]),
+    })(run);
+
+    assertEquals(gone.gone, false);
+    if (!gone.gone) {
+      assertStringIncludes(gone.why, "this serve instance is running it");
+      assertEquals(gone.why.includes("Stop that process"), false);
+    }
   });
 });
 
@@ -631,8 +652,8 @@ Deno.test("cancelSuspendedRunAndPush: cancels a running run whose serve process 
 Deno.test("cancelSuspendedRunAndPush: refuses a running run whose owner is alive with a conflict saying so", async () => {
   await withTracker(async (tracker) => {
     const wf = makeWorkflow("deploy");
-    const run = runningRun(wf, Deno.pid, "old-instance");
-    tracker.register(trackerRow(run, Deno.pid, "old-instance"));
+    const run = runningRun(wf, Deno.ppid, "old-instance");
+    tracker.register(trackerRow(run, Deno.ppid, "old-instance"));
     const h = harness([wf], [run]);
     Object.assign(h.ctx, { runTracker: tracker, instanceId: "new-instance" });
 

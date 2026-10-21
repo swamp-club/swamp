@@ -1430,3 +1430,103 @@ Deno.test("WebhookService: each queued run gets its own vault scope and starts o
   assertEquals(seen[1].passed, scopes[1]);
   assertEquals(seen.map((s) => s.ambient), [undefined, undefined]);
 });
+
+/**
+ * An executor whose run starts as `runId`, with a nested child, and settles as
+ * cancelled once its signal aborts. `aborts` receives each abort reason.
+ */
+function cancellableExecutor(runId: string, aborts: unknown[]) {
+  return ((
+    _repoDir: string,
+    _repoContext: unknown,
+    _datastoreConfig: unknown,
+    _input: unknown,
+    signal: AbortSignal,
+    onEvent: (event: unknown) => void,
+  ) => {
+    onEvent({ kind: "started", runId });
+    onEvent({ kind: "started", runId: `${runId}-child`, parentRunId: runId });
+    return new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => {
+        aborts.push(signal.reason);
+        onEvent({ kind: "cancelled", run: { status: "cancelled" } });
+        resolve();
+      }, { once: true });
+    });
+  }) as unknown as NonNullable<
+    ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+  >;
+}
+
+Deno.test("WebhookService.cancelByRunId: aborts the in-flight run with the reason and settles it as cancelled (swamp-club#3740)", async () => {
+  const aborts: unknown[] = [];
+  const { service, events } = await triggerService({
+    executeWorkflow: cancellableExecutor("run-1", aborts),
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_started"),
+    "run started",
+  );
+
+  assertEquals(service.cancelByRunId("other-run"), false);
+  // A nested run is cancelled through its parent, not by its own id.
+  assertEquals(service.cancelByRunId("run-1-child"), false);
+  assertEquals(service.cancelByRunId("run-1", "no longer needed"), true);
+
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_failed"),
+    "run settled",
+  );
+  assertEquals(aborts.length, 1);
+  assertEquals((aborts[0] as Error).message, "no longer needed");
+  const failed = events.find((e) => e.kind === "webhook_failed");
+  assertEquals(
+    failed?.kind === "webhook_failed" && failed.error,
+    "workflow was cancelled",
+  );
+  // A settled run is no longer held, so it cannot be cancelled again.
+  assertEquals(service.cancelByRunId("run-1"), false);
+  await service.stop();
+});
+
+Deno.test("WebhookService.cancelAllRuns: aborts every in-flight run and counts them (swamp-club#3740)", async () => {
+  const aborts: unknown[] = [];
+  const { service, events } = await triggerService({
+    executeWorkflow: cancellableExecutor("run-1", aborts),
+  });
+  assertEquals(service.cancelAllRuns(), 0);
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_started"),
+    "run started",
+  );
+
+  assertEquals(service.cancelAllRuns("shutting it all down"), 1);
+  await waitFor(() => aborts.length === 1, "run aborted");
+  assertEquals((aborts[0] as Error).message, "shutting it all down");
+  await service.stop();
+});
+
+Deno.test("WebhookService.cancelByRunId: a run whose start is not recorded yet is not matched (swamp-club#3740)", async () => {
+  let entered = false;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const { service } = await triggerService({
+    executeWorkflow: (async () => {
+      entered = true;
+      await gate;
+    }) as unknown as NonNullable<
+      ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+    >,
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(() => entered, "run entered");
+
+  assertEquals(service.cancelByRunId(""), false);
+  assertEquals(service.cancelByRunId("run-1"), false);
+  release();
+  await service.stop();
+});

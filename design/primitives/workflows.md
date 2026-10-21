@@ -3490,9 +3490,14 @@ such a run when this host's run tracker shows its owner is gone, tagged
 [run-tracker](../enablers/run-tracker.md)). `recover --assess-only` shows the
 assessment for such a run without writing it.
 
-A `RunCancelRegistry` in the serve layer tracks AbortControllers for every
-execution path (scheduled, WebSocket ad-hoc, webhook). The cancel API checks
-both the registry and the `ScheduledExecutionService` running map.
+A `RunCancelRegistry` in the serve layer tracks the AbortControllers of
+WebSocket ad-hoc runs. Detached and resumed runs are held in
+`ActiveRunRegistry`, scheduled runs by `ScheduledExecutionService`, and webhook
+runs by `WebhookService`. Each of the last two looks its runs up by run id
+(`cancelByRunId`, `cancelAllRuns`) once the run's `started` event has given
+that id. The HTTP cancel API (`cancelExecution`, and `cancelAllExecutions` for
+the bulk route, in `src/cli/commands/serve.ts`) checks all four
+(swamp-club#3740).
 
 **Nested workflows.** Cancelling a run cancels the child runs its workflow
 steps started. `runWorkflowStep` passes the step's abort signal to the child's
@@ -3568,6 +3573,10 @@ says what still holds the run and what to do, without naming a pid, host or
 instance id:
 
 - The process on the serve host is still alive: stop it, then cancel again.
+- The process is serve itself, which holds the run under another id (a nested
+  run) or has not recorded its start yet: cancel the run that started it, or
+  cancel again once it has started. The reply never advises stopping serve
+  (swamp-club#3740).
 - The serve instance that runs it still reports a heartbeat: cancel through
   that instance, or again here once its heartbeat has expired.
 - Nothing can judge it: there is no tracker row from this host and no
@@ -3604,8 +3613,8 @@ Over WebSocket, the `workflow.cancel` request (`runId`, optional
 `workflowIdOrName` and `reason`) cancels a run in `ActiveRunRegistry` (one
 started or resumed over WebSocket, or auto-resumed) or a persisted run:
 suspended, or left `running` by an owner that is gone. Scheduled and webhook
-runs are held in `RunCancelRegistry` and the scheduled runs instead, so they
-are cancelled over HTTP. It is not gated at
+runs are held by `ScheduledExecutionService` and `WebhookService` instead, so
+they are cancelled over HTTP. It is not gated at
 dispatch: it waits for an aborted run, which needs the sync gate for its final
 push, so it takes the gate only for the persisted cancel and its push
 (`cancelSuspendedRunAndPush`). It finds the persisted run and authorizes the

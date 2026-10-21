@@ -573,7 +573,10 @@ export class WebhookService {
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: WebhookEventHandler | null = null;
-  private readonly running = new Map<string, AbortController>();
+  private readonly running = new Map<
+    string,
+    { controller: AbortController; runId: string }
+  >();
   private draining = false;
   private stopped = false;
   private endpoints: WebhookEndpoint[];
@@ -966,10 +969,40 @@ export class WebhookService {
   async stop(): Promise<void> {
     this.stopped = true;
     this.runQueue.length = 0;
-    for (const controller of this.running.values()) {
+    for (const { controller } of this.running.values()) {
       controller.abort();
     }
     await this.processingPromise;
+  }
+
+  /**
+   * Cancels an in-flight webhook run by its run id. Returns true if found and
+   * aborted. `reason` becomes the run's `cancel_reason`.
+   */
+  cancelByRunId(runId: string, reason = "cancelled by user"): boolean {
+    // An empty id would match every run whose start is not recorded yet.
+    if (runId === "") return false;
+    for (const entry of this.running.values()) {
+      if (entry.runId === runId) {
+        logger.info("Cancelling webhook run {runId}", { runId });
+        entry.controller.abort(new Error(reason));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Cancels every in-flight webhook run. Returns the number of runs cancelled.
+   */
+  cancelAllRuns(reason = "cancelled by user"): number {
+    let count = 0;
+    for (const entry of this.running.values()) {
+      logger.info("Cancelling webhook run {runId}", { runId: entry.runId });
+      entry.controller.abort(new Error(reason));
+      count++;
+    }
+    return count;
   }
 
   private async processQueue(): Promise<void> {
@@ -1050,7 +1083,10 @@ export class WebhookService {
 
     const controller = new AbortController();
     const execId = crypto.randomUUID();
-    this.running.set(execId, controller);
+    // runId starts empty until the "started" event arrives with the real ID.
+    // During this narrow window cancelByRunId() cannot match this run.
+    const inFlight = { controller, runId: "" };
+    this.running.set(execId, inFlight);
     // stop() may have swept `running` while this run was still dequeuing.
     if (this.stopped) controller.abort();
     let runId = "";
@@ -1079,6 +1115,7 @@ export class WebhookService {
           // this webhook's run is the one without a parent.
           if (event.kind === "started" && event.parentRunId === undefined) {
             runId = event.runId;
+            inFlight.runId = runId;
             this.emit({
               kind: "webhook_started",
               route,
