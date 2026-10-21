@@ -14,7 +14,7 @@ ADD --checksum=sha256:f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e518
 
 FROM litestream-${TARGETARCH} AS litestream
 
-FROM denoland/deno:2.9.7
+FROM denoland/deno:2.9.8
 
 ARG SWAMP_VERSION="dev"
 ARG VCS_REF=""
