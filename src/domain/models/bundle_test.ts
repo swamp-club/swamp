@@ -1980,21 +1980,33 @@ Deno.test("bundleExtension: a scope sending zod to zod 3 in one module keeps the
   });
 });
 
-Deno.test("bundleExtension: a graph read that fails externalizes nothing more", async () => {
+Deno.test("bundleExtension: a graph read that fails falls back to the config's own zod 4 entry", async () => {
   await withTempFile('import { z } from "zod";\n', async (path) => {
+    const config = join(path, "..", `deno-${crypto.randomUUID()}.json`);
     const calls: string[][] = [];
-    await withMockedCommand(async (_cmd: string, args: string[]) => {
-      calls.push(args);
-      if (args[0] === "info") return { stdout: "", stderr: "boom", code: 1 };
-      await Deno.writeTextFile(args[args.indexOf("-o") + 1], "export {};\n");
-      return { stdout: "", code: 0 };
-    }, () =>
-      bundleExtension(path, DENO_PATH, {
-        denoConfigPath: join(path, "..", "deno.json"),
-        env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
-      }));
-    assertEquals(calls.length, 2);
-    assertEquals(calls[1].includes("zod"), false);
+    const run = (configText: string) =>
+      withMockedCommand(async (_cmd: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "info") return { stdout: "", stderr: "boom", code: 1 };
+        await Deno.writeTextFile(args[args.indexOf("-o") + 1], "export {};\n");
+        return { stdout: "", code: 0 };
+      }, async () => {
+        await Deno.writeTextFile(config, configText);
+        await bundleExtension(path, DENO_PATH, {
+          denoConfigPath: config,
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        });
+      });
+    try {
+      await run(JSON.stringify({ imports: { zod: "npm:zod@4" } }));
+      assertStringIncludes(calls[1].join(" "), "--external zod");
+      // A config with no zod 4 entry gives nothing to fall back to.
+      calls.length = 0;
+      await run(JSON.stringify({ imports: { zod: "npm:zod@3.23.8" } }));
+      assertEquals(calls[1].includes("zod"), false);
+    } finally {
+      await Deno.remove(config).catch(() => {});
+    }
   });
 });
 

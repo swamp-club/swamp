@@ -949,14 +949,14 @@ async function configZodTarget(
  * each to, read with `deno info` under the bundle's project config and
  * `--no-lock` (a resolution query never writes the author's lock), with
  * any it leaves unresolved read again with `--node-modules-dir=none` as
- * the graph reader does (swamp-club#3612); none when deno info fails, so
- * nothing more is externalized and the bundle reports any error itself.
+ * the graph reader does (swamp-club#3612); undefined when the graph read
+ * fails, which the caller treats as no answer for any name.
  */
 async function readBareImports(
   entryPoint: string,
   denoPath: string,
   options: BundleOptions,
-): Promise<ResolvedBareImport[]> {
+): Promise<ResolvedBareImport[] | undefined> {
   const read = async (extraArgs: string[]) => {
     const output = await new Deno.Command(denoPath, {
       args: [
@@ -981,9 +981,8 @@ async function readBareImports(
   try {
     const first = await read([]);
     if (!first) {
-      logger
-        .debug`deno info failed for ${entryPoint}; bare zod stays bundled`;
-      return [];
+      logger.debug`deno info failed for ${entryPoint}`;
+      return undefined;
     }
     if (!hasUnresolvedBareImports(first)) return first;
     return withPackageSpecifiers(
@@ -992,9 +991,8 @@ async function readBareImports(
     );
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    logger
-      .debug`Could not read the module graph of ${entryPoint}; bare zod stays bundled: ${error}`;
-    return [];
+    logger.debug`Could not read the module graph of ${entryPoint}: ${error}`;
+    return undefined;
   }
 }
 
@@ -1140,15 +1138,16 @@ export async function bundleExtension(
       if (options?.denoConfigPath) {
         const resolutions = options.bareImports ??
           await readBareImports(absolutePath, denoPath, options);
-        let targets = sharedZodTargets(resolutions);
-        // Deno gave no answer for a bare "zod" (offline, or a registry
-        // error on the node_modules-free read): keep the config's own zod 4
+        let targets = sharedZodTargets(resolutions ?? []);
+        // Deno gave no answer for a bare "zod" (the graph read failed, or
+        // the node_modules-free read hit a registry error offline): keep the config's own zod 4
         // entry external, as before, rather than inline a second zod that
         // fails the host's instanceof checks. Only the bundle's externals
         // follow this; what ships and is audited stays Deno's answer.
         if (
           targets.length === 0 &&
-          resolutions.some((r) => r.specifier === "zod" && !r.target)
+          (resolutions === undefined ||
+            resolutions.some((r) => r.specifier === "zod" && !r.target))
         ) {
           const fallback = await configZodTarget(options.denoConfigPath);
           if (fallback) targets = [fallback];
