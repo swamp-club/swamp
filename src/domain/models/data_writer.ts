@@ -127,6 +127,21 @@ export class DefaultDataWriter implements DataWriter {
     };
   }
 
+  /**
+   * The version a non-deferred writer allocated through `getFilePath` but
+   * never finalised: content with no metadata, which nothing commits or
+   * claims later, so a failed method rolls it back (swamp-club#3736).
+   */
+  getUnfinalizedReceipt(): DeferredWriteReceipt | null {
+    if (this.deferred || this.finalized || !this.allocated) return null;
+    return {
+      type: this.modelType,
+      modelId: this.modelId,
+      dataName: this.name,
+      version: this.allocated.version,
+    };
+  }
+
   async writeAll(content: Uint8Array): Promise<DataHandle> {
     this.ensureNotFinalized();
     const data = this.createDataEntity();
@@ -1780,6 +1795,7 @@ export function createFileWriterFactory(
   ) => DataWriter;
   getHandles: () => DataHandle[];
   getDeferredReceipts: () => DeferredWriteReceipt[];
+  getUnfinalizedReceipts: () => DeferredWriteReceipt[];
 } {
   const handles: DataHandle[] = [];
   const writers: DefaultDataWriter[] = [];
@@ -1970,6 +1986,14 @@ export function createFileWriterFactory(
       for (const writer of writers) {
         const pending = writer.getPendingDeferredReceipt();
         if (pending) receipts.push(pending);
+      }
+      return receipts;
+    },
+    getUnfinalizedReceipts: () => {
+      const receipts: DeferredWriteReceipt[] = [];
+      for (const writer of writers) {
+        const unfinalized = writer.getUnfinalizedReceipt();
+        if (unfinalized) receipts.push(unfinalized);
       }
       return receipts;
     },
