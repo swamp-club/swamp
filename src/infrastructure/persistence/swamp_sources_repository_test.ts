@@ -177,6 +177,40 @@ Deno.test("expandSourcePaths: expands glob to matching directories", async () =>
   }
 });
 
+Deno.test("expandSourcePaths: a glob survives directories appearing and disappearing under it", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  let stop = false;
+  // Lock directories that come and go, as in a home directory.
+  const churn = (async () => {
+    for (let n = 0; !stop; n++) {
+      const lockDir = join(tmpDir, "exts", `lock-${n % 500}`);
+      try {
+        await Deno.mkdir(lockDir);
+        await Deno.remove(lockDir);
+      } catch {
+        // Another iteration already created or removed it.
+      }
+    }
+  })();
+  try {
+    await Deno.mkdir(join(tmpDir, "exts", "a"), { recursive: true });
+    await Deno.mkdir(join(tmpDir, "exts", "b"), { recursive: true });
+    for (let i = 0; i < 100; i++) {
+      const result = await expandSourcePaths(
+        { sources: [{ path: join(tmpDir, "exts", "*") }] },
+        tmpDir,
+      );
+      const stable = result.map((s) => basename(s.path))
+        .filter((name) => !name.startsWith("lock-"));
+      assertEquals(stable, ["a", "b"]);
+    }
+  } finally {
+    stop = true;
+    await churn;
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("expandSourcePaths: inherits only filter from parent", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
   try {

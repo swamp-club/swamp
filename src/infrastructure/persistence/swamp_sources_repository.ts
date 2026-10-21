@@ -18,10 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { isAbsolute, resolve } from "@std/path";
-import { expandGlob, walk } from "@std/fs";
+import { walk } from "@std/fs";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import { expandEnvVars } from "./env_path.ts";
+import { expandSourceGlob } from "./source_glob_expander.ts";
 import { swampSourcesPath } from "./paths.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { resolveGitMainWorktreeRoot } from "./git_worktree.ts";
@@ -118,10 +119,8 @@ export async function expandSourcePaths(
       : resolve(baseDir, expandedPath);
 
     if (isGlobPattern(absolutePath)) {
-      for await (const entry of expandGlob(absolutePath, { globstar: true })) {
-        if (entry.isDirectory) {
-          expanded.push({ path: entry.path, only: source.only });
-        }
+      for (const path of await expandSourceGlob(absolutePath)) {
+        expanded.push({ path, only: source.only });
       }
     } else {
       expanded.push({ path: absolutePath, only: source.only });
