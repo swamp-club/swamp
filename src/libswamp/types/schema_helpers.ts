@@ -174,10 +174,16 @@ function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
  * Falls back to a manual converter if Zod's built-in toJSONSchema() fails
  * on known v4 edge cases (z.record, z.uuid, z.iso.datetime).
  * Returns a diagnostic object when the schema appears to be from Zod v3.
+ * `io: "input"` describes what the schema accepts rather than what it
+ * produces: for a schema with a transform, the properties and required
+ * keys a caller supplies (swamp-club#3681). The default is its output.
  */
-export function zodToJsonSchema(schema: z.ZodTypeAny): object {
+export function zodToJsonSchema(
+  schema: z.ZodTypeAny,
+  options: { io?: "input" | "output" } = {},
+): object {
   try {
-    const result = z.toJSONSchema(schema);
+    const result = z.toJSONSchema(schema, { io: options.io ?? "output" });
     return stripDefaultsFromRequired(result);
   } catch {
     const v3Diagnostic = detectZodV3Schema(schema);
