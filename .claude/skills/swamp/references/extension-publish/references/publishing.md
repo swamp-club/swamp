@@ -330,13 +330,14 @@ files. Two distinct constraints make this the right form:
 - **Hermeticity at score time.** The swamp-club scorer and the local
   `swamp extension quality` command both run in a sandbox that strips the
   tarball's `deno.json` and writes its own with `nodeModulesDir: "auto"` and no
-  imports map. Push therefore rewrites each bare import the repo's `deno.json`
-  import map resolves to an `npm:`, `jsr:`, `node:` or URL specifier, writing
-  the map's target (as the map writes it) in its place in the shipped source. A
-  bare import the map does not resolve — or any bare import in a `package.json`
-  project, or one reached only through an `importMap` file or `scopes` — ships
-  as written and fails at score time: `deno doc --json` cannot find the bare
-  name and the command throws before factor scoring begins.
+  imports map. Push therefore rewrites each bare import to the specifier Deno
+  resolves it to from that module under the repo's Deno config (`deno.json` or
+  `deno.jsonc` imports, an `importMap` file it references, the scope covering
+  the module, or a workspace root's imports), when that is an `npm:`, `jsr:`,
+  `node:` or URL specifier. A bare import Deno does not resolve — or any bare
+  import in a `package.json` project — ships as written and fails at score time:
+  `deno doc --json` cannot find the bare name and the command throws before
+  factor scoring begins.
 - **Zod externalization.** Zod is the sole import that is NOT inlined into the
   published bundle. The extension must share swamp's zod instance so schema
   `instanceof` checks work across the module boundary — that is why zod in
@@ -345,16 +346,17 @@ files. Two distinct constraints make this the right form:
 
 Other Deno-compatible imports (`npm:`, `jsr:`, `https://`) are inlined into the
 bundle by the swamp packager. A `deno.json` that maps zod to any 4.x version or
-range (`npm:zod@^4`) ships it as `npm:zod@4`, still shared.
-`swamp extension quality` and `swamp extension push` report the same
+range (`npm:zod@^4`) ships it as `npm:zod@4`, still shared, provided every
+module resolves `"zod"` to zod 4: a scope that sends it to zod 3 anywhere keeps
+it bundled. `swamp extension quality` and `swamp extension push` report the same
 `bare-specifiers` warning for each bare import that ships as written; fix it by
-adding a `deno.json` imports entry for the name or writing the specifier inline.
-Quality still prints the rubric but fails, because the registry cannot resolve
-the import and would score the documentation factors 0; push warns. A push also
-fails when an import-map target it would write holds a quote, backslash,
-backtick, line break or `${`. The finding cannot be accepted. Swamp's lint never
-applies Deno's `no-import-prefix` rule, so a `deno.json` needs no exclude for
-the `npm:`/`jsr:` form.
+adding an imports entry for the name to the Deno config or writing the specifier
+inline. Quality still prints the rubric but fails, because the registry cannot
+resolve the import and would score the documentation factors 0; push warns. A
+push also fails when an import-map target it would write holds a quote,
+backslash, backtick, line break or `${`. The finding cannot be accepted. Swamp's
+lint never applies Deno's `no-import-prefix` rule, so a `deno.json` needs no
+exclude for the `npm:`/`jsr:` form.
 
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
@@ -579,16 +581,16 @@ too. A real drift finding has no `cause`. None of these block the push.
 ### The version that ships, and unaudited dependencies
 
 The dependency trust audit checks each `npm:` and `jsr:` import at the version
-the push ships, including a bare import the extension's `deno.json` import map
-resolves to one (its findings end `(imported as "<name>" via deno.json)` and
-block the same way): an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version;
-otherwise the version the `deno.lock` records for that import (or, when the lock
-does not record the import itself, its highest locked version that satisfies the
-specifier), when the bundler honours that lock (a plain-JSON `deno.json` was
-found, or package.json mode); otherwise what the registry resolves today (a
-range to its highest published match, no version to `latest`). npm license,
-maintainers and deprecation are read from that version; OSV is asked about it. A
-JSR import's package and version must exist on jsr.io.
+the push ships, including a bare import the extension's Deno config resolves to
+one (its findings end `(imported as "<name>" through the project's Deno config)`
+and block the same way): an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that
+version; otherwise the version the `deno.lock` records for that import (or, when
+the lock does not record the import itself, its highest locked version that
+satisfies the specifier), when the bundler honours that lock (a `deno.json` or
+`deno.jsonc` was found, or package.json mode); otherwise what the registry
+resolves today (a range to its highest published match, no version to `latest`).
+npm license, maintainers and deprecation are read from that version; OSV is
+asked about it. A JSR import's package and version must exist on jsr.io.
 
 Push and `extension quality` never write the extension's lockfile. With a lock,
 they bundle under `--frozen`, so a `deno.lock` that no longer matches

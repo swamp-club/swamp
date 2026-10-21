@@ -23,7 +23,10 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { extractSpecifiersFromSource } from "./extension_dependency_extractor.ts";
+import {
+  extractSpecifiersFromSource,
+  importMapResolver,
+} from "./extension_dependency_extractor.ts";
 
 const writtenImportArb = fc.constantFrom(
   'import a from "npm:axios@1.7.2";',
@@ -61,7 +64,11 @@ Deno.test("extractSpecifiersFromSource: any import map leaves written imports' r
       (lines, imports) => {
         const source = lines.join("\n");
         assertEquals(
-          extractSpecifiersFromSource(source, "model.ts", imports),
+          extractSpecifiersFromSource(
+            source,
+            "model.ts",
+            importMapResolver(imports),
+          ),
           extractSpecifiersFromSource(source, "model.ts"),
         );
       },

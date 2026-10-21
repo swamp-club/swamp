@@ -304,6 +304,12 @@ export interface ExtensionPushPrepareInput {
   denoConfigPath?: string;
   packageJsonDir?: string;
   /**
+   * What Deno resolved each bare import a local module writes to, from the
+   * module graph read under `denoConfigPath` (swamp-club#3612). Push
+   * rewrites, audits and reports bare imports from these alone.
+   */
+  bareImports: ResolvedBareImport[];
+  /**
    * Content hash of the resolved source tree (the package cache hash). When
    * provided, push verifies a content-hash-bound adversarial-review report.
    * Omitted by non-push callers (e.g. quality packaging).
@@ -520,12 +526,13 @@ export interface ExtensionPushPrepareDeps {
       packageJsonDir?: string;
       readOnlyLock?: ReadOnlyLock;
       env?: Record<string, string>;
+      bareImports?: readonly ResolvedBareImport[];
     },
   ) => Promise<string>;
-  /** `imports` resolves bare imports, as the bundler does. */
+  /** `resolver` resolves bare imports, as the bundler does. */
   extractDependencySpecifiers: (
     sourceFiles: string[],
-    imports?: Record<string, string>,
+    resolver?: BareImportResolver,
   ) => Promise<DependencySpecifier[]>;
   /**
    * Audits each dependency at the version push ships; `project` locates the
@@ -668,6 +675,11 @@ import {
   sidecarDirectives,
 } from "../../domain/extensions/extension_quality_sidecar.ts";
 import type { MissingLocalModule } from "../../domain/extensions/extension_source_graph.ts";
+import {
+  type BareImportResolver,
+  bareImportResolverFrom,
+  type ResolvedBareImport,
+} from "../../domain/extensions/bare_import_resolution.ts";
 import {
   applySpecifierRewrites,
   bareImportRewrites,
@@ -1304,7 +1316,7 @@ export async function extensionPushPrepare(
   ];
   const specifiers = await deps.extractDependencySpecifiers(
     sourceFiles,
-    await readImportMap(input.denoConfigPath),
+    bareImportResolverFor(input),
   );
   if (specifiers.length > 0) {
     ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
@@ -1806,25 +1818,17 @@ export interface QualityFindingsInput {
 }
 
 /**
- * The project `deno.json` import map, or undefined when there is no config
- * or it has no usable `imports` object.
+ * How push resolves the bare imports `input`'s modules write: as Deno
+ * resolved them under the project's Deno config, read from the module
+ * graph (swamp-club#3612); without one, not at all, so each ships as
+ * written.
  */
-export async function readImportMap(
-  denoConfigPath: string | undefined,
-): Promise<Record<string, string> | undefined> {
-  if (!denoConfigPath) return undefined;
-  try {
-    const config = JSON.parse(await Deno.readTextFile(denoConfigPath));
-    if (
-      config.imports && typeof config.imports === "object" &&
-      !Array.isArray(config.imports)
-    ) {
-      return config.imports as Record<string, string>;
-    }
-  } catch {
-    // Missing or unparseable config — fall back to no import map.
-  }
-  return undefined;
+export function bareImportResolverFor(
+  input: { denoConfigPath?: string; bareImports?: ResolvedBareImport[] },
+): BareImportResolver | undefined {
+  return input.denoConfigPath
+    ? bareImportResolverFrom(input.bareImports ?? [])
+    : undefined;
 }
 
 /**
@@ -1837,9 +1841,11 @@ export function bareSpecifiersMessage(names: string[]): string {
     "registry's scorer cannot resolve, so it would score the documentation " +
     "factors 0: " +
     `${names.map((n) => JSON.stringify(n)).join(", ")}. Push rewrites a ` +
-    "bare import only when the deno.json import map resolves it to an " +
-    "npm:, jsr:, node: or URL specifier; add such an entry for each, or " +
-    "write the specifier in its place.";
+    "bare import only when the project's Deno config (deno.json or " +
+    "deno.jsonc imports, an importMap file, a scope covering the module, " +
+    "or a workspace root's imports) resolves it to an npm:, jsr:, node: or " +
+    "URL specifier; add such an entry for each, or write the specifier in " +
+    "its place.";
 }
 
 /**
@@ -1956,8 +1962,9 @@ export async function runQualityFindings(
 
   // Bare imports that ship as written: the server-side scorer cannot
   // resolve them (it strips deno.json and writes a controlled one). Push
-  // rewrites the ones the deno.json import map resolves (swamp-club#3637),
-  // so only the rest count; without a deno.json, every bare import does.
+  // rewrites the ones Deno resolves under the project config
+  // (swamp-club#3637, #3612), so only the rest count; without a config,
+  // every bare import does.
   const sourceFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
@@ -1965,12 +1972,14 @@ export async function runQualityFindings(
     ...input.allReportFiles,
     ...input.allWebhookFiles,
   ];
-  const imports = await readImportMap(input.denoConfigPath);
+  const resolver = bareImportResolverFor(input);
   const bareSpecifiers = new Set<string>();
   for (const file of sourceFiles) {
     try {
       const src = await Deno.readTextFile(file);
-      for (const name of planBareImports(src, imports, file).shippedAsWritten) {
+      for (
+        const name of planBareImports(src, resolver, file).shippedAsWritten
+      ) {
         bareSpecifiers.add(name);
       }
     } catch {
@@ -2909,8 +2918,10 @@ async function bundleAndArchive(
   denoPath: string,
   ctx: LibSwampContext,
 ): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
+  // Under a Deno config the bundler reuses the graph's bare-import
+  // resolutions to decide zod externalization rather than reading it again.
   const project = input.denoConfigPath
-    ? { denoConfigPath: input.denoConfigPath }
+    ? { denoConfigPath: input.denoConfigPath, bareImports: input.bareImports }
     : input.packageJsonDir
     ? { packageJsonDir: input.packageJsonDir }
     : undefined;
@@ -3021,7 +3032,11 @@ async function bundleEntryPoints(
   deps: ExtensionPushPrepareDeps,
   denoPath: string,
   bundleOptions:
-    | { denoConfigPath?: string; packageJsonDir?: string }
+    | {
+      denoConfigPath?: string;
+      packageJsonDir?: string;
+      bareImports?: readonly ResolvedBareImport[];
+    }
     | undefined,
   ctx: LibSwampContext,
   label: string,
@@ -3162,14 +3177,12 @@ async function createArchive(
     }
 
     // Copy every local module the entry points reach to its planned path,
-    // rewriting the imports the plan names and, under a deno.json, each bare
-    // import its import map resolves to an npm:, jsr:, node: or URL
-    // specifier (swamp-club#3637), so the archive's source resolves without
-    // the project config. Data modules and files with nothing to rewrite
-    // are byte for byte.
-    const imports = input.denoConfigPath
-      ? await readImportMap(input.denoConfigPath)
-      : undefined;
+    // rewriting the imports the plan names and, under a Deno config, each
+    // bare import Deno resolves from that module to an npm:, jsr:, node: or
+    // URL specifier (swamp-club#3637, #3612), so the archive's source
+    // resolves without the project config. Data modules and files with
+    // nothing to rewrite are byte for byte.
+    const resolver = bareImportResolverFor(input);
     const codeModules = new Set([
       ...input.allModelFiles,
       ...input.allVaultFiles,
@@ -3192,11 +3205,11 @@ async function createArchive(
       await Deno.mkdir(dirname(destPath), { recursive: true });
       let text: string | undefined;
       let rewrites = entry.rewrites;
-      if (imports && codeModules.has(entry.sourcePath)) {
+      if (resolver && codeModules.has(entry.sourcePath)) {
         text = await Deno.readTextFile(entry.sourcePath);
         rewrites = mergeSpecifierRewrites(
           entry.rewrites,
-          bareImportRewrites(text, imports, entry.sourcePath),
+          bareImportRewrites(text, resolver, entry.sourcePath),
         );
       }
       if (rewrites.length === 0) {

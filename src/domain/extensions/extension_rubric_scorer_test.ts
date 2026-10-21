@@ -1232,43 +1232,13 @@ function fakeScoreDeps(
   };
 }
 
-Deno.test("scoreExtensionTarball: merges importMap into controlled deno.json", async () => {
-  let capturedConfig: Record<string, unknown> | undefined;
-  const deps = fakeScoreDeps(
-    {
-      "manifest.yaml": "manifestVersion: 1\nname: '@test/bare'\n",
-      "models/mod.ts": 'import { z } from "zod";\nexport const s = z.string();',
-      "README.md": "# Test",
-      "LICENSE": "MIT",
-    },
-    (_args, cwd) => {
-      const raw = Deno.readTextFileSync(join(cwd, "deno.json"));
-      capturedConfig = JSON.parse(raw);
-    },
-  );
-
-  const tarball = new Uint8Array(0);
-  const manifest = makeManifest({
-    models: ["mod.ts"],
-  });
-  const importMap = { "zod": "npm:zod@4" };
-
-  const score = await scoreExtensionTarball(tarball, manifest, deps, {
-    importMap,
-  });
-
-  assert(capturedConfig !== undefined, "runDeno should have been called");
-  assertEquals(capturedConfig!.nodeModulesDir, "auto");
-  assertEquals(capturedConfig!.imports, { "zod": "npm:zod@4" });
-  assert(score.earnedPoints >= 0);
-});
-
-Deno.test("scoreExtensionTarball: omits imports when importMap is undefined", async () => {
+Deno.test("scoreExtensionTarball: the controlled deno.json has no import map, as the registry's (swamp-club#3612)", async () => {
   let capturedConfig: Record<string, unknown> | undefined;
   const deps = fakeScoreDeps(
     {
       "manifest.yaml": "manifestVersion: 1\nname: '@test/no-map'\n",
-      "models/mod.ts": "export const x = 1;",
+      // A bare import push shipped as written stays unresolved locally too.
+      "models/mod.ts": 'import { z } from "zod";\nexport const s = z.string();',
       "README.md": "# Test",
       "LICENSE": "MIT",
     },

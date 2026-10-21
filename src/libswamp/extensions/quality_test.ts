@@ -530,9 +530,15 @@ Deno.test("extensionQuality: bare imports the deno.json import map resolves leav
         JSON.stringify({ imports: { zod: "npm:zod@^4" } }),
       );
       const manifest = makeManifest();
+      // What Deno resolves the model's bare "zod" to under that config.
+      const bareImports = [{
+        importer: join(repoDir, "models", "echo.ts"),
+        specifier: "zod",
+        target: "npm:zod@^4",
+      }];
       const input = makeQualityInput(repoDir, manifest, {
-        prepareInput: { denoConfigPath },
-        hashInput: { denoConfigPath },
+        prepareInput: { denoConfigPath, bareImports },
+        hashInput: { denoConfigPath, bareImports },
       });
       const data = completedData(
         await collect(
@@ -559,9 +565,14 @@ Deno.test("extensionQuality: an import-map target that could escape its string l
         denoConfigPath,
         JSON.stringify({ imports: { zod: 'npm:zod@4"; globalThis.x = 1; "' } }),
       );
+      const bareImports = [{
+        importer: join(repoDir, "models", "echo.ts"),
+        specifier: "zod",
+        target: 'npm:zod@4"; globalThis.x = 1; "',
+      }];
       const input = makeQualityInput(repoDir, makeManifest(), {
-        prepareInput: { denoConfigPath },
-        hashInput: { denoConfigPath },
+        prepareInput: { denoConfigPath, bareImports },
+        hashInput: { denoConfigPath, bareImports },
       });
       const events = await collect(
         extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
@@ -874,7 +885,7 @@ Deno.test("extensionQuality: cache hit with no specifiers synthesizes a passing 
 
 // ── Import map handling ───────────────────────────────────────────────
 
-Deno.test("extensionQuality: import map from denoConfigPath is forwarded into the scorer's controlled config", async () => {
+Deno.test("extensionQuality: the scorer's controlled config has no import map, as the registry's (swamp-club#3612)", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const denoConfigPath = join(repoDir, "deno.json");
     await Deno.writeTextFile(
@@ -901,7 +912,7 @@ Deno.test("extensionQuality: import map from denoConfigPath is forwarded into th
     completedData(events);
     assert(capturedConfig !== undefined, "scorer should have invoked deno");
     assertEquals(capturedConfig!.nodeModulesDir, "auto");
-    assertEquals(capturedConfig!.imports, { "zod": "npm:zod@4" });
+    assertEquals(capturedConfig!.imports, undefined);
   });
 });
 

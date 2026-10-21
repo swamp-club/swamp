@@ -171,6 +171,7 @@ for (
 
       const input: ExtensionPushPrepareInput = {
         manifest: resolved.manifest,
+        bareImports: resolved.bareImports,
         repoDir,
         manifestDir: link,
         modelsDir: resolved.modelsDir,

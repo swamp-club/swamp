@@ -2487,6 +2487,28 @@ Deno.test("findDenoConfig: the nearest deno.json walking up to the boundary, inc
   });
 });
 
+Deno.test("findDenoConfig: finds a deno.jsonc, and deno.json wins in the same directory (swamp-club#3612)", async () => {
+  await withTempRepo(async (dir) => {
+    const ext = join(dir, "extensions", "models");
+    await Deno.mkdir(ext, { recursive: true });
+    await Deno.writeTextFile(join(dir, "deno.jsonc"), "// comment\n{}");
+    assertPathEquals(
+      (await findDenoConfig(ext, dir))!,
+      join(dir, "deno.jsonc"),
+    );
+
+    await Deno.writeTextFile(join(dir, "deno.json"), "{}");
+    assertPathEquals((await findDenoConfig(ext, dir))!, join(dir, "deno.json"));
+
+    // The nearer directory wins over the file name.
+    await Deno.writeTextFile(join(ext, "deno.jsonc"), "{}");
+    assertPathEquals(
+      (await findDenoConfig(ext, dir))!,
+      join(ext, "deno.jsonc"),
+    );
+  });
+});
+
 Deno.test("findDenoConfig: a directory named deno.json is not a config", async () => {
   await withTempRepo(async (dir) => {
     await Deno.mkdir(join(dir, "deno.json"));

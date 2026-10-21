@@ -146,6 +146,7 @@ async function pushArchive(author: string): Promise<Uint8Array> {
     stubDeps,
     {
       manifest: resolved.manifest,
+      bareImports: resolved.bareImports,
       repoDir: author,
       manifestDir: author,
       modelsDir: resolved.modelsDir,

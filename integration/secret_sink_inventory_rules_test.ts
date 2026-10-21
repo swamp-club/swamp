@@ -359,6 +359,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/domain/extensions/extension_rubric_scorer.ts: createRubricScoreDeps":
       TOOLING,
     "src/domain/models/bundle.ts: bundleExtension": TOOLING,
+    "src/domain/models/bundle.ts: readBareImports": TOOLING,
     "src/infrastructure/daemon/has_systemctl.ts: hasSystemctl": TOOLING,
     "src/infrastructure/daemon/launchd_service_scheduler.ts: LaunchdServiceScheduler":
       TOOLING,

@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   type LocalEdge,
+  mergeSourceGraphs,
   type SourceModuleGraph,
   withoutSymlinkedModules,
 } from "./extension_source_graph.ts";
@@ -184,4 +185,44 @@ Deno.test("withoutSymlinkedModules: with a symlink present, a missing module the
     new Set(["/private/r/link.ts"]),
   );
   assertEquals(result.graph.missing, []);
+});
+
+Deno.test("withoutSymlinkedModules: drops the bare imports of a module only a symlink reaches (swamp-club#3612)", () => {
+  const graph: SourceModuleGraph = {
+    ...graphOf(
+      ["/r/m.ts", "/r/link.ts", "/r/behind.ts"],
+      [edge("/r/m.ts", "/r/link.ts", 0), edge("/r/link.ts", "/r/behind.ts")],
+    ),
+    bareImports: [
+      { importer: "/r/m.ts", specifier: "ms", target: "npm:ms@2" },
+      { importer: "/r/link.ts", specifier: "ms", target: "npm:ms@3" },
+      { importer: "/r/behind.ts", specifier: "zod", target: "npm:zod@4" },
+    ],
+  };
+  const result = withoutSymlinkedModules(
+    graph,
+    "/r/m.ts",
+    new Set(["/r/link.ts"]),
+  );
+  assertEquals(result.graph.bareImports, [
+    { importer: "/r/m.ts", specifier: "ms", target: "npm:ms@2" },
+  ]);
+});
+
+Deno.test("mergeSourceGraphs: unions bare imports, one per importer and specifier (swamp-club#3612)", () => {
+  const a: SourceModuleGraph = {
+    ...graphOf(["/r/a.ts"], []),
+    bareImports: [{ importer: "/r/a.ts", specifier: "ms", target: "npm:ms@2" }],
+  };
+  const b: SourceModuleGraph = {
+    ...graphOf(["/r/a.ts", "/r/b.ts"], []),
+    bareImports: [
+      { importer: "/r/a.ts", specifier: "ms", target: "npm:ms@2" },
+      { importer: "/r/b.ts", specifier: "ms" },
+    ],
+  };
+  assertEquals(mergeSourceGraphs([a, b, graphOf([], [])]).bareImports, [
+    { importer: "/r/a.ts", specifier: "ms", target: "npm:ms@2" },
+    { importer: "/r/b.ts", specifier: "ms" },
+  ]);
 });

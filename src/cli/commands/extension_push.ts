@@ -532,6 +532,7 @@ export const extensionPushCommand = new Command()
         includeFilePaths,
         denoConfigPath,
         packageJsonPath: undefined,
+        bareImports: resolved.bareImports,
         symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
       };
       const cacheHash = await computePackageCacheHash(cacheHashInput);
@@ -583,6 +584,7 @@ export const extensionPushCommand = new Command()
           releaseNotes: options.releaseNotes,
           denoConfigPath,
           packageJsonDir,
+          bareImports: resolved.bareImports,
           contentHash: cacheHash,
           cachedArchive: cached?.archiveBytes,
           cachedArchiveIndex: cached?.metadata.archiveIndex,
@@ -740,6 +742,7 @@ export const extensionPushCommand = new Command()
                   releaseNotes: options.releaseNotes,
                   denoConfigPath,
                   packageJsonDir,
+                  bareImports: resolved.bareImports,
                   contentHash: bumpedHash,
                 });
               } catch (retryError) {

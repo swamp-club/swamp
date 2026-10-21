@@ -881,13 +881,17 @@ Author guidance is in
 
 #### Project-aware bundling
 
-An extension may live inside a project with a `deno.json` or `package.json`.
-`swamp extension push` walks up from the manifest directory to the repo root
-looking for project config.
+An extension may live inside a project with a Deno config (`deno.json` or
+`deno.jsonc`) or a `package.json`. `swamp extension push` walks up from the
+manifest directory to the repo root looking for project config.
 
-**Detection priority:** push walks the whole path for `deno.json` first. Only if
-it finds none does it walk again for `package.json`. So `deno.json` always wins,
-whatever its depth.
+**Detection priority:** push walks the whole path for a Deno config first,
+taking `deno.json` over `deno.jsonc` in the same directory as Deno does
+(swamp-club#3612). Only if it finds neither does it walk again for
+`package.json`. So a Deno config always wins, whatever its depth. Push, quality
+and fmt share this lookup (`findDenoConfig`), and every reader of the config's
+own settings (`lock`, `lint.rules.exclude`) parses it as JSONC
+(`parseDenoConfig`).
 
 **Bare specifier gate:** a `package.json` is used only if the extension source
 has bare specifiers (e.g., `from "zod"` rather than `from "npm:zod@4"`). This
@@ -903,7 +907,7 @@ them.
 
 | Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                            |
 | ----------------------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
+| **Deno config found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | The config governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
 | **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
 | **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
 | **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default                                                                                                          |
@@ -914,8 +918,8 @@ recommended set forbids the `npm:`/`jsr:` imports the bare-specifier finding
 asks for, so the two would contradict. The project's other rules still apply.
 The `bare-specifiers` finding names only the bare imports that ship as written
 (see [Bare imports in the shipped source](#bare-imports-in-the-shipped-source)):
-under a `deno.json`, those its import map does not resolve; without one, every
-bare import.
+under a Deno config, those Deno does not resolve to an `npm:`, `jsr:`, `node:`
+or URL specifier; without one, every bare import.
 
 In the bare-specifier row, `--node-modules-dir=auto` also creates `.deno/`
 metadata if needed.
@@ -940,11 +944,16 @@ The bundler handles:
   the entry point and every module it reaches through relative imports as text
   (`zod4SpecifiersReachedFrom`, no `deno` call) and externalizes each `npm:zod`
   specifier that admits only 4.x. Push ships such a spelling whenever the
-  import map maps `"zod"` to one (swamp-club#3637), so a pulled extension
+  config resolves `"zod"` to one (swamp-club#3637), so a pulled extension
   rebundles with zod still shared.
-- Bare `"zod"` via `deno.json`: when the import map maps it to a version or
-  range that admits only zod 4.x, both the resolved specifier and bare `"zod"`
-  are externalized
+- Bare `"zod"` under a Deno config: when every module that writes it resolves
+  it, as Deno does (imports, an `importMap` file, a scope, a workspace root), to
+  an `npm:zod` version or range that admits only 4.x, both the resolved
+  specifiers and bare `"zod"` are externalized (`sharedZodTargets`,
+  swamp-club#3612). `--external` matches the written text for the whole bundle,
+  so a scope that sends `"zod"` to zod 3 in any one module keeps it inlined
+  everywhere. Push hands the bundler the resolutions it read from the module
+  graph; the loader and serve reload run `deno info` themselves.
 - Bare `"zod"` via `package.json`: when `dependencies` or `devDependencies`
   lists zod 4.x
 
@@ -969,9 +978,9 @@ At runtime, loaders look for cached bundles in `.swamp/bundles/` (or the
 matching `-bundles/` directory). If the source has bare specifiers that need a
 project config and a cached bundle exists, the loader uses it, since re-bundling
 without the config would fail. This serves pulled extensions built in a
-`package.json` project, or whose bare imports a `deno.json` import map did not
-resolve, whose archive has pre-built bundles but no project config. Bare imports
-the import map resolves were rewritten to their targets on push, so that source
+`package.json` project, or whose bare imports the Deno config did not resolve,
+whose archive has pre-built bundles but no project config. Bare imports the
+config resolves were rewritten to their targets on push, so that source
 re-bundles on its own. Imports inside template literals don't count here either,
 so an extension that only generates code re-bundles normally.
 
@@ -1150,15 +1159,44 @@ first.
 
 The archive never holds the project's `deno.json` or `deno.lock`, and the
 registry's scorer strips any it finds, so a bare import (`from "ms"`) would not
-resolve in the shipped source. Under a `deno.json`, push rewrites each bare
-import a code module writes to the specifier its import map resolves it to
-(swamp-club#3637), in the archived copy only, at the import's exact span, beside
-the relative rewrites above:
+resolve in the shipped source. Under a Deno config, push rewrites each bare
+import a code module writes to the specifier Deno resolves it to from that
+module (swamp-club#3637), in the archived copy only, at the import's exact span,
+beside the relative rewrites above:
 
-- Resolution is `resolveBareImport` (swamp-club#3611): an exact key, else the
-  longest `key/` prefix, and a key mapped to an `npm:` or `jsr:` package also
-  covers its subpaths. It reads the JSON `imports` object only, never an
-  `importMap` file reference or `scopes`, and adds no `deno` call.
+- Resolution is Deno's own (swamp-club#3612). The module graph push already
+  reads with `deno info` under the project config reports, for every local
+  module, what each bare import it writes resolved to — through the config's
+  `imports`, an `importMap` file it references, the scope covering that module,
+  or a workspace root's imports. `bareImportsFromDenoInfo` keeps these as
+  `ResolvedBareImport`s, and a `BareImportResolver` answers by importing module
+  and specifier, never with another module's answer. A name Deno reports an
+  error for is unresolved, ships as written and raises the `bare-specifiers`
+  finding; push never falls back to reading the config itself, so it never
+  ships or audits a different target than the bundle was built with. Deno
+  refuses a remote `importMap` in a config, and so does push's graph read.
+- Under a manual `nodeModulesDir` (a `package.json` beside the config) Deno
+  applies the import map and then looks the npm package up in
+  `node_modules`, so a mapped name reads as an error when nothing is
+  installed and as a file there when it is. Either way it carries no
+  specifier, so any unresolved name is read again with
+  `--node-modules-dir=none` (`withPackageSpecifiers`), where Deno names the
+  npm specifier instead: where a package is installed does not change what a
+  name maps to. That read also resolves a name listed only in the
+  `package.json`, as Deno does, so it is rewritten and audited too. The
+  bundler's own graph read (loader, serve reload) does the same, so a bare
+  `"zod"` stays external there. These resolution reads run with `--no-lock`:
+  they are queries, never freeze or write the author's lock, and a lock
+  written under a manual `node_modules` need not hold what the other mode
+  wants; the bundle keeps its own lock flags. When Deno gives no answer for a
+  bare `"zod"` at all (offline, a registry error), the bundler keeps the
+  config's own zod 4 entry external, as before, rather than inline a second
+  zod; that fallback decides only the bundle's externals, never what ships or
+  is audited.
+- The package cache hash covers the config file's text, and also each
+  resolution its top-level `imports` would not give (an `importMap` file, a
+  scope, a workspace root), so editing an import map file cannot reuse a stale
+  archive while every config with plain top-level imports keeps its hash.
 - The imports are the ones the dependency audit reads (`findImportSpecifiers`):
   string literals in import position, with comments and template literals
   blanked, so generated import text is never rewritten. Push audits every code
@@ -1169,7 +1207,7 @@ the relative rewrites above:
   module is parsed with JSX. A module that does not parse gets no rewrite, and
   its bare imports count as shipping as written: the rewrite and the
   `bare-specifiers` finding come from one plan (`planBareImports`).
-- The target is written as the map writes it, version or range included,
+- The target is written as Deno reports it, version or range included,
   exactly as a specifier written out in source would ship. A `key/` target
   written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
   the registry's parser reads at all. A zod target the host shares (4.x at the
@@ -2017,10 +2055,10 @@ tooling, so they outlive the runtime:
    equivalent ranges match), else the highest version it records for the
    package that satisfies the specifier. A higher transitive copy never
    overrides the import's own entry. The lockfile is the one the bundler
-   uses: with a `deno.json`, its `lock` setting or the `deno.lock` beside it;
-   in package.json mode, the `deno.lock` there; otherwise none, since the
-   bundler runs with `--no-lock`. A config that is not plain JSON reads no
-   lock. The lockfile sits behind the `LockedDependencyVersions` port; the
+   uses: with a `deno.json` or `deno.jsonc`, its `lock` setting (read as
+   JSONC, swamp-club#3612) or the `deno.lock` beside it; in package.json
+   mode, the `deno.lock` there; otherwise none, since the bundler runs with
+   `--no-lock`. A config that cannot be parsed reads no lock. The lockfile sits behind the `LockedDependencyVersions` port; the
    Deno adapter (`src/infrastructure/runtime/deno_lockfile_reader.ts`) reads
    lock formats 4 and 5 as data, capped at 16 MiB. A lock entry that no
    longer satisfies the specifier falls through; push itself never gets
@@ -2035,7 +2073,7 @@ Push and quality treat the author's lockfile as read-only
 (swamp-club#3613). The module graph read (`deno info`) and the bundle run
 with `--frozen` when the project has the lock the bundler honours, and with
 `--no-lock` when it has none (`readOnlyLockFor` in the lockfile adapter; a
-`deno.json` that is not plain JSON keeps the `deno.lock` beside it). A lock
+config that cannot be parsed keeps the `deno.lock` beside it). A lock
 that no longer matches the project fails the push with an error naming the
 lock, the config and `deno install --entrypoint <file>`, instead of being
 rewritten in the author's tree, so the version the audit reads from the lock
@@ -2047,7 +2085,8 @@ the specifier the map resolves it to), the bare import as written
 (`importedAs`, mapped imports only; `extension quality`'s log mode prints it
 as `(as "<bare name>")` on the dependency's line), the resolved `version` and
 `resolvedFrom` (`exact`, `lockfile` or `registry`). Every finding for a
-mapped import ends `(imported as "<bare name>" via deno.json)`, and blocks or
+mapped import ends `(imported as "<bare name>" through the project's Deno
+config)`, and blocks or
 warns exactly as it would written out. npm
 license, maintainers and deprecation come from that version's manifest; a
 version the packument does not list is not audited. The age warning keeps

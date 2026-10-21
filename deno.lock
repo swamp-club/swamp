@@ -18,6 +18,8 @@
     "jsr:@std/fs@^1.0.23": "1.0.23",
     "jsr:@std/internal@^1.0.12": "1.0.13",
     "jsr:@std/internal@^1.0.13": "1.0.13",
+    "jsr:@std/json@^1.1.0": "1.1.0",
+    "jsr:@std/jsonc@^1.0.3": "1.0.3",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/streams@^1.0.17": "1.1.0",
@@ -146,6 +148,15 @@
     },
     "@std/internal@1.0.13": {
       "integrity": "2f9546691d4ac2d32859c82dff284aaeac980ddeca38430d07941e7e288725c0"
+    },
+    "@std/json@1.1.0": {
+      "integrity": "93330d3ed4054d6b1ffe54b075432c80a5f671be77277b978931e018014cb1cc"
+    },
+    "@std/jsonc@1.0.3": {
+      "integrity": "9a4bb168c6b64e8e89944e45f96390a6e6e6865f59f02f0a70b24653911f2d64",
+      "dependencies": [
+        "jsr:@std/json"
+      ]
     },
     "@std/path@1.1.4": {
       "integrity": "1d2d43f39efb1b42f0b1882a25486647cb851481862dc7313390b2bb044314b5",
@@ -2756,6 +2767,7 @@
       "jsr:@std/cli@^1.0.29",
       "jsr:@std/fmt@^1.0.10",
       "jsr:@std/fs@^1.0.23",
+      "jsr:@std/jsonc@^1.0.3",
       "jsr:@std/path@^1.1.4",
       "jsr:@std/semver@^1.0.8",
       "jsr:@std/streams@^1.1.0",

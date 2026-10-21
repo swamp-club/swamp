@@ -26,11 +26,8 @@ import {
 } from "@std/path/posix";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { isBareSpecifier, isZod4Specifier } from "../models/bundle.ts";
-import {
-  findImportSpecifiers,
-  type ImportMap,
-  resolveBareImport,
-} from "./extension_dependency_extractor.ts";
+import { findImportSpecifiers } from "./extension_dependency_extractor.ts";
+import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
 import {
   type AstNode,
@@ -526,9 +523,10 @@ export interface BareImportPlan {
   /** The rewrites {@link bareImportRewrites} applies. */
   rewrites: SpecifierRewrite[];
   /**
-   * The bare imports that ship as written, sorted and unique: no import
-   * map, no usable target, or a module the parser cannot read, so its sites
-   * cannot be confirmed. The bare-specifiers finding names these.
+   * The bare imports that ship as written, sorted and unique: Deno does not
+   * resolve them, their target is not one push writes, or the parser cannot
+   * read the module, so its sites cannot be confirmed. The bare-specifiers
+   * finding names these.
    */
   shippedAsWritten: string[];
   /** Imports whose target could end or escape its string literal. */
@@ -537,8 +535,10 @@ export interface BareImportPlan {
 
 /**
  * How push ships each bare import `source` writes (swamp-club#3637): those
- * the import map resolves to an `npm:`, `jsr:`, `node:` or `http(s):`
- * specifier are rewritten to it, as the map writes it (a zod 4 target as
+ * `resolver` resolves from `sourcePath` — as Deno resolves them, through the
+ * config's imports, an `importMap` file or the scope covering the module
+ * (swamp-club#3612) — to an `npm:`, `jsr:`, `node:` or `http(s):`
+ * specifier are rewritten to it, as Deno writes it (a zod 4 target as
  * `npm:zod@4`, see {@link shippedTarget}); a `key/` target written
  * `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and the
  * registry's specifier parser reads at all. One the map resolves to a local
@@ -552,7 +552,7 @@ export interface BareImportPlan {
  */
 export function planBareImports(
   source: string,
-  imports: ImportMap | undefined,
+  resolver: BareImportResolver | undefined,
   sourcePath: string,
 ): BareImportPlan {
   const plan: BareImportPlan = {
@@ -567,8 +567,8 @@ export function planBareImports(
   const asWritten = new Set<string>();
   for (const { specifier, span, offset } of sites) {
     if (confirmed && !confirmed.has(offset)) continue;
-    const target = imports && isRewritableSpecifierText(specifier)
-      ? resolveBareImport(specifier, imports)
+    const target = resolver && isRewritableSpecifierText(specifier)
+      ? resolver.resolve(sourcePath, specifier)
       : undefined;
     if (target !== undefined && isLocalTarget(target)) continue;
     if (
@@ -595,8 +595,8 @@ export function planBareImports(
     const scanned = new Set(sites.map((site) => site.offset));
     for (const [offset, specifier] of confirmed) {
       if (scanned.has(offset) || !isBareSpecifier(specifier)) continue;
-      const target = imports && isRewritableSpecifierText(specifier)
-        ? resolveBareImport(specifier, imports)
+      const target = resolver && isRewritableSpecifierText(specifier)
+        ? resolver.resolve(sourcePath, specifier)
         : undefined;
       if (target !== undefined && isLocalTarget(target)) continue;
       asWritten.add(specifier);
@@ -614,15 +614,15 @@ export function planBareImports(
  */
 export function bareImportRewrites(
   source: string,
-  imports: ImportMap,
+  resolver: BareImportResolver,
   sourcePath: string,
 ): SpecifierRewrite[] {
-  const plan = planBareImports(source, imports, sourcePath);
+  const plan = planBareImports(source, resolver, sourcePath);
   const [unsafe] = plan.unsafe;
   if (unsafe) {
     throw markErrorPaths(
       new UserError(
-        `The deno.json import map resolves ${
+        `The project's Deno config resolves ${
           JSON.stringify(unsafe.specifier)
         } ` +
           `(imported from ${sourcePath}) to ${
@@ -647,7 +647,7 @@ function isLocalTarget(target: string): boolean {
 /**
  * The plan's rewrites for a module plus its bare-import rewrites, sorted by
  * span. A bare rewrite at a span the plan already rewrites is dropped: the
- * import map resolved it to a local module, and the plan placed it.
+ * project config resolved it to a local module, and the plan placed it.
  */
 export function mergeSpecifierRewrites(
   planRewrites: readonly SpecifierRewrite[],

@@ -1427,7 +1427,7 @@ Deno.test("checkDependencyTrust: a mapped import's HIGH vulnerability blocks and
   assertEquals(result.errors, [{
     dependency: "@types/uuid",
     message:
-      'vulnerability GHSA-1234 (HIGH) (imported as "uuid-types" via deno.json)',
+      'vulnerability GHSA-1234 (HIGH) (imported as "uuid-types" through the project\'s Deno config)',
   }]);
   assertEquals(result.audited[0].specifier, "npm:@types/uuid@1.0.0");
   assertEquals(result.audited[0].importedAs, "uuid-types");
@@ -1458,7 +1458,7 @@ Deno.test("checkDependencyTrust: a mapped range resolves from the lock and its f
   assertEquals(result.warnings, [{
     dependency: "express",
     message:
-      'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" via deno.json)',
+      'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" through the project\'s Deno config)',
     cause: "loose-specifier",
     remediation:
       "Pin the exact version this push resolved (4.18.2) to ensure that the audited version is the one that ships.",
@@ -1483,7 +1483,7 @@ Deno.test("checkDependencyTrust: a mapped JSR version that does not exist is an 
   assertEquals(result.errors, [{
     dependency: "@std/assert",
     message:
-      'version 0.0.999 not found on JSR (imported as "@std/assert" via deno.json)',
+      'version 0.0.999 not found on JSR (imported as "@std/assert" through the project\'s Deno config)',
     cause: "jsr-missing",
   }]);
   assertEquals(result.audited[0].importedAs, "@std/assert");
@@ -1498,7 +1498,7 @@ Deno.test("checkDependencyTrust: a mapped import whose lookup fails is not audit
   assertEquals(result.warnings[0].cause, "not-audited");
   assertEquals(
     result.warnings[0].message.endsWith(
-      ' (imported as "pkg" via deno.json)',
+      ' (imported as "pkg" through the project\'s Deno config)',
     ),
     true,
   );

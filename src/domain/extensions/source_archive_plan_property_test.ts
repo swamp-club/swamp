@@ -25,7 +25,10 @@ import {
   normalize as posixNormalize,
 } from "@std/path/posix";
 import fc from "fast-check";
-import { findImportSpecifiers } from "./extension_dependency_extractor.ts";
+import {
+  findImportSpecifiers,
+  importMapResolver,
+} from "./extension_dependency_extractor.ts";
 import type { LocalEdge } from "./extension_source_graph.ts";
 import {
   applySpecifierRewrites,
@@ -211,7 +214,7 @@ Deno.test("bareImportRewrites: a rewritten module has no bare import the map res
     fc.property(arbModule, (source) => {
       const out = applySpecifierRewrites(
         source,
-        bareImportRewrites(source, BARE_IMPORTS, "/m.ts"),
+        bareImportRewrites(source, importMapResolver(BARE_IMPORTS), "/m.ts"),
       );
       for (const { specifier } of findImportSpecifiers(out)) {
         assert(
@@ -229,7 +232,11 @@ Deno.test("bareImportRewrites: a rewritten module has no bare import the map res
 Deno.test("bareImportRewrites: changes only the specifiers it names", () => {
   fc.assert(
     fc.property(arbModule, (source) => {
-      const rewrites = bareImportRewrites(source, BARE_IMPORTS, "/m.ts");
+      const rewrites = bareImportRewrites(
+        source,
+        importMapResolver(BARE_IMPORTS),
+        "/m.ts",
+      );
       const out = applySpecifierRewrites(source, rewrites);
       // Undoing each rewrite at its own position restores the source.
       const outLines = out.split("\n");

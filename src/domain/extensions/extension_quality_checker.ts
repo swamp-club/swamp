@@ -24,6 +24,7 @@ import {
 } from "./extension_content_extractor.ts";
 import type { RegistryCheckNotRunCause } from "./extension_publish_checks.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
+import { readDenoConfig } from "./deno_config.ts";
 
 /** A quality issue found during checking. */
 export interface QualityIssue {
@@ -360,22 +361,20 @@ export const EXTENSION_LINT_RULE_EXCLUDES: readonly string[] = [
 ];
 
 /**
- * The project's own `lint.rules.exclude` from its `deno.json`: `[]` when the
- * config sets none, undefined when the file cannot be read or is not plain
- * JSON (a `deno.json` with comments).
+ * The project's own `lint.rules.exclude` from its `deno.json` or
+ * `deno.jsonc`, read as JSONC as Deno reads it (swamp-club#3612): `[]` when
+ * the config sets none, undefined when the file cannot be read or parsed.
  */
 async function projectLintExcludes(
   denoConfigPath: string,
 ): Promise<string[] | undefined> {
-  try {
-    const config = JSON.parse(await Deno.readTextFile(denoConfigPath));
-    const exclude = config?.lint?.rules?.exclude;
-    return Array.isArray(exclude)
-      ? exclude.filter((r): r is string => typeof r === "string")
-      : [];
-  } catch {
-    return undefined;
-  }
+  const config = await readDenoConfig(denoConfigPath);
+  if (!config) return undefined;
+  const lint = config.lint as { rules?: { exclude?: unknown } } | undefined;
+  const exclude = lint?.rules?.exclude;
+  return Array.isArray(exclude)
+    ? exclude.filter((r): r is string => typeof r === "string")
+    : [];
 }
 
 /**
@@ -384,7 +383,7 @@ async function projectLintExcludes(
  * `--rules-exclude` on the command line replaces the config's
  * `lint.rules.exclude` rather than adding to it, so the project's own
  * exclusions are passed along with {@link EXTENSION_LINT_RULE_EXCLUDES}.
- * When the config cannot be read as JSON, no exclusion is passed and the
+ * When the config cannot be read or parsed, no exclusion is passed and the
  * config lints exactly as written.
  */
 export async function extensionLintArgs(

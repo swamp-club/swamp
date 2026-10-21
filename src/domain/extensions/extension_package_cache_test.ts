@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
-import { join } from "@std/path";
+import { join, toFileUrl } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
@@ -187,6 +187,75 @@ Deno.test("computePackageCacheHash: deno config change invalidates hash", async 
       `{"compilerOptions":{"strict":true}}`,
     );
     const h2 = await computePackageCacheHash(base);
+    assertNotEquals(h1, h2);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("computePackageCacheHash: resolutions the config's top-level imports give keep the hash (swamp-club#3612)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const denoConfigPath = join(tmp, "deno.json");
+    await Deno.writeTextFile(
+      denoConfigPath,
+      JSON.stringify({
+        imports: {
+          ms: "npm:ms@2.1.3",
+          "@std/path": "jsr:@std/path@1",
+          local: "./lib/local.ts",
+        },
+      }),
+    );
+    const base = await makeHashInput(tmp, { denoConfigPath });
+    const importer = join(tmp, "model.ts");
+    const withResolutions = {
+      ...base,
+      bareImports: [
+        { importer, specifier: "ms", target: "npm:ms@2.1.3" },
+        // Deno writes a subpath and a local target in its own forms.
+        {
+          importer,
+          specifier: "@std/path/posix",
+          target: "jsr:/@std/path@1/posix",
+        },
+        {
+          importer,
+          specifier: "local",
+          target: toFileUrl(join(tmp, "lib", "local.ts")).href,
+        },
+        { importer, specifier: "unmapped" },
+      ],
+    };
+    assertEquals(
+      await computePackageCacheHash(withResolutions),
+      await computePackageCacheHash(base),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("computePackageCacheHash: a resolution only an importMap file, scope or workspace gives changes the hash", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const denoConfigPath = join(tmp, "deno.json");
+    await Deno.writeTextFile(
+      denoConfigPath,
+      JSON.stringify({ importMap: "./import_map.json" }),
+    );
+    const importer = join(tmp, "model.ts");
+    const base = await makeHashInput(tmp, { denoConfigPath });
+    const h1 = await computePackageCacheHash({
+      ...base,
+      bareImports: [{ importer, specifier: "ms", target: "npm:ms@2.1.2" }],
+    });
+    // The import map file changed; deno.json did not.
+    const h2 = await computePackageCacheHash({
+      ...base,
+      bareImports: [{ importer, specifier: "ms", target: "npm:ms@2.1.3" }],
+    });
+    assertNotEquals(h1, await computePackageCacheHash(base));
     assertNotEquals(h1, h2);
   } finally {
     await Deno.remove(tmp, { recursive: true });

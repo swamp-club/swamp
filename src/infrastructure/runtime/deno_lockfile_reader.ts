@@ -25,6 +25,7 @@ import type {
   LockedDependencyVersions,
 } from "../../domain/extensions/dependency_version_resolution.ts";
 import type { ReadOnlyLock } from "../../domain/models/bundle.ts";
+import { readDenoConfig } from "../../domain/extensions/deno_config.ts";
 
 const logger = getLogger(["swamp", "extensions", "lockfile"]);
 
@@ -41,7 +42,8 @@ export interface ExtensionProject {
 
 /**
  * The lockfile the bundler honours for this project, following
- * `denoProjectArgs` in src/domain/models/bundle.ts: with a deno.json, its
+ * `denoProjectArgs` in src/domain/models/bundle.ts: with a deno.json or
+ * deno.jsonc (read as JSONC, as Deno reads it), its
  * `lock` setting or else the deno.lock beside it; in package.json mode, the
  * deno.lock in that directory; otherwise none, since the bundler runs with
  * `--no-lock`.
@@ -51,16 +53,15 @@ export async function lockfilePathFor(
 ): Promise<string | undefined> {
   if (project.denoConfigPath) {
     const configDir = dirname(project.denoConfigPath);
-    let lock: unknown;
-    try {
-      lock = JSON.parse(await Deno.readTextFile(project.denoConfigPath)).lock;
-    } catch {
-      // A config this reader cannot parse (comments, trailing commas) may
-      // set its own lock; assume none rather than a lock that may not apply.
+    const config = await readDenoConfig(project.denoConfigPath);
+    if (!config) {
+      // A config that cannot be read or parsed fails the bundle too; assume
+      // no lock rather than one that may not apply.
       logger
-        .debug`Config ${project.denoConfigPath} is not plain JSON; no lockfile read`;
+        .debug`Config ${project.denoConfigPath} could not be parsed; no lockfile read`;
       return undefined;
     }
+    const lock = config.lock;
     if (lock === false) return undefined;
     if (typeof lock === "string") return resolve(configDir, lock);
     if (
@@ -207,8 +208,8 @@ export async function readProjectLockfile(
 /**
  * The lockfile push leaves untouched for `project`: the lock the bundler
  * honours when it exists on disk, so the bundle runs `--frozen`; otherwise
- * none, so it runs `--no-lock` and creates no lock. A `deno.json` that is not
- * plain JSON may set its own lock, which this reader cannot see, so the
+ * none, so it runs `--no-lock` and creates no lock. A config this reader
+ * cannot parse may set its own lock, which it cannot see, so the
  * `deno.lock` beside it is used when present rather than bundling without
  * the lock the project has.
  */
@@ -218,20 +219,11 @@ export async function readOnlyLockFor(
   let path = await lockfilePathFor(project);
   if (
     !path && project.denoConfigPath &&
-    !(await isPlainJson(project.denoConfigPath))
+    !(await readDenoConfig(project.denoConfigPath))
   ) {
     path = join(dirname(project.denoConfigPath), "deno.lock");
   }
   return path && await isFile(path) ? { lockPath: path } : {};
-}
-
-async function isPlainJson(path: string): Promise<boolean> {
-  try {
-    JSON.parse(await Deno.readTextFile(path));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function isFile(path: string): Promise<boolean> {

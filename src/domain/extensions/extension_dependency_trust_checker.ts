@@ -727,12 +727,14 @@ function looseSpecifierFinding(
 
 /**
  * Names the bare imports a finding came from, so the pusher can find the
- * line the import map resolved.
+ * line. Deno resolved them under the project's config — its imports, an
+ * importMap file, a scope or a workspace root (swamp-club#3612) — and the
+ * module graph does not say which, so the config is not named further.
  */
 function importedAsSuffix(names: readonly string[]): string {
   return ` (imported as ${
     names.map((n) => `"${n}"`).join(", ")
-  } via deno.json)`;
+  } through the project's Deno config)`;
 }
 
 /** A specifier's audit, its findings naming the bare import it came from. */
