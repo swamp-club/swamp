@@ -155,3 +155,26 @@ Deno.test("uniqueBareImports: one entry per importer and specifier, the first ke
     ],
   );
 });
+
+Deno.test("bareImportsFromDenoInfo: a bare import Deno resolves into node_modules is unresolved, so it is never taken for a placed local module", () => {
+  const found = bareImportsFromDenoInfo({
+    modules: [{
+      specifier: url("models", "a.ts"),
+      dependencies: [{
+        specifier: "ms",
+        code: { specifier: url("node_modules", "ms", "index.js") },
+      }, {
+        specifier: "@/lib.ts",
+        code: { specifier: url("lib", "lib.ts") },
+      }],
+    }],
+  });
+  assertEquals(found, [
+    { importer: path("models", "a.ts"), specifier: "ms" },
+    {
+      importer: path("models", "a.ts"),
+      specifier: "@/lib.ts",
+      target: url("lib", "lib.ts"),
+    },
+  ]);
+});

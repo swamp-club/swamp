@@ -2391,9 +2391,9 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare
         "registry's scorer cannot resolve, so it would score the " +
         'documentation factors 0: "lodash". Push rewrites a bare import only when the ' +
         "project's Deno config (deno.json or deno.jsonc imports, an " +
-        "importMap file, or a scope covering the module) resolves it to an " +
-        "npm:, jsr:, node: or URL specifier; add such an entry for each, or " +
-        "write the specifier in its place.",
+        "importMap file, a scope covering the module, or a workspace root's " +
+        "imports) resolves it to an npm:, jsr:, node: or URL specifier; add " +
+        "such an entry for each, or write the specifier in its place.",
     );
   });
 });

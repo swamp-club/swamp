@@ -119,10 +119,19 @@ export function isLocalModuleSpecifier(
     !fromFileUrl(specifier).split(/[\\/]/).includes("node_modules");
 }
 
+/** A `file:` URL inside a node_modules directory. */
+function isInstalledPackageFile(specifier: string): boolean {
+  return specifier.startsWith("file:") &&
+    !isLocalModuleSpecifier(specifier);
+}
+
 /**
  * The bare imports each local module in `deno info --json` output writes,
  * with the specifier Deno resolved each to. A code import's resolution
- * wins over a type import's; one Deno reports an error for is unresolved.
+ * wins over a type import's; one Deno reports an error for is unresolved,
+ * and so is one Deno resolves into a node_modules directory (a manual
+ * `nodeModulesDir`): the graph names a file there, not a specifier push
+ * can ship, so the import ships as written and the finding names it.
  */
 export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
   const modules = (json as { modules?: unknown })?.modules;
@@ -139,7 +148,7 @@ export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
       }
       const resolved = (dep.code ?? dep.type)?.specifier;
       found.push(
-        typeof resolved === "string"
+        typeof resolved === "string" && !isInstalledPackageFile(resolved)
           ? { importer, specifier, target: resolved }
           : { importer, specifier },
       );
