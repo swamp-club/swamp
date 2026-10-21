@@ -570,3 +570,65 @@ Deno.test("createWorkflowValidateDeps: predicts sensitive-output vaults with the
     }
   }
 });
+
+Deno.test("createWorkflowValidateDeps: a step supplying what a method's transform accepts passes the required-inputs check, and one supplying only what it produces is told what is missing (swamp-club#3681)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const modelType = ModelType.create(
+      `@test-3681/pipeline-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.10.21.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        pipeline: {
+          description: "Accepts raw, produces token",
+          arguments: z.object({ raw: z.string() }).transform((x) => ({
+            token: x.raw,
+          })).pipe(z.object({ token: z.string().meta({ sensitive: true }) })),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(
+      modelType,
+      Definition.create({ name: "piped", type: modelType.normalized }),
+    );
+    const deps = createWorkflowValidateDeps(
+      {} as WorkflowRepository,
+      new YamlDefinitionRepository(dir),
+    );
+    const stepInputs = async (inputs: Record<string, unknown>) => {
+      const results = await deps.validate(Workflow.create({
+        name: "wf",
+        jobs: [
+          Job.create({
+            name: "job1",
+            steps: [
+              Step.create({
+                name: "step1",
+                task: StepTask.model("piped", "pipeline", inputs),
+              }),
+            ],
+          }),
+        ],
+      }));
+      return results.find((r) => r.name.includes("Step inputs"));
+    };
+
+    const accepted = await stepInputs({ raw: "value" });
+    assertEquals(accepted?.passed, true, accepted?.error);
+    const produced = await stepInputs({ token: "value" });
+    assertEquals(produced?.passed, false);
+    assertStringIncludes(produced?.error ?? "", "raw");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

@@ -166,8 +166,10 @@ function createModelMethodResolver(
         return { status: "method_not_found", modelType: modelType.normalized };
       }
 
-      // Extract required fields from the method's Zod argument schema
-      const jsonSchema = zodToJsonSchema(method.arguments) as {
+      // Extract required fields from the method's Zod argument schema: what
+      // the step supplies is what the schema accepts, a transform's input
+      // keys, not the keys it produces (swamp-club#3681).
+      const jsonSchema = zodToJsonSchema(method.arguments, { io: "input" }) as {
         required?: string[];
       };
       const requiredArgs = jsonSchema.required ?? [];
@@ -224,14 +226,17 @@ async function resolveByType(
     return { status: "method_not_found", modelType: type.normalized };
   }
 
-  const methodSchema = zodToJsonSchema(method.arguments) as {
+  // What the step supplies is what each schema accepts (swamp-club#3681).
+  const methodSchema = zodToJsonSchema(method.arguments, { io: "input" }) as {
     required?: string[];
   };
   const methodRequired = methodSchema.required ?? [];
 
   const globalRequired: string[] = [];
   if (modelDef.globalArguments) {
-    const globalSchema = zodToJsonSchema(modelDef.globalArguments) as {
+    const globalSchema = zodToJsonSchema(modelDef.globalArguments, {
+      io: "input",
+    }) as {
       required?: string[];
     };
     globalRequired.push(...(globalSchema.required ?? []));

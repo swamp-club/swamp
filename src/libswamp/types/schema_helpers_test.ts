@@ -191,3 +191,35 @@ Deno.test("zodToJsonSchema: returns diagnostic for Zod v3 string schema", () => 
   const result = zodToJsonSchema(fakeV3Schema) as Record<string, unknown>;
   assertEquals(result.$error, "unsupported_zod_version");
 });
+
+Deno.test("zodToJsonSchema: io input lists what a schema with a transform accepts, the default what it produces (swamp-club#3681)", () => {
+  const pipeline = z.object({ raw: z.string() }).transform((x) => ({
+    token: x.raw,
+  })).pipe(z.object({ token: z.string().meta({ sensitive: true }) }));
+  const produced = zodToJsonSchema(pipeline) as Record<string, unknown>;
+  assertEquals(produced.required, ["token"]);
+  const accepted = zodToJsonSchema(pipeline, { io: "input" }) as Record<
+    string,
+    unknown
+  >;
+  assertEquals(accepted.required, ["raw"]);
+  assertEquals(Object.keys(accepted.properties as object), ["raw"]);
+
+  // A leaf transform is not representable as output, so the manual fallback
+  // describes it; as input Zod describes it, defaults and optionals left out
+  // of required as they are for the output.
+  const leaf = z.object({
+    name: z.string().transform((text) => text.trim()),
+    tag: z.string().default("x"),
+    note: z.string().optional(),
+  });
+  const leafInput = zodToJsonSchema(leaf, { io: "input" }) as Record<
+    string,
+    unknown
+  >;
+  assertEquals(leafInput.required, ["name"]);
+  assertEquals(
+    (leafInput.properties as Record<string, { type: string }>).name.type,
+    "string",
+  );
+});

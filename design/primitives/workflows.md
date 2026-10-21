@@ -2479,7 +2479,9 @@ path: `.swamp/workflow-runs/`).
 
 `swamp workflow validate` checks structure (schema, unique names, dependency
 references, cycles) and checks each step's inputs against the resolved
-method's required arguments. To resolve a step's behavior type, the local path
+method's required arguments: the keys its argument schema accepts, so a schema
+with a transform asks for what it takes in, not what it produces
+(swamp-club#3681). To resolve a step's behavior type, the local path
 first hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()` in
 `src/cli/commands/workflow_validate.ts`), as `swamp behavior type describe` and
 `swamp behavior validate` do. With `--server`, the serve instance validates,
