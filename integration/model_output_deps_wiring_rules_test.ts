@@ -134,3 +134,47 @@ Deno.test("output, method-history, data versions and data rename deps callers in
       "and auto-definitions are found where the datastore keeps them.",
   );
 });
+
+/** Each output deps factory and the position of its datastoreResolver. */
+const RESOLVER_FACTORIES: Readonly<Record<string, number>> = {
+  createModelOutputGetDeps: 2,
+  createModelOutputDataDeps: 2,
+  createModelOutputLogsDeps: 2,
+  createModelMethodHistoryLogsDeps: 2,
+};
+
+Deno.test("output and method-history deps callers in serve pass the datastore resolver (swamp-club#3729)", async () => {
+  const missing: string[] = [];
+  let scanned = 0;
+  for await (
+    const entry of walk(join(SRC_DIR, "serve"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const code = await Deno.readTextFile(entry.path);
+    const owners = topLevelOwners(code.split("\n"));
+    for (const [factory, position] of Object.entries(RESOLVER_FACTORIES)) {
+      for (const call of callArgs(code, factory)) {
+        scanned++;
+        const resolver = call.args[position - 1];
+        if (resolver === undefined || resolver === "undefined") {
+          missing.push(
+            `${repoRelative(entry.path)}: ${factory} in ${owners[call.line]}`,
+          );
+        }
+      }
+    }
+  }
+
+  // Five serve handlers build these deps: a scan that matches nothing must
+  // not pass.
+  assertGreater(scanned, 4);
+  assertPinnedSet(
+    countedKeys(missing),
+    [],
+    "Serve output and method-history deps without a datastore resolver",
+    "Pass ctx.datastoreResolver so serve reads output records where the\n" +
+      "datastore keeps them, as history search and the local CLI do.",
+  );
+});

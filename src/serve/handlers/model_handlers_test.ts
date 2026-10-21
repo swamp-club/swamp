@@ -25,7 +25,10 @@ import {
   handleModelCreate,
   handleModelDelete,
   handleModelEdit,
+  handleModelMethodHistoryGet,
+  handleModelMethodHistoryLogs,
   handleModelMethodHistorySearch,
+  handleModelOutputGet,
   handleModelOutputSearch,
   isMethodMutating,
   redactWorkflowLinks,
@@ -35,6 +38,7 @@ import {
   withCapturedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -1227,4 +1231,218 @@ Deno.test("handleModelDelete: records the deleted model and the requesting princ
       assertEquals(span.attributes["auth.principal.id"], "user:editor");
     });
   });
+});
+
+// --- output and run-history reads under a relocated datastore (swamp-club#3729) ---
+
+/**
+ * A repo whose outputs resolve through `datastore`, with one run of model
+ * `watched` saved the way a real run splits it: the record in the datastore
+ * tier and its log under the repo's own outputs directory.
+ */
+async function saveRunUnder(
+  repoDir: string,
+  datastore: { path: string; namespace?: string } | undefined,
+  logFile?: string,
+): Promise<{ ctx: ConnectionContext; output: ModelOutput }> {
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definition = await saveEditModel(definitionRepo, "watched");
+  const resolver = new DefaultDatastorePathResolver(repoDir, {
+    type: "filesystem",
+    path: datastore?.path ?? join(repoDir, ".swamp"),
+    ...(datastore?.namespace ? { namespace: datastore.namespace } : {}),
+  });
+  const outputRepo = new YamlOutputRepository(
+    repoDir,
+    resolver.resolvePath("outputs"),
+  );
+  const ownLog = join(
+    repoDir,
+    ".swamp",
+    "outputs",
+    "command",
+    "shell",
+    "execute",
+    `${definition.id}.log`,
+  );
+  await Deno.mkdir(join(ownLog, ".."), { recursive: true });
+  await Deno.writeTextFile(ownLog, "hello from the run\n");
+  const output = ModelOutput.create({
+    definitionId: definition.id,
+    methodName: "execute",
+    status: "succeeded",
+    startedAt: new Date("2026-01-01T00:00:00Z"),
+    provenance: {
+      definitionHash: "h",
+      modelVersion: "1",
+      triggeredBy: "manual",
+    } as ModelOutput["provenance"],
+    logFile: logFile ?? ownLog,
+  });
+  await outputRepo.save(EDIT_TEST_TYPE, "execute", output);
+  const ctx = {
+    ...createEditCtx(repoDir, definitionRepo),
+    datastoreResolver: resolver,
+  } as ConnectionContext;
+  return { ctx, output };
+}
+
+/** The output lookups enumerate registered types to find a run's model. */
+async function withEditTestTypeRegistered(fn: () => Promise<void>) {
+  modelRegistry.register({
+    type: EDIT_TEST_TYPE,
+    version: "2026.01.01.1",
+    methods: {},
+  });
+  try {
+    await fn();
+  } finally {
+    modelRegistry.invalidateType(EDIT_TEST_TYPE);
+  }
+}
+
+for (
+  const [label, layout] of [
+    ["a filesystem datastore outside the repo", { namespace: undefined }],
+    ["a namespaced datastore", { namespace: "team-a" }],
+  ] as const
+) {
+  Deno.test(`handleModelMethodHistoryGet, handleModelOutputGet and handleModelMethodHistoryLogs: find a run whose record is in ${label}`, async () => {
+    await withEditTestTypeRegistered(() =>
+      withTempDir(async (dir) => {
+        const repoDir = join(dir, "repo");
+        const { ctx, output } = await saveRunUnder(repoDir, {
+          path: join(dir, "datastore"),
+          namespace: layout.namespace,
+        });
+        for (const ref of [output.id, output.id.slice(0, 8), "watched"]) {
+          const historySocket = createMockSocket();
+          await handleModelMethodHistoryGet(
+            historySocket,
+            ctx,
+            "req-history-get",
+            { outputIdOrModelName: ref },
+            new AbortController(),
+            null,
+          );
+          const [history] = frames(historySocket);
+          assertEquals(
+            history.type,
+            "model.method.history.get",
+            JSON.stringify(history),
+          );
+          assertEquals(history.payload.data.id, output.id);
+
+          const outputSocket = createMockSocket();
+          await handleModelOutputGet(
+            outputSocket,
+            ctx,
+            "req-output-get",
+            { outputIdOrModelName: ref },
+            new AbortController(),
+            null,
+          );
+          const [got] = frames(outputSocket);
+          assertEquals(got.type, "model.output.get", JSON.stringify(got));
+          assertEquals(got.payload.data.id, output.id);
+
+          const logsSocket = createMockSocket();
+          await handleModelMethodHistoryLogs(
+            logsSocket,
+            ctx,
+            "req-history-logs",
+            { outputIdOrModelName: ref },
+            new AbortController(),
+            null,
+          );
+          const [logs] = frames(logsSocket);
+          assertEquals(
+            logs.type,
+            "model.method.history.logs",
+            JSON.stringify(logs),
+          );
+          assertEquals(logs.payload.data.type, "log");
+          assertEquals(logs.payload.data.log.lines, ["hello from the run"]);
+        }
+      })
+    );
+  });
+}
+
+Deno.test("handleModelMethodHistoryLogs: never reads a log file outside the repo's outputs directory", async () => {
+  await withEditTestTypeRegistered(() =>
+    withTempDir(async (dir) => {
+      const secret = join(dir, "secret.txt");
+      await Deno.writeTextFile(secret, "server secret\n");
+      const repoDir = join(dir, "repo");
+      const escapeLink = join(repoDir, ".swamp", "outputs", "escape.log");
+
+      for (const logFile of [secret, escapeLink]) {
+        await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+        await Deno.mkdir(join(repoDir, ".swamp", "outputs"), {
+          recursive: true,
+        });
+        await Deno.symlink(secret, escapeLink, { type: "file" });
+        const { ctx, output } = await saveRunUnder(repoDir, undefined, logFile);
+
+        const socket = createMockSocket();
+        await handleModelMethodHistoryLogs(
+          socket,
+          ctx,
+          "req-history-logs",
+          { outputIdOrModelName: output.id },
+          new AbortController(),
+          null,
+        );
+        const [logs] = frames(socket);
+        assertEquals(
+          logs.type,
+          "model.method.history.logs",
+          JSON.stringify(logs),
+        );
+        assertEquals(logs.payload.data.type, "empty_log", logFile);
+        assertEquals(JSON.stringify(logs).includes("server secret"), false);
+      }
+    })
+  );
+});
+
+Deno.test("handleModelMethodHistoryLogs: reads a workflow step's log from its workflow run", async () => {
+  await withEditTestTypeRegistered(() =>
+    withTempDir(async (dir) => {
+      const repoDir = join(dir, "repo");
+      const workflowLog = join(
+        repoDir,
+        ".swamp",
+        "workflow-runs",
+        crypto.randomUUID(),
+        "workflow-run-1.log",
+      );
+      await Deno.mkdir(join(workflowLog, ".."), { recursive: true });
+      await Deno.writeTextFile(workflowLog, "hello from the workflow\n");
+      const { ctx, output } = await saveRunUnder(
+        repoDir,
+        { path: join(dir, "datastore") },
+        workflowLog,
+      );
+
+      const socket = createMockSocket();
+      await handleModelMethodHistoryLogs(
+        socket,
+        ctx,
+        "req-history-logs",
+        { outputIdOrModelName: output.id },
+        new AbortController(),
+        null,
+      );
+      const [logs] = frames(socket);
+      assertEquals(
+        logs.type,
+        "model.method.history.logs",
+        JSON.stringify(logs),
+      );
+      assertEquals(logs.payload.data.type, "log");
+      assertEquals(logs.payload.data.log.lines, ["hello from the workflow"]);
+    })
+  );
 });
