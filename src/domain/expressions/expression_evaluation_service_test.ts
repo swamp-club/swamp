@@ -43,6 +43,7 @@ import {
   runWithRejectionReport,
 } from "./expression_rejection_report.ts";
 import { ProvenanceMap } from "./provenance_map.ts";
+import { InvalidExpressionError } from "./errors.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -1336,6 +1337,139 @@ Deno.test("resolveRuntimeExpressionsInDefinition: resolves only the authored exp
         result.definition.globalArguments.injected,
         "${{ env.SWAMP_TEST_BAD }}",
       );
+    });
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: with a method, resolves the global arguments and that method's expressions and leaves another method's as authored", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    await withMockedEnv({ SWAMP_TEST_SCOPED: "resolved" }, async () => {
+      const unset = `SWAMP_UNSET_${crypto.randomUUID().replaceAll("-", "")}`;
+      const definition = Definition.create({
+        name: "scoped-model",
+        globalArguments: { token: "${{ env.SWAMP_TEST_SCOPED }}" },
+        methods: {
+          run: { arguments: { key: "${{ env.SWAMP_TEST_SCOPED }}-run" } },
+          other: {
+            arguments: {
+              // Fails the pass whenever it is evaluated.
+              key: `\${{ env.${unset} }}`,
+              // The raw text the run method resolves, kept as authored here.
+              shared: "${{ env.SWAMP_TEST_SCOPED }}",
+            },
+          },
+        },
+      });
+      const authored = collectAuthoredExpressions(definition.toData());
+
+      const scoped = await service.resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        authored,
+        { methodName: "run" },
+      );
+      assertEquals(scoped.definition.globalArguments.token, "resolved");
+      assertEquals(
+        scoped.definition.getMethodArguments("run").key,
+        "resolved-run",
+      );
+      assertEquals(
+        scoped.definition.getMethodArguments("other").key,
+        `\${{ env.${unset} }}`,
+      );
+      assertEquals(
+        scoped.definition.getMethodArguments("other").shared,
+        "${{ env.SWAMP_TEST_SCOPED }}",
+      );
+      assertEquals(scoped.failedExpressions, undefined);
+
+      // No method named: the global arguments alone.
+      const globalsOnly = await service.resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        authored,
+        { methodName: "" },
+      );
+      assertEquals(globalsOnly.definition.globalArguments.token, "resolved");
+      assertEquals(
+        globalsOnly.definition.getMethodArguments("run").key,
+        "${{ env.SWAMP_TEST_SCOPED }}-run",
+      );
+
+      // Without the option the whole definition is the pass's, and the
+      // other method's expression fails it.
+      await assertRejects(
+        () =>
+          service.resolveRuntimeExpressionsInDefinition(
+            definition,
+            undefined,
+            undefined,
+            authored,
+          ),
+        InvalidExpressionError,
+        unset,
+      );
+    });
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: keepUnevaluated leaves only the failing expression as authored text, records it, and resolves the rest whatever the order", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    await withMockedEnv({ SWAMP_TEST_KEPT: "resolved" }, async () => {
+      const unset = `SWAMP_UNSET_${crypto.randomUUID().replaceAll("-", "")}`;
+      const unsetRaw = `\${{ env.${unset} }}`;
+      const setRaw = "${{ env.SWAMP_TEST_KEPT }}";
+      for (
+        const [failing, resolving] of [["first", "second"], ["second", "first"]]
+      ) {
+        const definition = Definition.create({
+          name: "kept-model",
+          globalArguments: failing === "first"
+            ? { first: unsetRaw, second: setRaw }
+            : { first: setRaw, second: unsetRaw },
+        });
+        const decided: string[] = [];
+        const result = await service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          collectAuthoredExpressions(definition.toData()),
+          {
+            keepUnevaluated: (error, expression) => {
+              decided.push(expression.path);
+              return error instanceof InvalidExpressionError;
+            },
+          },
+        );
+        assertEquals(result.definition.globalArguments[failing], unsetRaw);
+        assertEquals(result.definition.globalArguments[resolving], "resolved");
+        assertEquals(decided, [`globalArguments.${failing}`]);
+        assertEquals([...result.failedExpressions!.keys()], [unsetRaw]);
+        assertStringIncludes(
+          result.failedExpressions!.get(unsetRaw)!.message,
+          unset,
+        );
+
+        // A decision of false fails the pass with the error, as the default.
+        await assertRejects(
+          () =>
+            service.resolveRuntimeExpressionsInDefinition(
+              definition,
+              undefined,
+              undefined,
+              collectAuthoredExpressions(definition.toData()),
+              { keepUnevaluated: () => false },
+            ),
+          InvalidExpressionError,
+          unset,
+        );
+      }
     });
   });
 });

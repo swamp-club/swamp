@@ -1043,6 +1043,10 @@ export async function* modelMethodRun(
                 ),
               ),
             });
+            // Scoped to the invoked method: another method's vault and env
+            // expressions are left as authored, neither checked, loaded nor
+            // failed on, as its failed definition-pass expressions are never
+            // asserted.
             const runtimeResult = await evaluationService
               .resolveRuntimeExpressionsInDefinition(
                 executedDefinition,
@@ -1053,6 +1057,7 @@ export async function* modelMethodRun(
                   secretBag: stepSecretBag,
                   rawGlobalArguments: evaluatedDefinition.globalArguments,
                   provenance: executedProvenance,
+                  methodName: input.methodName,
                 },
               );
             evaluatedDefinition = runtimeResult.definition;

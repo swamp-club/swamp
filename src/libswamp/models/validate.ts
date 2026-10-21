@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Definition } from "../../domain/definitions/definition.ts";
+import type { Definition } from "../../domain/definitions/definition.ts";
 import { markModelWording, wordedText } from "../../domain/behavior_wording.ts";
 import {
   findDefinitionByIdGlobal,
@@ -72,6 +72,7 @@ import {
   analyzeVaultCalls,
   indirectVaultUse,
 } from "../../domain/expressions/vault_call_syntax.ts";
+import { isDeliveredWithMethod } from "../../domain/expressions/splice_pair.ts";
 import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { VaultAccessDeniedError } from "../../domain/vaults/run_vault_access.ts";
@@ -380,61 +381,48 @@ async function deliverCheckArguments(
   sensitiveValues: RunSensitiveValues,
 ): Promise<CheckArgumentDelivery> {
   // Only what the checks and the method receive is evaluated: the global
-  // arguments and the selected method's arguments. Another method's
-  // expressions are not this validation's to resolve or to fail on.
-  const data = definition.toData();
+  // arguments and the selected method's arguments, the scope a run's
+  // runtime pass has. Another method's expressions are not this
+  // validation's to resolve or to fail on, as they are not the run's.
   const method = Object.hasOwn(modelDef.methods, methodName)
     ? modelDef.methods[methodName]
     : undefined;
-  const scoped = Definition.fromData({
-    ...data,
-    methods: method && Object.hasOwn(data.methods ?? {}, methodName)
-      ? { [methodName]: data.methods![methodName] }
-      : {},
-  });
   // A vault reached any way but a direct vault.get call, or a call with the
   // wrong arity or one that reads a comprehension or cel.bind local, is what
   // the typed run refuses before it evaluates anything; validate refuses it
   // the same way, since the evaluator reports it as an evaluation error.
-  refuseIndirectVaultUse(scoped);
+  refuseIndirectVaultUse(definition, methodName);
   // Bound as a run binds them: the definition's input defaults, and the
   // environment of the machine validate runs on.
   const inputs = definition.inputs
     ? new InputValidationService().applyDefaults({}, definition.inputs)
     : {};
   const context = await expressionService.buildRuntimeContext(
-    scoped,
+    definition,
     sensitiveValues,
     inputs,
   );
-  let resolved: Definition;
-  let secretBag: VaultSecretBag;
-  try {
-    ({ definition: resolved, secretBag } = await expressionService
-      .resolveRuntimeExpressionsInDefinition(
-        scoped,
-        sensitiveValues.probeRedactor,
-        context,
-        collectAuthoredExpressions(scoped.toData()),
-        {
-          secretBag: new VaultSecretBag(sensitiveValues.sentinels),
-          // The definition is read from the repository as stored, so every
-          // position in it is authored.
-          provenance: ProvenanceMap.authored(),
-        },
-      ));
-  } catch (error) {
-    // What validate simply cannot evaluate, an input with no default or an
-    // environment variable unset here, leaves the checks with the stored
-    // text and no bag, as the untyped path leaves them. Anything else, a
-    // refused secret, a denied, missing or unreadable reference, fails the
-    // checks here as it would fail the run.
-    if (!isEvaluationFailure(error)) throw error;
-    return {
-      globalArgs: scoped.globalArguments,
-      unresolvedMethodArgs: unresolvedArgumentsOf(scoped, methodName),
-    };
-  }
+  // What validate simply cannot evaluate, an input with no default or an
+  // environment variable unset here, is left as its stored text for the
+  // checks, as the untyped path leaves it, one expression at a time: the
+  // pass goes on, so a refused secret or a denied, missing or unreadable
+  // reference beside it fails the checks here as it would fail the run,
+  // whatever the key order.
+  const { definition: resolved, secretBag } = await expressionService
+    .resolveRuntimeExpressionsInDefinition(
+      definition,
+      sensitiveValues.probeRedactor,
+      context,
+      collectAuthoredExpressions(definition.toData()),
+      {
+        secretBag: new VaultSecretBag(sensitiveValues.sentinels),
+        // The definition is read from the repository as stored, so every
+        // position in it is authored.
+        provenance: ProvenanceMap.authored(),
+        methodName,
+        keepUnevaluated: isEvaluationFailure,
+      },
+    );
   const delivery = await deliverStepSecrets({
     definition: resolved,
     modelDef,
@@ -457,10 +445,11 @@ async function deliverCheckArguments(
 
 /**
  * Whether an error of the runtime pass is the evaluator failing to evaluate
- * an expression with what validate can bind, which degrades, rather than a
- * reference check, a refusal or a load failing, which fails the checks. The
- * evaluator wraps a denied sensitive-field authorization in its own error
- * class, so the cause is read: a denial fails the checks as it fails the run.
+ * an expression with what validate can bind, which leaves that expression
+ * as its stored text, rather than a reference check, a refusal or a load
+ * failing, which fails the checks. The evaluator wraps a denied
+ * sensitive-field authorization in its own error class, so the cause is
+ * read: a denial fails the checks as it fails the run.
  */
 function isEvaluationFailure(error: unknown): boolean {
   return error instanceof InvalidExpressionError &&
@@ -468,16 +457,22 @@ function isEvaluationFailure(error: unknown): boolean {
 }
 
 /**
- * Fails when an expression of `definition` uses `vault` other than as the
- * receiver of a direct two-argument `vault.get` call outside a comprehension
- * or `cel.bind` local (design/enablers/typed-secrets.md Section 4.4), naming
- * the authored path. The evaluator refuses the same uses before it evaluates
- * anything, and so before any reference is checked or loaded.
+ * Fails when an expression of `definition` delivered with `methodName` uses
+ * `vault` other than as the receiver of a direct two-argument `vault.get`
+ * call outside a comprehension or `cel.bind` local
+ * (design/enablers/typed-secrets.md Section 4.4), naming the authored path.
+ * The evaluator refuses the same uses before it evaluates anything, and so
+ * before any reference is checked or loaded; another method's expressions
+ * it never evaluates.
  */
-function refuseIndirectVaultUse(definition: Definition): void {
+function refuseIndirectVaultUse(
+  definition: Definition,
+  methodName: string,
+): void {
   for (
     const { celExpression, path } of extractExpressions(definition.toData())
   ) {
+    if (!isDeliveredWithMethod(path, methodName)) continue;
     let reason: string | undefined;
     try {
       reason = indirectVaultUse(analyzeVaultCalls(celExpression));

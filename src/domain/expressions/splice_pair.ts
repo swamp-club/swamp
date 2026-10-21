@@ -25,7 +25,7 @@ import {
   type SpliceOrigin,
   type SpliceSanitizer,
 } from "./expression_parser.ts";
-import { ProvenanceMap, sentinelStandInOf } from "./provenance_map.ts";
+import { keyPath, ProvenanceMap, sentinelStandInOf } from "./provenance_map.ts";
 
 /**
  * Whether a path in a definition's data holds an argument that reaches the
@@ -38,6 +38,45 @@ export function isDefinitionArgumentPath(path: string): boolean {
     path.startsWith("globalArguments.") ||
     path.startsWith("globalArguments[") ||
     /^methods\.[^.[]+\.arguments(?:$|[.[])/.test(path);
+}
+
+/**
+ * Whether a path in a definition's data is delivered with method
+ * `methodName`: anything outside `methods`, and that method's own subtree.
+ * Another method's subtree is not. A delivery resolves, checks and fails on
+ * the runtime expressions at these paths only, as it asserts the failed
+ * definition-pass expressions of this method only: another method's
+ * reference is no more this delivery's to read than its inputs are.
+ */
+export function isDeliveredWithMethod(
+  path: string,
+  methodName: string,
+): boolean {
+  const methods = keyPath("", "methods");
+  return !isUnder(path, methods) ||
+    isUnder(path, keyPath(methods, methodName));
+}
+
+/**
+ * Whether a subtree at `path` in a definition's data holds nothing that is
+ * delivered with method `methodName`: another method's subtree. A runtime
+ * pass scoped to a method neither resolves nor substitutes into one, so a
+ * raw text it shares with the delivered method keeps its authored form
+ * there. The `methods` container holds the delivered method, so it is not
+ * outside.
+ */
+export function isOutsideMethodDelivery(
+  path: string,
+  methodName: string,
+): boolean {
+  return path !== keyPath("", "methods") &&
+    !isDeliveredWithMethod(path, methodName);
+}
+
+/** Whether `path` is `root` or lies under it. */
+function isUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(root + ".") ||
+    path.startsWith(root + "[");
 }
 
 /**

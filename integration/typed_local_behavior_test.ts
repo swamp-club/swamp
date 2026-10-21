@@ -185,7 +185,10 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
             args: {},
             globalArgs: { ...context.globalArgs },
             unresolved: context.unresolvedMethodArgs,
-            loaded: context.vaultSecrets?.resolvesAny === true,
+            // A value of this delivery in hand: the bag issued a reference
+            // of this definition and loaded it. resolvesAny is registry-wide,
+            // and one validation run's definitions share a registry.
+            loaded: (context.vaultSecrets?.rawValues.length ?? 0) > 0,
           });
           return Promise.resolve({ pass: true });
         },
@@ -799,6 +802,153 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertStringIncludes(aliasedCheck?.error ?? "", "direct vault.get");
     assertEquals(f.checked.length, checksBeforeMissing);
     assertEquals(f.counting.readsOf(keyOf(9)) - before9, 0);
+
+    // What validate cannot evaluate degrades expression by expression, in
+    // any key order: the unset variable's argument is left as its stored
+    // text, while the reference beside it is still checked, refused or
+    // delivered as the run would.
+    const partialDef = await f.save(Definition.create({
+      name: "partial",
+      type: f.type.normalized,
+      globalArguments: {
+        region: `\${{ env.${unsetVariable} }}`,
+        token: "${{ vault.get('prod', 'canary-5') }}",
+      },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const before5 = f.counting.readsOf(keyOf(5));
+    const partial = await deps.validateModel(partialDef, f.model, f.type);
+    assertEquals(
+      partial.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(partial.results),
+    );
+    assertEquals(f.checked.at(-1)!.globalArgs.token, f.canaries[5].value);
+    assertEquals(
+      f.checked.at(-1)!.globalArgs.region,
+      `\${{ env.${unsetVariable} }}`,
+    );
+    assertEquals(f.checked.at(-1)!.loaded, true);
+    assertEquals(f.counting.readsOf(keyOf(5)) - before5, 2);
+
+    // A refused destination beside an unset variable is refused whichever
+    // of the two is evaluated first.
+    const checksBeforeOrdered = f.checked.length;
+    const before10 = f.counting.readsOf(keyOf(10));
+    const before11 = f.counting.readsOf(keyOf(11));
+    for (
+      const [name, globalArguments] of [
+        ["unset-first", {
+          token: `\${{ env.${unsetVariable} }}`,
+          region: "${{ vault.get('prod', 'canary-10') }}",
+        }],
+        ["unset-last", {
+          region: "${{ vault.get('prod', 'canary-11') }}",
+          token: `\${{ env.${unsetVariable} }}`,
+        }],
+      ] as const
+    ) {
+      const ordered = await f.save(Definition.create({
+        name,
+        type: f.type.normalized,
+        globalArguments,
+        methods: { [METHOD]: { arguments: {} } },
+      }));
+      const outcome = await deps.validateModel(ordered, f.model, f.type);
+      const orderedCheck = outcome.results.find((r) =>
+        r.name === "Check: see-args"
+      );
+      assertEquals(orderedCheck?.passed, false, name);
+      assertStringIncludes(
+        orderedCheck?.error ?? "",
+        "secret_destination_refused",
+        name,
+      );
+      assertStringIncludes(orderedCheck?.error ?? "", "region", name);
+      assertValueFree(f, JSON.stringify(outcome), `the refusal (${name})`);
+    }
+    assertEquals(f.checked.length, checksBeforeOrdered);
+    // Each probed once at evaluation, and refused before any load.
+    assertEquals(f.counting.readsOf(keyOf(10)) - before10, 1);
+    assertEquals(f.counting.readsOf(keyOf(11)) - before11, 1);
+
+    // A missing key beside an unset variable fails the checks as the run
+    // would fail.
+    const unsetBesideMissing = await f.save(Definition.create({
+      name: "unset-beside-missing",
+      type: f.type.normalized,
+      globalArguments: {
+        region: `\${{ env.${unsetVariable} }}`,
+        token: "${{ vault.get('prod', 'no-such-key-either') }}",
+      },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const besideMissing = await deps.validateModel(
+      unsetBesideMissing,
+      f.model,
+      f.type,
+    );
+    const besideMissingCheck = besideMissing.results.find((r) =>
+      r.name === "Check: see-args"
+    );
+    assertEquals(besideMissingCheck?.passed, false);
+    assertStringIncludes(
+      besideMissingCheck?.error ?? "",
+      "no-such-key-either",
+    );
+    assertEquals(f.checked.length, checksBeforeOrdered);
+    await assertNoPlaintextOnDisk(f);
+  });
+});
+
+Deno.test("typed local behavior: a run resolves the global arguments and the invoked method's runtime expressions only, so another method's reference is neither checked, read nor failed on", async () => {
+  await withFixture(async (f) => {
+    await f.save(Definition.create({
+      name: "two-methods",
+      type: f.type.normalized,
+      globalArguments: { token: "${{ vault.get('prod', 'token') }}" },
+      methods: {
+        [METHOD]: {
+          arguments: { note: "${{ vault.get('prod', 'canary-5') }}" },
+        },
+        // A missing key, a readable key and an alias, none of them the
+        // invoked method's: the run of `run` never needs them, as it never
+        // needs another method's inputs.
+        other: {
+          arguments: {
+            note: "${{ vault.get('prod', 'no-such-key') }}",
+            password: "${{ vault.get('prod', 'canary-4') }}",
+            extra: "${{ dyn(vault).get('prod', 'canary-3') }}",
+          },
+        },
+      },
+    }));
+    for (const typed of [true, false]) {
+      f.received.length = 0;
+      const before4 = f.counting.readsOf(keyOf(4));
+      const before5 = f.counting.readsOf(keyOf(5));
+      const beforeMissing = f.counting.readsOf("no-such-key");
+      const events = await collect<ModelMethodRunEvent>(
+        modelMethodRun(createLibSwampContext(), f.runDeps(typed), {
+          modelIdOrName: "two-methods",
+          methodName: METHOD,
+          inputs: {},
+          lastEvaluated: false,
+        }),
+      );
+      const error = events.find((e) => e.kind === "error");
+      assertEquals(error, undefined, `${typed}: ${JSON.stringify(error)}`);
+      const last = f.received.at(-1)!;
+      assertEquals(last.args.note, f.canaries[5].value, String(typed));
+      assertEquals(last.globalArgs.token, f.stored.token, String(typed));
+      assert(f.counting.readsOf(keyOf(5)) > before5, String(typed));
+      assertEquals(f.counting.readsOf(keyOf(4)) - before4, 0, String(typed));
+      assertEquals(
+        f.counting.readsOf("no-such-key") - beforeMissing,
+        0,
+        String(typed),
+      );
+    }
     await assertNoPlaintextOnDisk(f);
   });
 });

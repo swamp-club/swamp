@@ -489,6 +489,7 @@ export class ModelInvocationService {
         rawProvenance.subtree("globalArguments"),
       ),
     });
+    // Scoped to the invoked method, as every delivery's runtime pass is.
     const runtimeResult = await evaluationService
       .resolveRuntimeExpressionsInDefinition(
         executedDefinition,
@@ -499,6 +500,7 @@ export class ModelInvocationService {
           secretBag: stepSecretBag,
           rawGlobalArguments: evaluatedDefinition.globalArguments,
           provenance: executedProvenance,
+          methodName,
         },
       );
     const resolvedDefinition = runtimeResult.definition;

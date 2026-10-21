@@ -1453,6 +1453,41 @@ Deno.test("modelMethodRun: a failed expression in another method's arguments doe
   assertEquals(executed, ["run"]);
 });
 
+Deno.test("modelMethodRun: the runtime pass is scoped to the invoked method", async () => {
+  const definition = createTestDefinition("scoped-model", "run");
+  let seenMethod: string | undefined;
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => ({
+      ...createFakeEvaluationService(),
+      resolveRuntimeExpressionsInDefinition: (
+        def: Definition,
+        _redactor: unknown,
+        _ctx: unknown,
+        _authored: unknown,
+        options?: { methodName?: string },
+      ) => {
+        seenMethod = options?.methodName;
+        return Promise.resolve({
+          definition: def,
+          secretBag: new VaultSecretBag(new SecretBagRegistry()),
+        });
+      },
+    }),
+  };
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("scoped-model", "run"),
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "error"), false);
+  assertEquals(seenMethod, "run");
+});
+
 Deno.test("modelMethodRun: an --input override replacing the failed argument lets the method run", async () => {
   const definition = Definition.create({
     name: "consumer",

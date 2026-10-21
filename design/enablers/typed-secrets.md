@@ -725,6 +725,15 @@ splices the results into text, and leaves the rest for a later pass. `vault` and
 - Every CEL entry point converts at the boundary. These are the run-start, step
   and runtime passes, `forEach` expansion and step names, guards, asserts,
   `swamp behavior evaluate`, `swamp workflow evaluate` and validation.
+- The runtime pass of a delivery (`resolveRuntimeExpressionsInDefinition` with
+  its `methodName`: a behavior run, a workflow step, `context.runModel` and the
+  pre-flight delivery of `swamp behavior validate`) resolves the runtime
+  expressions of the global arguments and of the invoked method only
+  (`isDeliveredWithMethod`). Another method's are left as authored, and nothing
+  is substituted into them: its references are neither checked, loaded nor
+  failed on, as its failed definition-pass expressions are never asserted
+  (`assertMethodArgumentsEvaluated`), so a `delete` runs without the secret
+  its `create` named, and validate with `--method` predicts the run it names.
 - `context.runModel` (`model_invocation_service.ts`) evaluates and delivers a
   nested invocation with its own bag. It is an entry point and a delivery under
   Sections 3.3 and 5, and moves with Phase 3.
@@ -1328,14 +1337,17 @@ usage` diagnostics of Section 10.2 and, on the typed path only (the untyped path
 keeps its inline resolution until Phase 4 removes it), delivers its pre-flight
 check arguments through `deliverStepSecrets`, the refuse-then-load step
 extracted from `executeWorkflow` and shared with the method boundary. The pass
-covers the global arguments and the selected method's arguments only, binds the
-definition's input defaults and the environment as a run does, and nothing is
-delivered when no check applies; a refused destination, a denied, missing or
-unreadable reference (its existence check failing), a vault reached other than
-through a direct `vault.get` call, or a failed load fails every applicable check
-with a value-free error, while what validate cannot evaluate (an input with no
-default, an environment variable unset where validate runs) is left as its
-stored text for the checks, as the untyped path leaves it; `context.runModel`
+covers the global arguments and the selected method's arguments only, the scope
+every delivery's runtime pass has (Section 5), binds the definition's input
+defaults and the environment as a run does, and nothing is delivered when no
+check applies; a refused destination, a denied, missing or unreadable reference
+(its existence check failing), a vault reached other than through a direct
+`vault.get` call, or a failed load fails every applicable check with a
+value-free error, while what validate cannot evaluate (an input with no default,
+an environment variable unset where validate runs) is left as its stored text
+for the checks, as the untyped path leaves it, one expression at a time
+(`keepUnevaluated`): the pass goes on past it, so a refusal or a missing key
+beside it is reported whatever the key order; `context.runModel`
 builds its nested run over `callerContext.vaultSecrets.registry.independent()`,
 which carries the option and nothing else, so references are checked anew and
 loaded once per attempt under the destination policy. `model.method` gains the

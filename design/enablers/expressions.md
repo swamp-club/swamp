@@ -626,6 +626,16 @@ the original CEL message and the argument path, rather than handing the method
 `${{ ... }}` text. Global arguments the method reads directly are guarded
 lazily by the Proxy on `context.globalArgs`.
 
+**The runtime pass is scoped to the method being run.** It resolves the `vault`
+and `env` references of the global arguments and of the invoked method's
+arguments only (`resolveRuntimeExpressionsInDefinition` with its `methodName`,
+the paths `isDeliveredWithMethod` accepts). Another method's are left as
+authored, and nothing is substituted into them: a reference there is neither
+checked, loaded nor failed on, as its failed definition-pass expressions are
+never asserted, so the factory `delete` runs without the secret its `create`
+named. `swamp behavior validate --method` evaluates the same scope, so it
+predicts the run it names.
+
 Text is classified only after evaluation fails, so a misclassification can
 never stop an expression that evaluates. Two kinds of failure are left in place
 without being recorded. The first is text that is not valid CEL, which is prose.

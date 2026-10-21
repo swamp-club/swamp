@@ -43,6 +43,8 @@ import {
 import { sensitiveValuesOf } from "./sensitive_context.ts";
 import {
   isDefinitionArgumentPath,
+  isDeliveredWithMethod,
+  isOutsideMethodDelivery,
   sensitiveSpliceSanitizer,
   type SplicePair,
 } from "./splice_pair.ts";
@@ -466,6 +468,27 @@ function deferredBindingsProvenance(record: DeferredExpression): ProvenanceMap {
 export interface RuntimeResolutionResult {
   definition: Definition;
   secretBag: VaultSecretBag;
+  /**
+   * The expressions `keepUnevaluated` left as their authored text, keyed
+   * on raw text with the error each failed with. Absent when none did.
+   */
+  failedExpressions?: FailedExpressions;
+}
+
+/** How a runtime pass treats an expression that fails to evaluate. */
+interface UnevaluatedPolicy {
+  /** True keeps the expression as its authored text; false fails the pass. */
+  keep: (error: unknown, expression: ExpressionLocation) => boolean;
+  /** Where each kept expression is recorded, keyed on its raw text. */
+  into: Map<string, Error>;
+}
+
+/** What a delivery's runtime pass adds to the pass over a whole definition. */
+interface RuntimePassOptions {
+  /** A subtree the pass neither resolves nor substitutes into. */
+  skipPath?: (path: string) => boolean;
+  /** An expression that fails to evaluate; absent, it fails the pass. */
+  unevaluated?: UnevaluatedPolicy;
 }
 
 /**
@@ -1213,6 +1236,27 @@ export class ExpressionEvaluationService {
        * data is neither resolved nor substituted.
        */
       provenance?: ProvenanceMap;
+      /**
+       * The method this delivery is for. Given, the pass covers the
+       * runtime expressions of the global arguments and of this method's
+       * subtree only ({@link isDeliveredWithMethod}); every other method's
+       * are left as authored, neither checked, loaded nor failed on, as
+       * the definition pass's failures in them are never asserted, and
+       * nothing is substituted into them, not even the value of a raw text
+       * they share with this method. Absent, the pass covers the whole
+       * definition.
+       */
+      methodName?: string;
+      /**
+       * Decides an expression whose evaluation failed: true leaves it as
+       * its authored text and records it in the result's
+       * `failedExpressions`, and the pass goes on to the next expression;
+       * false, and the default, fails the pass with the error.
+       */
+      keepUnevaluated?: (
+        error: unknown,
+        expression: ExpressionLocation,
+      ) => boolean;
     } = {},
   ): Promise<RuntimeResolutionResult> {
     const logger = getLogger(["swamp", "expressions"]);
@@ -1221,11 +1265,15 @@ export class ExpressionEvaluationService {
     const expressions = extractExpressions(definitionData);
     const provenance = options.provenance ?? ProvenanceMap.authored();
 
-    // Filter to only runtime expressions (vault or env), then to those the
-    // author actually wrote at an authored position — see AuthoredExpressions.
+    // Filter to only runtime expressions (vault or env), of the delivery's
+    // method when one is named, then to those the author actually wrote at
+    // an authored position — see AuthoredExpressions.
+    const methodName = options.methodName;
     const runtimeExpressions = partitionAuthoredAt(
       expressions.filter((expr) =>
-        containsRuntimeExpression(expr.celExpression)
+        containsRuntimeExpression(expr.celExpression) &&
+        (methodName === undefined ||
+          isDeliveredWithMethod(expr.path, methodName))
       ),
       authored,
       provenance,
@@ -1253,6 +1301,7 @@ export class ExpressionEvaluationService {
         isDefinitionArgumentPath,
       )
       : undefined;
+    const failedExpressions = new Map<string, Error>();
     const resolvedDefinition = await this.resolveRuntimeInExpressions(
       definitionData,
       runtimeExpressions,
@@ -1262,9 +1311,23 @@ export class ExpressionEvaluationService {
       options.rawGlobalArguments,
       sanitizer,
       provenance,
+      {
+        skipPath: methodName === undefined
+          ? undefined
+          : (path) => isOutsideMethodDelivery(path, methodName),
+        unevaluated: options.keepUnevaluated &&
+          { keep: options.keepUnevaluated, into: failedExpressions },
+      },
     );
 
-    return { definition: resolvedDefinition, secretBag };
+    const result: RuntimeResolutionResult = {
+      definition: resolvedDefinition,
+      secretBag,
+    };
+    if (failedExpressions.size > 0) {
+      result.failedExpressions = failedExpressions;
+    }
+    return result;
   }
 
   /**
@@ -1438,6 +1501,7 @@ export class ExpressionEvaluationService {
     rawGlobalArguments?: Record<string, unknown>,
     sanitizer?: SpliceSanitizer,
     provenance: ProvenanceMap = ProvenanceMap.authored(),
+    pass?: RuntimePassOptions,
   ): Promise<Definition> {
     const celContext: ExpressionContext = {
       model: {},
@@ -1461,6 +1525,7 @@ export class ExpressionEvaluationService {
       secretBag ?? bagFor(expressionContext),
       sanitizer,
       provenance,
+      pass,
     );
     return DefinitionClass.fromData(
       resolvedData as ReturnType<Definition["toData"]>,
@@ -1476,6 +1541,7 @@ export class ExpressionEvaluationService {
     secretBag: VaultSecretBag,
     sanitizer?: SpliceSanitizer,
     provenance: ProvenanceMap = ProvenanceMap.authored(),
+    pass: RuntimePassOptions = {},
   ): Promise<unknown> {
     const records = new Map(
       (context.deferredExpressions ?? []).map((
@@ -1637,20 +1703,32 @@ export class ExpressionEvaluationService {
 
     const values = new Map<string, unknown>();
     for (const expr of expressions) {
-      values.set(expr.raw, await resolve(expr, context));
+      try {
+        values.set(expr.raw, await resolve(expr, context));
+      } catch (error) {
+        const { unevaluated } = pass;
+        if (!unevaluated?.keep(error, expr)) throw error;
+        // Not in `values`, so the splice below leaves it as authored. Each
+        // expression is decided on its own: the ones after it still resolve.
+        unevaluated.into.set(
+          expr.raw,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
     }
     // Only this final splice is sanitized; the binding resolution above builds
     // context, which keeps raw values. An occurrence in data is never
-    // substituted, even when an authored occurrence shares its raw text.
+    // substituted, even when an authored occurrence shares its raw text, and
+    // neither is one in a subtree the pass skips.
     if (provenance.isAuthored) {
-      return replaceExpressions(data, values, undefined, sanitizer);
+      return replaceExpressions(data, values, pass.skipPath, sanitizer);
     }
     return replaceExpressionsTracked(
       data,
       values,
       provenance,
       () => ({ map: ProvenanceMap.authored() }),
-      undefined,
+      pass.skipPath,
       sanitizer,
     ).data;
   }

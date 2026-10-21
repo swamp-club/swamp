@@ -23,6 +23,7 @@ import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import {
   isDefinitionArgumentPath,
+  isDeliveredWithMethod,
   sensitiveSpliceSanitizer,
   SplicePair,
 } from "./splice_pair.ts";
@@ -43,6 +44,38 @@ Deno.test("isDefinitionArgumentPath: accepts only argument paths", () => {
   assertEquals(isDefinitionArgumentPath("name"), false);
   assertEquals(isDefinitionArgumentPath("tags.env"), false);
   assertEquals(isDefinitionArgumentPath("methods.run.description"), false);
+});
+
+Deno.test("isDeliveredWithMethod: accepts paths outside methods and under the named method only", () => {
+  assertEquals(isDeliveredWithMethod("globalArguments.token", "run"), true);
+  assertEquals(isDeliveredWithMethod("tags.env", "run"), true);
+  assertEquals(isDeliveredWithMethod("methods.run", "run"), true);
+  assertEquals(isDeliveredWithMethod("methods.run.arguments.key", "run"), true);
+  assertEquals(
+    isDeliveredWithMethod("methods.run.arguments.list[0]", "run"),
+    true,
+  );
+  // A name that merely starts with the method's is another method.
+  assertEquals(
+    isDeliveredWithMethod("methods.runner.arguments.key", "run"),
+    false,
+  );
+  assertEquals(
+    isDeliveredWithMethod("methods.other.arguments.key", "run"),
+    false,
+  );
+  // A quoted method name is spelled as expression extraction spells it.
+  assertEquals(
+    isDeliveredWithMethod('methods["a.b"].arguments.key', "a.b"),
+    true,
+  );
+  assertEquals(
+    isDeliveredWithMethod('methods["a.b"].arguments.key', "a"),
+    false,
+  );
+  // No method: the global arguments alone.
+  assertEquals(isDeliveredWithMethod("globalArguments.token", ""), true);
+  assertEquals(isDeliveredWithMethod("methods.run.arguments.key", ""), false);
 });
 
 Deno.test("SplicePair.splice: raw copy keeps values, sanitized copy holds sentinels", () => {

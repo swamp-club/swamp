@@ -2459,6 +2459,7 @@ export class DefaultStepExecutor implements StepExecutor {
       // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
       // The expression context is passed so that dynamic vault.get() arguments
       // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
+      // Scoped to the step's method, as every delivery's runtime pass is.
       const runtimeResult = await expressionEvaluator
         .resolveRuntimeExpressionsInDefinition(
           executedDefinition,
@@ -2469,6 +2470,7 @@ export class DefaultStepExecutor implements StepExecutor {
             secretBag: stepSecretBag,
             rawGlobalArguments: evaluatedDefinition.globalArguments,
             provenance: definitionProvenance.sanitized,
+            methodName: task.methodName,
           },
         );
       evaluatedDefinition = runtimeResult.definition;

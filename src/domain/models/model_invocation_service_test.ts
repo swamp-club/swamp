@@ -1169,7 +1169,7 @@ Deno.test("ModelInvocationService: a failed expression in the invoked method's a
   });
 });
 
-Deno.test("ModelInvocationService: the caller's vault scope applies to the target's vault reads", async () => {
+Deno.test("ModelInvocationService: the caller's vault scope applies to the target's vault reads, and a reference in a method not invoked is never read", async () => {
   await withResolvingSvc(async ({ svc, save }) => {
     await save(Definition.create({
       name: "target-scoped",
@@ -1192,15 +1192,35 @@ Deno.test("ModelInvocationService: the caller's vault scope applies to the targe
       allowedVaults: ["some-other-vault"],
       allowListSource: "scoped-wf",
     });
-    for (const definition of ["target-scoped", "target-unrelated"]) {
-      const result = await runWithVaultAccess(
-        access,
-        () => svc.invoke({ definition, method: "show" }, makeStubContext()),
-      );
-      assertEquals(result.ok, false, definition);
-      assertStringIncludes(errorOf(result), "Reading vault 'v' is refused");
-    }
+    const scoped = await runWithVaultAccess(
+      access,
+      () =>
+        svc.invoke(
+          { definition: "target-scoped", method: "show" },
+          makeStubContext(),
+        ),
+    );
+    assertEquals(scoped.ok, false);
+    assertStringIncludes(errorOf(scoped), "Reading vault 'v' is refused");
     assertEquals(resolveCalls.length, 0);
+
+    // The reference sits in a method the invocation does not run, so it is
+    // never read and there is nothing for the scope to refuse.
+    const unrelatedResult = await runWithVaultAccess(
+      access,
+      () =>
+        svc.invoke(
+          { definition: "target-unrelated", method: "show" },
+          makeStubContext(),
+        ),
+    );
+    assertEquals(
+      unrelatedResult.ok,
+      true,
+      unrelatedResult.ok ? "" : errorOf(unrelatedResult),
+    );
+    assertEquals(resolveCalls.length, 1);
+    assertEquals(resolveCalls[0].globalArgs.url, "https://plain.invalid");
   });
 });
 
@@ -1310,4 +1330,64 @@ Deno.test("ModelInvocationService: a nested invocation runs on an independent re
       assertEquals(nested.drewPrefixOf(callerSentinel!), false);
     }
   }
+});
+
+Deno.test("ModelInvocationService: a nested invocation's runtime pass is scoped to the invoked method", async () => {
+  let seenMethod: string | undefined;
+  const evaluator: Evaluator = {
+    hasDefinitionExpressions: () => false,
+    evaluateDefinition: () => {
+      throw new Error("no expressions to evaluate");
+    },
+    buildRuntimeContext: () => Promise.resolve({} as RuntimeContext),
+    resolveRuntimeExpressionsInDefinition: (
+      definition,
+      _redactor,
+      _context,
+      _authored,
+      options,
+    ) => {
+      seenMethod = options?.methodName;
+      return Promise.resolve({ definition, secretBag: options!.secretBag! });
+    },
+    secretLoader: () =>
+      new SecretLoader(() => Promise.resolve(new VaultService())),
+  };
+  const targetDef = Definition.create({
+    name: "scoped-target",
+    type: "test/provenance-target",
+    globalArguments: {},
+  });
+  const svc = new ModelInvocationService({
+    executionService: {
+      execute: () => Promise.resolve({ dataHandles: [] }),
+      executeWorkflow: () => Promise.resolve({ dataHandles: [] }),
+    },
+    commonDeps: {
+      dataRepository: {
+        findAllForModel: () => Promise.resolve([]),
+        getContent: () => Promise.resolve(null),
+      },
+      definitionRepository: {
+        findByNameGlobal: (name: string) =>
+          Promise.resolve(
+            name === "scoped-target"
+              ? { definition: targetDef, type: PROVENANCE_TARGET_TYPE }
+              : null,
+          ),
+        findById: () => Promise.resolve(null),
+      },
+      createCelEnvironment: () =>
+        ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    } as unknown as CommonMethodContextDeps,
+    evaluationService: evaluator,
+    repoDir: "/tmp/test-repo",
+  });
+
+  const result = await svc.invoke(
+    { definition: "scoped-target", method: "greet" },
+    makeStubContext(),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(seenMethod, "greet");
 });
