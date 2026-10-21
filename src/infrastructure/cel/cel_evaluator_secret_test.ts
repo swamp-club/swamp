@@ -373,8 +373,8 @@ Deno.test("CelEvaluator typed secrets: model.method receives plain inputs, never
     },
   };
   evaluate("model.method('m', 'run', {'p': inputs.plain, 'q': [1]})", f);
-  // cel-js hands a delegate its own values, ints as bigints, as today.
-  assertEquals(received, { p: "x", q: [1n] });
+  // Ints arrive as numbers, so the inputs serialize (swamp-club#3708).
+  assertEquals(received, { p: "x", q: [1] });
   for (const key of ["p", "q"]) {
     assertEquals(
       Object.getOwnPropertyDescriptor(received, key)?.get,

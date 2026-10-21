@@ -6947,6 +6947,105 @@ Deno.test("assert: model.method() in expr fails when method returns falsy", asyn
   });
 });
 
+// swamp-club#3708: a guard or assert calling model.method with ints in its
+// inputs runs the method on the real executor. Before the fix the ints arrived
+// as bigints and saving the evaluated definition failed to serialize them.
+async function runModelMethodWithIntInputs(
+  step: (expression: string) => Step,
+): Promise<{ run: WorkflowRun; received: Record<string, unknown>[] }> {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+  const modelType = ModelType.create(
+    `@test-3708/int-inputs-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  const received: Record<string, unknown>[] = [];
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    resources: {},
+    methods: {
+      run: {
+        description: "records its arguments",
+        arguments: z.object({ n: z.number(), l: z.array(z.number()) }),
+        execute: (args: Record<string, unknown>) => {
+          received.push(args);
+          return Promise.resolve({});
+        },
+      },
+    },
+  });
+
+  let run: WorkflowRun | undefined;
+  await withTempDir(async (tempDir) => {
+    const definition = Definition.create({
+      name: "counter",
+      type: modelType.normalized,
+    });
+    await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const workflow = Workflow.create({
+      name: "int-inputs",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            step("model.method('counter', 'run', {'n': 1, 'l': [1]}) != null"),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+      ({ run } = await runToCompletion(service, workflow.name));
+    } finally {
+      catalogStore.close();
+    }
+  });
+  assert(run, "expected a completed run");
+  return { run, received };
+}
+
+Deno.test("guard: model.method() with int inputs runs the method and skips the step", async () => {
+  const { run, received } = await runModelMethodWithIntInputs((expression) =>
+    Step.create({
+      name: "count",
+      task: StepTask.model("counter", "run", { n: 2, l: [] }),
+      guard: `\${{ ${expression} }}`,
+    })
+  );
+  assertEquals(run.status, "succeeded");
+  assertEquals(run.getJob("job1")?.getStep("count")?.status, "skipped");
+  assertEquals(received, [{ n: 1, l: [1] }]);
+});
+
+Deno.test("assert: model.method() with int inputs runs the method and passes", async () => {
+  const { run, received } = await runModelMethodWithIntInputs((expression) =>
+    Step.create({
+      name: "check",
+      task: StepTask.assert(expression, "count check failed", "high"),
+    })
+  );
+  assertEquals(run.status, "succeeded");
+  assertEquals(run.getJob("job1")?.getStep("check")?.status, "succeeded");
+  assertEquals(received, [{ n: 1, l: [1] }]);
+});
+
 // ---------------------------------------------------------------------------
 // Drain-before-suspend: parallel sibling steps complete before suspension
 // ---------------------------------------------------------------------------

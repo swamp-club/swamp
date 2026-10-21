@@ -55,6 +55,7 @@ import {
 import { hasContainerComparison } from "./container_comparison.ts";
 import {
   detachForDestination,
+  isPlainMap,
   readResult,
   refuseUnboundSecrets,
   SecretBoundary,
@@ -146,6 +147,34 @@ export function coerceBigInts(value: unknown): unknown {
     for (const [k, v] of Object.entries(value)) {
       Object.defineProperty(result, k, {
         value: coerceBigInts(v),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return result;
+  }
+  return value;
+}
+
+/**
+ * Converts the CEL ints in a value bound for a delegate to numbers, as
+ * {@link coerceBigInts} does for results, so the value serializes as JSON.
+ * Unlike coerceBigInts it walks only arrays and plain maps and leaves every
+ * other object as it is: coerceBigInts rebuilds a Date (a CEL timestamp) as
+ * an empty object (swamp-club#3713), and a timestamp in the inputs of
+ * model.method reaches the method as its ISO string.
+ */
+function coerceBigIntsForDelegate(value: unknown): unknown {
+  if (typeof value === "bigint") return coerceBigInts(value);
+  if (Array.isArray(value)) return value.map(coerceBigIntsForDelegate);
+  if (isPlainMap(value)) {
+    const result: Record<string, unknown> = Object.create(
+      Object.getPrototypeOf(value),
+    );
+    for (const [k, v] of Object.entries(value)) {
+      Object.defineProperty(result, k, {
+        value: coerceBigIntsForDelegate(v),
         writable: true,
         enumerable: true,
         configurable: true,
@@ -807,11 +836,11 @@ export function createInternalCelEnvironment(
         modelName,
         methodName,
         // Until model.method delivers its inputs through the boundary
-        // conversion (typed-secrets 3.5), a secret in them is refused.
-        toDestination(inputs, "the inputs of model.method") as Record<
-          string,
-          unknown
-        >,
+        // conversion (typed-secrets 3.5), a secret in them is refused. Ints
+        // are delivered as numbers (swamp-club#3708).
+        coerceBigIntsForDelegate(
+          toDestination(inputs, "the inputs of model.method"),
+        ) as Record<string, unknown>,
       ),
   );
 
