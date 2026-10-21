@@ -129,12 +129,6 @@ jobs:
           sparse-checkout: scripts/download_release_artifact.sh
           sparse-checkout-cone-mode: false
 
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-        with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
-
       - name: Download Windows binary from GCS
         env:
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
@@ -162,12 +156,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: main
-
-      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
-        with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-
-      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Download Linux binaries from GCS
         env:

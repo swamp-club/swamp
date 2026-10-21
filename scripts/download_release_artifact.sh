@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-# Download a versioned GCS artifact and verify its checksum before use.
+# Download a versioned GCS artifact through the public edge and verify its
+# checksum before use. No cloud credentials are needed by download-only jobs.
 # Usage: bash scripts/download_release_artifact.sh <version> <os/arch> <directory>
 # Unix archives are extracted as swamp; Windows keeps swamp-windows-x86_64.zip.
 VERSION="${1:-}"
@@ -22,9 +23,9 @@ esac
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 ARCHIVE="swamp-${VERSION}-binary-${PLATFORM%/*}-${PLATFORM#*/}.${EXT}"
-URI="gs://${GCS_BUCKET:-swamp-club-artifacts}/swamp/$VERSION/binary/$PLATFORM/$ARCHIVE"
-gcloud storage cp "$URI" "$TEMP_DIR/$ARCHIVE"
-gcloud storage cp "$URI.sha256" "$TEMP_DIR/$ARCHIVE.sha256"
+URL="https://artifacts.swamp-club.com/swamp/$VERSION/binary/$PLATFORM/$ARCHIVE"
+curl --fail --silent --show-error --location --retry 3 "$URL" -o "$TEMP_DIR/$ARCHIVE"
+curl --fail --silent --show-error --location --retry 3 "$URL.sha256" -o "$TEMP_DIR/$ARCHIVE.sha256"
 expected=$(awk -v f="$ARCHIVE" '$2==f{print $1}' "$TEMP_DIR/$ARCHIVE.sha256")
 actual=$(sha256sum "$TEMP_DIR/$ARCHIVE" | awk '{print $1}')
 if [[ -z "$expected" || "$expected" != "$actual" ]]; then

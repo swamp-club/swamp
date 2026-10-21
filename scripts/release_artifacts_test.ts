@@ -33,6 +33,15 @@ const assets = [
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+// Native Windows launches Git Bash, not the WSL bash shim. Convert script
+// arguments and shell environment paths to Git Bash's /c/... spelling.
+function bashPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(
+    /^([a-zA-Z]):\//,
+    (_, drive: string) => `/${drive.toLowerCase()}/`,
+  );
+}
+
 async function sha256(bytes: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
   return Array.from(
@@ -84,17 +93,12 @@ printf '%s\\n' "$*" >> "$FIXTURE_ROOT/calls"
 [[ "$*" != *stable* ]] || exit 90
 [[ "$1" == storage ]] || exit 91
 if [[ "$2" == cp ]]; then
-    if [[ "$3" == gs://* ]]; then
-        [[ "\u0024{FAIL_READ:-}" != true ]] || exit 7
-        cp "$FIXTURE_ROOT/store/\u0024{3#gs://swamp-club-artifacts/}" "$4"
-    else
-        [[ "\u0024{FAIL_UPLOAD:-}" != true ]] || exit 8
-        [[ "$*" == *--if-generation-match=0* ]] || exit 92
-        target="$FIXTURE_ROOT/store/\u0024{4#gs://swamp-club-artifacts/}"
-        [[ ! -e "$target" ]] || exit 1
-        mkdir -p "$(dirname "$target")"
-        cp "$3" "$target"
-    fi
+    [[ "\u0024{FAIL_UPLOAD:-}" != true ]] || exit 8
+    [[ "$*" == *--if-generation-match=0* ]] || exit 92
+    target="$FIXTURE_ROOT/store/\u0024{4#gs://swamp-club-artifacts/}"
+    [[ ! -e "$target" ]] || exit 1
+    mkdir -p "$(dirname "$target")"
+    cp "$3" "$target"
 elif [[ "$2" == cat ]]; then
     [[ "\u0024{FAIL_READ:-}" != true ]] || exit 7
     cat "$FIXTURE_ROOT/store/\u0024{3#gs://swamp-club-artifacts/}"
@@ -103,6 +107,27 @@ else
 fi
 `;
     await Deno.writeTextFile(join(bin, "gcloud"), mock, { mode: 0o755 });
+    await Deno.writeTextFile(
+      join(bin, "curl"),
+      `#!/bin/bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FIXTURE_ROOT/calls"
+[[ "\u0024{FAIL_READ:-}" != true ]] || exit 7
+[[ "$*" != *stable* ]] || exit 90
+url=""
+output=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        https://artifacts.swamp-club.com/*) url="$1" ;;
+        -o) shift; output="$1" ;;
+    esac
+    shift
+done
+[[ -n "$url" && -n "$output" ]] || exit 91
+cp "$FIXTURE_ROOT/store/\u0024{url#https://artifacts.swamp-club.com/}" "$output"
+`,
+      { mode: 0o755 },
+    );
     // macOS has shasum; Linux runners have sha256sum. Keep the real hash tool.
     if (Deno.build.os === "darwin") {
       await Deno.writeTextFile(
@@ -117,20 +142,29 @@ fi
       store,
       download: join(root, "download"),
       async run(script, args = [version], env = {}, umask = "022") {
-        const result = await new Deno.Command("bash", {
+        const windows = Deno.build.os === "windows";
+        const bash = windows
+          ? join(
+            Deno.env.get("ProgramFiles") ?? "C:\\Program Files",
+            "Git",
+            "bin",
+            "bash.exe",
+          )
+          : "bash";
+        const result = await new Deno.Command(bash, {
           args: [
             "-c",
             'umask "$1"; shift; exec bash "$@"',
             "release-test",
             umask,
-            join(repo, "scripts", script),
-            ...args,
+            bashPath(join(repo, "scripts", script)),
+            ...args.map(bashPath),
           ],
           cwd: repo,
           env: {
-            PATH: `${bin}:${Deno.env.get("PATH") ?? ""}`,
-            FIXTURE_ROOT: root,
-            BINARIES_DIR: dist,
+            PATH: `${bin}${windows ? ";" : ":"}${Deno.env.get("PATH") ?? ""}`,
+            FIXTURE_ROOT: bashPath(root),
+            BINARIES_DIR: bashPath(dist),
             GCS_BUCKET: "swamp-club-artifacts",
             FAIL_READ: "",
             FAIL_UPLOAD: "",
@@ -153,6 +187,16 @@ fi
 
 const upload = "upload_release_artifacts.sh";
 const download = "download_release_artifact.sh";
+
+Deno.test("release script paths use Git Bash drive paths on Windows", () => {
+  assertEquals(
+    bashPath("C:\\Users\\runner\\file.sh"),
+    "/c/Users/runner/file.sh",
+  );
+  assertEquals(bashPath("D:/work/file.sh"), "/d/work/file.sh");
+  assertEquals(bashPath("/tmp/file.sh"), "/tmp/file.sh");
+  assertEquals(bashPath(version), version);
+});
 
 Deno.test("release uploader publishes five verified variants and never accesses stable", () =>
   withStore(async (f) => {
@@ -314,6 +358,14 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   assert(!text.includes("action-gh-release"));
   assert(!text.includes("release_body"));
   for (const job of ["windows-smoke", "docker"]) {
+    assert(
+      !JSON.stringify(workflow.jobs[job]).includes("GCP_SERVICE_ACCOUNT_KEY"),
+    );
+    assert(
+      !workflow.jobs[job].steps.some((s) =>
+        s.uses?.startsWith("google-github-actions/")
+      ),
+    );
     assert(
       workflow.jobs[job].steps.some((s) =>
         s.run?.includes("download_release_artifact.sh")

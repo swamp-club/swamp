@@ -3,8 +3,9 @@
 The release workflow builds all five variants, uploads versioned archives and
 checksums to `gs://swamp-club-artifacts`, then dispatches UAT. It does not
 create a GitHub Release or read/write `swamp/stable.json`. Windows smoke tests
-and Docker builds download the versioned GCS objects and verify their checksums
-before use.
+and Docker builds download the versioned GCS objects through the public
+`artifacts.swamp-club.com` edge and verify their checksums before use. These
+download-only jobs receive no cloud credentials.
 
 Configure the repository secret `GCP_SERVICE_ACCOUNT_KEY` with a service-account
 JSON key granting object create/read access to the bucket. Stable promotion is
