@@ -47,6 +47,8 @@ import {
   type DependencyTrustResult,
   looseSpecifierCount,
   notAuditedCount,
+  notAuditedFixes,
+  unpublishedSpecifiers,
 } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -339,10 +341,16 @@ export async function* extensionQuality(
           dependencyNotAuditedCount: notAuditedCount(
             prepared.dependencyTrustResult,
           ),
+          dependencyNotAuditedFixes: notAuditedFixes(
+            prepared.dependencyTrustResult,
+          ),
           dependencyLooseCount: looseSpecifierCount(
             prepared.dependencyTrustResult,
           ),
           privateSource,
+          unpublishedSpecifiers: unpublishedSpecifiers(
+            prepared.dependencyTrustResult,
+          ),
         },
       );
 

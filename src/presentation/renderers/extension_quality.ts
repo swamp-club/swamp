@@ -26,12 +26,18 @@ import type { FactorStatus } from "../../domain/extensions/extension_rubric_scor
 import type { LocalGateFailure } from "../../libswamp/extensions/push.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
+import {
+  notAuditedFixes,
+  onlyOutagesNotAudited,
+} from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { displayPath } from "../output/display_path.ts";
+import { logTextBlock } from "./log_text_block.ts";
 import {
   buildFindingsReport,
   renderFindingsReport,
@@ -55,9 +61,15 @@ export interface ExtensionQualityHandlerOptions {
 function errorDetails(error: SwampError): {
   reviewRuleErrors?: ReviewFinding[];
   safetyErrors?: SafetyIssue[];
+  compilationErrors?: CompilationError[];
 } {
   const details = error.details as Record<string, unknown> | undefined;
   return {
+    ...(Array.isArray(details?.compilationErrors)
+      ? {
+        compilationErrors: details.compilationErrors as CompilationError[],
+      }
+      : {}),
     ...(Array.isArray(details?.reviewRuleErrors)
       ? { reviewRuleErrors: details.reviewRuleErrors as ReviewFinding[] }
       : {}),
@@ -279,8 +291,13 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
           w.cause !== "not-audited"
         );
         if (notAudited.length > 0) {
-          logger
-            .warn`Dependencies not audited (re-run when OSV, npm and JSR are reachable):`;
+          // Only a lookup outage clears on a re-run.
+          if (onlyOutagesNotAudited(notAuditedFixes(dependencyTrustResult))) {
+            logger
+              .warn`Dependencies not audited (re-run when OSV, npm and JSR are reachable):`;
+          } else {
+            logger.warn`Dependencies not audited:`;
+          }
           for (const w of notAudited) {
             logger.warn`  ${w.dependency}: ${w.message}`;
           }
@@ -349,7 +366,25 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         }
       },
       error: (e) => {
-        const { reviewRuleErrors, safetyErrors } = errorDetails(e.error);
+        const { reviewRuleErrors, safetyErrors, compilationErrors } =
+          errorDetails(e.error);
+        if (compilationErrors) {
+          // As push prints them, so "the errors above" are above.
+          logger.error`Bundle compilation failed:`;
+          for (const r of compilationErrors) {
+            const file = displayPath(
+              r.file,
+              cwd,
+              repoDir !== undefined ? [repoDir, manifestDir] : [manifestDir],
+            );
+            if (r.error.includes("\n")) {
+              logger.error`  ${file}:`;
+              logTextBlock(logger, "error", r.error, "    ");
+            } else {
+              logger.error`  ${file}: ${r.error}`;
+            }
+          }
+        }
         if (reviewRuleErrors) {
           logger.error`Extension review rule errors:`;
           for (const f of reviewRuleErrors) {
@@ -467,7 +502,11 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
         }
       },
       error: (e) => {
-        const { reviewRuleErrors, safetyErrors } = errorDetails(e.error);
+        const { reviewRuleErrors, safetyErrors, compilationErrors } =
+          errorDetails(e.error);
+        if (compilationErrors) {
+          console.log(JSON.stringify({ compilationErrors }, null, 2));
+        }
         if (reviewRuleErrors) {
           console.log(JSON.stringify({ reviewRuleErrors }, null, 2));
         }

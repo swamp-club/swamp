@@ -697,6 +697,52 @@ Deno.test("extensionQuality: a dependency that was not audited loses the depende
   });
 });
 
+Deno.test("extensionQuality: a specifier no published version matches is named on the dependency-trust row, not an outage", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot, {
+      pushPrepareOverrides: {
+        extractDependencySpecifiers: () =>
+          Promise.resolve([{
+            name: "ms",
+            version: "99.0.0",
+            registry: "npm" as const,
+            sourceFile: join(repoDir, "models", "echo.ts"),
+          }]),
+        checkDependencyTrust: () =>
+          Promise.resolve({
+            errors: [],
+            warnings: [{
+              dependency: "ms",
+              message: "not audited: npm lists no version 99.0.0",
+              cause: "not-audited" as const,
+              remediation:
+                "Change the specifier to a version the registry publishes.",
+              notAuditedFix: "specifier" as const,
+            }],
+            audited: [],
+            passed: true,
+          }),
+      },
+    });
+
+    const data = completedData(
+      await collect(extensionQuality(ctx, deps, input)),
+    );
+    const trustFactor = data.score.factors.find((f) =>
+      f.id === "dependency-trust"
+    )!;
+    assertEquals(trustFactor.earnedPoints, 0);
+    assertEquals(
+      trustFactor.remediation,
+      "1 dependency(ies) not audited because no published version matches " +
+        "the specifier. Change the specifier to a version the registry " +
+        "publishes.",
+    );
+  });
+});
+
 for (
   const [label, result, earned] of [
     [

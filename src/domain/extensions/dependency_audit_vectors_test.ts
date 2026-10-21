@@ -33,6 +33,7 @@ import {
   type Fetcher,
   looseSpecifierCount,
   notAuditedCount,
+  notAuditedFixes,
 } from "./extension_dependency_trust_checker.ts";
 import {
   composeScore,
@@ -191,6 +192,7 @@ function factorOf(result: DependencyTrustResult) {
     dependencyTrustPassed: dependencyTrustBlockerCount(result) === 0,
     dependencyTrustBlockerCount: dependencyTrustBlockerCount(result),
     dependencyNotAuditedCount: notAuditedCount(result),
+    dependencyNotAuditedFixes: notAuditedFixes(result),
     dependencyLooseCount: looseSpecifierCount(result),
   });
   return composeScore(
