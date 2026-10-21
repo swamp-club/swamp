@@ -59,6 +59,12 @@ import {
   captureUnreadableWarnings,
   fakeUnreadableLookup,
 } from "./unreadable_records_test_helpers.ts";
+import {
+  findSpan,
+  isChildOf,
+  type ReadableSpan,
+  withCapturedSpans,
+} from "../tracing/span_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -3642,5 +3648,173 @@ Deno.test("YamlWorkflowRunRepository: listings keep their readable runs and warn
     assertEquals(warnings.length, 1, warnings.join("\n"));
     assertStringIncludes(warnings[0], lostPath);
     assertEquals(stats.listings, 5);
+  });
+});
+
+// Spans on the expensive run record reads (swamp-club#3741).
+
+const RUN_READ_SPANS = [
+  "swamp.workflow_runs.scan_all",
+  "swamp.workflow_runs.read_summaries",
+  "swamp.workflow_runs.index.repair",
+  "swamp.workflow_runs.index.rebuild",
+];
+
+/** The total length of the text of every run record of the workflows. */
+async function recordTextLength(
+  dir: string,
+  workflowIds: WorkflowId[],
+): Promise<number> {
+  let length = 0;
+  for (const workflowId of workflowIds) {
+    const runsDir = runsDirOf(dir, workflowId);
+    for await (const entry of Deno.readDir(runsDir)) {
+      if (!/^workflow-run-.*\.yaml$/.test(entry.name)) continue;
+      length += (await Deno.readTextFile(join(runsDir, entry.name))).length;
+    }
+  }
+  return length;
+}
+
+function runReadSpans(spans: readonly ReadableSpan[]): ReadableSpan[] {
+  return spans.filter((s) => RUN_READ_SPANS.includes(s.name));
+}
+
+Deno.test("findAllGlobal: a scan_all span records every run record it reads", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const first = createWorkflowWithId(crypto.randomUUID(), "first");
+    const second = createWorkflowWithId(crypto.randomUUID(), "second");
+    await saveRunningRuns(repo, first, 2);
+    await saveRunningRuns(repo, second, 3);
+    const length = await recordTextLength(dir, [first.id, second.id]);
+
+    await withCapturedSpans(async (spans) => {
+      assertEquals((await repo.findAllGlobal()).length, 5);
+      const scan = findSpan(spans, "swamp.workflow_runs.scan_all");
+      assertEquals(scan.attributes["workflow_runs.records_read"], 5);
+      assert(length > 0);
+      assertEquals(scan.attributes["workflow_runs.bytes_read"], length);
+    });
+  });
+});
+
+Deno.test("findAllSummariesByWorkflowId: a read_summaries span records the records it reads", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "summaries");
+    await saveRunningRuns(repo, workflow, 3);
+    const length = await recordTextLength(dir, [workflow.id]);
+
+    await withCapturedSpans(async (spans) => {
+      assertEquals(
+        (await repo.findAllSummariesByWorkflowId(workflow.id)).length,
+        3,
+      );
+      const read = findSpan(spans, "swamp.workflow_runs.read_summaries");
+      assertEquals(read.attributes["workflow.id"], workflow.id);
+      assertEquals(read.attributes["workflow_runs.records_read"], 3);
+      assertEquals(read.attributes["workflow_runs.bytes_read"], length);
+    });
+  });
+});
+
+Deno.test("getValidatedIndex: a repair span records the records it reads and its queue wait", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "repair");
+    const indexDir = runsDirOf(dir, workflow.id);
+    const runs = await saveRunningRuns(repo, workflow, 3);
+    await dropIndexEntries(indexDir, [runs[1].id]);
+
+    await withCapturedSpans(async (spans) => {
+      await repo.findAllSummariesFromIndex(workflow.id);
+      const repair = findSpan(spans, "swamp.workflow_runs.index.repair");
+      assertEquals(repair.attributes["workflow.id"], workflow.id);
+      // Only the record the index does not list is read.
+      assertEquals(repair.attributes["workflow_runs.records_read"], 1);
+      assert(Number(repair.attributes["workflow_runs.bytes_read"]) > 0);
+      const wait = repair.attributes["workflow_runs.index.queue_wait_ms"];
+      assertEquals(typeof wait, "number");
+      assert(Number(wait) >= 0);
+      assertEquals(
+        spans.filter((s) => s.name === "swamp.workflow_runs.index.rebuild")
+          .length,
+        0,
+      );
+    });
+  });
+});
+
+Deno.test("getValidatedIndex: a repair that rebuilds has the reads on its child rebuild span only", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "rebuild");
+    await saveRunningRuns(repo, workflow, 3);
+    await Deno.remove(getIndexPath(runsDirOf(dir, workflow.id)));
+    const length = await recordTextLength(dir, [workflow.id]);
+
+    await withCapturedSpans(async (spans) => {
+      assertEquals(
+        (await repo.findAllSummariesFromIndex(workflow.id)).length,
+        3,
+      );
+      const repair = findSpan(spans, "swamp.workflow_runs.index.repair");
+      const rebuild = findSpan(spans, "swamp.workflow_runs.index.rebuild");
+      assert(isChildOf(rebuild, repair));
+      assertEquals(rebuild.attributes["workflow.id"], workflow.id);
+      assertEquals(rebuild.attributes["workflow_runs.records_read"], 3);
+      assertEquals(rebuild.attributes["workflow_runs.bytes_read"], length);
+      assertEquals(repair.attributes["workflow_runs.records_read"], 0);
+      // The wait is the repair's: the rebuild ran inside its queue slot.
+      assertEquals(
+        typeof repair.attributes["workflow_runs.index.queue_wait_ms"],
+        "number",
+      );
+      assertEquals(
+        rebuild.attributes["workflow_runs.index.queue_wait_ms"],
+        undefined,
+      );
+    });
+  });
+});
+
+Deno.test("verifyIndexes: a rebuild span records the records it reads and its queue wait", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "verify");
+    await saveRunningRuns(repo, workflow, 2);
+    await Deno.remove(getIndexPath(runsDirOf(dir, workflow.id)));
+
+    await withCapturedSpans(async (spans) => {
+      await new YamlWorkflowRunRepository(dir).verifyIndexes();
+      const rebuild = findSpan(spans, "swamp.workflow_runs.index.rebuild");
+      assertEquals(rebuild.attributes["workflow.id"], workflow.id);
+      assertEquals(rebuild.attributes["workflow_runs.records_read"], 2);
+      assert(Number(rebuild.attributes["workflow_runs.bytes_read"]) > 0);
+      const wait = rebuild.attributes["workflow_runs.index.queue_wait_ms"];
+      assertEquals(typeof wait, "number");
+      assert(Number(wait) >= 0);
+    });
+  });
+});
+
+Deno.test("findLatestByWorkflowId: a read the index answers opens no run read span", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "hit");
+    const runs = await saveRunningRuns(repo, workflow, 2);
+
+    await withCapturedSpans(async (spans) => {
+      assertNotEquals(await repo.findLatestByWorkflowId(workflow.id), null);
+      assertEquals(
+        (await repo.findById(workflow.id, runs[0].id))?.id,
+        runs[0].id,
+      );
+      const run = WorkflowRun.create(workflow);
+      run.start();
+      await repo.save(workflow.id, run);
+      assertEquals(runReadSpans(spans).map((s) => s.name), []);
+    });
   });
 });

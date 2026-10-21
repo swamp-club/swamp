@@ -71,6 +71,11 @@ import { Step } from "../domain/workflows/step.ts";
 import { StepTask } from "../domain/workflows/step_task.ts";
 import { Definition } from "../domain/definitions/definition.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import {
+  findSpan,
+  SpanKind,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -5336,4 +5341,123 @@ Deno.test("handleMessage: server.version lists the literal-inputs capability (sw
     payload: { capabilities?: string[] };
   };
   assertEquals(reply.payload.capabilities, ["literal-inputs"]);
+});
+
+// ── handleMessage: request spans (swamp-club#3741) ─────────────────────────
+
+function tracedCtx(lagMs?: number): ConnectionContext {
+  return {
+    ...makeCtx(modeTokenConfig),
+    datastoreConfig: { type: "filesystem" },
+    datastoreResolver: {},
+    ...(lagMs !== undefined && {
+      eventLoopLag: { maxLagMs: () => lagMs },
+    }),
+  } as unknown as ConnectionContext;
+}
+
+for (
+  const type of [
+    "workflow.approvals",
+    "workflow.run.summary",
+  ]
+) {
+  Deno.test(`handleMessage: a ${type} request runs inside a swamp.serve.request span`, async () => {
+    await withCapturedSpans(async (spans) => {
+      const mock = createMockSocket();
+      const active = new Map<string, AbortController>();
+
+      // No principal under token auth: the handler refuses the read, which
+      // records the error code on the request span it runs in.
+      handleMessage(
+        mock as unknown as WebSocket,
+        tracedCtx(12),
+        active,
+        makeEvent(JSON.stringify({ type, id: "req-traced" })),
+      );
+
+      await waitFor(
+        () =>
+          active.size === 0 &&
+          spans.some((s) => s.name === "swamp.serve.request"),
+        "traced request settled",
+      );
+      const span = findSpan(spans, "swamp.serve.request");
+      assertEquals(span.kind, SpanKind.SERVER);
+      assertEquals(span.parentSpanId, undefined);
+      assertEquals(span.attributes["swamp.serve.request.type"], type);
+      assertEquals(span.attributes["swamp.serve.active_requests"], 1);
+      assertEquals(span.attributes["auth.principal.kind"], "anonymous");
+      assertEquals(span.attributes["datastore.type"], "filesystem");
+      assertEquals(span.attributes["datastore.engine"], "v2");
+      assertEquals(span.attributes["swamp.serve.event_loop.lag_max_ms"], 12);
+      const reply = parseSent(mock);
+      assertEquals(reply.type, "error");
+      assertEquals(
+        span.attributes["swamp.serve.response.error_code"],
+        (reply.error as Record<string, unknown>).code,
+      );
+    });
+  });
+}
+
+Deno.test("handleMessage: a workflow.history.get request records its type and principal on the request span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const mock = createMockSocket();
+    const active = new Map<string, AbortController>();
+
+    handleMessage(
+      mock as unknown as WebSocket,
+      tracedCtx(),
+      active,
+      makeEvent(JSON.stringify({
+        type: "workflow.history.get",
+        id: "req-history",
+        payload: { workflowIdOrName: "deploy" },
+      })),
+      testPrincipal,
+    );
+
+    await waitFor(
+      () =>
+        active.size === 0 &&
+        spans.some((s) => s.name === "swamp.serve.request"),
+      "traced request settled",
+    );
+    const span = findSpan(spans, "swamp.serve.request");
+    assertEquals(
+      span.attributes["swamp.serve.request.type"],
+      "workflow.history.get",
+    );
+    assertEquals(span.attributes["auth.principal.kind"], "user");
+    assertEquals(span.attributes["auth.principal.id"], "user:adam");
+    assertEquals(
+      span.attributes["swamp.serve.event_loop.lag_max_ms"],
+      undefined,
+    );
+  });
+});
+
+Deno.test("handleMessage: an untraced request opens no swamp.serve.request span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const mock = createMockSocket();
+    const active = new Map<string, AbortController>();
+
+    handleMessage(
+      mock as unknown as WebSocket,
+      tracedCtx(),
+      active,
+      makeEvent(JSON.stringify({ type: "server.version", id: "req-v" })),
+      testPrincipal,
+    );
+
+    await waitFor(
+      () => active.size === 0 && mock.sent.length >= 1,
+      "untraced request settled",
+    );
+    assertEquals(
+      spans.filter((s) => s.name === "swamp.serve.request").length,
+      0,
+    );
+  });
 });

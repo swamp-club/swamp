@@ -31,6 +31,11 @@ import {
   type WorkflowHistoryLogsDeps,
   type WorkflowHistoryLogsEvent,
 } from "./history_logs.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 function makeWorkflow(): Workflow {
   return Workflow.create({ name: "my-wf" });
@@ -216,4 +221,133 @@ Deno.test("workflowHistoryLogs: without a watermark repository the not-found is 
     { kind: "error" }
   >;
   assertEquals(last.error.message, "No workflow run or workflow found: abc");
+});
+
+const LOGS_SPAN = "swamp.workflow.history.logs";
+
+Deno.test("workflowHistoryLogs: records the argument, the tail, the run and the lines returned on the span", async () => {
+  const workflow = makeWorkflow();
+  const run = makeRun(workflow, { logFile: "/tmp/log.txt" });
+  let tailAsked: number | undefined;
+  const deps = makeDeps({
+    matchRunByPartialId: () =>
+      Promise.resolve({ status: "found" as const, match: run }),
+    readLogFile: (_path, opts) => {
+      tailAsked = opts?.tail;
+      return Promise.resolve({
+        lines: ["one", "two", "three"],
+        path: "/tmp/log.txt",
+      });
+    },
+  });
+  await withCapturedSpans(async (spans) => {
+    const events = await collect<WorkflowHistoryLogsEvent>(
+      workflowHistoryLogs(createLibSwampContext(), deps, {
+        runIdOrWorkflow: "abc123",
+        repoDir: "/tmp",
+        tail: 3,
+      }),
+    );
+    assertEquals(events[1].kind, "completed");
+    assertEquals(tailAsked, 3);
+    const span = findSpan(spans, LOGS_SPAN);
+    assertEquals(span.attributes["workflow.id_or_name"], "abc123");
+    assertEquals(span.attributes["logs.tail"], 3);
+    assertEquals(span.attributes["workflow.name"], run.workflowName);
+    assertEquals(span.attributes["workflow.id"], run.workflowId);
+    assertEquals(span.attributes["workflow.run_id"], run.id);
+    assertEquals(span.attributes["logs.lines_returned"], 3);
+    const resolve = findSpan(spans, "swamp.workflow.run_reference.resolve");
+    assertEquals(isChildOf(resolve, span), true);
+  });
+});
+
+Deno.test("workflowHistoryLogs: records no tail on the span when none is given", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryLogsEvent>(
+      workflowHistoryLogs(createLibSwampContext(), makeDeps(), {
+        runIdOrWorkflow: "abc123",
+        repoDir: "/tmp",
+      }),
+    );
+    const span = findSpan(spans, LOGS_SPAN);
+    assertEquals("logs.tail" in span.attributes, false);
+    assertEquals(span.attributes["logs.lines_returned"], 2);
+  });
+});
+
+Deno.test("workflowHistoryLogs: records zero lines returned on the span for an empty log", async () => {
+  const deps = makeDeps({
+    readLogFile: () => Promise.resolve({ lines: [], path: "/tmp/log.txt" }),
+  });
+  await withCapturedSpans(async (spans) => {
+    const events = await collect<WorkflowHistoryLogsEvent>(
+      workflowHistoryLogs(createLibSwampContext(), deps, {
+        runIdOrWorkflow: "abc123",
+        repoDir: "/tmp",
+      }),
+    );
+    const completed = events[1] as Extract<
+      WorkflowHistoryLogsEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.type, "empty_log");
+    const span = findSpan(spans, LOGS_SPAN);
+    assertEquals(span.attributes["logs.lines_returned"], 0);
+  });
+});
+
+Deno.test("workflowHistoryLogs: records the run but no lines returned on the span when the run has no log file", async () => {
+  const run = makeRun(makeWorkflow());
+  const deps = makeDeps({
+    matchRunByPartialId: () =>
+      Promise.resolve({ status: "found" as const, match: run }),
+    readLogFile: () => Promise.reject(new Error("no log file to read")),
+  });
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryLogsEvent>(
+      workflowHistoryLogs(createLibSwampContext(), deps, {
+        runIdOrWorkflow: "abc123",
+        repoDir: "/tmp",
+      }),
+    );
+    const span = findSpan(spans, LOGS_SPAN);
+    assertEquals(span.attributes["workflow.run_id"], run.id);
+    assertEquals("logs.lines_returned" in span.attributes, false);
+  });
+});
+
+Deno.test("workflowHistoryLogs: records no run on the span when nothing is found", async () => {
+  const deps = makeDeps({
+    isPartialId: () => false,
+    findWorkflow: () => Promise.resolve(null),
+  });
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryLogsEvent>(
+      workflowHistoryLogs(createLibSwampContext(), deps, {
+        runIdOrWorkflow: "missing-wf",
+        repoDir: "/tmp",
+      }),
+    );
+    const span = findSpan(spans, LOGS_SPAN);
+    assertEquals(span.attributes["workflow.id_or_name"], "missing-wf");
+    assertEquals("workflow.run_id" in span.attributes, false);
+    assertEquals("workflow.name" in span.attributes, false);
+    assertEquals("logs.lines_returned" in span.attributes, false);
+  });
+});
+
+Deno.test("workflowHistoryLogs: records a long argument on the span cut to 256 characters", async () => {
+  const long = `wf-${crypto.randomUUID()}-`.padEnd(300, "x");
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryLogsEvent>(
+      workflowHistoryLogs(
+        createLibSwampContext(),
+        makeDeps({ isPartialId: () => false }),
+        { runIdOrWorkflow: long, repoDir: "/tmp" },
+      ),
+    );
+    const span = findSpan(spans, LOGS_SPAN);
+    assertEquals(span.attributes["workflow.id_or_name"], long.slice(0, 256));
+  });
 });

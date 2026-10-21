@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
+import { EventLoopLagMonitor } from "../../serve/event_loop_lag.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import {
@@ -4708,11 +4709,15 @@ export const serveCommand = new Command()
       datastoreConfig,
     );
     const gcMutex = new GcMutex();
+    // Traced dashboard reads record the event-loop lag seen while they ran,
+    // to tell a blocked loop from slow I/O (swamp-club#3741).
+    const eventLoopLag = new EventLoopLagMonitor();
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
         repoContext,
         gcMutex,
+        eventLoopLag,
         datastoreConfig,
         datastoreResolver,
         syncService,
@@ -7001,6 +7006,7 @@ export const serveCommand = new Command()
       // competing with the drain; waited on after the drain, which no
       // longer waits for that load to end (swamp-club#3468).
       runIndexWarmup.stop();
+      eventLoopLag.stop();
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
@@ -7752,6 +7758,7 @@ export const serveCommand = new Command()
     logger.info("Startup complete — /ready is now serving 200");
 
     runIndexWarmup.start();
+    eventLoopLag.start();
 
     await server.finished;
 

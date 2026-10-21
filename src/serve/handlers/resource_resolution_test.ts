@@ -47,6 +47,12 @@ import { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import "../../domain/models/models.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -1381,5 +1387,107 @@ Deno.test("recordedRunModel: records the definition's name and a control-plane t
   assertEquals(recordedRunModel(null, "x", undefined), {
     name: "x",
     type: undefined,
+  });
+});
+
+// ── Authorize span (swamp-club#3741) ────────────────────────────────────
+
+Deno.test("resolveRunAccess: collects owners in a swamp.serve.authorize span counting distinct resources", async () => {
+  await withCapturedSpans(async (spans) => {
+    const prod = Workflow.create({ name: "prod-flow" });
+    const renamed = Workflow.create({ id: prod.id, name: "renamed-flow" });
+    const access = await resolveRunAccess(
+      workflowRepo([renamed]),
+      () => Promise.resolve({ reference: { kind: "run", run: runOf(prod) } }),
+      "abd",
+    );
+
+    assertEquals(access.status, "resolved");
+    const span = findSpan(spans, "swamp.serve.authorize");
+    assertEquals(span.attributes["authorize.resources"], 2);
+  });
+});
+
+Deno.test("resolveRunAccess: the authorize span counts a resource listed twice once", async () => {
+  await withCapturedSpans(async (spans) => {
+    const prod = Workflow.create({ name: "prod-flow" });
+    const access = await resolveRunAccess(
+      workflowRepo([prod]),
+      () =>
+        Promise.resolve({
+          reference: { kind: "workflow", workflow: prod, latest: runOf(prod) },
+        }),
+      "prod-flow",
+    );
+
+    assertEquals(
+      access.status === "resolved" && access.resources.map((r) => r.name),
+      ["prod-flow"],
+    );
+    const span = findSpan(spans, "swamp.serve.authorize");
+    assertEquals(span.attributes["authorize.resources"], 1);
+  });
+});
+
+Deno.test("resolveRunAccess: an ambiguous prefix counts every candidate resource on the authorize span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const prod = Workflow.create({ name: "prod-flow" });
+    const dev = Workflow.create({ name: "dev-flow" });
+    const runs = [runOf(prod), runOf(dev), runOf(prod)];
+    const access = await resolveRunAccess(
+      workflowRepo([prod, dev]),
+      () =>
+        Promise.resolve({
+          reference: {
+            kind: "ambiguous",
+            ids: runs.map((run) => run.id),
+            runs,
+          },
+        }),
+      "abd",
+    );
+
+    assertEquals(access.status, "ambiguous");
+    const span = findSpan(spans, "swamp.serve.authorize");
+    assertEquals(span.attributes["authorize.resources"], 3);
+  });
+});
+
+Deno.test("resolveRunAccess: the lookup runs before, not inside, the authorize span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const prod = Workflow.create({ name: "prod-flow" });
+    await withSpan("test.request", {}, () =>
+      resolveRunAccess(
+        workflowRepo([prod]),
+        () =>
+          withSpan("test.lookup", {}, () =>
+            Promise.resolve({
+              reference: { kind: "run" as const, run: runOf(prod) },
+            })),
+        "abd",
+      ));
+
+    const request = findSpan(spans, "test.request");
+    const lookup = findSpan(spans, "test.lookup");
+    const authorize = findSpan(spans, "swamp.serve.authorize");
+    assertEquals(isChildOf(lookup, authorize), false);
+    assertEquals(isChildOf(lookup, request), true);
+    assertEquals(isChildOf(authorize, request), true);
+  });
+});
+
+Deno.test("resolveRunAccess: a failing lookup opens no authorize span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const access = await resolveRunAccess(
+      workflowRepo([]),
+      () => Promise.reject(new Error("disk on fire")),
+      "abd",
+    );
+
+    assertEquals(access.status, "failed");
+    assertEquals(
+      spans.filter((s) => s.name === "swamp.serve.authorize").length,
+      0,
+    );
   });
 });

@@ -58,7 +58,12 @@ import {
 } from "./run_reference.ts";
 import { withReapedHint } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+  withSpan,
+} from "../../infrastructure/tracing/mod.ts";
+import { tracedArgument } from "./run_reference.ts";
 import {
   isFinishedRun,
   NestedRunLink,
@@ -240,16 +245,32 @@ export function createWorkflowHistoryGetDeps(
           undefined,
           unreadableContent,
         );
+        // Counted for the step outputs span (swamp-club#3741).
+        let resourcesRead = 0;
+        let resourcesDenied = 0;
+        const readAttributes = createDataRepositoryAttributeReader(dataRepo);
         const resolver = new StepOutputResolver({
-          readAttributes: createDataRepositoryAttributeReader(dataRepo),
+          readAttributes: (ref) => {
+            resourcesRead++;
+            return readAttributes(ref);
+          },
           findChildRun: (workflowId, runId) =>
             runRepo.findById(
               createWorkflowId(workflowId),
               createWorkflowRunId(runId),
             ),
-          canRead,
+          canRead: canRead && (async (ref) => {
+            const allowed = await canRead(ref);
+            if (!allowed) resourcesDenied++;
+            return allowed;
+          }),
         });
-        return await resolveRunStepOutputs(run, resolver);
+        const outputs = await resolveRunStepOutputs(run, resolver);
+        setActiveSpanAttributes({
+          "step_outputs.resources_read": resourcesRead,
+          "step_outputs.resources_denied": resourcesDenied,
+        });
+        return outputs;
       } finally {
         catalogStore.close();
       }
@@ -266,7 +287,10 @@ export async function* workflowHistoryGet(
 ): AsyncIterable<WorkflowHistoryGetEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.history.get",
-    {},
+    {
+      "workflow.id_or_name": tracedArgument(runIdOrWorkflow),
+      "history.include_outputs": options.includeOutputs === true,
+    },
     (async function* () {
       yield { kind: "resolving" };
 
@@ -322,18 +346,43 @@ export async function* workflowHistoryGet(
           run = reference.latest;
       }
 
+      setActiveSpanAttributes({
+        "workflow.name": run.workflowName,
+        "workflow.id": run.workflowId,
+        "workflow.run_id": run.id,
+        "workflow.run.status": run.status,
+      });
       const path = deps.getRunPath(
         run.workflowId as WorkflowId,
         run.id,
       );
       const stepOutputs = options.includeOutputs
-        ? await deps.resolveStepOutputs(run)
+        ? await withSpan(
+          "swamp.workflow.step_outputs.resolve",
+          {},
+          () => deps.resolveStepOutputs(run),
+        )
         : undefined;
       const data = toRunData(run, path, undefined, stepOutputs);
-      if (deps.nestedLink) {
-        Object.assign(data, await nestedWaitView(deps.nestedLink, run));
+      const nestedLink = deps.nestedLink;
+      if (nestedLink) {
+        // Only a run with nested waits reads anything here.
+        const view = () => nestedWaitView(nestedLink, run);
+        Object.assign(
+          data,
+          run.findNestedWaits().length > 0
+            ? await withSpan("swamp.workflow.nested_waits.resolve", {}, view)
+            : await view(),
+        );
       }
-      if (deps.signalWaits) await showAcceptedSignals(deps.signalWaits, data);
+      const signalWaits = deps.signalWaits;
+      if (signalWaits?.supported && data.status === "suspended") {
+        await withSpan(
+          "swamp.workflow.signal_waits.resolve",
+          {},
+          () => showAcceptedSignals(signalWaits, data),
+        );
+      }
 
       yield { kind: "completed", data };
     })(),

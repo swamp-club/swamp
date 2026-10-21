@@ -30,7 +30,12 @@ import type { WorkflowListing } from "../../domain/workflows/workflow_listing.ts
 
 import { findReapedBefore, type ReapedBefore } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  type Span,
+  withGeneratorSpan,
+  withSpan,
+} from "../../infrastructure/tracing/mod.ts";
 import { collectBounded, RUN_FANOUT_CONCURRENCY } from "./run_fanout.ts";
 /**
  * A single workflow run search result item.
@@ -391,10 +396,23 @@ function candidates(
  * snapshot, narrowed by name and time before any run is looked at, so the
  * cost follows the runs in the window, not the whole history.
  */
-export async function selectWorkflowRuns(
+export function selectWorkflowRuns(
   deps: Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">,
   workflows: ReadonlyArray<{ id: string }>,
   filter: WorkflowRunFilter,
+): Promise<WorkflowRunSelection> {
+  return withSpan(
+    "swamp.workflow.run_selection",
+    { "workflow_runs.workflows": workflows.length },
+    (span) => selectRuns(deps, workflows, filter, span),
+  );
+}
+
+async function selectRuns(
+  deps: Pick<WorkflowRunSearchDeps, "runIndexOf" | "isReadable">,
+  workflows: ReadonlyArray<{ id: string }>,
+  filter: WorkflowRunFilter,
+  span: Span,
 ): Promise<WorkflowRunSelection> {
   const loaded = await collectBounded(
     workflows,
@@ -410,10 +428,16 @@ export async function selectWorkflowRuns(
   const readable = new Map<string, boolean>();
   const groups: SelectedWorkflowRuns[] = [];
   let total = 0;
+  // Counted for the span: run index entries tested against the filter, and
+  // the workflow id and name pairs the readability check refused.
+  let scanned = 0;
+  let denied = 0;
   for (const workflow of workflows) {
     const snapshot = snapshots.get(workflow.id);
     if (!snapshot || cannotMatch(snapshot, filter)) continue;
-    let runs = candidates(snapshot, filter).filter(matches);
+    const tested = candidates(snapshot, filter);
+    scanned += tested.length;
+    let runs = tested.filter(matches);
     if (runs.length === 0) continue;
 
     if (deps.isReadable) {
@@ -427,7 +451,9 @@ export async function selectWorkflowRuns(
       }
       for (const [key, [id, name]] of pairs) {
         if (!readable.has(key)) {
-          readable.set(key, await deps.isReadable(id, name));
+          const allowed = await deps.isReadable(id, name);
+          readable.set(key, allowed);
+          if (!allowed) denied++;
         }
       }
       runs = runs.filter((run) =>
@@ -440,6 +466,11 @@ export async function selectWorkflowRuns(
     groups.push({ workflowId: workflow.id, snapshot, runs });
     total += runs.length;
   }
+  span.setAttributes({
+    "workflow_runs.workflows_denied": denied,
+    "workflow_runs.scanned": scanned,
+    "workflow_runs.matched": total,
+  });
   return { groups, snapshots, total };
 }
 
@@ -528,6 +559,9 @@ export function runDuration(run: RunIndexRun): number | undefined {
     : undefined;
 }
 
+/** The most characters of a search query recorded on the span. */
+const SEARCH_QUERY_ATTR_MAX = 256;
+
 /** Resolves an optional run time bound to epoch ms. */
 function boundMs(value: string | undefined, now: number): number | undefined {
   return value ? parseRunTimeBound(value, now) : undefined;
@@ -578,6 +612,15 @@ export async function* workflowRunSearch(
         Math.max(0, input.offset ?? 0),
         input.limit,
       );
+      setActiveSpanAttributes({
+        ...(input.query
+          ? { "search.query": input.query.slice(0, SEARCH_QUERY_ATTR_MAX) }
+          : {}),
+        "workflow_runs.returned": page.length,
+        ...(input.limit !== undefined
+          ? { "workflow_runs.limit": input.limit }
+          : {}),
+      });
 
       // A nested wait is resolved by finding the child in its workflow's
       // snapshot, its parentRun the back-link check, with no further reads

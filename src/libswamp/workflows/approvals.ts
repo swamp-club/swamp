@@ -35,7 +35,11 @@ import {
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+  withSpan,
+} from "../../infrastructure/tracing/mod.ts";
 import {
   isOrphaned,
   NestedRunLink,
@@ -155,7 +159,16 @@ export async function* workflowApprovals(
       yield { kind: "resolving" };
 
       const logger = getLogger(["swamp", "workflow", "approvals"]);
-      const workflows = await deps.workflowRepo.findAll();
+      const workflows = await withSpan(
+        "swamp.workflow.definitions.load",
+        {},
+        async (span) => {
+          const found = await deps.workflowRepo.findAll();
+          span.setAttribute("workflows.count", found.length);
+          return found;
+        },
+      );
+      let suspendedRuns = 0;
       const pending: PendingApproval[] = [];
       const expired: ExpiredApproval[] = [];
       // Many nested runs can share one parent: load each parent once.
@@ -186,6 +199,7 @@ export async function* workflowApprovals(
 
         for (const run of runs) {
           if (run.status !== "suspended") continue;
+          suspendedRuns++;
           const waiting = run.findWaitingApprovalStep();
           if (!waiting) continue;
 
@@ -301,6 +315,11 @@ export async function* workflowApprovals(
         }
       }
 
+      setActiveSpanAttributes({
+        "approvals.suspended_runs": suspendedRuns,
+        "approvals.pending": pending.length,
+        "approvals.expired": expired.length,
+      });
       yield { kind: "completed", data: { approvals: pending, expired } };
     })(),
   );

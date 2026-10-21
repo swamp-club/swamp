@@ -29,6 +29,11 @@ import {
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 const WF_ID = "550e8400-e29b-41d4-a716-446655440000" as unknown as WorkflowId;
 const PARENT_WF_ID =
@@ -526,4 +531,38 @@ Deno.test("workflowApprovals: falls back to evaluated workflow prompt for runs w
     assertEquals(completed.data.approvals.length, 1);
     assertEquals(completed.data.approvals[0].prompt, "Evaluated prompt value");
   }
+});
+
+Deno.test("workflowApprovals: records the definitions load and the approval counts on the span", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const other = makeWorkflow({
+    id: PARENT_WF_ID,
+    name: "other-workflow",
+    stepType: "manual_approval",
+  });
+  const runs = [
+    makeRun({ id: "run-pending" }),
+    makeRun({
+      id: "run-expired",
+      startedAt: new Date(Date.now() - 120_000),
+      approvalTimeout: 60,
+    }),
+    // Suspended on something other than an approval gate.
+    makeRun({ id: "run-no-gate", stepStatus: "succeeded" }),
+    makeRun({ id: "run-running", status: "running" }),
+  ];
+  const deps = makeDeps([wf, other], new Map([[WF_ID as string, runs]]));
+  await withCapturedSpans(async (spans) => {
+    const data = await completedData(deps);
+    assertEquals(data.approvals.map((a) => a.runId), ["run-pending"]);
+    assertEquals(data.expired.map((e) => e.runId), ["run-expired"]);
+
+    const approvals = findSpan(spans, "swamp.workflow.approvals");
+    const load = findSpan(spans, "swamp.workflow.definitions.load");
+    assertEquals(isChildOf(load, approvals), true);
+    assertEquals(load.attributes["workflows.count"], 2);
+    assertEquals(approvals.attributes["approvals.suspended_runs"], 3);
+    assertEquals(approvals.attributes["approvals.pending"], 1);
+    assertEquals(approvals.attributes["approvals.expired"], 1);
+  });
 });
