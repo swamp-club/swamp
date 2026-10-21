@@ -114,6 +114,16 @@ export class RunSensitiveValues implements SecretSink {
   }
 
   /**
+   * The run's redactor, for the vault check scope of a typed evaluation: an
+   * existence probe's value goes to it and is dropped
+   * (design/enablers/typed-secrets.md Section 3.4). Undefined when the run
+   * has none.
+   */
+  get probeRedactor(): SecretRedactor | undefined {
+    return this.redactor;
+  }
+
+  /**
    * Whether masks and stand-ins are also derived from the sentinels the run
    * issued: a typed run that issued at least one. Reading a registry entry
    * loads nothing.

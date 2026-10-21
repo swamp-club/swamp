@@ -52,6 +52,7 @@ import {
   readsSwampBinding,
 } from "../expressions/swamp_namespaces.ts";
 import { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
+import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
@@ -331,6 +332,11 @@ export class ModelInvocationService {
         routedGlobalArgs,
         routedMethodArgs,
         redactor,
+        // The nested run's own registry: it inherits the caller's
+        // typed-secrets option and nothing else, so every reference is
+        // checked anew and no sentinel of the caller's run is shared
+        // (design/enablers/typed-secrets.md Sections 3.2 and 3.4).
+        callerContext.vaultSecrets?.registry.independent(),
       );
       childDefinition = resolved.definition;
       secretBag = resolved.secretBag;
@@ -421,10 +427,11 @@ export class ModelInvocationService {
     routedGlobalArgs: Record<string, unknown>,
     routedMethodArgs: Record<string, unknown>,
     redactor: MethodContext["redactor"],
+    registry?: SecretBagRegistry,
   ): Promise<{ definition: Definition; secretBag: VaultSecretBag }> {
     const evaluationService = this.#deps.evaluationService;
     const authoredExpressions = collectAuthoredExpressions(definition.toData());
-    const sensitiveValues = new RunSensitiveValues(redactor);
+    const sensitiveValues = new RunSensitiveValues(redactor, registry);
     const inputs = definition.inputs
       ? new InputValidationService().applyDefaults({}, definition.inputs)
       : {};

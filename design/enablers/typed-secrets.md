@@ -272,7 +272,7 @@ masks the destination:
 
 | Inline resolution                                                                                       | Destination (Section 7.1)                                  | Loads until                                |
 | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------ |
-| Pre-flight checks in `swamp behavior validate` (`src/libswamp/models/validate.ts`)                      | Pre-flight checks, a trusted consumer                      | Always. Phase 3 uses the shared load step. |
+| Pre-flight checks in `swamp behavior validate` (`src/libswamp/models/validate.ts`)                      | Pre-flight checks, a trusted consumer                      | Always. In a typed run, through the shared refuse-then-load step (Phase 3.5). |
 | Placement and task selectors (`execution_service.ts`)                                                   | Refuses secrets                                            | Phase 4                                    |
 | Child workflow references (`execution_service.ts`)                                                      | Refuses secrets                                            | Phase 4                                    |
 | Deferred task targets, `inputs` and `globalArgs` (`resolveRecordExpression`, `resolveScalarExpression`) | Targets refuse secrets. Records issue into the step's bag. | Phase 4                                    |
@@ -548,7 +548,14 @@ Refusal uses registrations. It does not rewrite expressions.
    which reveals nothing. `has()` on a call result fails the check for a
    reason of its own, `invalid_macro_argument`, although `has()` is in the
    allowed set. Secrets from records are dyn values, so their misuse shows up
-   only at run time.
+   only at run time. Phase 3.5 implements the check in
+   `src/infrastructure/cel/secret_diagnostics.ts`: an expression with a
+   direct `vault.get` call is type-checked in a check environment that
+   registers the `Secret` type, the receiver and the allowed set with no
+   refusal, and a failure is the secret's when its error names the `Secret`
+   type, so an error unrelated to the result (`string + int`) is never
+   reported with a secret code; the container rule's scan is reported beside
+   it. Both findings answer `secret_operation_unsupported`.
 5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
@@ -670,10 +677,12 @@ effect follows the same four rules:
    each `Secret` becomes a sentinel in the synthetic step's bag. The step loads
    it under its own attempt, as Section 3.3 loads method arguments. No `Secret`
    reaches the step delegate, step creation or persistence. This is what happens
-   today, where the sentinel reaches the step and the bag resolves it. Until
-   this conversion lands (Phase 3.5), the internal option refuses a `Secret`
-   anywhere in `inputs` with `secret_destination_refused`, before the delegate
-   starts, and hands the delegate a plain copy of the rest.
+   today, where the sentinel reaches the step and the bag resolves it. Phase
+   3.5 lands this conversion: the function releases `inputs` through the
+   evaluation's boundary into the run's bag and hands the delegate a plain
+   copy, ints as cel-js's bigints; with no bag to issue into, a `Secret` in
+   them has nowhere to go and is refused with `secret_destination_refused`
+   before the delegate starts.
 4. **Results go through the accessor adapter.** `model.method` returns the
    step's latest resource or its raw result. Tagged fields in it become `Secret`
    values through the adapter in Section 6.1, as `data.latest` returns them, so
@@ -771,8 +780,12 @@ applied in the typed environment's accessor handlers and in the typed
 bindings, so a namespace instance built earlier is adapted all the same). A
 `Secret` it creates leaves CEL as a value-less data-origin entry of the run's
 registry (`DataReferenceEntry`, `VaultSecretBag.addDataReference`), which
-`SecretLoader` loads at delivery like a vault reference. `data.query`, step
-outputs and `model.method` results are Phases 4 and 3.5.
+`SecretLoader` loads at delivery like a vault reference. `model.method`
+results are Phase 3.5: in a typed run the delegate returns the stored record
+(`src/domain/workflows/model_method_result.ts`) and the function answers its
+attributes through the adapter (`adaptModelMethodResult`), so a tagged field
+is a `Secret` within the calling expression. `data.query` and step outputs are
+Phase 4.
 
 Extension `readResource` is a trusted plaintext API. It keeps resolving tagged
 fields, including the resource-schema fallback for untagged records, on both
@@ -1043,7 +1056,10 @@ the loaded bag.
 That covers a type error on a `vault.get` result, and a container comparison in
 an expression that calls `vault.get`. Findings name the file, the expression
 location and the code, never a value. Dynamic misuse fails at run time with the
-same codes. No new doctor command is needed.
+same codes. No new doctor command is needed. Phase 3.5 reports them from
+`swamp behavior validate` as the `Secret usage` validation, each finding naming
+the definition file, the authored path with the call's line and column, and the
+code (`secret_diagnostics.ts`, Section 4.3 item 4), behind the internal option.
 
 ### 10.3 Release
 
@@ -1275,8 +1291,42 @@ redactor is created per run; one shared across runs would keep every typed
 registry it is handed. Carried over: the shell result record's `command`
 attribute is still the resolved command through the value redactor (a Phase 4
 data-record gate), and generated `__SWAMP_VAULT_N` variables are not stripped
-from a nested swamp's inherited environment. Entry points keep building untyped
-registries until 3.5 wires them.
+from a nested swamp's inherited environment. Entry points keep building
+untyped registries until 3.5 wires them.
+
+Phase 3.5 (swamp-club#3628) completes the local behavior path. The run's
+`SecretBagRegistry.typedSecrets` becomes the single switch:
+`ExpressionEvaluationService` selects the typed `CelEvaluator` from the
+registry (built once by forwarding the flag, the one production site the
+fitness test pins beside `SecretBagRegistry.independent`) and passes an
+`EvaluationScope` through the definition and runtime passes, with the vault
+check scope the resolver's vault service answers
+(`ModelResolver.vaultEvaluationScope`). The typed runtime pass evaluates
+`vault.get` as the CEL function with its up-front checks and refuses aliases
+as errors instead of leaving them as raw text. The local entry points take an
+injectable sensitive-values factory (`ModelEvaluateDeps`,
+`createModelValidateDeps` options, `ModelMethodRunDeps`), so tests turn the
+option on while the CLI and serve pass nothing: `swamp behavior evaluate`
+persists its cache through `persistEvaluatedDefinition` and `toPersistedForm`
+with zero loads; `swamp behavior validate` reports the `Secret usage`
+diagnostics of Section 10.2 and, on the typed path only (the untyped path
+keeps its inline resolution until Phase 4 removes it), delivers its
+pre-flight check arguments through `deliverStepSecrets`, the refuse-then-load
+step extracted from `executeWorkflow` and shared with the method boundary, a
+refused destination or a failed load failing every applicable check;
+`context.runModel` builds its nested run over
+`callerContext.vaultSecrets.registry.independent()`, which carries the option
+and nothing else, so references are checked anew and loaded once per attempt
+under the destination policy. `model.method` gains the rules of Section 4.5:
+the effect gate reads the ambient fault scope (`containerComparison`,
+`release` and the recorded faults) before any delegate work; its routing
+names refuse with `secret_destination_refused` through a per-signature code
+on `registerSecretRefusals`; its inputs are released through the boundary;
+and in a typed run the delegate returns the stored record, which the
+function adapts. A `refuseSecretDestinations` stage with no method checks the
+global arguments alone, as validate without `--method` does. Phase 3's exit
+criteria are met in process for the local path; compiled-binary journeys and
+prohibited-sink scans run in swamp-uat when Phase 4 enables the option.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any
@@ -1377,7 +1427,8 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | The `Secret` value (Section 3.1)              | `src/infrastructure/cel/secret_value.ts`, `secret_fault_context.ts` (the fault context)                                                                                                                                                                                                                                                                               |
 | Refusals and the container rule (Section 4.3) | `src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`, `secret_registrations.ts`, `container_comparison.ts`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                            |
 | Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
-| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts`, `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`                                                                                                                                      |
+| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`evaluatorFor`, `scopeFor`: the registry selects the typed evaluator), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
+| Static misuse diagnostics (Section 10.2)      | `src/infrastructure/cel/secret_diagnostics.ts` (`diagnoseSecretMisuse`), `cel_evaluator.ts` (`createSecretCheckEnvironment`), `src/domain/models/validation_service.ts` (`diagnoseSecretMisuse`, `deliverCheckArguments`), `src/libswamp/models/validate.ts` |
 | Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
 | Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts`, `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace`), `integration/typed_data_secrets_test.ts` |
@@ -1389,9 +1440,9 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts`, `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts` |
 | Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
 | Queries                                       | `src/domain/data/data_query_service.ts`                                                                                                                                                                                                                                                                                                                               |
-| Method boundary and checks | `src/domain/models/method_execution_service.ts` (`unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
-| Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts`, `src/domain/workflows/trigger_input_resolver.ts`                                                                                                                                                                                                                                                                     |
-| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts`, `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts`                                                                                                                                                                                                                                                    |
+| Method boundary and checks | `src/domain/models/method_execution_service.ts` (`deliverStepSecrets`, `unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
+| Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` |
+| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts`, `model_method_result.ts` (the stored record `model.method` returns in a typed run), `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts` |
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |

@@ -695,6 +695,13 @@ first refuses a secret at a destination that takes none: a field marked
 method's own optional `refuseSecretDestinations` hook for a local placement,
 all before any load (Section 6.3), so a refused attempt reads no vault.
 
+In a typed run `swamp behavior validate` delivers its pre-flight check
+arguments through the same step (`deliverStepSecrets`): the checks receive the
+global arguments with their values, the merge with its sentinels as
+`unresolvedMethodArgs`, and the loaded bag, and a refused destination or a
+failed load fails every applicable check. With the option off, validate
+resolves the global arguments inline as before.
+
 ```typescript
 // Example: validate a method argument in a pre-flight check
 checks: {

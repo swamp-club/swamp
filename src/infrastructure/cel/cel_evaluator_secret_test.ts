@@ -39,7 +39,13 @@ import {
 } from "../../domain/expressions/errors.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
-import { CelEvaluator, createInternalCelEnvironment } from "./cel_evaluator.ts";
+import {
+  CelEvaluator,
+  createInternalCelEnvironment,
+  type EvaluationScope,
+} from "./cel_evaluator.ts";
+import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
   functionRefusalSignatures,
   INTERNAL_FUNCTION_SIGNATURES,
@@ -255,8 +261,13 @@ Deno.test("CelEvaluator typed secrets: every function refusal the inventory yiel
   const signatures = internalFunctionRefusals();
   assertEquals(signatures.length, 97);
   for (const signature of signatures) {
+    // The model and method names of model.method are routing arguments
+    // (Section 4.5 item 2) and refuse as a destination.
+    const code = signature.startsWith("CelModelNamespace.method(")
+      ? SECRET_DESTINATION_REFUSED
+      : SECRET_OPERATION_UNSUPPORTED;
     for (const form of absorbed(functionExpression(signature))) {
-      assertRefused(form, signature);
+      assertRefused(form, signature, code);
     }
   }
   // Two secrets in one call reach the all-Secret overload.
@@ -335,32 +346,186 @@ Deno.test("CelEvaluator typed secrets: a secret in the vary values of a data acc
   assertEquals(f.calls, ["latest"]);
 });
 
-Deno.test("CelEvaluator typed secrets: until 3.5, model.method refuses a secret in its inputs and never starts", () => {
+Deno.test("CelEvaluator typed secrets: model.method routing names refuse a secret as a destination, before any work", () => {
   for (
-    const expression of [
-      "model.method('m', 'run', {'p': s})",
-      "model.method('m', 'run', inputs.nested)",
-      "model.method('m', 'run', {'p': [optional.of(s)]})",
-      "dyn(model.method('m', 'run', {'p': s})) == null || true",
+    const [expression, operation] of [
+      [
+        "model.method(s, 'run', {})",
+        "CelModelNamespace.method(Secret, string, dyn): dyn",
+      ],
+      ["model.method('m', s)", "CelModelNamespace.method(string, Secret): dyn"],
+      [
+        "model.method(s, t, {'p': 1})",
+        "CelModelNamespace.method(Secret, Secret, dyn): dyn",
+      ],
     ]
   ) {
     const f = fixture();
-    assertRefused(
-      expression,
-      "the inputs of model.method",
-      SECRET_DESTINATION_REFUSED,
-      f,
-    );
+    assertRefused(expression, operation, SECRET_DESTINATION_REFUSED, f);
     assertEquals(f.calls, [], expression);
   }
-  const routing = fixture();
-  assertRefused(
-    "model.method(s, 'run', {})",
-    "CelModelNamespace.method(Secret, string, dyn): dyn",
-    SECRET_OPERATION_UNSUPPORTED,
-    routing,
+});
+
+Deno.test("CelEvaluator typed secrets: the effect gate stops model.method after an absorbed refusal, or after a secret read in an expression with a container comparison", () => {
+  const cases: [string, string, SecretRefusalCode][] = [
+    // || absorbs the refusal of s == 'x'; the effect must not start.
+    [
+      "s == 'x' || model.method('m', 'run', {}) == null",
+      "Secret == string",
+      SECRET_OPERATION_UNSUPPORTED,
+    ],
+    [
+      "[s].exists(x, x == 'x') || model.method('m', 'run', {}) == null",
+      "Secret == string",
+      SECRET_OPERATION_UNSUPPORTED,
+    ],
+    // A refused destination absorbed the same way.
+    [
+      "(data.latest('m', 'd', [s]) == null || true) && model.method('m', 'run', {}) == null",
+      "the vary values of data.latest",
+      SECRET_DESTINATION_REFUSED,
+    ],
+    // A secret was read and the expression compares containers: the gate
+    // refuses before the delegate runs, with the rule's code.
+    [
+      "s != null && model.method('m', 'run', {}) == null && inputs.item in ['a']",
+      "an effect in an expression with a container comparison that read a secret",
+      SECRET_OPERATION_UNSUPPORTED,
+    ],
+    [
+      "model.method('m', 'run', {'p': s}) == null && inputs.a == inputs.item",
+      "an effect in an expression with a container comparison that read a secret",
+      SECRET_OPERATION_UNSUPPORTED,
+    ],
+  ];
+  for (const [expression, operation, code] of cases) {
+    const f = fixture();
+    assertRefused(expression, operation, code, f);
+    assertEquals(f.calls, [], expression);
+  }
+  // With no secret read, a container comparison beside the effect is fine.
+  const f = fixture();
+  evaluate("model.method('m', 'run', {}) == null && inputs.item in ['a']", f);
+  assertEquals(f.calls, ["method"]);
+});
+
+Deno.test("CelEvaluator typed secrets: model.method delivers its inputs through the boundary as a plain sentinel-bearing copy", () => {
+  const f = fixture();
+  let received: unknown;
+  f.context.modelMethod = {
+    method: (_m: string, _n: string, inputs: unknown) => {
+      received = inputs;
+      return null;
+    },
+  };
+  evaluate(
+    "model.method('m', 'run', {'p': s, 'q': inputs.nested, 'r': [optional.of(t)], 'n': 1, 'c': s + '-x'})",
+    f,
   );
-  assertEquals(routing.calls, []);
+  const inputs = received as Record<string, unknown>;
+  // Each Secret left as the sentinel of the run's bag, ints stayed bigints,
+  // and nothing is a view or a Secret.
+  assertEquals(inputs.p, f.s);
+  assertEquals(inputs.q, { list: [{ token: f.s }] });
+  assertEquals(inputs.n, 1n);
+  assertEquals(inputs.c, `${f.s}-x`);
+  const r = inputs.r as Array<{ value(): unknown }>;
+  assertEquals(r[0].value(), f.t);
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    for (const key of Object.keys(value)) {
+      assertEquals(
+        Object.getOwnPropertyDescriptor(value, key)?.get,
+        undefined,
+        key,
+      );
+      walk((value as Record<string, unknown>)[key]);
+    }
+  };
+  walk(inputs);
+  assertEquals(f.bag.registry.issuedEntryOf(f.s)?.reference, {
+    vaultName: "prod",
+    key: "A",
+  });
+});
+
+Deno.test("CelEvaluator typed secrets: with no run's bag, a secret in model.method inputs is refused as a destination", async () => {
+  // Without a bag nothing bound is a Secret; one read from a tagged record is.
+  const record = {
+    id: "rec-1",
+    name: "main",
+    version: 1,
+    namespace: "",
+    modelName: "m",
+    tags: { "_swamp.sensitiveFields": JSON.stringify(["password"]) },
+    attributes: { password: "${{ vault.get('prod', 'P') }}" },
+  };
+  const f = fixture();
+  f.context.data = {
+    ...(f.context.data as Record<string, unknown>),
+    latest: () => {
+      f.calls.push("latest");
+      return record;
+    },
+  };
+  const error = await assertRejects(
+    () =>
+      evaluator.evaluateAsync(
+        "model.method('m', 'run', {'p': data.latest('m', 'd').attributes.password})",
+        f.context,
+      ),
+    SecretRefusedError,
+  );
+  assertEquals(error.code, SECRET_DESTINATION_REFUSED);
+  assertEquals(error.operation, "the inputs of model.method");
+  assertEquals(f.calls, ["latest"]);
+});
+
+Deno.test("CelEvaluator typed secrets: tagged fields of the record model.method returns are Secrets within the expression", async () => {
+  const record = {
+    id: "rec-1",
+    name: "main",
+    version: 1,
+    namespace: "",
+    modelName: "m",
+    tags: { "_swamp.sensitiveFields": JSON.stringify(["password"]) },
+    attributes: { password: "${{ vault.get('prod', 'P') }}", host: "h" },
+  };
+  const f = fixture();
+  f.context.modelMethod = { method: () => Promise.resolve(record) };
+  // A tagged record is authorized after release, so the asynchronous path
+  // with the run's vault scope evaluates it (typed-secrets 3.3).
+  const scope: EvaluationScope = {
+    secretBag: f.bag,
+    vault: {
+      service: new VaultService(),
+      redactor: new SecretRedactor(),
+      location: "test",
+    },
+  };
+  const run = (expression: string) =>
+    evaluator.evaluateAsync(expression, f.context, scope);
+  // The untagged field reads as before, and the tagged one composes.
+  assertEquals(await run("model.method('m', 'run').host"), "h");
+  const composed = await run("model.method('m', 'run').password + '-x'");
+  assertEquals(typeof composed, "string");
+  const sentinel = (composed as string).slice(0, -2);
+  assertEquals(f.bag.registry.issuedEntryOf(sentinel)?.reference, {
+    vaultName: "prod",
+    key: "P",
+  });
+  assertEquals(f.bag.registry.issuedEntryOf(sentinel)?.dataOrigin, true);
+  assertEquals(await run("model.method('m', 'run').password == null"), false);
+  // Misuse refuses, as data.latest's Secrets do.
+  const error = await assertRejects(
+    () => run("model.method('m', 'run').password == 'x'"),
+    SecretRefusedError,
+  );
+  assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED);
+  assertEquals(error.operation, "Secret == string");
+  // A raw result passes through.
+  f.context.modelMethod = { method: () => ({ dataHandles: [] }) };
+  assertEquals(await run("model.method('m', 'run')"), { dataHandles: [] });
 });
 
 Deno.test("CelEvaluator typed secrets: model.method receives plain inputs, never a view", () => {

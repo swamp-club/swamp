@@ -256,6 +256,15 @@ export interface ModelMethodRunDeps {
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
   createEvaluationService: () => ExpressionEvaluationService;
+  /**
+   * The run's sensitive values, with the registry that carries the internal
+   * typed-secrets option. Only tests set a typed one
+   * (design/enablers/typed-secrets.md Section 10.3): the evaluation passes,
+   * the persisted evaluated cache, the method boundary's destination policy
+   * and the redactor's masks all follow the registry. The CLI and serve
+   * pass nothing, and the run's values are untyped.
+   */
+  createSensitiveValues?: (redactor: RunLog["redactor"]) => RunSensitiveValues;
   loadEvaluatedDefinition: (
     type: ModelType,
     name: string,
@@ -702,8 +711,10 @@ export async function* modelMethodRun(
           );
           const { logFilePath, redactor } = runLog;
           // Every sensitive value this run resolves for an expression is
-          // recorded here and forwarded to the run's redactor.
-          const sensitiveValues = new RunSensitiveValues(redactor);
+          // recorded here and forwarded to the run's redactor. The registry
+          // it carries is the run's typed-secrets switch (typed-secrets 3.5).
+          const sensitiveValues = deps.createSensitiveValues?.(redactor) ??
+            new RunSensitiveValues(redactor);
           if (runLog.runId) {
             runLogger = getRunLogger(
               definition.name,

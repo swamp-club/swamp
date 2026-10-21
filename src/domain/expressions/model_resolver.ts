@@ -64,7 +64,10 @@ import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_ref
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { attachSensitiveValues } from "./sensitive_context.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import { checkSecretReference } from "../vaults/secret_reference_check.ts";
+import {
+  checkSecretReference,
+  type ProbeRedactor,
+} from "../vaults/secret_reference_check.ts";
 import { SecretLoader } from "../vaults/secret_loader.ts";
 
 /**
@@ -1894,6 +1897,26 @@ export class ModelResolver {
    */
   secretLoader(redactor?: SecretRedactor): SecretLoader {
     return new SecretLoader(() => this.getVaultService(), redactor);
+  }
+
+  /**
+   * The vault check scope of a typed evaluation
+   * (design/enablers/typed-secrets.md Section 3.4): this resolver's vault
+   * service, the one its existence checks ask and its loader reads through,
+   * with the run's probe redactor (a probe's value goes to it and is dropped;
+   * with none it is only dropped) and the authored location.
+   */
+  async vaultEvaluationScope(
+    location: string,
+    redactor?: ProbeRedactor,
+  ): Promise<
+    { service: VaultService; redactor: ProbeRedactor; location: string }
+  > {
+    return {
+      service: await this.getVaultService(),
+      redactor: redactor ?? { addSecret() {} },
+      location,
+    };
   }
 
   /**

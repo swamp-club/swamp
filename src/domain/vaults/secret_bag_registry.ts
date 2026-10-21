@@ -159,6 +159,18 @@ export class SecretBagRegistry {
     this.typedSecrets = options.typedSecrets === true;
   }
 
+  /**
+   * A new, empty registry carrying this one's option and nothing else: no
+   * entry, no prefix and no existence answer. A nested invocation issues into
+   * one, so it checks every reference anew while keeping the run's
+   * typed-secrets option (design/enablers/typed-secrets.md Sections 3.2 and
+   * 3.4). Production code reaches a typed registry only by forwarding an
+   * existing one's option this way, never by setting it.
+   */
+  independent(): SecretBagRegistry {
+    return new SecretBagRegistry({ typedSecrets: this.typedSecrets });
+  }
+
   /** Records a prefix a bag of this registry drew. */
   drawPrefix(prefix: string): void {
     this.prefixes.add(prefix);

@@ -35,6 +35,7 @@ import { isSecret, secretParts } from "./secret_value.ts";
 import {
   adaptDataRecord,
   adaptDataResult,
+  adaptModelMethodResult,
   modelMapView,
 } from "./sensitive_record_adapter.ts";
 
@@ -602,4 +603,34 @@ Deno.test("modelMapView: a record merged into the original map before first read
     assertEquals(error.code, SECRET_REFERENCE_INVALID);
     assertEquals(scope.faults.length, 1);
   });
+});
+
+Deno.test("adaptModelMethodResult: a record's attributes with tagged fields as Secrets, a raw result as it is", () => {
+  const record = {
+    id: "rec-1",
+    name: "main",
+    version: 1,
+    namespace: "ns",
+    modelName: "m",
+    tags: { "_swamp.sensitiveFields": JSON.stringify(["password"]) },
+    attributes: { password: "${{ vault.get('v', 'k') }}", host: "h" },
+  };
+  const attributes = runInFaultScope(() =>
+    adaptModelMethodResult(record) as Record<string, unknown>
+  );
+  assertEquals(attributes.host, "h");
+  assertEquals(isSecret(attributes.password), true);
+  // The original record is untouched.
+  assertEquals(record.attributes.password, "${{ vault.get('v', 'k') }}");
+  // An untagged record answers its attributes as stored.
+  assertEquals(
+    adaptModelMethodResult({ ...record, tags: {} }),
+    record.attributes,
+  );
+  // Anything that is not a record passes through.
+  assertEquals(adaptModelMethodResult({ dataHandles: [] }), {
+    dataHandles: [],
+  });
+  assertEquals(adaptModelMethodResult("text"), "text");
+  assertEquals(adaptModelMethodResult(null), null);
 });

@@ -41,6 +41,7 @@ import {
 } from "./cel_vault_namespace.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
 import {
+  SECRET_DESTINATION_REFUSED,
   SECRET_OPERATION_UNSUPPORTED,
   SecretRefusedError,
 } from "../../domain/expressions/errors.ts";
@@ -61,7 +62,9 @@ import {
   SecretBoundary,
 } from "./secret_boundary.ts";
 import {
+  currentFaultScope,
   type FaultScope,
+  refuse,
   runInFaultScope,
   SecretRefusal,
 } from "./secret_fault_context.ts";
@@ -72,6 +75,7 @@ import {
 } from "./secret_registrations.ts";
 import {
   adaptDataResult,
+  adaptModelMethodResult,
   type DataAccessor,
   modelMapView,
 } from "./sensitive_record_adapter.ts";
@@ -702,14 +706,44 @@ export interface EvaluationScope {
 export function createInternalCelEnvironment(
   options: CelEvaluatorOptions = {},
 ): Environment {
+  return buildInternalEnvironment(options.typedSecrets ? "evaluate" : "off");
+}
+
+/**
+ * How an internal environment treats typed secrets. `off` is the legacy
+ * environment. `evaluate` registers the `Secret` type, the typed vault
+ * receiver, the allowed set and every refusal the inventory yields. `check`
+ * is the type-check environment that nothing ever evaluates
+ * (design/enablers/typed-secrets.md Section 4.3 item 4): the type, the
+ * receiver and the allowed set with no refusal, and `vault` bound as a
+ * variable of the receiver type, so a check accepts the allowed set and
+ * rejects any other operation on a `vault.get` result.
+ */
+type SecretMode = "off" | "evaluate" | "check";
+
+/**
+ * The type-check environment of the static misuse diagnostics
+ * (`secret_diagnostics.ts`). Built here so the `Secret` modules stay inside
+ * the adapter.
+ */
+export function createSecretCheckEnvironment(): Environment {
+  return buildInternalEnvironment("check");
+}
+
+/** Never reached: a check environment evaluates nothing. */
+function neverEvaluated(): never {
+  throw new Error("A type-check environment evaluates nothing");
+}
+
+function buildInternalEnvironment(mode: SecretMode): Environment {
   const env = createExtensionCelEnvironment();
+  const typed = mode === "evaluate";
   // Destinations that take no secret: with typed secrets on, a value bound
   // for one is walked and copied, and a Secret in it is refused.
-  const toDestination: <T>(value: T, operation: string) => T =
-    options.typedSecrets
-      ? <T>(value: T, operation: string) =>
-        detachForDestination(value, operation) as T
-      : <T>(value: T) => value;
+  const toDestination: <T>(value: T, operation: string) => T = typed
+    ? <T>(value: T, operation: string) =>
+      detachForDestination(value, operation) as T
+    : <T>(value: T) => value;
   // Records an accessor answers: with typed secrets on, the reader's
   // own-namespace records are read as stored and their tagged fields become
   // data-origin Secrets (typed-secrets 3.3). Gated here, on the option, so a
@@ -718,11 +752,11 @@ export function createInternalCelEnvironment(
     receiver: CelDataNamespace,
     result: unknown,
     accessor: DataAccessor,
-  ) => unknown = options.typedSecrets
+  ) => unknown = typed
     ? (receiver, result, accessor) =>
       adaptDataResult(result, receiver.namespace, accessor)
     : (_receiver, result) => result;
-  const readOptions: DataReadOptions | undefined = options.typedSecrets
+  const readOptions: DataReadOptions | undefined = typed
     ? { sensitiveFields: "stored" }
     : undefined;
 
@@ -872,14 +906,33 @@ export function createInternalCelEnvironment(
     (receiver: CelWorkersNamespace) => receiver.connected(),
   );
 
-  // Register receiver methods for model namespace
+  // Register receiver methods for model namespace. model.method is the
+  // effectful function (design/enablers/typed-secrets.md Section 4.5): with
+  // typed secrets on, the effect gate runs before any delegate work, the
+  // inputs are delivered through the boundary into the run's bag, and the
+  // record it returns is adapted so its tagged fields are Secrets.
+  const gate: () => void = typed ? gateModelMethodEffect : () => {};
+  // Ints are delivered as numbers on both paths (swamp-club#3708).
+  const deliverInputs: (inputs: unknown) => Record<string, unknown> = typed
+    ? (inputs) =>
+      coerceBigIntsForDelegate(deliverModelMethodInputs(inputs)) as Record<
+        string,
+        unknown
+      >
+    : (inputs) => coerceBigIntsForDelegate(inputs) as Record<string, unknown>;
+  const adaptResult: (result: unknown) => unknown = typed
+    ? adaptModelMethodResultDeep
+    : (result) => result;
   env.registerFunction(
     "CelModelNamespace.method(string, string): dyn",
     (
       receiver: CelModelNamespace,
       modelName: string,
       methodName: string,
-    ) => receiver.method(modelName, methodName),
+    ) => {
+      gate();
+      return adaptResult(receiver.method(modelName, methodName));
+    },
   );
 
   env.registerFunction(
@@ -889,35 +942,43 @@ export function createInternalCelEnvironment(
       modelName: string,
       methodName: string,
       inputs: unknown,
-    ) =>
-      receiver.method(
-        modelName,
-        methodName,
-        // Until model.method delivers its inputs through the boundary
-        // conversion (typed-secrets 3.5), a secret in them is refused. Ints
-        // are delivered as numbers (swamp-club#3708).
-        coerceBigIntsForDelegate(
-          toDestination(inputs, "the inputs of model.method"),
-        ) as Record<string, unknown>,
-      ),
+    ) => {
+      gate();
+      return adaptResult(
+        receiver.method(modelName, methodName, deliverInputs(inputs)),
+      );
+    },
   );
 
-  if (options.typedSecrets) {
+  if (mode === "evaluate" || mode === "check") {
     registerSecretType(env);
     env.registerType("CelVaultNamespace", CelVaultNamespace);
     env.registerFunction(
       "CelVaultNamespace.get(string, string): Secret",
-      (receiver: CelVaultNamespace, vault: string, key: string) =>
-        receiver.get(vault, key),
+      typed
+        ? (receiver: CelVaultNamespace, vault: string, key: string) =>
+          receiver.get(vault, key)
+        : neverEvaluated,
       { async: false },
     );
     registerAllowedSet(env);
+  }
+  if (mode === "check") {
+    env.registerVariable("vault", "CelVaultNamespace");
+  }
+  if (typed) {
     registerSecretRefusals(env, {
       customTypes: [...SWAMP_NAMESPACE_TYPES, ...TYPED_VAULT_NAMESPACE_TYPES],
       swampSignatures: [
         ...INTERNAL_FUNCTION_SIGNATURES,
         ...TYPED_VAULT_FUNCTION_SIGNATURES,
       ],
+      // The model and method names of model.method are routing arguments
+      // (Section 4.5 item 2): a Secret there is refused as a destination.
+      codeFor: (signature) =>
+        signature.startsWith("CelModelNamespace.method(")
+          ? SECRET_DESTINATION_REFUSED
+          : undefined,
     });
   }
   return env;
@@ -936,6 +997,64 @@ function unresolvedPromiseError(expression: string): InvalidExpressionError {
       "references/nested-workflows.md#when-to-use-nested-workflows",
     expression,
   );
+}
+
+/**
+ * The effect gate of `model.method` (design/enablers/typed-secrets.md
+ * Section 4.5 item 1), run before any delegate work: refuse when the
+ * evaluation has already recorded a fault or a binding failure, or when its
+ * expression has a container comparison and a secret was already read, so a
+ * refusal that `||`, `&&`, `exists` or `all` absorbed never starts an effect
+ * that today's short-circuit would have skipped. Outside an evaluation it
+ * fails closed.
+ */
+function gateModelMethodEffect(): void {
+  const scope = currentFaultScope();
+  if (scope === undefined) {
+    refuse("model.method outside an evaluation");
+  }
+  if (scope.faults.length > 0 || scope.boundaryFailure !== undefined) {
+    refuse("an effect after a refusal", scope.faults[0]?.code);
+  }
+  if (scope.containerComparison && scope.secretsRead > 0) {
+    refuse(
+      "an effect in an expression with a container comparison that read a secret",
+    );
+  }
+}
+
+/**
+ * The inputs of `model.method` as its delegate receives them (Section 4.5
+ * item 3): a plain copy with each `Secret` released as a sentinel of the
+ * run's bag, so the synthetic step loads it under its own attempt and no
+ * `Secret` reaches the delegate. The copy keeps cel-js's own values (ints as
+ * bigints, which the caller delivers as numbers). With no bag to issue into,
+ * a `Secret` in them has nowhere to go and is refused as a destination, and
+ * the rest is copied plain.
+ */
+function deliverModelMethodInputs(inputs: unknown): Record<string, unknown> {
+  const release = currentFaultScope()?.release;
+  return (release
+    ? release(inputs)
+    : detachForDestination(inputs, "the inputs of model.method")) as Record<
+      string,
+      unknown
+    >;
+}
+
+/**
+ * {@link adaptModelMethodResult} over what the delegate answers, a value or
+ * a Promise of one. A rejected adaptation is a refusal cel-js observes when
+ * it awaits the result; the Promise is also marked handled, so an
+ * evaluation abandoned before that leaves no unobserved rejection.
+ */
+function adaptModelMethodResultDeep(result: unknown): unknown {
+  if (result instanceof Promise) {
+    const adapted = result.then(adaptModelMethodResultDeep);
+    adapted.catch(() => {});
+    return adapted;
+  }
+  return adaptModelMethodResult(result);
 }
 
 /** One evaluation with typed secrets on, parsed and bound. */
@@ -1091,7 +1210,7 @@ export class CelEvaluator {
       let run: SecretEvaluation | undefined;
       let result: unknown;
       try {
-        run = this.beginWithSecrets(expression, wrappedContext, scope);
+        run = this.beginWithSecrets(expression, wrappedContext, scope, faults);
         if (run.analysis.calls.length > 0) {
           throw new InvalidExpressionError(
             "vault.get requires evaluateAsync for its up-front reference checks",
@@ -1172,6 +1291,7 @@ export class CelEvaluator {
           expression,
           wrappedContext,
           scope,
+          faults,
           analysis,
         );
         let execute = run.evaluate;
@@ -1260,6 +1380,7 @@ export class CelEvaluator {
     expression: string,
     wrappedContext: Record<string, unknown>,
     scope: EvaluationScope,
+    faults: FaultScope,
     analysis: VaultCallAnalysis = analyzeVaultCalls(expression),
   ): SecretEvaluation {
     assertDirectVaultCalls(analysis, expression);
@@ -1270,11 +1391,17 @@ export class CelEvaluator {
       : new SecretBoundary(scope.secretBag);
     const context = this.withModelView(wrappedContext);
     const bindings = boundary?.bind(context) ?? context;
+    const containerComparison = hasContainerComparison(program.ast);
+    // What the effectful function reads before it starts (Section 4.5).
+    faults.containerComparison = containerComparison;
+    faults.release = boundary === undefined
+      ? undefined
+      : (value) => boundary.release(value);
     return {
       evaluate: () => program(bindings),
       analysis,
       bindings,
-      containerComparison: hasContainerComparison(program.ast),
+      containerComparison,
       boundary,
     };
   }

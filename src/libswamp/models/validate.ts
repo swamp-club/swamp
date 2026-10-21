@@ -26,6 +26,7 @@ import {
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import {
+  type CheckArgumentDelivery,
   type CheckValidationContext,
   DefaultModelValidationService,
   type EnvVarUsageDetail,
@@ -55,7 +56,18 @@ import {
   wordedSwampError,
 } from "../errors.ts";
 
-import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
+import {
+  collectAuthoredExpressions,
+  ExpressionEvaluationService,
+} from "../../domain/expressions/expression_evaluation_service.ts";
+import {
+  deliverStepSecrets,
+  unresolvedArgumentsOf,
+} from "../../domain/models/method_execution_service.ts";
+import type { ModelDefinition } from "../../domain/models/model.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
+import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Validation result for a single check. */
 export interface ValidationItemData {
@@ -190,7 +202,18 @@ export interface ModelValidateDeps {
 /** Wires real infrastructure into ModelValidateDeps. */
 export function createModelValidateDeps(
   repoDir: string,
-  options?: { labels?: string[]; method?: string },
+  options?: {
+    labels?: string[];
+    method?: string;
+    /**
+     * The sensitive values of this validation, with the registry that
+     * carries the internal typed-secrets option. Only tests set a typed
+     * one (design/enablers/typed-secrets.md Section 10.3): it turns on the
+     * Secret usage diagnostics and delivers the pre-flight check arguments
+     * through the shared refuse-then-load step. The CLI passes nothing.
+     */
+    createSensitiveValues?: () => RunSensitiveValues;
+  },
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedCatalogStore?: CatalogStore,
@@ -238,6 +261,13 @@ export function createModelValidateDeps(
     { dataRepo, dataQueryService },
   );
 
+  // A typed registry (the internal option, set only by tests) turns on the
+  // Secret usage diagnostics and the shared pre-flight delivery below; an
+  // untyped one leaves validate as it was (typed-secrets 3.5).
+  const sensitiveValues = options?.createSensitiveValues?.() ??
+    new RunSensitiveValues();
+  const typed = sensitiveValues.sentinels.typedSecrets;
+
   const checkContext: CheckValidationContext = {
     repoDir,
     dataRepository: dataRepo,
@@ -246,13 +276,16 @@ export function createModelValidateDeps(
     createCelEnvironment: createExtensionCelEnvironment,
     // Checks run against definitions loaded straight from the repository, with
     // no CEL substitution applied, so every expression in them is author-written.
-    resolveRuntimeExpressions: (data) =>
-      expressionService.resolveRuntimeExpressionsInData(
-        data,
-        undefined,
-        undefined,
-        "unrestricted",
-      ),
+    // In a typed run the shared delivery step replaces this inline resolution.
+    resolveRuntimeExpressions: typed
+      ? undefined
+      : (data) =>
+        expressionService.resolveRuntimeExpressionsInData(
+          data,
+          undefined,
+          undefined,
+          "unrestricted",
+        ),
     labels: options?.labels,
     method: options?.method,
   };
@@ -266,15 +299,41 @@ export function createModelValidateDeps(
     isAutoDefinition: (definition, type) =>
       definitionRepo.isAutoDefinition(definition, type),
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
-    validateModel: async (definition, modelDef, _type) => {
+    validateModel: async (definition, modelDef, type) => {
+      const model = modelDef as ModelDefinition;
+      const file = definitionRepo.getPath(type, definition.id);
       const outcome = await validationService.validateModel(
         definition,
-        // deno-lint-ignore no-explicit-any
-        modelDef as any,
+        model,
         definitionRepo,
-        checkContext,
+        typed
+          ? {
+            ...checkContext,
+            deliverCheckArguments: (stored, methodName) =>
+              deliverCheckArguments(
+                stored,
+                model,
+                methodName,
+                expressionService,
+                sensitiveValues,
+              ),
+          }
+          : checkContext,
         // Definitions are read straight from the repository, as stored.
-        { refuseLiteralSensitiveGlobals: true },
+        {
+          refuseLiteralSensitiveGlobals: true,
+          ...(typed
+            ? {
+              // Each finding names the definition file beside its authored
+              // location (design Section 10.2).
+              diagnoseSecretMisuse: (expression, location) =>
+                diagnoseSecretMisuse(expression, location).map((finding) => ({
+                  ...finding,
+                  location: `${file} ${finding.location}`,
+                })),
+            }
+            : {}),
+        },
       );
       return {
         results: outcome.results,
@@ -287,6 +346,51 @@ export function createModelValidateDeps(
         })),
       };
     },
+  };
+}
+
+/**
+ * What the pre-flight checks of a typed validation receive, through the
+ * same delivery a method boundary performs (design/enablers/typed-secrets.md
+ * Sections 3.3 and 6.3): the runtime pass checks every vault.get reference
+ * of the stored definition and issues it into a bag of the validation's
+ * registry; the shared step then refuses a secret at a destination that
+ * takes none and loads the references the arguments carry, once. The
+ * checks see the global arguments with their values, the merge with its
+ * sentinels as `unresolvedMethodArgs`, and the loaded bag.
+ */
+async function deliverCheckArguments(
+  definition: Definition,
+  modelDef: ModelDefinition,
+  methodName: string,
+  expressionService: ExpressionEvaluationService,
+  sensitiveValues: RunSensitiveValues,
+): Promise<CheckArgumentDelivery> {
+  const { definition: resolved, secretBag } = await expressionService
+    .resolveRuntimeExpressionsInDefinition(
+      definition,
+      sensitiveValues.probeRedactor,
+      undefined,
+      collectAuthoredExpressions(definition.toData()),
+      { secretBag: new VaultSecretBag(sensitiveValues.sentinels) },
+    );
+  const delivery = await deliverStepSecrets({
+    definition: resolved,
+    modelDef,
+    method: methodName ? modelDef.methods[methodName] : undefined,
+    methodName,
+    vaultSecrets: secretBag,
+    secretLoader: expressionService.secretLoader(sensitiveValues.probeRedactor),
+    localPlacement: true,
+  });
+  const loaded = delivery.vaultSecrets;
+  return {
+    globalArgs: loaded?.resolvesAny
+      ? loaded.resolveDeep(resolved.globalArguments) as Record<string, unknown>
+      : resolved.globalArguments,
+    unresolvedMethodArgs: delivery.sentinelArguments ??
+      unresolvedArgumentsOf(resolved, methodName),
+    vaultSecrets: loaded,
   };
 }
 

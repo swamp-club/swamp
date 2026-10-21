@@ -31,6 +31,8 @@ import {
   type ModelEvaluateEvent,
   type ModelEvaluateItemData,
 } from "./evaluate.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
@@ -400,4 +402,67 @@ Deno.test("modelEvaluate all with include saves and reports only accepted models
   assertEquals(completed.data.items.map((i) => i.name), ["keep"]);
   assertEquals(completed.data.total, 1);
   assertEquals(saved, ["keep"]);
+});
+
+Deno.test("modelEvaluate: the evaluation's sensitive values come from createSensitiveValues, for one model and for all", async () => {
+  const definition = Definition.create({
+    id: "00000000-0000-4000-8000-000000000002",
+    name: "typed-eval",
+    version: 1,
+  });
+  const type = ModelType.create("aws/ec2");
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const seen: SecretBagRegistry[] = [];
+  const deps: ModelEvaluateDeps = {
+    lookupDefinition: () => Promise.resolve({ definition, type }),
+    evaluateDefinition: (def, t, sensitiveValues) => {
+      seen.push(sensitiveValues.sentinels);
+      return Promise.resolve({
+        definition: def,
+        type: t,
+        hadExpressions: false,
+        authoredExpressions: new Set<string>(),
+      });
+    },
+    evaluateAllDefinitions: (sensitiveValues) => {
+      seen.push(sensitiveValues.sentinels);
+      return Promise.resolve([{
+        definition,
+        type,
+        hadExpressions: false,
+        authoredExpressions: new Set<string>(),
+      }]);
+    },
+    saveEvaluatedDefinition: () => Promise.resolve(),
+    getEvaluatedPath: () => "/tmp/evaluated.yaml",
+    createSensitiveValues: () => new RunSensitiveValues(undefined, registry),
+  };
+  await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {
+      modelIdOrName: "typed-eval",
+    }),
+  );
+  await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {}),
+  );
+  assertEquals(seen, [registry, registry]);
+  // Without the factory the values are untyped, as the CLI's are.
+  const plain: SecretBagRegistry[] = [];
+  await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), {
+      ...deps,
+      createSensitiveValues: undefined,
+      evaluateDefinition: (def, t, sensitiveValues) => {
+        plain.push(sensitiveValues.sentinels);
+        return Promise.resolve({
+          definition: def,
+          type: t,
+          hadExpressions: false,
+          authoredExpressions: new Set<string>(),
+        });
+      },
+    }, { modelIdOrName: "typed-eval" }),
+  );
+  assertEquals(plain.length, 1);
+  assertEquals(plain[0].typedSecrets, false);
 });

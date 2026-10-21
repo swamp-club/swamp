@@ -3588,3 +3588,210 @@ Deno.test("validateModel: Tags passes for lookalike keys", async () => {
 
   assertEquals(results.find((r) => r.name === "Tags")?.passed, true);
 });
+
+// ---------- Typed secrets (3.5): Secret usage and check delivery ----------
+
+const secretUsageModel: ModelDefinition = {
+  type: ModelType.create("test/secret-usage"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({ token: z.string() }),
+  methods: {
+    create: {
+      description: "Create",
+      arguments: z.object({ cmd: z.string() }),
+      execute: () => Promise.resolve({}),
+    },
+  },
+};
+
+Deno.test("validateModel: Secret usage reports each finding of the diagnostics hook with its location and code, over every authored expression", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "typed-def",
+    globalArguments: { token: "${{ vault.get('v', 'k') == 'x' }}" },
+    methods: {
+      create: { arguments: { cmd: "echo ${{ 'a' + vault.get('v', 'k') }}" } },
+    },
+  });
+  const seen: string[] = [];
+  const { results } = await service.validateModel(
+    definition,
+    secretUsageModel,
+    undefined,
+    undefined,
+    {
+      diagnoseSecretMisuse: (expression, location) => {
+        seen.push(`${location}|${expression}`);
+        return expression.includes("==")
+          ? [{
+            location: `${location}:1:1`,
+            code: "secret_operation_unsupported",
+            reason: "no such overload: Secret == string",
+          }]
+          : [];
+      },
+    },
+  );
+  assertEquals(seen, [
+    "globalArguments.token|vault.get('v', 'k') == 'x'",
+    "methods.create.arguments.cmd|'a' + vault.get('v', 'k')",
+  ]);
+  const usage = results.find((r) => r.name === "Secret usage");
+  assertEquals(usage?.passed, false);
+  assertStringIncludes(
+    usage?.error ?? "",
+    'secret_operation_unsupported at "globalArguments.token:1:1": no such overload: Secret == string',
+  );
+  assertEquals(usage?.expressionErrors?.length, 1);
+  assertEquals(
+    usage?.expressionErrors?.[0].expression,
+    "${{ vault.get('v', 'k') == 'x' }}",
+  );
+});
+
+Deno.test("validateModel: Secret usage passes with no finding, and does not run without the hook", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "typed-def",
+    globalArguments: { token: "${{ vault.get('v', 'k') + 'x' }}" },
+  });
+  const typed = await service.validateModel(
+    definition,
+    secretUsageModel,
+    undefined,
+    undefined,
+    { diagnoseSecretMisuse: () => [] },
+  );
+  assertEquals(
+    typed.results.find((r) => r.name === "Secret usage")?.passed,
+    true,
+  );
+  const untyped = await service.validateModel(definition, secretUsageModel);
+  assertEquals(
+    untyped.results.some((r) => r.name === "Secret usage"),
+    false,
+  );
+});
+
+Deno.test("validateModel: checks receive what deliverCheckArguments delivers: values in globalArgs, sentinels in unresolvedMethodArgs, and the loaded bag", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: '${{ vault.get("my-vault", "MY_SECRET") }}' },
+  });
+  const bag = { resolvesAny: true } as unknown as MethodContext["vaultSecrets"];
+  let captured: MethodContext | undefined;
+  let resolverCalls = 0;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures the context for assertion",
+        execute: (ctx) => {
+          captured = ctx;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  const delivered: string[] = [];
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: (stored, methodName) => {
+        delivered.push(`${stored.name}:${methodName}`);
+        return Promise.resolve({
+          globalArgs: { password: "the-value" },
+          unresolvedMethodArgs: { password: "__SWAMP_VSEC_sentinel__" },
+          vaultSecrets: bag,
+        });
+      },
+      resolveRuntimeExpressions: () => {
+        resolverCalls++;
+        return Promise.reject(new Error("not consulted"));
+      },
+    }),
+  );
+  assertEquals(delivered, ["test-definition:create"]);
+  assertEquals(resolverCalls, 0);
+  assertEquals(
+    results.find((r) => r.name === "Check: capture-args")?.passed,
+    true,
+  );
+  assertEquals(captured?.globalArgs.password, "the-value");
+  assertEquals(captured?.unresolvedMethodArgs, {
+    password: "__SWAMP_VSEC_sentinel__",
+  });
+  assertEquals(captured?.vaultSecrets, bag);
+});
+
+Deno.test("validateModel: a refused or failed delivery fails every applicable check with its error and runs none", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: '${{ vault.get("my-vault", "MY_SECRET") }}' },
+    checks: { skip: ["skipped"] },
+  });
+  let executed = 0;
+  const check = {
+    description: "Never runs",
+    execute: () => {
+      executed++;
+      return Promise.resolve({ pass: true });
+    },
+  };
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      first: check,
+      second: check,
+      skipped: check,
+      other: { ...check, appliesTo: ["delete"] },
+    },
+  };
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: () =>
+        Promise.reject(
+          new Error(
+            "A secret refuses the destination 'global argument password' (secret_destination_refused)",
+          ),
+        ),
+    }),
+  );
+  const checks = results.filter((r) => r.name.startsWith("Check:"));
+  assertEquals(checks.map((r) => r.name).sort(), [
+    "Check: first",
+    "Check: second",
+  ]);
+  for (const result of checks) {
+    assertEquals(result.passed, false);
+    assertStringIncludes(result.error ?? "", "secret_destination_refused");
+  }
+  assertEquals(executed, 0);
+});

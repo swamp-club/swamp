@@ -205,7 +205,12 @@ export function assertModelSecretsMetadataValid(
 /** What one delivery attempt refuses before it loads anything. */
 export interface SecretDestinationStage {
   modelDef: ModelDefinition;
-  method: MethodDefinition;
+  /**
+   * The method the attempt delivers to. Absent when no method is named, as
+   * `swamp behavior validate` without `--method`: only the global arguments
+   * are then checked.
+   */
+  method?: MethodDefinition;
   /** The definition's global arguments as written, sentinels in place. */
   globalArguments: Record<string, unknown>;
   /**
@@ -239,10 +244,6 @@ export function refuseSecretDestinations(stage: SecretDestinationStage): void {
   const globalArguments = stage.modelDef.globalArguments
     ? coerceMethodArgs(stage.globalArguments, stage.modelDef.globalArguments)
     : stage.globalArguments;
-  const mergedArguments = coerceMethodArgs(
-    stage.mergedArguments,
-    stage.method.arguments,
-  );
   if (stage.modelDef.globalArguments) {
     refuseSecretsInRefusingFields(
       stage.modelDef.globalArguments,
@@ -251,6 +252,11 @@ export function refuseSecretDestinations(stage: SecretDestinationStage): void {
       "global argument",
     );
   }
+  if (stage.method === undefined) return;
+  const mergedArguments = coerceMethodArgs(
+    stage.mergedArguments,
+    stage.method.arguments,
+  );
   refuseSecretsInRefusingFields(
     stage.method.arguments,
     mergedArguments,

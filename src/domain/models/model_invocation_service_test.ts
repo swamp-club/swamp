@@ -1223,3 +1223,91 @@ Deno.test("ModelInvocationService: a target with no expressions runs with its st
     });
   });
 });
+
+Deno.test("ModelInvocationService: a nested invocation runs on an independent registry that inherits the caller's typed-secrets option", async () => {
+  for (const typed of [true, false, undefined]) {
+    const callerRegistry = typed === undefined
+      ? undefined
+      : new SecretBagRegistry({ typedSecrets: typed });
+    const callerBag = callerRegistry && new VaultSecretBag(callerRegistry);
+    const callerSentinel = callerBag?.addSecret(
+      { vaultName: "v", key: "k" },
+      "methods.invoke.arguments.x",
+    );
+    const seen: SecretBagRegistry[] = [];
+    const evaluator: Evaluator = {
+      hasDefinitionExpressions: () => false,
+      evaluateDefinition: () => {
+        throw new Error("no expressions to evaluate");
+      },
+      buildRuntimeContext: (_definition, sensitiveValues) => {
+        seen.push(sensitiveValues.sentinels);
+        return Promise.resolve({} as RuntimeContext);
+      },
+      resolveRuntimeExpressionsInDefinition: (
+        definition,
+        _redactor,
+        _context,
+        _authored,
+        options,
+      ) => {
+        seen.push(options!.secretBag!.registry);
+        return Promise.resolve({ definition, secretBag: options!.secretBag! });
+      },
+      secretLoader: () =>
+        new SecretLoader(() => Promise.resolve(new VaultService())),
+    };
+    let delivered: MethodContext | undefined;
+    const targetDef = Definition.create({
+      name: "typed-target",
+      type: "test/provenance-target",
+      globalArguments: {},
+    });
+    const svc = new ModelInvocationService({
+      executionService: {
+        execute: () => Promise.resolve({ dataHandles: [] }),
+        executeWorkflow: (_def, _modelDef, _method, ctx) => {
+          delivered = ctx;
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+      commonDeps: {
+        dataRepository: {
+          findAllForModel: () => Promise.resolve([]),
+          getContent: () => Promise.resolve(null),
+        },
+        definitionRepository: {
+          findByNameGlobal: (name: string) =>
+            Promise.resolve(
+              name === "typed-target"
+                ? { definition: targetDef, type: PROVENANCE_TARGET_TYPE }
+                : null,
+            ),
+          findById: () => Promise.resolve(null),
+        },
+        createCelEnvironment: () =>
+          ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+      } as unknown as CommonMethodContextDeps,
+      evaluationService: evaluator,
+      repoDir: "/tmp/test-repo",
+    });
+
+    const result = await svc.invoke(
+      { definition: "typed-target", method: "greet" },
+      makeStubContext({ vaultSecrets: callerBag }),
+    );
+    assertEquals(result.ok, true, String(typed));
+
+    // One registry for both passes and the delivery, and never the caller's.
+    assertEquals(seen.length, 2, String(typed));
+    const nested = seen[0];
+    assertEquals(seen[1], nested);
+    assertEquals(delivered?.vaultSecrets?.registry, nested);
+    assertEquals(nested.typedSecrets, typed === true, String(typed));
+    if (callerRegistry) {
+      assertEquals(nested === callerRegistry, false);
+      assertEquals(nested.isEmpty, true);
+      assertEquals(nested.drewPrefixOf(callerSentinel!), false);
+    }
+  }
+});

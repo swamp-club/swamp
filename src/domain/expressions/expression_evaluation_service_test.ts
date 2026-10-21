@@ -2305,3 +2305,157 @@ Deno.test("resolveVaultExpressionsInDefinition: the deprecated seam loads the va
     assertEquals(reads, ["token"]);
   });
 });
+
+// ============================================================================
+// typed secrets (3.5): the run's registry selects the evaluator
+// ============================================================================
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run evaluates vault.get as the CEL function, checks each reference and issues a sentinel, reading no value", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-runtime-def",
+      globalArguments: { token: "${{ vault.get('v', 'token') }}" },
+      methods: {
+        run: {
+          arguments: { cmd: "echo ${{ vault.get('v', 'token') + '-x' }}" },
+        },
+      },
+    });
+    const { definition: executed, secretBag } = await service
+      .resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        "unrestricted",
+        { secretBag: new VaultSecretBag(registry) },
+      );
+    assertEquals(reads, []);
+    assertEquals(checks, ["token"]);
+    assertEquals(secretBag.registry, registry);
+    const entries = [...registry.all()];
+    assertEquals(entries.length, 2);
+    for (const entry of entries) {
+      assertEquals("value" in entry, false);
+      assertEquals(
+        "reference" in entry && entry.reference,
+        { vaultName: "v", key: "token" },
+      );
+    }
+    const locations = entries.map((entry) =>
+      "location" in entry ? entry.location : ""
+    );
+    assertStringIncludes(locations[0], "globalArguments.token");
+    assertStringIncludes(locations[1], "methods.run.arguments.cmd");
+    // The composition left CEL as text around the sentinel, and a delivery
+    // loads it once.
+    const loaded = await service.secretLoader(undefined).load(
+      secretBag,
+      executed.toData(),
+    );
+    assertEquals(
+      loaded.resolveRaw(executed.getMethodArguments("run").cmd as string),
+      "echo s3cret-x",
+    );
+    assertEquals(reads, ["token"]);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run refuses a vault alias instead of leaving it as raw text", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-alias-def",
+      methods: {
+        run: { arguments: { cmd: "${{ dyn(vault).get('v', 'token') }}" } },
+      },
+    });
+    await assertRejects(
+      () =>
+        service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          "unrestricted",
+          { secretBag: new VaultSecretBag(registry) },
+        ),
+      Error,
+      "vault",
+    );
+    assertEquals(reads, []);
+    assertEquals(checks, []);
+    assertEquals(registry.isEmpty, true);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run fails a missing key at evaluation with secret_reference_unavailable", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads } = countingEvaluator(repoDir, {});
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-missing-def",
+      methods: {
+        run: { arguments: { cmd: "${{ vault.get('v', 'missing') }}" } },
+      },
+    });
+    const error = await assertRejects(
+      () =>
+        service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          "unrestricted",
+          { secretBag: new VaultSecretBag(registry) },
+        ),
+      Error,
+      "Secret 'missing' not found in vault 'v'",
+    );
+    assertEquals(
+      (error as { code?: string }).code,
+      "secret_reference_unavailable",
+    );
+    assertEquals(reads, []);
+  });
+});
+
+Deno.test("evaluateDefinition: a typed run evaluates plain expressions as before and keeps vault.get deferred", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const values = new RunSensitiveValues(undefined, registry);
+    const definition = Definition.create({
+      name: "typed-pass-def",
+      inputs: { properties: { host: { type: "string" } } },
+      globalArguments: {
+        target: "${{ 'web-' + inputs.host }}",
+        token: "${{ vault.get('v', 'token') }}",
+      },
+      methods: {
+        run: { arguments: { cmd: "${{ self.globalArguments.target }}" } },
+      },
+    });
+    const result = await service.evaluateDefinition(
+      definition,
+      ModelType.create("command/shell"),
+      values,
+      { host: "a" },
+    );
+    assertEquals(result.definition.globalArguments.target, "web-a");
+    assertEquals(
+      result.definition.globalArguments.token,
+      "${{ vault.get('v', 'token') }}",
+    );
+    assertEquals(result.definition.getMethodArguments("run").cmd, "web-a");
+    assertEquals(reads, []);
+    assertEquals(checks, []);
+    assertEquals(registry.isEmpty, true);
+  });
+});

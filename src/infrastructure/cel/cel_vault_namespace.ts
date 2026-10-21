@@ -210,7 +210,8 @@ export async function prepareCheckedVaultCalls(
   return () => program(local);
 }
 
-function callLocation(
+/** `path:line:column` of the call at `offset` in the authored expression. */
+export function callLocation(
   expression: string,
   offset: number,
   path: string,

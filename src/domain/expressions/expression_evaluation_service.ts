@@ -21,7 +21,14 @@ import type { ModelType } from "../models/model_type.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { Definition as DefinitionClass } from "../definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  CelEvaluator,
+  type EvaluationScope,
+} from "../../infrastructure/cel/cel_evaluator.ts";
+import type {
+  CelExpressionEvaluator,
+  CelExpressionValidator,
+} from "./cel_runtime.ts";
 import { firstRejection } from "./expression_rejection_report.ts";
 import {
   containsExpression,
@@ -79,6 +86,7 @@ import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
+import type { ProbeRedactor } from "../vaults/secret_reference_check.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   findVaultGetCalls,
@@ -512,6 +520,8 @@ export type ForeignTextRule = "fail" | "passThrough";
 
 export class ExpressionEvaluationService {
   private readonly celEvaluator: CelEvaluator;
+  /** The typed evaluator, built on first use for a typed run. */
+  private typedEvaluator?: CelEvaluator;
   private readonly sortService: TopologicalSortService;
   private readonly modelResolver: ModelResolver;
   private readonly definitionRepo: YamlDefinitionRepository;
@@ -528,6 +538,54 @@ export class ExpressionEvaluationService {
       repoDir,
       ...repos,
     });
+  }
+
+  /**
+   * The evaluator for a run: the legacy one, or, when the run's registry is
+   * typed (the internal typed-secrets option, which only tests set), the
+   * typed one, built once by forwarding the registry's flag. The registry is
+   * the single switch (design/enablers/typed-secrets.md Section 11, Phase
+   * 3.5): no production code sets the option, and a fitness test pins this
+   * call as the one forwarding site.
+   */
+  private evaluatorFor(registry: SecretBagRegistry | undefined): CelEvaluator {
+    if (registry?.typedSecrets !== true) return this.celEvaluator;
+    return this.typedEvaluator ??= new CelEvaluator({
+      typedSecrets: registry.typedSecrets,
+    });
+  }
+
+  /**
+   * What a typed evaluation runs with: the issuing bag, and the vault check
+   * scope the resolver's vault service answers, so vault.get checks and
+   * sensitive-field authorization ask the service a load reads through.
+   */
+  private async scopeFor(
+    secretBag: VaultSecretBag,
+    location: string,
+    redactor: ProbeRedactor | undefined,
+  ): Promise<EvaluationScope> {
+    return {
+      secretBag,
+      vault: await this.modelResolver.vaultEvaluationScope(location, redactor),
+    };
+  }
+
+  /**
+   * A typed evaluator bound to one scope, in the shape the definition pass
+   * takes, so the pass itself is unchanged.
+   */
+  private static withScope(
+    evaluator: CelEvaluator,
+    scope: EvaluationScope,
+  ): CelExpressionEvaluator & CelExpressionValidator {
+    return {
+      evaluate: (expression, context) =>
+        evaluator.evaluate(expression, context, scope),
+      evaluateAsync: (expression, context) =>
+        evaluator.evaluateAsync(expression, context, scope),
+      validate: (expression) => evaluator.validate(expression),
+    };
   }
 
   private checkForExpressions(data: unknown): boolean {
@@ -791,6 +849,26 @@ export class ExpressionEvaluationService {
       };
     }
 
+    // In a typed run the pass issues into a bag of the run's registry, so a
+    // Secret a data read returned leaves CEL as a sentinel; a caller that
+    // passed no bag gets one over the run's registry. vault.get stays a
+    // runtime root here, so the scope's vault service answers only the
+    // authorization of sensitive-field references
+    // (design/enablers/typed-secrets.md Section 5).
+    const evaluator = this.evaluatorFor(
+      secretBag?.registry ?? sensitiveValues.sentinels,
+    );
+    const passEvaluator = evaluator === this.celEvaluator
+      ? this.celEvaluator
+      : ExpressionEvaluationService.withScope(
+        evaluator,
+        await this.scopeFor(
+          secretBag ?? new VaultSecretBag(sensitiveValues.sentinels),
+          definition.name,
+          sensitiveValues.probeRedactor,
+        ),
+      );
+
     // Evaluate CEL-only expressions; runtime expressions (vault, env, and
     // mixed) are left raw — they are resolved at runtime only, never persisted.
     const {
@@ -805,7 +883,7 @@ export class ExpressionEvaluationService {
         !containsRuntimeExpression(expr.celExpression)
       ),
       ctx,
-      this.celEvaluator,
+      passEvaluator,
       secretBag
         ? sensitiveSpliceSanitizer(
           sensitiveValuesOf(ctx) ?? sensitiveValues,
@@ -1502,6 +1580,20 @@ export class ExpressionEvaluationService {
       const celContext = records.size
         ? await withBindings(ctx, expr.celExpression, location)
         : ctx;
+      const evaluator = this.evaluatorFor(secretBag.registry);
+      if (evaluator !== this.celEvaluator) {
+        // A typed run evaluates vault.get as the CEL function: the evaluator
+        // checks every direct call up front, refuses an alias, and issues
+        // the sentinel on release into the step's bag
+        // (design/enablers/typed-secrets.md Sections 3.4 and 4.4). No
+        // pre-screen with validate here: the typed validate rejects an
+        // alias, and skipping on that would leave it as raw text.
+        return await evaluator.evaluateAsync(
+          expr.celExpression,
+          celContext,
+          await this.scopeFor(secretBag, location, redactor),
+        );
+      }
       let cel = expr.celExpression;
       if (containsVaultExpression(cel)) {
         cel = await this.modelResolver.resolveVaultExpressions(

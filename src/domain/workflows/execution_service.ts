@@ -194,6 +194,7 @@ import {
 } from "../data/data_record_mapper.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { MethodReportRunner } from "./method_report_runner.ts";
+import { storedResourceRecord } from "./model_method_result.ts";
 import {
   WorkflowReportRunner,
   type WorkflowStepExecutionDetail,
@@ -7499,6 +7500,20 @@ export class WorkflowExecutionService {
               modelName,
             );
             if (def) {
+              // In a typed run the stored record is returned for the
+              // evaluator to adapt, so a tagged field is a Secret and never
+              // comparable text (typed-secrets 3.5, design Section 4.5 item
+              // 4). The untyped path keeps the parsed content below.
+              if (options.sensitiveValues?.sentinels.typedSecrets) {
+                const stored = await storedResourceRecord(
+                  this.dataRepo,
+                  def.type,
+                  def.definition.id,
+                  resourceHandle.specName,
+                  modelName,
+                );
+                if (stored) return stored;
+              }
               const raw = await this.dataRepo.getContent(
                 def.type,
                 def.definition.id,

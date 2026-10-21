@@ -84,22 +84,41 @@ Deno.test("no production code outside the CEL adapter imports a Secret module", 
   );
 });
 
+/**
+ * The two places production code constructs with options, each forwarding
+ * an existing registry's flag and never a literal (typed-secrets 3.5): the
+ * evaluation service builds the typed evaluator from the run's registry,
+ * and a registry builds an independent sibling for a nested invocation.
+ * Pinned by file and argument shape, so a third site, or a changed shape,
+ * needs a decision here.
+ */
+const FORWARDING_SITES: readonly string[] = [
+  "src/domain/expressions/expression_evaluation_service.ts new CelEvaluator({ typedSecrets: registry.typedSecrets, })",
+  "src/domain/vaults/secret_bag_registry.ts new SecretBagRegistry({ typedSecrets: this.typedSecrets })",
+];
+
 Deno.test("no production code sets the typed-secrets option", async () => {
   const constructed: string[] = [];
-  const registries: string[] = [];
+  const literals: string[] = [];
   const built: string[] = [];
   for await (const filePath of productionSourceFiles(SRC_DIR)) {
     const rel = repoRelative(filePath);
     const source = await Deno.readTextFile(filePath);
-    for (const call of constructorCalls(source, "CelEvaluator")) {
-      if (call.args.length > 0) constructed.push(`${rel}:${call.line + 1}`);
+    for (const className of ["CelEvaluator", "SecretBagRegistry"]) {
+      for (const call of constructorCalls(source, className)) {
+        if (call.args.length === 0) continue;
+        const args = call.args.join(", ").replace(/\s+/g, " ");
+        constructed.push(`${rel} new ${className}(${args})`);
+      }
     }
-    for (const call of constructorCalls(source, "SecretBagRegistry")) {
-      if (call.args.length > 0) registries.push(`${rel}:${call.line + 1}`);
-    }
-    if (rel === `${CEL_ADAPTER}/cel_evaluator.ts`) continue;
     source.split("\n").forEach((line, index) => {
       if (isCommentLine(line)) return;
+      // An enabling literal anywhere is a production switch, whatever
+      // wrapper carries it: the backstop behind the pinned forwarding sites.
+      if (/\btypedSecrets\s*[:=]\s*true\b/.test(line)) {
+        literals.push(`${rel}:${index + 1}`);
+      }
+      if (rel === `${CEL_ADAPTER}/cel_evaluator.ts`) return;
       if (/\bcreateInternalCelEnvironment\(/.test(line)) {
         built.push(`${rel}:${index + 1}`);
       }
@@ -107,17 +126,18 @@ Deno.test("no production code sets the typed-secrets option", async () => {
   }
   const policy = "Typed secrets stay behind the internal option, set only by " +
     "tests, until typed-secrets Phase 4 turns the path on for every entry " +
-    "point (design Section 10.3).";
+    "point (design Section 10.3). Production code may forward an existing " +
+    "registry's flag at the pinned sites, never set it.";
   assertPinnedSet(
     constructed,
-    [],
-    "new CelEvaluator( with options in production code",
+    FORWARDING_SITES,
+    "new CelEvaluator( or new SecretBagRegistry( with options in production code",
     policy,
   );
   assertPinnedSet(
-    registries,
+    literals,
     [],
-    "new SecretBagRegistry( with options in production code",
+    "typedSecrets set to true in production code",
     policy,
   );
   assertPinnedSet(

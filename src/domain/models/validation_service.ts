@@ -328,6 +328,19 @@ export interface CheckValidationContext {
    * so they see real secret values instead of raw expression text.
    */
   resolveRuntimeExpressions?: (data: unknown) => Promise<unknown>;
+  /**
+   * Delivers what the checks receive through the shared refuse-then-load
+   * step of a typed run (design/enablers/typed-secrets.md Sections 3.3 and
+   * 6.3): the global arguments with their values, the merge the checks see
+   * as `unresolvedMethodArgs` with its sentinels, and the loaded bag. A
+   * refused destination or a failed load throws, and every applicable check
+   * fails with that error, since nothing is delivered. Supplied for a typed
+   * run; otherwise `resolveRuntimeExpressions` resolves inline, as before.
+   */
+  deliverCheckArguments?: (
+    definition: Definition,
+    methodName: string,
+  ) => Promise<CheckArgumentDelivery>;
   labels?: string[];
   method?: string;
 }
@@ -360,6 +373,38 @@ export interface ModelValidationOptions {
    * data where the stored definition holds its vault reference.
    */
   refuseLiteralSensitiveGlobals?: boolean;
+  /**
+   * The static misuse diagnostics of typed secrets for one authored
+   * expression (design/enablers/typed-secrets.md Sections 4.3 item 4 and
+   * 10.2), supplied by the application layer from the CEL adapter when the
+   * run is typed. The domain never sees a Secret: each finding names a
+   * location and a code, never a value. Absent, no Secret usage validation
+   * runs.
+   */
+  diagnoseSecretMisuse?: (
+    expression: string,
+    location: string,
+  ) => readonly SecretMisuseFinding[];
+}
+
+/** One statically identified secret misuse, as the Secret usage validation reports it. */
+export interface SecretMisuseFinding {
+  /** Where it was authored: the expression path, and the call's line and column. */
+  readonly location: string;
+  /** The code the run refuses the same misuse with. */
+  readonly code: string;
+  /** What was refused, never a value. */
+  readonly reason: string;
+}
+
+/** What the pre-flight checks of a typed run receive, delivered once. */
+export interface CheckArgumentDelivery {
+  /** The global arguments with their values, as a method receives them. */
+  globalArgs: Record<string, unknown>;
+  /** The merge the checks see as `unresolvedMethodArgs`, sentinels in place. */
+  unresolvedMethodArgs: Record<string, unknown>;
+  /** The loaded bag, as `context.vaultSecrets`. */
+  vaultSecrets?: MethodContext["vaultSecrets"];
 }
 
 /**
@@ -580,6 +625,16 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
+    // Secret usage: the static misuse diagnostics of a typed run, over the
+    // same authored expressions, when the application layer supplies them.
+    if (options?.diagnoseSecretMisuse) {
+      validations.push(
+        Promise.resolve(
+          this.validateSecretUsage(definition, options.diagnoseSecretMisuse),
+        ),
+      );
+    }
+
     // Validate definition-level check selection (require/skip)
     validations.push(
       this.validateCheckSelection(definition, modelDef),
@@ -703,6 +758,37 @@ export class DefaultModelValidationService implements ModelValidationService {
     return [ValidationWarning.envVarUsage(usages)];
   }
 
+  /**
+   * Secret usage: the static misuse diagnostics of typed secrets over every
+   * authored expression in the global and method arguments
+   * (design/enablers/typed-secrets.md Sections 4.3 item 4 and 10.2). Each
+   * failure names the authored location and the code, never a value.
+   */
+  private validateSecretUsage(
+    definition: Definition,
+    diagnose: NonNullable<ModelValidationOptions["diagnoseSecretMisuse"]>,
+  ): ValidationResult {
+    const errors: ExpressionPathError[] = [];
+    const data = {
+      globalArguments: definition.globalArguments,
+      methods: definition.methodData,
+    };
+    for (const { celExpression, raw, path } of extractExpressions(data)) {
+      for (const finding of diagnose(celExpression, path)) {
+        errors.push({
+          expression: raw,
+          error: `${finding.code} at "${finding.location}": ${finding.reason}`,
+        });
+      }
+    }
+    if (errors.length === 0) return ValidationResult.pass("Secret usage");
+    return ValidationResult.fail(
+      "Secret usage",
+      formatExpressionPathErrors(errors),
+      errors,
+    );
+  }
+
   private async runCheckValidations(
     definition: Definition,
     modelDef: ModelDefinition,
@@ -712,12 +798,48 @@ export class DefaultModelValidationService implements ModelValidationService {
     const results: ValidationResult[] = [];
     const defChecks = definition.checkSelection;
     const skippedCheckNames = new Set(defChecks?.skip ?? []);
+    const methodName = checkContext.method ?? "";
 
-    // Resolve vault/env expressions in globalArguments so checks see real
-    // values instead of raw ${{ vault.get(...) }} text. Falls back to the
-    // raw definition values if resolution is unavailable or fails.
+    const applicable = Object.entries(checks).filter(([name, check]) => {
+      // Definition-level skip always wins
+      if (skippedCheckNames.has(name)) return false;
+      // Filter by labels if provided
+      if (
+        checkContext.labels && checkContext.labels.length > 0 &&
+        (!check.labels ||
+          !check.labels.some((l) => checkContext.labels!.includes(l)))
+      ) {
+        return false;
+      }
+      // Filter by method: if --method given, only run checks that apply to
+      // that method. If no --method given, run all checks so that `model
+      // validate` surfaces the same errors that method execution would.
+      return !(check.appliesTo && checkContext.method &&
+        !check.appliesTo.includes(checkContext.method));
+    });
+
+    // What the checks receive. In a typed run the shared delivery step
+    // provides it, and a refusal or a failed load fails every applicable
+    // check: nothing is delivered. Otherwise vault/env expressions in
+    // globalArguments are resolved inline so checks see real values instead
+    // of raw ${{ vault.get(...) }} text, falling back to the raw definition
+    // values if resolution is unavailable or fails.
     let resolvedGlobalArgs = definition.globalArguments;
-    if (checkContext.resolveRuntimeExpressions) {
+    let delivered: CheckArgumentDelivery | undefined;
+    if (checkContext.deliverCheckArguments) {
+      try {
+        delivered = await checkContext.deliverCheckArguments(
+          definition,
+          methodName,
+        );
+        resolvedGlobalArgs = delivered.globalArgs;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return applicable.map(([name]) =>
+          ValidationResult.fail(`Check: ${name}`, message)
+        );
+      }
+    } else if (checkContext.resolveRuntimeExpressions) {
       try {
         resolvedGlobalArgs = await checkContext.resolveRuntimeExpressions(
           definition.globalArguments,
@@ -727,32 +849,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
     }
 
-    for (const [name, check] of Object.entries(checks)) {
-      // Definition-level skip always wins
-      if (skippedCheckNames.has(name)) {
-        continue;
-      }
-
-      // Filter by labels if provided
-      if (
-        checkContext.labels && checkContext.labels.length > 0 &&
-        (!check.labels ||
-          !check.labels.some((l) => checkContext.labels!.includes(l)))
-      ) {
-        continue;
-      }
-
-      // Filter by method: if --method given, only run checks that apply to
-      // that method. If no --method given, run all checks so that `model
-      // validate` surfaces the same errors that method execution would.
-      if (check.appliesTo && checkContext.method) {
-        if (!check.appliesTo.includes(checkContext.method)) {
-          continue;
-        }
-      }
-
+    for (const [name, check] of applicable) {
       try {
-        const methodName = checkContext.method ?? "";
         const rawMethodArgs = methodName
           ? definition.getMethodArguments(methodName)
           : {};
@@ -795,7 +893,8 @@ export class DefaultModelValidationService implements ModelValidationService {
               },
             } as unknown as MethodContext["logger"],
             extensionFilesRoot: modelDef.extensionFilesRoot,
-            unresolvedMethodArgs: {
+            vaultSecrets: delivered?.vaultSecrets,
+            unresolvedMethodArgs: delivered?.unresolvedMethodArgs ?? {
               ...filteredGlobalArgs,
               ...rawMethodArgs,
             },

@@ -91,6 +91,7 @@ import { createDataId } from "../data/data_id.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
+import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   type SecretOccurrences,
   secretOccurrencesOf,
@@ -297,7 +298,7 @@ function isDataHandleShaped(value: unknown): value is DataHandle {
  * leaves it out; another templating system's `${{ ... }}` text is kept, see
  * `containsSwampExpression`.
  */
-function unresolvedArgumentsOf(
+export function unresolvedArgumentsOf(
   definition: Definition,
   methodName: string,
 ): Record<string, unknown> {
@@ -307,6 +308,77 @@ function unresolvedArgumentsOf(
     merged[key] = value;
   }
   return { ...merged, ...definition.getMethodArguments(methodName) };
+}
+
+/** What one delivery attempt carries into its checks and its method. */
+export interface StepSecretDelivery {
+  /**
+   * The bag the attempt delivers from: loaded when the step holds a secret
+   * and a loader was given, else the step's own.
+   */
+  vaultSecrets: VaultSecretBag | undefined;
+  /**
+   * The merge the checks and the method see as `unresolvedMethodArgs`,
+   * sentinels in place. Undefined when the step holds no secret.
+   */
+  sentinelArguments: Record<string, unknown> | undefined;
+  /** The run's sentinels, value-free. Undefined when the step holds no secret. */
+  secrets: SecretOccurrences | undefined;
+}
+
+/**
+ * The shared refuse-then-load step of a delivery attempt
+ * (design/enablers/typed-secrets.md Sections 3.3 and 6.3), for the method
+ * boundary and for the pre-flight checks `swamp behavior validate` runs in a
+ * typed run. First the merge the checks and the method will see is built
+ * while the arguments still hold their sentinels. Then, behind the internal
+ * option a typed registry carries, a secret at a destination that takes
+ * none is refused before any load: a field marked secrets: "refuse" in the
+ * global or merged arguments, then the method's own destinations for a
+ * local placement. The decision reads the run's sentinels, never a value,
+ * so a refused attempt reads no vault. Last the references the arguments
+ * carry are loaded, once, for this attempt only; the step's own bag stays
+ * unloaded, so the next attempt loads again.
+ */
+export async function deliverStepSecrets(input: {
+  definition: Definition;
+  modelDef: ModelDefinition;
+  /** Absent when no method is named: only the global arguments are checked. */
+  method: MethodDefinition | undefined;
+  methodName: string;
+  vaultSecrets: VaultSecretBag | undefined;
+  secretLoader: SecretLoader | undefined;
+  /** False for a remotely placed step, whose shell is the worker's. */
+  localPlacement: boolean;
+}): Promise<StepSecretDelivery> {
+  const { definition, methodName, vaultSecrets } = input;
+  const registry = vaultSecrets?.registry;
+  const secrets = registry !== undefined && vaultSecrets?.resolvesAny === true
+    ? secretOccurrencesOf(registry)
+    : undefined;
+  const sentinelArguments = secrets !== undefined
+    ? unresolvedArgumentsOf(definition, methodName)
+    : undefined;
+  if (
+    registry !== undefined && registry.typedSecrets &&
+    sentinelArguments !== undefined
+  ) {
+    refuseSecretDestinations({
+      modelDef: input.modelDef,
+      method: input.method,
+      globalArguments: definition.globalArguments,
+      mergedArguments: sentinelArguments,
+      registry,
+      localPlacement: input.localPlacement,
+    });
+  }
+  const loaded = vaultSecrets?.resolvesAny && input.secretLoader
+    ? await input.secretLoader.load(vaultSecrets, {
+      globalArguments: definition.globalArguments,
+      methodArguments: definition.getMethodArguments(methodName),
+    })
+    : vaultSecrets;
+  return { vaultSecrets: loaded, sentinelArguments, secrets };
 }
 
 /**
@@ -838,57 +910,33 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const isRemotePlacement = context.placement &&
         hasPlacement(context.placement);
 
-      // The merge as `unresolvedMethodArgs` carries it, built here while the
+      // The merge as `unresolvedMethodArgs` carries it, built while the
       // global arguments still hold their sentinels, with or without the
       // internal option: the resolution below writes values into them, and a
       // method such as command/shell reads `run` from this merge wherever it
       // was authored, so a secret under globalArguments is placed through
       // the environment and never reaches the command line (swamp-club#3627).
-      // A run with no secrets has nothing to keep and builds no merge here.
-      const registry = context.vaultSecrets?.registry;
-      const secrets =
-        registry !== undefined && context.vaultSecrets?.resolvesAny === true
-          ? secretOccurrencesOf(registry)
-          : undefined;
-      const sentinelArguments = secrets !== undefined
-        ? unresolvedArgumentsOf(currentDefinition, methodName)
-        : undefined;
-      // Refuse a secret at a destination that takes none, before any load
-      // (design/enablers/typed-secrets.md Sections 6.3 and 7.1): a field
-      // marked secrets: "refuse" in the global arguments or in the merged
-      // arguments the method will see, then the method's own destinations
-      // for a local placement. The decision reads the run's sentinels, never
-      // a value, so a refused attempt reads no vault. Behind the internal
-      // option, which only a typed run's registry carries.
-      if (
-        registry !== undefined && registry.typedSecrets &&
-        sentinelArguments !== undefined
-      ) {
-        refuseSecretDestinations({
-          modelDef,
-          method,
-          globalArguments: currentDefinition.globalArguments,
-          mergedArguments: sentinelArguments,
-          registry,
-          localPlacement: !isRemotePlacement,
-        });
-      }
-
-      // Load the vault references this attempt delivers, once and before
-      // anything receives them (design/enablers/typed-secrets.md Section
-      // 3.3). From here on `context` is the attempt's: global argument
-      // validation, the pre-flight checks, the method, the shell and a
-      // remote dispatch all read its delivery view. The step's own bag stays
-      // unloaded, so the next attempt loads again; a step a guard skipped
-      // never gets here and loads nothing.
-      if (context.vaultSecrets?.resolvesAny && options.secretLoader) {
-        context = {
-          ...context,
-          vaultSecrets: await options.secretLoader.load(context.vaultSecrets, {
-            globalArguments: currentDefinition.globalArguments,
-            methodArguments: currentDefinition.getMethodArguments(methodName),
-          }),
-        };
+      // A run with no secrets has nothing to keep and builds no merge. Then
+      // the destination refusals of a typed run, then the load of the vault
+      // references this attempt delivers, once and before anything receives
+      // them (design/enablers/typed-secrets.md Sections 3.3 and 6.3). From
+      // here on `context` is the attempt's: global argument validation, the
+      // pre-flight checks, the method, the shell and a remote dispatch all
+      // read its delivery view. The step's own bag stays unloaded, so the
+      // next attempt loads again; a step a guard skipped never gets here and
+      // loads nothing.
+      const delivery = await deliverStepSecrets({
+        definition: currentDefinition,
+        modelDef,
+        method,
+        methodName,
+        vaultSecrets: context.vaultSecrets,
+        secretLoader: options.secretLoader,
+        localPlacement: !isRemotePlacement,
+      });
+      const { secrets, sentinelArguments } = delivery;
+      if (delivery.vaultSecrets !== context.vaultSecrets) {
+        context = { ...context, vaultSecrets: delivery.vaultSecrets };
       }
 
       // Resolve vault sentinels in globalArguments before validation.
