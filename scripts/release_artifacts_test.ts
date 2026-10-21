@@ -402,7 +402,8 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
       step.uses?.startsWith("google-github-actions/") ||
       step.name === "Trigger UAT" ||
       step.name === "Create GitHub Release" ||
-      step.name === "Stage GitHub Release assets"
+      step.name === "Stage GitHub Release assets" ||
+      step.name === "Generate release body"
     ) {
       assertEquals(step.if, gate);
     }
@@ -432,7 +433,7 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
   const publishedFiles = String(release.with?.files).trim().split("\n");
   assertEquals(
     String(steps[stage].with?.path).trim().split("\n"),
-    publishedFiles,
+    ["dist/release_body.md", ...publishedFiles],
   );
   const checksums = steps.find((s) => s.name === "Create checksums");
   assertEquals(
@@ -454,7 +455,13 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
     ],
   );
   assert(!text.includes("gh release download"));
-  assert(!text.includes("release_body"));
+  assertEquals(release.with?.body_path, "dist/release_body.md");
+  assertEquals(release.with?.generate_release_notes, undefined);
+  const body = steps.findIndex((s) => s.name === "Generate release body");
+  assert(body >= 0 && body < stage);
+  assertStringIncludes(steps[body].run ?? "", "## What's Changed");
+  assertStringIncludes(steps[body].run ?? "", "printenv PR_BODY");
+  assertStringIncludes(steps[body].run ?? "", "### Installation");
   for (const job of ["windows-smoke", "docker"]) {
     assertEquals(workflow.jobs[job].if, gate);
     assert(

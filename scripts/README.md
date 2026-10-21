@@ -3,9 +3,11 @@
 The release workflow builds all five variants, uploads versioned archives and
 checksums to `gs://swamp-club-artifacts`, creates a GitHub Release with the
 original binaries and `checksums.txt`, then dispatches UAT. GitHub Release tags
-retain the `v<version>` format used by swamp-uat. The workflow does not
-read/write `swamp/stable.json`. Windows smoke tests and Docker builds download
-the versioned GCS objects through the public `artifacts.swamp-club.com` edge and
+retain the `v<version>` format used by swamp-uat. The original release notes
+include the PR title/body (or latest commit for manual runs) and installation
+commands for all platforms. The workflow does not read/write
+`swamp/stable.json`. Windows smoke tests and Docker builds download the
+versioned GCS objects through the public `artifacts.swamp-club.com` edge and
 verify their checksums before use. These download-only jobs receive no cloud
 credentials.
 
