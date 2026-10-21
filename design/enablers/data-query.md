@@ -674,8 +674,8 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 | `collectGarbage()` | Update version or remove row |
 
 Every row carries its version's `Data.lifecycle` in the `lifecycle` column, so
-the deletion marker a `kind: delete` method saves is a `deleted` row on every
-write path that indexes it. A catalog export written before the column existed
+the deletion marker a `kind: delete` method saves is a `deleted` row whether
+write-through or a backfill indexed it. A catalog export written before the column existed
 pulls as `""` (unknown) rather than `active`, because such exports can hold
 deletion markers too.
 

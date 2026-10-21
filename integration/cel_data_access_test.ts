@@ -1876,7 +1876,14 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
   });
 });
 
-Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data query and data.query() alike (swamp-club#3706)", async () => {
+/**
+ * Saves an active "web" and a "db" deleted by a deletion marker, indexing them
+ * through write-through or through a full catalog rebuild, and checks that
+ * data query and CEL data.query() filter on lifecycle the same way.
+ */
+async function assertLifecycleQueries(
+  indexedBy: "write-through" | "rebuild",
+): Promise<void> {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const catalog = new CatalogStore(
@@ -1893,9 +1900,9 @@ Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data quer
     await definitionRepo.save(type, model);
 
     const dqs = new DataQueryService(catalog, dataRepo);
-    // Populate the empty catalog first, so the saves below reach it through
-    // write-through rather than a backfill.
-    await dqs.query('name == ""');
+    // Populating the empty catalog first sends the saves below through
+    // write-through; otherwise the first query rebuilds it from disk.
+    if (indexedBy === "write-through") await dqs.query('name == ""');
     try {
       const saveServer = async (data: Data, body: unknown) =>
         await dataRepo.save(
@@ -1921,17 +1928,32 @@ Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data quer
         id: 2,
         deletedAt: "2026-10-21T00:00:00.000Z",
       });
+      assertEquals(catalog.isPopulated(), indexedBy === "write-through");
 
-      const names = (records: unknown[]) =>
-        (records as DataRecord[]).map((r) => `${r.name}:${r.lifecycle}`)
+      const versions = (records: unknown[]) =>
+        (records as DataRecord[])
+          .map((r) => `${r.name}@${r.version}:${r.lifecycle}`)
           .sort();
 
-      assertEquals(names(await dqs.query('modelName == "servers"')), [
-        "db:deleted",
-        "web:active",
+      assertEquals(versions(await dqs.query('modelName == "servers"')), [
+        "db@2:deleted",
+        "web@1:active",
       ]);
+      assertEquals(catalog.isPopulated(), true);
       const live = 'modelName == "servers" && lifecycle == "active"';
-      assertEquals(names(await dqs.query(live)), ["web:active"]);
+      assertEquals(versions(await dqs.query(live)), ["web@1:active"]);
+      assertEquals(
+        versions(
+          await dqs.query('modelName == "servers" && lifecycle == "deleted"'),
+        ),
+        ["db@2:deleted"],
+      );
+      // lifecycle is per version: the deleted resource's earlier version
+      // is still an active row.
+      assertEquals(
+        versions(await dqs.query(`${live} && isLatest == false`)),
+        ["db@1:active"],
+      );
 
       const resolver = new ModelResolver(definitionRepo, {
         repoDir,
@@ -1940,10 +1962,18 @@ Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data quer
       });
       const context = await resolver.buildContext(new RunSensitiveValues());
       assertExists(context.data);
-      assertEquals(names(await context.data.query(live)), ["web:active"]);
+      assertEquals(versions(await context.data.query(live)), ["web@1:active"]);
       assertEquals(await context.data.query(live, "lifecycle"), ["active"]);
     } finally {
       catalog.close();
     }
   });
+}
+
+Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data query and data.query() alike, on a write-through catalog (swamp-club#3706)", async () => {
+  await assertLifecycleQueries("write-through");
+});
+
+Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data query and data.query() alike, on a rebuilt catalog (swamp-club#3706)", async () => {
+  await assertLifecycleQueries("rebuild");
 });
