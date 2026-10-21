@@ -94,15 +94,37 @@ export const MATERIALISED_SUBDIRS: ReadonlySet<string> = new Set(
 );
 
 /**
+ * The temporary file an atomic write renames over its target
+ * (`.<uuid>.tmp`), written beside the target at any depth.
+ */
+const ATOMIC_WRITE_TEMP =
+  /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+/**
  * Whether a file under the materialised subdirectories is the checkout's own
  * and never committed, so recovering an interrupted writer must leave it
- * (swamp-club#3299): any path segment starting with a dot (locks, indexes,
- * temporary files, install staging), a run log, or pulled extension sources
- * under managed config. `segments` is the key's path from the cache root.
+ * (swamp-club#3299): an atomic write's temporary file, a `.lock` file (per
+ * model under `data/`, the managed lockfile's under `config/`), a workflow's
+ * run index, the auto-definition creation locks, a run log, or pulled
+ * extension sources and their install staging under managed config.
+ * `segments` is the key's path from the cache root.
+ *
+ * Each rule names the artefact exactly, never "any dot segment": data names
+ * and method names may start with a dot (`.kubeconfig`, `.probe`), and those
+ * are committed records the recovery sweep must reach (swamp-club#3736).
  */
 export function isCheckoutLocalKey(segments: readonly string[]): boolean {
-  if (segments.some((segment) => segment.startsWith("."))) return true;
   const name = segments.at(-1) ?? "";
+  if (ATOMIC_WRITE_TEMP.test(name) || name === ".lock") return true;
+  if (segments[0] === "workflow-runs" && name === ".runs-index.json") {
+    return true;
+  }
+  if (
+    segments[0] === "auto-definitions" &&
+    segments[1] === ".auto-definition-create"
+  ) {
+    return true;
+  }
   if (isRunLogFile(segments[0], name)) return true;
   return segments[0] === "config" && segments[1] === PULLED_EXTENSIONS_SUBDIR;
 }

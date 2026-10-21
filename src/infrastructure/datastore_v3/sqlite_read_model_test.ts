@@ -324,3 +324,141 @@ Deno.test("SqliteReadModel: another checkout's upsert and delete of a name never
     }
   });
 });
+
+/** Lists directories as HFS+ does: every name decomposed (NFD). */
+async function* decomposedReadDir(dir: string): AsyncIterable<Deno.DirEntry> {
+  for await (const entry of Deno.readDir(dir)) {
+    yield { ...entry, name: entry.name.normalize("NFD") };
+  }
+}
+
+Deno.test("SqliteReadModel.recover: a committed file whose name the filesystem lists decomposed is kept (swamp-club#3736)", async () => {
+  await withEnv(async (env) => {
+    const name = "café";
+    await env.append(1, "", [await savePut(name, 1), versionOp(name, 1)]);
+    const readModel = env.open({ readDir: decomposedReadDir });
+    try {
+      await readModel.catchUp(signal());
+      // Every file is newer than `since`, as after the replay refreshed it.
+      const removed = await readModel.recover("", {
+        since: 0,
+        admits: datastoreKeyFilter(undefined, undefined),
+        signal: signal(),
+      });
+      assertEquals(removed, []);
+      assertEquals(
+        await readOrAbsent(env.contentPath("", name, 1)),
+        `${name}@1`,
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: an unowned file listed decomposed is kept when its composed key is filtered out, and removed when not (swamp-club#3736)", async () => {
+  await withEnv(async (env) => {
+    const kept = env.contentPath("", "café", 1);
+    const swept = env.contentPath("", "plain", 1);
+    await writeLocal(kept, "local");
+    await writeLocal(swept, "dropped");
+    const readModel = env.open({ readDir: decomposedReadDir });
+    try {
+      await readModel.catchUp(signal());
+      const removed = await readModel.recover("", {
+        since: 0,
+        // An exclude written composed, as a user types it.
+        admits: (key) => !key.includes("café"),
+        signal: signal(),
+      });
+      assertEquals(removed, [dataKey("plain", 1).toString()]);
+      assertEquals(await readOrAbsent(kept), "local");
+      assertEquals(await readOrAbsent(swept), undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+for (const admitsAll of [false, true]) {
+  Deno.test(`SqliteReadModel.recover: a key the checkout's directories keep local is neither written by the replay nor removed by the sweep, ${admitsAll ? "whatever filter the caller passes" : "with the checkout's own filter"} (swamp-club#3736)`, async () => {
+    await withEnv(async (env) => {
+      const committed = env.contentPath("", "a", 1);
+      const uncommitted = env.contentPath("", "b", 1);
+      await writeLocal(committed, "local");
+      await writeLocal(uncommitted, "local");
+      await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+      const checkout = {
+        namespace: "",
+        admits: datastoreKeyFilter(["config"], []),
+      };
+      const readModel = env.open({ checkout });
+      try {
+        await readModel.catchUp(signal());
+        const removed = await readModel.recover("", {
+          since: 0,
+          admits: admitsAll ? () => true : checkout.admits,
+          signal: signal(),
+        });
+        assertEquals(removed, []);
+        assertEquals(await readOrAbsent(committed), "local");
+        assertEquals(await readOrAbsent(uncommitted), "local");
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+}
+
+Deno.test("SqliteReadModel: a compacted base no longer showing a key the checkout now keeps local leaves its local file (swamp-club#3736)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const local = env.contentPath("", "a", 1);
+    let readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(local), "a@1");
+    await writeLocal(local, "local");
+    await env.append(2, "", [deleteVersion("a", 1)]);
+    await env.append(3, "", [await savePut("b", 1), versionOp("b", 1)]);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    readModel = env.open({
+      checkout: { namespace: "", admits: datastoreKeyFilter(["config"], []) },
+    });
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(local), "local");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: the reboot check leaves a removal it listed for a key the checkout now keeps local (swamp-club#3736)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    await env.append(2, "", [deleteVersion("a", 1)]);
+    const local = env.contentPath("", "a", 1);
+    let readModel = env.open({ bootIdentity: () => Promise.resolve("boot-1") });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(local), undefined);
+    await writeLocal(local, "local");
+    readModel = env.open({
+      checkout: { namespace: "", admits: datastoreKeyFilter(["config"], []) },
+      bootIdentity: () => Promise.resolve("boot-2"),
+    });
+    try {
+      assertEquals((await readModel.catchUp(signal())).applied, 0);
+      assertEquals(await readOrAbsent(local), "local");
+    } finally {
+      await readModel.close();
+    }
+  });
+});

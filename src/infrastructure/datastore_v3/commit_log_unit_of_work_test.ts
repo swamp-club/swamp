@@ -56,6 +56,7 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   unitOfWorkBinding,
   unitWrites,
+  versionFloors,
 } from "../persistence/unit_of_work_binding.ts";
 import {
   checkpointFrom,
@@ -1611,7 +1612,11 @@ Deno.test("createCommitLogUnitOfWork: a commit whose chunks are all present chec
 
 /** A unit tracker that records what it is told (swamp-club#3553). */
 function recordingTracker() {
-  const seen = { open: 0, dropped: [] as number[] };
+  const seen = {
+    open: 0,
+    dropped: [] as number[],
+    versionDirs: [] as string[][],
+  };
   return {
     seen,
     tracker: {
@@ -1621,8 +1626,9 @@ function recordingTracker() {
       ended: () => {
         seen.open--;
       },
-      dropped: (openedAt: number) => {
+      dropped: (openedAt: number, versionDirs: readonly string[]) => {
         seen.dropped.push(openedAt);
+        seen.versionDirs.push([...versionDirs]);
       },
     },
   };
@@ -1733,5 +1739,51 @@ Deno.test("createCommitLogUnitOfWork: a change refused on an abandoned child rep
   await clean.commit();
   await root.commit();
   assertEquals(seen.dropped.length, 1);
+  assertEquals(seen.open, 0);
+});
+
+Deno.test("createCommitLogUnitOfWork: a dropped unit reports the version directories it and its committed children created, and creating one touches it (swamp-club#3736)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const { seen, tracker } = recordingTracker();
+  const root = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root, tracker }),
+  );
+  versionFloors.of(root)!.allocated("data/t/m/a/1");
+  versionFloors.of(child)!.allocated("data/t/m/b/1");
+  await child.commit();
+  assertEquals(seen.dropped, []);
+  await root.abandon();
+  assertEquals(seen.versionDirs, [["data/t/m/a/1", "data/t/m/b/1"]]);
+
+  // Nothing staged, no write signal: the created directory alone touches.
+  const allocatedOnly = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  versionFloors.of(allocatedOnly)!.allocated("data/t/m/c/1");
+  await allocatedOnly.abandon();
+  assertEquals(seen.versionDirs.at(-1), ["data/t/m/c/1"]);
+
+  // An abandoned child reports its own; its root commits cleanly.
+  const parent = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { tracker }),
+  );
+  const abandoned = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent, tracker }),
+  );
+  versionFloors.of(abandoned)!.allocated("data/t/m/d/1");
+  await abandoned.abandon();
+  assertEquals(seen.versionDirs.at(-1), ["data/t/m/d/1"]);
+  const drops = seen.dropped.length;
+  await parent.commit();
+  assertEquals(seen.dropped.length, drops);
   assertEquals(seen.open, 0);
 });

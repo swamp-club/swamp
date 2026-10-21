@@ -82,6 +82,13 @@ const openTargets = new WeakMap<UnitOfWork, () => UnitOfWork | undefined>();
 export interface VersionFloorSource {
   floor(partition: string, name: string): Promise<number>;
   claim(partition: string, name: string, version: number): void;
+  /**
+   * Records a version directory the unit created, by its key from the
+   * cache root (`data/<type>/<model>/<name>/<version>`), so a recovery of
+   * the unit's dropped work sweeps whatever is left in it, however old its
+   * files' mtimes (swamp-club#3736).
+   */
+  allocated(dir: string): void;
 }
 
 const floors = new WeakMap<UnitOfWork, VersionFloorSource>();

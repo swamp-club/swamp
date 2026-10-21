@@ -147,8 +147,9 @@ function recordRoots(
  * holds, relative to its `.swamp/`: those of `.swamp/` and, with a
  * namespace, of `.swamp/<namespace>/`, found as v3 setup finds them. Files
  * the checkout keeps as its own (`isJoinOwnFile`: pulled extension
- * sources, dot-prefixed locks and indexes, run logs, the managedConfig
- * lockfile) and the v2 catalog are no records. Empty when the checkout has
+ * sources, temporary files, `.lock` files, run indexes, run logs, the
+ * managedConfig lockfile) and the v2 catalog are no records; a dot-named
+ * data or method name is a record. Empty when the checkout has
  * v3 state, which is not walked.
  */
 export async function preV3CheckoutRecordDirs(

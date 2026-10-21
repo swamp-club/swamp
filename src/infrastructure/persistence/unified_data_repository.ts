@@ -19,6 +19,7 @@
 
 import { existsSync } from "@std/fs";
 import { join, relative, resolve, SEPARATOR } from "@std/path";
+import { dirname as posixDirname } from "@std/path/posix";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
   signalChange,
@@ -3143,9 +3144,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // stops; a number is skipped, never reused.
     const floor = await this.readVersionFloor(type, modelId, dataName);
     const v3Floors = versionFloorSource(this.markDirty);
-    const partition = v3Floors === undefined
-      ? ""
-      : new ModelChanges(type, modelId).partition.toString();
+    const changes = v3Floors === undefined
+      ? undefined
+      : new ModelChanges(type, modelId);
+    const partition = changes === undefined ? "" : changes.partition.toString();
     const v3Floor = v3Floors === undefined
       ? 0
       : await v3Floors.floor(partition, dataName);
@@ -3157,6 +3159,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       try {
         await Deno.mkdir(versionDir);
         v3Floors?.claim(partition, dataName, nextVersion);
+        if (changes !== undefined) {
+          v3Floors?.allocated(
+            posixDirname(
+              changes.dataKey(dataName, nextVersion, "raw").toString(),
+            ),
+          );
+        }
         return { version: nextVersion, versionDir, priorVersions: versions };
       } catch (error) {
         if (error instanceof Deno.errors.AlreadyExists) {

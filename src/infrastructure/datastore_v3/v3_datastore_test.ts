@@ -68,12 +68,20 @@ import { writeDatastoreFormatMarker } from "../persistence/datastore_format_mark
 import {
   blobPut,
   deleteVersion,
+  MODEL_ID,
+  MODEL_TYPE,
   modelCommit,
   savePut,
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import { DEFAULT_DATASTORE_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
+import { Data } from "../../domain/data/data.ts";
+import { ModelOutput } from "../../domain/models/model_output.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
+import { CatalogStore } from "../persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
+import { YamlOutputRepository } from "../persistence/yaml_output_repository.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-datastore-" });
@@ -1321,3 +1329,235 @@ Deno.test("V3CheckoutFilterChangedError: says the change is the repository's, af
     );
   });
 });
+
+/**
+ * The real data and output repositories over a v3 handle's checkout, each
+ * write in its own root: one ending as it normally does, or one dropping
+ * its work (swamp-club#3736).
+ */
+function checkoutWriter(dir: string) {
+  const datastorePath = join(dir, "datastore");
+  const repoDir = join(dir, "a");
+  const handle = openV3Datastore({ repoDir, datastorePath });
+  const hook = () => Promise.resolve();
+  const engine = handle.engineFor(hook, () => {
+    throw new Error("no run repository needed");
+  });
+  const data = new FileSystemUnifiedDataRepository(
+    repoDir,
+    swampPath(repoDir, "data"),
+    new CatalogStore(join(dir, "_catalog.db")),
+    hook,
+    undefined,
+    SOLO_NAMESPACE,
+    true,
+  );
+  const outputs = new YamlOutputRepository(
+    repoDir,
+    swampPath(repoDir, "outputs"),
+    hook,
+  );
+  return {
+    handle,
+    data,
+    outputs,
+    kept: <T>(fn: () => Promise<T>) => engine.runRoot({}, fn),
+    dropped: <T>(fn: () => Promise<T>) =>
+      engine.runRoot({ disposition: () => "discard" }, fn),
+    /** The version directories and `latest` marker the checkout lists. */
+    listed: async (name: string): Promise<string[]> => {
+      const dir = data.getDataNameDir(MODEL_TYPE, MODEL_ID, name);
+      try {
+        return (await Array.fromAsync(Deno.readDir(dir)))
+          .map((entry) => entry.name)
+          .sort();
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return [];
+        throw error;
+      }
+    },
+  };
+}
+
+function dataNamed(name: string): Data {
+  return Data.create({
+    name,
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+  });
+}
+
+for (const name of [".kubeconfig", "kubeconfig"]) {
+  Deno.test(`openV3Datastore: a dropped save of data ${name} is swept, leaving the versions the datastore holds (swamp-club#3736)`, async () => {
+    await withTempDir(async (dir) => {
+      await initializeV3Datastore(join(dir, "datastore"), "test");
+      const writer = checkoutWriter(dir);
+      const bytes = new TextEncoder().encode("apiVersion: v1\n");
+      try {
+        await writer.kept(() =>
+          writer.data.save(MODEL_TYPE, MODEL_ID, dataNamed(name), bytes)
+        );
+        await writer.dropped(() =>
+          writer.data.save(MODEL_TYPE, MODEL_ID, dataNamed(name), bytes)
+        );
+        assertEquals(await writer.listed(name), ["1", "2", "latest"]);
+        assertEquals(await writer.handle.recoverDroppedWork(), "recovered");
+        assertEquals(await writer.listed(name), ["1", "latest"]);
+        assertEquals(
+          (await Deno.readTextFile(
+            join(
+              writer.data.getDataNameDir(MODEL_TYPE, MODEL_ID, name),
+              "latest",
+            ),
+          )).trim(),
+          "1",
+        );
+      } finally {
+        await writer.handle.close();
+      }
+    });
+  });
+
+  Deno.test(`openV3Datastore: a dropped first save of data ${name} leaves no version and no latest (swamp-club#3736)`, async () => {
+    await withTempDir(async (dir) => {
+      await initializeV3Datastore(join(dir, "datastore"), "test");
+      const writer = checkoutWriter(dir);
+      try {
+        await writer.dropped(() =>
+          writer.data.save(
+            MODEL_TYPE,
+            MODEL_ID,
+            dataNamed(name),
+            new TextEncoder().encode("apiVersion: v1\n"),
+          )
+        );
+        assertEquals(await writer.handle.recoverDroppedWork(), "recovered");
+        assertEquals(await writer.listed(name), []);
+      } finally {
+        await writer.handle.close();
+      }
+    });
+  });
+}
+
+for (const method of [".probe", "probe"]) {
+  Deno.test(`openV3Datastore: a dropped output of method ${method} is swept (swamp-club#3736)`, async () => {
+    await withTempDir(async (dir) => {
+      await initializeV3Datastore(join(dir, "datastore"), "test");
+      const writer = checkoutWriter(dir);
+      try {
+        const output = ModelOutput.create({
+          definitionId: MODEL_ID as DefinitionId,
+          provenance: {
+            definitionHash: "abc123",
+            modelVersion: "2026.02.09.1",
+            triggeredBy: "manual",
+          },
+          methodName: method,
+          status: "failed",
+          startedAt: new Date(),
+        });
+        await writer.dropped(() =>
+          writer.outputs.save(MODEL_TYPE, method, output)
+        );
+        const methodDir = swampPath(
+          join(dir, "a"),
+          "outputs",
+          MODEL_TYPE.normalized,
+          method,
+        );
+        assertEquals(
+          (await Array.fromAsync(Deno.readDir(methodDir))).length,
+          1,
+        );
+        assertEquals(await writer.handle.recoverDroppedWork(), "recovered");
+        const left = await Array.fromAsync(Deno.readDir(methodDir)).catch(
+          (error) => {
+            if (error instanceof Deno.errors.NotFound) return [];
+            throw error;
+          },
+        );
+        assertEquals(left, []);
+      } finally {
+        await writer.handle.close();
+      }
+    });
+  });
+}
+
+for (const old of [true, false]) {
+  const label = old ? "an old mtime" : "a new mtime";
+  Deno.test(`openV3Datastore: a dropped getFilePath write whose file has ${label} is swept (swamp-club#3736)`, async () => {
+    await withTempDir(async (dir) => {
+      await initializeV3Datastore(join(dir, "datastore"), "test");
+      const writer = checkoutWriter(dir);
+      const bytes = new TextEncoder().encode("artifact\n");
+      try {
+        // A method moves a file it kept in as its artifact, then fails
+        // before finalising: nothing is staged.
+        await assertRejects(() =>
+          writer.dropped(async () => {
+            const { contentPath } = await writer.data.allocateVersion(
+              MODEL_TYPE,
+              MODEL_ID,
+              dataNamed("artifact"),
+            );
+            await Deno.writeFile(contentPath, bytes);
+            if (old) {
+              const longAgo = new Date("2020-01-01T00:00:00.000Z");
+              await Deno.utime(contentPath, longAgo, longAgo);
+            }
+            throw new Error("the method failed");
+          })
+        );
+        assertEquals(await writer.listed("artifact"), ["1"]);
+        assertEquals(await writer.handle.recoverDroppedWork(), "recovered");
+        assertEquals(await writer.listed("artifact"), []);
+        await writer.kept(() =>
+          writer.data.save(MODEL_TYPE, MODEL_ID, dataNamed("artifact"), bytes)
+        );
+        assertEquals(await writer.listed("artifact"), ["2", "latest"]);
+      } finally {
+        await writer.handle.close();
+      }
+    });
+  });
+
+  Deno.test(`openV3Datastore: a dropped save whose files have ${label} is swept, leaving the committed version (swamp-club#3736)`, async () => {
+    await withTempDir(async (dir) => {
+      await initializeV3Datastore(join(dir, "datastore"), "test");
+      const writer = checkoutWriter(dir);
+      const bytes = new TextEncoder().encode("artifact\n");
+      try {
+        await writer.kept(() =>
+          writer.data.save(MODEL_TYPE, MODEL_ID, dataNamed("artifact"), bytes)
+        );
+        await writer.dropped(async () => {
+          await writer.data.save(
+            MODEL_TYPE,
+            MODEL_ID,
+            dataNamed("artifact"),
+            bytes,
+          );
+          if (old) {
+            const longAgo = new Date("2020-01-01T00:00:00.000Z");
+            const versionDir = join(
+              writer.data.getDataNameDir(MODEL_TYPE, MODEL_ID, "artifact"),
+              "2",
+            );
+            for await (const entry of Deno.readDir(versionDir)) {
+              await Deno.utime(join(versionDir, entry.name), longAgo, longAgo);
+            }
+          }
+        });
+        assertEquals(await writer.handle.recoverDroppedWork(), "recovered");
+        assertEquals(await writer.listed("artifact"), ["1", "latest"]);
+      } finally {
+        await writer.handle.close();
+      }
+    });
+  });
+}
