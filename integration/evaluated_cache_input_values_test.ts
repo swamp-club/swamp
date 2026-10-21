@@ -66,7 +66,8 @@ interface Harness {
 
 /**
  * A repository and a type whose methods record the arguments they receive.
- * `fail` takes a sensitive string and throws an error that echoes it.
+ * Each takes a sensitive string and throws something that echoes it: `fail`
+ * an Error, `failText` the bare string.
  */
 async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-3681-inputs-" });
@@ -76,10 +77,15 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const failures: Record<string, (args: Record<string, unknown>) => string> = {
     fail: (args) => `intentional failure ${args.token}`,
   };
+  const thrown: Record<string, (args: Record<string, unknown>) => unknown> = {
+    failText: (args) => `intentional failure ${args.token}`,
+  };
   const record = (name: string) => (args: unknown) => {
     received.push(args as Record<string, unknown>);
     const failure = failures[name];
     if (failure) throw new Error(failure(args as Record<string, unknown>));
+    const value = thrown[name];
+    if (value) throw value(args as Record<string, unknown>);
     return Promise.resolve({ dataHandles: [] });
   };
   const method = (name: string, args: z.ZodTypeAny) => ({
@@ -92,6 +98,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
     version: "2026.10.21.1",
     methods: {
       fail: method("fail", z.object({ token: secret })),
+      failText: method("failText", z.object({ token: secret })),
     },
   });
   try {
@@ -153,6 +160,57 @@ async function run(
         lastEvaluated: false,
       }),
     );
+  } finally {
+    repo.catalogStore.close();
+  }
+}
+
+/**
+ * Runs a workflow of one step that forwards the workflow's `key` input to
+ * `method` of the definition `name`, and returns the run with its error.
+ */
+async function runStep(
+  h: Harness,
+  name: string,
+  method: string,
+  key: unknown,
+): Promise<{ status: string; error: string; record: string }> {
+  const repo = createRepositoryContext({ repoDir: h.dir });
+  try {
+    const workflow = Workflow.create({
+      name: `${name}-flow`,
+      inputs: KEY_INPUT,
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "probe",
+              task: StepTask.model(name, method, { key: "${{ inputs.key }}" }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await repo.workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      repo.workflowRepo,
+      repo.workflowRunRepo,
+      h.dir,
+      undefined,
+      undefined,
+      repo.catalogStore,
+    );
+    const run = await service.execute(workflow.name, { inputs: { key } });
+    const { inputs: _recorded, ...record } = run.toData() as Record<
+      string,
+      unknown
+    >;
+    return {
+      status: run.status,
+      error: run.getJob("main")?.getStep("probe")?.error ?? "",
+      record: JSON.stringify(record),
+    };
   } finally {
     repo.catalogStore.close();
   }
@@ -248,5 +306,27 @@ Deno.test("input values: a workflow step whose method echoes a sensitive argumen
     } finally {
       repo.catalogStore.close();
     }
+  });
+});
+
+Deno.test("input values: a method that throws a string echoing a sensitive argument shows the mask in the error event, a workflow step's error and the output records (swamp-club#3746)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "text", "failText", { token: "${{ inputs.key }}" });
+    const events = await run(h, "text", "failText", { key: h.canary });
+    const errors = errorsOf(events);
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(errors[0].message, "intentional failure ***");
+    const step = await runStep(h, "text", "failText", h.canary);
+    assertEquals(step.status, "failed");
+    assertEquals(h.received, [{ token: h.canary }, { token: h.canary }]);
+    assertStringIncludes(step.error, "intentional failure ***");
+    assertEquals(step.error.includes(h.canary), false);
+    assertEquals(step.record.includes(h.canary), false);
+    assertEquals(
+      await filesHolding(join(h.dir, ".swamp", "outputs"), h.canary),
+      [],
+    );
   });
 });

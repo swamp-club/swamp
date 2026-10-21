@@ -24,8 +24,10 @@ import {
   type ExecutionProvenance,
   ModelOutput,
   type ModelOutputData,
+  redactedError,
 } from "./model_output.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
+import { errorPaths, markErrorPaths, UserError } from "../errors.ts";
 
 const defaultProvenance: ExecutionProvenance = {
   definitionHash: "abc123",
@@ -738,4 +740,77 @@ Deno.test("executionErrorFrom: passes the message and stack through the redactor
     },
   };
   assertEquals(executionErrorFrom(new Error("m"), idle).message, "m");
+});
+
+const secretRedactor = {
+  hasSecrets: true,
+  redact: (text: string) => text.replaceAll("hunter2-long", "***"),
+};
+
+Deno.test("redactedError: a coded UserError that echoes a secret stays a UserError with its code, cause, own properties and marked paths, its message and stack redacted (swamp-club#3746)", () => {
+  const cause = new Error("inner");
+  const error = markErrorPaths(
+    new UserError("token hunter2-long rejected", "auth_failed"),
+    ["/repo/a"],
+  );
+  Object.defineProperty(error, "cause", {
+    value: cause,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  (error as unknown as Record<string, unknown>).dataArtifacts = [{ name: "d" }];
+  const shown = redactedError(error, secretRedactor);
+  if (!(shown instanceof UserError)) {
+    throw new Error("expected the copy to stay a UserError");
+  }
+  assertEquals(shown === error, false);
+  assertEquals(shown.code, "auth_failed");
+  assertEquals(shown.name, "UserError");
+  assertEquals(shown.message, "token *** rejected");
+  assertEquals(shown.stack?.includes("hunter2-long"), false);
+  assertEquals(shown.cause, cause);
+  assertEquals(
+    (shown as unknown as Record<string, unknown>).dataArtifacts,
+    [{ name: "d" }],
+  );
+  assertEquals(errorPaths(shown), ["/repo/a"]);
+  // The original is left as it was.
+  assertEquals(error.message, "token hunter2-long rejected");
+  assertEquals(errorPaths(error), ["/repo/a"]);
+});
+
+Deno.test("redactedError: an AggregateError keeps its errors, and an error without a cause gains none (swamp-club#3746)", () => {
+  const inner = new Error("inner");
+  const shown = redactedError(
+    new AggregateError([inner], "batch hunter2-long failed"),
+    secretRedactor,
+  );
+  if (!(shown instanceof AggregateError)) {
+    throw new Error("expected the copy to stay an AggregateError");
+  }
+  assertEquals(shown.message, "batch *** failed");
+  assertEquals(shown.errors, [inner]);
+  assertEquals(Object.hasOwn(shown, "cause"), false);
+});
+
+Deno.test("redactedError: a thrown non-Error that echoes a secret becomes its redacted text; anything else, and any value without a redactor holding secrets, is returned as it is (swamp-club#3746)", () => {
+  assertEquals(
+    redactedError("request failed: hunter2-long", secretRedactor),
+    "request failed: ***",
+  );
+  const thrown = { message: "hunter2-long" };
+  assertEquals(redactedError(thrown, secretRedactor), thrown);
+  const clean = new Error("nothing to hide");
+  assertEquals(redactedError(clean, secretRedactor), clean);
+  const leaky = new Error("token hunter2-long");
+  assertEquals(redactedError(leaky), leaky);
+  const idle = {
+    hasSecrets: false,
+    redact: (): string => {
+      throw new Error("not called");
+    },
+  };
+  assertEquals(redactedError(leaky, idle), leaky);
+  assertEquals(redactedError("hunter2-long", idle), "hunter2-long");
 });

@@ -990,9 +990,9 @@ arguments. For a sensitive argument field, the framework:
    written, since their keys can embed such a value through the instance name.
 3. Shows the field as `"***"` in the generated method summary reports (Markdown
    and JSON).
-4. Scrubs the error a method throws with the run's redactor. A method error
-   that echoes a sensitive argument reaches the output record, the error and a
-   workflow step's failure through the redactor.
+4. Passes the error a method throws through the run's redactor. A sensitive
+   argument that the error echoes shows as `***` in the output record, the
+   error event and a workflow step's recorded error.
 
 ### Marking an Argument Field as Sensitive
 

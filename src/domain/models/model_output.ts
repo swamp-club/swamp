@@ -98,28 +98,42 @@ export function executionErrorFrom(
 /**
  * `error` with its message and stack passed through `redactor`, as
  * {@link executionErrorFrom} reads them, for a caller that rethrows or
- * reports it (swamp-club#3681): the same value when it is not an Error, the
- * redactor holds nothing, or nothing changes; otherwise a copy that keeps
- * its name, cause, own properties (recovered data handles, written
- * versions), marked paths and model spelling, the spelling redacted too.
+ * reports it (swamp-club#3681). It is the same value when the redactor holds
+ * nothing or nothing changes. Otherwise an Error becomes a copy that keeps
+ * its class, name, cause, own properties (a code, recovered data handles,
+ * written versions, an AggregateError's errors), marked paths and model
+ * spelling, the spelling redacted too. Any other value becomes its redacted
+ * `String()` text, which is how every reader shows a thrown non-Error. Only
+ * the error's own message and stack are read, as `executionErrorFrom` reads
+ * them: a wrapped cause is kept as it is.
  */
 export function redactedError(
   error: unknown,
   redactor?: ErrorRedactor,
 ): unknown {
-  if (!(error instanceof Error) || !redactor?.hasSecrets) return error;
+  if (!redactor?.hasSecrets) return error;
+  if (!(error instanceof Error)) {
+    const text = String(error);
+    const shown = redactor.redact(text);
+    return shown === text ? error : shown;
+  }
   const failure = executionErrorFrom(error, redactor);
   if (failure.message === error.message && failure.stack === error.stack) {
     return error;
   }
-  const cleaned = new Error(failure.message, { cause: error.cause });
+  const cleaned = new Error(failure.message);
+  // Own, so it still reads after the class is restored below, even where
+  // the class defines `name` as an accessor.
   cleaned.name = error.name;
   if (failure.stack !== undefined) cleaned.stack = failure.stack;
-  for (const key of Object.keys(error)) {
-    if (key === "message" || key === "stack" || key === "cause") continue;
+  for (const key of Object.getOwnPropertyNames(error)) {
+    if (key === "message" || key === "stack") continue;
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
     if (descriptor) Object.defineProperty(cleaned, key, descriptor);
   }
+  // The class is kept, so a coded UserError is still one and a workflow step
+  // keeps its error code (swamp-club#3748).
+  Object.setPrototypeOf(cleaned, Object.getPrototypeOf(error));
   const spelling = modelWording(error);
   if (spelling !== undefined) {
     markModelWording(cleaned, redactor.redact(spelling));
