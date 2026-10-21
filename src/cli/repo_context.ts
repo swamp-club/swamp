@@ -237,6 +237,7 @@ import {
   v3DatastoreConfigOf,
   v3RepositoryFactoryConfig,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import { assertV3CheckoutJoinable } from "../infrastructure/datastore_v3/v3_checkout_join.ts";
 import {
   adoptV3Config,
   planV3ConfigAdoption,
@@ -850,6 +851,12 @@ export async function resolveDatastoreForRepo(
     repoPath.value,
     datastoreConfig,
   );
+  // A checkout that joins a v3 datastore through .swamp.yaml while its
+  // .swamp holds records is refused before anything leases, catches up or
+  // writes, as setup refuses it (swamp-club#3690).
+  if (engine === "v3") {
+    await assertV3CheckoutJoinable(repoPath.value, datastoreConfig.namespace);
+  }
 
   return { repoDir: repoPath.value, datastoreConfig, marker, engine };
 }

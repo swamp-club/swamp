@@ -29,7 +29,10 @@ import type {
   DoctorDatastoresData,
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
-import { createDatastoreFormatMarkerRepairRenderer } from "./doctor_datastores.ts";
+import {
+  createDatastoreFormatMarkerRepairRenderer,
+  createPreV3RecordsRepairRenderer,
+} from "./doctor_datastores.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
 
@@ -320,4 +323,78 @@ Deno.test("createDoctorDatastoresRenderer: log mode fails on the v3 content find
   const renderer = createDoctorDatastoresRenderer("log");
   renderer.handlers().completed({ kind: "completed", data: v3Data() });
   assertEquals(renderer.overallStatus, "fail");
+});
+
+// --- swamp-club#3690: moving aside a joining checkout's records ---
+
+const PRE_V3_PREVIEW = {
+  swampDir: "/repo/.swamp",
+  recordDirs: ["data", "outputs"],
+  preV3RecordsDir: "/repo/.swamp/pre-v3-records",
+};
+
+Deno.test("createPreV3RecordsRepairRenderer: json mode reports the preview, the move and nothing to do (swamp-club#3690)", () => {
+  const preview = createPreV3RecordsRepairRenderer("json");
+  assertEquals(
+    JSON.parse(
+      captureStdout(() =>
+        preview.handlers().preview({ kind: "preview", data: PRE_V3_PREVIEW })
+      ),
+    ),
+    { status: "pre_v3_records_preview", ...PRE_V3_PREVIEW },
+  );
+  assertEquals(preview.overallStatus, "preview");
+
+  const moved = createPreV3RecordsRepairRenderer("json");
+  const done = {
+    ...PRE_V3_PREVIEW,
+    destination: "/repo/.swamp/pre-v3-records/20261020T211321Z-abcd1234",
+  };
+  assertEquals(
+    JSON.parse(
+      captureStdout(() =>
+        moved.handlers().completed({ kind: "completed", data: done })
+      ),
+    ),
+    { status: "pre_v3_records_moved", ...done },
+  );
+  assertEquals(moved.overallStatus, "pass");
+
+  const none = createPreV3RecordsRepairRenderer("json");
+  assertEquals(
+    JSON.parse(captureStdout(() =>
+      none.handlers().not_needed({
+        kind: "not_needed",
+        swampDir: "/repo/.swamp",
+      })
+    )),
+    { status: "pre_v3_records_not_needed", swampDir: "/repo/.swamp" },
+  );
+});
+
+Deno.test("createPreV3RecordsRepairRenderer: both modes fail with the error's message and code, and log mode previews then passes (swamp-club#3690)", () => {
+  for (const mode of ["log", "json"] as const) {
+    const renderer = createPreV3RecordsRepairRenderer(mode);
+    let thrown: unknown;
+    try {
+      renderer.handlers().error({
+        kind: "error",
+        error: { code: "some_code", message: "not moved" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assertEquals(thrown instanceof UserError, true);
+    assertEquals((thrown as UserError).message, "not moved");
+    assertEquals((thrown as UserError).code, "some_code");
+    assertEquals(renderer.overallStatus, "fail");
+  }
+  const log = createPreV3RecordsRepairRenderer("log");
+  log.handlers().preview({ kind: "preview", data: PRE_V3_PREVIEW });
+  assertEquals(log.overallStatus, "preview");
+  log.handlers().completed({
+    kind: "completed",
+    data: { ...PRE_V3_PREVIEW, destination: "/repo/.swamp/pre-v3-records/x" },
+  });
+  assertEquals(log.overallStatus, "pass");
 });

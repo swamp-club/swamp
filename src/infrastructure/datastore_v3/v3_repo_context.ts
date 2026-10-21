@@ -116,6 +116,7 @@ import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_gr
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
+import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -509,6 +510,9 @@ export async function holdV3Writer(
     readonly retakeLost?: boolean;
   } = {},
 ): Promise<void> {
+  // A checkout that holds records never joins (swamp-club#3690): refused
+  // before the lease, which records this checkout in the datastore.
+  await assertV3CheckoutJoinable(repoDir, config.namespace);
   // Before the handle opens: opening migrates commits.db, which a swamp from
   // before the lease, still writing, could not open again.
   await refuseLiveV3LegacyWriter(config.path);
@@ -936,6 +940,9 @@ export async function v3RepositoryFactoryConfig(
         "managedConfig off.",
     );
   }
+  // A checkout that holds records never joins (swamp-club#3690): refused
+  // before its copy is restored or its read model opens.
+  await assertV3CheckoutJoinable(repoDir, config.namespace);
   const writer = holdsV3WriterLock(config.path);
   // A reader's copy is made current first (swamp-club#3482), unless another
   // process writes this checkout: that writer keeps it current.

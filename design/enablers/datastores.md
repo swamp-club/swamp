@@ -4425,6 +4425,56 @@ Phase 5; migrating v2 data is Phase 6.
   stopped after the marker (or after `commits.db` and `_blobs/`) leaves a
   fresh skeleton with no commits, which a re-run of setup completes.
 
+**Joining a v3 datastore.** Setup runs in one checkout. A teammate's checkout
+joins when it pulls the committed `.swamp.yaml` that says `format: 3`, and it
+never runs setup. Its `.swamp/` may still hold v2 records, so the first v3
+open of a checkout runs setup's records check (swamp-club#3690).
+`assertV3CheckoutJoinable` (`src/infrastructure/datastore_v3/v3_checkout_join.ts`)
+uses the same rule as setup (`hasDatastoreRecords` in
+`src/infrastructure/persistence/datastore_records.ts`): it checks the datastore
+directories of `.swamp/` and of `.swamp/<namespace>`, and leaves out the stream
+directories, the always-local ones and the v2 catalog. It also leaves out the
+files a v3 checkout keeps as its own (`isCheckoutLocalKey`): pulled extension
+sources under managedConfig, dot-prefixed locks and indexes, and run logs.
+v3 setup's check skips those files too.
+
+- **When it runs.** A first open is one with no read-model state
+  (`.swamp/_read_model_v3/_read_model_v3.db`). The read model creates that
+  file when it opens, before it materialises anything, so a checkout another
+  process is already joining is never mistaken for one holding records. Once
+  the state exists, the check is one stat and never walks the checkout.
+  State deleted by hand counts as a first open.
+- **Where it runs.** `resolveDatastoreForRepo` calls it right after the
+  format guard, before any lease, copy restore, catch-up or write.
+  `holdV3Writer` and `v3RepositoryFactoryConfig` call it as well, so an
+  opener that skips `resolveDatastoreForRepo` is still refused. Filesystem
+  and bucket v3 share this path.
+- **The refusal.** A checkout holding records is refused with
+  `V3CheckoutHoldsRecordsError` (`v3_checkout_holds_records`), and nothing is
+  written in the checkout or the datastore. The message names the record
+  directories, says a v3 datastore starts empty, and gives the way out.
+  Opening anyway would replay commits over the checkout's files and leave
+  files no commit owns. Version listing and allocation read version
+  directories on disk, so the checkouts would diverge for good.
+- **The repair.** `swamp doctor datastores --repair` previews, and `-y` moves
+  each record file into `.swamp/pre-v3-records/<UTC stamp>-<suffix>/`, keeping
+  its path relative to `.swamp/`. The checkout's own files stay where they
+  are. The repair then removes the directories the move emptied, because
+  version listing reads version directories on disk. The stamp has no
+  character Windows refuses in a path, and the suffix keeps runs apart. It
+  also removes the v2 catalog. The next command catches up from the datastore.
+  `pre-v3-records` is not a datastore directory, so the read model never
+  writes or removes a file there. This is not the swamp-club#3617 `at-risk/`
+  directory: at-risk copies are tracked rows retried against the datastore's
+  chunks. The moved records are not in the v3 datastore: bringing them in
+  needs migrating records to v3 (Phase 6). For every other v3 case, `--repair`
+  stays refused.
+- **Known limit.** A checkout that already has v3 state, is switched back to
+  a v2 `.swamp.yaml`, writes records, and then returns to v3 is not checked
+  again. The check is for the first open only, so that later opens cost
+  nothing. Like setup, it checks the default datastore directories, whatever
+  the config's `directories` or `exclude` say.
+
 **The marker decides the engine.** `ensureSupportedDatastoreFormat` returns
 the engine (`DatastoreEngine`, `v2` or `v3`) and caches it per config object
 (`checkedDatastoreEngine`). This binary reads formats 2 and 3 on every
@@ -4981,7 +5031,9 @@ repair are skipped or refused.
 
 **Second machines.** A clone joins through `.swamp.yaml`: its first command
 reads the lineage registry once and restores the current lineage (D2), with
-an info line before the restore and one with its time after. Serve's own
+an info line before the restore and one with its time after. Before the
+restore, the join check refuses a clone whose `.swamp/` holds records, as
+on a filesystem v3 datastore (**Joining a v3 datastore**). Serve's own
 control plane (heartbeats, pending runs) stays in the checkout, so serve
 reports a `local` deployment mode on a v3 bucket datastore.
 
