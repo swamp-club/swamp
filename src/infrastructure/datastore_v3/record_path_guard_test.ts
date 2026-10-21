@@ -166,7 +166,10 @@ Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources 
   const local = [
     "workflow-runs/w1/.runs-index.json",
     "config/.lock",
-    "data/t/m/.0f.tmp",
+    "data/t/m/.0f4e2a6c-1b3d-4c5e-8f90-a1b2c3d4e5f6.tmp",
+    "data/t/m/.lock",
+    "auto-definitions/.auto-definition-create/t-m.lock",
+    "data/t/m/.DS_Store",
     "config/pulled-extensions/.swamp-staging/x/journal.json",
     "config/pulled-extensions/@x/y/mod.ts",
     "outputs/t/run/r-1.log",
@@ -185,4 +188,29 @@ Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources 
   for (const key of committed) {
     assertEquals(isCheckoutLocalKey(key.split("/")), false, key);
   }
+});
+
+Deno.test("isCheckoutLocalKey: dot-named data, methods and other dot files are records (swamp-club#3736)", () => {
+  const committed = [
+    "data/t/m/.kubeconfig/1/raw",
+    "data/t/m/.kubeconfig/1/metadata.yaml",
+    "data/t/m/.kubeconfig/latest",
+    "data/t/m/.env",
+    "outputs/t/.probe/def-2026-10-21T00-00-00-000Z.yaml",
+    "data/t/m/.terraformrc.tmp",
+    "data/t/m/.0f.tmp",
+    "data/t/m/.lock.d/1/raw",
+    "config/.runs-index.json",
+    "definitions-evaluated/.auto-definition-create/t.yaml",
+  ];
+  for (const key of committed) {
+    assertEquals(isCheckoutLocalKey(key.split("/")), false, key);
+  }
+  // A directory segment is judged on its own, as the recovery sweep asks
+  // before it descends: a dot-named data directory is walked.
+  assertEquals(isCheckoutLocalKey(["data", "t", "m", ".kubeconfig"]), false);
+  assertEquals(
+    isCheckoutLocalKey(["auto-definitions", ".auto-definition-create"]),
+    true,
+  );
 });

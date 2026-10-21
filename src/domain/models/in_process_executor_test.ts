@@ -1111,3 +1111,70 @@ Deno.test("wrapLoggerWithOutput: the event carries the level the line was logged
   wrapped.error("d");
   assertEquals(levels, ["info", "warning", "warning", "error"]);
 });
+
+Deno.test("InProcessExecutor: a failed method rolls back the file versions it took a path for and never finalised, and only those (swamp-club#3736)", async () => {
+  const rolledBack: unknown[][] = [];
+  let allocations = 0;
+  const repo = createMockDataRepo();
+  const context: MethodContext = {
+    ...createMockContext(),
+    dataRepository: {
+      ...repo,
+      allocateVersion: () =>
+        Promise.resolve({
+          version: ++allocations,
+          contentPath: "/tmp/mock",
+          priorVersions: [],
+        }),
+      rollbackVersions: (receipts: unknown[]) => {
+        rolledBack.push(receipts);
+        return Promise.resolve();
+      },
+    } as unknown as UnifiedDataRepository,
+  };
+  const modelDef: ModelDefinition = {
+    ...testModelDef,
+    files: {
+      artifact: {
+        contentType: "text/plain",
+        lifetime: "ephemeral",
+        garbageCollection: 10,
+      },
+    },
+  };
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      const finished = context.createFileWriter!("artifact", "finished");
+      await finished.getFilePath();
+      await finished.finalize();
+      const unfinished = context.createFileWriter!("artifact", "unfinished");
+      await unfinished.getFilePath();
+      throw new Error("the method failed after moving a file in");
+    },
+  };
+
+  const result = await new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    modelDef,
+    context,
+    "test",
+  ).execute(createMockRequest());
+
+  assertEquals(result.status, "error");
+  assertEquals(
+    rolledBack.map((receipts) =>
+      receipts.map((receipt) => {
+        const { dataName, version } = receipt as {
+          dataName: string;
+          version: number;
+        };
+        return [dataName, version];
+      })
+    ),
+    [[["unfinished", 2]]],
+  );
+  // The finalised write is still reported, as before.
+  assertEquals(result.outputs.length, 1);
+});

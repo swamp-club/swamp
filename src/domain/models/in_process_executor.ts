@@ -199,6 +199,7 @@ export class InProcessExecutor {
       createFileWriter,
       getHandles: getFileHandles,
       getDeferredReceipts: getFileReceipts,
+      getUnfinalizedReceipts: getUnfinalizedFileReceipts,
     } = createFileWriterFactory(
       this.context.dataRepository,
       this.context.modelType,
@@ -348,6 +349,20 @@ export class InProcessExecutor {
           logs,
           durationMs,
         };
+      }
+
+      // A file writer handed a path but never finalised left a version
+      // with no metadata that no commit or later write claims, so it would
+      // stay in this checkout alone (swamp-club#3736). Its rollback's error
+      // is logged, never put in place of the method's.
+      const unfinalized = getUnfinalizedFileReceipts();
+      if (unfinalized.length > 0) {
+        try {
+          await this.context.dataRepository.rollbackVersions(unfinalized);
+        } catch (rollbackError) {
+          this.context.logger
+            .warn`Rolling back the unfinalised file writes of a failed method failed: ${rollbackError}`;
+        }
       }
 
       // Collect handles for data that was already written to disk before the

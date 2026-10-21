@@ -211,7 +211,7 @@ const claimedVersions = new WeakMap<CommitSink, Map<string, number>>();
 function floorSourceFor(
   sink: CommitSink,
   namespace: string,
-): VersionFloorSource {
+): Omit<VersionFloorSource, "allocated"> {
   let claimed = claimedVersions.get(sink);
   if (claimed === undefined) {
     claimed = new Map();
@@ -326,9 +326,11 @@ export interface UnitTracker {
    * A unit a repository wrote into dropped work: a refused commit, an
    * abandon, a failed end, or a write refused after its files were written.
    * `openedAt` is its root's open time, epoch milliseconds: nothing it
-   * wrote is older.
+   * wrote is older. `versionDirs` are the keys of the data version
+   * directories it created (swamp-club#3736): whatever is left in them is
+   * its work, however old the files' mtimes.
    */
-  dropped(openedAt: number): void;
+  dropped(openedAt: number, versionDirs: readonly string[]): void;
 }
 
 /** A path-only change staged into a commit-log unit, which takes typed ones. */
@@ -368,7 +370,10 @@ interface CommitLogState {
   /** When the unit's root opened, epoch milliseconds. */
   readonly openedAt: number;
   /** Takes a committed child's batches, in order and batch by batch. */
-  adopt(batches: readonly (readonly TypedChange[])[]): void;
+  adopt(
+    batches: readonly (readonly TypedChange[])[],
+    versionDirs?: readonly string[],
+  ): void;
   /**
    * Hands what the unit has staged so far to its nearest open ancestor and
    * stays open (swamp-club#3587); a no-op on an ended unit.
@@ -465,10 +470,15 @@ export function createCommitLogUnitOfWork(
    * dropped work can be in the checkout (swamp-club#3553).
    */
   let touched = false;
+  /**
+   * The data version directories this unit created, and those of the
+   * children that committed into it (swamp-club#3736).
+   */
+  let versionDirs: string[] = [];
   const dropWork = (): void => {
     if (!touched) return;
     try {
-      options.tracker?.dropped(openedAt);
+      options.tracker?.dropped(openedAt, versionDirs);
     } catch (error) {
       logger
         .warn`Recording the work a v3 unit of work dropped failed: ${error}`;
@@ -728,8 +738,10 @@ export function createCommitLogUnitOfWork(
     isOpen: () => ended === undefined,
     parent,
     openedAt,
-    adopt(batches) {
+    adopt(batches, dirs = []) {
       for (const batch of batches) record(batch);
+      if (dirs.length > 0) touched = true;
+      for (const dir of dirs) versionDirs.push(dir);
     },
     promote() {
       if (ended !== undefined || staged.length === 0) return;
@@ -794,8 +806,9 @@ export function createCommitLogUnitOfWork(
             "were not committed",
         );
       }
-      states.get(target)!.adopt(staged);
+      states.get(target)!.adopt(staged, versionDirs);
       staged = [];
+      versionDirs = [];
       streamPuts.clear();
       return;
     }
@@ -887,10 +900,16 @@ export function createCommitLogUnitOfWork(
     touched = true;
   });
   options.tracker?.opened();
-  versionFloors.register(
-    uow,
-    floorSourceFor(options.sink, options.namespace.toString()),
-  );
+  const floors = floorSourceFor(options.sink, options.namespace.toString());
+  versionFloors.register(uow, {
+    floor: floors.floor,
+    claim: floors.claim,
+    allocated(dir) {
+      // A created version directory is a write into the checkout.
+      touched = true;
+      versionDirs.push(dir);
+    },
+  });
   typedStagers.register(
     uow,
     (changes) => uow.stageOps(changes),

@@ -310,6 +310,11 @@ export interface SqliteReadModelOptions {
   /** How a directory is synced after a move aside. For tests. */
   readonly syncDirectory?: (dir: string) => Promise<void>;
   /**
+   * How the recovery sweep lists a directory; `Deno.readDir` by default.
+   * For tests, which list names as HFS+ does (swamp-club#3736).
+   */
+  readonly readDir?: (dir: string) => AsyncIterable<Deno.DirEntry>;
+  /**
    * How a file the guard keeps in place, or links aside, is synced:
    * {@link syncExistingFile} by default. For tests.
    */
@@ -344,6 +349,7 @@ export class SqliteReadModel implements ReadModel {
   ) => Promise<ReadonlySet<string>>;
   readonly #clock: () => Date;
   readonly #rename: (from: string, to: string) => Promise<void>;
+  readonly #readDir: (dir: string) => AsyncIterable<Deno.DirEntry>;
   readonly #syncDirectory: (dir: string) => Promise<void>;
   readonly #syncFile: (path: string) => Promise<void>;
   readonly #atRiskCopyBytes: number;
@@ -402,6 +408,7 @@ export class SqliteReadModel implements ReadModel {
         commitStore.referencedChunks(namespace, hashes, NOT_RELEASED));
     this.#clock = options.clock ?? (() => new Date());
     this.#rename = options.rename ?? Deno.rename;
+    this.#readDir = options.readDir ?? Deno.readDir;
     this.#syncDirectory = options.syncDirectory ?? syncDirectory;
     this.#syncFile = options.syncFile ?? syncExistingFile;
     this.#atRiskCopyBytes = options.atRiskCopyBytes ??
@@ -444,9 +451,26 @@ export class SqliteReadModel implements ReadModel {
    * Resolves with the removed files' record keys.
    *
    * Only the materialised subdirectories of `namespace`'s cache root are
-   * swept, and in them only files `admits` admits, last modified at or after
-   * `since` (epoch milliseconds), that are not the checkout's own
-   * (`isCheckoutLocalKey`: dot paths, run logs, pulled extension sources).
+   * swept, and in them only files `admits` admits that the checkout
+   * projects ({@link unprojectedReason}, the check every other write and
+   * removal makes) and that are not the checkout's own
+   * (`isCheckoutLocalKey`: temporary files, locks, run indexes, run logs,
+   * pulled extension sources). A file under one of `droppedDirs` (keys of
+   * the version directories the dropped units allocated, swamp-club#3736)
+   * is removed whatever its mtime: a unit may have moved an old file in.
+   * Elsewhere only a file last modified at or after `since` (epoch
+   * milliseconds) is, since nothing better is known there: after a crash,
+   * or when the dropped work was left to the next command's recovery, no
+   * list of allocated directories survives.
+   *
+   * A listed name is looked up as listed and composed (NFC): HFS+ lists
+   * names decomposed while swamp commits them composed, so a committed
+   * file must never be taken for an unowned one. A file is kept when either
+   * spelling is owned, filtered out or the checkout's own, so on a
+   * filesystem that keeps both spellings apart an unowned decomposed
+   * sibling of an owned composed name is kept too: a stray file, never a
+   * removed record.
+   *
    * Run it only while this process holds the writer lock.
    */
   recover(
@@ -455,6 +479,7 @@ export class SqliteReadModel implements ReadModel {
       readonly since: number;
       readonly admits: (key: string) => boolean;
       readonly signal: AbortSignal;
+      readonly droppedDirs?: readonly string[];
     },
   ): Promise<string[]> {
     return this.#exclusive(async () => {
@@ -502,15 +527,25 @@ export class SqliteReadModel implements ReadModel {
       readonly since: number;
       readonly admits: (key: string) => boolean;
       readonly signal: AbortSignal;
+      readonly droppedDirs?: readonly string[];
     },
   ): Promise<string[]> {
     const root = this.#cacheRoot(namespace);
     const removed: string[] = [];
     const batch = new DurableWriteBatch();
+    const droppedDirs = new Set(options.droppedDirs);
+    // One lookup per ancestor, so a unit that created many versions does
+    // not make the walk quadratic.
+    const inDroppedDir = (segments: readonly string[]) => {
+      for (let depth = segments.length - 1; depth > 0; depth--) {
+        if (droppedDirs.has(segments.slice(0, depth).join("/"))) return true;
+      }
+      return false;
+    };
     const visit = async (dir: string, segments: string[]): Promise<void> => {
       let entries: Deno.DirEntry[];
       try {
-        entries = await Array.fromAsync(Deno.readDir(dir));
+        entries = await Array.fromAsync(this.#readDir(dir));
       } catch (error) {
         if (error instanceof Deno.errors.NotFound) return;
         throw error;
@@ -521,19 +556,32 @@ export class SqliteReadModel implements ReadModel {
         if (entry.isSymlink) continue;
         const path = join(dir, entry.name);
         const keySegments = [...segments, entry.name];
-        if (isCheckoutLocalKey(keySegments)) continue;
+        // Both spellings of a listed name are judged (see recover).
+        const composed = keySegments.map((segment) => segment.normalize("NFC"));
+        if (isCheckoutLocalKey(keySegments) || isCheckoutLocalKey(composed)) {
+          continue;
+        }
         if (entry.isDirectory) {
           await visit(path, keySegments);
           continue;
         }
         if (!entry.isFile) continue;
         const key = keySegments.join("/");
-        if (!options.admits(key)) continue;
-        if (this.#state.fileOwnership(namespace, key)?.present === true) {
+        const spellings = [...new Set([key, composed.join("/")])];
+        if (
+          spellings.some((spelling) =>
+            !options.admits(spelling) ||
+            unprojectedReason(namespace, spelling, this.#checkout) !==
+              undefined ||
+            this.#state.fileOwnership(namespace, spelling)?.present === true
+          )
+        ) {
           continue;
         }
-        const modified = (await Deno.lstat(path)).mtime?.getTime();
-        if (modified === undefined || modified < options.since) continue;
+        if (!inDroppedDir(keySegments) && !inDroppedDir(composed)) {
+          const modified = (await Deno.lstat(path)).mtime?.getTime();
+          if (modified === undefined || modified < options.since) continue;
+        }
         await this.#removeRecord(
           namespace,
           key,

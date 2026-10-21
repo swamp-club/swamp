@@ -4679,7 +4679,8 @@ directories of `.swamp/` and of `.swamp/<namespace>`, and leaves out the stream
 directories, the always-local ones and the v2 catalog. It also leaves out the
 files a joining checkout keeps as its own (`isJoinOwnFile`): those a v3
 checkout keeps as its own (`isCheckoutLocalKey`: pulled extension sources
-under managedConfig, dot-prefixed locks and indexes, and run logs), which v3
+under managedConfig, atomic-write temporary files, `.lock` files, run
+indexes, auto-definition creation locks, and run logs), which v3
 setup's check skips too, and the managedConfig lockfile
 `.swamp/config/upstream_extensions.json` (swamp-club#3696). On a fresh
 checkout of an extension datastore, the datastore extension is auto-installed
@@ -5066,11 +5067,24 @@ leave every checkout with the same records.
   stores again from the file any committed chunk it alone still holds whole,
   verifying right-size parts on filesystem storage), then removes each file in the materialised
   directories that no commit owns and that changed since the marker's start.
-  Run logs, any path with a dot segment (run indexes, locks, temporary
-  files, install staging), pulled extension sources under managed config
-  (`config/pulled-extensions`), files the datastore's `directories` or
-  `exclude` keep local, and the stream directories are never touched
-  (`isCheckoutLocalKey`). The marker goes last, so a recovery cut short runs again in full.
+  Never touched are the checkout's own files (`isCheckoutLocalKey`), each
+  named exactly: an atomic write's temporary file (`.<uuid>.tmp`), a `.lock`
+  file, a workflow's run index (`workflow-runs/<id>/.runs-index.json`), the
+  auto-definition creation locks (`auto-definitions/.auto-definition-create/`),
+  macOS's `.DS_Store`, run logs, and pulled extension sources and their install staging under
+  managed config (`config/pulled-extensions`); also files the datastore's
+  `directories` or `exclude` keep local, checked as every replay checks them
+  (`unprojectedReason`), and the stream directories. A dot at the start of a
+  name does not make it the checkout's own: data names and method names may
+  start with one (`.kubeconfig`, `.probe`), and those are committed records
+  the sweep must reach (swamp-club#3736). The sweep looks each listed name up
+  as listed and composed (NFC): HFS+ lists names decomposed while swamp
+  commits them composed, so a committed file with a non-ASCII name is never
+  taken for an unowned one. A file is kept when either spelling is owned,
+  filtered out or the checkout's own; on a filesystem that keeps the two
+  spellings apart, an unowned decomposed sibling of an owned composed name
+  is therefore kept too, a stray file rather than a removed record. Stored
+  keys are not normalised. The marker goes last, so a recovery cut short runs again in full.
   While the replay runs, a process reading the catalog directly sees it empty
   or partial; that lasts one recovery, after a crash, and is the price of
   never backfilling it from disk. A recovery that keeps failing (a file it
@@ -5099,7 +5113,10 @@ ever replaced it.
   it: the scope's write signal (`signalChange`, and `stageTyped` before its
   builder runs), or any change it records, including the batches a root
   adopts from a committed child. A touched unit that drops work tells its
-  handle (`UnitTracker.dropped`) with its root's open time; an untouched
+  handle (`UnitTracker.dropped`) with its root's open time and the data
+  version directories it created (`VersionFloorSource.allocated`, called
+  where a version is allocated, and handed to the parent with a child's
+  batches; creating one also touches the unit); an untouched
   unit, such as a use case that fails validation before it writes, reports
   nothing. A read-only command writes nothing by contract, holds no lease
   and has no marker, so a write refused there (a programming error) is
@@ -5115,6 +5132,15 @@ ever replaced it.
   the **Interrupted runs** recovery from that open time (floored as the
   marker's start is) once no unit of it is open; roots wait while it runs.
   The marker is then removed as usual.
+- *A dropped unit's version directories are swept whatever their mtimes*
+  (swamp-club#3736). A unit may put an old file in as a version's content
+  (`DataWriter.getFilePath` and a move, a hard link, or an extraction that
+  keeps times), so this recovery removes every unowned file under the
+  version directories the dropped units created, and applies the open-time
+  rule only elsewhere. That list lives in the process: after a crash, or
+  when the recovery is left to the next command below, only the marker's
+  start is known, and an old-mtime file of a dropped version can stay until
+  the name is written again.
 - *Otherwise the next command does.* A process that lost its lease, a
   checkout with a unit still open (a root waiting to open counts), a serve
   whose drain left runs that may still write (`keepV3WriterMarkers`), or a

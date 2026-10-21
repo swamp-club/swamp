@@ -38,7 +38,12 @@ import {
   v3DatastoreFor,
   v3RepositoryFactoryConfig,
 } from "./v3_repo_context.ts";
-import { readModelStateDir } from "./record_path_guard.ts";
+import { isCheckoutLocalKey, readModelStateDir } from "./record_path_guard.ts";
+import { hasDatastoreRecords } from "../persistence/datastore_records.ts";
+import {
+  CATALOG_FILES,
+  DEFAULT_DATASTORE_SUBDIRS,
+} from "../../domain/datastore/datastore_config.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-join-" });
@@ -256,6 +261,60 @@ Deno.test("assertV3CheckoutJoinable: files a v3 checkout keeps as its own are no
       V3CheckoutHoldsRecordsError,
     );
     assertEquals([...error.recordDirs], ["config"]);
+  });
+});
+
+Deno.test("assertV3CheckoutJoinable and movePreV3CheckoutRecords: a v2 dot-named record counts and moves, while the checkout's own dot files do not (swamp-club#3736)", async () => {
+  await withTempDir(async (repoDir) => {
+    const temp = ".0f4e2a6c-1b3d-4c5e-8f90-a1b2c3d4e5f6.tmp";
+    await plant(repoDir, "data", "t", "m1", temp);
+    await plant(repoDir, "data", "t", "m1", ".lock");
+    await plant(repoDir, "workflow-runs", "w1", ".runs-index.json");
+    await plant(repoDir, "workflow-runs", "w1", "workflow-run-1.log");
+    await assertV3CheckoutJoinable(repoDir);
+    await plant(repoDir, "data", "t", "m1", ".kubeconfig", "1", "raw");
+    const error = await assertRejects(
+      () => assertV3CheckoutJoinable(repoDir),
+      V3CheckoutHoldsRecordsError,
+    );
+    assertEquals([...error.recordDirs], ["data"]);
+    const { destination, moved } = await movePreV3CheckoutRecords(repoDir);
+    assertEquals([...moved], ["data"]);
+    await Deno.stat(
+      join(destination, "data", "t", "m1", ".kubeconfig", "1", "raw"),
+    );
+    await Deno.stat(swampPath(repoDir, "data", "t", "m1", temp));
+    await Deno.stat(swampPath(repoDir, "data", "t", "m1", ".lock"));
+    await Deno.stat(
+      swampPath(repoDir, "workflow-runs", "w1", ".runs-index.json"),
+    );
+    await assertV3CheckoutJoinable(repoDir);
+  });
+});
+
+Deno.test("hasDatastoreRecords with isCheckoutLocalKey, as v3 setup checks: a dot-named record counts, the checkout's own dot files do not (swamp-club#3736)", async () => {
+  await withTempDir(async (repoDir) => {
+    const dir = swampPath(repoDir);
+    const check = () =>
+      hasDatastoreRecords(
+        dir,
+        DEFAULT_DATASTORE_SUBDIRS,
+        CATALOG_FILES,
+        isCheckoutLocalKey,
+      );
+    await plant(
+      repoDir,
+      "data",
+      "t",
+      "m1",
+      ".0f4e2a6c-1b3d-4c5e-8f90-a1b2c3d4e5f6.tmp",
+    );
+    await plant(repoDir, "data", "t", "m1", ".lock");
+    await plant(repoDir, "workflow-runs", "w1", ".runs-index.json");
+    await plant(repoDir, "outputs", "t", "probe", "run.log");
+    assertEquals(await check(), false);
+    await plant(repoDir, "outputs", "t", ".probe", "def-1.yaml");
+    assertEquals(await check(), true);
   });
 });
 

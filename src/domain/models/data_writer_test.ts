@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
@@ -4097,4 +4098,48 @@ Deno.test("createResourceWriter: a caller cannot forge the sensitive-field write
     `Tag '${SENSITIVE_FIELDS_VERSION_TAG}' from the workflow's tags is reserved`,
   );
   assertEquals(repo.writes(), 0);
+});
+
+Deno.test("createFileWriterFactory.getUnfinalizedReceipts: names a writer whose path getFilePath handed out and that was never finalised, and no other (swamp-club#3736)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-unfinalized-" });
+  try {
+    let version = 0;
+    const repo: UnifiedDataRepository = {
+      ...createMockRepo(),
+      allocateVersion: () => {
+        version++;
+        return Promise.resolve({
+          version,
+          contentPath: join(dir, `${version}-raw`),
+          priorVersions: [],
+        });
+      },
+    };
+    const factory = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    const [spec] = Object.keys(testFiles);
+    const unfinished = factory.createFileWriter(spec, "unfinished");
+    await unfinished.getFilePath();
+    const finished = factory.createFileWriter(spec, "finished");
+    await finished.getFilePath();
+    await finished.finalize();
+    // A line writer's partial content keeps its behaviour on failure.
+    const lines = factory.createFileWriter(spec, "lines");
+    await lines.writeLine("first");
+    factory.createFileWriter(spec, "unused");
+    assertEquals(
+      factory.getUnfinalizedReceipts().map((r) => [r.dataName, r.version]),
+      [["unfinished", 1]],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

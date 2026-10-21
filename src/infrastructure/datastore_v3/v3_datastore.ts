@@ -694,6 +694,11 @@ interface CheckoutUnits {
    * only what was dropped before it started.
    */
   droppedGeneration: number;
+  /**
+   * The data version directories the dropped units created, by namespace
+   * (swamp-club#3736): their recovery sweeps them whatever the mtimes.
+   */
+  droppedDirs: Map<string, Set<string>>;
   /** The recovery running now, which new roots wait for. */
   recovering?: Promise<unknown>;
 }
@@ -732,7 +737,7 @@ export class DroppedWorkRecoveryRunningError extends UserError {
 function checkoutUnitsFor(stateDir: string): CheckoutUnits {
   let units = checkoutUnits.get(stateDir);
   if (units === undefined) {
-    units = { open: 0, droppedGeneration: 0 };
+    units = { open: 0, droppedGeneration: 0, droppedDirs: new Map() };
     checkoutUnits.set(stateDir, units);
   }
   return units;
@@ -821,9 +826,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ended: () => {
       units.open--;
     },
-    dropped: (openedAt) => {
+    dropped: (openedAt, versionDirs) => {
       units.droppedSince = Math.min(units.droppedSince ?? openedAt, openedAt);
       units.droppedGeneration++;
+      if (versionDirs.length === 0) return;
+      let dirs = units.droppedDirs.get(namespace);
+      if (dirs === undefined) {
+        dirs = new Set();
+        units.droppedDirs.set(namespace, dirs);
+      }
+      for (const dir of versionDirs) dirs.add(dir);
     },
   };
   const unitNamespace = namespace === ""
@@ -909,6 +921,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         since: recoverySince(since),
         admits,
         signal: signal ?? lifetime.signal,
+        droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
       });
       units.recovering = recovery;
       try {
@@ -919,11 +932,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       // A drop recorded while it ran stays owed to the next recovery.
       if (units.droppedGeneration === generation) {
         units.droppedSince = undefined;
+        units.droppedDirs.clear();
       }
       return "recovered";
     },
     forgetDroppedWork() {
       units.droppedSince = undefined;
+      units.droppedDirs.clear();
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const fenced = () => {

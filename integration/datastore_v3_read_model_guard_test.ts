@@ -801,6 +801,32 @@ Deno.test("read model: a missing chunk makes its record unreadable instead of fa
   });
 });
 
+Deno.test("read model: a retry of an unreadable record the checkout's directories now keep local forgets it and leaves the local file (swamp-club#3736)", async () => {
+  await withV3Env(async (env) => {
+    const blob = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
+    await env.storage.delete("_default", blob.parts![0].sha256, signal());
+    await putK(env, 1, blob);
+    await using(open(env, env.storage), async (model) => {
+      await model.catchUp(signal());
+      assertExists(await model.unreadableRecord("", K.toString()));
+    });
+    await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
+    const local = fileOf(env, K);
+    await Deno.mkdir(dirname(local), { recursive: true });
+    await Deno.writeTextFile(local, "local");
+    await using(
+      open(env, env.storage, {
+        checkout: { namespace: "", admits: (key) => key.startsWith("config/") },
+      }),
+      async (model) => {
+        await model.catchUp(signal());
+        assertEquals(await model.unreadableRecord("", K.toString()), undefined);
+      },
+    );
+    assertEquals(await Deno.readTextFile(local), "local");
+  });
+});
+
 Deno.test("read model: without a size reader an unreadable record is tried again at most hourly (swamp-club#3617)", async () => {
   await withV3Env(async (env) => {
     const blob = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
