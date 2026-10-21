@@ -683,3 +683,30 @@ Deno.test("advanceLatestMarkers: a version allocated and never finalized gets no
     Deno.errors.NotFound,
   );
 });
+
+Deno.test("findByTaggedName: returns a name whose latest version is a deletion marker, not a rename marker (swamp-club#3698)", async () => {
+  const { repo } = createRepo();
+  for (const name of ["deleted", "old-name"]) {
+    await repo.save(
+      TEST_TYPE,
+      TEST_MODEL_ID,
+      createTestData({ name }),
+      TEST_CONTENT,
+    );
+  }
+  const latest = await repo.findByName(TEST_TYPE, TEST_MODEL_ID, "deleted");
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    latest!.withDeletionMarker({ version: latest!.version + 1 }),
+    TEST_CONTENT,
+  );
+  await repo.rename(TEST_TYPE, TEST_MODEL_ID, "old-name", "new-name");
+
+  const deleted = await repo.findByTaggedName("test-model", "deleted");
+  assertEquals(
+    deleted.map(({ data, modelId }) => [data.version, data.isDeleted, modelId]),
+    [[2, true, TEST_MODEL_ID]],
+  );
+  assertEquals(await repo.findByTaggedName("test-model", "old-name"), []);
+});

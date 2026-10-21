@@ -1087,14 +1087,22 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
     this.ensureNotDisposed();
-    return Promise.resolve(
-      this.findAllGlobalSync().filter(
-        ({ data }) =>
-          data.name === dataName &&
-          data.tags["modelName"] === modelName &&
-          !data.isRenamed && !data.isDeleted,
-      ),
-    );
+    // Reads latest versions directly: findAllGlobalSync drops deletion
+    // markers, which this lookup returns (swamp-club#3698).
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    for (const [key, version] of this.latestVersionMap) {
+      const [typeNorm, modelId, name] = key.split(SEP);
+      if (name !== dataName) continue;
+      const data = this.dataMap.get(dataKey(typeNorm, modelId, name, version));
+      if (
+        data && !data.isRenamed && data.tags["modelName"] === modelName
+      ) {
+        results.push({ data, modelType: ModelType.create(typeNorm), modelId });
+      }
+    }
+    return Promise.resolve(results);
   }
 
   /**

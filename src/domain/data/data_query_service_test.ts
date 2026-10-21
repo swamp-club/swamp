@@ -5643,3 +5643,156 @@ Deno.test("DataQueryService: select content never fetches a foreign body through
 
   catalog.close();
 });
+
+/**
+ * A write-through repository whose delete-kind method writes deletion
+ * markers, as method_execution_service does, plus a way to rebuild a fresh
+ * catalog from the same files (swamp-club#3698).
+ */
+function setupDeletionTest() {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-deletion-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const type = ModelType.create("test/model");
+  const modelId = crypto.randomUUID();
+  const save = async (name: string) => {
+    const existing = await dataRepo.findByName(type, modelId, name);
+    const data = existing ?? Data.create({
+      name,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: name, modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+    });
+    await dataRepo.save(
+      type,
+      modelId,
+      data,
+      new TextEncoder().encode(JSON.stringify({ name })),
+    );
+  };
+  const tombstone = async (name: string) => {
+    const latest = await dataRepo.findByName(type, modelId, name);
+    await dataRepo.save(
+      type,
+      modelId,
+      latest!.withDeletionMarker({ version: latest!.version + 1 }),
+      new TextEncoder().encode(JSON.stringify({ deletedAt: "now" })),
+    );
+  };
+  const rename = (from: string, to: string) =>
+    dataRepo.rename(type, modelId, from, to);
+  /** A fresh, unpopulated catalog over the same files. */
+  const fresh = () => {
+    const rebuilt = new CatalogStore(
+      join(dir, `rebuilt-${crypto.randomUUID()}.db`),
+    );
+    const repo = new FileSystemUnifiedDataRepository(dir, undefined, rebuilt);
+    return { rebuilt, service: new DataQueryService(rebuilt, repo) };
+  };
+  const cleanup = () => Deno.removeSync(dir, { recursive: true });
+  return { catalog, type, modelId, save, tombstone, rename, fresh, cleanup };
+}
+
+/** Every row as name@version:is_latest is_step_latest, sorted. */
+const rowsOf = (catalog: CatalogStore) =>
+  [...catalog.iterate()]
+    .map((r) => `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`)
+    .sort();
+
+Deno.test("DataQueryService backfill: indexes a deletion marker as its name's latest row, as write-through does, async and sync (swamp-club#3698)", async () => {
+  for (const sync of [false, true]) {
+    const t = setupDeletionTest();
+    const { rebuilt, service } = t.fresh();
+    try {
+      await t.save("r");
+      await t.save("r");
+      await t.tombstone("r");
+      await t.save("other");
+
+      const results = sync
+        ? service.querySync('name == "r"') as DataRecord[]
+        : await service.query('name == "r"') as DataRecord[];
+
+      assertEquals(results.map((r) => r.version), [3]);
+      assertEquals(rowsOf(rebuilt), rowsOf(t.catalog));
+      assert(rowsOf(rebuilt).includes("r@3:11"), "the marker is latest");
+      assert(rowsOf(rebuilt).includes("r@1:00"), "its history is indexed");
+    } finally {
+      rebuilt.close();
+      t.catalog.close();
+      t.cleanup();
+    }
+  }
+});
+
+Deno.test("DataQueryService backfill: indexes a renamed name's target that was later deleted, async and sync (swamp-club#3698)", async () => {
+  for (const sync of [false, true]) {
+    const t = setupDeletionTest();
+    const { rebuilt, service } = t.fresh();
+    try {
+      await t.save("gamma");
+      await t.rename("gamma", "gamma2");
+      await t.tombstone("gamma2");
+
+      const results = sync
+        ? service.querySync('name == "gamma"') as DataRecord[]
+        : await service.query('name == "gamma"') as DataRecord[];
+
+      assertEquals(results.map((r) => r.name), ["gamma2"]);
+      assertEquals(rowsOf(rebuilt), rowsOf(t.catalog));
+      assertEquals(
+        rebuilt.findRenameTarget("", t.type.normalized, t.modelId, "gamma"),
+        "gamma2",
+      );
+    } finally {
+      rebuilt.close();
+      t.catalog.close();
+      t.cleanup();
+    }
+  }
+});
+
+Deno.test("getLatestRecord: a scoped backfill returns a deleted resource's final state (swamp-club#3698)", async () => {
+  const t = setupDeletionTest();
+  const { rebuilt, service } = t.fresh();
+  try {
+    await t.save("r");
+    await t.tombstone("r");
+
+    const record = await service.getLatestRecord("ingest", "r");
+
+    assertEquals(record?.version, 2);
+    assertEquals(record?.attributes, { deletedAt: "now" });
+    assertEquals(rebuilt.isPopulated(), false, "only the one name is indexed");
+  } finally {
+    rebuilt.close();
+    t.catalog.close();
+    t.cleanup();
+  }
+});
+
+Deno.test("getLatestRecord: an unpopulated row behind a deletion marker another repository wrote yields to the marker (swamp-club#3698)", async () => {
+  const t = setupDeletionTest();
+  // This repository's catalog learns v1 by write-through; another
+  // repository sharing the files then deletes the resource.
+  const { rebuilt: own, service } = t.fresh();
+  try {
+    await t.save("r");
+    await service.getLatestRecord("ingest", "r");
+    assertEquals(own.findLatestRow("ingest", "r")?.version, 1);
+    await t.tombstone("r");
+    own.invalidate();
+
+    const record = await service.getLatestRecord("ingest", "r");
+
+    assertEquals(record?.version, 2, "not the stale active version");
+    assertEquals(own.findLatestRow("ingest", "r")?.version, 2);
+  } finally {
+    own.close();
+    t.catalog.close();
+    t.cleanup();
+  }
+});

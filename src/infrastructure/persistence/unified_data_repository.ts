@@ -2743,7 +2743,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               targetDataName,
             );
             if (
-              data && !data.isRenamed && !data.isDeleted &&
+              data && !data.isRenamed &&
               data.tags["modelName"] === targetModelName
             ) {
               results.push({ data, modelType, modelId: name });

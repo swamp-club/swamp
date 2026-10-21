@@ -697,6 +697,14 @@ The catalog fills incrementally:
 4. **Self-healing**: if `_catalog.db` is deleted or corrupted, the next query
    triggers a backfill.
 
+Every backfill path — full, scoped, and the unpopulated latest-marker refresh —
+indexes what `save()` write-through indexes, so a rebuilt catalog matches a live
+one (swamp-club#3698). A deletion marker (`lifecycle: deleted`, written by a
+`delete`-kind method) is a version like any other: its name keeps its history
+and the marker is the latest row. Only rename markers are skipped; the rename
+forwards below project them. `swamp doctor datastores` counts the same records
+on disk, so a repaired catalog passes its completeness check.
+
 Full backfill upserts instead of replacing. It commits through
 `bulkUpsert()`, which uses `INSERT OR REPLACE` with no preceding `DELETE`.
 Rows the walk finds are added or updated; rows it cannot see are left alone.

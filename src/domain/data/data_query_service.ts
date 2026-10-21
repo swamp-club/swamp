@@ -444,10 +444,11 @@ export class DataQueryService {
   /**
    * When the on-disk latest marker names a newer (or older) version than
    * `row`, upserts that version into the catalog and returns its row.
-   * Returns null when the row is current, when the data is gone or
-   * tombstoned (the caller's content check handles that), or when the row
-   * belongs to another namespace, whose data is not in this repository's
-   * layout.
+   * Returns null when the row is current, when the data is gone or the
+   * marker names a rename marker (the caller's content check handles that),
+   * or when the row belongs to another namespace, whose data is not in this
+   * repository's layout. A deletion marker is served like any other version,
+   * as write-through and backfill index it (swamp-club#3698).
    */
   private refreshFromLatestMarker(row: CatalogRow): CatalogRow | null {
     if (row.namespace !== this.dataRepo.namespace) return null;
@@ -464,7 +465,7 @@ export class DataQueryService {
       row.data_name,
       latest,
     );
-    if (!data || data.isDeleted || data.isRenamed) return null;
+    if (!data || data.isRenamed) return null;
     // Rows above the marker whose version is gone from disk (another
     // repository deleted it) would otherwise outrank the marker's version in
     // upsertNewVersion, which orders by version (swamp-club#2520). A higher
@@ -764,7 +765,8 @@ export class DataQueryService {
     const items = await this.dataRepo.findByTaggedName(modelName, dataName);
 
     for (const { data: latest, modelType, modelId } of items) {
-      if (latest.isRenamed || latest.isDeleted) continue;
+      // A deletion marker is the name's latest row, as in a full backfill.
+      if (latest.isRenamed) continue;
       this.catalogStore.upsertNewVersion(
         this.toCatalogRow(latest, modelType, modelId, true),
       );
@@ -1784,7 +1786,10 @@ export class DataQueryService {
     const rows: CatalogRow[] = [];
     for (const [, items] of byType) {
       for (const { data: latest, modelType, modelId } of items) {
-        if (latest.isRenamed || latest.isDeleted) continue;
+        // Rows mirror write-through: a deletion marker is a version like any
+        // other (save() indexes it), while a rename marker is projected into
+        // catalog_renames, never as a row (swamp-club#3698).
+        if (latest.isRenamed) continue;
         const versions = await this.dataRepo.listVersions(
           modelType,
           modelId,
@@ -1802,7 +1807,7 @@ export class DataQueryService {
                 version,
               );
             if (!data) continue;
-            if (data.isRenamed || data.isDeleted) continue;
+            if (data.isRenamed) continue;
             rows.push(
               this.toCatalogRow(
                 data,
@@ -1859,7 +1864,8 @@ export class DataQueryService {
     const rows: CatalogRow[] = [];
     for (const [, items] of byType) {
       for (const { data: latest, modelType, modelId } of items) {
-        if (latest.isRenamed || latest.isDeleted) continue;
+        // Deletion markers are rows; see backfillAsync.
+        if (latest.isRenamed) continue;
         const versions = this.dataRepo.listVersionsSync(
           modelType,
           modelId,
@@ -1877,7 +1883,7 @@ export class DataQueryService {
                 version,
               );
             if (!data) continue;
-            if (data.isRenamed || data.isDeleted) continue;
+            if (data.isRenamed) continue;
             rows.push(
               this.toCatalogRow(
                 data,

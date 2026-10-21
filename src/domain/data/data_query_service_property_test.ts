@@ -23,11 +23,13 @@ import fc from "fast-check";
 import { computeLatestFlags, DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
+import { Data } from "./data.ts";
 import {
   type CatalogRow,
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 
 function makeRow(version: number, stepName: string): CatalogRow {
   return {
@@ -361,4 +363,94 @@ Deno.test("DataQueryService rename forwards: a read by any name matches what the
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+const RESOURCE_NAMES = ["a", "b", "c"] as const;
+
+const arbResourceOps = fc.array(
+  fc.record({
+    kind: fc.constantFrom("save", "delete", "rename"),
+    name: fc.constantFrom(...RESOURCE_NAMES),
+  }),
+  { maxLength: 12 },
+);
+
+/** Rows as name@version:is_latest is_step_latest, sorted. */
+function catalogRows(catalog: CatalogStore): string[] {
+  return [...catalog.iterate()]
+    .map((r) => `${r.data_name}@${r.version}:${r.is_latest}${r.is_step_latest}`)
+    .sort();
+}
+
+Deno.test("property: a catalog rebuilt from disk matches the write-through catalog across saves, deletion markers, re-creates and renames (swamp-club#3698)", async () => {
+  const type = ModelType.create("test/model");
+  await fc.assert(
+    fc.asyncProperty(arbResourceOps, async (ops) => {
+      const dir = Deno.makeTempDirSync({ prefix: "swamp-rebuild-prop-" });
+      const live = new CatalogStore(join(dir, "live.db"));
+      const rebuilt = new CatalogStore(join(dir, "rebuilt.db"));
+      try {
+        live.markPopulated();
+        const repo = new FileSystemUnifiedDataRepository(dir, undefined, live);
+        const modelId = crypto.randomUUID();
+        // A renamed-away name is never written again: re-saving it brings
+        // back its pre-rename versions on a rebuild (swamp-club#3707).
+        const state = new Map<string, "active" | "deleted" | "retired">();
+        const renamed: string[] = [];
+        for (const [i, { kind, name }] of ops.entries()) {
+          const current = state.get(name);
+          if (kind === "save" && current !== "retired") {
+            await repo.save(
+              type,
+              modelId,
+              Data.create({
+                name,
+                contentType: "application/json",
+                lifetime: "infinite",
+                garbageCollection: 100,
+                tags: { type: "resource", modelName: "m" },
+                ownerDefinition: { ownerType: "model-method", ownerRef: "t" },
+              }),
+              new TextEncoder().encode(JSON.stringify({ i })),
+            );
+            state.set(name, "active");
+          } else if (kind === "delete" && current === "active") {
+            const latest = await repo.findByName(type, modelId, name);
+            await repo.save(
+              type,
+              modelId,
+              latest!.withDeletionMarker({ version: latest!.version + 1 }),
+              new TextEncoder().encode(JSON.stringify({ deletedAt: i })),
+            );
+            state.set(name, "deleted");
+          } else if (kind === "rename" && current === "active") {
+            const target = `${name}-r${i}`;
+            await repo.rename(type, modelId, name, target);
+            state.set(name, "retired");
+            state.set(target, "active");
+            renamed.push(name);
+          }
+        }
+
+        const service = new DataQueryService(
+          rebuilt,
+          new FileSystemUnifiedDataRepository(dir, undefined, rebuilt),
+        );
+        await service.query("true");
+
+        assertEquals(catalogRows(rebuilt), catalogRows(live));
+        for (const name of renamed) {
+          assertEquals(
+            rebuilt.findRenameTarget("", type.normalized, modelId, name),
+            live.findRenameTarget("", type.normalized, modelId, name),
+          );
+        }
+      } finally {
+        live.close();
+        rebuilt.close();
+        Deno.removeSync(dir, { recursive: true });
+      }
+    }),
+    { numRuns: 40 },
+  );
 });

@@ -211,8 +211,10 @@ expands the references and registers the values with the redactor
 `method_execution_service.ts` writes a tombstone version (`lifecycle: deleted`)
 for every declared resource: the last known attributes plus `deletedAt` /
 `deletedByMethod`. `data.latest()` still returns the final state, which keeps
-workflow re-runs idempotent. `context.deleteResource(name)` is the hard form and
-removes every version.
+workflow re-runs idempotent, and `data query` returns the tombstone as the
+name's latest record — on a rebuilt catalog too (see
+[data-query.md](../enablers/data-query.md#population-strategy)).
+`context.deleteResource(name)` is the hard form and removes every version.
 
 ## Reading data
 

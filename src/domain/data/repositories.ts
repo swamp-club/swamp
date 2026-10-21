@@ -677,7 +677,8 @@ export interface UnifiedDataRepository {
    * Finds data matching a specific (modelName, dataName) pair by walking
    * the filesystem and checking metadata tags. Used for scoped catalog
    * backfill when the catalog is not yet populated but only a single
-   * data item is needed.
+   * data item is needed. A name whose latest version is a deletion marker
+   * is returned (it is a catalog row); a rename marker is not.
    *
    * @param modelName - The modelName tag value to match
    * @param dataName - The data directory name to match
