@@ -25,6 +25,9 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
+import { Data } from "../../domain/data/data.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
   catalogCompletenessDataDir,
@@ -223,6 +226,69 @@ Deno.test(
     assertEquals(summary.diskRecords, 2);
     assertEquals(summary.catalogRecords, 2);
     assertEquals(summary.shortfalls.length, 0);
+  }),
+);
+
+Deno.test(
+  "compareCatalogToDisk: a catalog rebuilt over deleted and renamed-then-deleted resources reports no shortfall (swamp-club#3698)",
+  withFixture(async (repoDir, catalog) => {
+    // Written through another catalog, as another checkout or a catalog the
+    // repair removed would have been; `catalog` starts empty.
+    const writer = new CatalogStore(join(repoDir, "writer.db"));
+    try {
+      const repo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        writer,
+      );
+      const type = ModelType.create("@scope/servers");
+      const modelId = crypto.randomUUID();
+      const tombstone = async (name: string) => {
+        const latest = await repo.findByName(type, modelId, name);
+        await repo.save(
+          type,
+          modelId,
+          latest!.withDeletionMarker({ version: latest!.version + 1 }),
+          new TextEncoder().encode("{}"),
+        );
+      };
+      for (const name of ["kept", "deleted", "gamma"]) {
+        await repo.save(
+          type,
+          modelId,
+          Data.create({
+            name,
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            tags: { type: "resource", modelName: "servers" },
+            ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+          }),
+          new TextEncoder().encode("{}"),
+        );
+      }
+      await tombstone("deleted");
+      await repo.rename(type, modelId, "gamma", "gamma2");
+      await tombstone("gamma2");
+    } finally {
+      writer.close();
+    }
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    await new DataQueryService(catalog, dataRepo).query("true");
+    const summary = await compareCatalogToDisk(
+      catalog,
+      dataRepo,
+      SOLO_NAMESPACE,
+    );
+
+    assertEquals(summary.diskRecords, 3);
+    assertEquals(summary.catalogRecords, 3);
+    assertEquals(summary.shortfalls, []);
   }),
 );
 

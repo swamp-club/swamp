@@ -185,6 +185,38 @@ Deno.test("shared filesystem datastore: B stops returning an item A deleted", as
   });
 });
 
+Deno.test("shared filesystem datastore: B sees A's deletion marker as the item's latest version (swamp-club#3698)", async () => {
+  await withSharedPair(async (a, b) => {
+    const modelId = crypto.randomUUID();
+    await a.unifiedDataRepo.save(type, modelId, item("server"), enc("up"));
+    assertEquals(
+      (await b.dataQueryService.getLatestRecord("shared", "server"))?.version,
+      1,
+    );
+    assertEquals(await names(b), ["server"]);
+
+    // A's delete-kind method writes a deletion marker, as
+    // method_execution_service does.
+    const latest = await a.unifiedDataRepo.findByName(type, modelId, "server");
+    await a.unifiedDataRepo.save(
+      type,
+      modelId,
+      latest!.withDeletionMarker({ version: latest!.version + 1 }),
+      enc(JSON.stringify({ deletedAt: "now" })),
+    );
+
+    // Not B's stale active v1, and not nothing: the final state.
+    assertEquals(
+      (await b.dataQueryService.getLatestRecord("shared", "server"))?.version,
+      2,
+    );
+    const rows = await b.dataQueryService.query(
+      'modelName == "shared"',
+    ) as Array<{ name: string; version: number }>;
+    assertEquals(rows.map((r) => [r.name, r.version]), [["server", 2]]);
+  });
+});
+
 Deno.test("shared filesystem datastore: B sees a deferred write once A advances the latest marker", async () => {
   await withSharedPair(async (a, b) => {
     const modelId = crypto.randomUUID();

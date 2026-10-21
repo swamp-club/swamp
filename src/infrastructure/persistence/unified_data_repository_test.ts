@@ -3540,3 +3540,43 @@ Deno.test("allocateVersion: never allocates at or below a raised version floor (
     }
   }
 });
+
+Deno.test("findByTaggedName: returns a name whose latest version is a deletion marker, not a rename marker (swamp-club#3698)", async () => {
+  await withRenameRepo(async (repo, _catalogStore, modelId) => {
+    const tagged = (name: string) =>
+      Data.create({
+        name,
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 100,
+        tags: { type: "resource", modelName: "ingest" },
+        ownerDefinition: owner,
+      });
+    await repo.save(testType, modelId, tagged("deleted"), new Uint8Array([1]));
+    await repo.save(testType, modelId, tagged("old"), new Uint8Array([1]));
+    const latest = await repo.findByName(testType, modelId, "deleted");
+    await repo.save(
+      testType,
+      modelId,
+      latest!.withDeletionMarker({ version: latest!.version + 1 }),
+      new TextEncoder().encode("{}"),
+    );
+    await repo.rename(testType, modelId, "old", "new");
+
+    const deleted = await repo.findByTaggedName("ingest", "deleted");
+    assertEquals(
+      deleted.map((
+        { data, modelId },
+      ) => [data.version, data.isDeleted, modelId]),
+      [[2, true, modelId]],
+    );
+    // The unversioned read follows the forward: the marker is never returned.
+    assertEquals(
+      (await repo.findByTaggedName("ingest", "old")).map(({ data }) => [
+        data.name,
+        data.isRenamed,
+      ]),
+      [["new", false]],
+    );
+  });
+});
