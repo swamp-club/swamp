@@ -720,3 +720,185 @@ Deno.test("FileSystemStorage.syncChunkDirectories: a sync that fails, or that a 
     assertEquals(synced, [shard]);
   });
 });
+
+/**
+ * A storage on a pretend macOS whose syncs are recorded: `barrier` answers
+ * each ordering barrier, `devices` maps a path to its device.
+ */
+function barrierStorage(
+  dir: string,
+  options: {
+    orderedBefore?: string;
+    platform?: typeof Deno.build.os;
+    barrier?: (path: string) => "synced" | "unsupported";
+    devices?: (path: string) => number;
+    fullSyncDevices?: Set<number>;
+  } = {},
+) {
+  const barriers: string[] = [];
+  const fullFiles: string[] = [];
+  const fullDirs: string[] = [];
+  const storage = new FileSystemStorage(dir, {
+    orderedBefore: "orderedBefore" in options
+      ? options.orderedBefore
+      : join(dir, "commits.db"),
+    platform: options.platform ?? "darwin",
+    barrierSync: (path) => {
+      barriers.push(path);
+      return Promise.resolve(options.barrier?.(path) ?? "synced");
+    },
+    deviceOf: (path) => Promise.resolve(options.devices?.(path) ?? 1),
+    fullSyncDevices: options.fullSyncDevices ?? new Set(),
+    syncFile: async (file) => {
+      fullFiles.push("file");
+      await file.sync();
+    },
+    syncDirectory: (d) => {
+      fullDirs.push(d);
+      return Promise.resolve();
+    },
+    syncedAncestors: new Map(),
+    durableChunks: new Map(),
+  });
+  return { storage, barriers, fullFiles, fullDirs };
+}
+
+/** Whether `path` is a chunk's temp file rather than a directory. */
+function isTempFile(path: string): boolean {
+  return path.endsWith(".tmp");
+}
+
+Deno.test("FileSystemStorage: on macOS with the commit log on its device, files and directories get the ordering barrier, never a full sync (swamp-club#3737)", async () => {
+  await withTempDir(async (dir) => {
+    const { storage, barriers, fullFiles, fullDirs } = barrierStorage(dir);
+    const stage = storage.stageChunks("team");
+    try {
+      await stage.put(SHA, new Uint8Array([1]), live());
+      await stage.put(SHA_CD, new Uint8Array([2]), live());
+      await stage.commit(live());
+    } finally {
+      await stage.discard();
+    }
+    assertEquals(barriers.filter(isTempFile).length, 2);
+    barriers.length = 0;
+    await storage.syncChunkDirectories("team", [SHA, SHA_CD], live());
+    assertEquals(barriers, [
+      dirname(chunkPath(dir, "team", SHA)),
+      dirname(chunkPath(dir, "team", SHA_CD)),
+      ...ancestorsOf(dir, "team"),
+    ]);
+    assertEquals(fullFiles, []);
+    assertEquals(fullDirs, []);
+    assertEquals(
+      await Deno.readFile(chunkPath(dir, "team", SHA)),
+      new Uint8Array([1]),
+    );
+  });
+});
+
+Deno.test("FileSystemStorage: a volume that refuses the barrier falls back to the full sync once, and its device is remembered (swamp-club#3737)", async () => {
+  await withTempDir(async (dir) => {
+    const fullSyncDevices = new Set<number>();
+    const { storage, barriers, fullFiles, fullDirs } = barrierStorage(dir, {
+      barrier: () => "unsupported",
+      devices: () => 9,
+      fullSyncDevices,
+    });
+    await storage.put("team", SHA, new Uint8Array([1]), live());
+    // The refused barrier, then the full sync of that same file.
+    assertEquals(barriers.filter(isTempFile).length, 1);
+    assertEquals(fullFiles, ["file"]);
+    assertEquals([...fullSyncDevices], [9]);
+
+    // Remembered: the next chunk and every directory go straight to the
+    // full sync.
+    barriers.length = 0;
+    await storage.put("team", SHA_CD, new Uint8Array([2]), live());
+    await storage.syncChunkDirectories("team", [SHA, SHA_CD], live());
+    assertEquals(barriers, []);
+    assertEquals(fullFiles, ["file", "file"]);
+    assertEquals(fullDirs, [
+      dirname(chunkPath(dir, "team", SHA)),
+      dirname(chunkPath(dir, "team", SHA_CD)),
+      ...ancestorsOf(dir, "team"),
+    ]);
+  });
+});
+
+Deno.test("FileSystemStorage: a directory whose barrier is refused gets the full directory sync, and a failed one marks nothing durable (swamp-club#3737)", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(dirname(chunkPath(dir, "team", SHA)), { recursive: true });
+    await Deno.writeFile(chunkPath(dir, "team", SHA), new Uint8Array([1]));
+    let failDirs = true;
+    const barriers: string[] = [];
+    const fullDirs: string[] = [];
+    const storage = new FileSystemStorage(dir, {
+      orderedBefore: join(dir, "commits.db"),
+      platform: "darwin",
+      barrierSync: (path) => {
+        barriers.push(path);
+        return Promise.resolve("unsupported");
+      },
+      deviceOf: () => Promise.resolve(1),
+      fullSyncDevices: new Set(),
+      syncDirectory: (d) => {
+        fullDirs.push(d);
+        return failDirs
+          ? Promise.reject(new Error("dir sync failed"))
+          : Promise.resolve();
+      },
+      syncedAncestors: new Map(),
+      durableChunks: new Map(),
+    });
+    await assertRejects(
+      () => storage.syncChunkDirectories("team", [SHA], live()),
+      Error,
+      "dir sync failed",
+    );
+    assertEquals(barriers, [dirname(chunkPath(dir, "team", SHA))]);
+    // Not marked durable: the next call syncs it again.
+    failDirs = false;
+    fullDirs.length = 0;
+    await storage.syncChunkDirectories("team", [SHA], live());
+    assertEquals(fullDirs, [
+      dirname(chunkPath(dir, "team", SHA)),
+      ...ancestorsOf(dir, "team"),
+    ]);
+  });
+});
+
+Deno.test("FileSystemStorage: the full sync is kept off macOS, without a commit log, on another device, or when the device lookup fails (swamp-club#3737)", async () => {
+  const cases: {
+    name: string;
+    options: Parameters<typeof barrierStorage>[1];
+  }[] = [
+    { name: "linux", options: { platform: "linux" } },
+    { name: "windows", options: { platform: "windows" } },
+    { name: "no commit log", options: { orderedBefore: undefined } },
+    {
+      name: "commit log on another device",
+      options: { devices: (path) => path.endsWith("_blobs") ? 1 : 2 },
+    },
+    {
+      name: "device lookup fails",
+      options: {
+        devices: () => {
+          throw new Error("stat failed");
+        },
+      },
+    },
+  ];
+  for (const { name, options } of cases) {
+    await withTempDir(async (dir) => {
+      const { storage, barriers, fullFiles, fullDirs } = barrierStorage(
+        dir,
+        options,
+      );
+      await storage.put("team", SHA, new Uint8Array([1]), live());
+      await storage.syncChunkDirectories("team", [SHA], live());
+      assertEquals(barriers, [], name);
+      assertEquals(fullFiles, ["file"], name);
+      assertEquals(fullDirs.length, 1 + ancestorsOf(dir, "team").length, name);
+    });
+  }
+});

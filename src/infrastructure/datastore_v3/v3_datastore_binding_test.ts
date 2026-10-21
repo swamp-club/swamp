@@ -55,6 +55,7 @@ import {
   v3ReplicaFor,
   v3ReplicatesAt,
 } from "./v3_datastore_binding.ts";
+import { v3ChunksOrderedBefore } from "./v3_datastore.ts";
 
 const TARGET: V3ReplicaTarget = {
   type: "s3",
@@ -375,4 +376,45 @@ Deno.test("lockingConfigOf: a v3 extension config no binding has seen is refused
   );
   const { format: _, ...v2 } = bucketConfig();
   assertEquals(lockingConfigOf(v2), v2);
+});
+
+Deno.test("v3ChunksOrderedBefore: only an unreplicated filesystem datastore orders its chunks before its commits.db (swamp-club#3737)", async () => {
+  await withRepo(async (repoDir) => {
+    const datastorePath = join(repoDir, "datastore");
+    const commitsDb = join(datastorePath, "commits.db");
+    await withMockedEnv({ [V3_REPLICA_ENV]: undefined }, () => {
+      assertEquals(v3ChunksOrderedBefore(datastorePath, commitsDb), commitsDb);
+      return Promise.resolve();
+    });
+    // While replicating, the commit is durable once Litestream ships it,
+    // before an ordering barrier has put the chunk on the disk.
+    await withMockedEnv(
+      {
+        [V3_REPLICA_ENV]: JSON.stringify({
+          type: "file",
+          path: join(repoDir, "replica"),
+        }),
+      },
+      () => {
+        assertEquals(
+          v3ChunksOrderedBefore(datastorePath, commitsDb),
+          undefined,
+        );
+        return Promise.resolve();
+      },
+    );
+    await withMockedEnv({ [V3_REPLICA_ENV]: undefined }, () => {
+      const bucket = bindV3BucketDatastore(
+        repoDir,
+        bucketConfig(),
+        bucketProvider().provider,
+        { platform: LINUX },
+      );
+      assertEquals(
+        v3ChunksOrderedBefore(bucket.path, join(bucket.path, "commits.db")),
+        undefined,
+      );
+      return Promise.resolve();
+    });
+  });
 });
