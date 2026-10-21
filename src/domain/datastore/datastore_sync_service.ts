@@ -547,6 +547,10 @@ export interface CatalogExportRow {
    * Absent in exports written before the column existed; read as unknown.
    */
   garbage_collection?: string;
+  /**
+   * Absent in exports written before the column existed; read as unknown.
+   */
+  lifecycle?: string;
   owner_type: string;
   streaming: number;
   size: number;

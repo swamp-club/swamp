@@ -783,6 +783,7 @@ export async function handleDataSearch(
         query: payload?.query,
         type: payload?.type,
         lifetime: payload?.lifetime,
+        lifecycle: payload?.lifecycle,
         ownerType: payload?.ownerType,
         workflow: payload?.workflow,
         model: payload?.model,

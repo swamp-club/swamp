@@ -1340,6 +1340,13 @@ export class DataQueryService {
       whereClauses.push("model_id = ?");
       whereParams.push(modelIdLiteral);
     }
+    // Every write path stores Data.lifecycle and catalog pull stores only
+    // "active", "deleted" or "", so the column equals the record's field.
+    const lifecycleLiteral = extractStringEquality(userAst, "lifecycle");
+    if (lifecycleLiteral !== null) {
+      whereClauses.push("lifecycle = ?");
+      whereParams.push(lifecycleLiteral);
+    }
 
     const modelCall = extractModelCall(userAst);
     const modelTarget = modelCall === null ? undefined : models.get(modelCall);
@@ -1942,6 +1949,7 @@ export class DataQueryService {
       content_type: data.contentType,
       lifetime: data.lifetime,
       garbage_collection: garbageCollectionToColumn(data.garbageCollection),
+      lifecycle: data.lifecycle,
       owner_type: data.ownerDefinition.ownerType,
       streaming: data.streaming ? 1 : 0,
       size: data.size ?? 0,

@@ -18,6 +18,7 @@
 | `contentType`       | string           | MIME type (e.g., `"application/json"`)                                              |
 | `lifetime`          | string           | `"infinite"`, `"ephemeral"`, `"job"`, `"workflow"`, or duration like `"1h"`, `"7d"` |
 | `garbageCollection` | number or string | Versions kept: a count (`10`) or a duration (`"30d"`); `""` if unknown              |
+| `lifecycle`         | string           | `"deleted"` for a deletion marker, else `"active"`; `""` if unknown                 |
 | `ownerType`         | string           | `"model-method"`, `"workflow-step"`, or `"manual"`                                  |
 | `ownerRef`          | string           | Owning entity; with `ownerType`, what ownership is checked on                       |
 | `workflowRunId`     | string           | Run that wrote the data (empty outside workflows)                                   |
@@ -44,6 +45,18 @@ garbageCollection == 10
 garbageCollection == "30d"
 type(garbageCollection) != string && garbageCollection < 5
 ```
+
+A `kind: delete` method leaves a deletion marker as the resource's latest
+version, so queries return deleted resources unless they filter on `lifecycle`.
+It is per version and needs no disk read; match it instead of
+`attributes.deletedAt`:
+
+```cel
+modelType == "@swamp/hetzner-cloud/servers" && lifecycle == "active"
+lifecycle != "deleted"  # also keeps "" rows pulled from older catalog exports
+```
+
+`swamp data search --lifecycle active` applies the same filter to search.
 
 ## Content Fields (loaded from disk on demand)
 

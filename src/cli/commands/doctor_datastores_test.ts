@@ -203,6 +203,7 @@ Deno.test(
         content_type: "application/json",
         lifetime: "infinite",
         garbage_collection: "10",
+        lifecycle: "active",
         owner_type: "model-method",
         owner_ref: "test",
         streaming: 0,

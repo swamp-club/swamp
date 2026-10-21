@@ -115,6 +115,22 @@ Deno.test("exportRowsToCatalogRows: an export without garbage_collection reads a
   assertEquals(row.garbage_collection, "");
 });
 
+Deno.test("exportRowsToCatalogRows: carries lifecycle from the export", () => {
+  const rows = exportRowsToCatalogRows([
+    makeExportRow({ data_name: "live", lifecycle: "active" }),
+    makeExportRow({ data_name: "gone", lifecycle: "deleted" }),
+  ]);
+  assertEquals(rows.map((r) => r.lifecycle), ["active", "deleted"]);
+});
+
+Deno.test("exportRowsToCatalogRows: an export without lifecycle, or with an unrecognised one, reads as unknown", () => {
+  const rows = exportRowsToCatalogRows([
+    makeExportRow({ data_name: "legacy" }),
+    makeExportRow({ data_name: "odd", lifecycle: "archived" }),
+  ]);
+  assertEquals(rows.map((r) => r.lifecycle), ["", ""]);
+});
+
 async function withCatalogStore(
   fn: (store: CatalogStore) => void,
 ): Promise<void> {

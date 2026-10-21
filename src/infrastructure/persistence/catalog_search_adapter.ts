@@ -20,6 +20,7 @@
 import type { CatalogRow, CatalogStore } from "./catalog_store.ts";
 import type { DataSearchItem } from "../../libswamp/data/search.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { lifecycleFromColumn } from "../../domain/data/data_metadata.ts";
 
 function catalogRowToSearchItem(row: CatalogRow): DataSearchItem {
   let tags: Record<string, string> = {};
@@ -35,6 +36,7 @@ function catalogRowToSearchItem(row: CatalogRow): DataSearchItem {
     contentType: row.content_type,
     type: row.data_type,
     lifetime: row.lifetime,
+    lifecycle: lifecycleFromColumn(row.lifecycle),
     ownerType: row.owner_type,
     ownerRef: row.owner_ref,
     modelId: row.model_id,

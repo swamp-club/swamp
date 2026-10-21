@@ -213,8 +213,11 @@ for every declared resource: the last known attributes plus `deletedAt` /
 `deletedByMethod`. `data.latest()` still returns the final state, which keeps
 workflow re-runs idempotent, and `data query` returns the tombstone as the
 name's latest record — on a rebuilt catalog too (see
-[data-query.md](../enablers/data-query.md#population-strategy)).
-`context.deleteResource(name)` is the hard form and removes every version.
+[data-query.md](../enablers/data-query.md#population-strategy)). Filter it out
+with the catalog's `lifecycle` column: `lifecycle == "active"` is a
+metadata-only predicate for `data query`, `data.query()` and
+`data search --lifecycle` (swamp-club#3706). `context.deleteResource(name)` is
+the hard form and removes every version.
 
 ## Reading data
 

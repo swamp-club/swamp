@@ -57,6 +57,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     content_type: "application/json",
     lifetime: "infinite",
     garbage_collection: "10",
+    lifecycle: "active",
     owner_type: "model-method",
     owner_ref: "",
     workflow_run_id: "",
@@ -1422,6 +1423,57 @@ Deno.test("CatalogStore: every write path stores garbage_collection", () => {
     "new-version": "1mo",
     bulk: "3",
     foreign: "2w",
+  });
+  store.close();
+});
+
+Deno.test("CatalogStore: rebuilds a schema 8 catalog, which has no lifecycle column (swamp-club#3706)", () => {
+  const dbPath = makeTempDbPath();
+
+  // A schema 8 catalog can hold write-through deletion markers. Defaulting
+  // their new column to active would mislabel them, so the table is rebuilt.
+  new CatalogStore(dbPath).close();
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    ALTER TABLE catalog DROP COLUMN lifecycle;
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
+      VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '8');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('generation', '8');
+  `);
+  db.close();
+
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0, "rebuild drops the unlabelled rows");
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+  assertEquals(store.generation(), 9, "rebuild advances the generation");
+  store.upsert(makeRow({ lifecycle: "deleted" }));
+  assertEquals([...store.iterate()][0].lifecycle, "deleted");
+  store.close();
+});
+
+Deno.test("CatalogStore: every write path stores lifecycle", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ data_name: "upsert", lifecycle: "deleted" }));
+  store.upsertNewVersion(
+    makeRow({ data_name: "new-version", lifecycle: "deleted" }),
+  );
+  store.bulkUpsert([makeRow({ data_name: "bulk", lifecycle: "deleted" })]);
+  store.bulkUpsertForeign("other", [
+    makeRow({ namespace: "other", data_name: "foreign", lifecycle: "" }),
+  ]);
+
+  const byName = Object.fromEntries(
+    [...store.iterate()].map((row) => [row.data_name, row.lifecycle]),
+  );
+  assertEquals(byName, {
+    upsert: "deleted",
+    "new-version": "deleted",
+    bulk: "deleted",
+    foreign: "",
   });
   store.close();
 });

@@ -393,6 +393,7 @@ const DataSearchRequestSchema = z.object({
     query: z.string().optional(),
     type: z.string().optional(),
     lifetime: z.string().optional(),
+    lifecycle: z.string().optional(),
     ownerType: z.string().optional(),
     workflow: z.string().optional(),
     model: z.string().optional(),

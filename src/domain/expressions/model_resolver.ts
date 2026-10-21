@@ -1775,6 +1775,7 @@ export class ModelResolver {
       contentType: data.contentType,
       lifetime: data.lifetime,
       garbageCollection: data.garbageCollection,
+      lifecycle: data.lifecycle,
       ownerType: data.ownerDefinition.ownerType,
       streaming: data.streaming,
       size: data.size ?? 0,

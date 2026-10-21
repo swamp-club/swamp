@@ -197,6 +197,10 @@ export const dataSearchCommand = withRemoteOptions(
       "Filter by lifetime (ephemeral, infinite, job, workflow, or duration)",
     )
     .option(
+      "--lifecycle <lifecycle:string>",
+      "Filter by lifecycle (active, or deleted for deletion markers)",
+    )
+    .option(
       "--owner-type <type:string>",
       "Filter by owner type (behavior-method or model-method, workflow-step, manual)",
     )
@@ -258,6 +262,7 @@ export const dataSearchCommand = withRemoteOptions(
           query,
           type: options.type as string | undefined,
           lifetime: options.lifetime as string | undefined,
+          lifecycle: options.lifecycle as string | undefined,
           ownerType,
           workflow: options.workflow as string | undefined,
           model,
@@ -320,6 +325,7 @@ export const dataSearchCommand = withRemoteOptions(
       query,
       type: options.type as string | undefined,
       lifetime: options.lifetime as string | undefined,
+      lifecycle: options.lifecycle as string | undefined,
       ownerType,
       workflow: options.workflow as string | undefined,
       model,

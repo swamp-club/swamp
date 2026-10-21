@@ -1875,3 +1875,75 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
     catalog.close();
   });
 });
+
+Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data query and data.query() alike (swamp-club#3706)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const model = Definition.create({ name: "servers", globalArguments: {} });
+    await definitionRepo.save(type, model);
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    // Populate the empty catalog first, so the saves below reach it through
+    // write-through rather than a backfill.
+    await dqs.query('name == ""');
+    try {
+      const saveServer = async (data: Data, body: unknown) =>
+        await dataRepo.save(
+          type,
+          model.id,
+          data,
+          new TextEncoder().encode(JSON.stringify(body)),
+        );
+      const server = (name: string) =>
+        Data.create({
+          name,
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource", specName: "server", modelName: "servers" },
+          ownerDefinition: createOwner("test/model:servers"),
+        });
+      await saveServer(server("web"), { id: 1 });
+      const db = server("db");
+      await saveServer(db, { id: 2 });
+      // What a kind: delete method writes (method_execution_service.ts).
+      await saveServer(db.withDeletionMarker({ version: 2 }), {
+        id: 2,
+        deletedAt: "2026-10-21T00:00:00.000Z",
+      });
+
+      const names = (records: unknown[]) =>
+        (records as DataRecord[]).map((r) => `${r.name}:${r.lifecycle}`)
+          .sort();
+
+      assertEquals(names(await dqs.query('modelName == "servers"')), [
+        "db:deleted",
+        "web:active",
+      ]);
+      const live = 'modelName == "servers" && lifecycle == "active"';
+      assertEquals(names(await dqs.query(live)), ["web:active"]);
+
+      const resolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await resolver.buildContext(new RunSensitiveValues());
+      assertExists(context.data);
+      assertEquals(names(await context.data.query(live)), ["web:active"]);
+      assertEquals(await context.data.query(live, "lifecycle"), ["active"]);
+    } finally {
+      catalog.close();
+    }
+  });
+});

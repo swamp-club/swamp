@@ -1577,6 +1577,7 @@ Deno.test("CelEvaluator: explains 'No such key' for every DataRecord field when 
     contentType: true,
     lifetime: true,
     garbageCollection: true,
+    lifecycle: true,
     ownerType: true,
     streaming: true,
     size: true,

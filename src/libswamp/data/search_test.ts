@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -41,6 +41,8 @@ function makeSearchItem(
     contentType: (overrides.contentType as string) ?? "application/json",
     type: (overrides.type as string) ?? "data",
     lifetime: (overrides.lifetime as string) ?? "persistent",
+    lifecycle: (overrides.lifecycle as DataSearchItem["lifecycle"]) ??
+      "active",
     ownerType: (overrides.ownerType as string) ?? "model",
     ownerRef: (overrides.ownerRef as string) ?? "ref-1",
     modelId: (overrides.modelId as string) ?? "model-1",
@@ -108,6 +110,38 @@ Deno.test("dataSearch: filters by type", async () => {
   assertEquals(completed.data.results.length, 1);
   assertEquals(completed.data.results[0].type, "log");
   assertEquals(completed.data.filters.type, "log");
+});
+
+Deno.test("dataSearch: filters by lifecycle (swamp-club#3706)", async () => {
+  const items = [
+    makeSearchItem({ id: "d1", lifecycle: "active" }),
+    makeSearchItem({ id: "d2", lifecycle: "deleted" }),
+    makeSearchItem({ id: "d3", lifecycle: "" }),
+  ];
+  const deps = makeDeps(items);
+  const events = await collect<DataSearchEvent>(
+    dataSearch(createLibSwampContext(), deps, { lifecycle: "active" }),
+  );
+
+  const completed = events[1] as Extract<
+    DataSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.map((r) => r.id), ["d1"]);
+  assertEquals(completed.data.filters.lifecycle, "active");
+});
+
+Deno.test("dataSearch: rejects an unknown lifecycle (swamp-club#3706)", async () => {
+  const events = await collect<DataSearchEvent>(
+    dataSearch(createLibSwampContext(), makeDeps([makeSearchItem()]), {
+      lifecycle: "gone",
+    }),
+  );
+
+  assertEquals(events[1].kind, "error");
+  const error = events[1] as Extract<DataSearchEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "validation_failed");
+  assertStringIncludes(error.error.message, "active, deleted");
 });
 
 Deno.test("dataSearch: filters by since duration", async () => {

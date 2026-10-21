@@ -56,6 +56,7 @@ function createRow(overrides?: Partial<CatalogRow>): CatalogRow {
     content_type: "application/json",
     lifetime: "infinite",
     garbage_collection: "10",
+    lifecycle: "active",
     owner_type: "model-method",
     streaming: 0,
     size: 100,
@@ -176,6 +177,17 @@ Deno.test("fromRow: decodes garbage_collection to the policy's own type", () => 
   assertEquals(decode("10"), 10);
   assertEquals(decode("7d"), "7d");
   assertEquals(decode(""), "", "unknown stays empty");
+});
+
+Deno.test("fromRow: decodes lifecycle, reading any unrecognised value as unknown", () => {
+  const repo = stubRepo(null);
+  const decode = (column: string) =>
+    fromRow(createRow({ lifecycle: column }), repo, false, false).lifecycle;
+
+  assertEquals(decode("active"), "active");
+  assertEquals(decode("deleted"), "deleted");
+  assertEquals(decode(""), "", "unknown stays empty");
+  assertEquals(decode("archived"), "", "a third state is never surfaced");
 });
 
 Deno.test("fromRow: handles invalid JSON content gracefully", () => {
@@ -325,6 +337,30 @@ Deno.test("fromData: parses JSON content and resolves attributes", async () => {
   assertEquals(record!.modelName, "my-model");
   assertEquals(record!.namespace, "");
   assertEquals(record!.garbageCollection, 10);
+});
+
+Deno.test("fromData: maps lifecycle from the Data entity", async () => {
+  const data = Data.create({
+    name: "my-data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: owner,
+  });
+  const repo = stubRepo(null, encoder.encode("{}"));
+  const modelType = ModelType.create("test/model");
+
+  const active = await fromData(data, modelType, "model-123", repo);
+  const marker = await fromData(
+    data.withDeletionMarker({ version: 2 }),
+    modelType,
+    "model-123",
+    repo,
+  );
+
+  assertEquals(active!.lifecycle, "active");
+  assertEquals(marker!.lifecycle, "deleted");
 });
 
 Deno.test("fromData: stamps the repository namespace onto the record", async () => {
@@ -615,6 +651,40 @@ Deno.test("fromResourceHandle: content is parsed attributes for JSON", async () 
   assertEquals(content.exitCode, 0);
   assertEquals(content.stdout, "output");
   assertEquals(record.content === record.attributes, true);
+});
+
+Deno.test("fromResourceHandle: lifecycle defaults to active and keeps deleted", async () => {
+  const repo = stubRepo(null, encoder.encode("{}"));
+  const handle = (lifecycle?: "active" | "deleted"): DataHandle => ({
+    name: "result",
+    specName: "result",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size: 2,
+    tags: { type: "resource" },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+      ...(lifecycle ? { lifecycle } : {}),
+    },
+  });
+  const map = (h: DataHandle) =>
+    fromResourceHandle(
+      h,
+      ModelType.create("test/model"),
+      "model-123",
+      "test-model",
+      repo,
+      new RunSensitiveValues(),
+    );
+
+  assertEquals((await map(handle())).lifecycle, "active");
+  assertEquals((await map(handle("deleted"))).lifecycle, "deleted");
 });
 
 Deno.test("fromResourceHandle: content is empty string for non-JSON", async () => {
