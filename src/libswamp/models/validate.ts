@@ -334,8 +334,10 @@ export function createModelValidateDeps(
           }
           : checkContext,
         // Definitions are read straight from the repository, as stored.
+        // With --method, the method items read what that method's run reads.
         {
           refuseLiteralSensitiveGlobals: true,
+          method: options?.method,
           ...(typed
             ? {
               // Each finding names the definition file beside its authored

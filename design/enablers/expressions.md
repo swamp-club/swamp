@@ -636,6 +636,16 @@ never asserted, so the factory `delete` runs without the secret its `create`
 named. `swamp behavior validate --method` evaluates the same scope, so it
 predicts the run it names.
 
+The static validation that a workflow step runs before evaluation is scoped
+the same way, and so is `validate --method`. The `Method arguments`,
+`Expression paths` and `Secret usage` items, and the template-syntax scan,
+read the global arguments and the selected method's arguments only
+(`ModelValidationOptions.method`). So a step and `swamp behavior run` agree on
+whether a method can run, whatever another method holds (swamp-club#3726). A
+method the type does not define leaves validation unscoped, and `validate`
+without `--method` still checks every method, so it remains the strictest
+gate.
+
 Text is classified only after evaluation fails, so a misclassification can
 never stop an expression that evaluates. Two kinds of failure are left in place
 without being recorded. The first is text that is not valid CEL, which is prose.
@@ -847,7 +857,8 @@ with the syntax corrected, swamp would claim it as its own expression.**
 - `{{ self.name }}`, `{{ model.vpc.resource.vpc.main.attributes.VpcId }}`,
   `${model.x.y}`, and `{{ inputs.env }}` in a definition that declares `env`
   are swamp's. They fail the `Expression paths` check, and in a workflow they
-  fail the step.
+  fail a step whose method is delivered them: one in the global arguments or
+  in the step's own method.
 - `{{host.name}}`, `{{#is_alert}}`, `{{ .Values.x }}`, `${HOME}`,
   `${var.region}`, and `{{ inputs.parameters.x }}` (an undeclared input) are
   not. They produce the `Template syntax passed through` warning, which never

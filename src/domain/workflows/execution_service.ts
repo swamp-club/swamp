@@ -2226,7 +2226,9 @@ export class DefaultStepExecutor implements StepExecutor {
       throw new Error(`Unknown behavior type: ${modelType.normalized}`);
     }
 
-    // Validate the model definition (including expression paths) BEFORE evaluation
+    // Validate the model definition (including expression paths) BEFORE
+    // evaluation, as a run of the step's method: another method's problems
+    // are not this step's to fail on, as `swamp behavior run` does not.
     const validationResults = await this.validationService.validateModel(
       originalDefinition,
       modelDef,
@@ -2236,6 +2238,7 @@ export class DefaultStepExecutor implements StepExecutor {
       {
         authoredGlobalArguments,
         refuseLiteralSensitiveGlobals: storedDefinition,
+        method: task.methodName,
       },
     );
 

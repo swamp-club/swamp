@@ -3842,3 +3842,171 @@ Deno.test("validateModel: with no applicable check nothing is delivered", async 
   assertEquals(deliveries, 0);
   assertEquals(results.some((r) => r.name.startsWith("Check:")), false);
 });
+
+// Validation scoped to a method (swamp-club#3726)
+
+/** A model type with three methods, for validation scoped to one of them. */
+const threeMethodModel: ModelDefinition = {
+  type: ModelType.create("test/method-scope"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({ message: z.string() }),
+  methods: Object.fromEntries(
+    ["run", "other", "broken"].map((name) => [name, {
+      description: name,
+      arguments: z.object({ message: z.string() }),
+      execute: () => Promise.resolve({}),
+    }]),
+  ),
+};
+
+/**
+ * A definition whose `run` method is sound while `other` holds an
+ * unresolvable model reference, a malformed swamp expression and another
+ * service's template text, `broken` an argument its schema refuses, and
+ * `extra`, a method the type does not define, another unresolvable
+ * reference.
+ */
+const scopedDefinitionProps = (
+  run: Record<string, unknown> = { message: "hello" },
+  globalArguments: Record<string, unknown> = { message: "hello" },
+) => ({
+  name: "scoped-def",
+  globalArguments,
+  methods: {
+    run: { arguments: run },
+    other: {
+      arguments: {
+        message:
+          "${{ model.missing-model.resource.x.y.attributes.z }} {{ self.name }} {{host.name}}",
+      },
+    },
+    broken: { arguments: { message: 42 } },
+    extra: { arguments: { message: "${{ model.also-missing.resource.x }}" } },
+  },
+});
+
+async function validateScoped(
+  props: Parameters<typeof Definition.create>[0],
+  method?: string,
+) {
+  const definition = Definition.create(props);
+  const { results, warnings } = await new DefaultModelValidationService()
+    .validateModel(
+      definition,
+      threeMethodModel,
+      createMockDefinitionRepo([
+        { name: props.name, type: "test/method-scope", definition },
+      ]),
+      undefined,
+      { method },
+    );
+  return {
+    result: (name: string) => results.find((r) => r.name === name),
+    warnings,
+  };
+}
+
+Deno.test("validateModel: scoped to a method, another method's Expression paths, Method arguments and template text pass (swamp-club#3726)", async () => {
+  const { result, warnings } = await validateScoped(
+    scopedDefinitionProps(),
+    "run",
+  );
+  assertEquals(result("Expression paths")?.passed, true);
+  assertEquals(result("Method arguments")?.passed, true);
+  assertEquals(
+    warnings.some((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    false,
+  );
+});
+
+Deno.test("validateModel: unscoped, the same definition fails on every method", async () => {
+  const { result, warnings } = await validateScoped(scopedDefinitionProps());
+  const paths = result("Expression paths");
+  assertEquals(paths?.passed, false);
+  assertStringIncludes(paths?.error ?? "", "missing-model");
+  assertStringIncludes(paths?.error ?? "", "also-missing");
+  assertStringIncludes(paths?.error ?? "", "{{ self.name }}");
+  assertEquals(result("Method arguments")?.passed, false);
+  assertStringIncludes(result("Method arguments")?.error ?? "", "broken");
+  assertEquals(
+    warnings.some((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    true,
+  );
+});
+
+Deno.test("validateModel: scoped to a method, its own problems and the global arguments' still fail", async () => {
+  const ownReference = await validateScoped(
+    scopedDefinitionProps({
+      message: "${{ model.run-missing.resource.x.y.attributes.z }}",
+    }),
+    "run",
+  );
+  assertEquals(ownReference.result("Expression paths")?.passed, false);
+  assertStringIncludes(
+    ownReference.result("Expression paths")?.error ?? "",
+    "run-missing",
+  );
+
+  const ownArgument = await validateScoped(
+    scopedDefinitionProps({ message: 42 }),
+    "run",
+  );
+  assertEquals(ownArgument.result("Method arguments")?.passed, false);
+
+  const globalReference = await validateScoped(
+    scopedDefinitionProps(undefined, {
+      message: "${{ model.global-missing.resource.x.y.attributes.z }}",
+    }),
+    "run",
+  );
+  assertEquals(globalReference.result("Expression paths")?.passed, false);
+  assertStringIncludes(
+    globalReference.result("Expression paths")?.error ?? "",
+    "global-missing",
+  );
+});
+
+Deno.test("validateModel: scoped to a method the type does not define, the whole definition is validated", async () => {
+  for (const method of ["bogus", "extra"]) {
+    const { result } = await validateScoped(scopedDefinitionProps(), method);
+    assertEquals(result("Expression paths")?.passed, false, method);
+    assertEquals(result("Method arguments")?.passed, false, method);
+  }
+});
+
+Deno.test("validateModel: scoped to a method, Secret usage diagnoses the global arguments and that method only", async () => {
+  const definition = Definition.create({
+    name: "typed-def",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+    methods: {
+      create: { arguments: { cmd: "echo ${{ vault.get('v', 'k') }}" } },
+      delete: { arguments: { cmd: "echo ${{ vault.get('v', 'k') == 'x' }}" } },
+    },
+  });
+  const model: ModelDefinition = {
+    ...secretUsageModel,
+    methods: {
+      create: secretUsageModel.methods.create,
+      delete: secretUsageModel.methods.create,
+    },
+  };
+  const seen: string[] = [];
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    model,
+    undefined,
+    undefined,
+    {
+      method: "create",
+      diagnoseSecretMisuse: (_expression, location) => {
+        seen.push(location);
+        return [];
+      },
+    },
+  );
+  assertEquals(seen, [
+    "globalArguments.token",
+    "methods.create.arguments.cmd",
+  ]);
+  assertEquals(results.find((r) => r.name === "Secret usage")?.passed, true);
+});

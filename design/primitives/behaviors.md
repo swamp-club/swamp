@@ -191,7 +191,10 @@ Validation reads static global arguments the way the next method run will.
 applies the same chain to an in-memory copy before it checks global arguments
 and runs pre-flight checks, and never saves it. That covers both
 `swamp behavior validate` and the check before each workflow step, so a stale
-definition is not refused before the run that would migrate it. An upgrade that
+definition is not refused before the run that would migrate it. The check
+before a step, like `validate --method`, reads the global arguments and the
+step's own method only, so another method's problems never fail it (see
+`design/enablers/expressions.md`, swamp-club#3726). An upgrade that
 throws fails the Global arguments item. Arguments holding a swamp expression are
 not upgraded in validation: the run upgrades their evaluated values, and the
 schema check skips them until then (swamp-club#3196).
