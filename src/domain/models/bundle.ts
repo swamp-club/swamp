@@ -24,7 +24,10 @@ import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { parseRange, rangeIntersects, tryParseRange } from "@std/semver";
 import * as zodModule from "zod";
 import { markErrorPaths, UserError } from "../errors.ts";
-import { DENO_CONFIG_FILE_NAMES } from "../extensions/deno_config.ts";
+import {
+  DENO_CONFIG_FILE_NAMES,
+  readDenoConfig,
+} from "../extensions/deno_config.ts";
 import {
   bareImportsFromDenoInfo,
   hasUnresolvedBareImports,
@@ -924,8 +927,27 @@ export function sharedZodTargets(
 }
 
 /**
+ * The config's own `imports` entry for `"zod"` when it admits only zod 4,
+ * read as JSONC; undefined otherwise. Only a fallback for externalizing
+ * zod when Deno gave no answer for it.
+ */
+async function configZodTarget(
+  denoConfigPath: string,
+): Promise<string | undefined> {
+  const imports = (await readDenoConfig(denoConfigPath))?.imports as
+    | Record<string, unknown>
+    | undefined;
+  const target = imports?.["zod"];
+  return typeof target === "string" && target.startsWith("npm:zod@") &&
+      isZod4Specifier(target) && !/^npm:zod@[^/]+\//.test(target)
+    ? target
+    : undefined;
+}
+
+/**
  * The bare imports `entryPoint`'s modules write and what Deno resolves
- * each to, read with `deno info` under the bundle's own project flags, with
+ * each to, read with `deno info` under the bundle's project config and
+ * `--no-lock` (a resolution query never writes the author's lock), with
  * any it leaves unresolved read again with `--node-modules-dir=none` as
  * the graph reader does (swamp-club#3612); none when deno info fails, so
  * nothing more is externalized and the bundle reports any error itself.
@@ -940,7 +962,8 @@ async function readBareImports(
       args: [
         "info",
         "--json",
-        ...denoProjectArgs(options),
+        // A resolution query only: never write or freeze the author's lock.
+        ...denoProjectArgs({ ...options, readOnlyLock: {} }),
         ...extraArgs,
         toFileUrl(entryPoint).href,
       ],
@@ -1117,7 +1140,19 @@ export async function bundleExtension(
       if (options?.denoConfigPath) {
         const resolutions = options.bareImports ??
           await readBareImports(absolutePath, denoPath, options);
-        const targets = sharedZodTargets(resolutions);
+        let targets = sharedZodTargets(resolutions);
+        // Deno gave no answer for a bare "zod" (offline, or a registry
+        // error on the node_modules-free read): keep the config's own zod 4
+        // entry external, as before, rather than inline a second zod that
+        // fails the host's instanceof checks. Only the bundle's externals
+        // follow this; what ships and is audited stays Deno's answer.
+        if (
+          targets.length === 0 &&
+          resolutions.some((r) => r.specifier === "zod" && !r.target)
+        ) {
+          const fallback = await configZodTarget(options.denoConfigPath);
+          if (fallback) targets = [fallback];
+        }
         for (const target of targets) args.push("--external", target);
         if (targets.length > 0) args.push("--external", "zod");
       }

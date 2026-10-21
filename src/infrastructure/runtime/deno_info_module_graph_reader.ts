@@ -23,7 +23,6 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   denoProjectArgs,
   isStaleLockfile,
-  type ReadOnlyLock,
   staleLockfileError,
 } from "../../domain/models/bundle.ts";
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
@@ -284,7 +283,7 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     ) {
       graph.bareImports = withPackageSpecifiers(
         graph.bareImports ?? [],
-        await this.readPackageSpecifiers(entryPoint, project, readOnlyLock),
+        await this.readPackageSpecifiers(entryPoint, project),
       );
     }
     return graph;
@@ -299,14 +298,16 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
   private async readPackageSpecifiers(
     entryPoint: string,
     project: ModuleGraphProject,
-    readOnlyLock: ReadOnlyLock | undefined,
   ): Promise<ResolvedBareImport[]> {
     try {
       const output = await new Deno.Command(this.denoPath, {
         args: [
           "info",
           "--json",
-          ...denoProjectArgs({ ...project, readOnlyLock }),
+          // A resolution query only: a lock written under a manual
+          // node_modules may lack the entries this mode wants, so the read
+          // never freezes or writes it. The bundle keeps its lock flags.
+          ...denoProjectArgs({ ...project, readOnlyLock: {} }),
           "--node-modules-dir=none",
           toFileUrl(entryPoint).href,
         ],

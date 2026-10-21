@@ -2030,3 +2030,82 @@ Deno.test("bundleExtension: a bare zod unresolved in node_modules is read again 
     assertStringIncludes(bundle, "--external zod");
   });
 });
+
+Deno.test("bundleExtension: when Deno gives no answer for a bare zod, the config's own zod 4 entry stays external", async () => {
+  await withTempFile('import { z } from "zod";\n', async (path) => {
+    const config = join(path, "..", `deno-${crypto.randomUUID()}.jsonc`);
+    await Deno.writeTextFile(
+      config,
+      '// offline\n{ "imports": { "zod": "npm:zod@4.3.6" } }',
+    );
+    try {
+      const calls: string[][] = [];
+      await withMockedCommand(async (_cmd: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "info") {
+          // The first read cannot find zod in node_modules; the second,
+          // offline, fails outright.
+          if (args.includes("--node-modules-dir=none")) {
+            return { stdout: "", stderr: "network unreachable", code: 1 };
+          }
+          return {
+            stdout: JSON.stringify({
+              modules: [{
+                specifier: toFileUrl(path).href,
+                dependencies: [{
+                  specifier: "zod",
+                  code: { error: "Could not find zod in node_modules" },
+                }],
+              }],
+            }),
+            code: 0,
+          };
+        }
+        await Deno.writeTextFile(args[args.indexOf("-o") + 1], "export {};\n");
+        return { stdout: "", code: 0 };
+      }, () =>
+        bundleExtension(path, DENO_PATH, {
+          denoConfigPath: config,
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }));
+      // Loader path (no readOnlyLock): the resolution reads still never
+      // touch the author's lock.
+      for (const info of calls.filter((c) => c[0] === "info")) {
+        assertEquals(info.includes("--no-lock"), true);
+      }
+      const bundle = calls.find((c) => c[0] === "bundle")!.join(" ");
+      assertStringIncludes(bundle, "--external npm:zod@4.3.6");
+      assertStringIncludes(bundle, "--external zod");
+    } finally {
+      await Deno.remove(config);
+    }
+  });
+});
+
+Deno.test("bundleExtension: no fallback when Deno resolves zod to zod 3 in some module", async () => {
+  await withTempFile('import { z } from "zod";\n', async (path) => {
+    const config = join(path, "..", `deno-${crypto.randomUUID()}.json`);
+    await Deno.writeTextFile(
+      config,
+      JSON.stringify({ imports: { zod: "npm:zod@4" } }),
+    );
+    try {
+      const calls: string[][] = [];
+      await withMockedCommand(async (_cmd: string, args: string[]) => {
+        calls.push(args);
+        await Deno.writeTextFile(args[args.indexOf("-o") + 1], "export {};\n");
+        return { stdout: "", code: 0 };
+      }, () =>
+        bundleExtension(path, DENO_PATH, {
+          denoConfigPath: config,
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+          bareImports: [
+            { importer: path, specifier: "zod", target: "npm:zod@3.23.8" },
+          ],
+        }));
+      assertEquals(calls[0].includes("zod"), false);
+    } finally {
+      await Deno.remove(config);
+    }
+  });
+});

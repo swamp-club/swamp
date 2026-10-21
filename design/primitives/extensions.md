@@ -1185,7 +1185,14 @@ beside the relative rewrites above:
   name maps to. That read also resolves a name listed only in the
   `package.json`, as Deno does, so it is rewritten and audited too. The
   bundler's own graph read (loader, serve reload) does the same, so a bare
-  `"zod"` stays external there.
+  `"zod"` stays external there. These resolution reads run with `--no-lock`:
+  they are queries, never freeze or write the author's lock, and a lock
+  written under a manual `node_modules` need not hold what the other mode
+  wants; the bundle keeps its own lock flags. When Deno gives no answer for a
+  bare `"zod"` at all (offline, a registry error), the bundler keeps the
+  config's own zod 4 entry external, as before, rather than inline a second
+  zod; that fallback decides only the bundle's externals, never what ships or
+  is audited.
 - The package cache hash covers the config file's text, and also each
   resolution its top-level `imports` would not give (an `importMap` file, a
   scope, a workspace root), so editing an import map file cannot reuse a stale

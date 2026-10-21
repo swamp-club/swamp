@@ -594,3 +594,38 @@ Deno.test("DenoInfoModuleGraphReader: no second read when every bare import reso
   );
   assertEquals(noConfig.calls.length, 1);
 });
+
+Deno.test("DenoInfoModuleGraphReader: the second read never freezes the lock, even when push reads under --frozen", async () => {
+  await withProject({
+    "deno.json": JSON.stringify({ imports: { "zod": "npm:zod@4" } }),
+    "deno.lock": '{ "version": "5" }',
+    "models/m.ts": 'import { z } from "zod";\nexport const m = z;\n',
+  }, async (dir) => {
+    const modelUrl = toFileUrl(join(dir, "models", "m.ts")).href;
+    const info = (code: Record<string, string>) =>
+      JSON.stringify({
+        modules: [{
+          kind: "esm",
+          mediaType: "TypeScript",
+          specifier: modelUrl,
+          dependencies: [{ specifier: "zod", code }],
+        }],
+      });
+    const { calls, result: graph } = await withMockedCommand(
+      [
+        { stdout: info({ error: "not in node_modules" }), code: 0 },
+        { stdout: info({ specifier: "npm:zod@4" }), code: 0 },
+      ],
+      () =>
+        new DenoInfoModuleGraphReader("deno", undefined, {
+          readOnlyLock: true,
+        }).read(join(dir, "models", "m.ts"), {
+          denoConfigPath: join(dir, "deno.json"),
+        }),
+    );
+    assertEquals(calls[0].args.includes("--frozen"), true);
+    assertEquals(calls[1].args.includes("--frozen"), false);
+    assertEquals(calls[1].args.includes("--no-lock"), true);
+    assertEquals(graph.bareImports?.[0].target, "npm:zod@4");
+  });
+});
