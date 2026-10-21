@@ -603,6 +603,22 @@ Deno.test("toRunData: step without approval has no approval field", () => {
   assertEquals(data.jobs[0].steps[0].approval, undefined);
 });
 
+Deno.test("toRunData: a failed step carries its error code only when it has one (swamp-club#3748)", () => {
+  for (const code of ["deployment_refused", undefined]) {
+    const run = WorkflowRun.create(createTestWorkflow());
+    run.start();
+    const step = run.getJob("job1")!.getStep("step1")!;
+    step.start();
+    step.fail("deploy refused", code);
+
+    const data = toRunData(run);
+    const stepData = data.jobs[0].steps[0];
+    assertEquals(stepData.error, "deploy refused");
+    assertEquals(stepData.errorCode, code);
+    assertEquals(Object.hasOwn(stepData, "errorCode"), code !== undefined);
+  }
+});
+
 /** A run whose single model_method step wrote a resource and a log. */
 function createModelMethodRun(): WorkflowRun {
   const run = WorkflowRun.create(createTestWorkflow());
@@ -1527,6 +1543,7 @@ Deno.test("mapWorkflowExecutionEvent: keeps step_failed dataHandles off the publ
     stepId: "step1",
     runId: "run-1",
     error: "deploy blew up",
+    errorCode: "deployment_refused",
     modelName: "failer",
     methodName: "run",
     dataHandles: [
@@ -1553,6 +1570,7 @@ Deno.test("mapWorkflowExecutionEvent: keeps step_failed dataHandles off the publ
     jobId: "job1",
     stepId: "step1",
     error: "deploy blew up",
+    errorCode: "deployment_refused",
     modelName: "failer",
     methodName: "run",
   });
