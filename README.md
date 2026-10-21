@@ -1,14 +1,26 @@
 <p align="center">
-  <img src="banner.png" alt="Swamp — AI Automation for Hackers">
+  <img src="banner.png" alt="Swamp — The right way to build with AI">
 </p>
 
 # Swamp
 
-Deterministic Automation for AI Agents.
+The right way to build with AI.
 
-Swamp is a CLI that supercharges AI agents to create operational workflows that
-are reviewable, shareable, and accurate. Built for agents, there to empower
-humans. All the data lives in the `.swamp/` (the swamp).
+Build AI systems from repeatable behaviors, rather than token-hungry
+agent-centric designs. Swamp is a CLI that teaches your AI agent to break a
+problem down into reusable behaviors and connect them into workflows you can
+review, share and run again. By default the data lives in `.swamp/` (the swamp).
+
+Why it's better:
+
+- **Use your favorite harness** — Claude Code, Cursor, Codex, OpenCode, Kiro and
+  more.
+- **Connect to any API** — start from thousands of existing extensions or write
+  your own.
+- **Store and query your data** — versioned, with a lifetime you control.
+- **Keep secrets safe** — credentials come from vaults, are injected only when
+  needed and are redacted from the output.
+- **See exactly what happened every time** — every run is recorded.
 
 Come join the [swamp party on discord](https://discord.gg/swamp-club).
 
@@ -78,8 +90,8 @@ Start your AI agent in the repo and tell it what you want to do. Just ask:
 - _"Build a workflow that rotates database credentials and stores them in the
   vault"_
 
-The agent will create models, wire up workflows, and run them — all reviewable
-in `.swamp/` before anything touches production.
+The agent will create behaviors, wire them into workflows, and run them — all
+reviewable in the repo before anything touches production.
 
 ## Learn More
 
@@ -90,30 +102,36 @@ the best place to start - it provides an overview of the entire system.
 
 ## Core Concepts
 
-- **Models** — Typed representations of external systems (cloud resources, CLI
-  tools, APIs). Each model type defines metadata, arguments, methods, and
-  inputs.
-- **Definitions** — YAML files that instantiate a model type with specific
-  configuration. Support CEL expressions for dynamic values and cross-model
-  references.
-- **Workflows** — Orchestrate model method executions across parallel jobs and
-  steps, with dependency ordering and trigger conditions.
-- **Data** — Versioned, immutable artifacts (resources, logs, files) produced by
-  method runs. Searchable by tags.
-- **Vaults** — Secure storage for secrets and credentials, referenced in
-  definitions via CEL expressions.
-- **Tags** — Key-value labels on definitions, workflows, and data. Flow from
-  definitions to produced data, overridable at runtime with `--tag`.
+- **Behaviors** — Reusable, composable units that break problems into
+  manageable, scalable components. A behavior type (a cloud resource, a CLI
+  tool, an API) declares its arguments and methods; a behavior definition is a
+  YAML file that configures one, with CEL expressions for dynamic values and
+  references to other behaviors. Behaviors used to be called models, and
+  `swamp model` still works as the old name for `swamp behavior`.
+- **Workflows** — Connected sequences of behaviors that run in order, such as
+  fetch-alert → inspect-cluster → triage → route-to-slack. Steps run across
+  parallel jobs with dependency ordering and trigger conditions.
+- **Extensions** — Ready-made integrations connecting to APIs, databases and
+  services. Pull them from the registry or write your own.
+- **Vaults** — Secure credential storage that injects secrets only when they're
+  needed and redacts them from output. Definitions reference them through CEL
+  expressions.
+- **Datastore** — Structured data storage with versioning, indexing and lifetime
+  management. Every method run produces immutable, versioned data (resources,
+  logs, files), labelled with tags that flow from definitions and can be
+  overridden at runtime with `--tag`.
 
-Everything lives in a `.swamp/` directory inside a Git repository, with
-human-friendly symlink views under `/models/` and `/workflows/`.
+Definitions, workflows and vaults are files in your Git repository, under
+`models/`, `workflows/` and `vaults/`. Runtime data goes to the datastore, which
+is the `.swamp/` directory unless you configure another one (see
+[Datastores](#datastores)).
 
 ### Local Execution
 
 Swamp runs entirely on your machine. It picks up the environment variables from
 the shell you run it in — your AWS credentials, SSH keys, kubeconfig, whatever
-the task needs. No credentials leave your laptop unless a model explicitly calls
-an external API.
+the task needs. No credentials leave your laptop unless a behavior explicitly
+calls an external API.
 
 ---
 
@@ -127,7 +145,7 @@ swamp update
 
 ### Shell Completions
 
-Tab-completion for commands, model names, and workflow names:
+Tab-completion for commands, behavior names, and workflow names:
 
 ```bash
 # Bash — add to ~/.bashrc
@@ -155,19 +173,30 @@ directory's swamp repository.
 
 ## Using Swamp with AI Agents
 
-Swamp ships first-class skills for four AI coding tools:
+Swamp ships first-class skills for nine AI coding tools:
 
-| Tool                                                          | Init flag         | Skills dir        | Instructions file         |
-| ------------------------------------------------------------- | ----------------- | ----------------- | ------------------------- |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | _(default)_       | `.claude/skills/` | `CLAUDE.md`               |
-| [Cursor](https://cursor.com)                                  | `--tool cursor`   | `.cursor/skills/` | `.cursor/rules/swamp.mdc` |
-| [OpenCode](https://opencode.ai)                               | `--tool opencode` | `.agents/skills/` | `AGENTS.md`               |
-| [Codex](https://openai.com/codex)                             | `--tool codex`    | `.agents/skills/` | `AGENTS.md`               |
+| Tool                                                                                                         | Init flag            | Skills dir        | Instructions file               |
+| ------------------------------------------------------------------------------------------------------------ | -------------------- | ----------------- | ------------------------------- |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code)                                                | _(default)_          | `.claude/skills/` | `CLAUDE.md`                     |
+| [Cursor](https://cursor.com)                                                                                 | `--tool cursor`      | `.cursor/skills/` | `.cursor/rules/swamp.mdc`       |
+| [OpenCode](https://opencode.ai)                                                                              | `--tool opencode`    | `.agents/skills/` | `AGENTS.md`                     |
+| [Codex](https://openai.com/codex)                                                                            | `--tool codex`       | `.agents/skills/` | `AGENTS.md`                     |
+| [Kiro](https://kiro.dev)                                                                                     | `--tool kiro`        | `.kiro/skills/`   | `.kiro/steering/swamp-rules.md` |
+| [Amp](https://ampcode.com)                                                                                   | `--tool amp`         | `.agents/skills/` | `AGENTS.md`                     |
+| [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli) | `--tool copilot`     | `.agents/skills/` | `AGENTS.md`                     |
+| [Pi](https://pi.dev)                                                                                         | `--tool pi`          | `.agents/skills/` | `AGENTS.md`                     |
+| [Antigravity](https://antigravity.google)                                                                    | `--tool antigravity` | `.agents/skills/` | `AGENTS.md`                     |
 
 The skills are bundled into the swamp binary and written into the appropriate
 directory so your agent discovers them automatically. Each skill teaches the
-agent how to work with swamp — search for models, create definitions, run
+agent how to work with swamp — search for behaviors, create definitions, run
 workflows, manage vaults, and more.
+
+Claude Code reads `AGENTS.md` only when there is no `CLAUDE.md`, so in a repo
+that has its own `AGENTS.md` and no `CLAUDE.md` (or whose `CLAUDE.md` is a
+symlink), swamp writes its instructions to `.claude/rules/swamp.md` instead.
+Repeat `--tool` to set up several tools at once, and define a tool swamp doesn't
+know with `swamp agent setup`.
 
 You can switch tools later or run multiple tools side-by-side — each tool's
 skills directory is independent and gitignored:
@@ -176,10 +205,13 @@ skills directory is independent and gitignored:
 swamp repo upgrade --tool cursor
 ```
 
-### User-Defined Models
+### User-Defined Behaviors
 
-Extend Swamp with custom TypeScript models. Place them in `extensions/models/`
-(or configure via `SWAMP_MODELS_DIR` or `.swamp.yaml`).
+Extend Swamp with custom TypeScript behaviors. Place them in
+`extensions/behaviors/` or `extensions/models/`, or choose another directory
+with `SWAMP_BEHAVIORS_DIR` (or its old name `SWAMP_MODELS_DIR`) or `modelsDir`
+in `.swamp.yaml`. `extensions/behaviors/` is only read while the default
+directory is in use.
 
 See the swamp skill in your skills directory (e.g.
 `.claude/skills/swamp/SKILL.md` for Claude Code) for details.
@@ -260,8 +292,8 @@ having to worry about keeping a fork in sync. See
 
 ## Datastores
 
-By default, swamp stores all runtime data (model data, workflow runs, outputs,
-audit logs, etc.) in the local `.swamp/` directory. You can configure a
+By default, swamp stores all runtime data (behavior data, workflow runs,
+outputs, audit logs, etc.) in the local `.swamp/` directory. You can configure a
 different datastore backend to share state across machines or centralise data.
 
 ### Default (local filesystem)
@@ -408,8 +440,8 @@ OTEL_TRACES_EXPORTER=console swamp workflow run my-workflow
 ```
 
 Traces capture the full execution hierarchy — CLI command, workflow, job, step,
-and model method — with automatic context propagation to in-process extensions
-and remote workers (including containerized ones) via `TRACEPARENT`.
+and method — with automatic context propagation to in-process extensions and
+remote workers (including containerized ones) via `TRACEPARENT`.
 
 ### Logs
 
@@ -484,10 +516,10 @@ export OTEL_EXPORTER_OTLP_METRICS_HEADERS="Authorization=Bearer TOKEN,X-Axiom-Me
 
 Swamp collects anonymous usage telemetry to help us understand which commands
 are used, how long they take, and what errors occur. Command words and the names
-you pass — model, workflow, vault and type names, ids and search queries — are
-sent as typed. Filesystem paths, option and input values, secrets, access groups
-and principals, and `data query` predicates are redacted before transmission,
-and paths in error messages are replaced with `<PATH>`.
+you pass — behavior, workflow, vault and type names, ids and search queries —
+are sent as typed. Filesystem paths, option and input values, secrets, access
+groups and principals, and `data query` predicates are redacted before
+transmission, and paths in error messages are replaced with `<PATH>`.
 
 Telemetry is **user-global** — events are spooled to a single directory
 regardless of which repository (if any) you are working in:
@@ -529,10 +561,10 @@ Here is a complete example of a telemetry event:
 }
 ```
 
-Note that positional arguments containing user data (model names, file paths,
+Note that positional arguments containing user data (behavior names, file paths,
 queries) are replaced with `<REDACTED>`. Only categorical values defined by
-swamp itself (like model types) are recorded. Option values are never recorded —
-only the option keys.
+swamp itself (like behavior types) are recorded. Option values are never
+recorded — only the option keys.
 
 `swamp behavior` and `swamp behaviour` commands are recorded in their
 `swamp model` form, so `swamp behavior run my-model deploy` is recorded as
