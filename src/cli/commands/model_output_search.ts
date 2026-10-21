@@ -33,6 +33,7 @@ import {
   createModelOutputGetDeps,
   modelOutputGet,
   type ModelOutputGetData,
+  type ModelOutputGetDeps,
 } from "../../libswamp/models/output_get.ts";
 import {
   modelOutputSearch,
@@ -68,13 +69,12 @@ type AnyOptions = any;
 /**
  * Creates a fetchPreview closure that fetches full model output detail data.
  * This bridges the presentation layer to the libswamp modelOutputGet application
- * service, capturing the repoDir dependency.
+ * service, capturing its deps.
  */
-async function createOutputFetchPreview(
-  repoDir: string,
-): Promise<(item: ModelOutputSearchItem) => Promise<ModelOutputGetData>> {
+function createOutputFetchPreview(
+  getDeps: ModelOutputGetDeps,
+): (item: ModelOutputSearchItem) => Promise<ModelOutputGetData> {
   const libCtx = createLibSwampContext();
-  const getDeps = await createModelOutputGetDeps(repoDir);
 
   return async (item: ModelOutputSearchItem): Promise<ModelOutputGetData> => {
     let result: ModelOutputGetData | undefined;
@@ -138,10 +138,11 @@ export async function modelOutputSearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
 
-  const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: effectiveMode,
-  });
+  const { repoDir, repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: effectiveMode,
+    });
 
   const deps: ModelOutputSearchDeps = {
     findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
@@ -152,9 +153,17 @@ export async function modelOutputSearchAction(
       ),
   };
 
-  const repoDir = resolveRepoDir(options.repoDir);
+  // The list reads outputs through the datastore, so the preview and the
+  // selected-run lookup must too (swamp-club#3743).
+  const getDeps = () =>
+    createModelOutputGetDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.definitionRepo,
+      repoContext.unreadableContent,
+    );
   const fetchPreview = effectiveMode === "log"
-    ? await createOutputFetchPreview(repoDir)
+    ? createOutputFetchPreview(await getDeps())
     : undefined;
 
   const renderer = createModelOutputSearchRenderer(
@@ -172,9 +181,8 @@ export async function modelOutputSearchAction(
     ctx.logger.debug`Selected output: ${selected.id}`;
     if (effectiveMode === "json") {
       const getRenderer = createModelOutputGetRenderer(effectiveMode);
-      const getDeps = await createModelOutputGetDeps(repoDir);
       await consumeStream(
-        modelOutputGet(libCtx, getDeps, selected.id),
+        modelOutputGet(libCtx, await getDeps(), selected.id),
         getRenderer.handlers(),
       );
     }

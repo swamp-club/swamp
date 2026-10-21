@@ -113,10 +113,11 @@ export async function modelMethodHistorySearchAction(
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching method history with query: ${query ?? "(none)"}`;
 
-  const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: resolveRepoDir(options.repoDir),
-    outputMode: effectiveMode,
-  });
+  const { repoDir, repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: effectiveMode,
+    });
 
   const deps: ModelOutputSearchDeps = {
     findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
@@ -141,8 +142,12 @@ export async function modelMethodHistorySearchAction(
   if (selected) {
     ctx.logger.debug`Selected output: ${selected.id}`;
     const getRenderer = createModelOutputGetRenderer(effectiveMode);
+    // Read the selected run where the list found it (swamp-club#3743).
     const getDeps = await createModelOutputGetDeps(
-      resolveRepoDir(options.repoDir),
+      repoDir,
+      datastoreResolver,
+      repoContext.definitionRepo,
+      repoContext.unreadableContent,
     );
     await consumeStream(
       modelOutputGet(libCtx, getDeps, selected.id),

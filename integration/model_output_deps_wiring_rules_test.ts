@@ -47,16 +47,6 @@ const FACTORIES: Readonly<Record<string, number>> = {
 };
 
 /**
- * Callers that still omit the injected definition repo: the search
- * commands' preview reads build their deps from the repo dir alone.
- */
-const PINNED_WITHOUT_DEFINITION_REPO: readonly string[] = [
-  "src/cli/commands/model_method_history_search.ts: createModelOutputGetDeps in modelMethodHistorySearchAction",
-  "src/cli/commands/model_output_search.ts: createModelOutputGetDeps in createOutputFetchPreview",
-  "src/cli/commands/model_output_search.ts: createModelOutputGetDeps in modelOutputSearchAction",
-];
-
-/**
  * Top-level argument texts of each `<factory>(...)` call. The splitter
  * tracks bracket depth only, not string literals; no caller passes a literal
  * containing a comma or bracket, and a miscount fails the test.
@@ -122,12 +112,12 @@ Deno.test("output, method-history, data versions and data rename deps callers in
     }
   }
 
-  // Six CLI callers that pass it, three search previews that do not, and
+  // Eight CLI callers, including the search pickers (swamp-club#3743), and
   // six serve handlers: a scan that matches nothing must not pass.
   assertGreater(scanned, 10);
   assertPinnedSet(
     countedKeys(missing),
-    PINNED_WITHOUT_DEFINITION_REPO,
+    [],
     "Output, method-history, data versions and data rename deps without an injected definition repo",
     "Pass repoContext.definitionRepo as injectedDefinitionRepo so an\n" +
       "auto-definition the v3 read model could not materialise fails loudly,\n" +
@@ -143,38 +133,41 @@ const RESOLVER_FACTORIES: Readonly<Record<string, number>> = {
   createModelMethodHistoryLogsDeps: 2,
 };
 
-Deno.test("output and method-history deps callers in serve pass the datastore resolver (swamp-club#3729)", async () => {
+Deno.test("output and method-history deps callers in cli and serve pass the datastore resolver (swamp-club#3729, swamp-club#3743)", async () => {
   const missing: string[] = [];
   let scanned = 0;
-  for await (
-    const entry of walk(join(SRC_DIR, "serve"), {
-      exts: [".ts"],
-      skip: [/_test\.ts$/],
-    })
-  ) {
-    const code = await Deno.readTextFile(entry.path);
-    const owners = topLevelOwners(code.split("\n"));
-    for (const [factory, position] of Object.entries(RESOLVER_FACTORIES)) {
-      for (const call of callArgs(code, factory)) {
-        scanned++;
-        const resolver = call.args[position - 1];
-        if (resolver === undefined || resolver === "undefined") {
-          missing.push(
-            `${repoRelative(entry.path)}: ${factory} in ${owners[call.line]}`,
-          );
+  for (const dir of ["cli", "serve"]) {
+    for await (
+      const entry of walk(join(SRC_DIR, dir), {
+        exts: [".ts"],
+        skip: [/_test\.ts$/],
+      })
+    ) {
+      const code = await Deno.readTextFile(entry.path);
+      const owners = topLevelOwners(code.split("\n"));
+      for (const [factory, position] of Object.entries(RESOLVER_FACTORIES)) {
+        for (const call of callArgs(code, factory)) {
+          scanned++;
+          const resolver = call.args[position - 1];
+          if (resolver === undefined || resolver === "undefined") {
+            missing.push(
+              `${repoRelative(entry.path)}: ${factory} in ${owners[call.line]}`,
+            );
+          }
         }
       }
     }
   }
 
-  // Five serve handlers build these deps: a scan that matches nothing must
-  // not pass.
-  assertGreater(scanned, 4);
+  // Seven CLI callers and five serve handlers build these deps: a scan
+  // that matches nothing must not pass.
+  assertGreater(scanned, 10);
   assertPinnedSet(
     countedKeys(missing),
     [],
-    "Serve output and method-history deps without a datastore resolver",
-    "Pass ctx.datastoreResolver so serve reads output records where the\n" +
-      "datastore keeps them, as history search and the local CLI do.",
+    "Output and method-history deps without a datastore resolver",
+    "Pass the datastore resolver (ctx.datastoreResolver in serve, the one\n" +
+      "requireInitializedRepo returns in the CLI) so output records are read\n" +
+      "where the datastore keeps them, as the search listings do.",
   );
 });
