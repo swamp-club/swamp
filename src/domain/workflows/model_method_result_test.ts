@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
+import { isJsonMediaType } from "../data/content_type.ts";
 import {
   modelMethodResourceResult,
   storedResourceRecord,
@@ -170,4 +171,46 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
       undefined,
     );
   }
+});
+
+Deno.test("storedResourceRecord: the media type is matched by prefix, so application/json with parameters reads as stored (typed-secrets 4.1)", async () => {
+  const json = JSON.stringify({ password: REFERENCE, host: "h" });
+  for (
+    const contentType of [
+      "application/json; charset=utf-8",
+      "Application/JSON",
+      "application/json ;charset=utf-8",
+    ]
+  ) {
+    const { repo: dataRepo } = repo(data(contentType), json);
+    const record = await storedResourceRecord(
+      dataRepo,
+      TYPE,
+      "id-1",
+      "creds",
+      "db",
+    );
+    assertEquals(
+      record?.attributes,
+      { password: REFERENCE, host: "h" },
+      contentType,
+    );
+  }
+  for (
+    const contentType of [
+      "application/jsonl",
+      "text/json",
+      "application/ld+json",
+    ]
+  ) {
+    const { repo: dataRepo } = repo(data(contentType), json);
+    assertEquals(
+      await storedResourceRecord(dataRepo, TYPE, "id-1", "creds", "db"),
+      null,
+      contentType,
+    );
+  }
+  assertEquals(isJsonMediaType("application/json"), true);
+  assertEquals(isJsonMediaType("application/json;charset=utf-8"), true);
+  assertEquals(isJsonMediaType("application/jsonx"), false);
 });

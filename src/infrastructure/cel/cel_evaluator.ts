@@ -67,6 +67,7 @@ import {
   refuse,
   runInFaultScope,
   SecretRefusal,
+  sensitiveReferenceKey,
 } from "./secret_fault_context.ts";
 import {
   registerAllowedSet,
@@ -78,6 +79,7 @@ import {
   adaptModelMethodResult,
   type DataAccessor,
   modelMapView,
+  synchronousSensitiveReferences,
 } from "./sensitive_record_adapter.ts";
 
 /**
@@ -697,6 +699,23 @@ export interface EvaluationScope {
   readonly secretBag?: VaultSecretBag;
   /** Required for direct typed vault calls; checks use the run's services. */
   readonly vault?: VaultEvaluationScope;
+  /**
+   * What becomes of a `Secret` in the result. `release`, the default, issues
+   * its sentinel into the bag. `refuse` is the predicate destination of a
+   * guard or assert (design/enablers/typed-secrets.md Section 7.1): a result
+   * that holds a secret anywhere is refused with `secret_destination_refused`
+   * before anything reads it, while the bindings still read sentinels as
+   * Secrets, so a comparison to null decides as it always did.
+   */
+  readonly secretResult?: "release" | "refuse";
+  /**
+   * The sensitive-field references a synchronous evaluation may read,
+   * authorized by {@link CelEvaluator.prepareSynchronousReads} under the
+   * run's vault access and keyed as the fault scope keys them. The
+   * synchronous `evaluate` accepts a recorded reference in this set and
+   * fails closed on any other, as it does with no set at all.
+   */
+  readonly authorizedReferences?: ReadonlySet<string>;
 }
 
 /**
@@ -1066,7 +1085,13 @@ interface SecretEvaluation {
   readonly containerComparison: boolean;
   /** The conversion, when the evaluation has a run's bag. */
   readonly boundary?: SecretBoundary;
+  /** Whether the result is a predicate destination, which refuses a secret. */
+  readonly refusesSecretResult: boolean;
 }
+
+/** What the predicate destination names when it refuses a result. */
+const PREDICATE_RESULT =
+  "a guard or assert predicate result that holds a secret";
 
 /**
  * CEL evaluator that wraps the cel-js library.
@@ -1253,21 +1278,96 @@ export class CelEvaluator {
         }
         throw this.evaluationError(error, expression, wrappedContext);
       }
-      this.refuseSynchronousSensitiveReads(faults, expression);
+      this.refuseSynchronousSensitiveReads(faults, scope, expression);
       return this.releaseWithSecrets(result, run, expression);
     });
   }
 
+  /**
+   * Fails a synchronous evaluation closed on a sensitive-field reference it
+   * read that {@link prepareSynchronousReads} did not authorize: the
+   * authorization is asynchronous, so the synchronous path can only accept
+   * what was authorized ahead of it (typed-secrets 3.3 and 4.1).
+   */
   private refuseSynchronousSensitiveReads(
     faults: FaultScope,
+    scope: EvaluationScope,
     expression: string,
   ): void {
-    if (faults.sensitiveReferences.size > 0) {
+    for (const key of faults.sensitiveReferences.keys()) {
+      if (scope.authorizedReferences?.has(key)) continue;
       throw new InvalidExpressionError(
         "a record with sensitive fields requires evaluateAsync for the authorization of its references",
         expression,
       );
     }
+  }
+
+  /**
+   * The authorization step of the synchronous passes
+   * (design/enablers/typed-secrets.md Section 3.4, typed-secrets 4.1). It
+   * prepares the context for every expression in `content` as
+   * {@link prepareExpressionsIn} does, and with typed secrets on, it takes
+   * the `model.<name>.resource` records those expressions read
+   * synchronously from the same analysis the data namespace's `prepare`
+   * uses, parses their sensitive-fields tags (no vault read) and authorizes
+   * each reference through the scope's vault service under the run's vault
+   * access, as the asynchronous path does after evaluation. The scope it
+   * returns carries the authorized keys, so a synchronous `evaluate` under
+   * it accepts those reads and keeps failing closed on any other. A denial
+   * fails here, before any evaluation issues a sentinel; a record whose tag
+   * does not parse is left for the evaluation to refuse. With typed secrets
+   * off, or no record read, the scope is returned as given.
+   */
+  async prepareSynchronousReads(
+    content: unknown,
+    context: Record<string, unknown>,
+    scope: EvaluationScope = {},
+  ): Promise<EvaluationScope> {
+    await prepareExpressionsIn(content, context);
+    if (!this.typedSecrets) return scope;
+    const authorized = new Set(scope.authorizedReferences ?? []);
+    let changed = false;
+    const seen = new Set<string>();
+    const wrappedContext = this.wrapNamespaces(context);
+    const data = wrappedContext["data"];
+    const ownNamespace = data instanceof CelDataNamespace
+      ? data.namespace
+      : undefined;
+    for (const expr of extractExpressions(content)) {
+      if (seen.has(expr.celExpression)) continue;
+      seen.add(expr.celExpression);
+      const references = synchronousSensitiveReferences(
+        expr.celExpression,
+        wrappedContext["model"],
+        ownNamespace,
+      );
+      for (const reference of references) {
+        const key = sensitiveReferenceKey(reference);
+        if (authorized.has(key)) continue;
+        if (scope.vault === undefined) {
+          throw new InvalidExpressionError(
+            "a record with sensitive fields requires the run's vault check scope",
+            expr.celExpression,
+          );
+        }
+        try {
+          await scope.vault.service.authorizeRead(
+            reference.vaultName,
+            reference.key,
+          );
+        } catch (error) {
+          throw this.evaluationError(
+            error,
+            expr.celExpression,
+            wrappedContext,
+          );
+        }
+        authorized.add(key);
+        changed = true;
+      }
+    }
+    return changed ? { ...scope, authorizedReferences: authorized } : scope;
   }
 
   /** {@link evaluateAsync} with typed secrets on, as {@link evaluateWithSecrets}. */
@@ -1412,6 +1512,7 @@ export class CelEvaluator {
       bindings,
       containerComparison,
       boundary,
+      refusesSecretResult: scope.secretResult === "refuse",
     };
   }
 
@@ -1491,6 +1592,14 @@ export class CelEvaluator {
     expression: string,
   ): unknown {
     try {
+      if (run.refusesSecretResult) {
+        // The predicate destination: the result is read as release reads
+        // it, so a record returned unread is adapted and refused too, and
+        // nothing is issued into the bag (Section 7.1).
+        return coerceBigInts(
+          unwrapOptional(detachForDestination(result, PREDICATE_RESULT)),
+        );
+      }
       if (run.boundary === undefined) {
         refuseUnboundSecrets(result, expression);
         return coerceBigInts(unwrapOptional(result));

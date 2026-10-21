@@ -113,10 +113,16 @@ export function recordSensitiveReference(reference: SecretReference): void {
       "A sensitive-field reference was read outside an expression evaluation",
     );
   }
-  scope.sensitiveReferences.set(
-    `${reference.vaultName}\u0000${reference.key}`,
-    reference,
-  );
+  scope.sensitiveReferences.set(sensitiveReferenceKey(reference), reference);
+}
+
+/**
+ * The key {@link FaultScope.sensitiveReferences} holds a reference under,
+ * and the key the synchronous authorization step authorizes it by
+ * (design/enablers/typed-secrets.md Section 3.4, typed-secrets 4.1).
+ */
+export function sensitiveReferenceKey(reference: SecretReference): string {
+  return `${reference.vaultName}\u0000${reference.key}`;
 }
 
 /**

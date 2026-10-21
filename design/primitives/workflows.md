@@ -2972,6 +2972,17 @@ Guards see the same context as other step expressions:
 - `data`: data namespace (e.g., `data.latest()`)
 - `self`: for forEach steps, includes the iteration variable
 
+### Secrets in a typed run
+
+Behind the typed-secrets internal option (Phase 4.1), a guard is a predicate
+destination: its evaluator binds the run's sentinels as `Secret` values and
+refuses a result that holds one with `secret_destination_refused`, before any
+vault load, so `data.latest(...).attributes.password` as a guard fails the step
+while `... != null` passes and loads nothing. A step the guard skips makes no
+vault read. The same holds for an assert predicate, and an assert message that
+interpolates a secret is masked as `***` with nothing loaded. See
+[typed-secrets](../enablers/typed-secrets.md) Sections 5 and 7.1.
+
 ### Guard patterns
 
 ```yaml

@@ -39,6 +39,15 @@ import {
  * **Strict**: a CEL evaluation error propagates, surfacing a misconfigured
  * mapping to the caller rather than silently dropping the input. Optional
  * payload fields should be guarded with `??` in the expression itself.
+ *
+ * **No secrets.** The resolver evaluates with the evaluator's default,
+ * empty scope: it binds no run's bag and no vault
+ * (design/enablers/typed-secrets.md Section 5, typed-secrets 4.1). With a
+ * typed evaluator a `vault.get` in a trigger input is refused before any
+ * work, and a result that holds a `Secret` is refused with
+ * `secret_destination_refused`, so no sentinel is ever persisted as orphan
+ * run-input text. The legacy evaluator has no `vault` root to bind, so a
+ * reference there fails as an unknown name.
  */
 export class TriggerInputResolver {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}

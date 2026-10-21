@@ -17,46 +17,51 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isJsonMediaType } from "../data/content_type.ts";
 import { fromData } from "../data/data_record_mapper.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { ModelType } from "../models/model_type.ts";
 
 /**
- * The latest record `modelName` wrote under `specName`, read as stored for
- * the typed evaluator to adapt (design/enablers/typed-secrets.md Section 4.5
- * item 4, typed-secrets 3.5): its tagged fields keep their reference text and
- * no vault is read. Null when nothing was written under the spec, or when
- * the content is not a JSON document, which keeps the parsed-content shape
- * `model.method` returns with the option off.
+ * The latest record `modelName` wrote as `dataName` (the resource handle's
+ * name, which is its spec name only when the method named the instance so),
+ * read as stored for the typed evaluator to adapt
+ * (design/enablers/typed-secrets.md Section 4.5 item 4, typed-secrets 3.5):
+ * its tagged fields keep their reference text and no vault is read. Null
+ * when nothing was written under that name, or when the content is not a
+ * JSON document, which keeps the parsed-content shape `model.method`
+ * returns with the option off.
  */
 export async function storedResourceRecord(
   dataRepo: UnifiedDataRepository,
   type: ModelType,
   modelId: string,
-  specName: string,
+  dataName: string,
   modelName: string,
 ): Promise<DataRecord | null> {
-  const data = await dataRepo.findByName(type, modelId, specName);
-  if (!data || data.contentType !== "application/json") return null;
+  const data = await dataRepo.findByName(type, modelId, dataName);
+  // The media type is matched as a media type, parameters and case aside,
+  // not as the exact string (review note on swamp-club#3628).
+  if (!data || !isJsonMediaType(data.contentType)) return null;
   // The mapper reads the content through getContent; make it local and
   // current first, as the data.latest accessor does. A failed download never
   // fails a lookup that would otherwise succeed.
   try {
-    await dataRepo.ensureContentLocal(type, modelId, specName, data.version);
+    await dataRepo.ensureContentLocal(type, modelId, dataName, data.version);
   } catch {
     // The read below answers with what is local.
   }
   return await fromData(data, type, modelId, dataRepo, {
     isLatest: true,
     modelName,
-    dataName: specName,
+    dataName,
   });
 }
 
 /**
- * What `model.method` answers for the latest resource `modelName` wrote
- * under `specName`. A typed consuming evaluator is handed the stored record,
+ * What `model.method` answers for the latest resource `modelName` wrote as
+ * `dataName`. A typed consuming evaluator is handed the stored record,
  * which it adapts so each tagged field is a `Secret` (Section 4.5 item 4);
  * any other evaluator receives what it always has, the parsed JSON content
  * or the text. Undefined when nothing was written, so the caller falls back
@@ -66,7 +71,7 @@ export async function modelMethodResourceResult(
   dataRepo: UnifiedDataRepository,
   type: ModelType,
   modelId: string,
-  specName: string,
+  dataName: string,
   modelName: string,
   typedConsumer: boolean,
 ): Promise<unknown> {
@@ -75,12 +80,12 @@ export async function modelMethodResourceResult(
       dataRepo,
       type,
       modelId,
-      specName,
+      dataName,
       modelName,
     );
     if (stored) return stored;
   }
-  const raw = await dataRepo.getContent(type, modelId, specName);
+  const raw = await dataRepo.getContent(type, modelId, dataName);
   if (!raw) return undefined;
   const text = new TextDecoder().decode(raw);
   try {

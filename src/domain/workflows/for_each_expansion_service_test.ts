@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  SECRET_OPERATION_UNSUPPORTED,
+  SecretRefusedError,
+} from "../expressions/errors.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   ForEachExpansionService,
   resolveForEachStepName,
@@ -419,5 +425,131 @@ Deno.test("ForEachExpansionService.expand: a control character in an item value 
       value: expanded?.[0].forEachVar.value,
     },
     { name: "host", value: "a\nb" },
+  );
+});
+
+Deno.test("resolveForEachStepName: a secret refusal in a name fails loudly instead of falling back, a composition leaves as a sentinel, and other failures keep the fallback (typed-secrets 4.1)", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const bag = new VaultSecretBag(registry);
+  const sentinel = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
+  const typed = new CelEvaluator({ typedSecrets: true });
+  const scoped = {
+    evaluate: (expression: string, context: Record<string, unknown>) =>
+      typed.evaluate(expression, context, { secretBag: bag }),
+    evaluateAsync: (expression: string, context: Record<string, unknown>) =>
+      typed.evaluateAsync(expression, context, { secretBag: bag }),
+  };
+  const ctx = makeStepContext({ item: { password: sentinel, name: "n" } });
+  const error = assertThrows(
+    () =>
+      resolveForEachStepName(
+        "step-${{ size(self.item.password) }}",
+        true,
+        ctx,
+        scoped,
+        "0",
+        "unrestricted",
+      ),
+    SecretRefusedError,
+  );
+  assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED);
+  // A secret in the name leaves as its sentinel, for the stand-in to
+  // replace; a composition (design Section 3.2) carries the sentinel too.
+  const secret = resolveForEachStepName(
+    "step-${{ self.item.password }}-${{ self.item.password + '-x' }}",
+    true,
+    ctx,
+    scoped,
+    "0",
+    "unrestricted",
+  );
+  assertEquals(secret, {
+    name: `step-${sentinel}-${sentinel}-x`,
+    hadEvalFailure: false,
+  });
+  // An ordinary failure keeps today's fallback.
+  const missing = resolveForEachStepName(
+    "step-${{ self.item.missing.deep }}",
+    true,
+    ctx,
+    scoped,
+    "0",
+    "unrestricted",
+  );
+  assertEquals(missing.hadEvalFailure, true);
+});
+
+Deno.test("ForEachExpansionService.expand: in a typed run an item that holds a secret leaves forEach.in as a sentinel, the name takes sensitive-<index> from it, and prepare runs before each name (typed-secrets 4.1)", async () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const bag = new VaultSecretBag(registry);
+  const sentinel = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
+  const typed = new CelEvaluator({ typedSecrets: true });
+  const prepared: unknown[] = [];
+  const pass = {
+    evaluate: (expression: string, context: Record<string, unknown>) =>
+      typed.evaluate(expression, context, { secretBag: bag }),
+    evaluateAsync: (expression: string, context: Record<string, unknown>) =>
+      typed.evaluateAsync(expression, context, { secretBag: bag }),
+    prepare: (content: unknown, _context: Record<string, unknown>) => {
+      prepared.push(content);
+      return Promise.resolve();
+    },
+  };
+  const values = new RunSensitiveValues(undefined, registry);
+  const context = attachSensitiveValues(
+    {
+      model: {},
+      env: {},
+      inputs: {
+        creds: [{ password: sentinel, host: "a" }, {
+          password: sentinel,
+          host: "b",
+        }],
+      },
+    } as unknown as ExpressionContext,
+    values,
+  );
+  const job = Job.create({
+    name: "j",
+    steps: [
+      Step.create({
+        name: "rotate-${{ self.c.password }}-${{ self.c.host }}",
+        task: StepTask.model("db", "rotate"),
+        forEach: { item: "c", in: "${{ inputs.creds }}" },
+      }),
+    ],
+  });
+  const expanded = await new ForEachExpansionService(pass).expand(
+    job,
+    context,
+    "unrestricted",
+  );
+  const steps = expanded.get(
+    "rotate-${{ self.c.password }}-${{ self.c.host }}",
+  )!;
+  assertEquals(steps.map((s) => s.expandedName), [
+    "rotate-sensitive-0-a",
+    "rotate-sensitive-1-b",
+  ]);
+  // The item binds the sentinel text the later passes read as a Secret.
+  assertEquals(
+    steps.map((s) => (s.forEachVar.value as { password: string }).password),
+    [sentinel, sentinel],
+  );
+  assertEquals(prepared.length, 2);
+  // Nothing was issued beyond the fixture's entry: the name's Secret is the
+  // bound sentinel itself.
+  assertEquals(registry.isEmpty, false);
+  // A plain evaluator, with no prepare, expands as before.
+  const plain = await new ForEachExpansionService(new CelEvaluator()).expand(
+    job,
+    context,
+    "unrestricted",
+  );
+  assertEquals(
+    plain.get("rotate-${{ self.c.password }}-${{ self.c.host }}")!.map((s) =>
+      s.expandedName
+    ),
+    ["rotate-sensitive-0-a", "rotate-sensitive-1-b"],
   );
 });

@@ -42,6 +42,16 @@ const TEXT_SUFFIXES = ["+json", "+xml", "+yaml"];
  * `application/vnd.api+json`. Parameters (`; charset=utf-8`) and case are
  * ignored.
  */
+/**
+ * Whether a media type is JSON itself: `application/json` with any
+ * parameters (`; charset=utf-8`), case-insensitively. A structured-syntax
+ * suffix such as `application/vnd.api+json` is text but not this.
+ */
+export function isJsonMediaType(contentType: string): boolean {
+  return contentType.split(";", 1)[0].trim().toLowerCase() ===
+    "application/json";
+}
+
 export function isTextContentType(contentType: string): boolean {
   const essence = contentType.split(";", 1)[0].trim().toLowerCase();
   return essence.startsWith("text/") ||

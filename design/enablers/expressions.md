@@ -472,6 +472,18 @@ During forEach expansion, `self.*` resolves in any task field: the step
 targets (`workflowIdOrName`), `inputs`, and shell `args`. So a forEach step can
 pick a different target per iteration:
 
+**In a typed run** (typed-secrets Phase 4.1, behind the internal option), every
+workflow pass takes its evaluator from one seam,
+`ExpressionEvaluationService.passEvaluatorFor`, so a sentinel bound into a pass
+reads as a `Secret` and a `Secret` result leaves as a sentinel issued into the
+run's bag. A `forEach` item that holds a secret is such a sentinel, and a name
+template that reads it names the iteration `sensitive-<index>`. The passes
+that evaluate synchronously (step names, the `self.*` resolution above) run
+the pass evaluator's `prepare` first, the authorization step for the
+sensitive-field references they can read; a secret refusal in a name fails the
+expansion rather than falling back to a suffixed raw name. See
+[typed-secrets](./typed-secrets.md) Sections 3.4 and 5.
+
 ```yaml
 # Fan out across region-specific behavior instances:
 - name: summary-${{ self.region }}
@@ -553,6 +565,13 @@ they are **deferred** past workflow evaluation and resolve at step execution
 time, after upstream steps have written their data. So step 1 can produce
 ephemeral data that step 2 reads via `data.findBySpec()` or `data.query()`, and
 assert steps can put prior-step data in their failure messages.
+
+In a typed run a guard or assert predicate is a predicate destination: a result
+that holds a secret is refused with `secret_destination_refused` before any
+load, while a comparison to `null` decides as before. An assert message's
+expressions evaluate through the typed evaluator, so a secret leaves as a
+sentinel the run masks as `***`, and nothing is loaded for the message
+(typed-secrets Phase 4.1).
 
 `--last-evaluated` keeps this: deferred expressions are saved as raw `${{ }}`
 in the evaluated workflow and resolved at step execution time against the
