@@ -1028,6 +1028,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelTypeInput,
     modelId: string,
   ): AsyncIterable<Data> {
+    if (!isUuid(modelId)) {
+      logger
+        .debug`iterateForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
+    }
     const coerced = coerceModelType(type);
     let dataNames: string[];
     try {

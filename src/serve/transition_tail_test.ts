@@ -86,6 +86,33 @@ Deno.test("TransitionTail: each transition's span records its tail, operation an
   });
 });
 
+Deno.test("TransitionTail: a transition that throws synchronously still ends its span and leaves the queue count", async () => {
+  await withCapturedSpans(async (spans) => {
+    const tail = new TransitionTail("gateway");
+
+    await assertRejects(
+      () =>
+        tail.run("throws", () => {
+          throw new Error("sync boom");
+        }),
+      Error,
+      "sync boom",
+    );
+    await tail.run("after", () => Promise.resolve());
+
+    const transitions = spans.filter((s) =>
+      s.name === "swamp.serve.transition"
+    );
+    assertEquals(
+      transitions.map((s) => [
+        s.attributes["swamp.transition.operation"],
+        s.attributes["swamp.transition.queue_depth"],
+      ]),
+      [["throws", 0], ["after", 0]],
+    );
+  });
+});
+
 Deno.test("TransitionTail: a transition's span nests under the work that enqueued it", async () => {
   await withCapturedSpans(async (spans) => {
     const tail = new TransitionTail("dispatch");

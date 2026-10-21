@@ -49,6 +49,10 @@ export class TransitionTail {
    * Runs `fn` after every earlier transition settled, whether it succeeded
    * or not, and settles as `fn` does. `operation` names the transition in
    * its span; it is a fixed label, never a worker, token or data name.
+   *
+   * `fn` starts a few microtasks after the previous transition settles (the
+   * span wraps it), so a test must wait for a transition's effect rather
+   * than expect it within the same tick.
    */
   run<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     const ahead = this.#pending++;
@@ -64,7 +68,9 @@ export class TransitionTail {
             performance.now() - enqueuedAt,
           ),
         },
-        fn,
+        // An async wrapper turns a synchronous throw into a rejection, so the
+        // span still ends and the pending count still drops.
+        async () => await fn(),
       ).finally(() => {
         this.#pending--;
       });
