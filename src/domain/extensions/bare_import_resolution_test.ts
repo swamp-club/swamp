@@ -22,9 +22,11 @@ import { join, toFileUrl } from "@std/path";
 import {
   bareImportResolverFrom,
   bareImportsFromDenoInfo,
+  hasUnresolvedBareImports,
   isLocalModuleSpecifier,
   NO_BARE_IMPORT_RESOLUTION,
   uniqueBareImports,
+  withPackageSpecifiers,
 } from "./bare_import_resolution.ts";
 
 const ROOT = Deno.build.os === "windows" ? "C:\\ext" : "/ext";
@@ -177,4 +179,37 @@ Deno.test("bareImportsFromDenoInfo: a bare import Deno resolves into node_module
       target: url("lib", "lib.ts"),
     },
   ]);
+});
+
+Deno.test("withPackageSpecifiers: fills only the unresolved imports, from the second read (swamp-club#3612)", () => {
+  const a = path("models", "a.ts");
+  const first = [
+    { importer: a, specifier: "zod" },
+    { importer: a, specifier: "ms", target: "npm:ms@2.1.2" },
+    { importer: a, specifier: "nothing-maps-this" },
+  ];
+  assertEquals(hasUnresolvedBareImports(first), true);
+  assertEquals(
+    withPackageSpecifiers(first, [
+      { importer: a, specifier: "zod", target: "npm:zod@4" },
+      { importer: a, specifier: "ms", target: "npm:ms@9.9.9" },
+      { importer: a, specifier: "nothing-maps-this" },
+    ]),
+    [
+      { importer: a, specifier: "zod", target: "npm:zod@4" },
+      { importer: a, specifier: "ms", target: "npm:ms@2.1.2" },
+      { importer: a, specifier: "nothing-maps-this" },
+    ],
+  );
+  assertEquals(withPackageSpecifiers(first, []), first);
+});
+
+Deno.test("hasUnresolvedBareImports: false when every import has a target", () => {
+  assertEquals(
+    hasUnresolvedBareImports([
+      { importer: path("a.ts"), specifier: "ms", target: "npm:ms@2" },
+    ]),
+    false,
+  );
+  assertEquals(hasUnresolvedBareImports([]), false);
 });

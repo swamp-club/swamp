@@ -23,12 +23,16 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   denoProjectArgs,
   isStaleLockfile,
+  type ReadOnlyLock,
   staleLockfileError,
 } from "../../domain/models/bundle.ts";
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
 import {
   bareImportsFromDenoInfo,
+  hasUnresolvedBareImports,
   isLocalModuleSpecifier,
+  type ResolvedBareImport,
+  withPackageSpecifiers,
 } from "../../domain/extensions/bare_import_resolution.ts";
 import type {
   LocalEdge,
@@ -274,7 +278,50 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         [entryPoint],
       );
     }
+    if (
+      project.denoConfigPath &&
+      hasUnresolvedBareImports(graph.bareImports ?? [])
+    ) {
+      graph.bareImports = withPackageSpecifiers(
+        graph.bareImports ?? [],
+        await this.readPackageSpecifiers(entryPoint, project, readOnlyLock),
+      );
+    }
     return graph;
+  }
+
+  /**
+   * The bare imports read again with `--node-modules-dir=none`, so a name
+   * the config maps to an npm package reads as that specifier rather than
+   * as missing from, or a file in, node_modules (swamp-club#3612). None when
+   * that read fails: the first read's answer stands.
+   */
+  private async readPackageSpecifiers(
+    entryPoint: string,
+    project: ModuleGraphProject,
+    readOnlyLock: ReadOnlyLock | undefined,
+  ): Promise<ResolvedBareImport[]> {
+    try {
+      const output = await new Deno.Command(this.denoPath, {
+        args: [
+          "info",
+          "--json",
+          ...denoProjectArgs({ ...project, readOnlyLock }),
+          "--node-modules-dir=none",
+          toFileUrl(entryPoint).href,
+        ],
+        stdout: "piped",
+        stderr: "piped",
+        signal: AbortSignal.timeout(DENO_INFO_TIMEOUT_MS),
+        ...(this.env ? { env: this.env } : {}),
+      }).output();
+      if (!output.success) return [];
+      return bareImportsFromDenoInfo(
+        JSON.parse(new TextDecoder().decode(output.stdout)),
+      );
+    } catch {
+      return [];
+    }
   }
 }
 

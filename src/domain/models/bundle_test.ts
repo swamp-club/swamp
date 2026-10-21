@@ -712,6 +712,37 @@ Deno.test("bundleExtension: externalizes a bare zod a deno.jsonc maps through an
   }
 });
 
+Deno.test("bundleExtension: a deno.json beside a package.json with no node_modules still keeps a bare zod external (swamp-club#3612)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  try {
+    const config = join(dir, "deno.json");
+    await Deno.writeTextFile(
+      config,
+      JSON.stringify({ imports: { zod: "npm:zod@4" } }),
+    );
+    // A package.json puts Deno in manual node_modules mode; with nothing
+    // installed, the first graph read cannot find zod.
+    await Deno.writeTextFile(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", dependencies: { zod: "^4.0.0" } }),
+    );
+    const entry = join(dir, "ext.ts");
+    await Deno.writeTextFile(
+      entry,
+      `import { z } from "zod";\nexport const schema = z.string();\n`,
+    );
+    const js = await bundleExtension(entry, DENO_PATH, {
+      denoConfigPath: config,
+      readOnlyLock: {},
+    });
+    assertEquals(js.length < 10_000, true);
+    const mod = await importBundled(js);
+    assertEquals(mod.schema instanceof z.ZodType, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // --- uint8ArrayToBase64 unit tests ---
 
 Deno.test("uint8ArrayToBase64 matches btoa for small input", () => {
@@ -1964,5 +1995,38 @@ Deno.test("bundleExtension: a graph read that fails externalizes nothing more", 
       }));
     assertEquals(calls.length, 2);
     assertEquals(calls[1].includes("zod"), false);
+  });
+});
+
+Deno.test("bundleExtension: a bare zod unresolved in node_modules is read again with --node-modules-dir=none and externalized", async () => {
+  await withTempFile('import { z } from "zod";\n', async (path) => {
+    const zodInfo = (code: Record<string, string>) => ({
+      modules: [{
+        specifier: toFileUrl(path).href,
+        dependencies: [{ specifier: "zod", code }],
+      }],
+    });
+    const calls: string[][] = [];
+    await withMockedCommand(async (_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "info") {
+        const info = args.includes("--node-modules-dir=none")
+          ? zodInfo({ specifier: "npm:zod@4" })
+          : zodInfo({
+            error: 'Could not find "zod" in a node_modules folder.',
+          });
+        return { stdout: JSON.stringify(info), code: 0 };
+      }
+      await Deno.writeTextFile(args[args.indexOf("-o") + 1], "export {};\n");
+      return { stdout: "", code: 0 };
+    }, () =>
+      bundleExtension(path, DENO_PATH, {
+        denoConfigPath: join(path, "..", "deno.json"),
+        env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+      }));
+    assertEquals(calls.map((c) => c[0]), ["info", "info", "bundle"]);
+    const bundle = calls[2].join(" ");
+    assertStringIncludes(bundle, "--external npm:zod@4");
+    assertStringIncludes(bundle, "--external zod");
   });
 });

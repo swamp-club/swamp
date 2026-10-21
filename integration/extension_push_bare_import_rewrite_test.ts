@@ -542,3 +542,44 @@ Deno.test("extension push: deno.json wins over a deno.jsonc in the same director
     assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
   });
 });
+
+Deno.test("extension push: a deno.json beside a package.json with nothing installed still ships each bare import as Deno maps it (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({ imports: { "zod": "npm:zod@4" } }),
+    );
+    // The package.json puts Deno in manual node_modules mode, and nothing is
+    // installed: the first graph read reports both imports as missing.
+    await write(
+      join(author, "package.json"),
+      JSON.stringify({
+        name: "author",
+        dependencies: { "zod": "^4.0.0", "ms": "2.1.2" },
+      }),
+    );
+    await write(
+      join(author, "extensions", "models", "took.ts"),
+      'import { z } from "zod";\nimport ms from "ms";\n' +
+        "export const took = { schema: z.string(), t: ms(2000) };\n",
+    );
+    await write(
+      join(author, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: NAME,
+        version: VERSION,
+        models: ["took.ts"],
+      }),
+    );
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareWarnings } = await pushArchive(author, audited);
+    assertEquals(bareWarnings, 0);
+    const took = (await archiveFiles(archive)).get("models/took.ts") ?? "";
+    assertStringIncludes(took, 'import { z } from "npm:zod@4";');
+    // Listed only in the package.json, as Deno resolves it.
+    assertStringIncludes(took, 'import ms from "npm:ms@2.1.2";');
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+  });
+});

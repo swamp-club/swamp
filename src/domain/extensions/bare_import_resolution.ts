@@ -131,7 +131,7 @@ function isInstalledPackageFile(specifier: string): boolean {
  * wins over a type import's; one Deno reports an error for is unresolved,
  * and so is one Deno resolves into a node_modules directory (a manual
  * `nodeModulesDir`): the graph names a file there, not a specifier push
- * can ship, so the import ships as written and the finding names it.
+ * can ship. {@link withPackageSpecifiers} fills these from a second read.
  */
 export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
   const modules = (json as { modules?: unknown })?.modules;
@@ -155,4 +155,40 @@ export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
     }
   }
   return uniqueBareImports(found);
+}
+
+/**
+ * Whether any bare import is unresolved: Deno reported an error for it or
+ * resolved it into node_modules. Under a manual `nodeModulesDir` (a
+ * package.json beside the config) Deno applies the import map and then
+ * looks the npm package up in node_modules, so a mapped name reads as
+ * unresolved whenever the package is not installed, or names a file there
+ * when it is.
+ */
+export function hasUnresolvedBareImports(
+  resolutions: readonly ResolvedBareImport[],
+): boolean {
+  return resolutions.some((r) => r.target === undefined);
+}
+
+/**
+ * `resolutions` with each unresolved import filled from `packageRead`, the
+ * same graph read with `--node-modules-dir=none` (swamp-club#3612): there
+ * Deno names the npm specifier the config maps the name to rather than a
+ * place in node_modules. Where to install a package does not change which
+ * specifier a name maps to, so this is still Deno's answer. A resolved
+ * import keeps its first answer, and one the second read cannot resolve
+ * either stays unresolved.
+ */
+export function withPackageSpecifiers(
+  resolutions: readonly ResolvedBareImport[],
+  packageRead: readonly ResolvedBareImport[],
+): ResolvedBareImport[] {
+  if (!hasUnresolvedBareImports(resolutions)) return [...resolutions];
+  const second = bareImportResolverFrom(packageRead);
+  return resolutions.map((r) => {
+    if (r.target !== undefined) return r;
+    const target = second.resolve(r.importer, r.specifier);
+    return target === undefined ? r : { ...r, target };
+  });
 }

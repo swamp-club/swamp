@@ -524,3 +524,73 @@ Deno.test("DenoInfoModuleGraphReader: a remote importMap is refused as Deno refu
     );
   });
 });
+
+/** deno info output for one local module whose bare `zod` resolves as given. */
+function zodInfo(code: Record<string, string>) {
+  return JSON.stringify({
+    modules: [{
+      kind: "esm",
+      mediaType: "TypeScript",
+      specifier: url("models", "m.ts"),
+      dependencies: [{ specifier: "zod", code }],
+    }],
+  });
+}
+
+Deno.test("DenoInfoModuleGraphReader: an import unresolved under a manual node_modules is read again with --node-modules-dir=none (swamp-club#3612)", async () => {
+  const entry = path("models", "m.ts");
+  const { result: graph, calls } = await withMockedCommand(
+    [
+      {
+        stdout: zodInfo({
+          error: 'Could not find "zod" in a node_modules folder.',
+        }),
+        code: 0,
+      },
+      { stdout: zodInfo({ specifier: "npm:zod@4" }), code: 0 },
+    ],
+    () =>
+      new DenoInfoModuleGraphReader("deno").read(entry, {
+        denoConfigPath: path("deno.json"),
+      }),
+  );
+  assertEquals(calls.length, 2);
+  assertEquals(calls[0].args.includes("--node-modules-dir=none"), false);
+  assertEquals(calls[1].args.includes("--node-modules-dir=none"), true);
+  assertEquals(calls[1].args.includes(path("deno.json")), true);
+  assertEquals(graph.bareImports, [
+    { importer: entry, specifier: "zod", target: "npm:zod@4" },
+  ]);
+});
+
+Deno.test("DenoInfoModuleGraphReader: a second read that fails leaves the import unresolved", async () => {
+  const entry = path("models", "m.ts");
+  const { result: graph } = await withMockedCommand(
+    [
+      { stdout: zodInfo({ error: "not found" }), code: 0 },
+      { stdout: "", stderr: "boom", code: 1 },
+    ],
+    () =>
+      new DenoInfoModuleGraphReader("deno").read(entry, {
+        denoConfigPath: path("deno.json"),
+      }),
+  );
+  assertEquals(graph.bareImports, [{ importer: entry, specifier: "zod" }]);
+});
+
+Deno.test("DenoInfoModuleGraphReader: no second read when every bare import resolves, or without a Deno config", async () => {
+  const entry = path("models", "m.ts");
+  const resolved = await withMockedCommand(
+    () => ({ stdout: zodInfo({ specifier: "npm:zod@4" }), code: 0 }),
+    () =>
+      new DenoInfoModuleGraphReader("deno").read(entry, {
+        denoConfigPath: path("deno.json"),
+      }),
+  );
+  assertEquals(resolved.calls.length, 1);
+  const noConfig = await withMockedCommand(
+    () => ({ stdout: zodInfo({ error: "not found" }), code: 0 }),
+    () => new DenoInfoModuleGraphReader("deno").read(entry, {}),
+  );
+  assertEquals(noConfig.calls.length, 1);
+});

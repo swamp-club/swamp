@@ -1175,6 +1175,17 @@ beside the relative rewrites above:
   finding; push never falls back to reading the config itself, so it never
   ships or audits a different target than the bundle was built with. Deno
   refuses a remote `importMap` in a config, and so does push's graph read.
+- Under a manual `nodeModulesDir` (a `package.json` beside the config) Deno
+  applies the import map and then looks the npm package up in
+  `node_modules`, so a mapped name reads as an error when nothing is
+  installed and as a file there when it is. Either way it carries no
+  specifier, so any unresolved name is read again with
+  `--node-modules-dir=none` (`withPackageSpecifiers`), where Deno names the
+  npm specifier instead: where a package is installed does not change what a
+  name maps to. That read also resolves a name listed only in the
+  `package.json`, as Deno does, so it is rewritten and audited too. The
+  bundler's own graph read (loader, serve reload) does the same, so a bare
+  `"zod"` stays external there.
 - The package cache hash covers the config file's text, and also each
   resolution its top-level `imports` would not give (an `importMap` file, a
   scope, a workspace root), so editing an import map file cannot reuse a stale

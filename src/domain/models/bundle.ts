@@ -27,7 +27,9 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import { DENO_CONFIG_FILE_NAMES } from "../extensions/deno_config.ts";
 import {
   bareImportsFromDenoInfo,
+  hasUnresolvedBareImports,
   type ResolvedBareImport,
+  withPackageSpecifiers,
 } from "../extensions/bare_import_resolution.ts";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
@@ -923,21 +925,23 @@ export function sharedZodTargets(
 
 /**
  * The bare imports `entryPoint`'s modules write and what Deno resolves
- * each to, read with `deno info` under the bundle's own project flags;
- * none when deno info fails, so nothing more is externalized and the
- * bundle reports any error itself.
+ * each to, read with `deno info` under the bundle's own project flags, with
+ * any it leaves unresolved read again with `--node-modules-dir=none` as
+ * the graph reader does (swamp-club#3612); none when deno info fails, so
+ * nothing more is externalized and the bundle reports any error itself.
  */
 async function readBareImports(
   entryPoint: string,
   denoPath: string,
   options: BundleOptions,
 ): Promise<ResolvedBareImport[]> {
-  try {
+  const read = async (extraArgs: string[]) => {
     const output = await new Deno.Command(denoPath, {
       args: [
         "info",
         "--json",
         ...denoProjectArgs(options),
+        ...extraArgs,
         toFileUrl(entryPoint).href,
       ],
       stdout: "piped",
@@ -945,13 +949,23 @@ async function readBareImports(
       signal: options.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
       ...(options.env ? { env: options.env } : {}),
     }).output();
-    if (!output.success) {
+    return output.success
+      ? bareImportsFromDenoInfo(
+        JSON.parse(new TextDecoder().decode(output.stdout)),
+      )
+      : undefined;
+  };
+  try {
+    const first = await read([]);
+    if (!first) {
       logger
         .debug`deno info failed for ${entryPoint}; bare zod stays bundled`;
       return [];
     }
-    return bareImportsFromDenoInfo(
-      JSON.parse(new TextDecoder().decode(output.stdout)),
+    if (!hasUnresolvedBareImports(first)) return first;
+    return withPackageSpecifiers(
+      first,
+      await read(["--node-modules-dir=none"]).catch(() => undefined) ?? [],
     );
   } catch (error) {
     if (options.signal?.aborted) throw error;
