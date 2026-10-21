@@ -345,6 +345,33 @@ Deno.test("redactServeOptions: reports the scheduled-run limit under scheduling"
   );
 });
 
+Deno.test("redactServeOptions: reports the webhook run limit", () => {
+  const base = {
+    port: 9090,
+    host: "127.0.0.1",
+    schedule: false,
+    authMode: "none",
+    grantReload: "manual",
+    trustProxy: false,
+    verifyOnEnroll: false,
+    detachRuns: false,
+    hotReload: false,
+    enableInternalApi: false,
+    remoteOnly: false,
+  };
+  assertEquals(
+    redactServeOptions(base as unknown as MergedServeOptions)
+      .maxConcurrentWebhookRuns,
+    null,
+  );
+  assertEquals(
+    redactServeOptions(
+      { ...base, maxConcurrentWebhookRuns: 5 } as unknown as MergedServeOptions,
+    ).maxConcurrentWebhookRuns,
+    5,
+  );
+});
+
 Deno.test("redactServeOptions: omits TLS key file", () => {
   const opts = {
     port: 443,

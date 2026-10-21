@@ -179,7 +179,15 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
             lastQueueDelayMs: null,
           }],
         },
-        webhooks: [{ route: "/hooks/n", workflow: "nightly", scheme: "hmac" }],
+        webhooks: [{
+          route: "/hooks/n",
+          workflow: "nightly",
+          scheme: "hmac",
+          active: 0,
+          queued: 0,
+          oldestQueuedAt: null,
+          lastQueueDelayMs: null,
+        }],
         components: [{
           name: "datastore",
           healthy: true,

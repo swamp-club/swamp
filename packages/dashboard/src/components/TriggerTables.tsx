@@ -214,6 +214,9 @@ export interface WebhookRow {
   recent: RecentRun[];
   runs: number;
   failed: number;
+  /** Webhook runs of this route in progress, or 0 when unknown. */
+  active: number;
+  queueLabel: string | null;
 }
 
 export function webhookColumns(showScheme: boolean): string[] {
@@ -223,6 +226,7 @@ export function webhookColumns(showScheme: boolean): string[] {
     "Workflow",
     "Webhook runs",
     "Last run",
+    "State",
     "Runs",
     "Failed",
   ];
@@ -305,6 +309,18 @@ export function WebhookTable(
                 {runsLoading
                   ? <span className="trig-muted">…</span>
                   : <LastRun run={row.recent[0]} now={now} />}
+              </td>
+              <td>
+                <span className="trig-state">
+                  {row.active > 0
+                    ? <RunningBadge count={row.active} />
+                    : row.queueLabel
+                    ? <span className="trig-pill tone-info">Queued</span>
+                    : <span className="trig-pill">Idle</span>}
+                  {row.queueLabel && (
+                    <span className="trig-queue">{row.queueLabel}</span>
+                  )}
+                </span>
               </td>
               <td className="num">
                 {runsLoading ? "…" : formatCount(row.runs)}

@@ -137,6 +137,8 @@ const webhook: WebhookRow = {
   }],
   runs: 12,
   failed: 3,
+  active: 0,
+  queueLabel: null,
 };
 
 Deno.test("WebhookTable: route and workflow link, counts and the shared note", () => {
@@ -171,6 +173,27 @@ Deno.test("WebhookTable: hides the verification column when serve doesn't report
   );
   assertEquals(html.includes("Verification"), false);
   assertEquals(html.includes("Shared by"), false);
+});
+
+Deno.test("WebhookTable: state shows idle, queued, and every run in progress", () => {
+  const render = (row: Partial<WebhookRow>) =>
+    renderToStaticMarkup(
+      <WebhookTable
+        rows={[{ ...webhook, ...row }]}
+        runsLoading={false}
+        now={NOW}
+        onOpen={noop}
+      />,
+    );
+  assertStringIncludes(render({}), ">State<");
+  assertStringIncludes(render({}), ">Idle<");
+  const queued = render({ queueLabel: "2 queued · waiting 5m" });
+  assertStringIncludes(queued, ">Queued<");
+  assertStringIncludes(queued, "2 queued · waiting 5m");
+  const busy = render({ active: 3, queueLabel: "1 queued" });
+  assertStringIncludes(busy, "Running ×3");
+  assertStringIncludes(busy, "1 queued");
+  assertEquals(busy.includes(">Idle<"), false);
 });
 
 const runA: TriggerRun = {

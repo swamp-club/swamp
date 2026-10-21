@@ -1284,6 +1284,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       String(options.maxConcurrentScheduledRuns),
     );
   }
+  if (options.maxConcurrentWebhookRuns !== undefined) {
+    args.push(
+      "--max-concurrent-webhook-runs",
+      String(options.maxConcurrentWebhookRuns),
+    );
+  }
   if (options.maxRunsPerPrincipal !== undefined) {
     args.push(
       "--max-runs-per-principal",
@@ -1540,6 +1546,7 @@ export interface ServeStartupSettings {
   tokenGcSettings: TokenGcSettings;
   maxConcurrentRuns?: number;
   maxConcurrentScheduledRuns?: number;
+  maxConcurrentWebhookRuns?: number;
   maxRunsPerPrincipal?: number;
   maxRunDurationMs?: number;
   grantReloadMode: "manual" | "auto";
@@ -1643,6 +1650,16 @@ export function resolveServeStartupSettings(
       `--max-concurrent-scheduled-runs must be a positive integer, got ${maxConcurrentScheduledRuns}`,
     );
   }
+  const maxConcurrentWebhookRuns = merged.maxConcurrentWebhookRuns;
+  if (
+    maxConcurrentWebhookRuns !== undefined &&
+    (!Number.isInteger(maxConcurrentWebhookRuns) ||
+      maxConcurrentWebhookRuns < 1)
+  ) {
+    throw new UserError(
+      `--max-concurrent-webhook-runs must be a positive integer, got ${maxConcurrentWebhookRuns}`,
+    );
+  }
   const maxRunsPerPrincipal = merged.maxRunsPerPrincipal;
   if (
     maxRunsPerPrincipal !== undefined &&
@@ -1696,6 +1713,7 @@ export function resolveServeStartupSettings(
     tokenGcSettings,
     maxConcurrentRuns,
     maxConcurrentScheduledRuns,
+    maxConcurrentWebhookRuns,
     maxRunsPerPrincipal,
     maxRunDurationMs,
     grantReloadMode,
@@ -1914,6 +1932,12 @@ const daemonEnableCommand = new Command()
     "--max-concurrent-scheduled-runs <count:integer>",
     "Maximum scheduled workflow runs in flight at once; a workflow never " +
       "overlaps itself. Default: 1 (env: SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS)",
+  )
+  .option(
+    "--max-concurrent-webhook-runs <count:integer>",
+    "Maximum webhook workflow runs in flight at once, across all routes; " +
+      "deliveries to the same route may overlap. Default: 1 " +
+      "(env: SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS)",
   )
   .option(
     "--max-runs-per-principal <count:integer>",
@@ -2738,6 +2762,13 @@ export const serveCommand = new Command()
       "(env: SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS)",
   )
   .option(
+    "--max-concurrent-webhook-runs <count:integer>",
+    "Maximum number of webhook workflow runs in flight at once, across all " +
+      "routes; deliveries to the same route may overlap. Separate from " +
+      "--max-concurrent-runs. Default: 1. " +
+      "(env: SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS)",
+  )
+  .option(
     "--max-runs-per-principal <count:integer>",
     "Maximum number of concurrent detached runs per authenticated principal. " +
       "Unset by default (no per-principal limit). (env: SWAMP_MAX_RUNS_PER_PRINCIPAL)",
@@ -2867,6 +2898,7 @@ export const serveCommand = new Command()
       tokenGcSettings,
       maxConcurrentRuns,
       maxConcurrentScheduledRuns,
+      maxConcurrentWebhookRuns,
       maxRunsPerPrincipal,
       maxRunDurationMs,
       grantReloadMode,
@@ -5828,6 +5860,7 @@ export const serveCommand = new Command()
             runVaultScopeContext(connectionCtx),
             WEBHOOK_PRINCIPAL,
           ),
+        maxConcurrentRuns: maxConcurrentWebhookRuns,
       });
 
       const webhookRejections = new WebhookRejectionCoalescer();
@@ -6927,6 +6960,7 @@ export const serveCommand = new Command()
                 route: ep.route,
                 workflow: ep.workflowIdOrName,
                 scheme: ep.scheme,
+                ...webhookService!.queueStatus(ep.route),
               }))
               : [];
 

@@ -2988,6 +2988,7 @@ export function redactServeOptions(
       scheme: wh.scheme ?? "github",
     })),
     maxConcurrentRuns: opts.maxConcurrentRuns ?? null,
+    maxConcurrentWebhookRuns: opts.maxConcurrentWebhookRuns ?? null,
     maxRunsPerPrincipal: opts.maxRunsPerPrincipal ?? null,
     maxRunDuration: opts.maxRunDuration ?? null,
     enableInternalApi: opts.enableInternalApi,

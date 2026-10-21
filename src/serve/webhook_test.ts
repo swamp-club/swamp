@@ -857,6 +857,7 @@ Deno.test("WebhookService.drain: waits for dropped entries' control-plane writes
   // Neither entry started, so both stay pending for the next boot.
   assertEquals(localDeletes, []);
   assertEquals(remoteDeletes, []);
+  assertEquals(service.queueStatus("/hooks/ext").active, 0);
 });
 
 Deno.test("handleRequest: extension hooks never run when verification fails", async () => {
@@ -1089,12 +1090,16 @@ function recordingExecutor(calls: ExecutorCall[]) {
   >;
 }
 
-async function signedDelivery(body: string): Promise<Request> {
+function signedDelivery(body: string): Promise<Request> {
+  return signedDeliveryTo("/hooks/gh", body);
+}
+
+async function signedDeliveryTo(route: string, body: string): Promise<Request> {
   const signature = await hmacSha256Hex(
     new TextEncoder().encode(body),
     "secret",
   );
-  return new Request("http://localhost/hooks/gh", {
+  return new Request(`http://localhost${route}`, {
     method: "POST",
     body,
     headers: { "x-hub-signature-256": `sha256=${signature}` },
@@ -1528,5 +1533,396 @@ Deno.test("WebhookService.cancelByRunId: a run whose start is not recorded yet i
   assertEquals(service.cancelByRunId(""), false);
   assertEquals(service.cancelByRunId("run-1"), false);
   release();
+  await service.stop();
+});
+
+// ── concurrent webhook runs (swamp-club#3665) ──
+
+type GatedRun = {
+  input: {
+    workflowIdOrName: string;
+    traceparent?: string;
+    webhook: { body: unknown };
+  };
+  signal: AbortSignal;
+  vaultAccess: unknown;
+  ambient: unknown;
+  span: Span | undefined;
+  release: () => void;
+  fail: (error: Error) => void;
+};
+
+/** An executor whose runs stay in flight until the test releases them. */
+function gatedExecutor() {
+  const runs: GatedRun[] = [];
+  const executor = ((
+    _repoDir: string,
+    _repoContext: unknown,
+    _datastoreConfig: unknown,
+    input: GatedRun["input"],
+    signal: AbortSignal,
+    onEvent: (event: unknown) => void,
+    _syncService: unknown,
+    _runTracker: unknown,
+    options: { vaultAccess?: unknown },
+  ) => {
+    const gate = Promise.withResolvers<void>();
+    signal.addEventListener(
+      "abort",
+      () => gate.reject(new DOMException("aborted", "AbortError")),
+    );
+    runs.push({
+      input,
+      signal,
+      vaultAccess: options.vaultAccess,
+      ambient: currentVaultAccess(),
+      span: trace.getActiveSpan(),
+      release: () => gate.resolve(),
+      fail: (error) => gate.reject(error),
+    });
+    onEvent({ kind: "started", runId: `run-${runs.length}` });
+    return gate.promise.then(() =>
+      onEvent({ kind: "completed", run: { status: "succeeded" } })
+    );
+  }) as unknown as NonNullable<
+    ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+  >;
+  return { runs, executor };
+}
+
+async function concurrentService(
+  overrides: Partial<ConstructorParameters<typeof WebhookService>[0]> = {},
+) {
+  const { runs, executor } = gatedExecutor();
+  const { service, events } = await triggerService({
+    endpoints: [
+      await parseWebhookFlag("/hooks/gh:deploy:secret"),
+      await parseWebhookFlag("/hooks/alerts:triage:secret"),
+    ],
+    executeWorkflow: executor,
+    ...overrides,
+  });
+  const completed = (runId: string) =>
+    events.some((e) => e.kind === "webhook_completed" && e.runId === runId);
+  return { service, events, runs, completed };
+}
+
+for (
+  const [label, secondRoute] of [
+    ["the same route", "/hooks/gh"],
+    ["different routes", "/hooks/alerts"],
+  ]
+) {
+  Deno.test(`WebhookService: a second delivery on ${label} completes while the first is still running`, async () => {
+    const { service, runs, completed } = await concurrentService({
+      maxConcurrentRuns: 2,
+    });
+    await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+    await waitFor(() => runs.length === 1, "delivery A started");
+    await service.handleRequest(await signedDeliveryTo(secondRoute, "{}"));
+    await waitFor(() => runs.length === 2, "delivery B started");
+
+    runs[1].release();
+    await waitFor(() => completed("run-2"), "delivery B completed");
+    assertEquals(completed("run-1"), false);
+
+    runs[0].release();
+    await waitFor(() => completed("run-1"), "delivery A completed");
+    await service.stop();
+  });
+}
+
+Deno.test("WebhookService: by default a delivery waits for the run ahead of it", async () => {
+  const { service, runs, completed } = await concurrentService();
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "delivery A started");
+  await service.handleRequest(await signedDeliveryTo("/hooks/alerts", "{}"));
+
+  assertEquals(service.queueStatus("/hooks/gh").active, 1);
+  assertEquals(service.queueStatus("/hooks/alerts").queued, 1);
+  assertEquals(runs.length, 1);
+
+  runs[0].release();
+  await waitFor(() => runs.length === 2, "delivery B started");
+  assertEquals(completed("run-1"), true);
+  runs[1].release();
+  await waitFor(() => completed("run-2"), "delivery B completed");
+  await service.stop();
+});
+
+Deno.test("WebhookService: a delivery beyond the limit starts when a run settles", async () => {
+  const { service, runs } = await concurrentService({ maxConcurrentRuns: 2 });
+  for (let i = 0; i < 3; i++) {
+    await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  }
+  await waitFor(() => runs.length === 2, "two runs started");
+  assertEquals(service.queueStatus("/hooks/gh").active, 2);
+  assertEquals(service.queueStatus("/hooks/gh").queued, 1);
+
+  runs[1].release();
+  await waitFor(() => runs.length === 3, "third run started");
+  assertEquals(service.queueStatus("/hooks/gh").active, 2);
+  assertEquals(service.queueStatus("/hooks/gh").queued, 0);
+  runs[0].release();
+  runs[2].release();
+  await waitFor(
+    () => service.queueStatus("/hooks/gh").active === 0,
+    "all runs settled",
+  );
+  await service.stop();
+});
+
+Deno.test("WebhookService: a failing run frees its slot for the next delivery", async () => {
+  const { service, events, runs, completed } = await concurrentService();
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "first run started");
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+
+  runs[0].fail(new Error("step exploded"));
+  await waitFor(() => runs.length === 2, "second run started");
+  runs[1].release();
+  await waitFor(() => completed("run-2"), "second run completed");
+  await service.stop();
+
+  const failed = events.find((e) => e.kind === "webhook_failed");
+  assertEquals(
+    failed?.kind === "webhook_failed" && failed.error,
+    "step exploded",
+  );
+  assertEquals(service.queueStatus("/hooks/gh").active, 0);
+});
+
+Deno.test("WebhookService: a refused run leaves no active run behind", async () => {
+  const { service, events } = await concurrentService({
+    maxConcurrentRuns: 2,
+    authorizeRun: (request) =>
+      Promise.resolve({
+        allowed: false,
+        workflowIdOrName: request.workflowIdOrName,
+        reason: "denied",
+      }),
+  });
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_denied"),
+    "webhook_denied event",
+  );
+  await waitFor(
+    () => service.queueStatus("/hooks/gh").active === 0,
+    "refused run settled",
+  );
+  await service.stop();
+});
+
+Deno.test("WebhookService: concurrent runs each keep their own payload, trace context and vault scope", async () => {
+  await withCapturedSpans(async () => {
+    const scopes: ServeRunVaultScope[] = [];
+    const outer = RunVaultAccess.create({ allowedVaults: ["leaked"] });
+    const { service, runs } = await concurrentService({
+      maxConcurrentRuns: 2,
+      createVaultAccess: () => {
+        const scope = { access: RunVaultAccess.create({}) };
+        scopes.push(scope);
+        return scope;
+      },
+    });
+    const parents = [
+      "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      "00-1bf7651916cd43dd8448eb211c80319c-c7ad6b7169203331-01",
+    ];
+    await runWithVaultAccess(outer, async () => {
+      for (const [i, route] of ["/hooks/gh", "/hooks/alerts"].entries()) {
+        await withSpan(`POST ${route}`, {}, async () => {
+          const request = await signedDeliveryTo(route, `{"n":${i}}`);
+          request.headers.set("traceparent", parents[i]);
+          await service.handleRequest(request);
+        });
+      }
+    });
+    await waitFor(() => runs.length === 2, "both runs in flight");
+
+    assertEquals(runs.map((r) => r.input.traceparent), parents);
+    assertEquals(runs.map((r) => r.input.webhook.body), [{ n: 0 }, { n: 1 }]);
+    assertEquals(runs.map((r) => r.vaultAccess), scopes);
+    assertEquals(runs.map((r) => r.ambient), [undefined, undefined]);
+    assertEquals(runs.map((r) => r.span), [undefined, undefined]);
+    for (const run of runs) run.release();
+    await service.stop();
+  });
+});
+
+Deno.test("WebhookService: a run started by a settling run does not inherit its scope", async () => {
+  const outer = RunVaultAccess.create({ allowedVaults: ["leaked"] });
+  const { service, runs } = await concurrentService({
+    createVaultAccess: () => ({ access: outer }),
+  });
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "first run started");
+  runs[0].release();
+  await waitFor(() => runs.length === 2, "second run started");
+  assertEquals(runs[1].ambient, undefined);
+  runs[1].release();
+  await service.stop();
+});
+
+Deno.test("WebhookService.drain: waits for every in-flight run and leaves the queued one pending", async () => {
+  const enqueued: string[] = [];
+  const deleted: string[] = [];
+  const { service, runs, completed } = await concurrentService({
+    maxConcurrentRuns: 2,
+    now: () => 1_000,
+    runTracker: {
+      enqueuePendingRun: (entry: { id: string }) => enqueued.push(entry.id),
+      deletePendingRun: (id: string) => deleted.push(id),
+    } as unknown as RunTrackerStore,
+  });
+  for (let i = 0; i < 3; i++) {
+    await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  }
+  await waitFor(() => runs.length === 2, "two runs in flight");
+
+  let drained = false;
+  const drain = service.drain(60_000).then(() => {
+    drained = true;
+  });
+  runs[0].release();
+  await waitFor(() => completed("run-1"), "first run completed");
+  assertEquals(drained, false);
+  runs[1].release();
+  await drain;
+  await service.stop();
+
+  assertEquals(runs.length, 2);
+  assertEquals(deleted, enqueued.slice(0, 2));
+  assertEquals(service.queueStatus("/hooks/gh"), {
+    active: 0,
+    queued: 0,
+    oldestQueuedAt: null,
+    lastQueueDelayMs: 0,
+  });
+});
+
+Deno.test("WebhookService.stop: aborts every in-flight run", async () => {
+  const { service, runs } = await concurrentService({ maxConcurrentRuns: 3 });
+  for (const route of ["/hooks/gh", "/hooks/gh", "/hooks/alerts"]) {
+    await service.handleRequest(await signedDeliveryTo(route, "{}"));
+  }
+  await waitFor(() => runs.length === 3, "three runs in flight");
+  await service.stop();
+
+  assertEquals(runs.map((r) => r.signal.aborted), [true, true, true]);
+  assertEquals(service.queueStatus("/hooks/gh").active, 0);
+  assertEquals(service.queueStatus("/hooks/alerts").active, 0);
+});
+
+Deno.test("WebhookService.queueStatus: reports the oldest waiting delivery and the last start delay", async () => {
+  let now = 1_000;
+  const { service, runs } = await concurrentService({ now: () => now });
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "first run started");
+  now = 2_000;
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+
+  assertEquals(service.queueStatus("/hooks/gh"), {
+    active: 1,
+    queued: 1,
+    oldestQueuedAt: new Date(2_000).toISOString(),
+    lastQueueDelayMs: 0,
+  });
+  assertEquals(service.queueStatus("/hooks/alerts"), {
+    active: 0,
+    queued: 0,
+    oldestQueuedAt: null,
+    lastQueueDelayMs: null,
+  });
+
+  now = 7_000;
+  runs[0].release();
+  await waitFor(() => runs.length === 2, "second run started");
+  assertEquals(service.queueStatus("/hooks/gh").lastQueueDelayMs, 5_000);
+  runs[1].release();
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: a removed route's queue delay is forgotten", async () => {
+  const { service, runs, completed } = await concurrentService({
+    now: () => 1_000,
+  });
+  await service.handleRequest(await signedDeliveryTo("/hooks/alerts", "{}"));
+  await waitFor(() => runs.length === 1, "run started");
+  runs[0].release();
+  await waitFor(() => completed("run-1"), "run completed");
+  assertEquals(service.queueStatus("/hooks/alerts").lastQueueDelayMs, 0);
+
+  service.updateEndpoints([await parseWebhookFlag("/hooks/gh:deploy:secret")]);
+  assertEquals(service.queueStatus("/hooks/alerts").lastQueueDelayMs, null);
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: a run of a route removed while it was queued records no delay", async () => {
+  const { service, runs } = await concurrentService();
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "first run started");
+  await service.handleRequest(await signedDeliveryTo("/hooks/alerts", "{}"));
+
+  service.updateEndpoints([await parseWebhookFlag("/hooks/gh:deploy:secret")]);
+  runs[0].release();
+  await waitFor(() => runs.length === 2, "queued run started");
+  assertEquals(service.queueStatus("/hooks/alerts").lastQueueDelayMs, null);
+  runs[1].release();
+  await service.stop();
+});
+
+Deno.test("WebhookService: overlapping runs consume each pending entry exactly once", async () => {
+  const enqueued: string[] = [];
+  const deleted: string[] = [];
+  const remoteDeletes: string[] = [];
+  const { service, runs } = await concurrentService({
+    maxConcurrentRuns: 3,
+    runTracker: {
+      enqueuePendingRun: (entry: { id: string }) => enqueued.push(entry.id),
+      deletePendingRun: (id: string) => deleted.push(id),
+    } as unknown as RunTrackerStore,
+    controlPlaneStore: {
+      put: () => Promise.resolve(),
+      delete: (key: string) => {
+        remoteDeletes.push(key);
+        return Promise.resolve();
+      },
+    } as unknown as ControlPlaneStore,
+  });
+  for (const route of ["/hooks/gh", "/hooks/gh", "/hooks/alerts"]) {
+    await service.handleRequest(await signedDeliveryTo(route, "{}"));
+  }
+  await waitFor(() => runs.length === 3, "three runs in flight");
+  for (const run of runs) run.release();
+  await service.stop();
+
+  assertEquals(enqueued.length, 3);
+  assertEquals([...deleted].sort(), [...enqueued].sort());
+  assertEquals(
+    [...remoteDeletes].sort(),
+    enqueued.map((id) => `pending-runs/${id}`).sort(),
+  );
+});
+
+Deno.test("WebhookService.cancelByRunId: cancels only the targeted run among concurrent ones", async () => {
+  const { service, runs } = await concurrentService({ maxConcurrentRuns: 3 });
+  for (const route of ["/hooks/gh", "/hooks/gh", "/hooks/alerts"]) {
+    await service.handleRequest(await signedDeliveryTo(route, "{}"));
+  }
+  await waitFor(() => runs.length === 3, "three runs in flight");
+
+  assertEquals(service.cancelByRunId("run-2", "superseded"), true);
+  assertEquals(runs.map((r) => r.signal.aborted), [false, true, false]);
+  assertEquals((runs[1].signal.reason as Error).message, "superseded");
+  await waitFor(
+    () => service.queueStatus("/hooks/gh").active === 1,
+    "cancelled run settled",
+  );
+
+  assertEquals(service.cancelAllRuns("shutdown"), 2);
+  assertEquals(runs.map((r) => r.signal.aborted), [true, true, true]);
   await service.stop();
 });

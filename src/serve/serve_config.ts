@@ -117,6 +117,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
   maxConcurrentRuns: "SWAMP_MAX_CONCURRENT_RUNS",
   maxConcurrentScheduledRuns: "SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS",
+  maxConcurrentWebhookRuns: "SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS",
   maxRunsPerPrincipal: "SWAMP_MAX_RUNS_PER_PRINCIPAL",
   maxRunDuration: "SWAMP_MAX_RUN_DURATION",
   enableInternalApi: "SWAMP_ENABLE_INTERNAL_API",
@@ -192,6 +193,7 @@ export interface ServeConfigFile {
   "reconciliation-interval"?: string;
   "max-concurrent-runs"?: number;
   "max-concurrent-scheduled-runs"?: number;
+  "max-concurrent-webhook-runs"?: number;
   "max-runs-per-principal"?: number;
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
@@ -318,6 +320,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "reconciliation-interval",
   "max-concurrent-runs",
   "max-concurrent-scheduled-runs",
+  "max-concurrent-webhook-runs",
   "max-runs-per-principal",
   "max-run-duration",
   "hydration-timeout",
@@ -1047,6 +1050,7 @@ export interface MergedServeOptions {
   triggerOverrides?: Record<string, TriggerOverrideEntry>;
   maxConcurrentRuns?: number;
   maxConcurrentScheduledRuns?: number;
+  maxConcurrentWebhookRuns?: number;
   maxRunsPerPrincipal?: number;
   maxRunDuration?: string;
   hydrationTimeout?: string;
@@ -1407,6 +1411,12 @@ export function mergeServeOptions(
     config?.["max-concurrent-scheduled-runs"],
   );
 
+  const maxConcurrentWebhookRuns = resolveOptionalNumber(
+    "max-concurrent-webhook-runs",
+    cliOptions.maxConcurrentWebhookRuns as number | undefined,
+    config?.["max-concurrent-webhook-runs"],
+  );
+
   const maxRunsPerPrincipal = resolveOptionalNumber(
     "max-runs-per-principal",
     cliOptions.maxRunsPerPrincipal as number | undefined,
@@ -1575,6 +1585,7 @@ export function mergeServeOptions(
     triggerOverrides,
     maxConcurrentRuns,
     maxConcurrentScheduledRuns,
+    maxConcurrentWebhookRuns,
     maxRunsPerPrincipal,
     maxRunDuration,
     hydrationTimeout,

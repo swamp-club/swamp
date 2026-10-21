@@ -24,10 +24,10 @@ export interface ScheduleQueueFields {
 }
 
 /**
- * What the Schedules view shows next to a schedule's status while fires are
- * waiting, e.g. "2 queued · waiting 12m". Null when nothing is waiting, or
- * for a server that does not report queue state, so those rows render as
- * they did before.
+ * What the Schedules and Webhooks views show next to a row's status while
+ * runs are waiting, e.g. "2 queued · waiting 12m". Null when nothing is
+ * waiting, or for a server that does not report queue state, so those rows
+ * render as they did before.
  */
 export function scheduleQueueLabel(
   entry: ScheduleQueueFields,

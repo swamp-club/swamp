@@ -906,6 +906,11 @@ Deno.test("collectServeExtraArgs: leaves out --max-concurrent-scheduled-runs whe
   assertEquals(collectServeExtraArgs({}), []);
 });
 
+Deno.test("collectServeExtraArgs: forwards --max-concurrent-webhook-runs", () => {
+  const args = collectServeExtraArgs({ maxConcurrentWebhookRuns: 8 });
+  assertEquals(args, ["--max-concurrent-webhook-runs", "8"]);
+});
+
 Deno.test("collectServeExtraArgs: forwards --max-runs-per-principal", () => {
   const args = collectServeExtraArgs({ maxRunsPerPrincipal: 10 });
   assertEquals(args, ["--max-runs-per-principal", "10"]);
@@ -1763,6 +1768,33 @@ Deno.test("resolveServeStartupSettings: rejects a max-concurrent-scheduled-runs 
         ),
       UserError,
       `--max-concurrent-scheduled-runs must be a positive integer, got ${value}`,
+    );
+  }
+});
+
+Deno.test("resolveServeStartupSettings: max-concurrent-webhook-runs is unset by default and kept when set", () => {
+  assertEquals(
+    resolveServeStartupSettings(mergedServeOptions())
+      .maxConcurrentWebhookRuns,
+    undefined,
+  );
+  assertEquals(
+    resolveServeStartupSettings(
+      mergedServeOptions({ maxConcurrentWebhookRuns: 6 }),
+    ).maxConcurrentWebhookRuns,
+    6,
+  );
+});
+
+Deno.test("resolveServeStartupSettings: rejects a max-concurrent-webhook-runs below 1 or not an integer", () => {
+  for (const value of [0, -1, 1.5]) {
+    assertThrows(
+      () =>
+        resolveServeStartupSettings(
+          mergedServeOptions({ maxConcurrentWebhookRuns: value }),
+        ),
+      UserError,
+      `--max-concurrent-webhook-runs must be a positive integer, got ${value}`,
     );
   }
 });

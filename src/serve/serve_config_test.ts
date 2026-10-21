@@ -1130,6 +1130,47 @@ Deno.test("mergeServeOptions: max-concurrent-scheduled-runs is independent of ma
   assertEquals(merged.maxConcurrentScheduledRuns, undefined);
 });
 
+Deno.test("mergeServeOptions: max-concurrent-webhook-runs from CLI flag", () => {
+  const merged = mergeServeOptions(
+    null,
+    { maxConcurrentWebhookRuns: 4 },
+    new Set(["max-concurrent-webhook-runs"]),
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentWebhookRuns, 4);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-webhook-runs from env var", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS" ? "3" : undefined,
+  );
+  assertEquals(merged.maxConcurrentWebhookRuns, 3);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-webhook-runs from config file", () => {
+  const config: ServeConfigFile = { "max-concurrent-webhook-runs": 2 };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentWebhookRuns, 2);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-webhook-runs is independent of the other run limits", () => {
+  const merged = mergeServeOptions(
+    { "max-concurrent-runs": 50, "max-concurrent-scheduled-runs": 4 },
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_RUNS" ? "25" : undefined,
+  );
+  assertEquals(merged.maxConcurrentWebhookRuns, undefined);
+});
+
 Deno.test("mergeServeOptions: max-runs-per-principal from CLI flag", () => {
   const cliOptions = { maxRunsPerPrincipal: 5 };
   const explicitFlags = new Set(["max-runs-per-principal"]);

@@ -38,13 +38,23 @@ swamp workflow history get <run-id> --server ws://localhost:9090
 ## Webhook Delivery
 
 `swamp serve` answers a verified webhook as queued and runs its workflow from a
-single queue shared by every endpoint. Deliveries run one at a time, in arrival
-order: a delivery waits until every run queued ahead of it, on any endpoint,
-completes or suspends.
+single queue shared by every endpoint. By default deliveries run one at a time,
+in arrival order: a delivery waits until every run queued ahead of it, on any
+endpoint, completes or suspends.
 
-A webhook workflow that starts long work should hand it off instead of waiting
-for it: run the long workflow with `--server --detach`, keep the returned
-`runId`, and return.
+`--max-concurrent-webhook-runs <n>` (or `max-concurrent-webhook-runs` in
+serve.yaml, or `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS`) lets up to `n` webhook runs
+execute at once, including several deliveries to the same route. Steps that use
+the same model still take turns through its lock, but a waiting step fails after
+`SWAMP_LOCK_TIMEOUT_MS` (60 s by default): raise it for a route whose step holds
+a model longer than that. Arrival order is no longer guaranteed, so keep the
+default for a workflow that must run in delivery order. `/health` reports
+`active` and `queued` per webhook route: a growing `queued` means the limit is
+the bottleneck.
+
+Under the default, a webhook workflow that starts long work should hand it off
+instead of waiting for it: run the long workflow with `--server --detach`, keep
+the returned `runId`, and return.
 
 ## Suspension and Resume
 
