@@ -24,6 +24,7 @@ import { initializeV3Datastore } from "./v3_datastore.ts";
 import {
   assertV3CheckoutJoinable,
   hasV3CheckoutState,
+  isJoinOwnFile,
   movePreV3CheckoutRecords,
   PRE_V3_RECORDS_DIR,
   preV3CheckoutRecordDirs,
@@ -249,7 +250,7 @@ Deno.test("assertV3CheckoutJoinable: files a v3 checkout keeps as its own are no
     await plant(repoDir, "outputs", "m1", "run.log");
     await assertV3CheckoutJoinable(repoDir);
     // A config record beside them still counts.
-    await plant(repoDir, "config", "upstream_extensions.json");
+    await plant(repoDir, "config", "vaults", "local_encryption", "v1.yaml");
     const error = await assertRejects(
       () => assertV3CheckoutJoinable(repoDir),
       V3CheckoutHoldsRecordsError,
@@ -262,6 +263,7 @@ Deno.test("movePreV3CheckoutRecords: moves records only, leaving the checkout's 
   await withTempDir(async (repoDir) => {
     await plant(repoDir, "config", "pulled-extensions", "@acme", "mod.ts");
     await plant(repoDir, "config", "upstream_extensions.json");
+    await plant(repoDir, "config", "vaults", "local_encryption", "v1.yaml");
     await plant(repoDir, "data", "m1", "log", "3", "raw");
     await plant(repoDir, "data", "_catalog.db");
     await plant(repoDir, "outputs", "m1", "run.log");
@@ -273,7 +275,10 @@ Deno.test("movePreV3CheckoutRecords: moves records only, leaving the checkout's 
     );
     await Deno.stat(swampPath(repoDir, "outputs", "m1", "run.log"));
     await Deno.stat(swampPath(repoDir, "data", "_catalog.db"));
-    await Deno.stat(join(destination, "config", "upstream_extensions.json"));
+    await Deno.stat(swampPath(repoDir, "config", "upstream_extensions.json"));
+    await Deno.stat(
+      join(destination, "config", "vaults", "local_encryption", "v1.yaml"),
+    );
     await Deno.stat(join(destination, "outputs", "m1", "run.yaml"));
     // No empty version directory is left to be listed as a version.
     await assertRejects(
@@ -315,5 +320,54 @@ Deno.test("preV3CheckoutRecordDirs and movePreV3CheckoutRecords: a namespace tha
       await Deno.readTextFile(join(dir, "data", "outside")),
       "not the repo's",
     );
+  });
+});
+
+Deno.test("isJoinOwnFile: the managedConfig lockfile is the joining checkout's own, and no other file of that name or config record is (swamp-club#3696)", () => {
+  for (
+    const key of [
+      "config/upstream_extensions.json",
+      "config/pulled-extensions/@swamp/s3-datastore/manifest.yaml",
+      "data/.lock",
+    ]
+  ) {
+    assertEquals(isJoinOwnFile(key.split("/")), true, key);
+  }
+  for (
+    const key of [
+      "config/vaults/local_encryption/v1.yaml",
+      "config/models/m1.yaml",
+      "config/x/upstream_extensions.json",
+      "models/upstream_extensions.json",
+      "upstream_extensions.json",
+    ]
+  ) {
+    assertEquals(isJoinOwnFile(key.split("/")), false, key);
+  }
+});
+
+Deno.test("assertV3CheckoutJoinable: a fresh managedConfig checkout holding only what the datastore extension's install wrote joins, and one holding records beside it is refused (swamp-club#3696)", async () => {
+  await withTempDir(async (repoDir) => {
+    // What auto-installing the datastore extension leaves in a fresh clone.
+    await plant(
+      repoDir,
+      "config",
+      "pulled-extensions",
+      "@swamp",
+      "s3-datastore",
+      "datastores",
+      "s3.ts",
+    );
+    await plant(repoDir, "config", "upstream_extensions.json");
+    await plant(repoDir, "datastore-bundles", "85cd93fd", "s3.js");
+    await plant(repoDir, "_extension_catalog.db");
+    await assertV3CheckoutJoinable(repoDir);
+    assertEquals(await preV3CheckoutRecordDirs(repoDir), []);
+    await plant(repoDir, "data", "m1", "log", "1", "raw");
+    const error = await assertRejects(
+      () => assertV3CheckoutJoinable(repoDir),
+      V3CheckoutHoldsRecordsError,
+    );
+    assertEquals([...error.recordDirs], ["data"]);
   });
 });

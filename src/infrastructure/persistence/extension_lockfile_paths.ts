@@ -22,7 +22,8 @@ import { getManagedConfigBase, managedConfigLockfilePath } from "./paths.ts";
 import type { RepoMarkerData } from "./repo_marker_repository.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 
-const LOCKFILE_NAME = "upstream_extensions.json";
+/** The file name of every extension lockfile. */
+export const LOCKFILE_NAME = "upstream_extensions.json";
 
 /**
  * Every lockfile an extension install in this checkout can write:

@@ -4587,9 +4587,18 @@ uses the same rule as setup (`hasDatastoreRecords` in
 `src/infrastructure/persistence/datastore_records.ts`): it checks the datastore
 directories of `.swamp/` and of `.swamp/<namespace>`, and leaves out the stream
 directories, the always-local ones and the v2 catalog. It also leaves out the
-files a v3 checkout keeps as its own (`isCheckoutLocalKey`): pulled extension
-sources under managedConfig, dot-prefixed locks and indexes, and run logs.
-v3 setup's check skips those files too.
+files a joining checkout keeps as its own (`isJoinOwnFile`): those a v3
+checkout keeps as its own (`isCheckoutLocalKey`: pulled extension sources
+under managedConfig, dot-prefixed locks and indexes, and run logs), which v3
+setup's check skips too, and the managedConfig lockfile
+`.swamp/config/upstream_extensions.json` (swamp-club#3696). On a fresh
+checkout of an extension datastore, the datastore extension is auto-installed
+before the check runs, and under managedConfig that install writes the
+lockfile. swamp regenerates the lockfile, and the datastore holds its
+committed copy, so it is never a record to refuse or move aside. Crash
+recovery's own-file rule (`isCheckoutLocalKey`) does not include it: on v3
+the lockfile is a committed config-tier record, and recovery must still be
+able to remove an uncommitted copy.
 
 - **When it runs.** A first open is one with no read-model state
   (`.swamp/_read_model_v3/_read_model_v3.db`). The read model creates that
