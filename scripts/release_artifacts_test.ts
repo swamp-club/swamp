@@ -168,6 +168,7 @@ cp "$FIXTURE_ROOT/store/\u0024{url#https://artifacts.swamp-club.com/}" "$output"
             GCS_BUCKET: "swamp-club-artifacts",
             FAIL_READ: "",
             FAIL_UPLOAD: "",
+            DRY_RUN: "false",
             ...env,
           },
           stdout: "piped",
@@ -187,6 +188,26 @@ cp "$FIXTURE_ROOT/store/\u0024{url#https://artifacts.swamp-club.com/}" "$output"
 
 const upload = "upload_release_artifacts.sh";
 const download = "download_release_artifact.sh";
+
+Deno.test("release dry run packages every variant without cloud access", () =>
+  withStore(async (f) => {
+    const result = await f.run(upload, [version], { DRY_RUN: "true" });
+    assert(result.success, result.output);
+    assertEquals(await f.calls(), "");
+    assertEquals(result.output.split("Dry run: would upload ").length - 1, 10);
+    for (const [, platform] of assets) {
+      assertStringIncludes(result.output, objectKey(platform));
+    }
+    await Deno.writeTextFile(join(f.dist, assets[0][0]), "corrupt");
+    assert(!(await f.run(upload, [version], { DRY_RUN: "true" })).success);
+    assertEquals(await f.calls(), "");
+  }));
+
+Deno.test("release uploader rejects invalid dry-run mode before cloud access", () =>
+  withStore(async (f) => {
+    assert(!(await f.run(upload, [version], { DRY_RUN: "yes" })).success);
+    assertEquals(await f.calls(), "");
+  }));
 
 Deno.test("release script paths use Git Bash drive paths on Windows", () => {
   assertEquals(
@@ -350,7 +371,7 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   };
   const steps = workflow.jobs.release.steps;
   const publish = steps.findIndex((s) =>
-    s.name === "Upload versioned artifacts to GCS"
+    s.name === "Package release artifacts and optionally upload to GCS"
   );
   const trigger = steps.findIndex((s) => s.name === "Trigger UAT");
   assert(publish >= 0 && trigger > publish);

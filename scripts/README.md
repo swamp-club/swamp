@@ -27,6 +27,26 @@ bash scripts/download_release_artifact.sh <version> linux/x86_64 <directory>
 deno run test scripts/release_artifacts_test.ts
 ```
 
+To test the actual cross-platform build from a PR branch, manually dispatch the
+Release workflow with that branch selected:
+
+```sh
+gh workflow run release.yml --ref <pr-branch> -f dry_run=true
+```
+
+Manual runs default to dry-run; non-`main` branches always dry-run even if the
+input is false. A dry run builds the dashboard and all five binaries, generates
+and verifies checksums, and packages every artifact, printing the intended GCS
+paths and hashes. It needs no publishing credentials and skips GCS access, UAT
+dispatch, and the downstream Windows-smoke/Docker-publishing jobs (which consume
+published artifacts). A merged PR still publishes normally. To manually publish
+from `main`, explicitly pass `-f dry_run=false`.
+
+For locally built binaries,
+`DRY_RUN=true bash scripts/upload_release_artifacts.sh
+<version>` exercises the
+same packaging without GCS access.
+
 Versioned uploads use create-only generation preconditions. Retries accept only
 identical bytes. Unix archives use Python's USTAR format with name `swamp`, mode
 0755, UID/GID zero, empty owner/group names and zero timestamps, wrapped in gzip

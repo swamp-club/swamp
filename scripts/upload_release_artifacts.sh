@@ -5,6 +5,7 @@ set -euo pipefail
 # Upload versioned artifacts only. Stable promotion belongs to the UAT publisher.
 # Usage: bash scripts/upload_release_artifacts.sh <version>
 # Requires authenticated gcloud and python3; GCS_BUCKET and BINARIES_DIR are optional.
+# DRY_RUN=true verifies and packages all assets without accessing GCS.
 VERSION="${1:-}"
 VERSION="${VERSION#v}"
 if [[ ! "$VERSION" =~ ^[0-9]{8}\.[0-9]{6}\.[0-9]+-sha\.[0-9a-f]{8,40}$ ]]; then
@@ -14,6 +15,11 @@ fi
 
 GCS_BUCKET="${GCS_BUCKET:-swamp-club-artifacts}"
 BINARIES_DIR="${BINARIES_DIR:-./dist}"
+DRY_RUN="${DRY_RUN:-false}"
+case "$DRY_RUN" in
+    true|false) ;;
+    *) echo "Error: DRY_RUN must be true or false"; exit 1 ;;
+esac
 REVISION=$(git rev-parse HEAD)
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
@@ -34,6 +40,10 @@ done
 upload_immutable() {
     local source="$1" destination="$2" content_type="$3" expected actual
     expected=$(sha256sum "$source" | awk '{print $1}')
+    if [[ "$DRY_RUN" == true ]]; then
+        echo "Dry run: would upload $destination (sha256=$expected)"
+        return 0
+    fi
     if ! gcloud storage cp "$source" "$destination" \
         --if-generation-match=0 --content-type="$content_type" \
         --custom-metadata="version=$VERSION,revision=$REVISION,sha256=$expected"; then
@@ -86,4 +96,8 @@ PY
     upload_immutable "$TEMP_DIR/$archive.sha256" "$destination.sha256" "text/plain"
 done
 
-echo "Uploaded versioned release $VERSION to gs://$GCS_BUCKET"
+if [[ "$DRY_RUN" == true ]]; then
+    echo "Dry run complete: verified and packaged all five variants; no GCS access"
+else
+    echo "Uploaded versioned release $VERSION to gs://$GCS_BUCKET"
+fi

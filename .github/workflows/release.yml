@@ -5,9 +5,14 @@ on:
     types: [closed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and package without publishing (non-main branches always dry-run)"
+        type: boolean
+        default: true
 
 concurrency:
-  group: release
+  group: release-${{ github.event_name == 'pull_request' && 'main' || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -19,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.mode.outputs.publish }}
+    env:
+      PUBLISH_RELEASE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run) }}
     # Only run on merged PRs (not closed without merge) or manual trigger
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
 
@@ -26,7 +34,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
+
+      - name: Select release mode
+        id: mode
+        run: |
+          echo "publish=$PUBLISH_RELEASE" >> "$GITHUB_OUTPUT"
+          if [[ "$PUBLISH_RELEASE" == true ]]; then
+            echo "Publishing release from main" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Dry run: building and packaging the selected branch without publishing" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup Deno
         uses: denoland/setup-deno@v2
@@ -92,6 +110,7 @@ jobs:
           cat checksums.txt
 
       - name: Authenticate to Google Cloud
+        if: env.PUBLISH_RELEASE == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           # Service-account JSON key with object create/read access to the
@@ -99,14 +118,17 @@ jobs:
           credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        if: env.PUBLISH_RELEASE == 'true'
 
-      - name: Upload versioned artifacts to GCS
+      - name: Package release artifacts and optionally upload to GCS
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
           GCS_BUCKET: swamp-club-artifacts
+          DRY_RUN: ${{ env.PUBLISH_RELEASE != 'true' }}
         run: bash scripts/upload_release_artifacts.sh "$RELEASE_VERSION"
 
       - name: Trigger UAT
+        if: env.PUBLISH_RELEASE == 'true'
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
           token: ${{ secrets.UAT_TRIGGER_TOKEN }}
@@ -118,6 +140,7 @@ jobs:
     name: Windows Smoke Test
     runs-on: windows-latest
     needs: release
+    if: needs.release.outputs.publish == 'true'
     permissions:
       contents: read
 
@@ -147,6 +170,7 @@ jobs:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: release
+    if: needs.release.outputs.publish == 'true'
     permissions:
       contents: read
       id-token: write
