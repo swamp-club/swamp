@@ -335,20 +335,20 @@ Read `results[0].phase` from the response. **Do NOT call `start` to resume** —
 
 Use this table to determine what to do next:
 
-| Phase            | Action                                                                                             |
-| ---------------- | -------------------------------------------------------------------------------------------------- |
-| `triaging`       | Read [references/triage.md](references/triage.md); duplicate of a shipped issue → `mark_duplicate` |
-| `classified`     | Read [references/planning.md](references/planning.md)                                              |
-| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)                          |
-| `approved`       | Read [references/implementation.md](references/implementation.md); plan needs changes → `iterate`  |
-| `implementing`   | Run code conformance review, then verify                                                           |
-| `verifying`      | Read [references/verification.md](references/verification.md)                                      |
-| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed                            |
-| `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)                               |
-| `releasing`      | Check release build: `ship` when done, or `complete` as fallback                                   |
-| `notify`         | Run `notify` — it thanks external authors and skips team members by itself                         |
-| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet                             |
-| `done`           | Nothing to do — lifecycle is complete                                                              |
+| Phase            | Action                                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `triaging`       | Read [references/triage.md](references/triage.md); duplicate of a shipped issue → `mark_duplicate`                       |
+| `classified`     | Read [references/planning.md](references/planning.md)                                                                    |
+| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)                                                |
+| `approved`       | Read [references/implementation.md](references/implementation.md); plan needs changes → `iterate`                        |
+| `implementing`   | Run code conformance review, then verify                                                                                 |
+| `verifying`      | Read [references/verification.md](references/verification.md)                                                            |
+| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed                                                  |
+| `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)                                                     |
+| `releasing`      | Read implementation section 5: for swamp CLI, authenticate to ops and `ship` once a build containing the change succeeds |
+| `notify`         | Run `notify` — it thanks external authors and skips team members by itself                                               |
+| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet                                                   |
+| `done`           | Nothing to do — lifecycle is complete                                                                                    |
 
 The canonical phase list lives in the `TRANSITIONS` constant in
 `extensions/models/_lib/schemas.ts`.
@@ -370,9 +370,15 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    ```
    swamp behavior run @swamp/issue-lifecycle pr_merged issue-<N>
    ```
-4. If the phase is `releasing`, ship it:
+4. If the phase is `releasing`, follow
+   [implementation section 5](references/implementation.md#5-ship-the-release).
+   For the swamp CLI, authenticate to `ops.swamp-club.com` and confirm a started
+   `@swamp/ci-artifact/release` run has a successful `build` containing the
+   merged change (the original or a subsequent build). Ship immediately with
+   that run's dashboard URL and build evidence; the rest of the run may still be
+   running:
    ```
-   swamp behavior run @swamp/issue-lifecycle ship issue-<N>
+   swamp behavior run @swamp/issue-lifecycle ship issue-<N> --input releaseUrl=<ops-run-URL> --input releaseNotes="<build evidence>"
    ```
 5. If the phase is `notify`, run `notify` (see Phase 5).
 6. If the phase is `summarizing`, record the summary:
@@ -380,9 +386,10 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    swamp behavior run @swamp/issue-lifecycle summarize issue-<N> \
      --input originalProblem="<problem>" --input deliveredOutcome="<outcome>" --input outcomeMet=true
    ```
-7. For quick close-out, `complete` still works from `implementing`, `pr_open`,
-   or `releasing` (transitions to `notify`, then `notify`/`skip_notify`, then
-   `summarize`).
+7. For work with no release build, `complete` still works from `implementing`,
+   `pr_open`, or `releasing` (transitions to `notify`, then
+   `notify`/`skip_notify`, then `summarize`). Never use it to bypass the swamp
+   CLI's ops authentication or successful-build check.
 
 ## Key Rules
 

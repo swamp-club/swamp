@@ -2930,11 +2930,13 @@ export const model = {
     ship: {
       rollbackOnFailure: true,
       description:
-        "Mark the release as shipped after the release build completes. " +
-        "Transitions to done and sets swamp-club status to shipped.",
+        "Mark the release as shipped after verifying a successful release build containing the change. " +
+        "For swamp CLI, check the authenticated ops release run's build job; a subsequent build containing the change also qualifies. " +
+        "The rest of the release run may still be running. " +
+        "Transitions to notify and sets swamp-club status to shipped.",
       arguments: z.object({
         releaseUrl: z.string().optional().describe(
-          "URL of the release (e.g., GitHub release page, package registry). Optional.",
+          "URL of the release evidence (e.g., qualifying ops release run, release page, package registry). Optional.",
         ),
         releaseNotes: z.string().optional().describe(
           "Brief release notes or summary. Optional.",

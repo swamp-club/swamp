@@ -138,25 +138,74 @@ When in `pr_failed`, diagnose and fix the issue. Then either:
 
 ## 5. Ship the Release
 
-After `pr_merged` transitions to `releasing`, wait for the release build to
-complete. Once the release is out, call `ship`:
+For the swamp CLI, after `pr_merged` transitions to `releasing`, check
+`@swamp/ci-artifact/release` on `https://ops.swamp-club.com`. A webhook starts
+the release there. GitHub Actions completion or webhook delivery alone is not
+shipping evidence.
+
+**Ship as soon as an ops release run has started and its `build` job has
+`status: succeeded`, with a built revision containing the merged change.** Do
+not wait for the whole run, UAT, Windows smoke, or publish to finish. Starting a
+run alone is insufficient. A subsequent successful build qualifies if it
+contains the change, even if the original build failed.
+
+### Authenticate and inspect ops
+
+Use the installed CLI and verify command schemas with `swamp help` before
+running these commands. The user needs authenticated read access to the ops
+server; swamp-club login or a dashboard browser session alone does not establish
+CLI server credentials. If credentials are missing or expired, have the user
+complete the server login flow:
 
 ```
-swamp behavior run @swamp/issue-lifecycle ship issue-<N>
+swamp auth server-login --server https://ops.swamp-club.com
 ```
 
-Optionally pass release metadata:
+If access is denied, ask the user to obtain read access. Leave the issue in
+`releasing` while authentication, access, or build evidence is unavailable; do
+not use `complete` to bypass this check.
+
+Find release runs and inspect candidates by their specific run IDs:
 
 ```
-swamp behavior run @swamp/issue-lifecycle ship issue-<N> --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
+swamp workflow history search --workflow @swamp/ci-artifact/release --server https://ops.swamp-club.com --json
+swamp workflow history get <run-id> --server https://ops.swamp-club.com --json
 ```
 
-This transitions the phase to `notify`, transitions the swamp-club status to
-`shipped`, and posts a `shipped` lifecycle entry.
+Check the returned `workflowName`, `startedAt`, and the job named `build` in
+`jobs`. Require that job and its step named `build` to have `status: succeeded`.
+Read `outputs.repository` and `outputs.revision` from that step (or its build
+data artifact's `attributes`); require repository `swamp-club/swamp`. Compare
+the full built revision with the PR's merge commit, obtained with
+`gh pr view <PR-URL> --json mergeCommit`. For a different revision, fetch the
+commits and require
+`git merge-base --is-ancestor <merge-commit> <built-revision>` to succeed. A
+newer timestamp or version alone does not prove inclusion.
 
-For quick close-out (e.g., the PR merged and you just want to wrap up),
-`complete` still works from `implementing`, `pr_open`, or `releasing`
-(transitions to `notify`).
+If the build is pending, running, failed, cancelled, or missing, keep checking
+this run or subsequent release runs. Never filter only for whole-run success: a
+running release can already have a qualifying successful build. If revision
+evidence is missing or ancestry cannot be verified, stay in `releasing`.
+
+### Record shipping evidence
+
+Use the qualifying run's dashboard URL as `releaseUrl` and include its version,
+built revision, and successful build in `releaseNotes`:
+
+```
+swamp behavior run @swamp/issue-lifecycle ship issue-<N> \
+  --input releaseUrl="https://ops.swamp-club.com/dashboard/workflows/@swamp%2Fci-artifact%2Frelease/runs/<run-id>" \
+  --input releaseNotes="Ops build succeeded for <version> at <built-revision>, containing merge <merge-commit>."
+```
+
+Record the subsequent run's URL if it supplied the successful build. This
+transitions the phase to `notify`, transitions the swamp-club status to
+`shipped`, and posts a `shipped` lifecycle entry. Continue through notification
+and summary immediately.
+
+For other repositories, follow their release conventions and pass appropriate
+release metadata to `ship`. `complete` remains available for work that has no
+release build, from `implementing`, `pr_open`, or `releasing` (to `notify`).
 
 ## 6. Notify the Contributor
 
