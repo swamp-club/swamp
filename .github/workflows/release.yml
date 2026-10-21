@@ -108,7 +108,7 @@ jobs:
       - name: Create checksums
         working-directory: dist
         run: |
-          sha256sum swamp-* > checksums.txt
+          sha256sum swamp-linux-x86_64 swamp-linux-aarch64 swamp-darwin-x86_64 swamp-darwin-aarch64 swamp-windows-x86_64.zip > checksums.txt
           cat checksums.txt
 
       - name: Authenticate to Google Cloud

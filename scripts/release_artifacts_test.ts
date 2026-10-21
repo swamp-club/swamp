@@ -429,6 +429,19 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
     "v${{ needs.release.outputs.version }}",
   );
   assertEquals(release.with?.fail_on_unmatched_files, true);
+  const publishedFiles = String(release.with?.files).trim().split("\n");
+  assertEquals(
+    String(steps[stage].with?.path).trim().split("\n"),
+    publishedFiles,
+  );
+  const checksums = steps.find((s) => s.name === "Create checksums");
+  assertEquals(
+    checksums?.run?.split("\n")[0],
+    `sha256sum ${
+      publishedFiles.filter((f) => f !== "dist/checksums.txt")
+        .map((f) => f.replace("dist/", "")).join(" ")
+    } > checksums.txt`,
+  );
   assertEquals(
     String(release.with?.files).trim().split("\n"),
     [
