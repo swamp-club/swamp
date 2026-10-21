@@ -38,10 +38,14 @@
  *
  * It also runs against a swamp before the batched barrier (a
  * `FileSystemStorage` without the `durableChunks` option ignores it), so the
- * same script measures both.
+ * same script measures both. The storage is ordered before a `commits.db`
+ * in the datastore root, as an unreplicated datastore's is, so on macOS it
+ * takes the ordering barrier (swamp-club#3737); a swamp before it ignores
+ * `orderedBefore` and syncs in full.
  */
 
 import { parseArgs } from "@std/cli/parse-args";
+import { join } from "@std/path";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
 import {
@@ -89,6 +93,7 @@ function storageOf(
     {
       syncedAncestors: new Map(),
       durableChunks: memo,
+      orderedBefore: join(dir, "commits.db"),
     } as FileSystemStorageOptions,
   );
 }

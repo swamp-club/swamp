@@ -32,6 +32,7 @@ import type {
   TempFileSweeper,
 } from "../../domain/datastore/datastore_storage.ts";
 import { assertContainedPath } from "./safe_path.ts";
+import { barrierSync, type BarrierSyncResult } from "./barrier_sync.ts";
 import { syncDirectory } from "./sync_directory.ts";
 
 /** The largest chunk this storage accepts: core's own maximum, 16 MiB. */
@@ -80,6 +81,12 @@ const DURABLE = Object.freeze({});
  */
 const DURABLE_CHUNKS = new Map<string, object>();
 
+/**
+ * The devices whose volume refused the macOS ordering barrier in this
+ * process, so their chunks go straight to the full sync (swamp-club#3737).
+ */
+const FULL_SYNC_DEVICES = new Set<number>();
+
 /** Options for {@link FileSystemStorage}; the defaults are for production. */
 export interface FileSystemStorageOptions {
   /** How a chunk's temp file is synced before its rename; `file.sync()`. */
@@ -96,6 +103,25 @@ export interface FileSystemStorageOptions {
    * process by default.
    */
   readonly durableChunks?: Map<string, object>;
+  /**
+   * The `commits.db` whose commits name this storage's chunks, when only
+   * its own device makes a commit durable (an unreplicated datastore). On
+   * macOS, with `_blobs/` on the same device, chunks and their directories
+   * are then synced with the ordering barrier ({@link barrierSync}) instead
+   * of a drive-cache flush (swamp-club#3737). Unset, every sync is full.
+   */
+  readonly orderedBefore?: string;
+  /** How the ordering barrier runs; {@link barrierSync} by default. */
+  readonly barrierSync?: (path: string) => Promise<BarrierSyncResult>;
+  /** The device a path is on; `Deno.stat`'s `dev` by default. */
+  readonly deviceOf?: (path: string) => Promise<number>;
+  /** The platform; `Deno.build.os` by default. */
+  readonly platform?: typeof Deno.build.os;
+  /**
+   * The devices that refused the barrier; one shared by the whole process
+   * by default.
+   */
+  readonly fullSyncDevices?: Set<number>;
 }
 
 /**
@@ -131,6 +157,13 @@ export class FileSystemStorage
   readonly #syncDirectory: (dir: string) => Promise<void>;
   readonly #syncedAncestors: Map<string, Promise<void>>;
   readonly #durableChunks: Map<string, object>;
+  readonly #orderedBefore: string | undefined;
+  readonly #barrierSync: (path: string) => Promise<BarrierSyncResult>;
+  readonly #deviceOf: (path: string) => Promise<number>;
+  readonly #platform: typeof Deno.build.os;
+  readonly #fullSyncDevices: Set<number>;
+  /** The device the barrier may run on, or undefined; looked up once. */
+  #barrierDeviceLookup: Promise<number | undefined> | undefined;
 
   /** `datastorePath` is the datastore root, where `_control/` also lives. */
   constructor(datastorePath: string, options: FileSystemStorageOptions = {}) {
@@ -140,6 +173,12 @@ export class FileSystemStorage
     this.#syncDirectory = options.syncDirectory ?? syncDirectory;
     this.#syncedAncestors = options.syncedAncestors ?? SYNCED_ANCESTORS;
     this.#durableChunks = options.durableChunks ?? DURABLE_CHUNKS;
+    this.#orderedBefore = options.orderedBefore;
+    this.#barrierSync = options.barrierSync ?? ((path) => barrierSync(path));
+    this.#deviceOf = options.deviceOf ??
+      (async (path) => (await Deno.stat(path)).dev);
+    this.#platform = options.platform ?? Deno.build.os;
+    this.#fullSyncDevices = options.fullSyncDevices ?? FULL_SYNC_DEVICES;
   }
 
   capabilities(): StorageCapabilities {
@@ -187,7 +226,8 @@ export class FileSystemStorage
    * Each put writes a temp file beside its chunk and closes it unsynced;
    * the commit syncs them all, {@link SYNC_PARALLELISM} at a time, then
    * renames each into place. Syncing closed files before any rename lets
-   * the syncs coalesce: on macOS each is a drive-cache flush.
+   * the syncs coalesce: on macOS each is a drive-cache flush, unless the
+   * ordering barrier may run (swamp-club#3737).
    */
   stageChunks(namespace: string): ChunkStage {
     /** Staged temp files not yet renamed, by hash. */
@@ -328,7 +368,7 @@ export class FileSystemStorage
     for (const path of paths) this.#durableChunks.set(path, token);
     try {
       const shards = [...new Set(paths.map((path) => dirname(path)))];
-      await forEachBounded(shards, (dir) => this.#syncDirectory(dir));
+      await forEachBounded(shards, (dir) => this.#syncDir(dir));
       signal.throwIfAborted();
       for (const dir of this.#ancestorsOf(namespace)) {
         await this.#syncAncestor(dir);
@@ -549,7 +589,7 @@ export class FileSystemStorage
     let sync = this.#syncedAncestors.get(dir);
     if (sync === undefined) {
       // A failed sync is forgotten, so the next caller tries again.
-      const started: Promise<void> = this.#syncDirectory(dir).catch(
+      const started: Promise<void> = this.#syncDir(dir).catch(
         (error) => {
           if (this.#syncedAncestors.get(dir) === started) {
             this.#syncedAncestors.delete(dir);
@@ -586,6 +626,7 @@ export class FileSystemStorage
 
   /** Reopens a closed temp file, syncs it and closes it again. */
   async #syncTemp(tmp: string): Promise<void> {
+    if (await this.#barrier(tmp)) return;
     // Windows syncs only a handle opened for writing.
     const file = await Deno.open(tmp, { write: true });
     try {
@@ -593,6 +634,51 @@ export class FileSystemStorage
     } finally {
       file.close();
     }
+  }
+
+  /** Syncs a chunk directory: the barrier where it may run, else in full. */
+  async #syncDir(dir: string): Promise<void> {
+    if (await this.#barrier(dir)) return;
+    await this.#syncDirectory(dir);
+  }
+
+  /**
+   * Runs the ordering barrier on `path` when it may run here, answering
+   * whether it did. A volume that refuses it is remembered, so its later
+   * syncs go straight to the full sync; nothing falls back to no sync.
+   */
+  async #barrier(path: string): Promise<boolean> {
+    const device = await this.#barrierDevice();
+    if (device === undefined || this.#fullSyncDevices.has(device)) {
+      return false;
+    }
+    if ((await this.#barrierSync(path)) === "synced") return true;
+    this.#fullSyncDevices.add(device);
+    return false;
+  }
+
+  /**
+   * The device of `_blobs/` when the barrier may run on it: on macOS, with
+   * {@link FileSystemStorageOptions.orderedBefore} set and on the same
+   * device. A lookup that fails answers undefined, a full sync.
+   */
+  #barrierDevice(): Promise<number | undefined> {
+    const orderedBefore = this.#orderedBefore;
+    if (orderedBefore === undefined || this.#platform !== "darwin") {
+      return Promise.resolve(undefined);
+    }
+    this.#barrierDeviceLookup ??= (async () => {
+      try {
+        const [blobs, commits] = await Promise.all([
+          this.#deviceOf(this.#blobsDir),
+          this.#deviceOf(dirname(orderedBefore)),
+        ]);
+        return blobs === commits ? blobs : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    return this.#barrierDeviceLookup;
   }
 
   /**

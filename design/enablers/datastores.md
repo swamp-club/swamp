@@ -2500,7 +2500,8 @@ implementation. `stageChunks` gives a stage whose `put` creates a temp file
 `commit` reopens and syncs every staged file, 64 at a time, then renames each
 into place, so a chunk's name never points at bytes a power loss could tear.
 Syncing closed files before any rename lets the syncs coalesce: on macOS each
-is an `F_FULLFSYNC`, a drive-cache flush. A failed commit removes every
+is an `F_FULLFSYNC`, a drive-cache flush, unless the ordering barrier applies
+(below). A failed commit removes every
 staged file it did not rename; chunks renamed before the failure stay,
 harmless because no commit names them yet. `put` is a stage of one, so a
 lone put still syncs its file before its rename. When a put fails and the
@@ -2531,6 +2532,33 @@ fails (`syncDirectory`), EIO included, is swallowed as SQLite does, so a
 barrier cannot report a lost directory entry. `quarantineChunk` renames
 a chunk to a `.<uuid>.tmp` name in its shard and sets its mtime to now, so
 `list` skips it and `removeStaleTempFiles` removes it after the grace period.
+
+**The macOS ordering barrier** (swamp-club#3737). The chunk barrier needs
+ordering, not a drive-cache flush: a chunk on the disk no later than the
+commit naming it. `commits.db` itself only gets a plain `fsync` (below), so
+`F_FULLFSYNC` made the chunk more durable than its commit. On macOS a storage
+given `orderedBefore` (the `commits.db` its chunks are named by) syncs chunk
+temp files, shard directories and their ancestors with `F_BARRIERFSYNC`
+instead, when `_blobs/` and that `commits.db` are on the same device: writes
+before the barrier reach the disk before any written to that device after
+it. Deno does not expose it, so `barrierSync`
+(`src/infrastructure/persistence/barrier_sync.ts`) opens the path read-only
+through libc over FFI (`libSystem.B.dylib`, loaded once per process; the
+compiled binary has `--allow-ffi`) and calls `fcntl` off the event loop, so
+the 64 parallel syncs still overlap. Any failure (libc that will not load, a
+path that will not open, a volume that refuses the call, such as a network
+filesystem) falls back to the full sync for that call and records the device
+for the process (`FULL_SYNC_DEVICES`), so its later syncs go straight to the
+full sync; nothing falls back to no sync. A nonblocking FFI call cannot read
+`errno`, so an I/O error takes the fallback too, which reports it.
+`openV3Datastore` passes `orderedBefore` only for an unreplicated filesystem
+datastore (`v3ChunksOrderedBefore`): while replicating, Litestream ships the
+commit to the replica before a barriered chunk need be on the disk, so a power
+loss could leave the replica naming a lost chunk, and every sync stays full
+whatever device the checkout's copy is on. One narrow gap is accepted: when
+replication is first turned on, a commit appended just before, its chunk
+ordered but perhaps still in the drive cache, can be seeded into the replica
+before the drive flushes it. Linux and Windows sync as before.
 It validates the namespace and hash before building any path, and uses mtime
 as `lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
 checks an implementation. `createInMemoryRemote({ storage: true })` provides a
@@ -2827,9 +2855,33 @@ before: about 10 to 25 ms on an idle Mac, and 200 ms or more when other
 processes keep the disk busy (the macOS uat#496 figures above were taken with
 other processes writing 1 to 2 GB/s; a direct A/B gave +217 ms). Linux figures
 are from a Docker Desktop VM (ext4 volume), whose cheap fsync understates bare
-metal; no bare-metal figure was taken. Replacing `F_FULLFSYNC` with an
-ordering barrier (`F_BARRIERFSYNC`) on macOS is a follow-up, gated before v3
-is dogfooded.
+metal; no bare-metal figure was taken.
+
+The ordering barrier (swamp-club#3737) on macOS arm64 (APFS), against the
+#3617 barrier on main at 55c5a07e9 and the swamp before it (270eb2fe6). In
+process, the same bench, medians of 3 interleaved runs of 9 with an A/A
+control, on an idle disk and with `dd` rewriting a 2 GiB file throughout:
+
+| Case | before #3617 | main | ordering barrier |
+|---|---|---|---|
+| 1 new chunk, idle | 0.5 ms | 8.5 ms | 1.6 ms |
+| 10 new chunks, idle | 2.7 ms | 20.5 ms | 5.0 ms |
+| 200 new chunks, idle | 51 ms | 135 ms | 66 ms |
+| 1 new chunk, under load | 0.5 ms | 34 ms | 3.6 ms |
+| 10 new chunks, under load | 3.0 ms | 76 ms | 8.2 ms |
+| 200 new chunks, under load | 54 ms | 348 ms | 80 ms |
+
+The uat#496 v3 write line (`model method run` of `shell-echo`) stores no
+chunk: its content is all inline, so it never reached the barrier, and it
+reads the same on main, the ordering barrier, and a build with every chunk
+sync removed (536, 542 and 540 ms, medians of 6 interleaved runs, idle). The
+same line with an 18 KiB random output, so each run stores new chunks, on
+the compiled binaries, 9 rounds in rotated order: idle, 598 ms on main,
+578 ms with the ordering barrier, 574 ms with no chunk sync, the barrier
+ahead of main in every round (median gap 12 ms). Under the `dd` load, with
+other processes also loading the machine, 1688, 1415 and 1252 ms, the barrier
+ahead of main in each of 6 rounds. Linux and Windows take the same path as
+before.
 
 - **No atomicity across partitions.** When a partition fails, the partitions
   before it stay committed and the ones after it are not tried. A refusal is
@@ -3551,8 +3603,8 @@ until its retry rewrites them, a reboot can leave one torn. `commits.db` keeps
 `checkpoint_fullfsync=0`, and swamp sets neither (swamp-club#3617 checked
 this; changing it is out of scope). The compacted-base load
 and recovery's sweep still sync their files at a barrier
-(`DurableWriteBatch`): they are rare. `F_BARRIERFSYNC`, which Deno does not
-expose, stays out of scope.
+(`DurableWriteBatch`): they are rare. They keep `F_FULLFSYNC`; only the chunk
+storage uses `F_BARRIERFSYNC` (swamp-club#3737).
 
 **Keys two partitions write (swamp-club#3256).** A same-key definition
 rename (two names that are not filename-safe, both stored at the
@@ -7159,7 +7211,8 @@ exclude patterns.
 | `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
 | `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log; `lostDatastoreFormatMarker` |
 | `src/infrastructure/persistence/datastore_format_marker_writer.ts` | Durable format marker writes |
-| `src/infrastructure/persistence/fs_datastore_storage.ts` | `FileSystemStorage`: staged chunks synced before their renames, chunk stats, the directory barrier and its durable-chunk memo, quarantine |
+| `src/infrastructure/persistence/fs_datastore_storage.ts` | `FileSystemStorage`: staged chunks synced before their renames, chunk stats, the directory barrier and its durable-chunk memo, the macOS ordering barrier and its per-device fallback, quarantine |
+| `src/infrastructure/persistence/barrier_sync.ts` | `barrierSync`: macOS `F_BARRIERFSYNC` through libc over FFI |
 | `src/infrastructure/persistence/sync_directory.ts` | `syncDirectory`: directory fsync shared by the read model and chunk storage |
 | `src/infrastructure/datastore_v3/v3_datastore.ts` | `openV3Datastore`, `initializeV3Datastore`, `isFreshV3Skeleton`, `restoreV3FormatMarker` |
 | `src/infrastructure/datastore_v3/sqlite_read_model.ts` | `SqliteReadModel`: catch-ups, the reboot check, the checkout-copy guard, at-risk copies, unreadable records |
