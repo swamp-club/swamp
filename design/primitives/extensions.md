@@ -2077,8 +2077,14 @@ config that cannot be parsed keeps the `deno.lock` beside it). A lock
 that no longer matches the project fails the push with an error naming the
 lock, the config and `deno install --entrypoint <file>`, instead of being
 rewritten in the author's tree, so the version the audit reads from the lock
-is the version that ships. Local loading and `serve` reload keep Deno's
-default lock handling.
+is the version that ships. `extension fmt` reads the module graph read-only
+too (swamp-club#3717), so `fmt` and `fmt --check` never create or rewrite the
+lock push then bundles against. A stale lock does not fail `fmt`: the read is
+lenient, so each entry point the lock refused is formatted and linted alone,
+and `fmt` warns with the same `deno install --entrypoint` command (and lists
+it under `staleLockfiles` in `--json`). `deno fmt` and `deno lint` themselves
+never touch the lock. Local loading and `serve` reload keep Deno's default
+lock handling.
 
 The audit summary carries the source text (`specifier`; for a mapped import,
 the specifier the map resolves it to), the bare import as written

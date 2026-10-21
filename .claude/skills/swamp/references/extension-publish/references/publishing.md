@@ -600,6 +600,10 @@ with <config>`) instead of being rewritten; the locked
 version is then always the one that ships. Fix it with
 `deno install --entrypoint <file>` in the project directory, commit the lock,
 and push again. Without a lock they bundle with `--no-lock` and create none.
+`extension fmt` and `fmt --check` never write the lock either. On a stale lock
+they still pass: each entry point the lock refused is formatted alone, and fmt
+warns with the same `deno install --entrypoint` command (`staleLockfiles` in
+`--json`). Fix the lock before pushing.
 
 Findings with a `cause` in `warnings.dependencyTrust`:
 

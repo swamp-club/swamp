@@ -404,6 +404,66 @@ export function isStaleLockfile(output: string): boolean {
 }
 
 /**
+ * A lockfile `--frozen` refused to update, with what names it: the lock, the
+ * project file it no longer matches, the directory `deno install` runs in,
+ * and the entry point whose read or bundle hit it. `extension fmt` reads
+ * these to warn instead of failing.
+ */
+export class StaleLockfileError extends UserError {
+  constructor(
+    message: string,
+    readonly lockPath: string,
+    readonly projectFile: string,
+    readonly projectDir: string,
+    readonly entryPoint: string,
+  ) {
+    super(message);
+    this.name = "StaleLockfileError";
+  }
+}
+
+/**
+ * A stale lockfile `extension fmt` read past: the lock, the project file it
+ * no longer matches, the directory `deno install` runs in, and every entry
+ * point whose module graph read it refused.
+ */
+export interface StaleLockfile {
+  lockPath: string;
+  projectFile: string;
+  projectDir: string;
+  entryPoints: string[];
+}
+
+/** One {@link StaleLockfile} per lock, each with all the entry points it refused. */
+export function groupStaleLockfiles(
+  errors: readonly StaleLockfileError[],
+): StaleLockfile[] {
+  const byLock = new Map<string, StaleLockfile>();
+  for (const error of errors) {
+    const lock = byLock.get(error.lockPath) ?? {
+      lockPath: error.lockPath,
+      projectFile: error.projectFile,
+      projectDir: error.projectDir,
+      entryPoints: [],
+    };
+    if (!lock.entryPoints.includes(error.entryPoint)) {
+      lock.entryPoints.push(error.entryPoint);
+    }
+    byLock.set(error.lockPath, lock);
+  }
+  return [...byLock.values()];
+}
+
+/**
+ * The command that brings a stale lock up to date, run in its `projectDir`.
+ * A path with whitespace is double-quoted, which every shell reads alike.
+ */
+export function staleLockfileInstallCommand(lock: StaleLockfile): string {
+  const quoted = lock.entryPoints.map((p) => /\s/.test(p) ? `"${p}"` : p);
+  return `deno install --entrypoint ${quoted.join(" ")}`;
+}
+
+/**
  * The error for a lockfile that no longer matches the project: push would
  * have to rewrite it, and it treats the author's lock as read-only. Names
  * the command that brings the lock up to date, and keeps the change list
@@ -414,7 +474,7 @@ export function staleLockfileError(
   entryPoint: string,
   project: { denoConfigPath?: string; packageJsonDir?: string },
   output: string,
-): UserError {
+): StaleLockfileError {
   const projectFile = project.denoConfigPath ?? "package.json";
   const projectDir = project.denoConfigPath
     ? dirname(project.denoConfigPath)
@@ -423,11 +483,15 @@ export function staleLockfileError(
   const changesAt = plain.indexOf("changes:");
   const changes = changesAt >= 0 ? `\n${plain.slice(changesAt).trimEnd()}` : "";
   return markErrorPaths(
-    new UserError(
+    new StaleLockfileError(
       `${lockPath} is out of date with ${projectFile}, and push and quality ` +
         `never rewrite your lockfile. Run \`deno install --entrypoint ` +
         `${entryPoint}\` in ${projectDir}, commit the updated lock, and try ` +
         `again.${changes}`,
+      lockPath,
+      projectFile,
+      projectDir,
+      entryPoint,
     ),
     [lockPath, projectFile, entryPoint, projectDir],
   );

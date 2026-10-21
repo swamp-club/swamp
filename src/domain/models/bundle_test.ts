@@ -32,6 +32,7 @@ import {
   denoProjectArgs,
   extractBareSpecifierNames,
   fixCjsEsmInterop,
+  groupStaleLockfiles,
   importMapTarget,
   installZodGlobal,
   isEsbuildInstallRace,
@@ -45,7 +46,9 @@ import {
   sanitizeDataUrlError,
   sharedZodTargets,
   sourceHasBareSpecifiers,
+  StaleLockfileError,
   staleLockfileError,
+  staleLockfileInstallCommand,
   uint8ArrayToBase64,
   zod4SpecifiersReachedFrom,
 } from "./bundle.ts";
@@ -1820,6 +1823,64 @@ Deno.test("staleLockfileError: package.json mode names package.json and its dire
   );
   assertStringIncludes(error.message, "is out of date with package.json");
   assertStringIncludes(error.message, `\` in ${dir}, commit`);
+});
+
+Deno.test("staleLockfileError: is a StaleLockfileError carrying what it names", () => {
+  const configDir = join("ext", "proj");
+  const error = staleLockfileError(
+    join(configDir, "deno.lock"),
+    join(configDir, "mod.ts"),
+    { denoConfigPath: join(configDir, "deno.json") },
+    STALE_LOCK_OUTPUT,
+  );
+  assertEquals(error instanceof StaleLockfileError, true);
+  assertEquals(error.lockPath, join(configDir, "deno.lock"));
+  assertEquals(error.projectFile, join(configDir, "deno.json"));
+  assertEquals(error.projectDir, configDir);
+  assertEquals(error.entryPoint, join(configDir, "mod.ts"));
+});
+
+Deno.test("groupStaleLockfiles: one entry per lock with every entry point it refused", () => {
+  const project = { denoConfigPath: join("p", "deno.json") };
+  const lock = join("p", "deno.lock");
+  const other = join("q", "deno.lock");
+  const grouped = groupStaleLockfiles([
+    staleLockfileError(lock, join("p", "a.ts"), project, STALE_LOCK_OUTPUT),
+    staleLockfileError(lock, join("p", "b.ts"), project, STALE_LOCK_OUTPUT),
+    staleLockfileError(lock, join("p", "a.ts"), project, STALE_LOCK_OUTPUT),
+    staleLockfileError(
+      other,
+      join("q", "c.ts"),
+      { packageJsonDir: "q" },
+      STALE_LOCK_OUTPUT,
+    ),
+  ]);
+  assertEquals(grouped, [
+    {
+      lockPath: lock,
+      projectFile: join("p", "deno.json"),
+      projectDir: "p",
+      entryPoints: [join("p", "a.ts"), join("p", "b.ts")],
+    },
+    {
+      lockPath: other,
+      projectFile: "package.json",
+      projectDir: "q",
+      entryPoints: [join("q", "c.ts")],
+    },
+  ]);
+});
+
+Deno.test("staleLockfileInstallCommand: lists the entry points, quoting one with whitespace", () => {
+  assertEquals(
+    staleLockfileInstallCommand({
+      lockPath: "deno.lock",
+      projectFile: "deno.json",
+      projectDir: ".",
+      entryPoints: ["a.ts", join("my models", "b.ts")],
+    }),
+    `deno install --entrypoint a.ts "${join("my models", "b.ts")}"`,
+  );
 });
 
 Deno.test("bundleExtension: readOnlyLock bundles with --frozen and reports a stale lock", async () => {

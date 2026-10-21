@@ -36,6 +36,10 @@ import {
   resolveExtensionFiles,
 } from "./resolve_extension_files.ts";
 import { UserError } from "../domain/errors.ts";
+import {
+  StaleLockfileError,
+  staleLockfileError,
+} from "../domain/models/bundle.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   assertPathEquals,
@@ -3157,6 +3161,98 @@ Deno.test("resolveExtensionFiles: lenient resolution (fmt) leaves symlinks out, 
       assertEquals(reads, [model]);
       assertEquals(result.allModelFiles, [model]);
     });
+  });
+});
+
+/** A module graph reader whose every read fails with `errorFor(entryPoint)`. */
+function failingReader(errorFor: (entryPoint: string) => Error): {
+  reader: ModuleGraphReader;
+} {
+  return {
+    reader: { read: (entryPoint) => Promise.reject(errorFor(entryPoint)) },
+  };
+}
+
+Deno.test("resolveExtensionFiles: lenient resolution (fmt) reports a stale lockfile once, with every entry point it refused", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    const a = join(modelsDir, "a.ts");
+    const b = join(modelsDir, "b.ts");
+    await Deno.writeTextFile(a, "export const a = 1;\n");
+    await Deno.writeTextFile(b, "export const b = 1;\n");
+    const lockPath = join(dir, "deno.lock");
+    const project = { denoConfigPath: join(dir, "deno.json") };
+    const { reader } = failingReader((entryPoint) =>
+      staleLockfileError(lockPath, entryPoint, project, "")
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: await writeModelManifest(dir, ["a.ts", "b.ts"]),
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: reader,
+      lenientSources: true,
+    });
+
+    assertEquals(result.allModelFiles.sort(), [a, b]);
+    assertEquals(result.staleLockfiles, [{
+      lockPath,
+      projectFile: join(dir, "deno.json"),
+      projectDir: dir,
+      entryPoints: [a, b],
+    }]);
+  });
+});
+
+Deno.test("resolveExtensionFiles: lenient resolution (fmt) reports no stale lockfile for another graph-read failure", async () => {
+  await withTempRepo(async (dir) => {
+    const model = join(dir, "extensions", "models", "m.ts");
+    await Deno.writeTextFile(model, "export const m = 1;\n");
+    const { reader } = failingReader(() => new UserError("deno info failed"));
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: await writeModelManifest(dir, ["m.ts"]),
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: reader,
+      lenientSources: true,
+    });
+
+    assertEquals(result.allModelFiles, [model]);
+    assertEquals(result.staleLockfiles, undefined);
+  });
+});
+
+Deno.test("resolveExtensionFiles: strict resolution (push, quality) fails on a stale lockfile", async () => {
+  await withTempRepo(async (dir) => {
+    const model = join(dir, "extensions", "models", "m.ts");
+    await Deno.writeTextFile(model, "export const m = 1;\n");
+    const lockPath = join(dir, "deno.lock");
+    const { reader } = failingReader((entryPoint) =>
+      staleLockfileError(
+        lockPath,
+        entryPoint,
+        { denoConfigPath: join(dir, "deno.json") },
+        "",
+      )
+    );
+
+    const manifestPath = await writeModelManifest(dir, ["m.ts"]);
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+          moduleGraphReader: reader,
+        }),
+      StaleLockfileError,
+      `${lockPath} is out of date`,
+    );
   });
 });
 

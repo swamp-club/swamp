@@ -59,7 +59,12 @@ import {
   type SourceArchiveKindInput,
   type SourceArchivePlan,
 } from "../domain/extensions/source_archive_plan.ts";
-import { sourceHasBareSpecifiers } from "../domain/models/bundle.ts";
+import {
+  groupStaleLockfiles,
+  sourceHasBareSpecifiers,
+  type StaleLockfile,
+  StaleLockfileError,
+} from "../domain/models/bundle.ts";
 import { DENO_CONFIG_FILE_NAMES } from "../domain/extensions/deno_config.ts";
 import type { ResolvedBareImport } from "../domain/extensions/bare_import_resolution.ts";
 import { DenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
@@ -179,6 +184,12 @@ export interface ResolvedExtensionFiles {
    * skill directory, or a symlink inside one, is listed here only.
    */
   symlinkedPaths: Map<string, string>;
+  /**
+   * Lockfiles fmt (lenient) found out of date with their project. Its graph
+   * read never rewrites the lock, so each entry point the lock refused is
+   * formatted alone; push and quality fail on a stale lock instead.
+   */
+  staleLockfiles?: StaleLockfile[];
   /** The project deno.json or deno.jsonc push bundles, formats and lints under. */
   denoConfigPath?: string;
   /** The package.json project push bundles under, when the extension uses bare specifiers. */
@@ -726,8 +737,9 @@ export function isPulledExtensionManifest(
 
 /**
  * The module graph reader push, quality and fmt resolve files with: the
- * embedded deno, run with the environment the bundler gets. Push and quality
- * pass `readOnlyLock` so the read never writes the extension's lockfile.
+ * embedded deno, run with the environment the bundler gets. Push, quality
+ * and fmt pass `readOnlyLock` so the read never writes the extension's
+ * lockfile.
  */
 export async function createModuleGraphReader(
   options?: { readOnlyLock?: boolean },
@@ -1492,6 +1504,9 @@ export async function resolveExtensionFiles(
         listed.has(path) || refusedSkillPaths.has(path)
       ),
     ),
+    ...(sources.staleLockfiles.length > 0
+      ? { staleLockfiles: sources.staleLockfiles }
+      : {}),
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
     bareImports: sources.bareImports,
@@ -1541,6 +1556,8 @@ interface ResolvedSourceModules {
   codeFilesByKind: Record<SourceArchiveKind, string[]>;
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
   plan: SourceArchivePlan;
+  /** Stale lockfiles a lenient graph read went past; empty otherwise. */
+  staleLockfiles: StaleLockfile[];
 }
 
 /** The real path of `path`, or `path` itself when it cannot be resolved. */
@@ -1631,6 +1648,7 @@ async function resolveSourceModules(options: {
 }): Promise<ResolvedSourceModules> {
   const graphOf = new Map<string, SymlinkFreeGraph>();
   const reachingSymlinks = new Set<string>();
+  const staleLocks: StaleLockfileError[] = [];
   const kindGraphs: Array<
     {
       k: SourceModuleKindRoots;
@@ -1644,7 +1662,7 @@ async function resolveSourceModules(options: {
     for (const root of k.roots) {
       let free = graphOf.get(root);
       if (!free) {
-        free = await readSymlinkFreeGraph(root, options);
+        free = await readSymlinkFreeGraph(root, { ...options, staleLocks });
         graphOf.set(root, free);
       }
       graphs.push(free.graph);
@@ -1769,6 +1787,7 @@ async function resolveSourceModules(options: {
       codeFilesByKind,
       dataFilesByKind,
       plan: { entries: [] },
+      staleLockfiles: groupStaleLockfiles(staleLocks),
     };
   }
   const plan = planSourceArchive({
@@ -1784,6 +1803,7 @@ async function resolveSourceModules(options: {
     codeFilesByKind,
     dataFilesByKind,
     plan,
+    staleLockfiles: [],
   };
 }
 
@@ -1801,6 +1821,8 @@ async function readSymlinkFreeGraph(
     project: ModuleGraphProject;
     lenient: boolean;
     logger: Logger;
+    /** Where a lenient read records the stale lockfiles it goes past. */
+    staleLocks?: StaleLockfileError[];
   },
 ): Promise<SymlinkFreeGraph> {
   const empty: SourceModuleGraph = { modules: [], edges: [], missing: [] };
@@ -1812,6 +1834,7 @@ async function readSymlinkFreeGraph(
     graph = await options.reader.read(root, options.project);
   } catch (error) {
     if (!options.lenient) throw error;
+    if (error instanceof StaleLockfileError) options.staleLocks?.push(error);
     options.logger
       .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
     graph = { ...empty, modules: [{ path: root, kind: "code" }] };
