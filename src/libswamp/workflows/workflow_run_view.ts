@@ -90,6 +90,8 @@ export interface StepRunView {
     | "skipped"
     | "unknown";
   error?: string;
+  /** Stable error identifier, when the step failed with a coded UserError. */
+  errorCode?: string;
   startedAt?: string;
   completedAt?: string;
   duration?: number;

@@ -181,6 +181,7 @@ export const StepRunSchema = z.object({
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   error: z.string().optional(),
+  errorCode: z.string().optional(),
   output: z.unknown().optional(),
   dataArtifacts: z.array(DataArtifactRefSchema).optional(),
   allowedFailure: z.boolean().optional(),
@@ -252,7 +253,9 @@ function isRunValuePath(path: DataPath): boolean {
   if (path[0] === "deferredExpressions" && path[2] === "bindings") return true;
   if (path[0] === "jobs" && path[2] === "steps") {
     const field = path[4];
-    if (field === "error" || field === "approvalPrompt") return true;
+    if (
+      field === "error" || field === "errorCode" || field === "approvalPrompt"
+    ) return true;
     if (
       field === "assertResult" &&
       (path[5] === "message" || path[5] === "error")
@@ -411,6 +414,7 @@ export class StepRun {
     private _wait: StoredWait | undefined = undefined,
     private _approvalTimeout: number | undefined = undefined,
     private _stoppedByAbort: boolean = false,
+    private _errorCode: string | undefined = undefined,
   ) {}
 
   /**
@@ -463,6 +467,7 @@ export class StepRun {
       parseStoredWait(validated.wait),
       validated.approvalTimeout,
       validated.stoppedByAbort ?? false,
+      validated.errorCode,
     );
   }
 
@@ -480,6 +485,10 @@ export class StepRun {
 
   get error(): string | undefined {
     return this._error;
+  }
+
+  get errorCode(): string | undefined {
+    return this._errorCode;
   }
 
   get output(): unknown {
@@ -634,6 +643,7 @@ export class StepRun {
     this._startedAt = undefined;
     this._completedAt = undefined;
     this._error = undefined;
+    this._errorCode = undefined;
     this._output = undefined;
     this._dataArtifacts = [];
     this._allowedFailure = false;
@@ -680,8 +690,8 @@ export class StepRun {
    * Fails a step the run's abort stopped while it was in flight, marked
    * {@link stoppedByAbort}.
    */
-  failStoppedByAbort(error: string): void {
-    this.fail(error);
+  failStoppedByAbort(error: string, code?: string): void {
+    this.fail(error, code);
     this._stoppedByAbort = true;
   }
 
@@ -874,10 +884,11 @@ export class StepRun {
   /**
    * Marks the step as failed.
    */
-  fail(error: string): void {
+  fail(error: string, code?: string): void {
     this._status = "failed";
     this._completedAt = new Date();
     this._error = error;
+    this._errorCode = code;
     this._resetByResume = false;
   }
 
@@ -891,6 +902,7 @@ export class StepRun {
     this._resetByResume = false;
     if (error !== undefined) {
       this._error = error;
+      this._errorCode = undefined;
     }
   }
 
@@ -922,6 +934,7 @@ export class StepRun {
       error: this._error,
       output: this._output,
     };
+    if (this._errorCode !== undefined) data.errorCode = this._errorCode;
     if (this._dataArtifacts.length > 0) {
       data.dataArtifacts = this._dataArtifacts.map((a) => ({ ...a }));
     }

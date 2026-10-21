@@ -180,6 +180,7 @@ export type WorkflowRunEvent =
     jobId: string;
     stepId: string;
     error: string;
+    errorCode?: string;
     allowedFailure?: boolean;
     /** The nested workflow a nested workflow step's error names. */
     nestedRun?: { workflowId: string; workflowName: string };
@@ -591,6 +592,9 @@ export function toRunData(
             name: step.stepName,
             status: viewStatus(step.status),
             error: step.error,
+            ...(step.errorCode !== undefined
+              ? { errorCode: step.errorCode }
+              : {}),
             startedAt: step.startedAt?.toISOString(),
             completedAt: step.completedAt?.toISOString(),
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,

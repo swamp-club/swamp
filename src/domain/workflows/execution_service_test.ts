@@ -514,6 +514,50 @@ Deno.test("step_failed carries the paths the model-method error marked (swamp-cl
   });
 });
 
+Deno.test("step_failed and the run record carry the code a model-method UserError supplied (swamp-club#3748)", async () => {
+  for (const code of ["deployment_refused", undefined]) {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor: StepExecutor = {
+        execute: () => Promise.reject(new UserError("deploy refused", code)),
+      };
+
+      const workflow = createSimpleWorkflow();
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      const failed: WorkflowExecutionEvent[] = [];
+      for await (const event of service.run(workflow.name)) {
+        if (event.kind === "step_failed") failed.push(event);
+      }
+
+      assertEquals(failed.length, 1);
+      const event = failed[0];
+      assert(event.kind === "step_failed");
+      assertEquals(event.error, "deploy refused");
+      assertEquals(event.errorCode, code);
+      // An uncoded failure leaves the key off the event.
+      assertEquals(Object.hasOwn(event, "errorCode"), code !== undefined);
+
+      const saved = await runRepo.findLatestByWorkflowId(workflow.id);
+      assert(saved !== null);
+      assertEquals(saved.getJob("job1")?.getStep("step1")?.errorCode, code);
+      const restored = WorkflowRun.fromData(saved.toData());
+      assertEquals(restored.getJob("job1")?.getStep("step1")?.errorCode, code);
+    });
+  }
+});
+
 Deno.test("skips job when trigger condition not met", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
