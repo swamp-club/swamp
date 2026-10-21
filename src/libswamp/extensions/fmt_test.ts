@@ -59,7 +59,7 @@ Deno.test("extensionFmt: check mode passes", async () => {
   assertEquals(events, [
     {
       kind: "completed",
-      data: { mode: "check", passed: true, issues: [] },
+      data: { mode: "check", passed: true, issues: [], staleLockfiles: [] },
     },
   ]);
 });
@@ -78,7 +78,7 @@ Deno.test("extensionFmt: check mode fails", async () => {
   assertEquals(events, [
     {
       kind: "completed",
-      data: { mode: "check", passed: false, issues },
+      data: { mode: "check", passed: false, issues, staleLockfiles: [] },
     },
   ]);
 });
@@ -105,6 +105,7 @@ Deno.test("extensionFmt: fix mode succeeds with no remaining issues", async () =
         lintOutput: "linted",
         remainingIssues: [],
         passed: true,
+        staleLockfiles: [],
       },
     },
   ]);
@@ -136,6 +137,63 @@ Deno.test("extensionFmt: fix mode with remaining issues", async () => {
         lintOutput: "",
         remainingIssues,
         passed: false,
+        staleLockfiles: [],
+      },
+    },
+  ]);
+});
+
+const STALE_LOCKFILES = [{
+  lockPath: "/p/deno.lock",
+  projectFile: "/p/deno.json",
+  projectDir: "/p",
+  entryPoints: ["/p/a.ts"],
+}];
+
+Deno.test("extensionFmt: check mode passes stale lockfiles through without failing", async () => {
+  const ctx = createLibSwampContext();
+  const events = await collect<ExtensionFmtEvent>(
+    extensionFmt(ctx, makeDeps(), {
+      tsFiles: ["/p/a.ts"],
+      check: true,
+      staleLockfiles: STALE_LOCKFILES,
+    }),
+  );
+
+  assertEquals(events, [
+    {
+      kind: "completed",
+      data: {
+        mode: "check",
+        passed: true,
+        issues: [],
+        staleLockfiles: STALE_LOCKFILES,
+      },
+    },
+  ]);
+});
+
+Deno.test("extensionFmt: fix mode passes stale lockfiles through without failing", async () => {
+  const ctx = createLibSwampContext();
+  const events = await collect<ExtensionFmtEvent>(
+    extensionFmt(ctx, makeDeps(), {
+      tsFiles: ["/p/a.ts"],
+      check: false,
+      staleLockfiles: STALE_LOCKFILES,
+    }),
+  );
+
+  assertEquals(events, [
+    {
+      kind: "completed",
+      data: {
+        mode: "fix",
+        fileCount: 1,
+        fmtOutput: "",
+        lintOutput: "",
+        remainingIssues: [],
+        passed: true,
+        staleLockfiles: STALE_LOCKFILES,
       },
     },
   ]);

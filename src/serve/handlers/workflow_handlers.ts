@@ -181,6 +181,7 @@ import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral
 import {
   extractTraceContext,
   runWithParentTrace,
+  withSpan,
 } from "../../infrastructure/tracing/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
@@ -243,6 +244,7 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  sendTraced,
   subscribeUntilDetach,
   wasRequestErrored,
 } from "./shared.ts";
@@ -915,12 +917,12 @@ export async function handleWorkflowApprovals(
       }
       return kept;
     };
-    const data = {
+    const data = await withSpan("swamp.serve.authorize", {}, async () => ({
       approvals: await readable(listed.approvals),
       expired: await readable(listed.expired),
-    };
+    }));
 
-    send(socket, {
+    await sendTraced(socket, {
       type: "workflow.approvals",
       id: requestId,
       payload: { data },
@@ -1100,12 +1102,15 @@ export async function handleWorkflowHistoryGet(
       );
       return;
     }
-    await redactRunViewLinks(
-      result as unknown as WorkflowRunView,
-      nestedRunReadDecider(ctx, socket, principal),
+    const view = result as unknown as WorkflowRunView;
+    await withSpan(
+      "swamp.serve.redact",
+      {},
+      () =>
+        redactRunViewLinks(view, nestedRunReadDecider(ctx, socket, principal)),
     );
 
-    send(socket, {
+    await sendTraced(socket, {
       type: "workflow.history.get",
       id: requestId,
       payload: { data: result },
@@ -1203,7 +1208,7 @@ export async function handleWorkflowHistoryLogs(
       return;
     }
 
-    send(socket, {
+    await sendTraced(socket, {
       type: "workflow.history.logs",
       id: requestId,
       payload: { data: result },
@@ -1393,19 +1398,21 @@ export async function handleWorkflowRunSearch(
     // Links to other runs name only workflows the principal may read
     // (swamp-club#2736); the derived awaitingResume flag stays.
     const canRead = nestedRunReadDecider(ctx, socket, principal);
-    for (const item of page) {
-      await redactParentRun(item, canRead);
-      const nestedWaits = await readableNestedRuns(
-        item.nestedWaits,
-        (w) => w.workflowId,
-        canRead,
-      );
-      if (nestedWaits) item.nestedWaits = nestedWaits;
-      else delete item.nestedWaits;
-    }
+    await withSpan("swamp.serve.redact", {}, async () => {
+      for (const item of page) {
+        await redactParentRun(item, canRead);
+        const nestedWaits = await readableNestedRuns(
+          item.nestedWaits,
+          (w) => w.workflowId,
+          canRead,
+        );
+        if (nestedWaits) item.nestedWaits = nestedWaits;
+        else delete item.nestedWaits;
+      }
+    });
     data.results = page;
 
-    send(socket, {
+    await sendTraced(socket, {
       type: "workflow.run.search",
       id: requestId,
       payload: { data, total, ...searchWindow },
@@ -1485,7 +1492,7 @@ export async function handleWorkflowRunSummary(
     }
     if (!data) throw new Error("The run summary completed without data");
 
-    send(socket, {
+    await sendTraced(socket, {
       type: "workflow.run.summary",
       id: requestId,
       payload: { data },

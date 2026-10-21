@@ -47,6 +47,8 @@ import {
   type DependencyTrustResult,
   looseSpecifierCount,
   notAuditedCount,
+  notAuditedFixes,
+  unpublishedSpecifiers,
 } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -58,7 +60,6 @@ import {
   type ExtensionPushPrepareInput,
   type LocalGateFailure,
   type QualityFindings,
-  readImportMap,
 } from "./push.ts";
 import { sourceHostingOf } from "../auth/whoami.ts";
 
@@ -310,9 +311,10 @@ export async function* extensionQuality(
       }
 
       // The registry's scorer strips deno.json, so it cannot resolve a bare
-      // import push ships as written (one the import map does not resolve,
-      // swamp-club#3637) and scores the documentation factors 0. The local
-      // score below fails deno doc the same way (score.docAnalysisError).
+      // import push ships as written (one the project config does not
+      // resolve, swamp-club#3637, #3612) and scores the documentation
+      // factors 0. The local score below runs with no import map either, so
+      // it fails deno doc the same way (score.docAnalysisError).
       const registryScorable = !prepared.reviewRulesResult.warnings.some((w) =>
         w.ruleId === "bare-specifiers"
       );
@@ -325,9 +327,6 @@ export async function* extensionQuality(
       );
       const denoPath = await deps.ensureDenoPath();
       const scoreDeps = deps.makeScoreDeps(denoPath);
-      const importMap = await readImportMap(
-        input.prepareInput.denoConfigPath,
-      );
       const score = await scoreExtensionTarball(
         archiveBytes,
         input.prepareInput.manifest,
@@ -342,11 +341,16 @@ export async function* extensionQuality(
           dependencyNotAuditedCount: notAuditedCount(
             prepared.dependencyTrustResult,
           ),
+          dependencyNotAuditedFixes: notAuditedFixes(
+            prepared.dependencyTrustResult,
+          ),
           dependencyLooseCount: looseSpecifierCount(
             prepared.dependencyTrustResult,
           ),
-          importMap,
           privateSource,
+          unpublishedSpecifiers: unpublishedSpecifiers(
+            prepared.dependencyTrustResult,
+          ),
         },
       );
 

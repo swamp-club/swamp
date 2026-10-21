@@ -26,6 +26,7 @@ import {
   RunIndexCache,
   type RunIndexStamp,
 } from "./run_index_cache.ts";
+import { withCapturedSpans } from "../tracing/span_test_helpers.ts";
 
 const NOW = Date.UTC(2026, 5, 1);
 const OLD = NOW - 60_000;
@@ -350,4 +351,88 @@ Deno.test("RunIndexCache: a read waiting on a load whose own reader was aborted 
   d.releases[1]({ snapshot: fresh, fromIndex: true });
   assertStrictEquals(await waiting, fresh);
   assertEquals(h.cache.runs, 2);
+});
+
+const INDEX_LOAD_SPAN = "swamp.workflow_runs.index.load";
+
+Deno.test("RunIndexCache.get: a miss opens an index.load span with the snapshot's runs, a hit opens none", async () => {
+  await withCapturedSpans(async (spans) => {
+    const h = harness();
+    const workflowId = crypto.randomUUID();
+    h.stamps.set(workflowId, stampAt(OLD, OLD));
+    await h.cache.get(workflowId, h.load(snapshotOf(3)));
+    const loads = spans.filter((s) => s.name === INDEX_LOAD_SPAN);
+    assertEquals(loads.length, 1);
+    assertEquals(loads[0].attributes["workflow.id"], workflowId);
+    assertEquals(loads[0].attributes["workflow_runs.records"], 3);
+    assertEquals(loads[0].attributes["run_index.joined_inflight"], false);
+
+    await h.cache.get(workflowId, h.load(snapshotOf(1)));
+    assertEquals(h.loads, 1);
+    assertEquals(spans.filter((s) => s.name === INDEX_LOAD_SPAN).length, 1);
+  });
+});
+
+Deno.test("RunIndexCache.get: a read that waits on another read's load records joined_inflight", async () => {
+  await withCapturedSpans(async (spans) => {
+    const h = harness();
+    const workflowId = crypto.randomUUID();
+    h.stamps.set(workflowId, stampAt(OLD, OLD));
+    const d = deferredLoads();
+    const snapshot = snapshotOf(2);
+    const first = h.cache.get(workflowId, d.load(snapshot));
+    const second = h.cache.get(workflowId, d.load(snapshot));
+    await waitFor(
+      () => Promise.resolve(d.releases.length >= 1),
+      "the first read to start loading",
+    );
+    assertEquals(d.releases.length, 1);
+    d.releases[0]({ snapshot, fromIndex: true });
+    await Promise.all([first, second]);
+
+    const loads = spans.filter((s) => s.name === INDEX_LOAD_SPAN);
+    assertEquals(loads.length, 2);
+    assertEquals(
+      loads.map((s) => s.attributes["run_index.joined_inflight"]).sort(),
+      [false, true],
+    );
+    for (const load of loads) {
+      assertEquals(load.attributes["workflow_runs.records"], 2);
+    }
+  });
+});
+
+Deno.test("RunIndexCache.get: a read whose shared load's reader was aborted records that it loaded for itself", async () => {
+  await withCapturedSpans(async (spans) => {
+    const h = harness();
+    const workflowId = crypto.randomUUID();
+    h.stamps.set(workflowId, stampAt(OLD, OLD));
+    const d = deferredLoads();
+    const abort = new AbortController();
+    const aborted = h.cache.get(
+      workflowId,
+      d.load(snapshotOf(1)),
+      abort.signal,
+    );
+    const waiting = h.cache.get(workflowId, d.load(snapshotOf(2)));
+    await waitFor(
+      () => Promise.resolve(d.releases.length >= 1),
+      "the first read to start loading",
+    );
+    abort.abort();
+    d.releases[0](new DOMException("stopped", "AbortError"));
+    await assertRejects(() => aborted, DOMException, "stopped");
+    await waitFor(
+      () => Promise.resolve(d.releases.length >= 2),
+      "the waiting read to load for itself",
+    );
+    d.releases[1]({ snapshot: snapshotOf(2), fromIndex: true });
+    await waiting;
+
+    const loads = spans.filter((s) => s.name === INDEX_LOAD_SPAN);
+    assertEquals(loads.length, 2);
+    for (const load of loads) {
+      assertEquals(load.attributes["run_index.joined_inflight"], false);
+    }
+  });
 });

@@ -3994,3 +3994,26 @@ Deno.test("loud reads: data.version's content check rethrows an unreadable recor
     }
   });
 });
+
+Deno.test("ModelResolver.vaultEvaluationScope: answers the resolver's vault service with the authored location, and a probe redactor that drops values when none is given", async () => {
+  await withTempDir(async (repoDir) => {
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const vaultService = {
+      get: () => Promise.resolve("v"),
+    } as unknown as VaultService;
+    const resolver = new ModelResolver(defRepo, { repoDir, vaultService });
+    const redactor = new SecretRedactor();
+    const scope = await resolver.vaultEvaluationScope(
+      "methods.run.arguments.token",
+      redactor,
+    );
+    assertEquals(scope.service, vaultService);
+    assertEquals(scope.redactor, redactor);
+    assertEquals(scope.location, "methods.run.arguments.token");
+    const silent = await resolver.vaultEvaluationScope("globalArguments.t");
+    assertEquals(silent.service, vaultService);
+    // A probe's value goes nowhere without a redactor.
+    silent.redactor.addSecret("dropped");
+    assertEquals(redactor.redact("dropped"), "dropped");
+  });
+});

@@ -133,10 +133,30 @@ Deno.test("lockfilePathFor: a deno.json without a lock setting uses the deno.loc
   });
 });
 
-Deno.test("lockfilePathFor: a config that is not plain JSON reads no lock", async () => {
+Deno.test("lockfilePathFor: honours the lock setting of a config with comments, as a deno.jsonc (swamp-club#3612)", async () => {
+  await withTempDir(async (dir) => {
+    const config = join(dir, "deno.jsonc");
+    await Deno.writeTextFile(config, '{ // comment\n "lock": false, }');
+    assertEquals(await lockfilePathFor({ denoConfigPath: config }), undefined);
+
+    await Deno.writeTextFile(config, '// comment\n{ "lock": "locks/a.lock" }');
+    assertPathEquals(
+      await lockfilePathFor({ denoConfigPath: config }),
+      join(dir, "locks", "a.lock"),
+    );
+
+    await Deno.writeTextFile(config, "/* no lock setting */ {}");
+    assertPathEquals(
+      await lockfilePathFor({ denoConfigPath: config }),
+      join(dir, "deno.lock"),
+    );
+  });
+});
+
+Deno.test("lockfilePathFor: a config that cannot be parsed reads no lock", async () => {
   await withTempDir(async (dir) => {
     const config = join(dir, "deno.json");
-    await Deno.writeTextFile(config, '{ // comment\n "lock": false }');
+    await Deno.writeTextFile(config, '{ "lock": false');
     assertEquals(await lockfilePathFor({ denoConfigPath: config }), undefined);
   });
 });
@@ -226,10 +246,10 @@ Deno.test("readOnlyLockFor: follows the deno.json lock setting", async () => {
   });
 });
 
-Deno.test("readOnlyLockFor: a deno.json that is not plain JSON keeps the deno.lock beside it", async () => {
+Deno.test("readOnlyLockFor: a deno.json that cannot be parsed keeps the deno.lock beside it", async () => {
   await withTempDir(async (dir) => {
     const config = join(dir, "deno.json");
-    await Deno.writeTextFile(config, '{ // comment\n "imports": {} }');
+    await Deno.writeTextFile(config, '{ "imports": {}');
     assertEquals(await readOnlyLockFor({ denoConfigPath: config }), {});
     const lock = await writeLock(dir, V5_LOCK);
     assertPathEquals(

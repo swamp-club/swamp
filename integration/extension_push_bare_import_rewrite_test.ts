@@ -18,11 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Push rewrites each bare import the deno.json import map resolves to its
- * npm:, jsr: or node: target in the archive's source (swamp-club#3637), so
- * the shipped source resolves without the author's config: the registry's
- * scan reads the specifiers, and a pulled extension rebundles in a
- * repository with no deno.json. Wires the real push resolver, module graph
+ * Push rewrites each bare import the project's Deno config resolves to its
+ * npm:, jsr: or node: target in the archive's source (swamp-club#3637), as
+ * Deno resolves it from that module: deno.json or deno.jsonc imports, an
+ * importMap file, the scope covering the module, a workspace root's imports
+ * (swamp-club#3612). So the shipped source resolves without the author's
+ * config: the registry's scan reads the specifiers, and a pulled extension
+ * rebundles in a repository with no deno.json. Wires the real push resolver, module graph
  * reader, planner, dependency extractor and archive assembly to the real
  * install and bundler; only the registry download is mocked. The rebundle
  * resolves npm:ms, jsr:@std/path and npm:zod for real, so it needs network
@@ -148,8 +150,11 @@ async function withRepos(
 async function pushArchive(
   author: string,
   audited: DependencySpecifier[],
-): Promise<{ archive: Uint8Array; bareWarnings: number }> {
-  const manifestPath = join(author, "manifest.yaml");
+  manifestDir = author,
+): Promise<
+  { archive: Uint8Array; bareWarnings: number; bareMessages: string[] }
+> {
+  const manifestPath = join(manifestDir, "manifest.yaml");
   const { repoContext } = await requireInitializedRepoReadOnly({
     repoDir: author,
     outputMode: "log",
@@ -166,8 +171,9 @@ async function pushArchive(
     stubDeps(audited),
     {
       manifest: resolved.manifest,
+      bareImports: resolved.bareImports,
       repoDir: author,
-      manifestDir: author,
+      manifestDir,
       modelsDir: resolved.modelsDir,
       allModelFiles: resolved.allModelFiles,
       modelEntryPoints: resolved.modelEntryPoints,
@@ -198,12 +204,13 @@ async function pushArchive(
       registryChecks: "skip",
     },
   );
+  const bare = prepared.reviewRulesResult.warnings.filter((w) =>
+    w.ruleId === "bare-specifiers"
+  );
   return {
     archive: prepared.archiveBytes,
-    bareWarnings:
-      prepared.reviewRulesResult.warnings.filter((w) =>
-        w.ruleId === "bare-specifiers"
-      ).length,
+    bareWarnings: bare.length,
+    bareMessages: bare.map((w) => w.message),
   };
 }
 
@@ -337,5 +344,242 @@ Deno.test("extension push: ships each bare import as its import-map target, and 
     assertEquals(out.took, "2s");
     assertEquals(out.file, "b.ts");
     assertEquals(out.schema instanceof z.ZodType, true);
+  });
+});
+
+/** A one-model extension at `dir` whose model imports `ms` bare. */
+async function writeMsExtension(dir: string): Promise<void> {
+  await write(
+    join(dir, "extensions", "models", "took.ts"),
+    'import ms from "ms";\nexport const took = ms(2000);\n',
+  );
+  await write(
+    join(dir, "manifest.yaml"),
+    stringifyYaml({
+      manifestVersion: 1,
+      name: NAME,
+      version: VERSION,
+      models: ["took.ts"],
+    }),
+  );
+}
+
+function auditedNames(audited: DependencySpecifier[]): string[] {
+  return audited.map((s) => `${s.registry}:${s.name}@${s.version}`).sort();
+}
+
+Deno.test("extension push: each module ships and audits the version the scope covering it gives (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({
+        imports: { "ms": "npm:ms@2.1.3" },
+        scopes: { "./extensions/models/": { "ms": "npm:ms@2.1.2" } },
+      }),
+    );
+    await write(
+      join(author, "extensions", "lib", "fmt.ts"),
+      'import ms from "ms";\nexport const fmt = (n: number) => ms(n);\n',
+    );
+    await write(
+      join(author, "extensions", "models", "took.ts"),
+      'import ms from "ms";\nimport { fmt } from "../lib/fmt.ts";\n' +
+        "export const took = [ms(2000), fmt(1000)];\n",
+    );
+    await write(
+      join(author, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: NAME,
+        version: VERSION,
+        models: ["took.ts"],
+      }),
+    );
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareWarnings } = await pushArchive(author, audited);
+    assertEquals(bareWarnings, 0);
+    const files = await archiveFiles(archive);
+    assertStringIncludes(
+      files.get("models/took.ts") ?? "",
+      'import ms from "npm:ms@2.1.2";',
+    );
+    assertStringIncludes(
+      [...files.entries()].find(([p]) => p.endsWith("fmt.ts"))?.[1] ?? "",
+      'import ms from "npm:ms@2.1.3";',
+    );
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2", "npm:ms@2.1.3"]);
+  });
+});
+
+Deno.test("extension push: a deno.jsonc with comments resolves, rewrites and audits bare imports (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.jsonc"),
+      '// project config\n{\n  "imports": { "ms": "npm:ms@2.1.2", },\n}\n',
+    );
+    await writeMsExtension(author);
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareWarnings } = await pushArchive(author, audited);
+    assertEquals(bareWarnings, 0);
+    const files = await archiveFiles(archive);
+    assertStringIncludes(
+      files.get("models/took.ts") ?? "",
+      'import ms from "npm:ms@2.1.2";',
+    );
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+    assert(
+      ![...files.keys()].some((p) => p.endsWith("deno.jsonc")),
+      "the project config does not ship",
+    );
+  });
+});
+
+Deno.test("extension push: an importMap file the deno.json references resolves bare imports (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({ importMap: "./import_map.json" }),
+    );
+    await write(
+      join(author, "import_map.json"),
+      JSON.stringify({ imports: { "ms": "npm:ms@2.1.2" } }),
+    );
+    await writeMsExtension(author);
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareWarnings } = await pushArchive(author, audited);
+    assertEquals(bareWarnings, 0);
+    assertStringIncludes(
+      (await archiveFiles(archive)).get("models/took.ts") ?? "",
+      'import ms from "npm:ms@2.1.2";',
+    );
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+  });
+});
+
+Deno.test("extension push: a workspace member's bare imports resolve through the root's imports (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({
+        workspace: ["./member"],
+        imports: { "ms": "npm:ms@2.1.2" },
+      }),
+    );
+    const member = join(author, "member");
+    await write(join(member, "deno.json"), JSON.stringify({ imports: {} }));
+    await writeMsExtension(member);
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareWarnings } = await pushArchive(
+      author,
+      audited,
+      member,
+    );
+    assertEquals(bareWarnings, 0);
+    assertStringIncludes(
+      (await archiveFiles(archive)).get("models/took.ts") ?? "",
+      'import ms from "npm:ms@2.1.2";',
+    );
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+  });
+});
+
+Deno.test("extension push: a bare import nothing resolves ships as written and the finding names it (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({ imports: { "ms": "npm:ms@2.1.2" } }),
+    );
+    await write(
+      join(author, "extensions", "models", "took.ts"),
+      'import ms from "ms";\n' +
+        "// @ts-ignore: never resolves; push must not invent a target\n" +
+        'import x from "nothing-maps-this";\n' +
+        "export const took = [ms(2000), x];\n",
+    );
+    await write(
+      join(author, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: NAME,
+        version: VERSION,
+        models: ["took.ts"],
+      }),
+    );
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareMessages } = await pushArchive(author, audited);
+    assertEquals(bareMessages.length, 1);
+    assertStringIncludes(bareMessages[0], '"nothing-maps-this"');
+    const took = (await archiveFiles(archive)).get("models/took.ts") ?? "";
+    assertStringIncludes(took, 'import ms from "npm:ms@2.1.2";');
+    assertStringIncludes(took, 'import x from "nothing-maps-this";');
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+  });
+});
+
+Deno.test("extension push: deno.json wins over a deno.jsonc in the same directory, as for Deno (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({ imports: { "ms": "npm:ms@2.1.2" } }),
+    );
+    await write(
+      join(author, "deno.jsonc"),
+      '{ "imports": { "ms": "npm:ms@2.1.3" } }\n',
+    );
+    await writeMsExtension(author);
+
+    const audited: DependencySpecifier[] = [];
+    const { archive } = await pushArchive(author, audited);
+    assertStringIncludes(
+      (await archiveFiles(archive)).get("models/took.ts") ?? "",
+      'import ms from "npm:ms@2.1.2";',
+    );
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+  });
+});
+
+Deno.test("extension push: a deno.json beside a package.json with nothing installed still ships each bare import as Deno maps it (swamp-club#3612)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({ imports: { "zod": "npm:zod@4" } }),
+    );
+    // The package.json puts Deno in manual node_modules mode, and nothing is
+    // installed: the first graph read reports both imports as missing.
+    await write(
+      join(author, "package.json"),
+      JSON.stringify({
+        name: "author",
+        dependencies: { "zod": "^4.0.0", "ms": "2.1.2" },
+      }),
+    );
+    await write(
+      join(author, "extensions", "models", "took.ts"),
+      'import { z } from "zod";\nimport ms from "ms";\n' +
+        "export const took = { schema: z.string(), t: ms(2000) };\n",
+    );
+    await write(
+      join(author, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: NAME,
+        version: VERSION,
+        models: ["took.ts"],
+      }),
+    );
+
+    const audited: DependencySpecifier[] = [];
+    const { archive, bareWarnings } = await pushArchive(author, audited);
+    assertEquals(bareWarnings, 0);
+    const took = (await archiveFiles(archive)).get("models/took.ts") ?? "";
+    assertStringIncludes(took, 'import { z } from "npm:zod@4";');
+    // Listed only in the package.json, as Deno resolves it.
+    assertStringIncludes(took, 'import ms from "npm:ms@2.1.2";');
+    assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
   });
 });

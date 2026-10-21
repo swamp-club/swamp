@@ -37,6 +37,7 @@ import {
   secretCapableBuiltins,
   SWAMP_FUNCTION_SIGNATURES,
 } from "./cel_js_secret_refusal_inventory.ts";
+import type { SecretRefusalCode } from "../../domain/expressions/errors.ts";
 import { refuse } from "./secret_fault_context.ts";
 import { composeSecrets, Secret } from "./secret_value.ts";
 
@@ -77,6 +78,13 @@ export function registerSecretRefusals(
   options: {
     readonly customTypes?: readonly string[];
     readonly swampSignatures?: readonly string[];
+    /**
+     * The code a function refusal records, by signature. Defaults to
+     * `secret_operation_unsupported`; a routing argument, such as the model
+     * and method names of `model.method`, records
+     * `secret_destination_refused` (Section 4.5 item 2).
+     */
+    readonly codeFor?: (signature: string) => SecretRefusalCode | undefined;
   } = {},
 ): RefusalRegistration {
   const operators = operatorRefusalSignatures(options.customTypes ?? []);
@@ -92,7 +100,10 @@ export function registerSecretRefusals(
     ...functionRefusalSignatures(options.swampSignatures ?? []),
   ].sort();
   for (const signature of functions) {
-    env.registerFunction(signature, () => refuse(signature), { async: false });
+    const code = options.codeFor?.(signature);
+    env.registerFunction(signature, () => refuse(signature, code), {
+      async: false,
+    });
   }
   return { operators, functions };
 }

@@ -530,9 +530,15 @@ Deno.test("extensionQuality: bare imports the deno.json import map resolves leav
         JSON.stringify({ imports: { zod: "npm:zod@^4" } }),
       );
       const manifest = makeManifest();
+      // What Deno resolves the model's bare "zod" to under that config.
+      const bareImports = [{
+        importer: join(repoDir, "models", "echo.ts"),
+        specifier: "zod",
+        target: "npm:zod@^4",
+      }];
       const input = makeQualityInput(repoDir, manifest, {
-        prepareInput: { denoConfigPath },
-        hashInput: { denoConfigPath },
+        prepareInput: { denoConfigPath, bareImports },
+        hashInput: { denoConfigPath, bareImports },
       });
       const data = completedData(
         await collect(
@@ -559,9 +565,14 @@ Deno.test("extensionQuality: an import-map target that could escape its string l
         denoConfigPath,
         JSON.stringify({ imports: { zod: 'npm:zod@4"; globalThis.x = 1; "' } }),
       );
+      const bareImports = [{
+        importer: join(repoDir, "models", "echo.ts"),
+        specifier: "zod",
+        target: 'npm:zod@4"; globalThis.x = 1; "',
+      }];
       const input = makeQualityInput(repoDir, makeManifest(), {
-        prepareInput: { denoConfigPath },
-        hashInput: { denoConfigPath },
+        prepareInput: { denoConfigPath, bareImports },
+        hashInput: { denoConfigPath, bareImports },
       });
       const events = await collect(
         extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
@@ -682,6 +693,52 @@ Deno.test("extensionQuality: a dependency that was not audited loses the depende
     assertStringIncludes(
       trustFactor.remediation ?? "",
       "1 dependency(ies) not audited",
+    );
+  });
+});
+
+Deno.test("extensionQuality: a specifier no published version matches is named on the dependency-trust row, not an outage", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest);
+    const deps = makeQualityDeps(cacheRoot, {
+      pushPrepareOverrides: {
+        extractDependencySpecifiers: () =>
+          Promise.resolve([{
+            name: "ms",
+            version: "99.0.0",
+            registry: "npm" as const,
+            sourceFile: join(repoDir, "models", "echo.ts"),
+          }]),
+        checkDependencyTrust: () =>
+          Promise.resolve({
+            errors: [],
+            warnings: [{
+              dependency: "ms",
+              message: "not audited: npm lists no version 99.0.0",
+              cause: "not-audited" as const,
+              remediation:
+                "Change the specifier to a version the registry publishes.",
+              notAuditedFix: "specifier" as const,
+            }],
+            audited: [],
+            passed: true,
+          }),
+      },
+    });
+
+    const data = completedData(
+      await collect(extensionQuality(ctx, deps, input)),
+    );
+    const trustFactor = data.score.factors.find((f) =>
+      f.id === "dependency-trust"
+    )!;
+    assertEquals(trustFactor.earnedPoints, 0);
+    assertEquals(
+      trustFactor.remediation,
+      "1 dependency(ies) not audited because no published version matches " +
+        "the specifier. Change the specifier to a version the registry " +
+        "publishes.",
     );
   });
 });
@@ -874,7 +931,7 @@ Deno.test("extensionQuality: cache hit with no specifiers synthesizes a passing 
 
 // ── Import map handling ───────────────────────────────────────────────
 
-Deno.test("extensionQuality: import map from denoConfigPath is forwarded into the scorer's controlled config", async () => {
+Deno.test("extensionQuality: the scorer's controlled config has no import map, as the registry's (swamp-club#3612)", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const denoConfigPath = join(repoDir, "deno.json");
     await Deno.writeTextFile(
@@ -901,7 +958,7 @@ Deno.test("extensionQuality: import map from denoConfigPath is forwarded into th
     completedData(events);
     assert(capturedConfig !== undefined, "scorer should have invoked deno");
     assertEquals(capturedConfig!.nodeModulesDir, "auto");
-    assertEquals(capturedConfig!.imports, { "zod": "npm:zod@4" });
+    assertEquals(capturedConfig!.imports, undefined);
   });
 });
 

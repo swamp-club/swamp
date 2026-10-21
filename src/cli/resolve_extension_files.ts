@@ -59,7 +59,14 @@ import {
   type SourceArchiveKindInput,
   type SourceArchivePlan,
 } from "../domain/extensions/source_archive_plan.ts";
-import { sourceHasBareSpecifiers } from "../domain/models/bundle.ts";
+import {
+  groupStaleLockfiles,
+  sourceHasBareSpecifiers,
+  type StaleLockfile,
+  StaleLockfileError,
+} from "../domain/models/bundle.ts";
+import { DENO_CONFIG_FILE_NAMES } from "../domain/extensions/deno_config.ts";
+import type { ResolvedBareImport } from "../domain/extensions/bare_import_resolution.ts";
 import { DenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { resolveWorkflowDependencies } from "../domain/extensions/extension_dependency_resolver.ts";
@@ -177,10 +184,21 @@ export interface ResolvedExtensionFiles {
    * skill directory, or a symlink inside one, is listed here only.
    */
   symlinkedPaths: Map<string, string>;
-  /** The project deno.json push bundles, formats and lints under. */
+  /**
+   * Lockfiles fmt (lenient) found out of date with their project. Its graph
+   * read never rewrites the lock, so each entry point the lock refused is
+   * formatted alone; push and quality fail on a stale lock instead.
+   */
+  staleLockfiles?: StaleLockfile[];
+  /** The project deno.json or deno.jsonc push bundles, formats and lints under. */
   denoConfigPath?: string;
   /** The package.json project push bundles under, when the extension uses bare specifiers. */
   packageJsonDir?: string;
+  /**
+   * What Deno resolved each bare import the extension's modules write to,
+   * read from the module graph under the project config (swamp-club#3612).
+   */
+  bareImports: ResolvedBareImport[];
 }
 
 /**
@@ -385,18 +403,21 @@ export function projectConfigBoundary(
 
 /**
  * Walks up from `startDir` to `boundaryDir` (inclusive) and returns the path
- * of the first `fileName` found, or undefined when none exists in between.
+ * of the first of `fileNames` found, the earlier name winning in one
+ * directory, or undefined when none exists in between.
  */
 async function findUpward(
   startDir: string,
   boundaryDir: string,
-  fileName: string,
+  fileNames: readonly string[],
 ): Promise<string | undefined> {
   let current = resolve(startDir);
   const boundary = resolve(boundaryDir);
   while (true) {
-    const candidate = join(current, fileName);
-    if (await isFile(candidate)) return candidate;
+    for (const fileName of fileNames) {
+      const candidate = join(current, fileName);
+      if (await isFile(candidate)) return candidate;
+    }
     if (current === boundary) break;
     const parent = dirname(current);
     if (parent === current) break;
@@ -406,16 +427,17 @@ async function findUpward(
 }
 
 /**
- * The project `deno.json` for an extension: the first one walking up from
- * `startDir` to `boundaryDir` (see {@link projectConfigBoundary}). Push,
- * quality and fmt all use it, so they format, lint and bundle under the same
- * config.
+ * The project Deno config for an extension: the first `deno.json` or
+ * `deno.jsonc` walking up from `startDir` to `boundaryDir` (see
+ * {@link projectConfigBoundary}), `deno.json` winning in one directory as
+ * it does for Deno. Push, quality and fmt all use it, so they format, lint
+ * and bundle under the same config.
  */
 export function findDenoConfig(
   startDir: string,
   boundaryDir: string,
 ): Promise<string | undefined> {
-  return findUpward(startDir, boundaryDir, "deno.json");
+  return findUpward(startDir, boundaryDir, DENO_CONFIG_FILE_NAMES);
 }
 
 /**
@@ -426,7 +448,7 @@ export async function findPackageJsonDir(
   startDir: string,
   boundaryDir: string,
 ): Promise<string | undefined> {
-  const path = await findUpward(startDir, boundaryDir, "package.json");
+  const path = await findUpward(startDir, boundaryDir, ["package.json"]);
   return path === undefined ? undefined : dirname(path);
 }
 
@@ -715,8 +737,9 @@ export function isPulledExtensionManifest(
 
 /**
  * The module graph reader push, quality and fmt resolve files with: the
- * embedded deno, run with the environment the bundler gets. Push and quality
- * pass `readOnlyLock` so the read never writes the extension's lockfile.
+ * embedded deno, run with the environment the bundler gets. Push, quality
+ * and fmt pass `readOnlyLock` so the read never writes the extension's
+ * lockfile.
  */
 export async function createModuleGraphReader(
   options?: { readOnlyLock?: boolean },
@@ -1369,7 +1392,7 @@ export async function resolveExtensionFiles(
   const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
   let packageJsonDir: string | undefined;
   if (denoConfigPath) {
-    logger.debug`Found deno.json at ${denoConfigPath}`;
+    logger.debug`Found Deno config at ${denoConfigPath}`;
   } else {
     const candidateDir = await findPackageJsonDir(manifestDir, configBoundary);
     if (candidateDir) {
@@ -1481,8 +1504,12 @@ export async function resolveExtensionFiles(
         listed.has(path) || refusedSkillPaths.has(path)
       ),
     ),
+    ...(sources.staleLockfiles.length > 0
+      ? { staleLockfiles: sources.staleLockfiles }
+      : {}),
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
+    bareImports: sources.bareImports,
   };
 }
 
@@ -1525,9 +1552,12 @@ interface SourceModuleKindRoots {
 interface ResolvedSourceModules {
   missing: MissingLocalModule[];
   entryPointsReachingSymlinks: string[];
+  bareImports: ResolvedBareImport[];
   codeFilesByKind: Record<SourceArchiveKind, string[]>;
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
   plan: SourceArchivePlan;
+  /** Stale lockfiles a lenient graph read went past; empty otherwise. */
+  staleLockfiles: StaleLockfile[];
 }
 
 /** The real path of `path`, or `path` itself when it cannot be resolved. */
@@ -1618,6 +1648,7 @@ async function resolveSourceModules(options: {
 }): Promise<ResolvedSourceModules> {
   const graphOf = new Map<string, SymlinkFreeGraph>();
   const reachingSymlinks = new Set<string>();
+  const staleLocks: StaleLockfileError[] = [];
   const kindGraphs: Array<
     {
       k: SourceModuleKindRoots;
@@ -1631,7 +1662,7 @@ async function resolveSourceModules(options: {
     for (const root of k.roots) {
       let free = graphOf.get(root);
       if (!free) {
-        free = await readSymlinkFreeGraph(root, options);
+        free = await readSymlinkFreeGraph(root, { ...options, staleLocks });
         graphOf.set(root, free);
       }
       graphs.push(free.graph);
@@ -1745,13 +1776,18 @@ async function resolveSourceModules(options: {
     });
   }
 
+  const bareImports = (graph.bareImports ?? []).filter((b) =>
+    !outside.has(b.importer)
+  );
   if (options.lenient) {
     return {
       missing: graph.missing.filter((m) => !outside.has(m.path)),
       entryPointsReachingSymlinks: [...reachingSymlinks].sort(),
+      bareImports,
       codeFilesByKind,
       dataFilesByKind,
       plan: { entries: [] },
+      staleLockfiles: groupStaleLockfiles(staleLocks),
     };
   }
   const plan = planSourceArchive({
@@ -1763,9 +1799,11 @@ async function resolveSourceModules(options: {
   return {
     missing: graph.missing,
     entryPointsReachingSymlinks: [...reachingSymlinks].sort(),
+    bareImports,
     codeFilesByKind,
     dataFilesByKind,
     plan,
+    staleLockfiles: [],
   };
 }
 
@@ -1783,6 +1821,8 @@ async function readSymlinkFreeGraph(
     project: ModuleGraphProject;
     lenient: boolean;
     logger: Logger;
+    /** Where a lenient read records the stale lockfiles it goes past. */
+    staleLocks?: StaleLockfileError[];
   },
 ): Promise<SymlinkFreeGraph> {
   const empty: SourceModuleGraph = { modules: [], edges: [], missing: [] };
@@ -1794,6 +1834,7 @@ async function readSymlinkFreeGraph(
     graph = await options.reader.read(root, options.project);
   } catch (error) {
     if (!options.lenient) throw error;
+    if (error instanceof StaleLockfileError) options.staleLocks?.push(error);
     options.logger
       .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
     graph = { ...empty, modules: [{ path: root, kind: "code" }] };

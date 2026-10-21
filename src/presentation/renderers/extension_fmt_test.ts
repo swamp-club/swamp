@@ -76,6 +76,7 @@ const checkFailed: ExtensionFmtEvent = {
     mode: "check",
     passed: false,
     issues: [{ check: "fmt", output: FMT_DIFF }],
+    staleLockfiles: [],
   },
 };
 
@@ -120,6 +121,7 @@ Deno.test("extensionFmtRenderer: log prints fix-mode fmt and lint output as plai
         lintOutput: "Checked 1 file",
         remainingIssues: [],
         passed: true,
+        staleLockfiles: [],
       },
     })
   );
@@ -148,6 +150,7 @@ Deno.test("extensionFmtRenderer: log prints fix-mode remaining issues as plain l
             "error[require-await]: no await\n  --> a.ts:1:1\nFound 1 problem\n",
         }],
         passed: false,
+        staleLockfiles: [],
       },
     })
   );
@@ -170,4 +173,71 @@ Deno.test("extensionFmtRenderer: json carries a failed check's output unchanged"
     issues: [{ check: "fmt", output: FMT_DIFF }],
   });
   assertEquals(renderer.passed(), false);
+});
+
+const STALE_LOCK = {
+  lockPath: "/repo/deno.lock",
+  projectFile: "/repo/deno.json",
+  projectDir: "/repo",
+  entryPoints: ["/repo/extensions/models/a.ts", "/repo/extensions/models/b.ts"],
+};
+
+const checkPassedWithStaleLock: ExtensionFmtEvent = {
+  kind: "completed",
+  data: {
+    mode: "check",
+    passed: true,
+    issues: [],
+    staleLockfiles: [STALE_LOCK],
+  },
+};
+
+Deno.test("extensionFmtRenderer: log warns about a stale lockfile with the command that fixes it, and still passes", async () => {
+  const renderer = createExtensionFmtRenderer("log");
+  const logs = await capture(() =>
+    renderer.handlers().completed(checkPassedWithStaleLock)
+  );
+  assertPlain(logs);
+  assertEquals(logs.length, 2);
+  assertStringIncludes(logs[0], "[WRN]");
+  assertStringIncludes(
+    logs[0],
+    '"/repo/deno.lock" is out of date with "/repo/deno.json"',
+  );
+  assertStringIncludes(logs[0], "fmt never rewrites your lockfile");
+  assertStringIncludes(
+    logs[0],
+    '"deno install --entrypoint /repo/extensions/models/a.ts /repo/extensions/models/b.ts" in "/repo"',
+  );
+  assertStringIncludes(logs[1], "All quality checks passed.");
+  assertEquals(renderer.passed(), true);
+});
+
+Deno.test("extensionFmtRenderer: json lists a stale lockfile with its command, and omits the field when there is none", async () => {
+  const stale = createExtensionFmtRenderer("json");
+  const staleLogs = await capture(() =>
+    stale.handlers().completed(checkPassedWithStaleLock)
+  );
+  assertEquals(JSON.parse(staleLogs.join("\n")), {
+    status: "passed",
+    issues: [],
+    staleLockfiles: [{
+      ...STALE_LOCK,
+      command:
+        "deno install --entrypoint /repo/extensions/models/a.ts /repo/extensions/models/b.ts",
+    }],
+  });
+  assertEquals(stale.passed(), true);
+
+  const fresh = createExtensionFmtRenderer("json");
+  const freshLogs = await capture(() =>
+    fresh.handlers().completed({
+      kind: "completed",
+      data: { mode: "check", passed: true, issues: [], staleLockfiles: [] },
+    })
+  );
+  assertEquals(
+    Object.hasOwn(JSON.parse(freshLogs.join("\n")), "staleLockfiles"),
+    false,
+  );
 });

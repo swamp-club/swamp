@@ -93,7 +93,7 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
       )
       .option(
         "--method <method:string>",
-        "Only run checks that apply to this method",
+        "Validate as a run of this method: its arguments, the global arguments and the checks that apply to it",
       ),
     syntax,
   )).action(

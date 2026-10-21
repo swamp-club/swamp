@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { importMapResolver } from "./extension_dependency_extractor.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../errors.ts";
@@ -397,7 +398,7 @@ function rewritten(
 ): string {
   return applySpecifierRewrites(
     source,
-    bareImportRewrites(source, imports, "/repo/m.ts"),
+    bareImportRewrites(source, importMapResolver(imports), "/repo/m.ts"),
   );
 }
 
@@ -427,7 +428,10 @@ Deno.test("bareImportRewrites: rewrites node: and URL targets", () => {
 Deno.test("bareImportRewrites: leaves local, unmapped and other targets as written", () => {
   const source = 'import a from "@/a.ts";\nimport u from "unmapped";\n' +
     'import d from "data";\nimport r from "./rel.ts";\n';
-  assertEquals(bareImportRewrites(source, IMPORTS, "/repo/m.ts"), []);
+  assertEquals(
+    bareImportRewrites(source, importMapResolver(IMPORTS), "/repo/m.ts"),
+    [],
+  );
 });
 
 Deno.test("bareImportRewrites: rewrites dynamic and side-effect imports, not import text in strings", () => {
@@ -459,7 +463,12 @@ Deno.test("bareImportRewrites: refuses a target that would end or escape its str
     ]
   ) {
     assertThrows(
-      () => bareImportRewrites('import a from "a";', { a: target }, "/m.ts"),
+      () =>
+        bareImportRewrites(
+          'import a from "a";',
+          importMapResolver({ a: target }),
+          "/m.ts",
+        ),
       UserError,
       'Fix the import map entry for "a"',
     );
@@ -468,10 +477,14 @@ Deno.test("bareImportRewrites: refuses a target that would end or escape its str
 
 Deno.test("bareImportRewrites: ignores an unsafe target the source never imports", () => {
   assertEquals(
-    bareImportRewrites('import ms from "ms";', {
-      ms: "npm:ms@2",
-      unused: 'npm:x"',
-    }, "/m.ts").map((r) => r.to),
+    bareImportRewrites(
+      'import ms from "ms";',
+      importMapResolver({
+        ms: "npm:ms@2",
+        unused: 'npm:x"',
+      }),
+      "/m.ts",
+    ).map((r) => r.to),
     ["npm:ms@2"],
   );
 });
@@ -479,10 +492,14 @@ Deno.test("bareImportRewrites: ignores an unsafe target the source never imports
 Deno.test("bareImportRewrites: never rewrites specifier text holding whitespace, a semicolon or parentheses", () => {
   const source = 'const re = /import "a/;const s = "x";\nimport ms from "ms";';
   assertEquals(
-    bareImportRewrites(source, {
-      ms: "npm:ms@2",
-      "a/;const s = ": "npm:x/;globalThis.pwned = 1;const s = ",
-    }, "/m.ts").map((r) => r.to),
+    bareImportRewrites(
+      source,
+      importMapResolver({
+        ms: "npm:ms@2",
+        "a/;const s = ": "npm:x/;globalThis.pwned = 1;const s = ",
+      }),
+      "/m.ts",
+    ).map((r) => r.to),
     ["npm:ms@2"],
   );
 });
@@ -490,10 +507,14 @@ Deno.test("bareImportRewrites: never rewrites specifier text holding whitespace,
 Deno.test("bareImportRewrites: never rewrites a quote inside a regex literal the scanner reads as an import", () => {
   const source = 'let x, s, t;\nx=/import"a/g,s="X";\nimport ms from "ms";\n';
   assertEquals(
-    bareImportRewrites(source, {
-      ms: "npm:ms@2",
-      "a/g,s=": "npm:b/,globalThis.pwned=1,t=",
-    }, "/m.ts").map((r) => r.to),
+    bareImportRewrites(
+      source,
+      importMapResolver({
+        ms: "npm:ms@2",
+        "a/g,s=": "npm:b/,globalThis.pwned=1,t=",
+      }),
+      "/m.ts",
+    ).map((r) => r.to),
     ["npm:ms@2"],
   );
 });
@@ -507,7 +528,11 @@ Deno.test("bareImportRewrites: rewrites a typeof import() type", () => {
 
 Deno.test("bareImportRewrites: rewrites nothing in a module that does not parse", () => {
   assertEquals(
-    bareImportRewrites('import ms from "ms";\nconst = ;\n', IMPORTS, "/m.ts"),
+    bareImportRewrites(
+      'import ms from "ms";\nconst = ;\n',
+      importMapResolver(IMPORTS),
+      "/m.ts",
+    ),
     [],
   );
 });
@@ -515,15 +540,19 @@ Deno.test("bareImportRewrites: rewrites nothing in a module that does not parse"
 Deno.test("bareImportRewrites: a zod 4 target ships as npm:zod@4, at its root or /v4; zod 3 as written", () => {
   const source = 'import { z } from "zod";\nimport { v } from "zod/v4";\n';
   assertEquals(
-    bareImportRewrites(source, { zod: "npm:zod@^4.1.0" }, "/m.ts").map((r) =>
-      r.to
-    ),
+    bareImportRewrites(
+      source,
+      importMapResolver({ zod: "npm:zod@^4.1.0" }),
+      "/m.ts",
+    ).map((r) => r.to),
     ["npm:zod@4", "npm:zod@4"],
   );
   assertEquals(
-    bareImportRewrites(source, { zod: "npm:zod@3.23.8" }, "/m.ts").map((r) =>
-      r.to
-    ),
+    bareImportRewrites(
+      source,
+      importMapResolver({ zod: "npm:zod@3.23.8" }),
+      "/m.ts",
+    ).map((r) => r.to),
     ["npm:zod@3.23.8", "npm:zod@3.23.8/v4"],
   );
 });
@@ -532,9 +561,11 @@ Deno.test("bareImportRewrites: a zod subpath other than /v4 ships as the map wri
   const source =
     'import { $ZodType } from "zod/v4/core";\nimport * as zm from "zod/mini";\n';
   assertEquals(
-    bareImportRewrites(source, { zod: "npm:zod@^4.1.0" }, "/m.ts").map((r) =>
-      r.to
-    ),
+    bareImportRewrites(
+      source,
+      importMapResolver({ zod: "npm:zod@^4.1.0" }),
+      "/m.ts",
+    ).map((r) => r.to),
     ["npm:zod@^4.1.0/v4/core", "npm:zod@^4.1.0/mini"],
   );
 });
@@ -558,7 +589,7 @@ Deno.test("planBareImports: names the bare imports that ship as written, never a
   const source = 'import ms from "ms";\nimport fp from "lodash/fp";\n' +
     'import a from "@/a.ts";\nimport u from "unmapped";\n' +
     'import d from "data";\nimport u2 from "unmapped";\n';
-  const plan = planBareImports(source, IMPORTS, "/m.ts");
+  const plan = planBareImports(source, importMapResolver(IMPORTS), "/m.ts");
   assertEquals(plan.rewrites.map((r) => r.from), ["ms", "lodash/fp"]);
   assertEquals(plan.shippedAsWritten, ["data", "unmapped"]);
   assertEquals(
@@ -570,7 +601,7 @@ Deno.test("planBareImports: names the bare imports that ship as written, never a
 Deno.test("planBareImports: a module that does not parse ships every bare import as written", () => {
   const plan = planBareImports(
     'import ms from "ms";\nconst = ;\n',
-    IMPORTS,
+    importMapResolver(IMPORTS),
     "/m.ts",
   );
   assertEquals(plan.rewrites, []);
@@ -580,7 +611,7 @@ Deno.test("planBareImports: a module that does not parse ships every bare import
 Deno.test("planBareImports: a scanner site the parser shows is not an import is ignored", () => {
   const plan = planBareImports(
     'let x;\nx=/import"a/g;\n',
-    { "a/g;": "npm:b" },
+    importMapResolver({ "a/g;": "npm:b" }),
     "/m.ts",
   );
   assertEquals(plan, { rewrites: [], shippedAsWritten: [], unsafe: [] });
@@ -589,7 +620,7 @@ Deno.test("planBareImports: a scanner site the parser shows is not an import is 
 Deno.test("planBareImports: a bare import the scanner misses ships as written and is named, never rewritten", () => {
   const plan = planBareImports(
     'const re = /"/; import ms from "ms";\nimport { posix } from "@std/path/posix";\n',
-    IMPORTS,
+    importMapResolver(IMPORTS),
     "/m.ts",
   );
   assertEquals(plan.rewrites.map((r) => r.from), ["@std/path/posix"]);
@@ -598,14 +629,22 @@ Deno.test("planBareImports: a bare import the scanner misses ships as written an
 
 Deno.test("planBareImports: a .tsx module with JSX is parsed and rewritten", () => {
   const source = 'import ms from "ms";\nexport const v = <div>{ms(1)}</div>;\n';
-  const plan = planBareImports(source, IMPORTS, "/reports/view.tsx");
+  const plan = planBareImports(
+    source,
+    importMapResolver(IMPORTS),
+    "/reports/view.tsx",
+  );
   assertEquals(plan.rewrites.map((r) => r.to), ["npm:ms@^2"]);
   assertEquals(plan.shippedAsWritten, []);
 });
 
 Deno.test("planBareImports: specifier text holding a space ships as written", () => {
   assertEquals(
-    planBareImports('import a from "a b";', { "a b": "npm:x@1" }, "/m.ts")
+    planBareImports(
+      'import a from "a b";',
+      importMapResolver({ "a b": "npm:x@1" }),
+      "/m.ts",
+    )
       .shippedAsWritten,
     ["a b"],
   );

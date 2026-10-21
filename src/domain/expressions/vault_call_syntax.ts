@@ -374,3 +374,49 @@ export function analyzeVaultCalls(expression: string): VaultCallAnalysis {
   visit(ast, new Set());
   return { source, ast, calls, invalidUses };
 }
+
+/**
+ * Why `vault` is used other than as the receiver of a direct two-argument
+ * `vault.get` call that the up-front checks can evaluate, or undefined when
+ * every use is direct (design/enablers/typed-secrets.md Section 4.4): an
+ * alias such as `cel.bind(v, vault, v.get(...))`, a call with the wrong
+ * arity, an argument that reads a comprehension or `cel.bind` local, or an
+ * argument that would run `model.method` during checking. The typed
+ * evaluator refuses these before it evaluates anything, and validate
+ * refuses them the same way before its runtime pass.
+ */
+export function indirectVaultUse(
+  analysis: VaultCallAnalysis,
+): string | undefined {
+  if (analysis.invalidUses.length > 0) {
+    return "Call vault.get(vaultName, secretKey) directly; other uses of vault are unsupported";
+  }
+  if (analysis.calls.some((call) => call.args.length !== 2)) {
+    return "vault.get requires exactly two string arguments";
+  }
+  if (analysis.calls.some((call) => call.usesLocalBinding)) {
+    return "vault.get arguments cannot depend on surrounding CEL local bindings";
+  }
+  if (
+    analysis.calls.some((call) =>
+      call.args.some((arg) => containsMethodCall(arg.node))
+    )
+  ) {
+    return "vault.get arguments cannot invoke model.method during up-front checking";
+  }
+  return undefined;
+}
+
+/** Whether a subtree calls the effectful receiver method, even when aliased. */
+function containsMethodCall(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsMethodCall);
+  if (
+    typeof value !== "object" || value === null || !("op" in value) ||
+    !("args" in value) || value.op === "value"
+  ) return false;
+  if (
+    value.op === "rcall" && Array.isArray(value.args) &&
+    value.args[0] === "method"
+  ) return true;
+  return containsMethodCall(value.args);
+}

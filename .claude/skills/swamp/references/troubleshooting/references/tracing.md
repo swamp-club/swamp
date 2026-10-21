@@ -189,6 +189,8 @@ Serve's background work is never a child of serve's `swamp.cli`. Each unit of
 work is the root of its own trace:
 
 - **HTTP request**: a SERVER span named `{method} {route}` (below).
+- **Dashboard read over WebSocket**: a SERVER span named `swamp.serve.request`
+  (below).
 - **Poll cycle**: `swamp.serve.poll`, with `swamp.serve.poller` set to `config`,
   `access_data`, `runtime_data` or `grants_directory`. The cycle's
   `swamp.serve.sync_gate.wait`, `swamp.datastore.sync` and datastore extension
@@ -240,6 +242,57 @@ For a slow `swamp auth server-login`, `POST /auth/device` has one child,
 A long `swamp.serve.sync_gate.wait` means the login queued behind a datastore
 pull or another mutation. `sync_gate.acquired=false` means the 150s wait timed
 out and the unit ran without the gate.
+
+### Slow Dashboard Reads
+
+Five WebSocket requests each get a root SERVER span named `swamp.serve.request`:
+`workflow.history.get`, `workflow.history.logs`, `workflow.run.search`,
+`workflow.run.summary` and `workflow.approvals`. Other requests get none, and
+runs started over WebSocket keep their own traces. Attributes:
+
+- `swamp.serve.request.type` — the request type
+- `swamp.serve.connection.id` — random per WebSocket; group on it to see one
+  dashboard tab's requests, which are separate traces
+- `swamp.serve.active_requests` — requests in flight on this connection, not the
+  whole server; a high value means the client is stacking requests
+- `auth.principal.kind` (`user`, `worker`, `service` or `anonymous`) and
+  `auth.principal.id`
+- `datastore.type` and `datastore.engine` (`v2` or `v3`)
+- `swamp.serve.response.error_code` — the code of an error reply; only server
+  failures (`internal_error`, `<operation>_failed`) mark the span ERROR
+- `swamp.serve.response.error_reason` — the client reason (`not_found`,
+  `validation_failed`, ...) an `<operation>_failed` reply carries; such a reply
+  is the caller's error and leaves the span unset
+- `swamp.serve.event_loop.lag_max_ms` — the largest event-loop lag in the last
+  10s; high values on requests that all end together mean a blocked loop, not
+  slow I/O
+
+Under it:
+
+- `swamp.workflow.run_reference.resolve` (history reads) — the run lookup, with
+  `workflow.lookup` (`id`, `prefix` or `name`) and `workflow.lookup.result`. A
+  `prefix` lookup scans every run.
+- `swamp.serve.authorize` — collecting the resources to authorize
+  (`authorize.resources`), or filtering rows for approvals
+- the libswamp span (`swamp.workflow.history.get`, `.history.logs`,
+  `.run_search`, `.run_summary`, `.approvals`) with `workflow.name`,
+  `workflow.id`, `workflow.run_id` and counts. Its children:
+  `swamp.workflow.step_outputs.resolve` (`step_outputs.resources_read`,
+  `step_outputs.resources_denied`), `swamp.workflow.run_selection`
+  (`workflow_runs.workflows`, `.workflows_denied`, `.scanned`, `.matched`) and
+  `swamp.workflow.definitions.load` (`workflows.count`)
+- `swamp.serve.redact` and `swamp.serve.response.send` (serializing and
+  compressing the reply)
+
+Run-record reads appear only on their slow paths:
+`swamp.workflow_runs.scan_all`, `.read_summaries`, `.index.repair`,
+`.index.rebuild` and `.index.load` (a run index cache miss,
+`run_index.joined_inflight=true` when it waited on another load). They record
+`workflow_runs.records_read` and `workflow_runs.bytes_read` (characters of the
+records read). Repair and rebuild record `workflow_runs.index.queue_wait_ms`,
+the wait behind other index work on the same workflow, such as run saves.
+Growing `records_read` across builds points to history growth; a fast index hit
+has no span at all.
 
 ## Reference
 

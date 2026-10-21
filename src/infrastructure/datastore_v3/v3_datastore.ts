@@ -237,6 +237,23 @@ export function v3SharedCommitsDbPath(datastorePath: string): string {
 }
 
 /**
+ * The `commits.db` a filesystem v3 datastore's chunks are ordered before
+ * (swamp-club#3737): its own, when only this machine's disk makes a commit
+ * durable. Undefined, every chunk sync is a full one: on a bucket the
+ * chunks are not on the filesystem, and while replicating Litestream ships
+ * the commit to the replica before an ordering barrier has put its chunks
+ * on the disk, so a power loss could leave the replica naming a lost chunk.
+ */
+export function v3ChunksOrderedBefore(
+  datastorePath: string,
+  commitsDbPath: string,
+): string | undefined {
+  if (v3BucketBindingAt(datastorePath) !== undefined) return undefined;
+  if (v3ReplicaFor(datastorePath) !== undefined) return undefined;
+  return commitsDbPath;
+}
+
+/**
  * `path` with symlinks resolved, through its nearest existing parent when it
  * does not exist yet, so the key is the same before and after it is created
  * (`/tmp/x` and `/private/tmp/x` on macOS).
@@ -757,7 +774,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // A filesystem datastore's storage also sweeps its stale temp files; a
   // provider's storage has none to sweep.
   const fsStorage = bucket === undefined
-    ? new FileSystemStorage(datastorePath)
+    ? new FileSystemStorage(datastorePath, {
+      orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath),
+    })
     : undefined;
   const storage: DatastoreStorage = bucket?.storage ?? fsStorage!;
   const chunkStore = new ChunkStore(storage);

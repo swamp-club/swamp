@@ -152,3 +152,17 @@ export function describeDocFailure(output: string, roots: string[]): string {
 
   return sentences.length > 0 ? cap(sentences.join(" ")) : DOC_FAILURE_FALLBACK;
 }
+
+/**
+ * Describe a `deno doc` failure that the dependency audit explains: npm
+ * publishes no version matching these specifiers, which fails deno's whole
+ * npm resolution, so deno's own output names whichever import it was
+ * resolving. CLI-only; swamp-club's scorer has no audit to consult.
+ */
+export function describeUnpublishedSpecifiers(specifiers: string[]): string {
+  return cap(
+    `npm publishes no version matching ${
+      listed(specifiers.map(quoteSpecifier))
+    }, so deno doc could not resolve the extension's npm imports.`,
+  );
+}

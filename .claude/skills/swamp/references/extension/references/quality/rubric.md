@@ -73,6 +73,11 @@ Counting rules:
 - A symbol is "documented" if its `jsDoc.doc` field is a non-empty string.
 - Types, interfaces, classes, functions, and constants all count.
 
+When `deno doc` cannot analyse the source, nothing counts as documented and the
+remediation names that failure (`docAnalysisError`) instead of asking for JSDoc;
+fix the failure first. `has-readme` likewise stops offering a module-level JSDoc
+in place of a README until `deno doc` can analyse the source.
+
 ### `fast-check` (1 pt)
 
 Earned when `deno doc --lint <entrypoints>` produces zero slow-type diagnostics.
@@ -215,7 +220,11 @@ second point. Any blocker or unaudited dependency still gives 0/2.
 **Not audited (fails the factor, does not block):** a dependency whose OSV.dev,
 npm or JSR lookup failed, or whose specifier no published version matches, is
 reported as not audited (`cause: "not-audited"` with a `reason`) and never as
-passed. Re-run when all three services are reachable to earn the factor.
+passed. `notAuditedFix` says how to resolve it: `outage` (re-run when OSV.dev,
+npm and JSR are reachable), `specifier` (change it to a version the registry
+publishes), `name` (correct the package name), `unexpected` (re-run, report it
+if it fails again) or `other`. The row's remediation follows those fixes and
+says to re-run only when every unaudited dependency was an outage.
 
 **Warnings (displayed but do not block or cost the factor):**
 

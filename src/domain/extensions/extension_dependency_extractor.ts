@@ -22,6 +22,7 @@ import {
   isBareSpecifier,
   stripSourceComments,
 } from "../models/bundle.ts";
+import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { LineIndex } from "./extension_source_ast.ts";
 import type { SpecifierSpan } from "./extension_source_graph.ts";
 
@@ -235,6 +236,17 @@ export function resolveBareImport(
   return importMapTarget(specifier, expanded);
 }
 
+/**
+ * A resolver reading only an `imports` record, the same for every importer:
+ * no scopes, no `importMap` file. For tests and callers that hold no module
+ * graph; push resolves through the graph (swamp-club#3612).
+ */
+export function importMapResolver(imports: ImportMap): BareImportResolver {
+  return {
+    resolve: (_importer, specifier) => resolveBareImport(specifier, imports),
+  };
+}
+
 function specifierKey(
   spec: { registry: string; name: string; version: string | null },
 ): string {
@@ -243,13 +255,13 @@ function specifierKey(
 
 /**
  * The `npm:` and `jsr:` dependencies a module imports: those it writes
- * out, and, given the import map, the bare imports it resolves to one.
- * A dependency written both ways keeps the written form.
+ * out, and, given a resolver, the bare imports it resolves to one from
+ * `sourceFile`. A dependency written both ways keeps the written form.
  */
 export function extractSpecifiersFromSource(
   source: string,
   sourceFile: string,
-  imports?: ImportMap,
+  resolver?: BareImportResolver,
 ): DependencySpecifier[] {
   const seen = new Set<string>();
   const results: DependencySpecifier[] = [];
@@ -271,13 +283,13 @@ export function extractSpecifiersFromSource(
     }
   }
 
-  if (!imports) return results;
+  if (!resolver) return results;
 
   // Bare names are read as the bare-specifiers rule reads them, with
   // template literals blanked, so generated code is never audited.
   for (const bare of importedSpecifiers(stripSourceComments(source))) {
     if (!bare || !isBareSpecifier(bare)) continue;
-    const target = resolveBareImport(bare, imports);
+    const target = resolver.resolve(sourceFile, bare);
     if (!target) continue;
     // A `key/` entry must write its target `npm:/name@v/` for Deno to
     // resolve it; the package is the same.
@@ -301,7 +313,7 @@ export function extractSpecifiersFromSource(
  */
 export async function extractDependencySpecifiers(
   sourceFiles: string[],
-  imports?: ImportMap,
+  resolver?: BareImportResolver,
 ): Promise<DependencySpecifier[]> {
   const seen = new Map<string, DependencySpecifier>();
 
@@ -312,7 +324,7 @@ export async function extractDependencySpecifiers(
     } catch {
       continue;
     }
-    for (const spec of extractSpecifiersFromSource(source, file, imports)) {
+    for (const spec of extractSpecifiersFromSource(source, file, resolver)) {
       // Each version of a package is audited: two specifiers can ship two
       // different versions. A written specifier replaces a mapped one.
       const key = specifierKey(spec);

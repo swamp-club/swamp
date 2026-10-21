@@ -40,6 +40,8 @@ import {
   runAdoptingForwardedLocks,
 } from "../domain/datastore/lock_holder_marker.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
+import { traceWebSocketRequest } from "./ws_request_span.ts";
+import { resolverEngine } from "../domain/datastore/datastore_path_resolver.ts";
 import {
   IDEMPOTENCY_KEY_FORM,
   isIdempotencyKey,
@@ -1959,6 +1961,20 @@ export function handleMessage(
   const confirmed = (handler: () => Promise<void>): Promise<void> =>
     confirmRequest(ctx, socket, request.id, handler);
 
+  // Dashboard reads run inside a swamp.serve.request span, so a slow one
+  // breaks down into its lookups and reads (swamp-club#3741). `start` must
+  // call the handler, so the handler begins inside the span.
+  const traced = (start: () => Promise<void>): Promise<void> =>
+    traceWebSocketRequest({
+      type: request.type,
+      socket,
+      activeRequests: activeRequests.size,
+      principal,
+      datastoreType: ctx.datastoreConfig.type,
+      datastoreEngine: resolverEngine(ctx.datastoreResolver),
+      eventLoopLag: ctx.eventLoopLag,
+    }, start);
+
   let task: Promise<void>;
   switch (request.type) {
     case "server.version":
@@ -2241,15 +2257,17 @@ export function handleMessage(
       );
       break;
     case "workflow.approvals":
-      task = audited(
-        handleWorkflowApprovals(
-          socket,
-          ctx,
-          request.id,
-          controller,
-          principal,
-        ),
-        auditOpts("data", "workflow", "*"),
+      task = traced(() =>
+        audited(
+          handleWorkflowApprovals(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+          ),
+          auditOpts("data", "workflow", "*"),
+        )
       );
       break;
     case "vault.get":
@@ -3076,33 +3094,41 @@ export function handleMessage(
       );
       break;
     case "workflow.history.get":
-      task = audited(
-        handleWorkflowHistoryGet(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
-        auditOpts(
-          "data",
-          "workflow",
-          request.payload?.workflowIdOrName ?? "*",
-        ),
+      task = traced(() =>
+        audited(
+          handleWorkflowHistoryGet(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          ),
+          auditOpts(
+            "data",
+            "workflow",
+            request.payload?.workflowIdOrName ?? "*",
+          ),
+        )
       );
       break;
     case "workflow.history.logs":
-      task = audited(
-        handleWorkflowHistoryLogs(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-          principal,
-        ),
-        auditOpts("data", "workflow", request.payload?.runIdOrWorkflow ?? "*"),
+      task = traced(() =>
+        audited(
+          handleWorkflowHistoryLogs(
+            socket,
+            ctx,
+            request.id,
+            request.payload,
+            controller,
+            principal,
+          ),
+          auditOpts(
+            "data",
+            "workflow",
+            request.payload?.runIdOrWorkflow ?? "*",
+          ),
+        )
       );
       break;
     case "workflow.history.search":
@@ -3123,29 +3149,33 @@ export function handleMessage(
       );
       break;
     case "workflow.run.search":
-      task = audited(
-        handleWorkflowRunSearch(
-          socket,
-          ctx,
-          request.id,
-          controller,
-          principal,
-          request.payload,
-        ),
-        auditOpts("data", "workflow", request.payload?.query ?? "*"),
+      task = traced(() =>
+        audited(
+          handleWorkflowRunSearch(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+            request.payload,
+          ),
+          auditOpts("data", "workflow", request.payload?.query ?? "*"),
+        )
       );
       break;
     case "workflow.run.summary":
-      task = audited(
-        handleWorkflowRunSummary(
-          socket,
-          ctx,
-          request.id,
-          controller,
-          principal,
-          request.payload,
-        ),
-        auditOpts("data", "workflow", "*"),
+      task = traced(() =>
+        audited(
+          handleWorkflowRunSummary(
+            socket,
+            ctx,
+            request.id,
+            controller,
+            principal,
+            request.payload,
+          ),
+          auditOpts("data", "workflow", "*"),
+        )
       );
       break;
     case "workflow.schema":

@@ -50,6 +50,17 @@ export type DependencyTrustCause =
   | "jsr-yanked"
   | "jsr-missing";
 
+/**
+ * How a `not-audited` finding is resolved, by why the dependency was not
+ * audited: only an `outage` clears on a re-run.
+ */
+export type NotAuditedFix =
+  | "outage"
+  | "name"
+  | "specifier"
+  | "unexpected"
+  | "other";
+
 export interface DependencyTrustIssue {
   dependency: string;
   message: string;
@@ -62,6 +73,8 @@ export interface DependencyTrustIssue {
   suggestedVersion?: string;
   /** How to resolve a finding that has a cause. */
   remediation?: string;
+  /** Which fix `remediation` gives; present on `not-audited` findings only. */
+  notAuditedFix?: NotAuditedFix;
 }
 
 export interface DependencyAuditSummary {
@@ -85,6 +98,8 @@ export interface DependencyAuditSummary {
   cause?: DependencyTrustCause;
   /** Which lookup failed and how, present with `cause`. */
   reason?: string;
+  /** How to resolve it, present with `cause`. */
+  notAuditedFix?: NotAuditedFix;
 }
 
 export interface DependencyTrustResult {
@@ -727,12 +742,14 @@ function looseSpecifierFinding(
 
 /**
  * Names the bare imports a finding came from, so the pusher can find the
- * line the import map resolved.
+ * line. Deno resolved them under the project's config — its imports, an
+ * importMap file, a scope or a workspace root (swamp-club#3612) — and the
+ * module graph does not say which, so the config is not named further.
  */
 function importedAsSuffix(names: readonly string[]): string {
   return ` (imported as ${
     names.map((n) => `"${n}"`).join(", ")
-  } via deno.json)`;
+  } through the project's Deno config)`;
 }
 
 /** A specifier's audit, its findings naming the bare import it came from. */
@@ -764,19 +781,19 @@ interface SpecifierAudit {
  * How to resolve a dependency that was not audited, by why it was not: a
  * lookup outage clears on a re-run, a wrong name or specifier never does.
  */
-const NOT_AUDITED_FIX = {
+export const NOT_AUDITED_FIX: Readonly<Record<NotAuditedFix, string>> = {
   outage: "Re-run when OSV, npm and JSR are reachable.",
   name: "Correct the package name in the import.",
   specifier: "Change the specifier to a version the registry publishes.",
   unexpected: "Re-run; if it fails again, report it.",
   other: "Resolve the reason above, then re-run.",
-} as const;
+};
 
 function notAudited(
   spec: DependencySpecifier,
   reason: string,
   summary: Omit<DependencyAuditSummary, "passed" | "cause" | "reason">,
-  fix: keyof typeof NOT_AUDITED_FIX = "other",
+  fix: NotAuditedFix = "other",
   errors: DependencyTrustIssue[] = [],
   warnings: DependencyTrustIssue[] = [],
 ): SpecifierAudit {
@@ -787,8 +804,15 @@ function notAudited(
       message: `not audited: ${reason}`,
       cause: "not-audited",
       remediation: NOT_AUDITED_FIX[fix],
+      notAuditedFix: fix,
     }],
-    summary: { ...summary, passed: false, cause: "not-audited", reason },
+    summary: {
+      ...summary,
+      passed: false,
+      cause: "not-audited",
+      reason,
+      notAuditedFix: fix,
+    },
   };
 }
 
@@ -1070,6 +1094,7 @@ export async function checkDependencyTrust(
           })${bare.length > 0 ? importedAsSuffix(bare) : ""}`,
           cause: "not-audited",
           remediation: NOT_AUDITED_FIX.unexpected,
+          notAuditedFix: "unexpected",
         });
         continue;
       }
@@ -1113,6 +1138,43 @@ export function looseSpecifierCount(result: DependencyTrustResult): number {
       .filter((w) => w.cause === "loose-specifier")
       .map((w) => w.dependency),
   ).size;
+}
+
+/**
+ * The distinct fixes the unaudited dependencies need; a finding without
+ * one counts as `other`.
+ */
+export function notAuditedFixes(
+  result: Pick<DependencyTrustResult, "warnings">,
+): NotAuditedFix[] {
+  return [
+    ...new Set(
+      result.warnings
+        .filter((w) => w.cause === "not-audited")
+        .map((w) => w.notAuditedFix ?? "other"),
+    ),
+  ];
+}
+
+/** Whether every unaudited dependency is down to a lookup outage alone. */
+export function onlyOutagesNotAudited(
+  fixes: readonly NotAuditedFix[],
+): boolean {
+  return fixes.length > 0 && fixes.every((fix) => fix === "outage");
+}
+
+/**
+ * The specifiers no published version matches, as the source (or its
+ * import map) writes them.
+ */
+export function unpublishedSpecifiers(result: DependencyTrustResult): string[] {
+  return [
+    ...new Set(
+      result.audited
+        .filter((a) => a.notAuditedFix === "specifier")
+        .map((a) => a.specifier),
+    ),
+  ];
 }
 
 /** How many dependencies a lookup failure left unaudited. */

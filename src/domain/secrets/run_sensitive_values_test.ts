@@ -259,3 +259,9 @@ Deno.test("RunSensitiveValues: recorded values and registered sentinels are repl
     "sensitive-v.new:sensitive-v.old",
   );
 });
+
+Deno.test("RunSensitiveValues.probeRedactor: answers the run's redactor, or undefined without one", () => {
+  const redactor = new SecretRedactor();
+  assertEquals(new RunSensitiveValues(redactor).probeRedactor, redactor);
+  assertEquals(new RunSensitiveValues().probeRedactor, undefined);
+});

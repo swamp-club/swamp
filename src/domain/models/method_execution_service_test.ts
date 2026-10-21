@@ -30,7 +30,12 @@ import { SecretDestinationRefusedError } from "./secret_destinations.ts";
 import type { OutputRepository } from "./repositories.ts";
 import type { SecretDestinationArgs } from "./model.ts";
 import { shellModel } from "./command/shell/shell_model.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   type RemoteStepRequest,
   setRemoteOnlyMode,
@@ -40,6 +45,7 @@ import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   DefaultMethodExecutionService,
+  deliverStepSecrets,
   recoveredDataHandles,
 } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
@@ -5818,4 +5824,168 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
     );
     assertEquals(Object.hasOwn(merge ?? {}, "shaped"), false);
   }
+});
+
+// ---------- deliverStepSecrets: the shared refuse-then-load step ----------
+
+function deliveryFixture(typed: boolean) {
+  const registry = new SecretBagRegistry({ typedSecrets: typed });
+  const bag = new VaultSecretBag(registry);
+  const sentinel = bag.addSecret(
+    { vaultName: "v", key: "k" },
+    "methods.run.arguments.token",
+  );
+  const loads: string[] = [];
+  const vaultService = new class extends VaultService {
+    override get(vaultName: string, key: string) {
+      loads.push(`${vaultName}/${key}`);
+      return Promise.resolve("hunter2-value");
+    }
+  }();
+  const loader = new SecretLoader(() => Promise.resolve(vaultService));
+  const model = (refuse: boolean): ModelDefinition => ({
+    type: ModelType.create("test/delivery"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({
+      region: z.string().optional().meta(refuse ? { secrets: "refuse" } : {}),
+    }),
+    methods: {
+      run: {
+        description: "Run",
+        arguments: z.object({ token: z.string() }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  return { registry, bag, sentinel, loads, loader, model };
+}
+
+Deno.test("deliverStepSecrets: builds the sentinel merge, loads once for the attempt, and leaves the step's own bag unloaded", async () => {
+  const { bag, sentinel, loads, loader, model } = deliveryFixture(true);
+  const definition = Definition.create({
+    name: "d",
+    globalArguments: { region: "us-east-1", templated: "${{ inputs.x }}" },
+    methods: { run: { arguments: { token: sentinel } } },
+  });
+  const modelDef = model(false);
+  const delivery = await deliverStepSecrets({
+    definition,
+    modelDef,
+    method: modelDef.methods.run,
+    methodName: "run",
+    vaultSecrets: bag,
+    secretLoader: loader,
+    localPlacement: true,
+  });
+  assertEquals(delivery.sentinelArguments, {
+    region: "us-east-1",
+    token: sentinel,
+  });
+  assertEquals(delivery.secrets?.occurrencesIn(sentinel).length, 1);
+  assertEquals(loads, ["v/k"]);
+  assertEquals(delivery.vaultSecrets?.resolveRaw(sentinel), "hunter2-value");
+  // The step's own bag still holds only the reference, so resolving through
+  // it fails as an unloaded delivery does.
+  assertThrows(() => bag.resolveRaw(sentinel), Error, "not loaded");
+  // A second attempt loads again.
+  await deliverStepSecrets({
+    definition,
+    modelDef,
+    method: modelDef.methods.run,
+    methodName: "run",
+    vaultSecrets: bag,
+    secretLoader: loader,
+    localPlacement: true,
+  });
+  assertEquals(loads, ["v/k", "v/k"]);
+});
+
+Deno.test("deliverStepSecrets: a typed run refuses a secret at a refusing destination before any load; an untyped run does not refuse", async () => {
+  for (const typed of [true, false]) {
+    const { bag, sentinel, loads, loader, model } = deliveryFixture(typed);
+    const definition = Definition.create({
+      name: "d",
+      globalArguments: { region: sentinel },
+      methods: { run: { arguments: { token: "plain" } } },
+    });
+    const modelDef = model(true);
+    const deliver = () =>
+      deliverStepSecrets({
+        definition,
+        modelDef,
+        method: modelDef.methods.run,
+        methodName: "run",
+        vaultSecrets: bag,
+        secretLoader: loader,
+        localPlacement: true,
+      });
+    if (typed) {
+      await assertRejects(deliver, SecretDestinationRefusedError);
+      assertEquals(loads, []);
+    } else {
+      const delivery = await deliver();
+      assertEquals(loads, ["v/k"]);
+      assertEquals(
+        delivery.vaultSecrets?.resolveRaw(sentinel),
+        "hunter2-value",
+      );
+    }
+  }
+});
+
+Deno.test("deliverStepSecrets: with no method named only the global arguments are checked, and a step with no secret delivers its own bag untouched", async () => {
+  const { bag, sentinel, loads, loader, model } = deliveryFixture(true);
+  const modelDef = model(true);
+  // A secret in a refusing global argument is refused even with no method.
+  await assertRejects(
+    () =>
+      deliverStepSecrets({
+        definition: Definition.create({
+          name: "d",
+          globalArguments: { region: sentinel },
+        }),
+        modelDef,
+        method: undefined,
+        methodName: "",
+        vaultSecrets: bag,
+        secretLoader: loader,
+        localPlacement: true,
+      }),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(loads, []);
+  // A secret elsewhere loads with no method-level policy to apply.
+  const delivered = await deliverStepSecrets({
+    definition: Definition.create({
+      name: "d",
+      globalArguments: { other: sentinel },
+    }),
+    modelDef,
+    method: undefined,
+    methodName: "",
+    vaultSecrets: bag,
+    secretLoader: loader,
+    localPlacement: true,
+  });
+  assertEquals(loads, ["v/k"]);
+  assertEquals(delivered.vaultSecrets?.resolveRaw(sentinel), "hunter2-value");
+  // No secret in the arguments: nothing is built or loaded.
+  const plain = await deliverStepSecrets({
+    definition: Definition.create({
+      name: "d",
+      globalArguments: { region: "us-east-1" },
+      methods: { run: { arguments: { token: "plain" } } },
+    }),
+    modelDef,
+    method: modelDef.methods.run,
+    methodName: "run",
+    vaultSecrets: new VaultSecretBag(
+      new SecretBagRegistry({ typedSecrets: true }),
+    ),
+    secretLoader: loader,
+    localPlacement: true,
+  });
+  assertEquals(plain.sentinelArguments, undefined);
+  assertEquals(plain.secrets, undefined);
+  assertEquals(loads, ["v/k"]);
 });

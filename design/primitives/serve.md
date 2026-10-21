@@ -995,8 +995,12 @@ server needs an upgrade (`requestNewerServerResponse`,
 - HTTP cancel routes (admin only) call `cancelExecution`. It aborts the run's
   controller and waits up to `CANCEL_GRACE_MS = 5_000` for completion. It
   returns `cancelled` if the run left the registry in time, otherwise
-  `cancellation_requested` (`src/cli/commands/serve.ts`). A run it cannot find
-  gets 404 `No cancellable <type> with id <id>`. The single-run route takes an
+  `cancellation_requested` (`src/cli/commands/serve.ts`). A workflow run that
+  no registry holds is looked up among the scheduled runs, then the webhook
+  runs (`WebhookService.cancelByRunId`); either is aborted without a grace wait
+  and answered `cancellation_requested`. The bulk route (`cancelAllExecutions`)
+  counts the same holders (swamp-club#3740). A run it cannot find gets 404
+  `No cancellable <type> with id <id>`. The single-run route takes an
   optional JSON body `{"reason": "..."}` (at most `MAX_CANCEL_REASON_LENGTH`
   characters, read after auth with an 8 KiB cap), recorded through
   `cancelReasonFor` as `<reason> (cancelled by <principal>)`. A workflow-run

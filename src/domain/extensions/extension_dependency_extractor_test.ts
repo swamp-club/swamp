@@ -24,6 +24,7 @@ import {
   extractSpecifiersFromSource,
   findImportSpecifiers,
   type ImportMap,
+  importMapResolver,
   resolveBareImport,
 } from "./extension_dependency_extractor.ts";
 
@@ -161,7 +162,11 @@ export function hello() { return "world"; }`;
 
 /** The audited specifiers, as `registry:name@version <- bare`. */
 function mappedOf(source: string, imports: ImportMap): string[] {
-  return extractSpecifiersFromSource(source, "model.ts", imports).map((s) =>
+  return extractSpecifiersFromSource(
+    source,
+    "model.ts",
+    importMapResolver(imports),
+  ).map((s) =>
     `${s.registry}:${s.name}@${s.version ?? ""}${
       s.importedAs !== undefined ? ` <- ${s.importedAs}` : ""
     }`
@@ -392,9 +397,12 @@ Deno.test("extractDependencySpecifiers: a written import in one file replaces th
     const b = join(dir, "b.ts");
     await Deno.writeTextFile(a, `import ms from "ms";`);
     await Deno.writeTextFile(b, `import ms from "npm:ms@2.1.3";`);
-    const specs = await extractDependencySpecifiers([a, b], {
-      ms: "npm:ms@2.1.3",
-    });
+    const specs = await extractDependencySpecifiers(
+      [a, b],
+      importMapResolver({
+        ms: "npm:ms@2.1.3",
+      }),
+    );
     assertEquals(specs.length, 1);
     assertEquals(specs[0].importedAs, undefined);
     assertEquals(specs[0].sourceFile, b);
@@ -407,9 +415,12 @@ Deno.test("extractDependencySpecifiers: audits JavaScript code modules too", asy
     const mjs = join(dir, "helper.mjs");
     await Deno.writeTextFile(js, `import ms from "ms";`);
     await Deno.writeTextFile(mjs, `import a from "npm:axios@1.7.2";`);
-    const specs = await extractDependencySpecifiers([js, mjs], {
-      ms: "npm:ms@2.1.3",
-    });
+    const specs = await extractDependencySpecifiers(
+      [js, mjs],
+      importMapResolver({
+        ms: "npm:ms@2.1.3",
+      }),
+    );
     assertEquals(
       specs.map((s) => [s.name, s.sourceFile]).sort(),
       [["axios", mjs], ["ms", js]],

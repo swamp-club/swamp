@@ -17,7 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative, SEPARATOR } from "@std/path";
+import {
+  dirname,
+  fromFileUrl,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
+import type { ResolvedBareImport } from "./bare_import_resolution.ts";
+import { readDenoConfig } from "./deno_config.ts";
+import {
+  type ImportMap,
+  resolveBareImport,
+} from "./extension_dependency_extractor.ts";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import { qualitySidecarPath } from "./extension_quality_sidecar.ts";
 
@@ -74,6 +87,12 @@ export interface PackageCacheHashInput {
   includeFilePaths: string[];
   denoConfigPath: string | undefined;
   packageJsonPath: string | undefined;
+  /**
+   * What Deno resolved each bare import to (swamp-club#3612). The archive's
+   * shipped source depends on these, and an `importMap` file or a workspace
+   * root can change them without changing `denoConfigPath`.
+   */
+  bareImports?: ResolvedBareImport[];
   /**
    * Files with a symlink on their path (swamp-club#3421). Each is hashed by
    * its path alone, never read: the safety gate refuses it, and its target
@@ -226,6 +245,20 @@ export async function computePackageCacheHash(
     parts.push("package-json");
     parts.push(await readFileIfExists(input.packageJsonPath));
   }
+  // Only the resolutions the config's own top-level imports do not give
+  // (an importMap file, a scope, a workspace root), so every extension
+  // whose config the deno-config part above already covers keeps its hash.
+  const unexplained = input.denoConfigPath
+    ? await unexplainedBareImports(
+      input.denoConfigPath,
+      input.bareImports ?? [],
+      rootDir,
+    )
+    : [];
+  if (unexplained.length > 0) {
+    parts.push("bare-imports");
+    for (const line of unexplained) parts.push(line);
+  }
   // Only when present, like deno-config and package-json above, so every
   // extension without a sidecar keeps its hash across this change.
   const sidecar = await computeFileContentHashIfExists(
@@ -291,6 +324,52 @@ async function appendFileGroup(
     out.push(`file=${rel}`);
     out.push(unread.has(abs) ? "symlink" : await readFileIfExists(abs));
   }
+}
+
+/**
+ * Each resolution in `bareImports` that the config's top-level `imports`
+ * would not give, as a sorted line with paths relative to `rootDir`.
+ */
+async function unexplainedBareImports(
+  denoConfigPath: string,
+  bareImports: readonly ResolvedBareImport[],
+  rootDir: string,
+): Promise<string[]> {
+  if (bareImports.length === 0) return [];
+  const imports = (await readDenoConfig(denoConfigPath))?.imports;
+  const map: ImportMap | undefined =
+    imports && typeof imports === "object" && !Array.isArray(imports)
+      ? imports as ImportMap
+      : undefined;
+  const configDir = dirname(denoConfigPath);
+  const label = (target: string | undefined): string => {
+    if (target === undefined) return "";
+    if (target.startsWith("file:")) {
+      return `file:${
+        normalizeToForwardSlash(relative(rootDir, fromFileUrl(target)))
+      }`;
+    }
+    if (/^\.{0,2}\//.test(target)) {
+      return `file:${
+        normalizeToForwardSlash(relative(rootDir, resolve(configDir, target)))
+      }`;
+    }
+    return target.replace(/^(npm|jsr):\//, "$1:");
+  };
+  const lines: string[] = [];
+  for (const b of bareImports) {
+    const resolved = label(b.target);
+    const fromImports = label(
+      map ? resolveBareImport(b.specifier, map) : undefined,
+    );
+    if (resolved === fromImports) continue;
+    lines.push(
+      `import=${
+        normalizeToForwardSlash(relative(rootDir, b.importer))
+      }\0${b.specifier}\0${resolved}`,
+    );
+  }
+  return lines.sort();
 }
 
 function normalizeToForwardSlash(p: string): string {

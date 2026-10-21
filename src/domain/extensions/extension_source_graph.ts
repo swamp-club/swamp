@@ -25,6 +25,11 @@
  * local module the bundle was built from (swamp-club#3376).
  */
 
+import {
+  type ResolvedBareImport,
+  uniqueBareImports,
+} from "./bare_import_resolution.ts";
+
 /** Code modules are TypeScript or JavaScript; data modules are imported as JSON, text or bytes. */
 export type LocalModuleKind = "code" | "data";
 
@@ -69,6 +74,11 @@ export interface SourceModuleGraph {
   modules: LocalModule[];
   edges: LocalEdge[];
   missing: MissingLocalModule[];
+  /**
+   * The bare imports the local modules write, with what Deno resolved each
+   * to; absent when the reader recorded none.
+   */
+  bareImports?: ResolvedBareImport[];
 }
 
 /** The project configuration the bundler resolves modules under. */
@@ -106,7 +116,9 @@ export function mergeSourceGraphs(
   const modules = new Map<string, LocalModule>();
   const edges = new Map<string, LocalEdge>();
   const missing = new Map<string, MissingLocalModule>();
+  const bareImports: ResolvedBareImport[] = [];
   for (const graph of graphs) {
+    for (const b of graph.bareImports ?? []) bareImports.push(b);
     for (const m of graph.modules) {
       if (!modules.has(m.path)) modules.set(m.path, m);
     }
@@ -123,6 +135,7 @@ export function mergeSourceGraphs(
     modules: [...modules.values()],
     edges: [...edges.values()],
     missing: [...missing.values()],
+    bareImports: uniqueBareImports(bareImports),
   };
 }
 
@@ -190,6 +203,9 @@ export function withoutSymlinkedModules(
           ? clean.has(m.path) && !symlinks.has(m.path)
           : keep(m.path)
       ),
+      ...(graph.bareImports
+        ? { bareImports: graph.bareImports.filter((b) => keep(b.importer)) }
+        : {}),
     },
     symlinked,
   };

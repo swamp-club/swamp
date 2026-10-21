@@ -82,7 +82,8 @@ export type DataAccessor =
   | "data.version"
   | "data.findBySpec"
   | "data.findByTag"
-  | "model.<name>.resource";
+  | "model.<name>.resource"
+  | "model.method";
 
 /** The fields of a record the adapter reads. Anything else passes through. */
 interface RecordLike {
@@ -391,6 +392,21 @@ export function adaptDataRecord(
     defineValue(view, key, aliased ? attributes : record[key]);
   }
   return view;
+}
+
+/**
+ * What `model.method` returns to CEL (design/enablers/typed-secrets.md
+ * Section 4.5 item 4): the attributes of the stored record its delegate
+ * returned in a typed run, adapted so each tagged field is a `Secret`, as
+ * `data.latest` returns them, so a stored reference never comes back as a
+ * comparable string. A value that is not a record, the delegate's raw
+ * result, is returned as it is. The record is the run's own by
+ * construction, so no namespace check applies.
+ */
+export function adaptModelMethodResult(result: unknown): unknown {
+  if (!isRecordLike(result)) return result;
+  const adapted = adaptDataRecord(result, undefined, "model.method");
+  return (adapted as RecordLike).attributes;
 }
 
 /**

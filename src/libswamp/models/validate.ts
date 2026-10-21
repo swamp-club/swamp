@@ -26,6 +26,7 @@ import {
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import {
+  type CheckArgumentDelivery,
   type CheckValidationContext,
   DefaultModelValidationService,
   type EnvVarUsageDetail,
@@ -55,7 +56,29 @@ import {
   wordedSwampError,
 } from "../errors.ts";
 
-import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
+import {
+  collectAuthoredExpressions,
+  ExpressionEvaluationService,
+} from "../../domain/expressions/expression_evaluation_service.ts";
+import {
+  deliverStepSecrets,
+  unresolvedArgumentsOf,
+} from "../../domain/models/method_execution_service.ts";
+import type { ModelDefinition } from "../../domain/models/model.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
+import {
+  analyzeVaultCalls,
+  indirectVaultUse,
+} from "../../domain/expressions/vault_call_syntax.ts";
+import { isDeliveredWithMethod } from "../../domain/expressions/splice_pair.ts";
+import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
+import { UserError } from "../../domain/errors.ts";
+import { VaultAccessDeniedError } from "../../domain/vaults/run_vault_access.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
+import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Validation result for a single check. */
 export interface ValidationItemData {
@@ -190,7 +213,18 @@ export interface ModelValidateDeps {
 /** Wires real infrastructure into ModelValidateDeps. */
 export function createModelValidateDeps(
   repoDir: string,
-  options?: { labels?: string[]; method?: string },
+  options?: {
+    labels?: string[];
+    method?: string;
+    /**
+     * The sensitive values of this validation, with the registry that
+     * carries the internal typed-secrets option. Only tests set a typed
+     * one (design/enablers/typed-secrets.md Section 10.3): it turns on the
+     * Secret usage diagnostics and delivers the pre-flight check arguments
+     * through the shared refuse-then-load step. The CLI passes nothing.
+     */
+    createSensitiveValues?: () => RunSensitiveValues;
+  },
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedCatalogStore?: CatalogStore,
@@ -238,6 +272,16 @@ export function createModelValidateDeps(
     { dataRepo, dataQueryService },
   );
 
+  // A typed registry (the internal option, set only by tests) turns on the
+  // Secret usage diagnostics and the shared pre-flight delivery below; an
+  // untyped one leaves validate as it was (typed-secrets 3.5). One deps is
+  // one validation run: every definition it validates issues into this one
+  // registry, so a reference's existence is probed once for the run, as a
+  // workflow's steps share one registry.
+  const sensitiveValues = options?.createSensitiveValues?.() ??
+    new RunSensitiveValues();
+  const typed = sensitiveValues.sentinels.typedSecrets;
+
   const checkContext: CheckValidationContext = {
     repoDir,
     dataRepository: dataRepo,
@@ -246,13 +290,16 @@ export function createModelValidateDeps(
     createCelEnvironment: createExtensionCelEnvironment,
     // Checks run against definitions loaded straight from the repository, with
     // no CEL substitution applied, so every expression in them is author-written.
-    resolveRuntimeExpressions: (data) =>
-      expressionService.resolveRuntimeExpressionsInData(
-        data,
-        undefined,
-        undefined,
-        "unrestricted",
-      ),
+    // In a typed run the shared delivery step replaces this inline resolution.
+    resolveRuntimeExpressions: typed
+      ? undefined
+      : (data) =>
+        expressionService.resolveRuntimeExpressionsInData(
+          data,
+          undefined,
+          undefined,
+          "unrestricted",
+        ),
     labels: options?.labels,
     method: options?.method,
   };
@@ -266,15 +313,43 @@ export function createModelValidateDeps(
     isAutoDefinition: (definition, type) =>
       definitionRepo.isAutoDefinition(definition, type),
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
-    validateModel: async (definition, modelDef, _type) => {
+    validateModel: async (definition, modelDef, type) => {
+      const model = modelDef as ModelDefinition;
+      const file = definitionRepo.getPath(type, definition.id);
       const outcome = await validationService.validateModel(
         definition,
-        // deno-lint-ignore no-explicit-any
-        modelDef as any,
+        model,
         definitionRepo,
-        checkContext,
+        typed
+          ? {
+            ...checkContext,
+            deliverCheckArguments: (stored, methodName) =>
+              deliverCheckArguments(
+                stored,
+                model,
+                methodName,
+                expressionService,
+                sensitiveValues,
+              ),
+          }
+          : checkContext,
         // Definitions are read straight from the repository, as stored.
-        { refuseLiteralSensitiveGlobals: true },
+        // With --method, the method items read what that method's run reads.
+        {
+          refuseLiteralSensitiveGlobals: true,
+          method: options?.method,
+          ...(typed
+            ? {
+              // Each finding names the definition file beside its authored
+              // location (design Section 10.2).
+              diagnoseSecretMisuse: (expression, location) =>
+                diagnoseSecretMisuse(expression, location).map((finding) => ({
+                  ...finding,
+                  location: `${file} ${finding.location}`,
+                })),
+            }
+            : {}),
+        },
       );
       return {
         results: outcome.results,
@@ -288,6 +363,132 @@ export function createModelValidateDeps(
       };
     },
   };
+}
+
+/**
+ * What the pre-flight checks of a typed validation receive, through the
+ * same delivery a method boundary performs (design/enablers/typed-secrets.md
+ * Sections 3.3 and 6.3): the runtime pass checks every vault.get reference
+ * of the stored definition and issues it into a bag of the validation's
+ * registry; the shared step then refuses a secret at a destination that
+ * takes none and loads the references the arguments carry, once. The
+ * checks see the global arguments with their values, the merge with its
+ * sentinels as `unresolvedMethodArgs`, and the loaded bag.
+ */
+async function deliverCheckArguments(
+  definition: Definition,
+  modelDef: ModelDefinition,
+  methodName: string,
+  expressionService: ExpressionEvaluationService,
+  sensitiveValues: RunSensitiveValues,
+): Promise<CheckArgumentDelivery> {
+  // Only what the checks and the method receive is evaluated: the global
+  // arguments and the selected method's arguments, the scope a run's
+  // runtime pass has. Another method's expressions are not this
+  // validation's to resolve or to fail on, as they are not the run's.
+  const method = Object.hasOwn(modelDef.methods, methodName)
+    ? modelDef.methods[methodName]
+    : undefined;
+  // A vault reached any way but a direct vault.get call, or a call with the
+  // wrong arity or one that reads a comprehension or cel.bind local, is what
+  // the typed run refuses before it evaluates anything; validate refuses it
+  // the same way, since the evaluator reports it as an evaluation error.
+  refuseIndirectVaultUse(definition, methodName);
+  // Bound as a run binds them: the definition's input defaults, and the
+  // environment of the machine validate runs on.
+  const inputs = definition.inputs
+    ? new InputValidationService().applyDefaults({}, definition.inputs)
+    : {};
+  const context = await expressionService.buildRuntimeContext(
+    definition,
+    sensitiveValues,
+    inputs,
+  );
+  // What validate simply cannot evaluate, an input with no default or an
+  // environment variable unset here, is left as its stored text for the
+  // checks, as the untyped path leaves it, one expression at a time: the
+  // pass goes on, so a refused secret or a denied, missing or unreadable
+  // reference beside it fails the checks here as it would fail the run,
+  // whatever the key order.
+  const { definition: resolved, secretBag } = await expressionService
+    .resolveRuntimeExpressionsInDefinition(
+      definition,
+      sensitiveValues.probeRedactor,
+      context,
+      collectAuthoredExpressions(definition.toData()),
+      {
+        secretBag: new VaultSecretBag(sensitiveValues.sentinels),
+        // The definition is read from the repository as stored, so every
+        // position in it is authored.
+        provenance: ProvenanceMap.authored(),
+        methodName,
+        keepUnevaluated: isEvaluationFailure,
+      },
+    );
+  const delivery = await deliverStepSecrets({
+    definition: resolved,
+    modelDef,
+    method,
+    methodName,
+    vaultSecrets: secretBag,
+    secretLoader: expressionService.secretLoader(sensitiveValues.probeRedactor),
+    localPlacement: true,
+  });
+  const loaded = delivery.vaultSecrets;
+  return {
+    globalArgs: loaded?.resolvesAny
+      ? loaded.resolveDeep(resolved.globalArguments) as Record<string, unknown>
+      : resolved.globalArguments,
+    unresolvedMethodArgs: delivery.sentinelArguments ??
+      unresolvedArgumentsOf(resolved, methodName),
+    vaultSecrets: loaded,
+  };
+}
+
+/**
+ * Whether an error of the runtime pass is the evaluator failing to evaluate
+ * an expression with what validate can bind, which leaves that expression
+ * as its stored text, rather than a reference check, a refusal or a load
+ * failing, which fails the checks. The evaluator wraps a denied
+ * sensitive-field authorization in its own error class, so the cause is
+ * read: a denial fails the checks as it fails the run.
+ */
+function isEvaluationFailure(error: unknown): boolean {
+  return error instanceof InvalidExpressionError &&
+    !(error.cause instanceof VaultAccessDeniedError);
+}
+
+/**
+ * Fails when an expression of `definition` delivered with `methodName` uses
+ * `vault` other than as the receiver of a direct two-argument `vault.get`
+ * call outside a comprehension or `cel.bind` local
+ * (design/enablers/typed-secrets.md Section 4.4), naming the authored path.
+ * The evaluator refuses the same uses before it evaluates anything, and so
+ * before any reference is checked or loaded; another method's expressions
+ * it never evaluates.
+ */
+function refuseIndirectVaultUse(
+  definition: Definition,
+  methodName: string,
+): void {
+  for (
+    const { celExpression, path } of extractExpressions(definition.toData())
+  ) {
+    if (!isDeliveredWithMethod(path, methodName)) continue;
+    let reason: string | undefined;
+    try {
+      reason = indirectVaultUse(analyzeVaultCalls(celExpression));
+    } catch {
+      // Text that does not parse is the syntax validation's to report.
+      continue;
+    }
+    if (reason !== undefined) {
+      throw new UserError(
+        `Expression at ${path} reaches vault other than through a direct vault.get(vaultName, secretKey) call, which the run refuses: ${reason}`,
+        "invalid_expression",
+      );
+    }
+  }
 }
 
 /** Converts raw validation results to the presentation format. */

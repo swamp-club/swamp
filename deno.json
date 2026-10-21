@@ -30,6 +30,7 @@
     "@std/fmt": "jsr:@std/fmt@^1.0.10",
     "@std/cli": "jsr:@std/cli@^1.0.29",
     "@std/fs": "jsr:@std/fs@^1.0.23",
+    "@std/jsonc": "jsr:@std/jsonc@^1.0.3",
     "@std/path": "jsr:@std/path@^1.1.4",
     "@std/semver": "jsr:@std/semver@^1.0.8",
     "@std/streams": "jsr:@std/streams@^1.1.0",

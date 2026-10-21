@@ -30,10 +30,15 @@ import {
   licenseAllowed,
   looseSpecifierCount,
   monthsSince,
+  NOT_AUDITED_FIX,
   notAuditedCount,
+  type NotAuditedFix,
+  notAuditedFixes,
+  onlyOutagesNotAudited,
   parseCvssV3BaseScore,
   parseSpdxLicense,
   resolveAuditVersion,
+  unpublishedSpecifiers,
 } from "./extension_dependency_trust_checker.ts";
 import type { LockedDependencyVersions } from "./dependency_version_resolution.ts";
 
@@ -419,6 +424,7 @@ Deno.test("checkDependencyTrust: an OSV error response leaves the dependency not
     message: "not audited: OSV lookup failed (HTTP 503)",
     cause: "not-audited",
     remediation: "Re-run when OSV, npm and JSR are reachable.",
+    notAuditedFix: "outage",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.passed, false);
@@ -463,6 +469,7 @@ Deno.test("checkDependencyTrust: npm down with a pinned version still queries OS
     message: "not audited: npm registry lookup failed (HTTP 500)",
     cause: "not-audited",
     remediation: "Re-run when OSV, npm and JSR are reachable.",
+    notAuditedFix: "outage",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.version, "1.0.0");
@@ -532,6 +539,7 @@ Deno.test("checkDependencyTrust: both services down names both lookups", async (
       "request); OSV lookup failed (HTTP 502)",
     cause: "not-audited",
     remediation: "Re-run when OSV, npm and JSR are reachable.",
+    notAuditedFix: "outage",
   }]);
   assertEquals(result.audited[0].passed, false);
   assertEquals(notAuditedCount(result), 1);
@@ -715,6 +723,7 @@ Deno.test("checkDependencyTrust: a range nothing satisfies is not audited", asyn
       "not audited: OSV not queried (no published version matches ^9.0.0)",
     cause: "not-audited",
     remediation: "Change the specifier to a version the registry publishes.",
+    notAuditedFix: "specifier",
   }]);
   const [summary] = result.audited;
   assertEquals(summary.version, "^9.0.0");
@@ -1073,6 +1082,7 @@ Deno.test("checkDependencyTrust: an invalid npm name is not audited and never fe
     message: "not audited: invalid npm package name",
     cause: "not-audited",
     remediation: "Correct the package name in the import.",
+    notAuditedFix: "name",
   }]);
 });
 
@@ -1357,6 +1367,7 @@ for (
       message: `not audited: JSR lookup failed (${reason})`,
       cause: "not-audited",
       remediation: "Re-run when OSV, npm and JSR are reachable.",
+      notAuditedFix: "outage",
     }]);
     assertEquals(result.audited[0].passed, false);
     assertEquals(notAuditedCount(result), 1);
@@ -1427,7 +1438,7 @@ Deno.test("checkDependencyTrust: a mapped import's HIGH vulnerability blocks and
   assertEquals(result.errors, [{
     dependency: "@types/uuid",
     message:
-      'vulnerability GHSA-1234 (HIGH) (imported as "uuid-types" via deno.json)',
+      'vulnerability GHSA-1234 (HIGH) (imported as "uuid-types" through the project\'s Deno config)',
   }]);
   assertEquals(result.audited[0].specifier, "npm:@types/uuid@1.0.0");
   assertEquals(result.audited[0].importedAs, "uuid-types");
@@ -1458,7 +1469,7 @@ Deno.test("checkDependencyTrust: a mapped range resolves from the lock and its f
   assertEquals(result.warnings, [{
     dependency: "express",
     message:
-      'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" via deno.json)',
+      'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" through the project\'s Deno config)',
     cause: "loose-specifier",
     remediation:
       "Pin the exact version this push resolved (4.18.2) to ensure that the audited version is the one that ships.",
@@ -1483,7 +1494,7 @@ Deno.test("checkDependencyTrust: a mapped JSR version that does not exist is an 
   assertEquals(result.errors, [{
     dependency: "@std/assert",
     message:
-      'version 0.0.999 not found on JSR (imported as "@std/assert" via deno.json)',
+      'version 0.0.999 not found on JSR (imported as "@std/assert" through the project\'s Deno config)',
     cause: "jsr-missing",
   }]);
   assertEquals(result.audited[0].importedAs, "@std/assert");
@@ -1498,7 +1509,7 @@ Deno.test("checkDependencyTrust: a mapped import whose lookup fails is not audit
   assertEquals(result.warnings[0].cause, "not-audited");
   assertEquals(
     result.warnings[0].message.endsWith(
-      ' (imported as "pkg" via deno.json)',
+      ' (imported as "pkg" through the project\'s Deno config)',
     ),
     true,
   );
@@ -1586,4 +1597,72 @@ Deno.test("looseSpecifierCount: counts distinct dependencies with a loose specif
     }),
     2,
   );
+});
+
+Deno.test("checkDependencyTrust: a version npm does not list names the specifier fix on the finding and the summary", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("some-pkg", "9.9.9")],
+    routedFetcher(healthyRoutes(HEALTHY_NPM_BODY)),
+  );
+  const warning = result.warnings.find((w) => w.cause === "not-audited");
+  assertEquals(warning?.remediation, NOT_AUDITED_FIX.specifier);
+  assertEquals(warning?.notAuditedFix, "specifier");
+  assertEquals(result.audited[0].notAuditedFix, "specifier");
+  assertEquals(notAuditedFixes(result), ["specifier"]);
+  assertEquals(unpublishedSpecifiers(result), [result.audited[0].specifier]);
+});
+
+Deno.test("checkDependencyTrust: an audited dependency carries no notAuditedFix", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("some-pkg", "1.0.0")],
+    routedFetcher(healthyRoutes(HEALTHY_NPM_BODY)),
+  );
+  assertEquals(result.audited[0].notAuditedFix, undefined);
+  assertEquals(notAuditedFixes(result), []);
+  assertEquals(unpublishedSpecifiers(result), []);
+});
+
+Deno.test("checkDependencyTrust: an audit that throws unexpectedly is fixed by a re-run report", async () => {
+  const thresholds = {
+    get minWeeklyDownloads(): number {
+      throw new Error("boom");
+    },
+    maxAgeMonths: 24,
+  };
+  const result = await checkDependencyTrust(
+    [npmSpec("some-pkg", "1.0.0")],
+    routedFetcher(healthyRoutes(HEALTHY_NPM_BODY)),
+    thresholds,
+  );
+  const [warning] = result.warnings.filter((w) => w.cause === "not-audited");
+  assertEquals(warning.remediation, NOT_AUDITED_FIX.unexpected);
+  assertEquals(warning.notAuditedFix, "unexpected");
+});
+
+Deno.test("notAuditedFixes: lists each fix once, and a finding without one counts as other", () => {
+  const issue = (fix?: NotAuditedFix) => ({
+    dependency: "d",
+    message: "not audited: x",
+    cause: "not-audited" as const,
+    ...(fix !== undefined ? { notAuditedFix: fix } : {}),
+  });
+  assertEquals(
+    notAuditedFixes({
+      warnings: [
+        issue("outage"),
+        issue("outage"),
+        issue("specifier"),
+        issue(),
+        { dependency: "e", message: "low downloads" },
+      ],
+    }),
+    ["outage", "specifier", "other"],
+  );
+});
+
+Deno.test("onlyOutagesNotAudited: true only when every fix is an outage", () => {
+  assertEquals(onlyOutagesNotAudited(["outage"]), true);
+  assertEquals(onlyOutagesNotAudited(["outage", "specifier"]), false);
+  assertEquals(onlyOutagesNotAudited(["name"]), false);
+  assertEquals(onlyOutagesNotAudited([]), false);
 });

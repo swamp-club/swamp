@@ -25,11 +25,13 @@ import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_wo
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import {
   applyTriggerOverrides,
+  handleWorkflowApprovals,
   handleWorkflowCancel,
   handleWorkflowCreate,
   handleWorkflowDelete,
   handleWorkflowEdit,
   handleWorkflowHistoryGet,
+  handleWorkflowHistoryLogs,
   handleWorkflowRunSearch,
   handleWorkflowRunSummary,
   handleWorkflowSearch,
@@ -38,8 +40,12 @@ import {
 import "../../domain/models/models.ts";
 import {
   findSpan,
+  isChildOf,
+  type ReadableSpan,
   withCapturedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
+import { SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
+import { traceWebSocketRequest } from "../ws_request_span.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -1863,6 +1869,289 @@ Deno.test("handleWorkflowDelete: records the deleted workflow and the requesting
       assertEquals(span.attributes["workflow.name"], "doomed-wf");
       assertEquals(span.attributes["workflow.id"], workflow.id);
       assertEquals(span.attributes["auth.principal.id"], "user:editor");
+    });
+  });
+});
+
+// --- traced WebSocket reads (swamp-club#3741) ---
+
+/**
+ * Runs `fn` inside the `swamp.serve.request` span connection.ts opens for a
+ * WebSocket request, so the handler's spans have the parent they have in
+ * serve.
+ */
+function tracedRequest(
+  type: string,
+  socket: WebSocket,
+  principal: Principal | null,
+  fn: () => Promise<void>,
+): Promise<void> {
+  return traceWebSocketRequest({
+    type,
+    socket,
+    activeRequests: 1,
+    principal,
+    datastoreType: "filesystem",
+    datastoreEngine: "test",
+  }, fn);
+}
+
+/**
+ * Asserts each of `children` is one span started directly under `parent`,
+ * and returns `parent`.
+ */
+function assertChildren(
+  spans: readonly ReadableSpan[],
+  parent: string,
+  children: string[],
+): ReadableSpan {
+  const parentSpan = findSpan(spans, parent);
+  for (const child of children) {
+    assertEquals(
+      isChildOf(findSpan(spans, child), parentSpan),
+      true,
+      `${child} is not a child of ${parent}`,
+    );
+  }
+  return parentSpan;
+}
+
+Deno.test("handleWorkflowHistoryGet: traces the lookup, authorization, read, redaction and send under the request span", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const ctx = makeHistoryCtx(dir, workflow, [
+      grantFor("wf", "workflow", "history-wf"),
+      grantFor("writer-data", "data", "writer"),
+    ]);
+    await withCapturedSpans(async (spans) => {
+      const { socket, frames } = makeSearchSocket();
+      await tracedRequest(
+        "workflow.history.get",
+        socket,
+        searchPrincipal,
+        () =>
+          handleWorkflowHistoryGet(
+            socket,
+            ctx,
+            "req-history-traced",
+            { workflowIdOrName: "history-wf" },
+            new AbortController(),
+            searchPrincipal,
+          ),
+      );
+      assertEquals(frames.map((f) => f.type), ["workflow.history.get"]);
+
+      const request = assertChildren(spans, "swamp.serve.request", [
+        "swamp.workflow.run_reference.resolve",
+        "swamp.serve.authorize",
+        "swamp.workflow.history.get",
+        "swamp.serve.redact",
+        "swamp.serve.response.send",
+      ]);
+      const get = assertChildren(spans, "swamp.workflow.history.get", [
+        "swamp.workflow.step_outputs.resolve",
+      ]);
+      assertEquals(get.attributes["workflow.name"], "history-wf");
+      assertEquals(get.attributes["workflow.id"], workflow.id);
+      assertEquals(typeof get.attributes["workflow.run_id"], "string");
+
+      const outputs = findSpan(spans, "swamp.workflow.step_outputs.resolve");
+      assertEquals(outputs.attributes["step_outputs.resources_read"], 1);
+      assertEquals(outputs.attributes["step_outputs.resources_denied"], 1);
+
+      const traceId = request.spanContext().traceId;
+      assertEquals(
+        spans.every((s) => s.spanContext().traceId === traceId),
+        true,
+      );
+      assertEquals(request.parentSpanId, undefined);
+      assertEquals(
+        request.attributes["swamp.serve.request.type"],
+        "workflow.history.get",
+      );
+      assertEquals(request.status.code, SpanStatusCode.UNSET);
+    });
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: records the error code of an unknown run on the request span", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    await withCapturedSpans(async (spans) => {
+      const { socket, frames } = makeSearchSocket();
+      await tracedRequest(
+        "workflow.history.get",
+        socket,
+        null,
+        () =>
+          handleWorkflowHistoryGet(
+            socket,
+            makeHistoryCtx(dir, workflow),
+            "req-history-traced-missing",
+            { workflowIdOrName: "no-such-run" },
+            new AbortController(),
+            null,
+          ),
+      );
+      assertEquals(frames[0].error?.code, "workflow_history_get_failed");
+
+      const request = findSpan(spans, "swamp.serve.request");
+      assertEquals(
+        request.attributes["swamp.serve.response.error_code"],
+        "workflow_history_get_failed",
+      );
+      // A run that is not found is the caller's error, not the server's.
+      assertEquals(
+        request.attributes["swamp.serve.response.error_reason"],
+        "not_found",
+      );
+      assertEquals(request.status.code, SpanStatusCode.UNSET);
+      assertEquals(
+        spans.some((s) => s.name === "swamp.serve.response.send"),
+        false,
+      );
+    });
+  });
+});
+
+Deno.test("handleWorkflowHistoryLogs: traces the logs read and the send under the request span", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    await withCapturedSpans(async (spans) => {
+      const { socket, frames } = makeSearchSocket();
+      await tracedRequest(
+        "workflow.history.logs",
+        socket,
+        null,
+        () =>
+          handleWorkflowHistoryLogs(
+            socket,
+            makeHistoryCtx(dir, workflow),
+            "req-logs-traced",
+            { runIdOrWorkflow: "history-wf" },
+            new AbortController(),
+            null,
+          ),
+      );
+      assertEquals(frames.map((f) => f.type), ["workflow.history.logs"]);
+
+      assertChildren(spans, "swamp.serve.request", [
+        "swamp.workflow.run_reference.resolve",
+        "swamp.serve.authorize",
+        "swamp.workflow.history.logs",
+        "swamp.serve.response.send",
+      ]);
+      const logs = findSpan(spans, "swamp.workflow.history.logs");
+      assertEquals(logs.attributes["workflow.name"], "history-wf");
+      assertEquals(logs.attributes["workflow.id"], workflow.id);
+    });
+  });
+});
+
+Deno.test("handleWorkflowRunSearch: traces the search, its run selection, redaction and send under the request span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket, frames } = makeSearchSocket();
+    await tracedRequest(
+      "workflow.run.search",
+      socket,
+      null,
+      () =>
+        handleWorkflowRunSearch(
+          socket,
+          makeSearchCtx(),
+          "req-run-search-traced",
+          new AbortController(),
+          null,
+          { limit: 2 },
+        ),
+    );
+    assertEquals(frames.map((f) => f.type), ["workflow.run.search"]);
+
+    assertChildren(spans, "swamp.serve.request", [
+      "swamp.workflow.run_search",
+      "swamp.serve.redact",
+      "swamp.serve.response.send",
+    ]);
+    assertChildren(spans, "swamp.workflow.run_search", [
+      "swamp.workflow.run_selection",
+    ]);
+  });
+});
+
+Deno.test("handleWorkflowRunSummary: traces the summary, its run selection and send under the request span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket, frames } = makeSearchSocket();
+    await tracedRequest(
+      "workflow.run.summary",
+      socket,
+      null,
+      () =>
+        handleWorkflowRunSummary(
+          socket,
+          makeSearchCtx(),
+          "req-run-summary-traced",
+          new AbortController(),
+          null,
+          {},
+        ),
+    );
+    assertEquals(frames.map((f) => f.type), ["workflow.run.summary"]);
+
+    assertChildren(spans, "swamp.serve.request", [
+      "swamp.workflow.run_summary",
+      "swamp.serve.response.send",
+    ]);
+    assertChildren(spans, "swamp.workflow.run_summary", [
+      "swamp.workflow.run_selection",
+    ]);
+  });
+});
+
+Deno.test("handleWorkflowApprovals: traces the approvals read, its definitions load, authorization and send under the request span", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const ctx = {
+      ...makeHistoryCtx(dir, workflow),
+      datastoreResolver: {
+        resolvePath: (subdir: string) => join(dir, ".swamp", subdir),
+      },
+    } as unknown as ConnectionContext;
+    ctx.repoContext = {
+      ...ctx.repoContext,
+      workflowRepo: {
+        ...ctx.repoContext.workflowRepo,
+        findAll: () => Promise.resolve([workflow]),
+      },
+      workflowRunRepo: new YamlWorkflowRunRepository(dir),
+    };
+    await withCapturedSpans(async (spans) => {
+      const { socket, frames } = makeSearchSocket();
+      await tracedRequest(
+        "workflow.approvals",
+        socket,
+        null,
+        () =>
+          handleWorkflowApprovals(
+            socket,
+            ctx,
+            "req-approvals-traced",
+            new AbortController(),
+            null,
+          ),
+      );
+      assertEquals(frames.map((f) => f.type), ["workflow.approvals"]);
+
+      assertChildren(spans, "swamp.serve.request", [
+        "swamp.workflow.approvals",
+        "swamp.serve.authorize",
+        "swamp.serve.response.send",
+      ]);
+      const load = findSpan(spans, "swamp.workflow.definitions.load");
+      assertEquals(
+        isChildOf(load, findSpan(spans, "swamp.workflow.approvals")),
+        true,
+      );
+      assertEquals(load.attributes["workflows.count"], 1);
     });
   });
 });

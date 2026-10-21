@@ -65,6 +65,7 @@ import type {
 import type { RunReference } from "../../libswamp/workflows/run_reference.ts";
 import type { Action } from "../../domain/access/action.ts";
 import type { Principal } from "../../domain/access/principal.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -820,50 +821,57 @@ export async function resolveRunAccess<T extends { reference: RunReference }>(
 ): Promise<ReferenceAccess<T>> {
   try {
     const resolved = await resolve();
-    const reference = resolved.reference;
-    let resources: AccessResource[];
-    switch (reference.kind) {
-      case "run":
-        resources = await runOwners(workflowRepo, reference.run);
-        break;
-      case "workflow":
-        resources = [
-          workflowAccessResource(reference.workflow),
-          ...(reference.latest
-            ? await runOwners(workflowRepo, reference.latest)
-            : []),
-        ];
-        break;
-      case "ambiguous": {
-        const owners = new Map<string, AccessResource[]>();
-        const candidates: AccessResource[][] = [];
-        for (const run of reference.runs) {
-          const key = JSON.stringify([run.workflowId, run.workflowName]);
-          let found = owners.get(key);
-          if (!found) {
-            found = await runOwners(workflowRepo, run);
-            owners.set(key, found);
+    // Collecting the owners reads the workflow repository again; the span
+    // separates that from the lookup (swamp-club#3741).
+    return await withSpan("swamp.serve.authorize", {}, async (span) => {
+      const reference = resolved.reference;
+      let resources: AccessResource[];
+      switch (reference.kind) {
+        case "run":
+          resources = await runOwners(workflowRepo, reference.run);
+          break;
+        case "workflow":
+          resources = [
+            workflowAccessResource(reference.workflow),
+            ...(reference.latest
+              ? await runOwners(workflowRepo, reference.latest)
+              : []),
+          ];
+          break;
+        case "ambiguous": {
+          const owners = new Map<string, AccessResource[]>();
+          const candidates: AccessResource[][] = [];
+          for (const run of reference.runs) {
+            const key = JSON.stringify([run.workflowId, run.workflowName]);
+            let found = owners.get(key);
+            if (!found) {
+              found = await runOwners(workflowRepo, run);
+              owners.set(key, found);
+            }
+            candidates.push(found);
           }
-          candidates.push(found);
+          span.setAttribute("authorize.resources", candidates.flat().length);
+          return {
+            status: "ambiguous",
+            resolved,
+            candidates,
+            narrow: (readable) => ({
+              ...resolved,
+              reference: {
+                kind: "ambiguous",
+                ids: readable.map((i) => reference.ids[i]),
+                runs: readable.map((i) => reference.runs[i]),
+              },
+            }),
+          };
         }
-        return {
-          status: "ambiguous",
-          resolved,
-          candidates,
-          narrow: (readable) => ({
-            ...resolved,
-            reference: {
-              kind: "ambiguous",
-              ids: readable.map((i) => reference.ids[i]),
-              runs: readable.map((i) => reference.runs[i]),
-            },
-          }),
-        };
+        default:
+          resources = [unresolvedAccessResource("workflow", rawArgument)];
       }
-      default:
-        resources = [unresolvedAccessResource("workflow", rawArgument)];
-    }
-    return { status: "resolved", resolved, resources: distinct(resources) };
+      const unique = distinct(resources);
+      span.setAttribute("authorize.resources", unique.length);
+      return { status: "resolved", resolved, resources: unique };
+    });
   } catch (error) {
     return { status: "failed", error };
   }

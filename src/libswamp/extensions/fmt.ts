@@ -26,6 +26,7 @@ import {
   denoToolConfigArgs,
   extensionLintArgs,
 } from "../../domain/extensions/extension_quality_checker.ts";
+import type { StaleLockfile } from "../../domain/models/bundle.ts";
 import { plainDenoEnv } from "../../domain/runtime/deno_plain_env.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -37,6 +38,8 @@ export interface ExtensionFmtCheckData {
   mode: "check";
   passed: boolean;
   issues: QualityIssue[];
+  /** Lockfiles out of date with their project; fmt left each unchanged. */
+  staleLockfiles: StaleLockfile[];
 }
 
 /** Data for an auto-fix run. */
@@ -47,6 +50,8 @@ export interface ExtensionFmtFixData {
   lintOutput: string;
   remainingIssues: QualityIssue[];
   passed: boolean;
+  /** Lockfiles out of date with their project; fmt left each unchanged. */
+  staleLockfiles: StaleLockfile[];
 }
 
 export type ExtensionFmtData = ExtensionFmtCheckData | ExtensionFmtFixData;
@@ -65,6 +70,11 @@ export interface ExtensionFmtInput {
    * lints under the same rules push checks with.
    */
   denoConfigPath?: string;
+  /**
+   * Lockfiles the module graph read found out of date. fmt never rewrites
+   * them, so the entry points they refused were formatted alone.
+   */
+  staleLockfiles?: StaleLockfile[];
 }
 
 /** Dependencies for the extension fmt operation. */
@@ -151,6 +161,7 @@ export async function* extensionFmt(
             mode: "check",
             passed: result.passed,
             issues: result.issues,
+            staleLockfiles: input.staleLockfiles ?? [],
           },
         };
         return;
@@ -176,6 +187,7 @@ export async function* extensionFmt(
           lintOutput,
           remainingIssues: remaining.issues,
           passed: remaining.passed,
+          staleLockfiles: input.staleLockfiles ?? [],
         },
       };
     })(),

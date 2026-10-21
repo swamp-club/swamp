@@ -168,7 +168,11 @@ changes that aren't tied to a single building block:
   `integration/` when you introduce a new module boundary, allow a new
   cross-layer import, add a new libswamp public export, or change the
   json-mode/license-header conventions. Use the pinned-ratchet pattern from
-  `arch_fitness_helpers.ts`.
+  `arch_fitness_helpers.ts`. Rules that inspect a call's arguments
+  (`callArguments` there) read the source text, so put a comment above the call
+  rather than inside its argument list: an apostrophe in such a comment opens a
+  string literal to the parser and the rule reports the site as missing its
+  argument.
 - **Conformance suite** — add a suite to `packages/testing/` when you define a
   new provider interface that extension authors will implement. Follow the
   `datastore_conformance.ts` pattern.

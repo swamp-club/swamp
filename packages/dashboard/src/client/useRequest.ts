@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "./SwampProvider.tsx";
-import { createRequestSequence } from "./request_sequence.ts";
+import { createRequestRunner } from "./request_runner.ts";
 import { type RequestErrorInfo, requestErrorInfo } from "./stream.ts";
 
 interface UseRequestResult<T> {
@@ -29,6 +29,11 @@ interface UseRequestResult<T> {
   /** Serve's error code plus any reason/entity type, when the request failed. */
   errorInfo: RequestErrorInfo | null;
   refetch: () => void;
+  /**
+   * Re-reads without stacking: waits for the read still in flight, or sends
+   * one when none is. Resolves once it has answered; never rejects.
+   */
+  reload: () => Promise<void>;
 }
 
 interface UseRequestOptions {
@@ -50,61 +55,66 @@ export function useRequest<T = Record<string, unknown>>(
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
   const [errorInfo, setErrorInfo] = useState<RequestErrorInfo | null>(null);
-  const sequenceRef = useRef(createRequestSequence());
+  const runnerRef = useRef(createRequestRunner());
   const lastKeyRef = useRef<string | null>(null);
 
   const payloadKey = payload ? JSON.stringify(payload) : "";
   const requestKey = `${type}\u0000${payloadKey}`;
 
-  const fetch = useCallback(() => {
-    const sequence = sequenceRef.current;
+  const run = useCallback((join: boolean): Promise<void> => {
+    const runner = runnerRef.current;
     if (!enabled) {
-      sequence.invalidate();
+      runner.invalidate();
       lastKeyRef.current = null;
       setData(null);
       setError(null);
       setErrorInfo(null);
       setLoading(false);
-      return;
+      return Promise.resolve();
     }
     // A different request must not show the previous request's result
     // while it loads — even while disconnected; a refetch of the same
     // request keeps it.
     if (lastKeyRef.current !== requestKey) {
       lastKeyRef.current = requestKey;
-      sequence.invalidate();
+      runner.invalidate();
       setData(null);
       setError(null);
       setErrorInfo(null);
       setLoading(true);
     }
-    if (!connected) return;
-    const ticket = sequence.next();
+    if (!connected) return Promise.resolve();
     setLoading(true);
     setError(null);
     setErrorInfo(null);
-    request<T>(type, payload)
-      .then((result) => {
-        if (!sequence.isCurrent(ticket)) return;
+    const start = () => request<T>(type, payload);
+    const apply = {
+      result: (result: T) => {
         setData(result);
         setLoading(false);
-      })
-      .catch((err) => {
-        if (!sequence.isCurrent(ticket)) return;
+      },
+      error: (err: unknown) => {
         setError(err instanceof Error ? err.message : String(err));
         setErrorInfo(requestErrorInfo(err));
         setLoading(false);
-      });
+      },
+    };
+    return join ? runner.join(start, apply) : runner.send(start, apply);
   }, [connected, enabled, type, payloadKey, request]);
+
+  const fetch = useCallback(() => {
+    run(false).catch(() => {});
+  }, [run]);
+  const reload = useCallback(() => run(true), [run]);
 
   useEffect(() => {
     fetch();
   }, [fetch]);
 
   useEffect(() => {
-    const sequence = sequenceRef.current;
-    return () => sequence.invalidate();
+    const runner = runnerRef.current;
+    return () => runner.invalidate();
   }, []);
 
-  return { data, loading, error, errorInfo, refetch: fetch };
+  return { data, loading, error, errorInfo, refetch: fetch, reload };
 }

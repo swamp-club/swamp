@@ -19,7 +19,10 @@
 
 import { assertEquals, assertStrictEquals, assertThrows } from "@std/assert";
 import { Environment } from "cel-js";
-import { SECRET_OPERATION_UNSUPPORTED } from "../../domain/expressions/errors.ts";
+import {
+  SECRET_DESTINATION_REFUSED,
+  SECRET_OPERATION_UNSUPPORTED,
+} from "../../domain/expressions/errors.ts";
 import {
   functionRefusalSignatures,
   operatorRefusalSignatures,
@@ -99,6 +102,36 @@ Deno.test("registerSecretRefusals: refuses swamp's own signatures it is given, w
     assertThrows(() => env.evaluate("literal(s)", { s }), SecretRefusal);
     assertEquals(scope.faults.map((fault) => fault.operation), [
       "literal(Secret): string",
+    ]);
+  });
+});
+
+Deno.test("registerSecretRefusals: codeFor chooses the code a function refusal records, by signature", () => {
+  const env = environment();
+  env.registerFunction(
+    "route(string): string",
+    (value: string) => value,
+    { async: false },
+  );
+  env.registerFunction(
+    "plain(string): string",
+    (value: string) => value,
+    { async: false },
+  );
+  // Both are read from the environment as secret-capable functions.
+  registerSecretRefusals(env, {
+    codeFor: (signature) =>
+      signature.startsWith("route(") ? SECRET_DESTINATION_REFUSED : undefined,
+  });
+  runInFaultScope((scope) => {
+    assertThrows(() => env.evaluate("route(s)", { s }), SecretRefusal);
+    assertThrows(() => env.evaluate("plain(s)", { s }), SecretRefusal);
+    assertEquals(scope.faults, [
+      { operation: "route(Secret): string", code: SECRET_DESTINATION_REFUSED },
+      {
+        operation: "plain(Secret): string",
+        code: SECRET_OPERATION_UNSUPPORTED,
+      },
     ]);
   });
 });

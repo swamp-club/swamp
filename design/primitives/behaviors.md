@@ -191,7 +191,10 @@ Validation reads static global arguments the way the next method run will.
 applies the same chain to an in-memory copy before it checks global arguments
 and runs pre-flight checks, and never saves it. That covers both
 `swamp behavior validate` and the check before each workflow step, so a stale
-definition is not refused before the run that would migrate it. An upgrade that
+definition is not refused before the run that would migrate it. The check
+before a step, like `validate --method`, reads the global arguments and the
+step's own method only, so another method's problems never fail it (see
+`design/enablers/expressions.md`, swamp-club#3726). An upgrade that
 throws fails the Global arguments item. Arguments holding a swamp expression are
 not upgraded in validation: the run upgrades their evaluated values, and the
 schema check skips them until then (swamp-club#3196).
@@ -694,6 +697,13 @@ first refuses a secret at a destination that takes none: a field marked
 `.meta({ secrets: "refuse" })` in the global or merged arguments, then the
 method's own optional `refuseSecretDestinations` hook for a local placement,
 all before any load (Section 6.3), so a refused attempt reads no vault.
+
+In a typed run `swamp behavior validate` delivers its pre-flight check
+arguments through the same step (`deliverStepSecrets`): the checks receive the
+global arguments with their values, the merge with its sentinels as
+`unresolvedMethodArgs`, and the loaded bag, and a refused destination or a
+failed load fails every applicable check. With the option off, validate
+resolves the global arguments inline as before.
 
 ```typescript
 // Example: validate a method argument in a pre-flight check

@@ -26,6 +26,13 @@ import {
   staleLockfileError,
 } from "../../domain/models/bundle.ts";
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
+import {
+  bareImportsFromDenoInfo,
+  hasUnresolvedBareImports,
+  isLocalModuleSpecifier,
+  type ResolvedBareImport,
+  withPackageSpecifiers,
+} from "../../domain/extensions/bare_import_resolution.ts";
 import type {
   LocalEdge,
   LocalModule,
@@ -73,16 +80,6 @@ interface DenoInfoModule {
   dependencies?: DenoInfoDependency[];
 }
 
-/**
- * A `file:` module that is not an npm package installed in a node_modules
- * directory (a bare specifier under a manual node_modules dir resolves to
- * one); those are dependencies the bundler inlines, not the author's source.
- */
-function isLocal(specifier: string | undefined): specifier is string {
-  return typeof specifier === "string" && specifier.startsWith("file:") &&
-    !fromFileUrl(specifier).split(/[\\/]/).includes("node_modules");
-}
-
 /** Reads what the importer has at `span`, quotes stripped, or undefined. */
 function textAt(
   lines: string[] | undefined,
@@ -109,7 +106,8 @@ export interface DenoInfoGraphFiles {
 }
 
 /**
- * Reads the local part of `deno info --json` output. `files.exists` decides
+ * Reads the local part of `deno info --json` output, and what Deno resolved
+ * each bare import a local module writes to. `files.exists` decides
  * whether a module deno did not load itself (a text or bytes import, which
  * deno reports as external) is on disk. Each edge's specifier is the text
  * the importer holds at the edge's span — for a type edge that may be a
@@ -128,7 +126,7 @@ export async function parseDenoInfoGraph(
   const missingReasons = new Map<string, string>();
 
   for (const m of raw) {
-    if (!isLocal(m.specifier)) continue;
+    if (!isLocalModuleSpecifier(m.specifier)) continue;
     const path = fromFileUrl(m.specifier);
     if (m.error) {
       missingReasons.set(path, m.error);
@@ -146,7 +144,9 @@ export async function parseDenoInfoGraph(
     let linesRead = false;
     for (const dep of m.dependencies ?? []) {
       for (const target of [dep.code, dep.type]) {
-        if (!target || !isLocal(target.specifier) || !target.span) continue;
+        if (
+          !target || !isLocalModuleSpecifier(target.specifier) || !target.span
+        ) continue;
         if (!linesRead) {
           lines = (await files.readText(path))?.split("\n");
           linesRead = true;
@@ -176,7 +176,12 @@ export async function parseDenoInfoGraph(
     seen.add(key);
     return true;
   });
-  return { modules, edges: uniqueEdges, missing };
+  return {
+    modules,
+    edges: uniqueEdges,
+    missing,
+    bareImports: bareImportsFromDenoInfo(json),
+  };
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -272,7 +277,52 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         [entryPoint],
       );
     }
+    if (
+      project.denoConfigPath &&
+      hasUnresolvedBareImports(graph.bareImports ?? [])
+    ) {
+      graph.bareImports = withPackageSpecifiers(
+        graph.bareImports ?? [],
+        await this.readPackageSpecifiers(entryPoint, project),
+      );
+    }
     return graph;
+  }
+
+  /**
+   * The bare imports read again with `--node-modules-dir=none`, so a name
+   * the config maps to an npm package reads as that specifier rather than
+   * as missing from, or a file in, node_modules (swamp-club#3612). None when
+   * that read fails: the first read's answer stands.
+   */
+  private async readPackageSpecifiers(
+    entryPoint: string,
+    project: ModuleGraphProject,
+  ): Promise<ResolvedBareImport[]> {
+    try {
+      const output = await new Deno.Command(this.denoPath, {
+        args: [
+          "info",
+          "--json",
+          // A resolution query only: a lock written under a manual
+          // node_modules may lack the entries this mode wants, so the read
+          // never freezes or writes it. The bundle keeps its lock flags.
+          ...denoProjectArgs({ ...project, readOnlyLock: {} }),
+          "--node-modules-dir=none",
+          toFileUrl(entryPoint).href,
+        ],
+        stdout: "piped",
+        stderr: "piped",
+        signal: AbortSignal.timeout(DENO_INFO_TIMEOUT_MS),
+        ...(this.env ? { env: this.env } : {}),
+      }).output();
+      if (!output.success) return [];
+      return bareImportsFromDenoInfo(
+        JSON.parse(new TextDecoder().decode(output.stdout)),
+      );
+    } catch {
+      return [];
+    }
   }
 }
 

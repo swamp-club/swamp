@@ -22,6 +22,12 @@
  */
 
 import type { GcMutex } from "../gc_mutex.ts";
+import type { EventLoopLagReader } from "../ws_request_span.ts";
+import {
+  markActiveSpanError,
+  setActiveSpanAttributes,
+  withSpan,
+} from "../../infrastructure/tracing/mod.ts";
 import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
@@ -338,6 +344,11 @@ export interface ConnectionContext {
    * (swamp-club#3473). Absent in contexts built without the retention timer.
    */
   gcMutex?: GcMutex;
+  /**
+   * Serve's event-loop lag monitor. A traced request records the largest lag
+   * seen recently (swamp-club#3741). Absent outside `swamp serve`.
+   */
+  eventLoopLag?: EventLoopLagReader;
   datastoreConfig: DatastoreConfig;
   datastoreResolver: DatastorePathResolver;
   /**
@@ -2172,6 +2183,21 @@ export function vaultListingDecider(
   };
 }
 
+/**
+ * Sends `message` inside a `swamp.serve.response.send` span, so a traced
+ * read shows the time spent serializing and compressing its reply
+ * (swamp-club#3741).
+ */
+export function sendTraced(
+  socket: WebSocket,
+  message: ServerMessage,
+): Promise<void> {
+  return withSpan("swamp.serve.response.send", {}, () => {
+    send(socket, message);
+    return Promise.resolve();
+  });
+}
+
 export function send(socket: WebSocket, message: ServerMessage): void {
   if (message.type !== "event") {
     const id = message.id;
@@ -2380,6 +2406,26 @@ export function takeAuditedResource(
   return recorded?.kind === kind ? recorded.name : undefined;
 }
 
+/** The client reason `clientErrorDetails` put in an error reply's details. */
+function clientErrorReasonOf(details: unknown): string | undefined {
+  if (details === null || typeof details !== "object") return undefined;
+  if (!("reason" in details) || typeof details.reason !== "string") {
+    return undefined;
+  }
+  return CLIENT_ERROR_REASONS.has(details.reason) ? details.reason : undefined;
+}
+
+/**
+ * Whether an error code reports a failure on the server's side: an internal
+ * error, or a handler's own `<operation>_failed` code for an operation that
+ * threw. Client errors such as `not_found`, `forbidden` and
+ * `validation_failed` are not.
+ */
+export function isServerFailureCode(code: string): boolean {
+  if (code === "internal_error") return true;
+  return code.endsWith("_failed") && code !== "validation_failed";
+}
+
 export function sendError(
   socket: WebSocket,
   id: string,
@@ -2396,6 +2442,19 @@ export function sendError(
   if (errors.size > MAX_ERRORED_REQUESTS) {
     const first = errors.values().next().value!;
     errors.delete(first);
+  }
+  // Records the outcome on the request's span; a failed request answers
+  // with an error frame instead of throwing (swamp-club#3741). An
+  // `<operation>_failed` reply whose details name a client reason, such as a
+  // run that is not found, is the caller's error, not the server's.
+  const reason = clientErrorReasonOf(details);
+  setActiveSpanAttributes({
+    "swamp.serve.response.error_code": code,
+    ...(reason !== undefined &&
+      { "swamp.serve.response.error_reason": reason }),
+  });
+  if (reason === undefined && isServerFailureCode(code)) {
+    markActiveSpanError(code);
   }
   send(socket, {
     type: "error",

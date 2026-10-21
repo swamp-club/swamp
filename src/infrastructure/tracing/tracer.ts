@@ -200,6 +200,17 @@ export function setActiveSpanAttributes(attributes: Attributes): void {
   trace.getActiveSpan()?.setAttributes(attributes);
 }
 
+/**
+ * Marks the active span ERROR with `message`, and does nothing when no span
+ * is active.
+ *
+ * Use it where a failure is answered rather than thrown, such as an error
+ * frame a serve handler sends.
+ */
+export function markActiveSpanError(message: string): void {
+  trace.getActiveSpan()?.setStatus({ code: SpanStatusCode.ERROR, message });
+}
+
 export function withSpan<T>(
   name: string,
   attributes: Attributes,

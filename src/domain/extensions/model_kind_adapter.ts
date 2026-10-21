@@ -76,6 +76,7 @@ import {
 } from "./source_snapshot.ts";
 import { realCanonicalPath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { markErrorPaths } from "../errors.ts";
+import { DENO_CONFIG_FILE_NAMES } from "./deno_config.ts";
 import {
   BEHAVIOR_EXPORT_NAME,
   MODEL_EXPORT_NAME,
@@ -773,7 +774,7 @@ function findNearestDenoConfig(
   while (dir !== root) {
     if (repoDir && resolve(dir) === resolve(repoDir)) break;
 
-    for (const name of ["deno.json", "deno.jsonc"]) {
+    for (const name of DENO_CONFIG_FILE_NAMES) {
       const candidate = join(dir, name);
       try {
         Deno.statSync(candidate);

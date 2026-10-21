@@ -89,6 +89,7 @@ import {
 } from "../../domain/events/types.ts";
 import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
+import { type Span, withSpan } from "../tracing/mod.ts";
 import {
   NestedRunRefSchema,
   ParentRunRefSchema,
@@ -127,6 +128,72 @@ async function recordMayExist(path: string): Promise<boolean> {
 interface ValidatedIndex {
   entries: WorkflowRunIndex;
   inStep: boolean;
+}
+
+/**
+ * The run records a traced read has read so far: how many, and the length
+ * of their text. The length is counted in UTF-16 code units of the text
+ * already read, not re-encoded, so tallying costs nothing; for the ASCII
+ * YAML run records are written as it is their size in bytes. Each read is
+ * counted on the one span that made it, never on an enclosing one too.
+ */
+interface RecordReadTally {
+  records: number;
+  bytesRead: number;
+}
+
+function tallyRead(tally: RecordReadTally | undefined, content: string): void {
+  if (!tally) return;
+  tally.records++;
+  tally.bytesRead += content.length;
+}
+
+/**
+ * Runs `fn` in a span named `name` that records what `fn` tallies as
+ * `workflow_runs.records_read` and `workflow_runs.bytes_read`, however it
+ * settles.
+ */
+function withRecordReadSpan<T>(
+  name: string,
+  attributes: Record<string, string>,
+  fn: (tally: RecordReadTally, span: Span) => Promise<T>,
+): Promise<T> {
+  return withSpan(name, attributes, async (span) => {
+    const tally: RecordReadTally = { records: 0, bytesRead: 0 };
+    try {
+      return await fn(tally, span);
+    } finally {
+      span.setAttributes({
+        "workflow_runs.records_read": tally.records,
+        "workflow_runs.bytes_read": tally.bytesRead,
+      });
+    }
+  });
+}
+
+/**
+ * Runs `fn` in the index queue of `indexDir`, recording on `span` how long
+ * it waited there behind the workflow's other index work, in milliseconds.
+ */
+function withTimedIndexQueue<T>(
+  span: Span,
+  indexDir: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const queuedAt = performance.now();
+  return withIndexQueue(indexDir, () => {
+    span.setAttribute(
+      "workflow_runs.index.queue_wait_ms",
+      performance.now() - queuedAt,
+    );
+    return fn();
+  });
+}
+
+/** The workflow a runs directory holds the records of, for a span. */
+function workflowOfRunsDir(runsDir: string): Record<string, string> {
+  // getRunsDir is join(baseDir, workflowId).
+  return { "workflow.id": basename(runsDir) };
 }
 
 /**
@@ -213,9 +280,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return runs;
   }
 
-  /** {@link findAllByWorkflowId} without the unreadable-record warning. */
+  /**
+   * {@link findAllByWorkflowId} without the unreadable-record warning,
+   * counting each record it reads into `tally`.
+   */
   private async readAllByWorkflowId(
     workflowId: WorkflowId,
+    tally?: RecordReadTally,
   ): Promise<WorkflowRun[]> {
     const dir = this.getRunsDir(workflowId);
     const runs: WorkflowRun[] = [];
@@ -236,6 +307,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // means "skip it" — never "abandon the rest of the workflow."
         try {
           const content = await Deno.readTextFile(path);
+          tallyRead(tally, content);
           const data = parseYaml(content) as WorkflowRunData | null;
           if (!data) continue;
           if (data.logFile) {
@@ -291,10 +363,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   /**
    * {@link findAllSummariesByWorkflowId} without the unreadable-record
-   * warning.
+   * warning, traced: every caller reaches it when the index cannot answer,
+   * and it reads every record.
    */
-  private async readSummariesByWorkflowId(
+  private readSummariesByWorkflowId(
     workflowId: WorkflowId,
+  ): Promise<WorkflowRunSummary[]> {
+    return withRecordReadSpan(
+      "swamp.workflow_runs.read_summaries",
+      { "workflow.id": workflowId },
+      (tally) => this.readSummariesUntraced(workflowId, tally),
+    );
+  }
+
+  private async readSummariesUntraced(
+    workflowId: WorkflowId,
+    tally: RecordReadTally,
   ): Promise<WorkflowRunSummary[]> {
     const dir = this.getRunsDir(workflowId);
     const summaries: WorkflowRunSummary[] = [];
@@ -315,6 +399,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         // "abandon the rest of the workflow." Mirrors findAllByWorkflowId.
         try {
           const content = await Deno.readTextFile(path);
+          tallyRead(tally, content);
           // parseWorkflowRunSummary keeps only the displayed fields; the heavy
           // jobs/output subtree in `parseYaml`'s result is dropped and GC'd.
           const parsed = parseYaml(content);
@@ -498,9 +583,19 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   /**
    * Finds all workflow runs across all workflows.
    */
-  async findAllGlobal(): Promise<
+  findAllGlobal(): Promise<
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
+    return withRecordReadSpan(
+      "swamp.workflow_runs.scan_all",
+      {},
+      (tally) => this.scanAllGlobal(tally),
+    );
+  }
+
+  private async scanAllGlobal(
+    tally: RecordReadTally,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
     const workflowRunsDir = this.baseDir;
 
@@ -510,7 +605,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           // Directory name is the workflow ID
           const workflowIdStr = entry.name;
           const workflowId = workflowIdStr as WorkflowId;
-          const runs = await this.readAllByWorkflowId(workflowId);
+          const runs = await this.readAllByWorkflowId(workflowId, tally);
           for (const run of runs) {
             results.push({ run, workflowId });
           }
@@ -1495,44 +1590,61 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * The entries are in step only when the index file holds them and lists
    * one per record: a repair that could not be written, or a record that
    * cannot be indexed (an empty one), leaves them out of step.
+   *
+   * Traced as `swamp.workflow_runs.index.repair`. A repair that rebuilds
+   * the index has the rebuild's reads on its child rebuild span, not on
+   * its own.
    */
   private repairIndex(
     runsDir: string,
     indexDir: string,
     signal?: AbortSignal,
   ): Promise<ValidatedIndex | null> {
-    return withIndexQueue(indexDir, async () => {
-      signal?.throwIfAborted();
-      const files = await listDirEntries(runsDir);
-      const count = countYamlRunFiles(files);
-      if (count === 0) return null;
-      const result = await readRunIndex(indexDir);
-      if (!result || result.version !== INDEX_SCHEMA_VERSION) {
-        return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
-      }
+    return withRecordReadSpan(
+      "swamp.workflow_runs.index.repair",
+      workflowOfRunsDir(runsDir),
+      (tally, span) =>
+        withTimedIndexQueue(span, indexDir, async () => {
+          signal?.throwIfAborted();
+          const files = await listDirEntries(runsDir);
+          const count = countYamlRunFiles(files);
+          if (count === 0) return null;
+          const result = await readRunIndex(indexDir);
+          if (!result || result.version !== INDEX_SCHEMA_VERSION) {
+            return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
+          }
 
-      const entries = result.entries;
-      const suspects = await this.findSuspectRecords(
-        runsDir,
-        entries,
-        signal,
-      );
-      let written = true;
-      if (await this.reconcileSuspects(runsDir, entries, suspects, signal)) {
-        try {
-          await ensureDir(indexDir);
-          await writeRunIndex(indexDir, entries);
-        } catch (error) {
-          written = false;
-          logger
-            .warn`Failed to write repaired index, will retry next read: ${error}`;
-        }
-      }
-      return {
-        entries,
-        inStep: written && Object.keys(entries).length === count,
-      };
-    });
+          const entries = result.entries;
+          const suspects = await this.findSuspectRecords(
+            runsDir,
+            entries,
+            signal,
+          );
+          let written = true;
+          if (
+            await this.reconcileSuspects(
+              runsDir,
+              entries,
+              suspects,
+              signal,
+              tally,
+            )
+          ) {
+            try {
+              await ensureDir(indexDir);
+              await writeRunIndex(indexDir, entries);
+            } catch (error) {
+              written = false;
+              logger
+                .warn`Failed to write repaired index, will retry next read: ${error}`;
+            }
+          }
+          return {
+            entries,
+            inStep: written && Object.keys(entries).length === count,
+          };
+        }),
+    );
   }
 
   /**
@@ -1616,6 +1728,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     entries: WorkflowRunIndex,
     suspects: Set<string>,
     signal?: AbortSignal,
+    tally?: RecordReadTally,
   ): Promise<boolean> {
     // Ids that a record names in its body under another file name, which
     // a rebuild indexes by the body id: their entries are not gone.
@@ -1635,7 +1748,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       if (current && fingerprintMatches(entries[runId]?.record, current)) {
         continue;
       }
-      const read = await readIndexedRecord(path);
+      const read = await readIndexedRecord(path, tally);
       if (read === null) {
         if (runId in entries) {
           delete entries[runId];
@@ -1701,22 +1814,46 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   /**
    * Queued with the index updates of the same workflow, so an entry a save
    * writes while the records are being read is applied after the rebuild
-   * rather than overwritten by it.
+   * rather than overwritten by it. Its span records the time spent waiting
+   * in that queue.
    */
   private rebuildIndex(
     runsDir: string,
     indexDir: string,
   ): Promise<ValidatedIndex | null> {
-    return withIndexQueue(
-      indexDir,
-      () => this.rebuildIndexUnqueued(runsDir, indexDir),
+    return withRecordReadSpan(
+      "swamp.workflow_runs.index.rebuild",
+      workflowOfRunsDir(runsDir),
+      (tally, span) =>
+        withTimedIndexQueue(
+          span,
+          indexDir,
+          () => this.rebuildFromRecords(runsDir, indexDir, undefined, tally),
+        ),
     );
   }
 
-  private async rebuildIndexUnqueued(
+  /**
+   * A rebuild run inside an index queue its caller already holds. Its span
+   * has no queue wait: the caller's span, its parent, records that.
+   */
+  private rebuildIndexUnqueued(
     runsDir: string,
     indexDir: string,
     signal?: AbortSignal,
+  ): Promise<ValidatedIndex | null> {
+    return withRecordReadSpan(
+      "swamp.workflow_runs.index.rebuild",
+      workflowOfRunsDir(runsDir),
+      (tally) => this.rebuildFromRecords(runsDir, indexDir, signal, tally),
+    );
+  }
+
+  private async rebuildFromRecords(
+    runsDir: string,
+    indexDir: string,
+    signal: AbortSignal | undefined,
+    tally: RecordReadTally,
   ): Promise<ValidatedIndex | null> {
     const index: WorkflowRunIndex = {};
     let count = 0;
@@ -1731,7 +1868,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           continue;
         }
         count++;
-        const read = await readIndexedRecord(join(runsDir, entry.name));
+        const read = await readIndexedRecord(join(runsDir, entry.name), tally);
         if (!read) continue;
         index[read.summary.id] = indexEntryOf(read.summary, read.record);
       }
@@ -1855,6 +1992,7 @@ function indexEntryDiffers(index: ReadIndexResult, run: WorkflowRun): boolean {
  */
 async function readIndexedRecord(
   path: string,
+  tally?: RecordReadTally,
 ): Promise<{ summary: WorkflowRunSummary; record?: RecordFingerprint } | null> {
   const before = await statRecord(path);
   if (before === null) return null;
@@ -1865,6 +2003,7 @@ async function readIndexedRecord(
     if (error instanceof Deno.errors.NotFound) return null;
     throw error;
   }
+  tallyRead(tally, content);
   const after = await statRecord(path);
   const parsed = parseYaml(content);
   if (!parsed) return null;

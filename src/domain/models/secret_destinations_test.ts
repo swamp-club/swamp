@@ -446,3 +446,31 @@ Deno.test("refuseSecretsInRefusingFields: a refusing field behind a z.preprocess
   );
   assertEquals(error.destination, "method argument 'cfg'");
 });
+
+Deno.test("refuseSecretDestinations: with no method named, only the global arguments are checked", () => {
+  const { registry, sentinel } = issued();
+  let hookCalls = 0;
+  const model = stageModel(() => {
+    hookCalls++;
+  });
+  const stage = (
+    globalArguments: Record<string, unknown>,
+    mergedArguments: Record<string, unknown>,
+  ) =>
+    refuseSecretDestinations({
+      modelDef: model,
+      method: undefined,
+      globalArguments,
+      mergedArguments,
+      registry,
+      localPlacement: true,
+    });
+  const global = assertThrows(
+    () => stage({ root: sentinel }, { root: sentinel }),
+    SecretDestinationRefusedError,
+  );
+  assertEquals(global.destination, "global argument 'root'");
+  // A refusing method field and the method hook are not consulted.
+  stage({ workingDir: sentinel }, { workingDir: sentinel });
+  assertEquals(hookCalls, 0);
+});

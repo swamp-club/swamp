@@ -36,10 +36,14 @@ import {
   resolveRunReference,
   type RunReference,
   type RunReferenceDeps,
+  tracedArgument,
 } from "./run_reference.ts";
 import { withReapedHint } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 /** Log file data. */
 export interface LogData {
   lines: string[];
@@ -138,7 +142,10 @@ export async function* workflowHistoryLogs(
 ): AsyncIterable<WorkflowHistoryLogsEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.history.logs",
-    {},
+    {
+      "workflow.id_or_name": tracedArgument(input.runIdOrWorkflow),
+      ...(input.tail !== undefined && { "logs.tail": input.tail }),
+    },
     (async function* () {
       yield { kind: "resolving" };
 
@@ -194,6 +201,12 @@ export async function* workflowHistoryLogs(
           run = reference.latest;
       }
 
+      setActiveSpanAttributes({
+        "workflow.name": run.workflowName,
+        "workflow.id": run.workflowId,
+        "workflow.run_id": run.id,
+      });
+
       // Read log file
       if (!run.logFile) {
         yield {
@@ -211,6 +224,7 @@ export async function* workflowHistoryLogs(
 
       const logData = await deps.readLogFile(run.logFile, { tail: input.tail });
       const displayPath = deps.toRelativePath(input.repoDir, run.logFile);
+      setActiveSpanAttributes({ "logs.lines_returned": logData.lines.length });
 
       if (logData.lines.length === 0) {
         yield {

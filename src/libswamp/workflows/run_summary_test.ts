@@ -23,6 +23,11 @@ import { createLibSwampContext } from "../context.ts";
 import { runStatusBucket } from "./run_search.ts";
 import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
+import {
   clampRecentLimit,
   summarizeWorkflowRuns,
   workflowRunSummary,
@@ -338,4 +343,20 @@ Deno.test("workflowRunSummary: an unreadable time is a validation error", async 
     "validation_failed",
   );
   assertEquals(error.message.includes("last tuesday"), true);
+});
+
+Deno.test("workflowRunSummary: records the workflows and runs summarized on the span", async () => {
+  const deps = makeDeps((_id, name) => Promise.resolve(name !== "beta"));
+  await withCapturedSpans(async (spans) => {
+    await summaryOf(deps, {});
+    const summary = findSpan(spans, "swamp.workflow.run_summary");
+    assertEquals(summary.attributes["workflow_runs.workflows"], 2);
+    assertEquals(summary.attributes["workflow_runs.summarized"], 2);
+    const selection = findSpan(spans, "swamp.workflow.run_selection");
+    assertEquals(isChildOf(selection, summary), true);
+    assertEquals(selection.attributes["workflow_runs.workflows"], 2);
+    assertEquals(selection.attributes["workflow_runs.workflows_denied"], 1);
+    assertEquals(selection.attributes["workflow_runs.scanned"], 3);
+    assertEquals(selection.attributes["workflow_runs.matched"], 2);
+  });
 });

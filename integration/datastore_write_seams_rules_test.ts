@@ -1603,6 +1603,9 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
+  // swamp-club#3741: a traced dashboard read records the engine as a span
+  // attribute; nothing is chosen by it.
+  "src/serve/connection.ts: handleMessage",
   // swamp-club#3617: serve's `doctor datastores` adds the v3 content check
   // (unreadable records, at-risk copies, torn chunks) on a v3 datastore.
   "src/serve/handlers/admin_handlers.ts: handleDoctorDatastores",

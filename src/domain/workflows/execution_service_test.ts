@@ -4041,6 +4041,29 @@ Deno.test({
 
 Deno.test({
   name:
+    "DefaultStepExecutor: the step's runtime pass leaves another method's vault and env expressions as authored, so they neither fail the step nor are read",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const unset = `SWAMP_UNSET_${crypto.randomUUID().replaceAll("-", "")}`;
+    const received = await runDefinitionStep(
+      {
+        name: "two-methods",
+        methods: {
+          execute: { arguments: { value: "ok" } },
+          delete: { arguments: { value: `\${{ env.${unset} }}` } },
+        },
+      },
+      "execute",
+      undefined,
+      {},
+    );
+    assertEquals(received, [{ value: "ok" }]);
+  },
+});
+
+Deno.test({
+  name:
     "DefaultStepExecutor: self.globalArguments in a method argument sees the evaluated global argument (swamp-club#2455)",
   sanitizeResources: false,
   sanitizeOps: false,
@@ -4121,6 +4144,71 @@ Deno.test({
         '      Expression uses {{...}} instead of ${{...}} at "methods.execute.arguments.value"\n' +
         '      Add "$" prefix: ${{...}}.\n' +
         "    If this is another service's template syntax",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: another method's static problems do not fail the step, as they do not fail behavior run (swamp-club#3726)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const otherMethodArguments: Record<string, unknown>[] = [
+      { value: "${{ dyn(vault).get('default', 'token') }}" },
+      { value: "${{ model.nonexistent.resource.x }}" },
+      { value: "{{self.name}}" },
+      { value: 42 },
+    ];
+    for (const deleteArguments of otherMethodArguments) {
+      const received = await runDefinitionStep(
+        {
+          name: "two-methods",
+          methods: {
+            execute: { arguments: { value: "ok" } },
+            delete: { arguments: deleteArguments },
+          },
+        },
+        "execute",
+        undefined,
+        {},
+      );
+      assertEquals(received, [{ value: "ok" }], String(deleteArguments.value));
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: the step's own method holding a vault alias still fails validation",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() =>
+      runDefinitionStep(
+        {
+          name: "two-methods",
+          methods: {
+            execute: {
+              arguments: {
+                value: "${{ dyn(vault).get('default', 'token') }}",
+              },
+            },
+            delete: { arguments: { value: "ok" } },
+          },
+        },
+        "execute",
+        undefined,
+        {},
+      )
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      'Behavior validation failed for "two-methods"',
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      'at "methods.execute.arguments.value"',
     );
   },
 });

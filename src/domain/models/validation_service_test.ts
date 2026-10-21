@@ -3588,3 +3588,425 @@ Deno.test("validateModel: Tags passes for lookalike keys", async () => {
 
   assertEquals(results.find((r) => r.name === "Tags")?.passed, true);
 });
+
+// ---------- Typed secrets (3.5): Secret usage and check delivery ----------
+
+const secretUsageModel: ModelDefinition = {
+  type: ModelType.create("test/secret-usage"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({ token: z.string() }),
+  methods: {
+    create: {
+      description: "Create",
+      arguments: z.object({ cmd: z.string() }),
+      execute: () => Promise.resolve({}),
+    },
+  },
+};
+
+Deno.test("validateModel: Secret usage reports each finding of the diagnostics hook with its location and code, over every authored expression", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "typed-def",
+    globalArguments: { token: "${{ vault.get('v', 'k') == 'x' }}" },
+    methods: {
+      create: { arguments: { cmd: "echo ${{ 'a' + vault.get('v', 'k') }}" } },
+    },
+  });
+  const seen: string[] = [];
+  const { results } = await service.validateModel(
+    definition,
+    secretUsageModel,
+    undefined,
+    undefined,
+    {
+      diagnoseSecretMisuse: (expression, location) => {
+        seen.push(`${location}|${expression}`);
+        return expression.includes("==")
+          ? [{
+            location: `${location}:1:1`,
+            code: "secret_operation_unsupported",
+            reason: "no such overload: Secret == string",
+          }]
+          : [];
+      },
+    },
+  );
+  assertEquals(seen, [
+    "globalArguments.token|vault.get('v', 'k') == 'x'",
+    "methods.create.arguments.cmd|'a' + vault.get('v', 'k')",
+  ]);
+  const usage = results.find((r) => r.name === "Secret usage");
+  assertEquals(usage?.passed, false);
+  assertStringIncludes(
+    usage?.error ?? "",
+    'secret_operation_unsupported at "globalArguments.token:1:1": no such overload: Secret == string',
+  );
+  assertEquals(usage?.expressionErrors?.length, 1);
+  assertEquals(
+    usage?.expressionErrors?.[0].expression,
+    "${{ vault.get('v', 'k') == 'x' }}",
+  );
+});
+
+Deno.test("validateModel: Secret usage passes with no finding, and does not run without the hook", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "typed-def",
+    globalArguments: { token: "${{ vault.get('v', 'k') + 'x' }}" },
+  });
+  const typed = await service.validateModel(
+    definition,
+    secretUsageModel,
+    undefined,
+    undefined,
+    { diagnoseSecretMisuse: () => [] },
+  );
+  assertEquals(
+    typed.results.find((r) => r.name === "Secret usage")?.passed,
+    true,
+  );
+  const untyped = await service.validateModel(definition, secretUsageModel);
+  assertEquals(
+    untyped.results.some((r) => r.name === "Secret usage"),
+    false,
+  );
+});
+
+Deno.test("validateModel: checks receive what deliverCheckArguments delivers: values in globalArgs, sentinels in unresolvedMethodArgs, and the loaded bag", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: '${{ vault.get("my-vault", "MY_SECRET") }}' },
+  });
+  const bag = { resolvesAny: true } as unknown as MethodContext["vaultSecrets"];
+  let captured: MethodContext | undefined;
+  let resolverCalls = 0;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures the context for assertion",
+        execute: (ctx) => {
+          captured = ctx;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  const delivered: string[] = [];
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: (stored, methodName) => {
+        delivered.push(`${stored.name}:${methodName}`);
+        return Promise.resolve({
+          globalArgs: { password: "the-value" },
+          unresolvedMethodArgs: { password: "__SWAMP_VSEC_sentinel__" },
+          vaultSecrets: bag,
+        });
+      },
+      resolveRuntimeExpressions: () => {
+        resolverCalls++;
+        return Promise.reject(new Error("not consulted"));
+      },
+    }),
+  );
+  assertEquals(delivered, ["test-definition:create"]);
+  assertEquals(resolverCalls, 0);
+  assertEquals(
+    results.find((r) => r.name === "Check: capture-args")?.passed,
+    true,
+  );
+  assertEquals(captured?.globalArgs.password, "the-value");
+  assertEquals(captured?.unresolvedMethodArgs, {
+    password: "__SWAMP_VSEC_sentinel__",
+  });
+  assertEquals(captured?.vaultSecrets, bag);
+});
+
+Deno.test("validateModel: a refused or failed delivery fails every applicable check with its error and runs none", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: '${{ vault.get("my-vault", "MY_SECRET") }}' },
+    checks: { skip: ["skipped"] },
+  });
+  let executed = 0;
+  const check = {
+    description: "Never runs",
+    execute: () => {
+      executed++;
+      return Promise.resolve({ pass: true });
+    },
+  };
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      first: check,
+      second: check,
+      skipped: check,
+      other: { ...check, appliesTo: ["delete"] },
+    },
+  };
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: () =>
+        Promise.reject(
+          new Error(
+            "A secret refuses the destination 'global argument password' (secret_destination_refused)",
+          ),
+        ),
+    }),
+  );
+  const checks = results.filter((r) => r.name.startsWith("Check:"));
+  assertEquals(checks.map((r) => r.name).sort(), [
+    "Check: first",
+    "Check: second",
+  ]);
+  for (const result of checks) {
+    assertEquals(result.passed, false);
+    assertStringIncludes(result.error ?? "", "secret_destination_refused");
+  }
+  assertEquals(executed, 0);
+});
+
+Deno.test("validateModel: with no applicable check nothing is delivered", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: '${{ vault.get("my-vault", "MY_SECRET") }}' },
+    checks: { skip: ["skipped"] },
+  });
+  let deliveries = 0;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      skipped: {
+        description: "Skipped by the definition",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+      other: {
+        description: "Applies to another method",
+        appliesTo: ["delete"],
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: () => {
+        deliveries++;
+        return Promise.reject(new Error("never asked"));
+      },
+    }),
+  );
+  assertEquals(deliveries, 0);
+  assertEquals(results.some((r) => r.name.startsWith("Check:")), false);
+});
+
+// Validation scoped to a method (swamp-club#3726)
+
+/** A model type with three methods, for validation scoped to one of them. */
+const threeMethodModel: ModelDefinition = {
+  type: ModelType.create("test/method-scope"),
+  version: "2026.02.09.1",
+  globalArguments: z.object({ message: z.string() }),
+  methods: Object.fromEntries(
+    ["run", "other", "broken"].map((name) => [name, {
+      description: name,
+      arguments: z.object({ message: z.string() }),
+      execute: () => Promise.resolve({}),
+    }]),
+  ),
+};
+
+/**
+ * A definition whose `run` method is sound while `other` holds an
+ * unresolvable model reference, a malformed swamp expression and another
+ * service's template text, `broken` an argument its schema refuses, and
+ * `extra`, a method the type does not define, another unresolvable
+ * reference.
+ */
+const scopedDefinitionProps = (
+  run: Record<string, unknown> = { message: "hello" },
+  globalArguments: Record<string, unknown> = { message: "hello" },
+) => ({
+  name: "scoped-def",
+  globalArguments,
+  methods: {
+    run: { arguments: run },
+    other: {
+      arguments: {
+        message:
+          "${{ model.missing-model.resource.x.y.attributes.z }} {{ self.name }} {{host.name}}",
+      },
+    },
+    broken: { arguments: { message: 42 } },
+    extra: { arguments: { message: "${{ model.also-missing.resource.x }}" } },
+  },
+});
+
+async function validateScoped(
+  props: Parameters<typeof Definition.create>[0],
+  method?: string,
+) {
+  const definition = Definition.create(props);
+  const { results, warnings } = await new DefaultModelValidationService()
+    .validateModel(
+      definition,
+      threeMethodModel,
+      createMockDefinitionRepo([
+        { name: props.name, type: "test/method-scope", definition },
+      ]),
+      undefined,
+      { method },
+    );
+  return {
+    result: (name: string) => results.find((r) => r.name === name),
+    warnings,
+  };
+}
+
+Deno.test("validateModel: scoped to a method, another method's Expression paths, Method arguments and template text pass (swamp-club#3726)", async () => {
+  const { result, warnings } = await validateScoped(
+    scopedDefinitionProps(),
+    "run",
+  );
+  assertEquals(result("Expression paths")?.passed, true);
+  assertEquals(result("Method arguments")?.passed, true);
+  assertEquals(
+    warnings.some((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    false,
+  );
+});
+
+Deno.test("validateModel: unscoped, the same definition fails on every method", async () => {
+  const { result, warnings } = await validateScoped(scopedDefinitionProps());
+  const paths = result("Expression paths");
+  assertEquals(paths?.passed, false);
+  assertStringIncludes(paths?.error ?? "", "missing-model");
+  assertStringIncludes(paths?.error ?? "", "also-missing");
+  assertStringIncludes(paths?.error ?? "", "{{ self.name }}");
+  assertEquals(result("Method arguments")?.passed, false);
+  assertStringIncludes(result("Method arguments")?.error ?? "", "broken");
+  assertEquals(
+    warnings.some((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+    true,
+  );
+});
+
+Deno.test("validateModel: scoped to a method, its own problems and the global arguments' still fail", async () => {
+  const ownReference = await validateScoped(
+    scopedDefinitionProps({
+      message: "${{ model.run-missing.resource.x.y.attributes.z }}",
+    }),
+    "run",
+  );
+  assertEquals(ownReference.result("Expression paths")?.passed, false);
+  assertStringIncludes(
+    ownReference.result("Expression paths")?.error ?? "",
+    "run-missing",
+  );
+
+  const ownArgument = await validateScoped(
+    scopedDefinitionProps({ message: 42 }),
+    "run",
+  );
+  assertEquals(ownArgument.result("Method arguments")?.passed, false);
+
+  const globalReference = await validateScoped(
+    scopedDefinitionProps(undefined, {
+      message: "${{ model.global-missing.resource.x.y.attributes.z }}",
+    }),
+    "run",
+  );
+  assertEquals(globalReference.result("Expression paths")?.passed, false);
+  assertStringIncludes(
+    globalReference.result("Expression paths")?.error ?? "",
+    "global-missing",
+  );
+});
+
+Deno.test("validateModel: scoped to a method the type does not define, the whole definition is validated", async () => {
+  for (const method of ["bogus", "extra"]) {
+    const { result } = await validateScoped(scopedDefinitionProps(), method);
+    assertEquals(result("Expression paths")?.passed, false, method);
+    assertEquals(result("Method arguments")?.passed, false, method);
+  }
+});
+
+Deno.test("validateModel: scoped to a method, Secret usage diagnoses the global arguments and that method only", async () => {
+  const definition = Definition.create({
+    name: "typed-def",
+    globalArguments: { token: "${{ vault.get('v', 'k') }}" },
+    methods: {
+      create: { arguments: { cmd: "echo ${{ vault.get('v', 'k') }}" } },
+      delete: { arguments: { cmd: "echo ${{ vault.get('v', 'k') == 'x' }}" } },
+    },
+  });
+  const model: ModelDefinition = {
+    ...secretUsageModel,
+    methods: {
+      create: secretUsageModel.methods.create,
+      delete: secretUsageModel.methods.create,
+    },
+  };
+  const seen: string[] = [];
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    model,
+    undefined,
+    undefined,
+    {
+      method: "create",
+      diagnoseSecretMisuse: (_expression, location) => {
+        seen.push(location);
+        return [];
+      },
+    },
+  );
+  assertEquals(seen, [
+    "globalArguments.token",
+    "methods.create.arguments.cmd",
+  ]);
+  assertEquals(results.find((r) => r.name === "Secret usage")?.passed, true);
+});

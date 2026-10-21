@@ -20,10 +20,20 @@
 import { parse, type ParserPlugin } from "@babel/parser";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { parseRange, rangeIntersects, tryParseRange } from "@std/semver";
 import * as zodModule from "zod";
 import { markErrorPaths, UserError } from "../errors.ts";
+import {
+  DENO_CONFIG_FILE_NAMES,
+  readDenoConfig,
+} from "../extensions/deno_config.ts";
+import {
+  bareImportsFromDenoInfo,
+  hasUnresolvedBareImports,
+  type ResolvedBareImport,
+  withPackageSpecifiers,
+} from "../extensions/bare_import_resolution.ts";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
 
@@ -394,6 +404,66 @@ export function isStaleLockfile(output: string): boolean {
 }
 
 /**
+ * A lockfile `--frozen` refused to update, with what names it: the lock, the
+ * project file it no longer matches, the directory `deno install` runs in,
+ * and the entry point whose read or bundle hit it. `extension fmt` reads
+ * these to warn instead of failing.
+ */
+export class StaleLockfileError extends UserError {
+  constructor(
+    message: string,
+    readonly lockPath: string,
+    readonly projectFile: string,
+    readonly projectDir: string,
+    readonly entryPoint: string,
+  ) {
+    super(message);
+    this.name = "StaleLockfileError";
+  }
+}
+
+/**
+ * A stale lockfile `extension fmt` read past: the lock, the project file it
+ * no longer matches, the directory `deno install` runs in, and every entry
+ * point whose module graph read it refused.
+ */
+export interface StaleLockfile {
+  lockPath: string;
+  projectFile: string;
+  projectDir: string;
+  entryPoints: string[];
+}
+
+/** One {@link StaleLockfile} per lock, each with all the entry points it refused. */
+export function groupStaleLockfiles(
+  errors: readonly StaleLockfileError[],
+): StaleLockfile[] {
+  const byLock = new Map<string, StaleLockfile>();
+  for (const error of errors) {
+    const lock = byLock.get(error.lockPath) ?? {
+      lockPath: error.lockPath,
+      projectFile: error.projectFile,
+      projectDir: error.projectDir,
+      entryPoints: [],
+    };
+    if (!lock.entryPoints.includes(error.entryPoint)) {
+      lock.entryPoints.push(error.entryPoint);
+    }
+    byLock.set(error.lockPath, lock);
+  }
+  return [...byLock.values()];
+}
+
+/**
+ * The command that brings a stale lock up to date, run in its `projectDir`.
+ * A path with whitespace is double-quoted, which every shell reads alike.
+ */
+export function staleLockfileInstallCommand(lock: StaleLockfile): string {
+  const quoted = lock.entryPoints.map((p) => /\s/.test(p) ? `"${p}"` : p);
+  return `deno install --entrypoint ${quoted.join(" ")}`;
+}
+
+/**
  * The error for a lockfile that no longer matches the project: push would
  * have to rewrite it, and it treats the author's lock as read-only. Names
  * the command that brings the lock up to date, and keeps the change list
@@ -404,7 +474,7 @@ export function staleLockfileError(
   entryPoint: string,
   project: { denoConfigPath?: string; packageJsonDir?: string },
   output: string,
-): UserError {
+): StaleLockfileError {
   const projectFile = project.denoConfigPath ?? "package.json";
   const projectDir = project.denoConfigPath
     ? dirname(project.denoConfigPath)
@@ -413,11 +483,15 @@ export function staleLockfileError(
   const changesAt = plain.indexOf("changes:");
   const changes = changesAt >= 0 ? `\n${plain.slice(changesAt).trimEnd()}` : "";
   return markErrorPaths(
-    new UserError(
+    new StaleLockfileError(
       `${lockPath} is out of date with ${projectFile}, and push and quality ` +
         `never rewrite your lockfile. Run \`deno install --entrypoint ` +
         `${entryPoint}\` in ${projectDir}, commit the updated lock, and try ` +
         `again.${changes}`,
+      lockPath,
+      projectFile,
+      projectDir,
+      entryPoint,
     ),
     [lockPath, projectFile, entryPoint, projectDir],
   );
@@ -468,6 +542,14 @@ export interface BundleOptions {
    * process is killed and the returned promise rejects.
    */
   signal?: AbortSignal;
+
+  /**
+   * What Deno resolves each bare import the entry point's modules write to
+   * under `denoConfigPath`, when the caller has read the module graph (push
+   * does). Without it the bundler reads the graph itself to decide whether
+   * a bare `"zod"` is the host's zod 4 (swamp-club#3612).
+   */
+  bareImports?: readonly ResolvedBareImport[];
 }
 
 /**
@@ -813,7 +895,7 @@ export function isExpectedBundleFailure(
   const root = resolve("/");
   while (dir !== root) {
     if (repoDir && resolve(dir) === resolve(repoDir)) break;
-    for (const name of ["deno.json", "deno.jsonc"]) {
+    for (const name of DENO_CONFIG_FILE_NAMES) {
       try {
         Deno.statSync(join(dir, name));
         return false; // Config found — failure is unexpected
@@ -885,31 +967,95 @@ export async function zod4SpecifiersReachedFrom(
 }
 
 /**
- * Reads a deno.json import map and determines how "zod" is mapped.
- * If it maps to a zod 4.x npm specifier, returns the resolved specifier
- * (e.g., "npm:zod@4.3.6") so it can be externalized alongside the
- * standard patterns. Returns undefined if there's no zod mapping or
- * if it maps to a non-4.x version (which should be inlined, not
- * externalized, since globalThis.__swamp_zod provides zod 4).
+ * The targets Deno resolves the bare `"zod"` to when every module writing
+ * it gets an npm:zod at a version or range admitting only 4.x
+ * (npm:zod@4, npm:zod@4.3.6, npm:zod@^4.1); none when any module resolves
+ * it elsewhere, or to nothing, so the bundle inlines it.
  */
-async function resolveZodFromConfig(
+export function sharedZodTargets(
+  resolutions: readonly ResolvedBareImport[],
+): string[] {
+  const targets = new Set<string>();
+  for (const r of resolutions) {
+    if (r.specifier !== "zod") continue;
+    const target = r.target?.replace(/^npm:\//, "npm:");
+    if (
+      !target || !target.startsWith("npm:zod@") || !isZod4Specifier(target) ||
+      /^npm:zod@[^/]+\//.test(target)
+    ) {
+      return [];
+    }
+    targets.add(target);
+  }
+  return [...targets].sort();
+}
+
+/**
+ * The config's own `imports` entry for `"zod"` when it admits only zod 4,
+ * read as JSONC; undefined otherwise. Only a fallback for externalizing
+ * zod when Deno gave no answer for it.
+ */
+async function configZodTarget(
   denoConfigPath: string,
 ): Promise<string | undefined> {
-  try {
-    const raw = await Deno.readTextFile(denoConfigPath);
-    const config = JSON.parse(raw);
-    const imports = config.imports as Record<string, string> | undefined;
-    if (!imports || typeof imports["zod"] !== "string") return undefined;
+  const imports = (await readDenoConfig(denoConfigPath))?.imports as
+    | Record<string, unknown>
+    | undefined;
+  const target = imports?.["zod"];
+  return typeof target === "string" && target.startsWith("npm:zod@") &&
+      isZod4Specifier(target) && !/^npm:zod@[^/]+\//.test(target)
+    ? target
+    : undefined;
+}
 
-    const target = imports["zod"];
-    // npm:zod at a version or range that admits only 4.x (npm:zod@4,
-    // npm:zod@4.3.6, npm:zod@^4.1); bare "zod" would resolve to zod 3 or
-    // to nothing otherwise.
-    if (target.startsWith("npm:zod@") && isZod4Specifier(target)) {
-      return target;
+/**
+ * The bare imports `entryPoint`'s modules write and what Deno resolves
+ * each to, read with `deno info` under the bundle's project config and
+ * `--no-lock` (a resolution query never writes the author's lock), with
+ * any it leaves unresolved read again with `--node-modules-dir=none` as
+ * the graph reader does (swamp-club#3612); undefined when the graph read
+ * fails, which the caller treats as no answer for any name.
+ */
+async function readBareImports(
+  entryPoint: string,
+  denoPath: string,
+  options: BundleOptions,
+): Promise<ResolvedBareImport[] | undefined> {
+  const read = async (extraArgs: string[]) => {
+    const output = await new Deno.Command(denoPath, {
+      args: [
+        "info",
+        "--json",
+        // A resolution query only: never write or freeze the author's lock.
+        ...denoProjectArgs({ ...options, readOnlyLock: {} }),
+        ...extraArgs,
+        toFileUrl(entryPoint).href,
+      ],
+      stdout: "piped",
+      stderr: "piped",
+      signal: options.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
+      ...(options.env ? { env: options.env } : {}),
+    }).output();
+    return output.success
+      ? bareImportsFromDenoInfo(
+        JSON.parse(new TextDecoder().decode(output.stdout)),
+      )
+      : undefined;
+  };
+  try {
+    const first = await read([]);
+    if (!first) {
+      logger.debug`deno info failed for ${entryPoint}`;
+      return undefined;
     }
-    return undefined;
-  } catch {
+    if (!hasUnresolvedBareImports(first)) return first;
+    return withPackageSpecifiers(
+      first,
+      await read(["--node-modules-dir=none"]).catch(() => undefined) ?? [],
+    );
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    logger.debug`Could not read the module graph of ${entryPoint}: ${error}`;
     return undefined;
   }
 }
@@ -1047,16 +1193,31 @@ export async function bundleExtension(
         args.push("--external", spec);
       }
 
-      // When using a deno.json import map, bare specifier "zod" is resolved
-      // to the fully-qualified npm specifier (e.g., "npm:zod@4.3.6") before
-      // esbuild sees it. Also externalize the resolved specifier and the
-      // bare "zod" specifier. Only do this for zod 4.x — externalizing
-      // zod 3.x would silently break since globalThis.__swamp_zod provides zod 4.
+      // Under a Deno config, a bare "zod" resolves through the config's
+      // imports, an importMap file or a scope. --external matches the
+      // specifier as written, so "zod" is externalized, with each target,
+      // only when every module resolves it to zod 4 (swamp-club#3612) —
+      // externalizing a zod 3 import would silently break, since
+      // globalThis.__swamp_zod provides zod 4.
       if (options?.denoConfigPath) {
-        const resolvedZod = await resolveZodFromConfig(options.denoConfigPath);
-        if (resolvedZod) {
-          args.push("--external", resolvedZod, "--external", "zod");
+        const resolutions = options.bareImports ??
+          await readBareImports(absolutePath, denoPath, options);
+        let targets = sharedZodTargets(resolutions ?? []);
+        // Deno gave no answer for a bare "zod" (the graph read failed, or
+        // the node_modules-free read hit a registry error offline): keep the config's own zod 4
+        // entry external, as before, rather than inline a second zod that
+        // fails the host's instanceof checks. Only the bundle's externals
+        // follow this; what ships and is audited stays Deno's answer.
+        if (
+          targets.length === 0 &&
+          (resolutions === undefined ||
+            resolutions.some((r) => r.specifier === "zod" && !r.target))
+        ) {
+          const fallback = await configZodTarget(options.denoConfigPath);
+          if (fallback) targets = [fallback];
         }
+        for (const target of targets) args.push("--external", target);
+        if (targets.length > 0) args.push("--external", "zod");
       }
 
       // When using a package.json project, bare specifier "zod" needs to be

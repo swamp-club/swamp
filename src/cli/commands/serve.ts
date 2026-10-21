@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
+import { EventLoopLagMonitor } from "../../serve/event_loop_lag.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import {
@@ -600,6 +601,7 @@ export interface CancelDeps {
   cancelRegistry: RunCancelRegistry;
   activeRunRegistry?: ActiveRunRegistry;
   scheduledCancelByRunId?: (id: string) => boolean;
+  webhookCancelByRunId?: (id: string) => boolean;
   /** Recorded as the cancelled run's `cancel_reason`. */
   reason?: string;
   /**
@@ -756,12 +758,19 @@ export async function cancelExecution(
     found = deps.activeRunRegistry.cancel(executionId, deps.reason);
     abortedActive = found;
   }
-  let foundViaScheduled = false;
+  // Scheduled and webhook runs are aborted without waiting for them to end.
+  let foundViaTriggerRun = false;
   if (
     !found && executionType === "workflow-run" && deps.scheduledCancelByRunId
   ) {
     found = deps.scheduledCancelByRunId(executionId);
-    foundViaScheduled = found;
+    foundViaTriggerRun = found;
+  }
+  if (
+    !found && executionType === "workflow-run" && deps.webhookCancelByRunId
+  ) {
+    found = deps.webhookCancelByRunId(executionId);
+    foundViaTriggerRun = found;
   }
   if (
     !found && executionType === "workflow-run" && deps.cancelSuspended
@@ -839,10 +848,38 @@ export async function cancelExecution(
     }
     return { status: "cancelled", executionType, executionId };
   }
-  if (foundViaScheduled) {
+  if (foundViaTriggerRun) {
     return { status: "cancellation_requested", executionType, executionId };
   }
   return { status: "cancelled", executionType, executionId };
+}
+
+export interface CancelAllDeps {
+  cancelRegistry: RunCancelRegistry;
+  activeRunRegistry?: ActiveRunRegistry;
+  scheduledCancelAll?: (reason: string) => number;
+  webhookCancelAll?: (reason: string) => number;
+}
+
+/**
+ * Aborts every run this instance holds that matches `typeFilter`, for the bulk
+ * cancel route. Scheduled and webhook runs are workflow runs. Returns the
+ * number of runs aborted.
+ */
+export function cancelAllExecutions(
+  deps: CancelAllDeps,
+  typeFilter: ExecutionType | undefined,
+  reason: string,
+): number {
+  let count = deps.cancelRegistry.cancelAll(typeFilter, reason);
+  if (deps.activeRunRegistry) {
+    count += deps.activeRunRegistry.cancelAll(typeFilter, reason);
+  }
+  if (!typeFilter || typeFilter === "workflow-run") {
+    count += deps.scheduledCancelAll?.(reason) ?? 0;
+    count += deps.webhookCancelAll?.(reason) ?? 0;
+  }
+  return count;
 }
 
 /** The largest body a single-run cancel request may send. */
@@ -4708,11 +4745,15 @@ export const serveCommand = new Command()
       datastoreConfig,
     );
     const gcMutex = new GcMutex();
+    // Traced dashboard reads record the event-loop lag seen while they ran,
+    // to tell a blocked loop from slow I/O (swamp-club#3741).
+    const eventLoopLag = new EventLoopLagMonitor();
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
         repoContext,
         gcMutex,
+        eventLoopLag,
         datastoreConfig,
         datastoreResolver,
         syncService,
@@ -6428,6 +6469,9 @@ export const serveCommand = new Command()
                   scheduledCancelByRunId: scheduledExecution
                     ? (id) => scheduledExecution.cancelByRunId(id, reason)
                     : undefined,
+                  webhookCancelByRunId: webhookService
+                    ? (id) => webhookService!.cancelByRunId(id, reason)
+                    : undefined,
                   // The endpoint already required admin on every resource, so
                   // the run's own workflow needs no further check.
                   cancelSuspended: (id) =>
@@ -6489,16 +6533,20 @@ export const serveCommand = new Command()
             const reason = cancelReasonFor(
               cancelActor(cancelAuditPrincipal, connectionCtx),
             );
-            let count = cancelRegistry.cancelAll(typeFilter, reason);
-            if (activeRunRegistry) {
-              count += activeRunRegistry.cancelAll(typeFilter, reason);
-            }
-            if (
-              (!typeFilter || typeFilter === "workflow-run") &&
-              scheduledExecution
-            ) {
-              count += scheduledExecution.cancelAllRuns(reason);
-            }
+            const count = cancelAllExecutions(
+              {
+                cancelRegistry,
+                activeRunRegistry,
+                scheduledCancelAll: scheduledExecution
+                  ? (r) => scheduledExecution.cancelAllRuns(r)
+                  : undefined,
+                webhookCancelAll: webhookService
+                  ? (r) => webhookService!.cancelAllRuns(r)
+                  : undefined,
+              },
+              typeFilter,
+              reason,
+            );
             emitRunCancelAudit(connectionCtx, {
               action: "cancel.all",
               resourceKind: typeFilter === "method-run"
@@ -7001,6 +7049,7 @@ export const serveCommand = new Command()
       // competing with the drain; waited on after the drain, which no
       // longer waits for that load to end (swamp-club#3468).
       runIndexWarmup.stop();
+      eventLoopLag.stop();
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
@@ -7752,6 +7801,7 @@ export const serveCommand = new Command()
     logger.info("Startup complete — /ready is now serving 200");
 
     runIndexWarmup.start();
+    eventLoopLag.start();
 
     await server.finished;
 

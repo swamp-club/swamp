@@ -24,6 +24,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 import "../../domain/models/models.ts";
 
@@ -51,27 +52,32 @@ async function withRepo(fn: (dir: string) => Promise<void>): Promise<void> {
 
 /**
  * Adds an unexpanded glob source (allowed before its directories exist) with
- * `--only only`, and returns the `.swamp-sources.yaml` it writes.
+ * `--only only`, and returns the `.swamp-sources.yaml` it writes. `~` resolves
+ * to a home directory under `dir`, so the glob never walks the real home,
+ * where another process can remove a directory mid-walk (swamp-club#3694).
  */
 async function addWithOnly(dir: string, only: string): Promise<string> {
   const { extensionSourceAddCommand } = await import(
     "./extension_source_add.ts"
   );
+  const home = join(dir, "test-home");
+  await Deno.mkdir(home, { recursive: true });
   const originalLog = console.log;
   console.log = () => {};
   try {
-    await new Command()
-      .globalOption("--json", "JSON output")
-      .command("add", extensionSourceAddCommand)
-      .parse([
-        "add",
-        "~/swamp-source-add-test-*",
-        "--only",
-        only,
-        "--repo-dir",
-        dir,
-        "--json",
-      ]);
+    await withMockedEnv({ HOME: home, USERPROFILE: home }, () =>
+      new Command()
+        .globalOption("--json", "JSON output")
+        .command("add", extensionSourceAddCommand)
+        .parse([
+          "add",
+          "~/swamp-source-add-test-*",
+          "--only",
+          only,
+          "--repo-dir",
+          dir,
+          "--json",
+        ]));
   } finally {
     console.log = originalLog;
   }

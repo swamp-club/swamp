@@ -25,8 +25,28 @@ import {
   qualityCheckLabel,
 } from "../../domain/extensions/extension_quality_checker.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  type StaleLockfile,
+  staleLockfileInstallCommand,
+} from "../../domain/models/bundle.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { logTextBlock } from "./log_text_block.ts";
+
+/**
+ * The JSON form of the stale lockfiles a run went past, with the command
+ * that brings each up to date; absent when there are none.
+ */
+function staleLockfilesJson(
+  locks: StaleLockfile[],
+): { staleLockfiles?: Array<StaleLockfile & { command: string }> } {
+  if (locks.length === 0) return {};
+  return {
+    staleLockfiles: locks.map((lock) => ({
+      ...lock,
+      command: staleLockfileInstallCommand(lock),
+    })),
+  };
+}
 
 /** Renderer interface that also exposes pass/fail state for the CLI. */
 export interface ExtensionFmtRenderer extends Renderer<ExtensionFmtEvent> {
@@ -54,6 +74,12 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
       },
       completed: (e) => {
         const data = e.data;
+        for (const lock of data.staleLockfiles) {
+          const entryPoints = lock.entryPoints.join(", ");
+          const command = staleLockfileInstallCommand(lock);
+          logger
+            .warn`The lockfile ${lock.lockPath} is out of date with ${lock.projectFile}, and fmt never rewrites your lockfile, so it covered ${entryPoints} alone, not the local modules they import. Push refuses this lock: run ${command} in ${lock.projectDir} and commit the updated lock.`;
+        }
         if (data.mode === "check") {
           if (data.passed) {
             logger.info("All quality checks passed.");
@@ -126,6 +152,7 @@ class JsonExtensionFmtRenderer implements ExtensionFmtRenderer {
             {
               status: data.passed ? "passed" : "failed",
               issues: data.issues,
+              ...staleLockfilesJson(data.staleLockfiles),
             },
             null,
             2,
@@ -143,6 +170,7 @@ class JsonExtensionFmtRenderer implements ExtensionFmtRenderer {
               fmtOutput: data.fmtOutput,
               lintOutput: data.lintOutput,
               remainingIssues: data.remainingIssues,
+              ...staleLockfilesJson(data.staleLockfiles),
             },
             null,
             2,
