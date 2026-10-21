@@ -296,6 +296,17 @@ export interface UnifiedDataRepository {
   findAllForModel(type: ModelTypeInput, modelId: string): Promise<Data[]>;
 
   /**
+   * Yields the same data as {@link findAllForModel}, in the same order, but
+   * reads each data name only when the consumer asks for it, so a caller
+   * that stops early does not pay for the rest of the model's data.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @returns The latest data of each name, read lazily
+   */
+  iterateForModel(type: ModelTypeInput, modelId: string): AsyncIterable<Data>;
+
+  /**
    * Saves data with its content, creating a new version.
    * Validates ownership if data with the same name already exists.
    *

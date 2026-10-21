@@ -174,6 +174,9 @@ function createMockDataRepo(): UnifiedDataRepository {
     findById: () => Promise.resolve(null),
     listVersions: () => Promise.resolve([]),
     findAllForModel: () => Promise.resolve([]),
+    iterateForModel: async function* () {
+      yield* [];
+    },
     save: () => Promise.resolve({ version: 1 }),
     append: () => Promise.resolve(),
     stream: async function* () {},

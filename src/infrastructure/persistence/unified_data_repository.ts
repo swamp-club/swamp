@@ -1022,6 +1022,38 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * One model's data, a data name at a time; see {@link findAllForModel}.
+   * Each name is read only when the consumer asks for the next item.
+   */
+  async *iterateForModel(
+    type: ModelTypeInput,
+    modelId: string,
+  ): AsyncIterable<Data> {
+    if (!isUuid(modelId)) {
+      logger
+        .debug`iterateForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
+    }
+    const coerced = coerceModelType(type);
+    let dataNames: string[];
+    try {
+      dataNames = await listSubdirectories(
+        this.getModelDataDir(coerced, modelId),
+      );
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+    const seen = new Set<string>();
+    for (const dataName of dataNames) {
+      const found: Data[] = [];
+      await this.collectDataName(coerced, modelId, dataName, found, seen, {
+        strict: false,
+      });
+      yield* found;
+    }
+  }
+
+  /**
    * The latest data of each name under a model, following rename forwards.
    * Each rename marker followed is pushed to `renames` when given.
    *

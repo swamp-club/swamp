@@ -521,8 +521,14 @@ successive versions), so the **orchestrator process serializes all token and
 lease transitions in memory**, including concurrent enrollment attempts. It is
 the only writer of these behaviors, and enrollment for a given token is a
 critical section. (If orchestrators ever scale out, the future primitive is a
-conditional save that rejects unless `latest` matches an expected version.) The
-CLI:
+conditional save that rejects unless `latest` matches an expected version.)
+`TransitionTail` (`src/serve/transition_tail.ts`) is that serialization: the
+dispatch service and the gateway each keep one, and each transition runs in a
+`swamp.serve.transition` span recording its queue wait and the transitions
+ahead of it. Because transitions run one at a time, each must cost the same
+however many records its instance holds: an update method's deleted-resource
+check stops at the first live resource rather than reading every lease the
+`leases` instance keeps (swamp-club#3755). The CLI:
 
 ```bash
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once

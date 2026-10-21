@@ -178,6 +178,40 @@ Deno.test("CompositeUnifiedDataRepository: findAllForModel merges results, ephem
   assertEquals(shared?.ownerDefinition.ownerRef, "eph");
 });
 
+Deno.test("CompositeUnifiedDataRepository: iterateForModel yields what findAllForModel returns, ephemeral first", async () => {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+
+  await ephemeral.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "shared", lifetime: "ephemeral", ownerRef: "eph" }),
+    TEST_CONTENT,
+  );
+  await persistent.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "shared", lifetime: "infinite", ownerRef: "pers" }),
+    TEST_CONTENT,
+  );
+  await persistent.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "only-persistent", lifetime: "infinite" }),
+    TEST_CONTENT,
+  );
+
+  const iterated = await Array.fromAsync(
+    composite.iterateForModel(TEST_TYPE, TEST_MODEL_ID),
+  );
+  const all = await composite.findAllForModel(TEST_TYPE, TEST_MODEL_ID);
+
+  assertEquals(
+    iterated.map((d) => [d.name, d.ownerDefinition.ownerRef]),
+    all.map((d) => [d.name, d.ownerDefinition.ownerRef]),
+  );
+  assertEquals(iterated[0].ownerDefinition.ownerRef, "eph");
+});
+
 Deno.test("CompositeUnifiedDataRepository: findAllGlobal merges results with deduplication", async () => {
   const { composite, persistent, ephemeral } = createCompositeRepo();
 

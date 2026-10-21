@@ -402,7 +402,15 @@ export class DataPlane {
       return;
     }
     this.#dispatchesWithWrites.add(dispatch.dispatchId);
-    await this.#options.onFirstWrite?.(dispatch);
+    const onFirstWrite = this.#options.onFirstWrite;
+    if (onFirstWrite === undefined) return;
+    // The lease hook waits its turn on serve's transition tail, so the span
+    // separates that wait from the write itself (swamp-club#3755).
+    await withSpan(
+      "swamp.serve.data_plane.mark_writes",
+      {},
+      () => onFirstWrite(dispatch),
+    );
   }
 
   #vault(): Promise<VaultService> {
@@ -550,7 +558,8 @@ export class DataPlane {
       data?: Record<string, unknown>;
       overrides?: unknown;
     };
-    if (!body.specName || !body.name || body.data === undefined) {
+    const { specName, name, data } = body;
+    if (!specName || !name || data === undefined) {
       return errorResponse(400, "Expected { specName, name, data }");
     }
     // Validated before the lease is marked: a refused body writes nothing.
@@ -584,11 +593,10 @@ export class DataPlane {
     const done = this.#beginWrite(dispatch.dispatchId);
     let handle: DataHandle;
     try {
-      handle = await writeResource(
-        body.specName,
-        body.name,
-        body.data,
-        overrides.value,
+      handle = await withSpan(
+        "swamp.serve.data_plane.persist",
+        {},
+        () => writeResource(specName, name, data, overrides.value),
       );
       this.#recordVersion(dispatch, handle);
     } catch (error) {
@@ -718,7 +726,11 @@ export class DataPlane {
         await this.#recordWrite(dispatch);
         const done = this.#beginWrite(dispatch.dispatchId);
         try {
-          const handle = await session.writer.writeStream(body);
+          const handle = await withSpan(
+            "swamp.serve.data_plane.persist",
+            {},
+            () => session.writer.writeStream(body),
+          );
           this.#recordVersion(dispatch, handle);
           this.#writers.delete(writerId);
           return json(handleToJson(handle));
@@ -730,7 +742,11 @@ export class DataPlane {
         await this.#recordWrite(dispatch);
         const done = this.#beginWrite(dispatch.dispatchId);
         try {
-          const handle = await session.writer.finalize();
+          const handle = await withSpan(
+            "swamp.serve.data_plane.persist",
+            {},
+            () => session.writer.finalize(),
+          );
           this.#recordVersion(dispatch, handle);
           this.#writers.delete(writerId);
           return json(handleToJson(handle));

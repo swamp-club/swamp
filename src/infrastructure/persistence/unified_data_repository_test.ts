@@ -679,6 +679,65 @@ Deno.test("findAllForModelSync returns empty for missing model", async () => {
   });
 });
 
+Deno.test("iterateForModel: yields what findAllForModel returns, following renames", async () => {
+  await withTempRepo(async (repo) => {
+    for (const name of ["item-a", "item-b", "item-c"]) {
+      await repo.save(testType, "model-1", makeData(name), new Uint8Array([1]));
+    }
+    await repo.rename(testType, "model-1", "item-b", "item-d");
+
+    const iterated = await Array.fromAsync(
+      repo.iterateForModel(testType, "model-1"),
+    );
+    const all = await repo.findAllForModel(testType, "model-1");
+    assertEquals(
+      iterated.map((d) => [d.name, d.version]),
+      all.map((d) => [d.name, d.version]),
+    );
+    assertEquals(iterated.map((d) => d.name).sort(), [
+      "item-a",
+      "item-c",
+      "item-d",
+    ]);
+  });
+});
+
+Deno.test("iterateForModel: yields nothing for a missing model", async () => {
+  await withTempRepo(async (repo) => {
+    assertEquals(
+      await Array.fromAsync(repo.iterateForModel(testType, "missing-model")),
+      [],
+    );
+  });
+});
+
+Deno.test("iterateForModel: reads each name when asked, skipping one removed after listing", async () => {
+  await withTempRepo(async (repo) => {
+    for (const name of ["item-a", "item-b", "item-c"]) {
+      await repo.save(testType, "model-1", makeData(name), new Uint8Array([1]));
+    }
+    const iterator = repo.iterateForModel(testType, "model-1")
+      [Symbol.asyncIterator]();
+    const first = await iterator.next();
+    assertEquals(first.value?.name, "item-a");
+
+    // Removed after the names were listed, as bookkeeping GC can do.
+    await Deno.remove(repo.getDataNameDir(testType, "model-1", "item-b"), {
+      recursive: true,
+    });
+
+    const rest: string[] = [];
+    for (
+      let next = await iterator.next();
+      !next.done;
+      next = await iterator.next()
+    ) {
+      rest.push(next.value.name);
+    }
+    assertEquals(rest, ["item-c"]);
+  });
+});
+
 Deno.test("findAllForType: returns data scoped to one model type", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

@@ -19,6 +19,10 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
 import { UserError } from "../domain/errors.ts";
 import { UNREADABLE_CONTENT_CODE } from "../domain/datastore/unreadable_content.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -203,6 +207,18 @@ Deno.test("WorkerGateway: enrollment redeems the token, records the worker, issu
   assertEquals(workers[0].status, "idle");
   assertEquals(workers[0].connected, true);
   assertEquals(h.idle.length, 1);
+});
+
+Deno.test("WorkerGateway: enrollment runs in a gateway-tail span (swamp-club#3755)", async () => {
+  await withCapturedSpans(async (spans) => {
+    const h = createHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    await enroll(workerChannel);
+
+    const span = findSpan(spans, "swamp.serve.transition");
+    assertEquals(span.attributes["swamp.transition.tail"], "gateway");
+    assertEquals(span.attributes["swamp.transition.operation"], "enroll");
+  });
 });
 
 Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", async () => {
@@ -1767,6 +1783,14 @@ Deno.test("WorkerGateway: verifyOnEnroll — a reconnect while a step holds a sl
   await waitFor(
     () => h.gateway.worker("ci-runner-3")?.status === "busy",
     "the step to be placed",
+  );
+  // The busy record lands on the transition tail after the in-memory status.
+  await waitFor(
+    () =>
+      h.transitions.some((t) =>
+        t.methodName === "set_status" && t.inputs.status === "busy"
+      ),
+    "the busy status to be recorded",
   );
 
   const second = connectWorkerSocket(h.gateway);
