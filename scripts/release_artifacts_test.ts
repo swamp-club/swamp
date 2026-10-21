@@ -359,7 +359,7 @@ Deno.test("release downloader refuses corrupt archives and cloud read failures",
     assert(!exists);
   }));
 
-Deno.test("release workflow publishes before UAT and consumers use GCS without GitHub releases", async () => {
+Deno.test("release workflow publishes GCS and GitHub assets before UAT", async () => {
   const text = await Deno.readTextFile(
     join(repo, ".github/workflows/release.yml"),
   );
@@ -372,6 +372,7 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
           name?: string;
           run?: string;
           uses?: string;
+          with?: Record<string, unknown>;
           if?: string;
           env?: Record<string, string>;
         }[];
@@ -386,7 +387,8 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   for (const step of steps) {
     if (
       step.uses?.startsWith("google-github-actions/") ||
-      step.name === "Trigger UAT"
+      step.name === "Trigger UAT" ||
+      step.name === "Create GitHub Release"
     ) {
       assertEquals(step.if, gate);
     }
@@ -400,8 +402,28 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   );
   const trigger = steps.findIndex((s) => s.name === "Trigger UAT");
   assert(publish >= 0 && trigger > publish);
+  const githubRelease = steps.findIndex((s) =>
+    s.name === "Create GitHub Release"
+  );
+  assert(githubRelease > publish && githubRelease < trigger);
+  const release = steps[githubRelease];
+  assertEquals(
+    release.with?.tag_name,
+    "v${{ steps.version.outputs.version }}",
+  );
+  assertEquals(release.with?.fail_on_unmatched_files, true);
+  assertEquals(
+    String(release.with?.files).trim().split("\n"),
+    [
+      "dist/swamp-linux-x86_64",
+      "dist/swamp-linux-aarch64",
+      "dist/swamp-darwin-x86_64",
+      "dist/swamp-darwin-aarch64",
+      "dist/swamp-windows-x86_64.zip",
+      "dist/checksums.txt",
+    ],
+  );
   assert(!text.includes("gh release download"));
-  assert(!text.includes("action-gh-release"));
   assert(!text.includes("release_body"));
   for (const job of ["windows-smoke", "docker"]) {
     assertEquals(workflow.jobs[job].if, gate);

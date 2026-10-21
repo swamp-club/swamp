@@ -1,11 +1,13 @@
 # Release artifacts
 
 The release workflow builds all five variants, uploads versioned archives and
-checksums to `gs://swamp-club-artifacts`, then dispatches UAT. It does not
-create a GitHub Release or read/write `swamp/stable.json`. Windows smoke tests
-and Docker builds download the versioned GCS objects through the public
-`artifacts.swamp-club.com` edge and verify their checksums before use. These
-download-only jobs receive no cloud credentials.
+checksums to `gs://swamp-club-artifacts`, creates a GitHub Release with the
+original binaries and `checksums.txt`, then dispatches UAT. GitHub Release tags
+retain the `v<version>` format used by swamp-uat. The workflow does not
+read/write `swamp/stable.json`. Windows smoke tests and Docker builds download
+the versioned GCS objects through the public `artifacts.swamp-club.com` edge and
+verify their checksums before use. These download-only jobs receive no cloud
+credentials.
 
 Configure the repository secret `GCP_SERVICE_ACCOUNT_KEY` with a service-account
 JSON key granting object create/read access to the bucket. Stable promotion is
@@ -37,10 +39,11 @@ gh workflow run release.yml --ref <pr-branch> -f dry_run=true
 Manual runs default to dry-run; non-`main` branches always dry-run even if the
 input is false. A dry run builds the dashboard and all five binaries, generates
 and verifies checksums, and packages every artifact, printing the intended GCS
-paths and hashes. It needs no publishing credentials and skips GCS access, UAT
-dispatch, and the downstream Windows-smoke/Docker-publishing jobs (which consume
-published artifacts). A merged PR still publishes normally. To manually publish
-from `main`, explicitly pass `-f dry_run=false`.
+paths and hashes. It needs no publishing credentials and skips GCS access,
+GitHub Release creation, UAT dispatch, and the downstream
+Windows-smoke/Docker-publishing jobs (which consume published artifacts). A
+merged PR still publishes normally. To manually publish from `main`, explicitly
+pass `-f dry_run=false`.
 
 For locally built binaries,
 `DRY_RUN=true bash scripts/upload_release_artifacts.sh
