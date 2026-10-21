@@ -581,16 +581,16 @@ too. A real drift finding has no `cause`. None of these block the push.
 ### The version that ships, and unaudited dependencies
 
 The dependency trust audit checks each `npm:` and `jsr:` import at the version
-the push ships, including a bare import the extension's `deno.json` import map
-resolves to one (its findings end `(imported as "<name>" via deno.json)` and
-block the same way): an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version;
-otherwise the version the `deno.lock` records for that import (or, when the lock
-does not record the import itself, its highest locked version that satisfies the
-specifier), when the bundler honours that lock (a plain-JSON `deno.json` was
-found, or package.json mode); otherwise what the registry resolves today (a
-range to its highest published match, no version to `latest`). npm license,
-maintainers and deprecation are read from that version; OSV is asked about it. A
-JSR import's package and version must exist on jsr.io.
+the push ships, including a bare import the extension's Deno config resolves to
+one (its findings end `(imported as "<name>" through the project's Deno config)`
+and block the same way): an exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that
+version; otherwise the version the `deno.lock` records for that import (or, when
+the lock does not record the import itself, its highest locked version that
+satisfies the specifier), when the bundler honours that lock (a `deno.json` or
+`deno.jsonc` was found, or package.json mode); otherwise what the registry
+resolves today (a range to its highest published match, no version to `latest`).
+npm license, maintainers and deprecation are read from that version; OSV is
+asked about it. A JSR import's package and version must exist on jsr.io.
 
 Push and `extension quality` never write the extension's lockfile. With a lock,
 they bundle under `--frozen`, so a `deno.lock` that no longer matches

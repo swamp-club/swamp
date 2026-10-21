@@ -339,7 +339,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         }
         if (!registryScorable) {
           logger
-            .error`The registry cannot resolve this extension's bare imports: they ship as written, so it would score the documentation factors 0. Push rewrites only the bare imports the deno.json import map resolves.`;
+            .error`The registry cannot resolve this extension's bare imports: they ship as written, so it would score the documentation factors 0. Push rewrites only the bare imports the project's Deno config resolves.`;
         }
         const failure = qualityFailureMessage(e.data);
         if (failure) {

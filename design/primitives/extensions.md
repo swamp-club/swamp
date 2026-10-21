@@ -2037,10 +2037,10 @@ tooling, so they outlive the runtime:
    equivalent ranges match), else the highest version it records for the
    package that satisfies the specifier. A higher transitive copy never
    overrides the import's own entry. The lockfile is the one the bundler
-   uses: with a `deno.json`, its `lock` setting or the `deno.lock` beside it;
-   in package.json mode, the `deno.lock` there; otherwise none, since the
-   bundler runs with `--no-lock`. A config that is not plain JSON reads no
-   lock. The lockfile sits behind the `LockedDependencyVersions` port; the
+   uses: with a `deno.json` or `deno.jsonc`, its `lock` setting (read as
+   JSONC, swamp-club#3612) or the `deno.lock` beside it; in package.json
+   mode, the `deno.lock` there; otherwise none, since the bundler runs with
+   `--no-lock`. A config that cannot be parsed reads no lock. The lockfile sits behind the `LockedDependencyVersions` port; the
    Deno adapter (`src/infrastructure/runtime/deno_lockfile_reader.ts`) reads
    lock formats 4 and 5 as data, capped at 16 MiB. A lock entry that no
    longer satisfies the specifier falls through; push itself never gets
@@ -2055,7 +2055,7 @@ Push and quality treat the author's lockfile as read-only
 (swamp-club#3613). The module graph read (`deno info`) and the bundle run
 with `--frozen` when the project has the lock the bundler honours, and with
 `--no-lock` when it has none (`readOnlyLockFor` in the lockfile adapter; a
-`deno.json` that is not plain JSON keeps the `deno.lock` beside it). A lock
+config that cannot be parsed keeps the `deno.lock` beside it). A lock
 that no longer matches the project fails the push with an error naming the
 lock, the config and `deno install --entrypoint <file>`, instead of being
 rewritten in the author's tree, so the version the audit reads from the lock
@@ -2067,7 +2067,8 @@ the specifier the map resolves it to), the bare import as written
 (`importedAs`, mapped imports only; `extension quality`'s log mode prints it
 as `(as "<bare name>")` on the dependency's line), the resolved `version` and
 `resolvedFrom` (`exact`, `lockfile` or `registry`). Every finding for a
-mapped import ends `(imported as "<bare name>" via deno.json)`, and blocks or
+mapped import ends `(imported as "<bare name>" through the project's Deno
+config)`, and blocks or
 warns exactly as it would written out. npm
 license, maintainers and deprecation come from that version's manifest; a
 version the packument does not list is not audited. The age warning keeps

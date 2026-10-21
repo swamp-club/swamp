@@ -2782,7 +2782,7 @@ Deno.test("extensionPushPrepare: a bare import the deno.json maps is audited and
               errors: [{
                 dependency: "@std/assert",
                 message:
-                  'version 0.0.999 not found on JSR (imported as "missing-assert" via deno.json)',
+                  'version 0.0.999 not found on JSR (imported as "missing-assert" through the project\'s Deno config)',
                 cause: "jsr-missing",
               }],
               warnings: [],
