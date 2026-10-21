@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import { type ApplyReply, createRequestRunner } from "./request_runner.ts";
 
 /** A request the test answers itself, counting how often it was sent. */
@@ -92,7 +92,7 @@ Deno.test("createRequestRunner: join waits for the request in flight", async () 
   const apply = recorder();
   const sent = runner.send(req.start, apply);
   const joined = runner.join(req.start, recorder("joined:"));
-  assertEquals(joined, sent);
+  assertStrictEquals(joined, sent);
   assertEquals(req.replies.length, 1);
   req.replies[0].resolve("v1");
   await joined;
@@ -130,7 +130,7 @@ Deno.test("createRequestRunner: join after a send joins the newer request", asyn
   const apply = recorder();
   const first = runner.send(req.start, apply);
   const second = runner.send(req.start, apply);
-  assertEquals(runner.join(req.start, apply), second);
+  assertStrictEquals(runner.join(req.start, apply), second);
   assertEquals(req.replies.length, 2);
   req.replies[0].resolve("v4");
   req.replies[1].resolve("v5");
@@ -146,7 +146,7 @@ Deno.test("createRequestRunner: a superseded request settling keeps the newer on
   const second = runner.send(req.start, apply);
   req.replies[0].resolve("v4");
   await first;
-  assertEquals(runner.join(req.start, apply), second);
+  assertStrictEquals(runner.join(req.start, apply), second);
   assertEquals(req.replies.length, 2);
   req.replies[1].resolve("v5");
   await second;
