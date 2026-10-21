@@ -183,6 +183,65 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "createModelValidateDeps: --method validates as a run of that method, without it every method (swamp-club#3726)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const type = ModelType.create("test/method-validate");
+      const method = {
+        description: "Run",
+        arguments: z.object({ run: z.string() }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      };
+      const modelDef: ModelDefinition = defineModel({
+        type,
+        version: "2026.01.01.1",
+        methods: { execute: method, third: method },
+      });
+      const definition = Definition.create({
+        name: "c",
+        methods: {
+          execute: { arguments: { run: "echo ok" } },
+          third: {
+            arguments: {
+              run: "echo ${{ dyn(vault).get('default', 'token') }}",
+            },
+          },
+        },
+      });
+      const store = new CatalogStore(":memory:");
+      try {
+        const expressionPaths = async (method?: string) => {
+          const deps = createModelValidateDeps(
+            dir,
+            { method },
+            undefined,
+            new FileSystemUnifiedDataRepository(dir, undefined, store),
+            store,
+          );
+          const { results } = await deps.validateModel(
+            definition,
+            modelDef,
+            type,
+          );
+          return results.find((r) => r.name === "Expression paths");
+        };
+        assertEquals((await expressionPaths("execute"))?.passed, true);
+        for (const unscoped of [undefined, "bogus"]) {
+          const result = await expressionPaths(unscoped);
+          assertEquals(result?.passed, false, String(unscoped));
+          assertStringIncludes(
+            result?.error ?? "",
+            'at "methods.third.arguments.run"',
+          );
+        }
+      } finally {
+        store.close();
+      }
+    });
+  },
+);
+
 function makeDeps(
   overrides?: Partial<ModelValidateDeps>,
 ): ModelValidateDeps {

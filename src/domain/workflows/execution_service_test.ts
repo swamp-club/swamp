@@ -4150,6 +4150,71 @@ Deno.test({
 
 Deno.test({
   name:
+    "DefaultStepExecutor: another method's static problems do not fail the step, as they do not fail behavior run (swamp-club#3726)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const otherMethodArguments: Record<string, unknown>[] = [
+      { value: "${{ dyn(vault).get('default', 'token') }}" },
+      { value: "${{ model.nonexistent.resource.x }}" },
+      { value: "{{self.name}}" },
+      { value: 42 },
+    ];
+    for (const deleteArguments of otherMethodArguments) {
+      const received = await runDefinitionStep(
+        {
+          name: "two-methods",
+          methods: {
+            execute: { arguments: { value: "ok" } },
+            delete: { arguments: deleteArguments },
+          },
+        },
+        "execute",
+        undefined,
+        {},
+      );
+      assertEquals(received, [{ value: "ok" }], String(deleteArguments.value));
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: the step's own method holding a vault alias still fails validation",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const error = await assertRejects(() =>
+      runDefinitionStep(
+        {
+          name: "two-methods",
+          methods: {
+            execute: {
+              arguments: {
+                value: "${{ dyn(vault).get('default', 'token') }}",
+              },
+            },
+            delete: { arguments: { value: "ok" } },
+          },
+        },
+        "execute",
+        undefined,
+        {},
+      )
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      'Behavior validation failed for "two-methods"',
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      'at "methods.execute.arguments.value"',
+    );
+  },
+});
+
+Deno.test({
+  name:
     "DefaultStepExecutor: a step refuses a stored definition holding a literal sensitive global argument (swamp-club#3555)",
   sanitizeResources: false,
   sanitizeOps: false,

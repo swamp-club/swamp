@@ -385,6 +385,15 @@ export interface ModelValidationOptions {
     expression: string,
     location: string,
   ) => readonly SecretMisuseFinding[];
+  /**
+   * Validate as a run of this method: Method arguments, Expression paths,
+   * Secret usage and the template-syntax scan read the global arguments and
+   * this method's arguments only, what a delivery of the method reads
+   * (`isDeliveredWithMethod`). Another method's problems are that method's
+   * run to fail on. Ignored for a method the model type does not define, so
+   * a scope never passes for want of anything to check.
+   */
+  method?: string;
 }
 
 /** One statically identified secret misuse, as the Secret usage validation reports it. */
@@ -532,6 +541,23 @@ export function expressionPathErrorInModelWords(
 }
 
 /**
+ * The method arguments a run of `method` is delivered: that method's subtree
+ * alone, the part of `methods` that `isDeliveredWithMethod` accepts. Every
+ * method's when no method is selected. Pruned at the method key rather than
+ * filtered by path, so it holds however a scanner spells its paths.
+ */
+function deliveredMethodData(
+  definition: Definition,
+  method: string | undefined,
+): Definition["methodData"] {
+  const methodData = definition.methodData;
+  if (method === undefined) return methodData;
+  return Object.hasOwn(methodData, method)
+    ? { [method]: methodData[method] }
+    : {};
+}
+
+/**
  * Default implementation of the model validation service.
  */
 export class DefaultModelValidationService implements ModelValidationService {
@@ -583,6 +609,13 @@ export class DefaultModelValidationService implements ModelValidationService {
     const globalArgsResult = upgrade.failure
       ? Promise.resolve(upgrade.failure)
       : this.validateGlobalArguments(upgrade.definition, modelDef);
+    // The method arguments the method items read: the selected method's
+    // only, when the validation is scoped to a method the type defines.
+    const method = options?.method !== undefined &&
+        Object.hasOwn(modelDef.methods, options.method)
+      ? options.method
+      : undefined;
+    const methodData = deliveredMethodData(definition, method);
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
       this.validateTypeVersion(definition),
@@ -598,13 +631,14 @@ export class DefaultModelValidationService implements ModelValidationService {
           )
         )
         : globalArgsResult,
-      this.validateMethodArguments(definition, modelDef),
+      this.validateMethodArguments(methodData, modelDef),
     ];
 
     // Template-like text: swamp's own expressions with the syntax slightly
     // wrong fail Expression paths; another service's syntax only warns.
     const templateScan = this.scanTemplateSyntax(
       definition,
+      methodData,
       modelDef,
       options?.authoredGlobalArguments,
     );
@@ -617,6 +651,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       validations.push(
         this.validateExpressionPaths(
           definition,
+          methodData,
           modelDef,
           definitionRepo,
           templateScan.malformed,
@@ -630,7 +665,11 @@ export class DefaultModelValidationService implements ModelValidationService {
     if (options?.diagnoseSecretMisuse) {
       validations.push(
         Promise.resolve(
-          this.validateSecretUsage(definition, options.diagnoseSecretMisuse),
+          this.validateSecretUsage(
+            definition,
+            methodData,
+            options.diagnoseSecretMisuse,
+          ),
         ),
       );
     }
@@ -717,6 +756,7 @@ export class DefaultModelValidationService implements ModelValidationService {
    */
   private scanTemplateSyntax(
     definition: Definition,
+    methodData: Definition["methodData"],
     modelDef: ModelDefinition,
     authoredGlobalArguments?: Record<string, unknown>,
   ): TemplateSyntaxScan {
@@ -724,7 +764,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       {
         globalArguments: authoredGlobalArguments ??
           definition.globalArguments,
-        methods: definition.methodData,
+        methods: methodData,
       },
       {
         declaredInputs: new Set(
@@ -760,18 +800,19 @@ export class DefaultModelValidationService implements ModelValidationService {
 
   /**
    * Secret usage: the static misuse diagnostics of typed secrets over every
-   * authored expression in the global and method arguments
+   * authored expression in the global and delivered method arguments
    * (design/enablers/typed-secrets.md Sections 4.3 item 4 and 10.2). Each
    * failure names the authored location and the code, never a value.
    */
   private validateSecretUsage(
     definition: Definition,
+    methodData: Definition["methodData"],
     diagnose: NonNullable<ModelValidationOptions["diagnoseSecretMisuse"]>,
   ): ValidationResult {
     const errors: ExpressionPathError[] = [];
     const data = {
       globalArguments: definition.globalArguments,
-      methods: definition.methodData,
+      methods: methodData,
     };
     for (const { celExpression, raw, path } of extractExpressions(data)) {
       for (const finding of diagnose(celExpression, path)) {
@@ -1047,11 +1088,10 @@ export class DefaultModelValidationService implements ModelValidationService {
   }
 
   private validateMethodArguments(
-    definition: Definition,
+    methodData: Definition["methodData"],
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
     const errors: string[] = [];
-    const methodData = definition.methodData;
 
     for (const [methodName, methodDef] of Object.entries(modelDef.methods)) {
       const args = methodData[methodName]?.arguments;
@@ -1110,6 +1150,7 @@ export class DefaultModelValidationService implements ModelValidationService {
    */
   private async validateExpressionPaths(
     definition: Definition,
+    methodData: Definition["methodData"],
     modelDef: ModelDefinition,
     definitionRepo: DefinitionRepository,
     malformed: TemplateSyntaxFinding[],
@@ -1136,7 +1177,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     // Extract and validate all expressions from definition data
     const allExpressionData = {
       globalArguments: definition.globalArguments,
-      methods: definition.methodData,
+      methods: methodData,
     };
     const isDeclaredForeign = foreignTemplatePathPredicate(modelDef);
     for (const exprLocation of extractExpressions(allExpressionData)) {

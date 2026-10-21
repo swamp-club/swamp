@@ -302,8 +302,10 @@ swamp behavior delete my-shell --json
 ## Validate Behaviors
 
 Validate a behavior definition against its type schema. Use `--label` to run
-only checks with a specific label, and `--method` to simulate validation for a
-specific method context.
+only checks with a specific label, and `--method` to validate as a run of that
+method: its arguments, the global arguments and the checks that apply to it,
+which is what a workflow step validates before it runs. Without `--method`,
+every method is checked.
 
 ```bash
 swamp behavior validate my-shell --json
