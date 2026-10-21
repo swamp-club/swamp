@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Upload versioned artifacts only. Stable promotion belongs to the UAT publisher.
 # Usage: bash scripts/upload_release_artifacts.sh <version>
-# Requires authenticated gcloud; GCS_BUCKET and BINARIES_DIR are optional.
+# Requires authenticated gcloud and python3; GCS_BUCKET and BINARIES_DIR are optional.
 VERSION="${1:-}"
 VERSION="${VERSION#v}"
 if [[ ! "$VERSION" =~ ^[0-9]{8}\.[0-9]{6}\.[0-9]+-sha\.[0-9a-f]{8,40}$ ]]; then
@@ -60,11 +60,24 @@ for mapping in $BINARIES; do
     if [[ "$ext" == "zip" ]]; then
         cp "$BINARIES_DIR/$binary" "$TEMP_DIR/$archive"
     else
-        # Keep this packaging identical to swamp-uat/scripts/upload_binaries.sh.
-        cp "$BINARIES_DIR/$binary" "$TEMP_DIR/swamp"
-        chmod +x "$TEMP_DIR/swamp"
-        TZ=UTC touch -t 197001010000 "$TEMP_DIR/swamp"
-        (cd "$TEMP_DIR" && tar --format=ustar -cf - swamp | gzip -n > "$archive")
+        # Fixed USTAR headers and gzip metadata make retries independent of the
+        # source file's ownership, permissions, timestamp, and the host umask.
+        python3 - "$BINARIES_DIR/$binary" "$TEMP_DIR/$archive" <<'PY'
+import gzip
+import os
+import sys
+import tarfile
+
+source, destination = sys.argv[1:]
+with open(destination, "wb") as output:
+    with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            entry = tarfile.TarInfo("swamp")
+            entry.size = os.path.getsize(source)
+            entry.mode = 0o755
+            with open(source, "rb") as binary:
+                archive.addfile(entry, binary)
+PY
     fi
     checksum=$(sha256sum "$TEMP_DIR/$archive" | awk '{print $1}')
     echo "$checksum  $archive" > "$TEMP_DIR/$archive.sha256"
