@@ -22,6 +22,7 @@ import type { Environment } from "cel-js";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import {
   editCelSource,
+  indirectVaultUse,
   type SourceEdit,
   type VaultCallAnalysis,
   type VaultGetCall,
@@ -68,48 +69,10 @@ export function assertDirectVaultCalls(
   analysis: VaultCallAnalysis,
   expression: string,
 ): void {
-  if (analysis.invalidUses.length > 0) {
-    throw new InvalidExpressionError(
-      "Call vault.get(vaultName, secretKey) directly; other uses of vault are unsupported",
-      expression,
-    );
+  const reason = indirectVaultUse(analysis);
+  if (reason !== undefined) {
+    throw new InvalidExpressionError(reason, expression);
   }
-  if (analysis.calls.some((call) => call.args.length !== 2)) {
-    throw new InvalidExpressionError(
-      "vault.get requires exactly two string arguments",
-      expression,
-    );
-  }
-  if (analysis.calls.some((call) => call.usesLocalBinding)) {
-    throw new InvalidExpressionError(
-      "vault.get arguments cannot depend on surrounding CEL local bindings",
-      expression,
-    );
-  }
-  if (
-    analysis.calls.some((call) =>
-      call.args.some((arg) => containsMethodCall(arg.node))
-    )
-  ) {
-    throw new InvalidExpressionError(
-      "vault.get arguments cannot invoke model.method during up-front checking",
-      expression,
-    );
-  }
-}
-
-/** Refuse the effectful receiver method even when its receiver is aliased. */
-function containsMethodCall(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsMethodCall);
-  if (
-    typeof value !== "object" || value === null || !("op" in value) ||
-    !("args" in value) || value.op === "value"
-  ) return false;
-  if (
-    value.op === "rcall" && Array.isArray(value.args) &&
-    value.args[0] === "method"
-  ) return true;
-  return containsMethodCall(value.args);
 }
 
 /**

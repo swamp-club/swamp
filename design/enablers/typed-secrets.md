@@ -566,10 +566,10 @@ Refusal uses registrations. It does not rewrite expressions.
    type, so an error unrelated to the result (`string + int`) is never
    reported with a secret code; the container rule's scan is reported beside
    it. Both findings answer `secret_operation_unsupported`. A ternary with a
-`Secret` branch is a fourth escape: the check cannot unify its branches, the
-evaluator binds the call as dyn (Section 4.4), and what follows the ternary is
-refused only at run time.
-5. **Containers.** cel-js answers `in` and list or map equality without calling
+   `Secret` branch is a fourth escape: the check cannot unify its branches, the
+   evaluator binds the call as dyn (Section 4.4), and what follows the ternary is
+   refused only at run time.
+   5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
    `data.latest('db', 'main').attributes.password in ['', 'changeme']` would
@@ -1312,47 +1312,45 @@ untyped registries until 3.5 wires them.
 
 Phase 3.5 (swamp-club#3628) completes the local behavior path. The run's
 `SecretBagRegistry.typedSecrets` becomes the single switch:
-`ExpressionEvaluationService` selects the typed `CelEvaluator` from the
-registry (built once by forwarding the flag, the one production site the
-fitness test pins beside `SecretBagRegistry.independent`) and passes an
-`EvaluationScope` through the definition and runtime passes, with the vault
-check scope the resolver's vault service answers
-(`ModelResolver.vaultEvaluationScope`). The typed runtime pass evaluates
-`vault.get` as the CEL function with its up-front checks and refuses aliases
-as errors instead of leaving them as raw text. The local entry points take an
-injectable sensitive-values factory (`ModelEvaluateDeps`,
-`createModelValidateDeps` options, `ModelMethodRunDeps`), so tests turn the
-option on while the CLI and serve pass nothing: `swamp behavior evaluate`
-persists its cache through `persistEvaluatedDefinition` and `toPersistedForm`
-with zero loads; `swamp behavior validate` reports the `Secret usage`
-diagnostics of Section 10.2 and, on the typed path only (the untyped path
-keeps its inline resolution until Phase 4 removes it), delivers its
-pre-flight check arguments through `deliverStepSecrets`, the refuse-then-load
-step extracted from `executeWorkflow` and shared with the method boundary. The
-pass covers the global arguments and the selected method's arguments only,
-binds the definition's input defaults and the environment as a run does, and
-nothing is delivered when no check applies; a refused destination, a denied,
-missing or unreadable reference (its existence check failing), a vault reached
-other than through a direct `vault.get` call, or a failed load fails every
-applicable check with a value-free error, while what validate
-cannot evaluate (an input with no
+`ExpressionEvaluationService` selects the typed `CelEvaluator` from the registry
+(built once by forwarding the flag, the one production site the fitness test
+pins beside `SecretBagRegistry.independent`) and passes an `EvaluationScope`
+through the definition and runtime passes, with the vault check scope the
+resolver's vault service answers (`ModelResolver.vaultEvaluationScope`). The
+typed runtime pass evaluates `vault.get` as the CEL function with its up-front
+checks and refuses aliases as errors instead of leaving them as raw text. The
+local entry points take an injectable sensitive-values factory
+(`ModelEvaluateDeps`, `createModelValidateDeps` options, `ModelMethodRunDeps`),
+so tests turn the option on while the CLI and serve pass nothing: `swamp
+behavior evaluate` persists its cache through `persistEvaluatedDefinition` and
+`toPersistedForm` with zero loads; `swamp behavior validate` reports the `Secret
+usage` diagnostics of Section 10.2 and, on the typed path only (the untyped path
+keeps its inline resolution until Phase 4 removes it), delivers its pre-flight
+check arguments through `deliverStepSecrets`, the refuse-then-load step
+extracted from `executeWorkflow` and shared with the method boundary. The pass
+covers the global arguments and the selected method's arguments only, binds the
+definition's input defaults and the environment as a run does, and nothing is
+delivered when no check applies; a refused destination, a denied, missing or
+unreadable reference (its existence check failing), a vault reached other than
+through a direct `vault.get` call, or a failed load fails every applicable check
+with a value-free error, while what validate cannot evaluate (an input with no
 default, an environment variable unset where validate runs) is left as its
-stored text for the checks, as the untyped path leaves it;
-`context.runModel` builds its nested run over
-`callerContext.vaultSecrets.registry.independent()`, which carries the option
-and nothing else, so references are checked anew and loaded once per attempt
-under the destination policy. `model.method` gains the rules of Section 4.5:
-the effect gate reads the ambient fault scope (`containerComparison`,
-`release` and the recorded faults) before any delegate work; its routing
-names refuse with `secret_destination_refused` through a per-signature code
-on `registerSecretRefusals`; its inputs are released through the boundary;
-and a delegate whose consuming evaluator is typed returns the stored record
-(`model_method_result.ts`), which the function adapts. The workflow guard and
-assert evaluators stay untyped until Phase 4, so their delegate keeps
-answering the parsed content whatever the run's registry carries. A `refuseSecretDestinations` stage with no method checks the
-global arguments alone, as validate without `--method` does. Phase 3's exit
-criteria are met in process for the local path; compiled-binary journeys and
-prohibited-sink scans run in swamp-uat when Phase 4 enables the option.
+stored text for the checks, as the untyped path leaves it; `context.runModel`
+builds its nested run over `callerContext.vaultSecrets.registry.independent()`,
+which carries the option and nothing else, so references are checked anew and
+loaded once per attempt under the destination policy. `model.method` gains the
+rules of Section 4.5: the effect gate reads the ambient fault scope
+(`containerComparison`, `release` and the recorded faults) before any delegate
+work; its routing names refuse with `secret_destination_refused` through a per-
+signature code on `registerSecretRefusals`; its inputs are released through the
+boundary; and a delegate whose consuming evaluator is typed returns the stored
+record (`model_method_result.ts`), which the function adapts. The workflow guard
+and assert evaluators stay untyped until Phase 4, so their delegate keeps
+answering the parsed content whatever the run's registry carries. A
+`refuseSecretDestinations` stage with no method checks the global arguments
+alone, as validate without `--method` does. Phase 3's exit criteria are met in
+process for the local path; compiled-binary journeys and prohibited-sink scans
+run in swamp-uat when Phase 4 enables the option.
 
 **Exit:** trusted local consumers receive the exact value of every canary class.
 Every Phase 3 entry in the inventory stays clean. Refusals happen before any

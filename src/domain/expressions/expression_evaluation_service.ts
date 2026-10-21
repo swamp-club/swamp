@@ -82,6 +82,7 @@ import {
   maskLiteralCalls,
   stripStringLiterals,
 } from "./cel_string_lexer.ts";
+import { analyzeVaultCalls } from "./vault_call_syntax.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -1586,14 +1587,19 @@ export class ExpressionEvaluationService {
         // checks every direct call up front, refuses an alias, and issues
         // the sentinel on release into the step's bag
         // (design/enablers/typed-secrets.md Sections 3.4 and 4.4). Text that
-        // is not CEL stays raw, as on the legacy path; the screen is the
-        // legacy parse, which knows nothing of aliases, so an alias still
-        // reaches the typed evaluator and is refused there.
-        const syntax = this.celEvaluator.validate(expr.celExpression);
-        if (!syntax.valid) {
+        // is not CEL stays raw, as on the legacy path. The screen parses the
+        // normalized source, with legacy bare-token arguments such as
+        // vault.get(my-vault, a@b) already quoted as the evaluator parses
+        // them; it records an alias rather than refusing it, so an alias
+        // still reaches the typed evaluator and is refused there.
+        try {
+          analyzeVaultCalls(expr.celExpression);
+        } catch (error) {
           if (containsVaultExpression(expr.celExpression)) {
             getLogger(["swamp", "expressions"])
-              .warn`Skipped vault expression at ${expr.path} because its CEL is syntactically invalid: ${syntax.error}. Raw: ${expr.raw}`;
+              .warn`Skipped vault expression at ${expr.path} because its CEL is syntactically invalid: ${
+              error instanceof Error ? error.message : String(error)
+            }. Raw: ${expr.raw}`;
           }
           return expr.raw;
         }

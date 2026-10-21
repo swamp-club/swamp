@@ -68,7 +68,10 @@ import type { ModelDefinition } from "../../domain/models/model.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
-import { analyzeVaultCalls } from "../../domain/expressions/vault_call_syntax.ts";
+import {
+  analyzeVaultCalls,
+  indirectVaultUse,
+} from "../../domain/expressions/vault_call_syntax.ts";
 import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { VaultAccessDeniedError } from "../../domain/vaults/run_vault_access.ts";
@@ -475,20 +478,16 @@ function refuseIndirectVaultUse(definition: Definition): void {
   for (
     const { celExpression, path } of extractExpressions(definition.toData())
   ) {
-    let indirect: boolean;
+    let reason: string | undefined;
     try {
-      const analysis = analyzeVaultCalls(celExpression);
-      indirect = analysis.invalidUses.length > 0 ||
-        analysis.calls.some((call) =>
-          call.args.length !== 2 || call.usesLocalBinding
-        );
+      reason = indirectVaultUse(analyzeVaultCalls(celExpression));
     } catch {
       // Text that does not parse is the syntax validation's to report.
       continue;
     }
-    if (indirect) {
+    if (reason !== undefined) {
       throw new UserError(
-        `Expression at ${path} reaches vault other than through a direct vault.get(vaultName, secretKey) call, which the run refuses`,
+        `Expression at ${path} reaches vault other than through a direct vault.get(vaultName, secretKey) call, which the run refuses: ${reason}`,
         "invalid_expression",
       );
     }

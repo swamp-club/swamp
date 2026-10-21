@@ -765,3 +765,9 @@ Deno.test("CelEvaluator: with typed secrets off, a scope changes nothing and sen
 Deno.test("CelEvaluator typed secrets: a parse error keeps today's error", () => {
   assertThrows(() => evaluate("s +"), InvalidExpressionError);
 });
+
+Deno.test("CelEvaluator.isTyped: answers the option the evaluator was built with, so an untyped guard or assert evaluator is handed parsed content by the model.method delegate", () => {
+  assertEquals(new CelEvaluator().isTyped, false);
+  assertEquals(new CelEvaluator({ typedSecrets: true }).isTyped, true);
+  assertEquals(evaluator.isTyped, true);
+});

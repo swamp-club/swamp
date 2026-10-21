@@ -2459,3 +2459,44 @@ Deno.test("evaluateDefinition: a typed run evaluates plain expressions as before
     assertEquals(registry.isEmpty, true);
   });
 });
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run keeps the legacy bare-token and backtick argument forms, and leaves text that is not CEL raw", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      "a@b": "s3cret-at",
+      "k-1": "s3cret-dash",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-legacy-forms",
+      methods: {
+        run: {
+          arguments: {
+            at: "${{ vault.get(v, a@b) }}",
+            dash: "${{ vault.get(`v`, `k-1`) }}",
+            prose: "${{ not cel at all {{ }}",
+          },
+        },
+      },
+    });
+    const { definition: executed, secretBag } = await service
+      .resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        "unrestricted",
+        { secretBag: new VaultSecretBag(registry) },
+      );
+    assertEquals(reads, []);
+    assertEquals(checks.sort(), ["a@b", "k-1"]);
+    const args = executed.getMethodArguments("run");
+    const loaded = await service.secretLoader(undefined).load(
+      secretBag,
+      executed.toData(),
+    );
+    assertEquals(loaded.resolveRaw(args.at as string), "s3cret-at");
+    assertEquals(loaded.resolveRaw(args.dash as string), "s3cret-dash");
+    assertEquals(args.prose, "${{ not cel at all {{ }}");
+    assertEquals(reads.sort(), ["a@b", "k-1"]);
+  });
+});
