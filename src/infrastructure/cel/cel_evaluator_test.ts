@@ -1434,6 +1434,76 @@ Deno.test("coerceBigInts: preserves __proto__ key in objects", () => {
   assertEquals(result["normal"], 7);
 });
 
+/** Evaluates a model.method call and returns the inputs its delegate got. */
+function modelMethodInputs(
+  expression: string,
+  typedSecrets: boolean,
+  context: Record<string, unknown> = {},
+): Record<string, unknown> {
+  let received: unknown;
+  new CelEvaluator({ typedSecrets }).evaluate(expression, {
+    ...context,
+    modelMethod: {
+      method: (_model: string, _method: string, inputs: unknown) => {
+        received = inputs;
+        return null;
+      },
+    },
+  });
+  return received as Record<string, unknown>;
+}
+
+for (const typedSecrets of [false, true]) {
+  Deno.test(`CelEvaluator model.method: ints in the inputs reach the delegate as numbers (typedSecrets ${typedSecrets})`, () => {
+    // swamp-club#3708: a bigint here failed to serialize once the synthetic
+    // step ran.
+    const inputs = modelMethodInputs(
+      "model.method('m', 'run', {'n': 1, 'l': [1, 2], 'm': {'k': {'j': 3}}})",
+      typedSecrets,
+    );
+    assertEquals(inputs, { n: 1, l: [1, 2], m: { k: { j: 3 } } });
+    assertEquals(
+      JSON.stringify(inputs),
+      '{"n":1,"l":[1,2],"m":{"k":{"j":3}}}',
+    );
+  });
+
+  Deno.test(`CelEvaluator model.method: other input values reach the delegate unchanged (typedSecrets ${typedSecrets})`, () => {
+    const inputs = modelMethodInputs(
+      "model.method('m', 'run', {'s': 'one', 'd': 2.5, 'b': true, " +
+        "'t': timestamp('2026-01-01T00:00:00Z')})",
+      typedSecrets,
+    );
+    assertEquals(inputs.s, "one");
+    assertEquals(inputs.d, 2.5);
+    assertEquals(inputs.b, true);
+    assertEquals(inputs.t, new Date("2026-01-01T00:00:00Z"));
+    assertEquals(
+      JSON.stringify(inputs.t),
+      JSON.stringify("2026-01-01T00:00:00.000Z"),
+    );
+  });
+
+  Deno.test(`CelEvaluator model.method: a __proto__ key in the inputs stays an own key (typedSecrets ${typedSecrets})`, () => {
+    // A CEL map literal never yields an own __proto__ key, so the inputs
+    // come from the context, as a parsed workflow input would.
+    const payload = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(payload, "__proto__", {
+      value: 42n,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    const inputs = modelMethodInputs(
+      "model.method('m', 'run', payload)",
+      typedSecrets,
+      { payload },
+    );
+    assertStrictEquals(Object.hasOwn(inputs, "__proto__"), true);
+    assertStrictEquals(inputs["__proto__"], 42);
+  });
+}
+
 /** Data delegate over a fixed record set; every other name resolves to null. */
 function missingRecordContext(
   records: Record<string, Record<string, unknown>> = {
