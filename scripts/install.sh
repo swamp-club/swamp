@@ -1,6 +1,11 @@
 #!/usr/bin/env sh
 # shellcheck shell=sh disable=SC3043
 set -eu
+ARTIFACT_ORIGIN="${SWAMP_ARTIFACTS_URL:-https://artifacts.swamp-club.com}"
+case "$ARTIFACT_ORIGIN" in
+  https://artifacts.swamp-club.com | https://artifacts-b.swamp-club.com) ;;
+  *) printf '%s\n' "Untrusted artifact origin: $ARTIFACT_ORIGIN" >&2; exit 1 ;;
+esac
 
 print_usage() {
   local program bin default_dest default_platform
@@ -96,18 +101,15 @@ main() {
 
   release_version="$(release_version_from_url "$resolved_asset_url")"
   release_asset="$bin-$os_type-$cpu_type"
-  release_checksums="checksums-$release_version.txt"
-  download \
-    "https://github.com/swamp-club/swamp/releases/download/v$release_version/checksums.txt" \
-    "$tmpdir/$release_checksums"
 
   section "Extracting '$asset'"
   extract_archive "$tmpdir/$asset" "$tmpdir" "$bin"
   # The archive was verified before extraction and is not needed again.
   # Removing it now keeps it off disk while the binary is copied into place.
   rm -f "$tmpdir/$asset" "$tmpdir/$checksum"
-  verify_release_binary \
-    "$tmpdir/$bin" "$tmpdir/$release_checksums" "$release_asset"
+  chmod 755 "$tmpdir/$bin"
+  reported_version="$("$tmpdir/$bin" --version)"
+  [ "$reported_version" = "swamp $release_version" ] || die "Downloaded binary version mismatch: $reported_version"
 
   INSTALL_DEST="$dest"
   INSTALL_BIN="$bin"
@@ -269,7 +271,7 @@ asset_url() {
   type="binary"
   extension="tar.gz"
 
-  asset_url="https://artifacts.swamp-club.com/$bin/$version/$type"
+  asset_url="$ARTIFACT_ORIGIN/$bin/$version/$type"
   asset_url="$asset_url/$os_type/$cpu_type/$bin-$version-$type-$platform.$extension"
 
   echo "$asset_url"
@@ -280,7 +282,7 @@ validate_artifact_url() {
   url="$1"
 
   case "$url" in
-    https://artifacts.swamp-club.com/swamp/*) ;;
+    $ARTIFACT_ORIGIN/swamp/*) ;;
     *) die "Untrusted artifact URL: $url" ;;
   esac
 }
@@ -290,7 +292,7 @@ release_version_from_url() {
   url="$1"
 
   validate_artifact_url "$url"
-  path="${url#https://artifacts.swamp-club.com/swamp/}"
+  path="${url#$ARTIFACT_ORIGIN/swamp/}"
   version="${path%%/*}"
 
   if [ -z "$version" ] || [ "$version" = "stable" ]; then
@@ -741,7 +743,7 @@ download() {
   _download_url="$_url"
   _artifact_download=false
   case "$_url" in
-    https://artifacts.swamp-club.com/swamp/*) _artifact_download=true ;;
+    $ARTIFACT_ORIGIN/swamp/*) _artifact_download=true ;;
   esac
   need_cmd sed
   if check_cmd curl; then

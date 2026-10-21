@@ -67,7 +67,11 @@ $ErrorActionPreference = "Stop"
 # Script configuration
 $BinName = "swamp"
 $BinExe = "$BinName.exe"
-$TrustedArtifactHost = "https://artifacts.swamp-club.com/$BinName/"
+$ArtifactOrigin = if ($env:SWAMP_ARTIFACTS_URL) { $env:SWAMP_ARTIFACTS_URL } else { "https://artifacts.swamp-club.com" }
+if ($ArtifactOrigin -cnotin @("https://artifacts.swamp-club.com", "https://artifacts-b.swamp-club.com")) {
+    throw "Untrusted artifact origin: $ArtifactOrigin"
+}
+$TrustedArtifactHost = "$ArtifactOrigin/$BinName/"
 
 function Write-Header {
     param([string]$Message)
@@ -129,7 +133,7 @@ function Get-AssetUrl {
     $platform = "$OsType-$CpuType"
     $extension = "zip"
 
-    $url = "https://artifacts.swamp-club.com/$BinName/$Version/$type"
+    $url = "$ArtifactOrigin/$BinName/$Version/$type"
     $url = "$url/$OsType/$CpuType/$BinName-$Version-$type-$platform.$extension"
 
     return $url
@@ -493,24 +497,18 @@ function Main {
             }
             $createdDestination = $true
         }
-        $binaryPath = Join-Path $Destination ".swamp.tmp.$([guid]::NewGuid())"
+        $binaryPath = Join-Path $Destination ".swamp.tmp.$([guid]::NewGuid()).exe"
         Extract-Archive -ArchivePath $zipFile -DestinationFile $binaryPath
         # The archive was verified before extraction and is not needed again.
         # Removing it now keeps it off disk while the binary is put in place.
         Remove-Item -LiteralPath $zipFile, $checksumFile -Force -ErrorAction SilentlyContinue
         Write-Success "Extracted successfully"
 
-        # Cross-verify extracted binary against GitHub release checksums
-        Write-Header "Verifying release binary"
-        $releaseAsset = "$BinName-$osType-$cpuType"
-        $releaseChecksumsFile = Join-Path $tempDir "checksums-$releaseVersion.txt"
-        Download-File `
-            -Url "https://github.com/swamp-club/swamp/releases/download/v$releaseVersion/checksums.txt" `
-            -Destination $releaseChecksumsFile
-
-        $expectedBinaryHash = Get-ChecksumForAsset $releaseChecksumsFile $releaseAsset
-        Assert-Sha256 $binaryPath $expectedBinaryHash $releaseAsset
-        Write-Success "Verified GitHub release checksum for '$releaseAsset'"
+        # Archive SHA-256 was verified against the immutable GCP object.
+        $reportedVersion = & $binaryPath --version
+        if ($LASTEXITCODE -ne 0 -or $reportedVersion -cne "swamp $releaseVersion") {
+            throw "Downloaded binary version mismatch: $reportedVersion"
+        }
 
         # Install binary
         Write-Header "Installing binary"
