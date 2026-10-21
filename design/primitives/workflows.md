@@ -3575,8 +3575,12 @@ instance id:
 - The process on the serve host is still alive: stop it, then cancel again.
 - The process is serve itself, which holds the run under another id (a nested
   run) or has not recorded its start yet: cancel the run that started it, or
-  cancel again once it has started. The reply never advises stopping serve
-  (swamp-club#3740).
+  cancel again once it has started (swamp-club#3740). This reply is given only
+  for a row this instance wrote (its instance id, or none). A row a previous
+  serve process left under the same pid, as when serve runs as PID 1 and its
+  container restarts, still gets the reply above, which then names serve
+  itself. Telling such a row apart from a live process of another instance
+  sharing the host and `.swamp` directory is swamp-club#3739.
 - The serve instance that runs it still reports a heartbeat: cancel through
   that instance, or again here once its heartbeat has expired.
 - Nothing can judge it: there is no tracker row from this host and no

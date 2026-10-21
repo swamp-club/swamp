@@ -549,7 +549,7 @@ Deno.test("ownerGoneDecider: a live pid in the tracker row keeps the owner, what
   });
 });
 
-Deno.test("ownerGoneDecider: a tracker row naming this process never advises stopping it (swamp-club#3740)", async () => {
+Deno.test("ownerGoneDecider: a tracker row this instance wrote under its own pid never advises stopping it (swamp-club#3740)", async () => {
   await withTracker(async (tracker) => {
     const run = runningRun(makeWorkflow("deploy"), Deno.pid, "this-instance");
     tracker.register(trackerRow(run, Deno.pid, "this-instance"));
@@ -569,7 +569,7 @@ Deno.test("ownerGoneDecider: a tracker row naming this process never advises sto
   });
 });
 
-Deno.test("ownerGoneDecider: a previous instance's row under this process's reused pid is not taken for this process (swamp-club#3740)", async () => {
+Deno.test("ownerGoneDecider: a previous instance's row under this process's reused pid still gets the process-alive reply (swamp-club#3740, swamp-club#3739)", async () => {
   await withTracker(async (tracker) => {
     const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
     tracker.register(trackerRow(run, Deno.pid, "old-instance"));
@@ -587,6 +587,9 @@ Deno.test("ownerGoneDecider: a previous instance's row under this process's reus
         gone.why.includes("this serve instance is running it"),
         false,
       );
+      // Telling this row from a live process of another instance is
+      // swamp-club#3739.
+      assertStringIncludes(gone.why, "is still alive");
     }
   });
 });
