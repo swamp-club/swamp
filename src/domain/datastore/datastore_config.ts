@@ -353,7 +353,10 @@ export const REPO_LOCAL_STREAM_SUBDIRS = [
  * `.swamp`, whatever the datastore. Records store its path relative to the
  * repository, so the log stays local when its record moves.
  */
-const RUN_LOG_SUBDIRS: readonly string[] = ["outputs", "workflow-runs"];
+export const RUN_LOG_SUBDIRS: readonly string[] = [
+  "outputs",
+  "workflow-runs",
+];
 
 /**
  * Whether `subdir`, a top-level datastore subdirectory, is a repo-local

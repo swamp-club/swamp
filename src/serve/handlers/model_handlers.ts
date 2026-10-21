@@ -50,6 +50,7 @@ import {
 import {
   createModelMethodHistoryLogsDeps,
   modelMethodHistoryLogs,
+  type ModelMethodHistoryLogsDeps,
 } from "../../libswamp/models/method_history_logs.ts";
 import {
   createModelOutputDataDeps,
@@ -198,6 +199,12 @@ import {
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  assertSafePath,
+  PathTraversalError,
+} from "../../infrastructure/persistence/safe_path.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { RUN_LOG_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
 import {
   isUnpublishedDataError,
   type WrittenVersion,
@@ -1670,7 +1677,7 @@ export async function handleModelOutputGet(
       const deps = {
         ...await createModelOutputGetDeps(
           ctx.repoDir,
-          undefined,
+          ctx.datastoreResolver,
           ctx.repoContext.definitionRepo,
           ctx.repoContext.unreadableContent,
         ),
@@ -2058,7 +2065,7 @@ export async function handleModelMethodHistoryGet(
     async () => {
       const deps = await createModelOutputGetDeps(
         ctx.repoDir,
-        undefined,
+        ctx.datastoreResolver,
         ctx.repoContext.definitionRepo,
         ctx.repoContext.unreadableContent,
       );
@@ -2130,6 +2137,31 @@ export async function handleModelMethodHistoryGet(
   }
 }
 
+/**
+ * Reads a run log only from the repo's own run-log directories: a method
+ * run logs under outputs, a workflow step under its workflow run. The path
+ * comes from the output record, which may have been written by another
+ * datastore writer, so a path outside them is answered as a missing log
+ * rather than read and sent to the client (swamp-club#3729).
+ */
+function containedLogFileReader(
+  repoDir: string,
+  read: ModelMethodHistoryLogsDeps["readLogFile"],
+): ModelMethodHistoryLogsDeps["readLogFile"] {
+  const logDirs = RUN_LOG_SUBDIRS.map((subdir) => swampPath(repoDir, subdir));
+  return async (path, options) => {
+    for (const logDir of logDirs) {
+      try {
+        await assertSafePath(path, logDir);
+        return await read(path, options);
+      } catch (error) {
+        if (!(error instanceof PathTraversalError)) throw error;
+      }
+    }
+    return { lines: [], path };
+  };
+}
+
 export async function handleModelMethodHistoryLogs(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2145,10 +2177,11 @@ export async function handleModelMethodHistoryLogs(
     async () => {
       const deps = await createModelMethodHistoryLogsDeps(
         ctx.repoDir,
-        undefined,
+        ctx.datastoreResolver,
         ctx.repoContext.definitionRepo,
         ctx.repoContext.unreadableContent,
       );
+      deps.readLogFile = containedLogFileReader(ctx.repoDir, deps.readLogFile);
       return {
         deps,
         reference: await resolveOutputReference(
