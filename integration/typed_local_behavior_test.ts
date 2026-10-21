@@ -671,6 +671,12 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       globalArguments: { token: "${{ vault.get('prod', 'no-such-key') }}" },
       methods: { [METHOD]: { arguments: {} } },
     }));
+    const aliasedDef = await f.save(Definition.create({
+      name: "aliased",
+      type: f.type.normalized,
+      globalArguments: { token: "${{ dyn(vault).get('prod', 'canary-9') }}" },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
     const deps = createModelValidateDeps(
       f.repoDir,
       { method: METHOD, createSensitiveValues: f.typedValues },
@@ -781,6 +787,18 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertStringIncludes(missingCheck?.error ?? "", "no-such-key");
     assertEquals(f.checked.length, checksBeforeMissing);
     assertValueFree(f, JSON.stringify(missing), "the missing-key failure");
+
+    // A vault reached through an alias is refused as the run refuses it,
+    // before any check runs and with no read.
+    const before9 = f.counting.readsOf(keyOf(9));
+    const aliased = await deps.validateModel(aliasedDef, f.model, f.type);
+    const aliasedCheck = aliased.results.find((r) =>
+      r.name === "Check: see-args"
+    );
+    assertEquals(aliasedCheck?.passed, false);
+    assertStringIncludes(aliasedCheck?.error ?? "", "direct vault.get");
+    assertEquals(f.checked.length, checksBeforeMissing);
+    assertEquals(f.counting.readsOf(keyOf(9)) - before9, 0);
     await assertNoPlaintextOnDisk(f);
   });
 });

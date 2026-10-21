@@ -66,11 +66,12 @@ import {
 } from "../../domain/models/method_execution_service.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
-import {
-  InvalidExpressionError,
-  SecretRefusedError,
-} from "../../domain/expressions/errors.ts";
+import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
+import { analyzeVaultCalls } from "../../domain/expressions/vault_call_syntax.ts";
 import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
+import { UserError } from "../../domain/errors.ts";
+import { VaultAccessDeniedError } from "../../domain/vaults/run_vault_access.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
@@ -388,6 +389,11 @@ async function deliverCheckArguments(
       ? { [methodName]: data.methods![methodName] }
       : {},
   });
+  // A vault reached any way but a direct vault.get call, or a call with the
+  // wrong arity or one that reads a comprehension or cel.bind local, is what
+  // the typed run refuses before it evaluates anything; validate refuses it
+  // the same way, since the evaluator reports it as an evaluation error.
+  refuseIndirectVaultUse(scoped);
   // Bound as a run binds them: the definition's input defaults, and the
   // environment of the machine validate runs on.
   const inputs = definition.inputs
@@ -449,12 +455,44 @@ async function deliverCheckArguments(
 /**
  * Whether an error of the runtime pass is the evaluator failing to evaluate
  * an expression with what validate can bind, which degrades, rather than a
- * reference check, a refusal or a load failing, which fails the checks. A
- * refusal is never an evaluation failure, whatever class wraps it.
+ * reference check, a refusal or a load failing, which fails the checks. The
+ * evaluator wraps a denied sensitive-field authorization in its own error
+ * class, so the cause is read: a denial fails the checks as it fails the run.
  */
 function isEvaluationFailure(error: unknown): boolean {
   return error instanceof InvalidExpressionError &&
-    !(error instanceof SecretRefusedError);
+    !(error.cause instanceof VaultAccessDeniedError);
+}
+
+/**
+ * Fails when an expression of `definition` uses `vault` other than as the
+ * receiver of a direct two-argument `vault.get` call outside a comprehension
+ * or `cel.bind` local (design/enablers/typed-secrets.md Section 4.4), naming
+ * the authored path. The evaluator refuses the same uses before it evaluates
+ * anything, and so before any reference is checked or loaded.
+ */
+function refuseIndirectVaultUse(definition: Definition): void {
+  for (
+    const { celExpression, path } of extractExpressions(definition.toData())
+  ) {
+    let indirect: boolean;
+    try {
+      const analysis = analyzeVaultCalls(celExpression);
+      indirect = analysis.invalidUses.length > 0 ||
+        analysis.calls.some((call) =>
+          call.args.length !== 2 || call.usesLocalBinding
+        );
+    } catch {
+      // Text that does not parse is the syntax validation's to report.
+      continue;
+    }
+    if (indirect) {
+      throw new UserError(
+        `Expression at ${path} reaches vault other than through a direct vault.get(vaultName, secretKey) call, which the run refuses`,
+        "invalid_expression",
+      );
+    }
+  }
 }
 
 /** Converts raw validation results to the presentation format. */

@@ -1332,8 +1332,9 @@ step extracted from `executeWorkflow` and shared with the method boundary. The
 pass covers the global arguments and the selected method's arguments only,
 binds the definition's input defaults and the environment as a run does, and
 nothing is delivered when no check applies; a refused destination, a denied,
-missing or unreadable reference (its existence check failing), or a failed
-load fails every applicable check with a value-free error, while what validate
+missing or unreadable reference (its existence check failing), a vault reached
+other than through a direct `vault.get` call, or a failed load fails every
+applicable check with a value-free error, while what validate
 cannot evaluate (an input with no
 default, an environment variable unset where validate runs) is left as its
 stored text for the checks, as the untyped path leaves it;
