@@ -42,6 +42,7 @@ import {
   subdirsHoldingRecords,
 } from "../persistence/datastore_records.ts";
 import { removeEmptyDirs } from "../persistence/directory_merge.ts";
+import { LOCKFILE_NAME } from "../persistence/extension_lockfile_paths.ts";
 import { swampPath } from "../persistence/paths.ts";
 import { isCheckoutLocalKey, readModelStateDir } from "./record_path_guard.ts";
 import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
@@ -90,6 +91,23 @@ export class V3CheckoutHoldsRecordsError extends UserError {
 }
 
 /**
+ * Whether a file under `.swamp/` (or `.swamp/<namespace>/`) is the joining
+ * checkout's own, so the join check never counts or moves it: a file the
+ * checkout keeps as its own under v3 (`isCheckoutLocalKey`), or the
+ * managedConfig lockfile `config/upstream_extensions.json`. The datastore
+ * extension's auto-install writes that lockfile on a fresh checkout's first
+ * command, before the check runs, and swamp regenerates it while the
+ * datastore holds its committed copy (swamp-club#3696). Crash recovery does
+ * not use this rule: the lockfile is a committed record there.
+ * `segments` is the file's path from the record root.
+ */
+export function isJoinOwnFile(segments: readonly string[]): boolean {
+  if (isCheckoutLocalKey(segments)) return true;
+  return segments.length === 2 && segments[0] === "config" &&
+    segments[1] === LOCKFILE_NAME;
+}
+
+/**
  * Whether the checkout at `repoDir` has opened a v3 datastore before: its
  * read model's state exists. The read model creates it when it opens,
  * before it materialises any file, so a checkout another process is joining
@@ -128,9 +146,9 @@ function recordRoots(
  * The record directories a checkout that has never opened a v3 datastore
  * holds, relative to its `.swamp/`: those of `.swamp/` and, with a
  * namespace, of `.swamp/<namespace>/`, found as v3 setup finds them. Files
- * the checkout keeps as its own under v3 (`isCheckoutLocalKey`: pulled
- * extension sources, dot-prefixed locks and indexes, run logs) and the v2
- * catalog are no records. Empty when the checkout has v3 state, which is
+ * the checkout keeps as its own (`isJoinOwnFile`: pulled extension
+ * sources, dot-prefixed locks and indexes, run logs, the managedConfig
+ * lockfile) and the v2 catalog are no records. Empty when the checkout has v3 state, which is
  * not walked.
  */
 export async function preV3CheckoutRecordDirs(
@@ -145,7 +163,7 @@ export async function preV3CheckoutRecordDirs(
       dir,
       subdirs,
       CATALOG_FILES,
-      isCheckoutLocalKey,
+      isJoinOwnFile,
     );
     for (const subdir of holding) {
       found.push(prefix ? join(prefix, subdir) : subdir);
@@ -221,7 +239,7 @@ export async function movePreV3CheckoutRecords(
           dir,
           subdir,
           CATALOG_FILES,
-          isCheckoutLocalKey,
+          isJoinOwnFile,
         )
       ) {
         files.push(file);

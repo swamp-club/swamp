@@ -909,6 +909,56 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 bucket: a fresh checkout holding what the datastore extension's install wrote joins, commits, and is refused while a v2 record sits beside it (swamp-club#3696)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const first = join(root, "first");
+      await initRepo(first);
+      assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+      const second = join(root, "second");
+      await cloneRepo(first, second);
+      // Auto-installing the datastore extension under managedConfig writes
+      // the managed lockfile and the pulled sources before the first open.
+      const lockfile = swampPath(second, "config", "upstream_extensions.json");
+      const pulled = swampPath(
+        second,
+        "config",
+        "pulled-extensions",
+        "@swamp",
+        "s3-datastore",
+        "manifest.yaml",
+      );
+      await Deno.mkdir(dirname(pulled), { recursive: true });
+      await Deno.writeTextFile(lockfile, "{}");
+      await Deno.writeTextFile(pulled, "name: '@swamp/s3-datastore'");
+      const v2Record = swampPath(second, "data", "m", "log", "1", "raw");
+      await Deno.mkdir(dirname(v2Record), { recursive: true });
+      await Deno.writeTextFile(v2Record, "B-pre-join");
+      await withSidecar(root, async () => {
+        await writeIn(first, 2);
+        const error = await assertRejects(
+          () => restoredCommits(second),
+          V3CheckoutHoldsRecordsError,
+        );
+        assertEquals([...error.recordDirs], ["data"]);
+        assertEquals(await recordsIn(second, "_read_model_v3"), []);
+
+        await Deno.remove(swampPath(second, "data"), { recursive: true });
+        assertEquals(await restoredCommits(second), 2);
+        assertEquals((await recordsIn(second, "auto-definitions")).length, 2);
+        await writeIn(second, 1);
+        assertEquals(await restoredCommits(first), 3);
+        // The checkout's own files are left where they are.
+        assertEquals(await Deno.readTextFile(lockfile), "{}");
+        await Deno.stat(pulled);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 bucket: a writer whose lease another checkout took is fenced, and its late commits never reach the published state (swamp-club#3534)",
   ignore: SIDECAR_TESTS_IGNORED,
   async fn() {

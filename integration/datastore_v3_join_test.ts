@@ -388,3 +388,59 @@ Deno.test({
     }, { bHoldsRecords: false });
   },
 });
+
+Deno.test({
+  name:
+    "v3 join: a fresh managedConfig checkout holding what the datastore extension's install wrote joins, and is refused while a v2 record sits beside it (swamp-club#3696)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withJoiningCheckout(async ({ repoB, modelType, model }) => {
+      // Auto-installing the datastore extension under managedConfig writes
+      // the managed lockfile and the pulled sources before the first open.
+      const lockfile = swampPath(repoB, "config", "upstream_extensions.json");
+      const pulled = swampPath(
+        repoB,
+        "config",
+        "pulled-extensions",
+        "@swamp",
+        "s3-datastore",
+        "manifest.yaml",
+      );
+      await Deno.mkdir(join(pulled, ".."), { recursive: true });
+      await Deno.writeTextFile(lockfile, "{}");
+      await Deno.writeTextFile(pulled, "name: '@swamp/s3-datastore'");
+      const record = swampPath(repoB, "data", "m1", "log", "1", "raw");
+      await Deno.mkdir(join(record, ".."), { recursive: true });
+      await Deno.writeTextFile(record, "B-pre-join");
+
+      const error = await assertRejects(
+        () =>
+          requireInitializedRepoReadOnly({
+            repoDir: repoB,
+            outputMode: "json",
+          }),
+        V3CheckoutHoldsRecordsError,
+      );
+      assertEquals([...error.recordDirs], ["data"]);
+      assertEquals(await hasV3CheckoutState(repoB), false);
+
+      await Deno.remove(swampPath(repoB, "data"), { recursive: true });
+      const opened = await requireInitializedRepoReadOnly({
+        repoDir: repoB,
+        outputMode: "json",
+      });
+      assertEquals(
+        await opened.repoContext.unifiedDataRepo.listVersions(
+          modelType,
+          model.id,
+          "log",
+        ),
+        [1, 2],
+      );
+      assertEquals(await hasV3CheckoutState(repoB), true);
+      // The checkout's own files are left where they are.
+      assertEquals(await Deno.readTextFile(lockfile), "{}");
+      await Deno.stat(pulled);
+    }, { bHoldsRecords: false });
+  },
+});
