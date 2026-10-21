@@ -148,8 +148,8 @@ function recordRoots(
  * namespace, of `.swamp/<namespace>/`, found as v3 setup finds them. Files
  * the checkout keeps as its own (`isJoinOwnFile`: pulled extension
  * sources, dot-prefixed locks and indexes, run logs, the managedConfig
- * lockfile) and the v2 catalog are no records. Empty when the checkout has v3 state, which is
- * not walked.
+ * lockfile) and the v2 catalog are no records. Empty when the checkout has
+ * v3 state, which is not walked.
  */
 export async function preV3CheckoutRecordDirs(
   repoDir: string,
