@@ -28,6 +28,9 @@ Come join the [swamp party on discord](https://discord.gg/swamp-club).
 
 Swamp runs on macOS and Linux (x86_64 and arm64) and on Windows (x86_64).
 
+Stable releases are promoted after automated user acceptance tests verify the
+versioned build artifacts.
+
 On macOS and Linux:
 
 ```bash
