@@ -207,6 +207,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // v3 here and the target is new and empty.
   "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/v3_bucket_setup.ts",
   "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/v3_datastore_binding.ts",
+  // swamp-club#3691: `--format 3` refuses a checkout whose materialised
+  // subdirectories link out of .swamp, as the v3 open does.
+  "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/cache_root_containment.ts",
   // swamp-club#3534: lock status and release, and config migrate, open a
   // bucket datastore through its binding (v3DatastoreConfigOf).
   "src/cli/commands/datastore_config_migrate.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",

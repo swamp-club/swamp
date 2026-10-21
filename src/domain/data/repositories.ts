@@ -29,14 +29,43 @@ import type { Namespace } from "./namespace.ts";
 export type ContentAvailability = "current" | "acceptedShort" | "missing";
 
 /**
- * Reads one file of another namespace from the remote datastore, by its path
- * relative to that namespace's root. Returns the bytes, or null when the file
+ * Reads one file of another namespace, by its path relative to that
+ * namespace's root: from the remote datastore on v2, from the namespace's
+ * cache root in the checkout on v3. Returns the bytes, or null when the file
  * does not exist. Nothing is written to local storage.
  */
-export type ForeignContentFetcher = (
+export type ForeignContentFetcher =
+  & ((
+    namespace: string,
+    relPath: string,
+  ) => Promise<Uint8Array | null>)
+  & {
+    /**
+     * The fetcher reads the solo namespace (`""`) too, so a row of it in a
+     * namespaced repository is another namespace's row (v3, swamp-club#3691).
+     * Otherwise such a row is the repository's own, written before it set a
+     * namespace, and is never fetched.
+     */
+    readonly readsSoloNamespace?: boolean;
+  };
+
+/**
+ * Whether a row of `namespace` is another namespace's to the repository
+ * `repo`: its content is never in the repository's own layout, and is read
+ * only through {@link ForeignContentFetcher}. A solo row (`""`) is the
+ * repository's own unless its fetcher reads the solo namespace.
+ */
+export function isForeignNamespace(
   namespace: string,
-  relPath: string,
-) => Promise<Uint8Array | null>;
+  repo: {
+    readonly namespace: string;
+    readonly fetchForeignContent?: ForeignContentFetcher;
+  },
+): boolean {
+  if (namespace === repo.namespace) return false;
+  return namespace !== "" ||
+    repo.fetchForeignContent?.readsSoloNamespace === true;
+}
 
 /**
  * Error thrown when ownership validation fails.

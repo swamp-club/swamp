@@ -22,7 +22,10 @@ import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.
 import type { DataRecord, FileDataRecord } from "./data_record.ts";
 import type { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
-import type { UnifiedDataRepository } from "./repositories.ts";
+import {
+  isForeignNamespace,
+  type UnifiedDataRepository,
+} from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
@@ -168,6 +171,11 @@ function isAcceptedShortContent(
  * accept it as the remote's copy (a metadata-only pull left the old bytes of
  * a version another host appended to, swamp-club#3178), so an async caller
  * can hydrate it and map the row again. Such stale bytes are not parsed.
+ *
+ * A row of another namespace (see {@link isForeignNamespace}) is never read
+ * from the repository's own layout, which can hold the repository's own item
+ * at the same path (swamp-club#3691): its bytes are left empty, and the
+ * async caller fills them through the foreign content fetcher.
  */
 export function fromRow(
   row: CatalogRow,
@@ -177,9 +185,9 @@ export function fromRow(
   includeContentPath = false,
   onMissingContent?: () => void,
 ): DataRecord {
-  const needsBytes = (loadAttributes &&
-    row.content_type === "application/json") ||
-    (loadContent && isTextContentType(row.content_type));
+  const needsBytes = !isForeignNamespace(row.namespace, dataRepo) &&
+    ((loadAttributes && row.content_type === "application/json") ||
+      (loadContent && isTextContentType(row.content_type)));
 
   let rawBytes: Uint8Array | null = null;
   if (needsBytes) {

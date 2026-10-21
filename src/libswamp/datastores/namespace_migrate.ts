@@ -25,7 +25,10 @@ import {
   CATALOG_FILE_NAMES,
   DEFAULT_DATASTORE_SUBDIRS,
 } from "../../domain/datastore/datastore_config.ts";
-import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
+import {
+  namespaceCollidesWithLayout,
+  namespaceNameClash,
+} from "../../domain/data/namespace.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface SubdirPreview {
@@ -126,8 +129,8 @@ const MERGEABLE_ON_REVERSE = new Set([
  * layout's `{base}/{subdir}` are the same directory.
  */
 export function layoutCollisionMessage(namespace: string): string {
-  return `Namespace "${namespace}" has the same name as a datastore layout ` +
-    `directory, so its data cannot be told apart from un-namespaced data and ` +
+  return `${namespaceNameClash(namespace)}, so its data cannot be told ` +
+    `apart from un-namespaced data and ` +
     `cannot be moved automatically.\n\n` +
     `To move it to another name by hand:\n` +
     `  1. swamp datastore namespace set <new-name>\n` +

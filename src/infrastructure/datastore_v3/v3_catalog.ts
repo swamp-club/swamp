@@ -167,6 +167,97 @@ export class V3Catalog implements ReadModelCatalog {
   }
 }
 
+/**
+ * The read model's catalog with the actions on data it never projects
+ * dropped (swamp-club#3691): `skips(namespace, recordKey)` names them, by
+ * the record key each action's row maps to ({@link catalogRowRecordKey}; a
+ * name-wide action maps to the name's latest marker). Every kind of action
+ * is judged, so another checkout's commit can neither add, change nor
+ * remove a row this checkout keeps for itself. One wrapper covers both the
+ * commits the read model applies and the compacted base it loads.
+ */
+export class ProjectedCatalog implements ReadModelCatalog {
+  readonly #inner: ReadModelCatalog;
+  readonly #skips: (namespace: string, recordKey: string) => boolean;
+
+  constructor(
+    inner: ReadModelCatalog,
+    skips: (namespace: string, recordKey: string) => boolean,
+  ) {
+    this.#inner = inner;
+    this.#skips = skips;
+  }
+
+  generation(): number {
+    return this.#inner.generation();
+  }
+
+  isPopulated(): boolean {
+    return this.#inner.isPopulated();
+  }
+
+  markPopulated(generation: number): void {
+    this.#inner.markPopulated(generation);
+  }
+
+  clear(admits: (key: string) => boolean): number {
+    return this.#inner.clear(admits);
+  }
+
+  apply(
+    namespace: string,
+    partition: PartitionKey,
+    actions: readonly CatalogAction[],
+  ): void {
+    const identity = partition.identity;
+    // The inner catalog refuses actions on any other partition.
+    if (identity.kind !== "model") {
+      this.#inner.apply(namespace, partition, actions);
+      return;
+    }
+    this.#inner.apply(
+      namespace,
+      partition,
+      actions.filter((action) =>
+        !this.#skips(
+          namespace,
+          catalogRowRecordKey(
+            catalogActionRowKey(namespace, identity.type, identity.id, action),
+          ),
+        )
+      ),
+    );
+  }
+
+  close(): void {
+    this.#inner.close();
+  }
+}
+
+/** The catalog row, or rows of a name, a catalog action changes. */
+function catalogActionRowKey(
+  namespace: string,
+  typeNormalized: string,
+  modelId: string,
+  action: CatalogAction,
+): CatalogRowKey {
+  const row = { namespace, type_normalized: typeNormalized, model_id: modelId };
+  switch (action.kind) {
+    case "upsert-version":
+      return {
+        ...row,
+        data_name: action.metadata.name,
+        version: action.metadata.version,
+      };
+    case "remove-version":
+      return { ...row, data_name: action.name, version: action.version };
+    case "remove-name":
+    case "forward":
+    case "end-forward":
+      return { ...row, data_name: action.name };
+  }
+}
+
 /** A version's catalog row, as the v2 repository's `catalogUpsert` builds it. */
 export function catalogRow(
   namespace: string,

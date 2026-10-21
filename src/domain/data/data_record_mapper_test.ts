@@ -872,3 +872,78 @@ Deno.test("fromRow: a repository without isContentAcceptedSync accepts a short b
   assertEquals(missing, 0);
   assertEquals(record.attributes, { a: 1 });
 });
+
+// ============================================================================
+// fromRow — another namespace's row (swamp-club#3691)
+// ============================================================================
+
+/**
+ * A repository of namespace `namespace` whose own layout holds `own` at
+ * every path, counting the synchronous reads. `readsSoloNamespace` marks
+ * its foreign content fetcher as one that reads the solo namespace too.
+ */
+function namespacedRepo(
+  namespace: string,
+  own: Uint8Array,
+  readsSoloNamespace?: boolean,
+): { repo: UnifiedDataRepository; reads: () => number } {
+  let reads = 0;
+  const fetcher = () => Promise.resolve(null);
+  const repo = {
+    namespace,
+    getContentSync: () => {
+      reads++;
+      return own;
+    },
+    ...(readsSoloNamespace === undefined ? {} : {
+      fetchForeignContent: Object.assign(fetcher, { readsSoloNamespace }),
+    }),
+  } as unknown as UnifiedDataRepository;
+  return { repo, reads: () => reads };
+}
+
+Deno.test("fromRow: never reads the reader's own path for another namespace's row (swamp-club#3691)", () => {
+  // The reader's own layout holds its own item under the same model id.
+  const { repo, reads } = namespacedRepo(
+    "alpha",
+    encoder.encode('{"who":"alpha"}'),
+  );
+  let missing = 0;
+  const record = fromRow(
+    createRow({ namespace: "beta" }),
+    repo,
+    true,
+    true,
+    false,
+    () => missing++,
+  );
+
+  assertEquals(reads(), 0);
+  assertEquals(record.attributes, {});
+  assertEquals(record.content, "");
+  assertEquals(missing, 0, "hydration fills a foreign row, not a download");
+});
+
+Deno.test("fromRow: a solo row is another namespace's when the fetcher reads the solo namespace (swamp-club#3691)", () => {
+  const { repo, reads } = namespacedRepo(
+    "alpha",
+    encoder.encode('{"who":"alpha"}'),
+    true,
+  );
+  const record = fromRow(createRow({ namespace: "" }), repo, true, true);
+
+  assertEquals(reads(), 0);
+  assertEquals(record.attributes, {});
+});
+
+Deno.test("fromRow: a solo row stays the repository's own legacy row with a fetcher that does not read the solo namespace", () => {
+  const { repo, reads } = namespacedRepo(
+    "alpha",
+    encoder.encode('{"who":"alpha"}'),
+    false,
+  );
+  const record = fromRow(createRow({ namespace: "" }), repo, true, true);
+
+  assertEquals(reads(), 1);
+  assertEquals(record.attributes, { who: "alpha" });
+});

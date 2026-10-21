@@ -41,11 +41,13 @@ import {
   compactRetentionQuietly,
   holdV3Writer,
   SERVE_CHUNK_VERIFY_BYTES,
+  V3_RESERVED_NAMESPACE_CODE,
   v3DatastoreFor,
   V3MaintenanceTimer,
   v3RepositoryFactoryConfig,
   v3RetentionHistory,
 } from "./v3_repo_context.ts";
+import { V3_CACHE_ROOT_ESCAPE_CODE } from "./cache_root_containment.ts";
 import {
   acquireV3WriterLock,
   checkV3WriterLease,
@@ -941,4 +943,250 @@ Deno.test("v3RepositoryFactoryConfig: a writer whose boot id cannot be read stil
       setLocalProcessForTesting(undefined);
     }
   });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a reserved namespace is refused with the v3 way off it (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir);
+    for (const namespace of ["data", "vault"]) {
+      const error = await assertRejects(
+        () =>
+          v3RepositoryFactoryConfig(repoDir, {
+            type: "filesystem",
+            path: datastorePath,
+            namespace,
+          }),
+        UserError,
+        `Namespace "${namespace}" has the same name as a datastore layout directory`,
+      );
+      assert(
+        error.message.includes("new, empty v3 datastore"),
+        error.message,
+      );
+      assert(
+        !error.message.includes("swamp datastore namespace set"),
+        "v3 refuses namespace set, so the remedy cannot name it",
+      );
+      assertEquals(error.code, V3_RESERVED_NAMESPACE_CODE);
+    }
+    // Refused before anything opened: no read model state was made.
+    assertEquals(
+      await Deno.stat(swampPath(repoDir, "_read_model_v3")).then(
+        () => true,
+        () => false,
+      ),
+      false,
+    );
+  });
+});
+
+Deno.test("holdV3Writer: a reserved namespace is refused before the writer lock or recovery (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir);
+    const reserved = {
+      type: "filesystem" as const,
+      path: datastorePath,
+      namespace: "vault",
+    };
+    await assertRejects(
+      () => holdV3Writer(reserved, repoDir),
+      UserError,
+      'Namespace "vault"',
+    );
+    assertEquals(holdsV3WriterLock(datastorePath), false);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a .swamp/data linking out of .swamp is refused at open (swamp-club#3691)", async () => {
+  if (Deno.build.os === "windows") return;
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    const outside = join(dir, "elsewhere");
+    await Deno.mkdir(outside);
+    await Deno.mkdir(swampPath(repoDir), { recursive: true });
+    await Deno.symlink(outside, swampPath(repoDir, "data"), { type: "dir" });
+    await assertRejects(
+      () => v3RepositoryFactoryConfig(repoDir, config(datastorePath)),
+      UserError,
+      `${swampPath(repoDir, "data")} resolves to ${await Deno.realPath(
+        outside,
+      )}, outside`,
+    );
+    await assertRejects(
+      () => holdV3Writer(config(datastorePath), repoDir),
+      UserError,
+      "Replace",
+    );
+    assertEquals(holdsV3WriterLock(datastorePath), false);
+    assertEquals([...Deno.readDirSync(outside)], []);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a link out of a namespace's cache root is refused, one inside .swamp is not (swamp-club#3691)", async () => {
+  if (Deno.build.os === "windows") return;
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    const outside = join(dir, "elsewhere");
+    await Deno.mkdir(outside);
+    // Inside .swamp: harmless, and opened.
+    const inside = swampPath(repoDir, "data-real");
+    await Deno.mkdir(inside, { recursive: true });
+    await Deno.symlink(inside, swampPath(repoDir, "data"), { type: "dir" });
+    await commitFromElsewhere(dir, datastorePath);
+    await v3RepositoryFactoryConfig(repoDir, config(datastorePath));
+    assertEquals(await caughtUp(repoDir), true);
+    await closeV3Datastores();
+    // Out of the namespace's own cache root: refused.
+    await Deno.mkdir(swampPath(repoDir, "team-a"), { recursive: true });
+    await Deno.symlink(outside, swampPath(repoDir, "team-a", "outputs"), {
+      type: "dir",
+    });
+    const escaped = await assertRejects(
+      () =>
+        v3RepositoryFactoryConfig(repoDir, {
+          ...config(datastorePath),
+          namespace: "team-a",
+        }),
+      UserError,
+      swampPath(repoDir, "team-a", "outputs"),
+    );
+    assertEquals(escaped.code, V3_CACHE_ROOT_ESCAPE_CODE);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a solo-root link out of .swamp in a subdirectory the checkout leaves out is not refused (swamp-club#3691)", async () => {
+  if (Deno.build.os === "windows") return;
+  await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    const outside = join(dir, "elsewhere");
+    await Deno.mkdir(outside);
+    await Deno.mkdir(swampPath(repoDir), { recursive: true });
+    await Deno.symlink(outside, swampPath(repoDir, "data"), { type: "dir" });
+    await v3RepositoryFactoryConfig(repoDir, {
+      ...config(datastorePath),
+      directories: ["auto-definitions"],
+    });
+  });
+});
+
+// ── Another namespace's content (swamp-club#3691) ───────────────────────────
+
+const FOREIGN_KEY = "data/test/model/m-1/state/1/raw";
+
+/** Writes `text` at `key` under `root`, creating its directories. */
+async function plant(root: string, key: string, text: string): Promise<void> {
+  const path = join(root, ...key.split("/"));
+  await Deno.mkdir(join(path, ".."), { recursive: true });
+  await Deno.writeTextFile(path, text);
+}
+
+/**
+ * The fetcher the factory gives checkout `alpha` of a fresh v3 datastore,
+ * with the checkout's `.swamp/`.
+ */
+async function alphaFetcher(
+  dir: string,
+  config: { namespace?: string; exclude?: string[] } = { namespace: "alpha" },
+) {
+  const datastorePath = join(dir, "datastore");
+  await initializeV3Datastore(datastorePath, "test");
+  const repoDir = join(dir, "alpha");
+  await Deno.mkdir(repoDir);
+  const factory = await v3RepositoryFactoryConfig(repoDir, {
+    type: "filesystem",
+    path: datastorePath,
+    ...config,
+  });
+  const fetcher = factory.fetchForeignContent;
+  assert(fetcher !== undefined, "the v3 context has a foreign fetcher");
+  return { fetcher, swamp: swampPath(repoDir) };
+}
+
+const text = (bytes: Uint8Array | null) =>
+  bytes === null ? null : new TextDecoder().decode(bytes);
+
+Deno.test("v3RepositoryFactoryConfig: the foreign fetcher reads another namespace's cache root, never the checkout's own, and reads the solo namespace (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const { fetcher, swamp } = await alphaFetcher(dir);
+    assertEquals(fetcher.readsSoloNamespace, true);
+    // The reader's own item lives at the same key under its own root.
+    await plant(join(swamp, "alpha"), FOREIGN_KEY, '{"who":"alpha"}');
+    await plant(join(swamp, "beta"), FOREIGN_KEY, '{"who":"beta"}');
+    await plant(swamp, FOREIGN_KEY, '{"who":"solo"}');
+
+    assertEquals(text(await fetcher("beta", FOREIGN_KEY)), '{"who":"beta"}');
+    assertEquals(text(await fetcher("", FOREIGN_KEY)), '{"who":"solo"}');
+    assertEquals(await fetcher("gamma", FOREIGN_KEY), null, "absent file");
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: the foreign fetcher refuses reserved namespaces and paths that leave the namespace's tree (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const { fetcher, swamp } = await alphaFetcher(dir);
+    // `data` is a reserved name: `.swamp/data` is the solo namespace's tier.
+    await plant(join(swamp, "data"), FOREIGN_KEY, "solo tier");
+    await plant(join(swamp, "beta"), "data/x", "x");
+
+    assertEquals(await fetcher("data", FOREIGN_KEY), null);
+    for (
+      const [namespace, relPath] of [
+        ["..", FOREIGN_KEY],
+        ["a/b", FOREIGN_KEY],
+        ["beta", "data/../data/x"],
+        ["beta", "../beta/data/x"],
+        ["beta", "/data/x"],
+        ["beta", "data//x"],
+        ["beta", "data\\x"],
+      ]
+    ) {
+      assertEquals(
+        await fetcher(namespace, relPath),
+        null,
+        `${namespace}:${relPath}`,
+      );
+    }
+    // The same file under a key the read model materialises is read.
+    assertEquals(text(await fetcher("beta", "data/x")), "x");
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: the foreign fetcher refuses a solo key this checkout's directories leave out, which is a local file there (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const { fetcher, swamp } = await alphaFetcher(dir, {
+      namespace: "alpha",
+      exclude: ["data/test/model/m-1/**"],
+    });
+    await plant(swamp, FOREIGN_KEY, "local");
+    await plant(join(swamp, "beta"), FOREIGN_KEY, "beta");
+
+    assertEquals(await fetcher("", FOREIGN_KEY), null);
+    // Another namespace's checkouts keep their own directories.
+    assertEquals(text(await fetcher("beta", FOREIGN_KEY)), "beta");
+  });
+});
+
+Deno.test({
+  name:
+    "v3RepositoryFactoryConfig: the foreign fetcher refuses a path a symlink takes outside the namespace's cache root (swamp-club#3691)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const { fetcher, swamp } = await alphaFetcher(dir);
+      const outside = join(dir, "outside");
+      await plant(outside, "state/1/raw", "outside");
+      await Deno.mkdir(join(swamp, "beta", "data", "test", "model", "m-1"), {
+        recursive: true,
+      });
+      await Deno.symlink(
+        join(outside, "state"),
+        join(swamp, "beta", "data", "test", "model", "m-1", "state"),
+        { type: "dir" },
+      );
+
+      assertEquals(await fetcher("beta", FOREIGN_KEY), null);
+    });
+  },
 });

@@ -317,27 +317,69 @@ Solo mode (empty namespace) gives byte-identical paths to an un-namespaced repo,
 with no prefix or stray separator. The local tier (`localPath`, `.swamp/`) is
 never namespaced.
 
+On v3 each namespace also has a **cache root** in every checkout, where the
+read model materialises its records (`v3CacheRoot`): `.swamp/<namespace>/`,
+or `.swamp/` itself for the solo namespace. So on v3 the local tier shares
+`.swamp/` with the solo namespace's cache root: a subdirectory a checkout
+keeps local (outside its `directories`, or matching its `exclude`) is the
+same directory the solo namespace's records of that subdirectory would be
+written to. "v3 read model" below says how the read model keeps the two apart
+(swamp-club#3691).
+
 #### Reserved namespace names
 
 Because a namespace is the outermost segment, one named after a layout directory
 (`data`, `outputs`, ...) is the same directory as the solo layout's
-`{base}/{subdir}/`. `RESERVED_NAMESPACE_NAMES` in `src/domain/data/namespace.ts`
-is derived from `DEFAULT_DATASTORE_SUBDIRS` and `ALWAYS_LOCAL_SUBDIRS`, so a
-directory added to the layout is reserved with it.
+`{base}/{subdir}/`. On v3 a namespace's cache root is `.swamp/<namespace>/`,
+so one named after any directory swamp keeps in `.swamp/` (`vault`,
+`definitions`, `datastore-bundles`, ...) would have its records written over
+swamp's own files (swamp-club#3691).
+
+`RESERVED_NAMESPACE_NAMES` in `src/domain/data/namespace.ts` is built from
+`SWAMP_OWNED_DIR_NAMES` in `src/domain/datastore/datastore_config.ts`: every
+first-level name swamp uses in a checkout's `.swamp/`. That is
+`DEFAULT_DATASTORE_SUBDIRS`, `ALWAYS_LOCAL_SUBDIRS`, the rest of
+`SWAMP_SUBDIRS` by first segment, `cache`, `start`, `pre-v3-records`
+(swamp-club#3690) and the `managed-config-lockfile-unpublished` file, and the names swamp
+keeps in `~/.swamp` (`repos`, `deno`, `source`, `log`, ...), which is a
+checkout's `.swamp/` when the repository is the home directory. The list is
+written out in the domain rather than derived from `SWAMP_SUBDIRS`, which
+lives in `infrastructure/persistence/paths.ts`: deriving it would give the
+namespace rules a domain-to-infrastructure import.
+`integration/namespace_reserved_names_rules_test.ts` keeps it whole: it fails
+when a first segment of `SWAMP_SUBDIRS` is not reserved, or when production
+source spells a first-level `.swamp/` name in a path literal (`swampPath`,
+`join(..., ".swamp", name)`, `SWAMP_DATA_DIR` joins), or passes a string
+constant to `swampPath` or such a `join`, that a namespace could still take. A property test checks that no slug `createNamespace` accepts is
+such a name.
 
 - **Claiming** a name goes through `createNamespace`, which rejects a reserved
   name. `namespace set` also rejects a name equal to one of the repo's
   configured `datastore.directories`.
 - **Loading** a name already in `.swamp.yaml` goes through `restoreNamespace`,
-  which does not apply the reserved rule. A repo bound to such a name before it
-  was reserved, or by hand, still loads.
+  which does not apply the reserved rule. On v2 a repo bound to such a name
+  before it was reserved, or by hand, still loads.
+- **A v3 checkout does not open** on a reserved namespace
+  (swamp-club#3691). `v3RepositoryFactoryConfig` and `holdV3Writer` refuse it
+  (`refuseUnsafeV3Checkout`, code `datastore_v3_reserved_namespace`) before
+  recovery, the lease and catch-up, so nothing is written. v3 refuses `namespace set` and cannot be moved by
+  setup, so the message (`reservedV3NamespaceMessage`) gives the one way that
+  works on v3: set up a new, empty v3 datastore, then edit the repo's
+  `.swamp.yaml` to a name that is not reserved and point it at the new
+  datastore. Nothing is migrated; the records committed under the reserved
+  name stay in the old datastore. `datastore setup filesystem --format 3`
+  refuses a repo bound to a reserved name before it touches anything, with
+  the v2 move-by-hand steps, since the repo is not on v3 yet; `setup
+  extension --format 3` was already refused by the reserved check below.
 - For a repo loaded with a colliding name, `namespace migrate` (both
   directions), `namespace unset --migrate` and the doctor un-migrated data
   repair refuse before touching anything, and `swamp doctor datastores` reports
-  a failing `reserved_namespace` check. They cannot tell the namespace directory
-  from solo data. `doctor datastores --repair` skips only the un-migrated data
-  repair and still runs the others. The way out is a move by hand, described in
-  the swamp skill's namespaces reference.
+  a failing `reserved_namespace` check (on v3, with the v3 message above; a
+  retention check that would open the refused checkout reports the refusal as
+  its finding). They cannot tell the namespace directory from solo data.
+  `doctor datastores --repair` skips only the un-migrated data repair and
+  still runs the others. The way out is a move by hand, described in the
+  swamp skill's namespaces reference.
 - `datastore setup extension` checks reserved names only. It writes a datastore
   block without `directories`, so the defaults apply afterwards and a configured
   directory name cannot collide. A re-run on a repo already bound to a reserved
@@ -3294,7 +3336,7 @@ the read model.
 | File | Holds |
 |---|---|
 | `_catalog_v3.db` | The v3 catalog |
-| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata; since schema 5 (swamp-club#3617, one-way) `unreadable_records`, `at_risk_copies` and `written_files` |
+| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata; since schema 5 (swamp-club#3617, one-way) `unreadable_records`, `at_risk_copies` and `written_files`; since schema 6 (swamp-club#3691) `checkout_filter`, which a reset never clears |
 | `read_model.lock` | The lock that serializes catch-ups across processes |
 | `at-risk/<storage namespace>/<sha256>` | Checkout files moved aside by the checkout-copy guard (swamp-club#3617) |
 
@@ -3525,6 +3567,110 @@ after `assertSafePath` the read model also refuses a key whose resolved path
 lands in the state directory: a symlink already in the cache could lead
 there. A refused key is logged and not materialised, but it is still
 indexed, so the index stays exact for chunk GC.
+
+**What is never projected** (swamp-club#3691). Every checkout materialises
+every namespace, and other checkouts (or an older swamp on the same
+datastore) can commit what this one would refuse, so the read model checks
+each key against the checkout it projects into (`ReadModelCheckout`: its
+namespace and its `datastoreKeyFilter`, passed by `openV3Datastore`).
+`unprojectedReason` leaves a key alone when:
+
+- **`reserved`**: its namespace is a reserved name
+  (`isUnprojectedNamespace`), whose cache root `.swamp/<name>/` is a
+  directory swamp keeps its own files in. Warned once per namespace.
+- **`local`**: it is a key of the solo namespace, or of the checkout's own
+  namespace, that the checkout's `directories` or `exclude` leave out. The
+  solo cache root is `.swamp/`, so such a key's path is the checkout's local
+  tier, which another checkout with more directories commits to. Two
+  checkouts of one namespace with different directories also stamp their
+  catalog rows with the same identity. Logged at debug level only, since it
+  is expected on every such commit.
+
+The check sits at the top of `#target`, so all four callers skip the key
+(`#checkUnsyncedAfterReboot`, `#materialise`, `#loadFiles`,
+`#retryUnreadableRecords`), and it follows the refused-key path: no file
+written or removed, no file ownership, not in the touched or unsynced keys,
+while the record stays in the records index and the cursor and applied seq
+move past it, so history, chunk GC and compaction inputs stay whole. A
+listed unsynced key that is now unprojected is skipped after a reboot rather
+than triggering a reset, and an unreadable record of one is dropped. Catalog
+actions of every kind (upsert, remove-name, remove-version, forward,
+end-forward) for such a key are dropped by `ProjectedCatalog`
+(`v3_catalog.ts`), a wrapper around the read model's catalog that maps each
+action to its row's record key (`catalogRowRecordKey`; a name-wide action
+maps to the name's latest marker), so one place covers both applied commits
+and the compacted base. Another checkout's commit can then neither add,
+change nor remove a file or row this checkout keeps for itself.
+
+So in a checkout whose directories leave out a subdirectory, the solo
+namespace's and its own namespace's records in that subdirectory are
+invisible there by design, and a reserved namespace's records are invisible
+in every checkout. Catalog rows of a reserved namespace written before this
+fix stay, but read as empty: the v3 foreign-content fetcher ("v3 opt-in")
+refuses a reserved namespace.
+
+**The checkout filter is fixed** (swamp-club#3691). Which keys are `local`
+depends on the checkout's `directories` and `exclude`, and a rebuild under a
+new filter would lose the checkout's file ownership and local-tier rows, so
+there is no re-projection. Read-model state schema 6 adds a single-row
+`checkout_filter` table holding the filter inputs the projection was built
+with: the configured directories, sorted and deduplicated (`null` for the
+default set, so a swamp that changes the default does not refuse its own
+checkouts), and the exclude patterns, as JSON. The exclude patterns are
+read as the matcher reads them (trimmed, blank and comment lines dropped).
+Without a `!` pattern every match excludes, so they are deduplicated and
+sorted and a reordering opens; with one, the last match wins, so they keep
+their order and a reordering is refused. It is its own table,
+not `meta`, so a reset never clears it, and an older swamp refuses the newer
+state with its upgrade message rather than dropping it.
+`openV3Datastore`, the one production opener every v3 path uses, checks it
+first (`assertCheckoutFilterUnchanged`), before the read model opens, catches
+up, loads or recovers a writer. Inputs that differ throw
+`V3CheckoutFilterChangedError` (`datastore_v3_directories_changed`): changing
+directories on an existing v3 checkout is not supported yet. The filter
+lives in the committed `.swamp.yaml`, so one edit refuses every existing
+checkout of the repository on its next command, solo checkouts included.
+The message says so, and offers first to restore the previous directories
+and exclude patterns, then a fresh checkout, naming the local-only files
+(the subdirectories this checkout keeps local, and anything its exclude
+patterns keep out) that a fresh checkout will not have, since they were
+never committed, so they can be copied out first. Nothing is changed. A state with no row (a projection from
+before the fix) is stamped with the current inputs. `doctor datastores`
+reports the refusal as a failing `v3_directories` check
+(`v3CheckoutFilterRefusal`, which reads the state read-only and stamps
+nothing) and skips the checks that would open the checkout.
+
+**Materialised subdirectories stay in their cache root** (swamp-club#3691).
+A first-level materialised subdirectory such as `.swamp/data` that is a
+symlink or a Windows junction to somewhere outside `.swamp` would fail every
+catch-up of a commit under it with a `PathTraversalError`, while the writer
+went on committing what the read model cannot apply.
+`assertV3CacheSubdirsContained` (`cache_root_containment.ts`) checks, by real
+path rather than `lstat`, that each such subdirectory resolves inside its
+cache root: every one under the checkout's own namespace's root, and those
+the checkout's `directories` admit under the solo root. A link that stays
+inside is allowed; a dangling one is refused. v3 filesystem setup refuses
+before it starts, and a v3 context or `holdV3Writer` refuses to open before
+recovery and catch-up, each with a message saying to replace the link with
+a real directory (code `datastore_v3_cache_root_escape`). An escape deeper in the cache still fails catch-up with
+`PathTraversalError`, a deliberate, tested behaviour.
+
+**Departures from swamp-club#3691's proposals.**
+
+- The local tier is protected by filtering (the issue's option 2), not by
+  refusing a namespaced checkout beside a solo one, or checkouts with
+  different directories: no valid setup is refused.
+- `migrateFromSymlinks`, bundle eviction and the solo recovery sweep are
+  unchanged rather than taught to skip namespace cache roots. With the
+  read-model guard no reserved namespace's cache root is ever written, so
+  they cannot meet its records; a sweep skip would also have disabled the
+  solo namespace's own recovery.
+- Reserved names come from a domain list guarded by a rules test, not
+  derived from `SWAMP_SUBDIRS` (layering, see "Reserved namespace names").
+- `hydrateForeignRecord` keeps its early return for a record whose
+  attributes are already filled: `fromRow` no longer fills a foreign row from
+  the reader's own path, so filled attributes are the right ones.
+- Changing directories on a v3 checkout is refused, not re-projected.
 
 **Path conflicts.** A file and a directory claiming one path (a put of
 `data/x` where `data/x/y` exists, or of `data/x/y` where `data/x` is a
@@ -3884,7 +4030,10 @@ tombstone itself. The section that began with the reset is a replay for the guar
   state directory: on v3 every datastore directory resolves in the checkout
   already, and the record key guard refuses any key under it.
 - A checkout applies every namespace in `commits.db`, each under its own cache
-  root; its resolver and catalog queries read its own namespace.
+  root, except what "What is never projected" leaves out; its resolver and
+  catalog queries read its own namespace, and another namespace's content is
+  read from that namespace's cache root ("Reading another namespace" under
+  "v3 opt-in").
 
 ### v3 chunk garbage collection (datastore rework Phase 3)
 
@@ -4412,6 +4561,10 @@ Phase 5; migrating v2 data is Phase 6.
 - The checkout's own `.swamp/` is checked for records even under
   `--skip-migration`, and a current datastore that cannot be read refuses
   setup, as on v2.
+- Setup refuses, before it inspects the target, a repo bound to a reserved
+  namespace and a materialised subdirectory that links out of its cache root
+  (swamp-club#3691; "Reserved namespace names", and "Materialised
+  subdirectories stay in their cache root" under "v3 read model").
 - A repo already on a v3 datastore is never moved by setup, to v2 or to
   another v3: its records live in the checkout and its commit log, and
   migrating v3 data is Phase 6. A v2 setup onto a datastore that is already v3
@@ -4663,7 +4816,37 @@ path under the config base, so a later save of it stages the same key.
 **Tier rules.** A record key outside the repository's configured `directories`
 or matching its `exclude` stays in the checkout and is never committed: the
 commit-log unit drops it when it is staged (`datastoreKeyFilter`), as v2 never
-syncs it.
+syncs it. The read model never writes another checkout's commit of the solo
+namespace or this checkout's own namespace onto such a key, and refuses to
+open a checkout whose `directories` or `exclude` changed since it was
+projected ("What is never projected" and "The checkout filter is fixed" under
+"v3 read model", swamp-club#3691).
+
+**Reading another namespace** (swamp-club#3691). A row of another namespace
+must be read from that namespace's cache root, never from the reader's own
+layout, which can hold the reader's own item at the same path. On v3
+`v3RepositoryFactoryConfig` supplies a local `ForeignContentFetcher`
+(`v3ForeignContentFetcher`, `v3_foreign_content.ts`) in the existing
+`fetchForeignContent` slot, so no interface changes; the context builders
+spread the v3 config after the v2 sync service's fetcher, so it replaces it.
+It reads `relPath` under `v3CacheRoot(repo, namespace)` and is marked
+`readsSoloNamespace`: in a namespaced checkout a solo row is another
+namespace's (`isForeignNamespace` in `repositories.ts`), while on v2 a solo
+row in a namespaced repo is still its own, written before it set a
+namespace. The fetcher reads nothing for a reserved or unsafe namespace, a
+key the key guard refuses, a solo or own-namespace key the checkout's filter
+keeps local, a path with an unsafe segment, or one whose real path leaves the
+cache root. It consults `unreadableContent` first, so a record the read model
+could not materialise fails the read with its code
+(`datastore_v3_record_unreadable`) instead of reading as empty; the query
+service rethrows that error rather than logging it at debug level.
+
+- `fromRow` never reads the reader's own path for a foreign row: its bytes are
+  left empty, and the async `hydrateForeignRecord` fills them through the
+  fetcher (`data.latest`, `getLatestRecord`, queries, CEL in workflow runs).
+- `data query --select content` reads a foreign row's body through the
+  fetcher only when it is the v3 one (`readsSoloNamespace`); on v2 such a row
+  still projects `null` content, since the sync fetcher would download it.
 
 **Chunk GC and compaction.** `swamp datastore gc` sweeps the namespace's
 unreferenced chunks with the default grace period under the writer lock; on a
@@ -5547,8 +5730,10 @@ The path fetched is built from the foreign row's namespace, behavior type,
 behavior id, data name and version. Those fields are the other namespace's to
 write, so a row is fetched only when each is a plain path segment: one holding
 `..`, a separator or nothing at all could name an object outside that
-namespace's data tree, and is left with empty attributes. A `select` that reads
-`content` rather than `attributes` still sees no bytes for a foreign record, and
+namespace's data tree, and is left with empty attributes. On v2 a `select` that
+reads `content` rather than `attributes` still sees no bytes for a foreign
+record (on v3 the local fetcher fills it: "Reading another namespace" under
+"v3 opt-in", swamp-club#3691), and
 a predicate over a foreign record's `attributes` is matched before hydration,
 against empty attributes.
 

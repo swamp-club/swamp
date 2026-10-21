@@ -458,6 +458,6 @@ Deno.test("ReadModelState: a schema-4 database migrates to the unreadable-record
     } finally {
       reopened.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 5);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 6);
   });
 });

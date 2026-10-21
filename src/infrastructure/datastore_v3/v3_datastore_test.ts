@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   AutoDefinitionChanges,
@@ -44,7 +50,13 @@ import {
   openV3Datastore,
   referencedChunksOf,
   restoreV3FormatMarker,
+  V3_CHECKOUT_FILTER_CHANGED_CODE,
+  v3CheckoutFilterRefusal,
 } from "./v3_datastore.ts";
+import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
+import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
+import { writerAliveFrom } from "./commit_outbox_recovery.ts";
+import { localProcess } from "./process_identity.ts";
 import { DatabaseSync } from "node:sqlite";
 import {
   COMMIT_STORE_SCHEMA_VERSION,
@@ -61,6 +73,7 @@ import {
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
+import { DEFAULT_DATASTORE_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-datastore-" });
@@ -1081,4 +1094,230 @@ Deno.test("referencedChunksOf: asks the outbox before commits.db, so a commit la
     await referencedChunksOf(commitStore, outbox, "", [chunk]),
     new Set([chunk]),
   );
+});
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+/** Deletes a checkout's recorded filter, as a state from before swamp-club#3691 has none. */
+function forgetCheckoutFilter(repoDir: string): void {
+  const db = new DatabaseSync(
+    join(readModelStateDir(Deno.realPathSync(repoDir)), READ_MODEL_STATE_FILE),
+  );
+  try {
+    db.exec("DELETE FROM checkout_filter");
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("openV3Datastore: refuses a checkout whose directories changed since it was projected, opening nothing, and opens again with the previous ones (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "a");
+    const projected = {
+      directories: ["data", "config"],
+      exclude: ["**/*.tmp"],
+    };
+    const first = openV3Datastore({ repoDir, datastorePath, ...projected });
+    const commitsDb = first.commitsDbPath;
+    const catalogDb = v3CatalogPath(Deno.realPathSync(repoDir));
+    try {
+      await first.catchUp();
+    } finally {
+      await first.close();
+    }
+    // The same filter spelled another way opens.
+    await openV3Datastore({
+      repoDir,
+      datastorePath,
+      directories: ["config", "data", "config"],
+      exclude: ["**/*.tmp"],
+    }).close();
+    // SQLite removes a database's WAL once its last connection closes: a
+    // handle the refusal leaked would keep one.
+    for (const db of [commitsDb, catalogDb]) {
+      assertEquals(await pathExists(`${db}-wal`), false, db);
+    }
+
+    const writer = {
+      host: Deno.hostname(),
+      pid: 99_999_999,
+      instance: crypto.randomUUID(),
+    };
+    for (
+      const changed of [
+        { directories: ["config"], exclude: ["**/*.tmp"] },
+        { directories: ["data", "config"] },
+        {},
+      ]
+    ) {
+      const error = assertThrows(
+        () => openV3Datastore({ repoDir, datastorePath, writer, ...changed }),
+        UserError,
+        "directories",
+      );
+      assertEquals(error.code, V3_CHECKOUT_FILTER_CHANGED_CODE);
+    }
+    for (const db of [commitsDb, catalogDb]) {
+      assertEquals(await pathExists(`${db}-wal`), false, db);
+    }
+    assertEquals(
+      writerAliveFrom(await localProcess())(writer, undefined),
+      false,
+      "the refused handle's writer was never registered",
+    );
+
+    const again = openV3Datastore({ repoDir, datastorePath, ...projected });
+    try {
+      await again.catchUp();
+    } finally {
+      await again.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: a checkout with no recorded filter is stamped with the current one (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "a");
+    await openV3Datastore({ repoDir, datastorePath }).close();
+    forgetCheckoutFilter(repoDir);
+    await openV3Datastore({
+      repoDir,
+      datastorePath,
+      directories: ["config"],
+    }).close();
+    assertThrows(
+      () => openV3Datastore({ repoDir, datastorePath }),
+      UserError,
+      "directories",
+    );
+    await openV3Datastore({
+      repoDir,
+      datastorePath,
+      directories: ["config"],
+    }).close();
+  });
+});
+
+Deno.test("v3CheckoutFilterRefusal: names a changed filter without opening the checkout or stamping one (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "a");
+    await Deno.mkdir(repoDir);
+    assertEquals(
+      v3CheckoutFilterRefusal(repoDir, ["config"], undefined),
+      undefined,
+    );
+    await openV3Datastore({ repoDir, datastorePath }).close();
+    assertEquals(
+      v3CheckoutFilterRefusal(repoDir, undefined, undefined),
+      undefined,
+    );
+    const refusal = v3CheckoutFilterRefusal(repoDir, ["config"], undefined);
+    assert(refusal?.includes("directories"), refusal);
+
+    forgetCheckoutFilter(repoDir);
+    assertEquals(
+      v3CheckoutFilterRefusal(repoDir, ["config"], undefined),
+      undefined,
+    );
+    // Not stamped: the checkout still opens with its own filter.
+    await openV3Datastore({ repoDir, datastorePath }).close();
+  });
+});
+
+Deno.test("openV3Datastore: the default directories listed in full and left out are one filter, in either order (swamp-club#3691)", async () => {
+  // Setup writes the default set out in full; an override such as
+  // SWAMP_DATASTORE gives none.
+  const listed = { directories: [...DEFAULT_DATASTORE_SUBDIRS].reverse() };
+  for (const [first, second] of [[listed, {}], [{}, listed]]) {
+    await withTempDir(async (dir) => {
+      const datastorePath = join(dir, "datastore");
+      await initializeV3Datastore(datastorePath, "test");
+      const repoDir = join(dir, "a");
+      await openV3Datastore({ repoDir, datastorePath, ...first }).close();
+      await openV3Datastore({ repoDir, datastorePath, ...second }).close();
+    });
+  }
+});
+
+Deno.test("openV3Datastore: exclude patterns without a negation are one filter in any order, while reordering a negation is refused (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const plain = join(dir, "plain");
+    await openV3Datastore({
+      repoDir: plain,
+      datastorePath,
+      exclude: ["**/*.tmp", "data/scratch/**"],
+    }).close();
+    await openV3Datastore({
+      repoDir: plain,
+      datastorePath,
+      exclude: [" data/scratch/** ", "**/*.tmp", "# a comment", "**/*.tmp"],
+    }).close();
+
+    // With a negation the last match wins, so the order is the filter.
+    const negated = join(dir, "negated");
+    await openV3Datastore({
+      repoDir: negated,
+      datastorePath,
+      exclude: ["data/**", "!data/keep/**"],
+    }).close();
+    const error = assertThrows(
+      () =>
+        openV3Datastore({
+          repoDir: negated,
+          datastorePath,
+          exclude: ["!data/keep/**", "data/**"],
+        }),
+      UserError,
+    );
+    assertEquals(error.code, V3_CHECKOUT_FILTER_CHANGED_CODE);
+  });
+});
+
+Deno.test("V3CheckoutFilterChangedError: says the change is the repository's, affects every checkout, and that a fresh checkout loses the local-only files (swamp-club#3691)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "a");
+    await openV3Datastore({
+      repoDir,
+      datastorePath,
+      directories: ["config", "outputs"],
+    }).close();
+    const error = assertThrows(
+      () => openV3Datastore({ repoDir, datastorePath }),
+      UserError,
+    );
+    const message = error.message;
+    assertStringIncludes(message, "repository's datastore config");
+    assertStringIncludes(message, "every existing checkout");
+    assertStringIncludes(message, "never committed");
+    assertStringIncludes(message, "copy them out");
+    // It names the subdirectories this checkout kept local.
+    assertStringIncludes(
+      message,
+      join(Deno.realPathSync(repoDir), ".swamp", "data"),
+    );
+    // Restoring the previous directories is offered first.
+    assert(
+      message.indexOf("Restore the previous directories") <
+        message.indexOf("fresh checkout"),
+      message,
+    );
+  });
 });

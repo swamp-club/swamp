@@ -993,10 +993,17 @@ Deno.test("DataQueryService: ns field is queryable for namespace filtering", () 
 
 // ── Phase 6d: foreign content fetch ─────────────────────────────────────────
 
-/** A service whose repository carries `fetcher`, as a repo context wires it. */
-function setupForeignTest(fetcher: ForeignContentFetcher): {
+/**
+ * A service whose repository carries `fetcher`, as a repo context wires it,
+ * and writes as `namespace` (solo unless given).
+ */
+function setupForeignTest(
+  fetcher: ForeignContentFetcher,
+  namespace?: string,
+): {
   catalog: CatalogStore;
   service: DataQueryService;
+  dataRepo: FileSystemUnifiedDataRepository;
 } {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-foreign-" });
   const catalog = new CatalogStore(
@@ -1009,12 +1016,16 @@ function setupForeignTest(fetcher: ForeignContentFetcher): {
     catalog,
     undefined,
     undefined,
-    undefined,
+    namespace === undefined ? undefined : createNamespace(namespace),
     undefined,
     undefined,
     fetcher,
   );
-  return { catalog, service: new DataQueryService(catalog, dataRepo) };
+  return {
+    catalog,
+    service: new DataQueryService(catalog, dataRepo),
+    dataRepo,
+  };
 }
 
 function jsonBytes(value: unknown): Uint8Array {
@@ -5479,5 +5490,156 @@ Deno.test("DataQueryService behavior(): pushes down to SQL as model() and behavi
   assertStringIncludes(filters[0], "model_id = ?");
   assertEquals(filters[3], filters[2]);
   assertStringIncludes(filters[2], "model_name = ?");
+  catalog.close();
+});
+
+// ── Another namespace's content on v3 (swamp-club#3691) ─────────────────────
+
+/** A fetcher that reads the solo namespace too, as the v3 one does. */
+function soloReadingFetcher(
+  read: (namespace: string, relPath: string) => Promise<Uint8Array | null>,
+): ForeignContentFetcher {
+  return Object.assign(read, { readsSoloNamespace: true });
+}
+
+/** The error a v3 read of a record it could not materialise throws. */
+function unreadableError(): UserError {
+  return new UserError(
+    "record unreadable",
+    "datastore_v3_record_unreadable",
+  );
+}
+
+Deno.test("getLatestRecord: a solo row read from a namespaced checkout is fetched through a fetcher that reads the solo namespace (swamp-club#3691)", async () => {
+  const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
+  const { catalog, service } = setupForeignTest(
+    soloReadingFetcher((namespace, relPath) => {
+      fetchCalls.push({ namespace, relPath });
+      return Promise.resolve(jsonBytes({ who: "solo" }));
+    }),
+    "alpha",
+  );
+  const row = foreignRow({ namespace: "" });
+  catalog.upsert(row);
+
+  const record = await service.getLatestRecord("scanner", "results", "");
+
+  assertEquals(record?.attributes, { who: "solo" });
+  assertEquals(fetchCalls, [{
+    namespace: "",
+    relPath:
+      `data/${row.type_normalized}/${row.model_id}/results/${row.version}/raw`,
+  }]);
+
+  catalog.close();
+});
+
+Deno.test("getLatestRecord: a solo row is never fetched through a fetcher that does not read the solo namespace (v2 sync fetchers)", async () => {
+  let fetched = 0;
+  const { catalog, service } = setupForeignTest(() => {
+    fetched++;
+    return Promise.resolve(jsonBytes({ who: "remote" }));
+  }, "alpha");
+  catalog.upsert(foreignRow({ namespace: "" }));
+
+  await service.getLatestRecord("scanner", "results", "");
+  await service.query('ns == ""', { loadAttributes: true });
+  await service.query('ns == ""', { select: "content" });
+
+  assertEquals(fetched, 0);
+
+  catalog.close();
+});
+
+Deno.test("getLatestRecord and query: an unreadable foreign record fails the read instead of reading as empty (swamp-club#3691)", async () => {
+  const { catalog, service } = setupForeignTest(
+    soloReadingFetcher(() => Promise.reject(unreadableError())),
+    "alpha",
+  );
+  catalog.upsert(foreignRow({ namespace: "beta" }));
+
+  const refused = async (read: () => Promise<unknown>) => {
+    const error = await assertRejects(read, UserError);
+    assertEquals(error.code, "datastore_v3_record_unreadable");
+  };
+  await refused(() => service.getLatestRecord("scanner", "results", "beta"));
+  await refused(() => service.query('ns == "beta"', { loadAttributes: true }));
+  await refused(() => service.query('ns == "beta"', { select: "content" }));
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: select content reads a foreign row through the fetcher (swamp-club#3691)", async () => {
+  const { catalog, service } = setupForeignTest(
+    soloReadingFetcher(() => Promise.resolve(jsonBytes({ who: "beta" }))),
+    "alpha",
+  );
+  catalog.upsert(foreignRow({ namespace: "beta" }));
+  catalog.upsert(foreignRow({
+    namespace: "beta",
+    data_name: "notes",
+    id: "uuid-notes",
+    content_type: "text/plain",
+  }));
+
+  assertEquals(
+    await service.query('ns == "beta" && name == "results"', {
+      select: ENCODED_SELECT,
+    }),
+    [{ content: { who: "beta" }, contentEncoding: "utf-8" }],
+  );
+  assertEquals(
+    await service.query('ns == "beta" && name == "notes"', {
+      select: ENCODED_SELECT,
+    }),
+    [{ content: '{"who":"beta"}', contentEncoding: "utf-8" }],
+  );
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a foreign row's missing body leaves select content null and the row in the results (swamp-club#3691)", async () => {
+  let calls = 0;
+  const { catalog, service } = setupForeignTest(
+    soloReadingFetcher(() => {
+      calls++;
+      return Promise.resolve(null);
+    }),
+    "alpha",
+  );
+  catalog.upsert(foreignRow({ namespace: "beta" }));
+
+  assertEquals(
+    await service.query('ns == "beta"', { select: ENCODED_SELECT }),
+    [{ content: null, contentEncoding: null }],
+  );
+  const records = await service.query('ns == "beta"', {
+    loadAttributes: true,
+  }) as DataRecord[];
+  assertEquals(records.map((r) => r.attributes), [{}]);
+  assert(calls <= 3, `fetched ${calls} times`);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: select content never fetches a foreign body through a v2 sync fetcher (swamp-club#3691)", async () => {
+  let calls = 0;
+  const { catalog, service } = setupForeignTest(() => {
+    calls++;
+    return Promise.resolve(new TextEncoder().encode("beta notes"));
+  }, "alpha");
+  catalog.upsert(foreignRow({
+    namespace: "beta",
+    data_name: "notes",
+    id: "uuid-notes",
+    content_type: "text/plain",
+  }));
+
+  assertEquals(
+    await service.query('ns == "beta"', { select: ENCODED_SELECT }),
+    [{ content: null, contentEncoding: null }],
+  );
+  assertEquals(calls, 0);
+
   catalog.close();
 });
