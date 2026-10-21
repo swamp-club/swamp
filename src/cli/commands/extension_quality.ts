@@ -187,6 +187,7 @@ export const extensionQualityCommand = new Command()
             dryRun: true,
             registryChecks: "skip",
             denoConfigPath,
+            bareImports: resolved.bareImports,
           },
           hashInput: {
             manifest: resolved.manifest,
@@ -219,6 +220,7 @@ export const extensionQualityCommand = new Command()
             includeFilePaths: resolved.includeFilePaths,
             denoConfigPath,
             packageJsonPath: undefined,
+            bareImports: resolved.bareImports,
             symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
           },
         }),

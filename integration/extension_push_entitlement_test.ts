@@ -164,6 +164,7 @@ async function withScenario(
     ): ExtensionPushPrepareInput => {
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: root,
         manifestDir: root,
         modelsDir: root,

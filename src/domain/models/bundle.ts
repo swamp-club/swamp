@@ -20,10 +20,15 @@
 import { parse, type ParserPlugin } from "@babel/parser";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { parseRange, rangeIntersects, tryParseRange } from "@std/semver";
 import * as zodModule from "zod";
 import { markErrorPaths, UserError } from "../errors.ts";
+import { DENO_CONFIG_FILE_NAMES } from "../extensions/deno_config.ts";
+import {
+  bareImportsFromDenoInfo,
+  type ResolvedBareImport,
+} from "../extensions/bare_import_resolution.ts";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
 
@@ -468,6 +473,14 @@ export interface BundleOptions {
    * process is killed and the returned promise rejects.
    */
   signal?: AbortSignal;
+
+  /**
+   * What Deno resolves each bare import the entry point's modules write to
+   * under `denoConfigPath`, when the caller has read the module graph (push
+   * does). Without it the bundler reads the graph itself to decide whether
+   * a bare `"zod"` is the host's zod 4 (swamp-club#3612).
+   */
+  bareImports?: readonly ResolvedBareImport[];
 }
 
 /**
@@ -813,7 +826,7 @@ export function isExpectedBundleFailure(
   const root = resolve("/");
   while (dir !== root) {
     if (repoDir && resolve(dir) === resolve(repoDir)) break;
-    for (const name of ["deno.json", "deno.jsonc"]) {
+    for (const name of DENO_CONFIG_FILE_NAMES) {
       try {
         Deno.statSync(join(dir, name));
         return false; // Config found — failure is unexpected
@@ -885,32 +898,66 @@ export async function zod4SpecifiersReachedFrom(
 }
 
 /**
- * Reads a deno.json import map and determines how "zod" is mapped.
- * If it maps to a zod 4.x npm specifier, returns the resolved specifier
- * (e.g., "npm:zod@4.3.6") so it can be externalized alongside the
- * standard patterns. Returns undefined if there's no zod mapping or
- * if it maps to a non-4.x version (which should be inlined, not
- * externalized, since globalThis.__swamp_zod provides zod 4).
+ * The targets Deno resolves the bare `"zod"` to when every module writing
+ * it gets an npm:zod at a version or range admitting only 4.x
+ * (npm:zod@4, npm:zod@4.3.6, npm:zod@^4.1); none when any module resolves
+ * it elsewhere, or to nothing, so the bundle inlines it.
  */
-async function resolveZodFromConfig(
-  denoConfigPath: string,
-): Promise<string | undefined> {
-  try {
-    const raw = await Deno.readTextFile(denoConfigPath);
-    const config = JSON.parse(raw);
-    const imports = config.imports as Record<string, string> | undefined;
-    if (!imports || typeof imports["zod"] !== "string") return undefined;
-
-    const target = imports["zod"];
-    // npm:zod at a version or range that admits only 4.x (npm:zod@4,
-    // npm:zod@4.3.6, npm:zod@^4.1); bare "zod" would resolve to zod 3 or
-    // to nothing otherwise.
-    if (target.startsWith("npm:zod@") && isZod4Specifier(target)) {
-      return target;
+export function sharedZodTargets(
+  resolutions: readonly ResolvedBareImport[],
+): string[] {
+  const targets = new Set<string>();
+  for (const r of resolutions) {
+    if (r.specifier !== "zod") continue;
+    const target = r.target?.replace(/^npm:\//, "npm:");
+    if (
+      !target || !target.startsWith("npm:zod@") || !isZod4Specifier(target) ||
+      /^npm:zod@[^/]+\//.test(target)
+    ) {
+      return [];
     }
-    return undefined;
-  } catch {
-    return undefined;
+    targets.add(target);
+  }
+  return [...targets].sort();
+}
+
+/**
+ * The bare imports `entryPoint`'s modules write and what Deno resolves
+ * each to, read with `deno info` under the bundle's own project flags;
+ * none when deno info fails, so nothing more is externalized and the
+ * bundle reports any error itself.
+ */
+async function readBareImports(
+  entryPoint: string,
+  denoPath: string,
+  options: BundleOptions,
+): Promise<ResolvedBareImport[]> {
+  try {
+    const output = await new Deno.Command(denoPath, {
+      args: [
+        "info",
+        "--json",
+        ...denoProjectArgs(options),
+        toFileUrl(entryPoint).href,
+      ],
+      stdout: "piped",
+      stderr: "piped",
+      signal: options.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
+      ...(options.env ? { env: options.env } : {}),
+    }).output();
+    if (!output.success) {
+      logger
+        .debug`deno info failed for ${entryPoint}; bare zod stays bundled`;
+      return [];
+    }
+    return bareImportsFromDenoInfo(
+      JSON.parse(new TextDecoder().decode(output.stdout)),
+    );
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    logger
+      .debug`Could not read the module graph of ${entryPoint}; bare zod stays bundled: ${error}`;
+    return [];
   }
 }
 
@@ -1047,16 +1094,18 @@ export async function bundleExtension(
         args.push("--external", spec);
       }
 
-      // When using a deno.json import map, bare specifier "zod" is resolved
-      // to the fully-qualified npm specifier (e.g., "npm:zod@4.3.6") before
-      // esbuild sees it. Also externalize the resolved specifier and the
-      // bare "zod" specifier. Only do this for zod 4.x — externalizing
-      // zod 3.x would silently break since globalThis.__swamp_zod provides zod 4.
+      // Under a Deno config, a bare "zod" resolves through the config's
+      // imports, an importMap file or a scope. --external matches the
+      // specifier as written, so "zod" is externalized, with each target,
+      // only when every module resolves it to zod 4 (swamp-club#3612) —
+      // externalizing a zod 3 import would silently break, since
+      // globalThis.__swamp_zod provides zod 4.
       if (options?.denoConfigPath) {
-        const resolvedZod = await resolveZodFromConfig(options.denoConfigPath);
-        if (resolvedZod) {
-          args.push("--external", resolvedZod, "--external", "zod");
-        }
+        const resolutions = options.bareImports ??
+          await readBareImports(absolutePath, denoPath, options);
+        const targets = sharedZodTargets(resolutions);
+        for (const target of targets) args.push("--external", target);
+        if (targets.length > 0) args.push("--external", "zod");
       }
 
       // When using a package.json project, bare specifier "zod" needs to be

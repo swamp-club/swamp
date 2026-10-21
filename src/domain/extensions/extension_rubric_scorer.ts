@@ -748,7 +748,6 @@ export async function scoreExtensionTarball(
     dependencyTrustBlockerCount?: number;
     dependencyNotAuditedCount?: number;
     dependencyLooseCount?: number;
-    importMap?: Record<string, string>;
     privateSource?: PrivateSourceStanding;
   },
 ): Promise<RubricScore> {
@@ -784,9 +783,6 @@ export async function scoreExtensionTarball(
     const controlledConfig: Record<string, unknown> = {
       nodeModulesDir: "auto",
     };
-    if (options?.importMap && Object.keys(options.importMap).length > 0) {
-      controlledConfig.imports = options.importMap;
-    }
     await Deno.writeTextFile(
       join(logicalRoot, "deno.json"),
       JSON.stringify(controlledConfig, null, 2) + "\n",

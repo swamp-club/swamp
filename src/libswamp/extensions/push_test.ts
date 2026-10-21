@@ -41,7 +41,7 @@ import {
   firstSymlinkUnder,
 } from "./push.ts";
 import { notAuthenticated, type SwampError } from "../errors.ts";
-import { buildPrepareInput } from "./push_test_helpers.ts";
+import { buildPrepareInput, topLevelBareImports } from "./push_test_helpers.ts";
 import { createApiCallRecorder } from "../../infrastructure/http/recording_fetcher.ts";
 import { REGISTRY_FORBIDDEN_CODE } from "../../infrastructure/http/extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -2375,6 +2375,10 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare
     const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
       ...acceptanceInput(dir, [paths["models/a.ts"]]),
       denoConfigPath: paths["deno.json"],
+      bareImports: await topLevelBareImports(
+        [paths["models/a.ts"]],
+        paths["deno.json"],
+      ),
     });
     const bare = result.reviewRulesResult.warnings.filter((w) =>
       w.ruleId === "bare-specifiers"
@@ -2385,9 +2389,11 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare
       bare[0].message,
       "Extension has bare imports that ship as written, which the " +
         "registry's scorer cannot resolve, so it would score the " +
-        'documentation factors 0: "lodash". Push rewrites a bare import only when the deno.json ' +
-        "import map resolves it to an npm:, jsr:, node: or URL specifier; " +
-        "add such an entry for each, or write the specifier in its place.",
+        'documentation factors 0: "lodash". Push rewrites a bare import only when the ' +
+        "project's Deno config (deno.json or deno.jsonc imports, an " +
+        "importMap file, or a scope covering the module) resolves it to an " +
+        "npm:, jsr:, node: or URL specifier; add such an entry for each, or " +
+        "write the specifier in its place.",
     );
   });
 });
@@ -2403,6 +2409,10 @@ Deno.test("extensionPushPrepare: no bare-specifiers finding when the import map 
     const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
       ...acceptanceInput(dir, [paths["models/a.ts"]]),
       denoConfigPath: paths["deno.json"],
+      bareImports: await topLevelBareImports(
+        [paths["models/a.ts"]],
+        paths["deno.json"],
+      ),
     });
     assertEquals(
       result.reviewRulesResult.warnings.filter((w) =>
@@ -2480,6 +2490,7 @@ Deno.test("extensionPushPrepare: the archive's source carries each bare import's
     const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
       ...input,
       denoConfigPath: paths["deno.json"],
+      bareImports: await topLevelBareImports(models, paths["deno.json"]),
       dataFilesByKind: { models: [paths["models/data.json"]] },
       sourcePlan: {
         entries: [
@@ -2521,6 +2532,94 @@ Deno.test("extensionPushPrepare: the archive's source carries each bare import's
   });
 });
 
+Deno.test("extensionPushPrepare: each module ships and audits the target Deno resolves for it, as a scope gives (swamp-club#3612)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'import ms from "ms";\nexport const a = ms;\n',
+    "models/b.ts": 'import ms from "ms";\nexport const b = ms;\n',
+    // The top level says 2.1.3; a scope gives a.ts 3.0.0, as deno info
+    // reports below.
+    "deno.json": JSON.stringify({
+      imports: { "ms": "npm:ms@2.1.3" },
+      scopes: { "./models/a.ts": { "ms": "npm:ms@3.0.0" } },
+    }),
+  }, async (dir, paths) => {
+    const audited: DependencySpecifier[][] = [];
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractDependencySpecifiers,
+        checkDependencyTrust: (specifiers) => {
+          audited.push(specifiers);
+          return Promise.resolve({
+            errors: [],
+            warnings: [],
+            audited: [],
+            passed: true,
+          });
+        },
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"], paths["models/b.ts"]]),
+        denoConfigPath: paths["deno.json"],
+        bareImports: [
+          {
+            importer: paths["models/a.ts"],
+            specifier: "ms",
+            target: "npm:ms@3.0.0",
+          },
+          {
+            importer: paths["models/b.ts"],
+            specifier: "ms",
+            target: "npm:ms@2.1.3",
+          },
+        ],
+      },
+    );
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(
+      texts["models/a.ts"],
+      'import ms from "npm:ms@3.0.0";\nexport const a = ms;\n',
+    );
+    assertEquals(
+      texts["models/b.ts"],
+      'import ms from "npm:ms@2.1.3";\nexport const b = ms;\n',
+    );
+    assertEquals(
+      audited[0].map((s) => [s.version, s.importedAs]).sort(),
+      [["2.1.3", "ms"], ["3.0.0", "ms"]],
+    );
+    assertEquals(
+      result.reviewRulesResult.warnings.filter((w) =>
+        w.ruleId === "bare-specifiers"
+      ),
+      [],
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a bare import Deno does not resolve ships as written even when the top-level imports map it (swamp-club#3612)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": 'import ms from "ms";\nexport const a = ms;\n',
+    "deno.json": JSON.stringify({ imports: { "ms": "npm:ms@2.1.3" } }),
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...acceptanceInput(dir, [paths["models/a.ts"]]),
+      denoConfigPath: paths["deno.json"],
+      bareImports: [{ importer: paths["models/a.ts"], specifier: "ms" }],
+    });
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(
+      texts["models/a.ts"],
+      'import ms from "ms";\nexport const a = ms;\n',
+    );
+    const bare = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "bare-specifiers"
+    );
+    assertEquals(bare.length, 1);
+    assertStringIncludes(bare[0].message, '"ms"');
+  });
+});
+
 Deno.test("extensionPushPrepare: without a deno.json the archive's source keeps its bare imports", async () => {
   await withAcceptanceFixture({
     "models/a.ts": 'import ms from "ms";\nexport const a = ms;\n',
@@ -2545,11 +2644,16 @@ Deno.test("extensionPushPrepare: an import-map target that could escape its stri
       imports: { "ms": 'npm:ms@2"; globalThis.pwned = true; "' },
     }),
   }, async (dir, paths) => {
+    const bareImports = await topLevelBareImports(
+      [paths["models/a.ts"]],
+      paths["deno.json"],
+    );
     await assertRejects(
       () =>
         extensionPushPrepare(ctx, makePrepareDeps(), {
           ...acceptanceInput(dir, [paths["models/a.ts"]]),
           denoConfigPath: paths["deno.json"],
+          bareImports,
         }),
       UserError,
       'Fix the import map entry for "ms"',
@@ -2662,6 +2766,10 @@ Deno.test("extensionPushPrepare: a bare import the deno.json maps is audited and
       imports: { "missing-assert": "jsr:@std/assert@0.0.999" },
     }),
   }, async (dir, paths) => {
+    const bareImports = await topLevelBareImports(
+      [paths["models/a.ts"]],
+      paths["deno.json"],
+    );
     const audited: DependencySpecifier[][] = [];
     const error = await assertRejects(() =>
       extensionPushPrepare(
@@ -2686,6 +2794,7 @@ Deno.test("extensionPushPrepare: a bare import the deno.json maps is audited and
         {
           ...acceptanceInput(dir, [paths["models/a.ts"]]),
           denoConfigPath: paths["deno.json"],
+          bareImports,
         },
       )
     ) as SwampError;

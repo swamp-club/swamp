@@ -119,12 +119,13 @@ the start — placeholder prefixes like `@local/` are rejected during push.
 ## Import Rules
 
 Prefer `import { z } from "npm:zod@4";` in source files. A bare import such as
-`from "zod"` works only when the project's `deno.json` imports map resolves it
-to an `npm:`, `jsr:`, `node:` or URL specifier: push then writes that target in
+`from "zod"` works only when the project's Deno config (`deno.json` or
+`deno.jsonc` imports, an `importMap` file, or a scope) resolves it to an `npm:`,
+`jsr:`, `node:` or URL specifier: push then writes the target Deno resolves in
 its place in the shipped source. The swamp-club scorer runs `deno doc --lint` in
 a hermetic sandbox that strips the repo's `deno.json` and writes its own with no
-imports map, so a bare import the map does not resolve, or any bare import in a
-`package.json` project, fails at score time and raises the `bare-specifiers`
+imports map, so a bare import the config does not resolve, or any bare import in
+a `package.json` project, fails at score time and raises the `bare-specifiers`
 warning.
 
 Bundled deno lives at `~/.swamp/deno/deno` (not on `PATH`) — invoke it by full

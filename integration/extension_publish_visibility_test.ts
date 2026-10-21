@@ -131,6 +131,7 @@ for (
       };
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: root,
         manifestDir: root,
         modelsDir: root,

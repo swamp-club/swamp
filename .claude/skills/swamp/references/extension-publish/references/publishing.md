@@ -330,13 +330,14 @@ files. Two distinct constraints make this the right form:
 - **Hermeticity at score time.** The swamp-club scorer and the local
   `swamp extension quality` command both run in a sandbox that strips the
   tarball's `deno.json` and writes its own with `nodeModulesDir: "auto"` and no
-  imports map. Push therefore rewrites each bare import the repo's `deno.json`
-  import map resolves to an `npm:`, `jsr:`, `node:` or URL specifier, writing
-  the map's target (as the map writes it) in its place in the shipped source. A
-  bare import the map does not resolve — or any bare import in a `package.json`
-  project, or one reached only through an `importMap` file or `scopes` — ships
-  as written and fails at score time: `deno doc --json` cannot find the bare
-  name and the command throws before factor scoring begins.
+  imports map. Push therefore rewrites each bare import to the specifier Deno
+  resolves it to from that module under the repo's Deno config (`deno.json` or
+  `deno.jsonc` imports, an `importMap` file it references, the scope covering
+  the module, or a workspace root's imports), when that is an `npm:`, `jsr:`,
+  `node:` or URL specifier. A bare import Deno does not resolve — or any bare
+  import in a `package.json` project — ships as written and fails at score time:
+  `deno doc --json` cannot find the bare name and the command throws before
+  factor scoring begins.
 - **Zod externalization.** Zod is the sole import that is NOT inlined into the
   published bundle. The extension must share swamp's zod instance so schema
   `instanceof` checks work across the module boundary — that is why zod in
@@ -345,16 +346,17 @@ files. Two distinct constraints make this the right form:
 
 Other Deno-compatible imports (`npm:`, `jsr:`, `https://`) are inlined into the
 bundle by the swamp packager. A `deno.json` that maps zod to any 4.x version or
-range (`npm:zod@^4`) ships it as `npm:zod@4`, still shared.
-`swamp extension quality` and `swamp extension push` report the same
+range (`npm:zod@^4`) ships it as `npm:zod@4`, still shared, provided every
+module resolves `"zod"` to zod 4: a scope that sends it to zod 3 anywhere keeps
+it bundled. `swamp extension quality` and `swamp extension push` report the same
 `bare-specifiers` warning for each bare import that ships as written; fix it by
-adding a `deno.json` imports entry for the name or writing the specifier inline.
-Quality still prints the rubric but fails, because the registry cannot resolve
-the import and would score the documentation factors 0; push warns. A push also
-fails when an import-map target it would write holds a quote, backslash,
-backtick, line break or `${`. The finding cannot be accepted. Swamp's lint never
-applies Deno's `no-import-prefix` rule, so a `deno.json` needs no exclude for
-the `npm:`/`jsr:` form.
+adding an imports entry for the name to the Deno config or writing the specifier
+inline. Quality still prints the rubric but fails, because the registry cannot
+resolve the import and would score the documentation factors 0; push warns. A
+push also fails when an import-map target it would write holds a quote,
+backslash, backtick, line break or `${`. The finding cannot be accepted. Swamp's
+lint never applies Deno's `no-import-prefix` rule, so a `deno.json` needs no
+exclude for the `npm:`/`jsr:` form.
 
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push

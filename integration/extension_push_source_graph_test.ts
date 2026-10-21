@@ -135,6 +135,7 @@ async function prepare(
     deps,
     {
       manifest: resolved.manifest,
+      bareImports: resolved.bareImports,
       repoDir: repo,
       manifestDir: dirname(manifestPath),
       modelsDir: resolved.modelsDir,

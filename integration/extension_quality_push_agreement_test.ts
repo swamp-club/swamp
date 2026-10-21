@@ -35,6 +35,7 @@ import {
 } from "@std/assert";
 import { join, toFileUrl } from "@std/path";
 import { parseExtensionManifest } from "../src/domain/extensions/extension_manifest.ts";
+import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
 import {
   computePackageCacheHash,
   ExtensionPackageCache,
@@ -172,6 +173,8 @@ async function withExtension(
   files: {
     model: string;
     denoJson?: string;
+    /** The config's file name; `deno.json` when omitted. */
+    denoConfigName?: "deno.json" | "deno.jsonc";
     additional?: Record<string, string>;
   },
   fn: (fixture: Fixture) => Promise<void>,
@@ -193,9 +196,16 @@ async function withExtension(
     }
     let denoConfigPath: string | undefined;
     if (files.denoJson !== undefined) {
-      denoConfigPath = join(root, "deno.json");
+      denoConfigPath = join(root, files.denoConfigName ?? "deno.json");
       await Deno.writeTextFile(denoConfigPath, files.denoJson);
     }
+    // What Deno resolves the model's bare imports to, read from the real
+    // module graph as the CLI reads it (swamp-club#3612).
+    const bareImports = denoConfigPath
+      ? (await new DenoInfoModuleGraphReader(DENO).read(model, {
+        denoConfigPath,
+      })).bareImports ?? []
+      : [];
     const manifest = parseExtensionManifest(manifestText);
     const additionalPaths = additional.map((f) => join(root, f));
     await fn({
@@ -207,6 +217,7 @@ async function withExtension(
         dryRun: true,
         registryChecks: "skip",
         denoConfigPath,
+        bareImports,
       }),
       hashInput: {
         manifest,
@@ -224,6 +235,7 @@ async function withExtension(
         includeFilePaths: [],
         denoConfigPath,
         packageJsonPath: undefined,
+        bareImports,
       },
       tsFiles: [model],
       denoConfigPath,
@@ -280,6 +292,30 @@ Deno.test("quality and push agree: a bare import the import map resolves raises 
     model:
       'import { z } from "zod";\nexport const model = { s: z.string() };\n',
     denoJson: JSON.stringify({ imports: { zod: "npm:zod@4.3.6" } }),
+  }, async (fixture) => {
+    const pushed = await extensionPushPrepare(
+      ctx,
+      prepareDeps(),
+      fixture.prepareInput,
+    );
+    const quality = await runQuality(fixture);
+    const bare = (warnings: { ruleId: string }[]) =>
+      warnings.filter((w) => w.ruleId === "bare-specifiers");
+
+    assertEquals(bare(pushed.reviewRulesResult.warnings), []);
+    assertEquals(bare(quality.findings.reviewRulesResult.warnings), []);
+    assertEquals(quality.registryScorable, true);
+    assertEquals(quality.gateFailures, []);
+  });
+});
+
+Deno.test("quality and push agree: a bare import only a scope resolves raises no warning, and the extension is registry-scorable (swamp-club#3612)", async () => {
+  await withExtension({
+    model:
+      'import { z } from "zod";\nexport const model = { s: z.string() };\n',
+    denoConfigName: "deno.jsonc",
+    denoJson:
+      '// scoped\n{ "scopes": { "./models/": { "zod": "npm:zod@4.3.6" } } }',
   }, async (fixture) => {
     const pushed = await extensionPushPrepare(
       ctx,

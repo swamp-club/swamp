@@ -393,3 +393,134 @@ Deno.test("DenoInfoModuleGraphReader: without readOnlyLock the lock flags are De
     assertEquals(calls[0].args.includes("--no-lock"), false);
   });
 });
+
+/** Writes `files` under a fresh temp dir and runs `fn` on it. */
+async function withProject(
+  files: Record<string, string>,
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-" });
+  try {
+    for (const [rel, text] of Object.entries(files)) {
+      await Deno.mkdir(join(dir, rel, ".."), { recursive: true });
+      await Deno.writeTextFile(join(dir, rel), text);
+    }
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+}
+
+/** Each bare import as `[importer relative to dir, specifier, target]`. */
+function bareImportsOf(
+  dir: string,
+  graph: {
+    bareImports?: { importer: string; specifier: string; target?: string }[];
+  },
+): Array<[string, string, string | undefined]> {
+  return (graph.bareImports ?? []).map((b): [
+    string,
+    string,
+    string | undefined,
+  ] => [relative(dir, b.importer), b.specifier, b.target]).sort();
+}
+
+// node: targets resolve without network access, so these read real graphs.
+
+Deno.test("DenoInfoModuleGraphReader: a bare import resolves through the scope covering its importer (swamp-club#3612)", async () => {
+  await withProject({
+    "deno.json": JSON.stringify({
+      imports: { "fs": "node:fs", "path": "node:path" },
+      scopes: { "./extensions/": { "fs": "node:os" } },
+    }),
+    "extensions/models/m.ts":
+      'import fs from "fs";\nimport path from "path";\nimport { l } from "../../lib/l.ts";\nexport const m = [fs, path, l];\n',
+    "lib/l.ts": 'import fs from "fs";\nexport const l = fs;\n',
+  }, async (dir) => {
+    const graph = await new DenoInfoModuleGraphReader(Deno.execPath()).read(
+      join(dir, "extensions", "models", "m.ts"),
+      { denoConfigPath: join(dir, "deno.json") },
+    );
+    assertEquals(bareImportsOf(dir, graph), [
+      [join("extensions", "models", "m.ts"), "fs", "node:os"],
+      [join("extensions", "models", "m.ts"), "path", "node:path"],
+      [join("lib", "l.ts"), "fs", "node:fs"],
+    ]);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: a deno.jsonc and the importMap file it references resolve bare imports (swamp-club#3612)", async () => {
+  await withProject({
+    "deno.jsonc":
+      '// project config\n{ "importMap": "./maps/import_map.json", }\n',
+    "maps/import_map.json": JSON.stringify({ imports: { "fs": "node:fs" } }),
+    "models/m.ts": 'import fs from "fs";\nexport const m = fs;\n',
+  }, async (dir) => {
+    const graph = await new DenoInfoModuleGraphReader(Deno.execPath()).read(
+      join(dir, "models", "m.ts"),
+      { denoConfigPath: join(dir, "deno.jsonc") },
+    );
+    assertEquals(bareImportsOf(dir, graph), [
+      [join("models", "m.ts"), "fs", "node:fs"],
+    ]);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: a workspace member inherits the root's imports (swamp-club#3612)", async () => {
+  await withProject({
+    "deno.json": JSON.stringify({
+      workspace: ["./member"],
+      imports: { "fs": "node:fs" },
+    }),
+    "member/deno.json": JSON.stringify({ imports: { "path": "node:path" } }),
+    "member/models/m.ts":
+      'import fs from "fs";\nimport path from "path";\nexport const m = [fs, path];\n',
+  }, async (dir) => {
+    const graph = await new DenoInfoModuleGraphReader(Deno.execPath()).read(
+      join(dir, "member", "models", "m.ts"),
+      { denoConfigPath: join(dir, "member", "deno.json") },
+    );
+    assertEquals(bareImportsOf(dir, graph), [
+      [join("member", "models", "m.ts"), "fs", "node:fs"],
+      [join("member", "models", "m.ts"), "path", "node:path"],
+    ]);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: a bare import nothing maps is unresolved", async () => {
+  await withProject({
+    "deno.json": JSON.stringify({ imports: { "fs": "node:fs" } }),
+    "models/m.ts":
+      'import fs from "fs";\nimport x from "unmapped";\nexport const m = [fs, x];\n',
+  }, async (dir) => {
+    const graph = await new DenoInfoModuleGraphReader(Deno.execPath()).read(
+      join(dir, "models", "m.ts"),
+      { denoConfigPath: join(dir, "deno.json") },
+    );
+    assertEquals(bareImportsOf(dir, graph), [
+      [join("models", "m.ts"), "fs", "node:fs"],
+      [join("models", "m.ts"), "unmapped", undefined],
+    ]);
+  });
+});
+
+Deno.test("DenoInfoModuleGraphReader: a remote importMap is refused as Deno refuses it, never resolved another way", async () => {
+  await withProject({
+    "deno.json": JSON.stringify({
+      importMap: "https://example.invalid/import_map.json",
+    }),
+    "models/m.ts": 'import fs from "fs";\nexport const m = fs;\n',
+  }, async (dir) => {
+    await assertRejects(
+      () =>
+        new DenoInfoModuleGraphReader(Deno.execPath()).read(
+          join(dir, "models", "m.ts"),
+          { denoConfigPath: join(dir, "deno.json") },
+        ),
+      UserError,
+      "Only file: specifiers are supported",
+    );
+  });
+});

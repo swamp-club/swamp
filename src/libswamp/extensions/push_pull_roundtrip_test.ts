@@ -161,6 +161,7 @@ Deno.test(
       });
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: src,
         manifestDir: src,
         modelsDir,
@@ -271,6 +272,7 @@ Deno.test(
 
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: src,
         manifestDir: src,
         // Resolver under paths.base=manifest sets these to the manifest dir;
@@ -380,6 +382,7 @@ Deno.test(
 
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: src,
         manifestDir: src,
         modelsDir: extDir,
@@ -466,6 +469,7 @@ Deno.test(
       });
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: src,
         manifestDir: src,
         modelsDir,
@@ -549,6 +553,7 @@ Deno.test(
 
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: src,
         manifestDir: src,
         modelsDir: extDir,
@@ -635,6 +640,7 @@ Deno.test(
       // will place the file at models/models/project.ts (doubled).
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
+        bareImports: [],
         repoDir: src,
         manifestDir: src,
         modelsDir: extDir,

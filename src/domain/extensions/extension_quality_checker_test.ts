@@ -400,10 +400,27 @@ Deno.test("extensionLintArgs: the project config or --no-config, never no-import
   assertEquals(denoToolConfigArgs(undefined), ["--no-config"]);
 });
 
-Deno.test("extensionLintArgs: a config that is not plain JSON is linted exactly as written", async () => {
+Deno.test("extensionLintArgs: a deno.jsonc with comments keeps its own lint excludes (swamp-club#3612)", async () => {
   await withTempFiles(
     {
-      "deno.json": '// comment\n{ "lint": { "rules": { "exclude": ["x"] } } }',
+      "deno.jsonc":
+        '// comment\n{ "lint": { "rules": { "exclude": ["x",] } }, }',
+    },
+    async (dir) => {
+      assertEquals(await extensionLintArgs(join(dir, "deno.jsonc")), [
+        "lint",
+        "--config",
+        join(dir, "deno.jsonc"),
+        "--rules-exclude=x,no-import-prefix",
+      ]);
+    },
+  );
+});
+
+Deno.test("extensionLintArgs: a config that cannot be parsed is linted exactly as written", async () => {
+  await withTempFiles(
+    {
+      "deno.json": '{ "lint": { "rules": { "exclude": ["x"] } }',
     },
     async (dir) => {
       assertEquals(await extensionLintArgs(join(dir, "deno.json")), [
