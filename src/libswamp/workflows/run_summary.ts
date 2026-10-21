@@ -21,7 +21,10 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { UserError } from "../../domain/errors.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  setActiveSpanAttributes,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 import {
   parseRunTimeBound,
   runDuration,
@@ -359,9 +362,10 @@ export async function* workflowRunSummary(
         ? undefined
         : new Date(untilMs).toISOString();
 
+      const allWorkflows = await deps.findAllWorkflows();
       const selection = await selectWorkflowRuns(
         deps,
-        await deps.findAllWorkflows(),
+        allWorkflows,
         {
           sinceMs,
           untilMs,
@@ -387,6 +391,10 @@ export async function* workflowRunSummary(
           });
         }
       }
+      setActiveSpanAttributes({
+        "workflow_runs.workflows": allWorkflows.length,
+        "workflow_runs.summarized": readable.length,
+      });
       yield {
         kind: "completed",
         data: summarizeWorkflowRuns(readable, {

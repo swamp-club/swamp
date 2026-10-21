@@ -57,6 +57,7 @@ import {
   isAdminOnlyModelType,
   isAuthorized,
   isAuthorizedForAll,
+  isServerFailureCode,
   LibSwampStreamError,
   listTokenSessions,
   MAX_STREAM_SESSIONS_PER_PRINCIPAL,
@@ -71,6 +72,7 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  sendTraced,
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionLoginIdentity,
@@ -84,6 +86,15 @@ import {
 import type { ServerMessage } from "../protocol.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
+import {
+  SpanStatusCode,
+  withServerSpan,
+} from "../../infrastructure/tracing/mod.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -2319,4 +2330,129 @@ Deno.test("authorizeRetag: by default a rename passes on the tag write implies",
     ),
     true,
   );
+});
+
+// ── Request span outcome (swamp-club#3741) ──────────────────────────────
+
+Deno.test("isServerFailureCode: internal errors and operation failures are server failures", () => {
+  assertEquals(isServerFailureCode("internal_error"), true);
+  assertEquals(isServerFailureCode("workflow_history_get_failed"), true);
+});
+
+Deno.test("isServerFailureCode: client errors are not server failures", () => {
+  assertEquals(isServerFailureCode("validation_failed"), false);
+  assertEquals(isServerFailureCode("not_found"), false);
+  assertEquals(isServerFailureCode("forbidden"), false);
+  assertEquals(isServerFailureCode("cancelled"), false);
+});
+
+Deno.test("sendError: records a client error code on the active span without marking it ERROR", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket, sent } = messageSocket();
+    await withServerSpan("test.request", {}, () => {
+      sendError(socket, "r1", "not_found", "Data not found");
+      return Promise.resolve();
+    });
+
+    const span = findSpan(spans, "test.request");
+    assertEquals(
+      span.attributes["swamp.serve.response.error_code"],
+      "not_found",
+    );
+    assertEquals(span.status.code, SpanStatusCode.UNSET);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+  });
+});
+
+Deno.test("sendError: marks the active span ERROR for a server failure code", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket } = messageSocket();
+    await withServerSpan("test.request", {}, () => {
+      sendError(socket, "r1", "workflow_history_get_failed", "boom");
+      return Promise.resolve();
+    });
+
+    const span = findSpan(spans, "test.request");
+    assertEquals(
+      span.attributes["swamp.serve.response.error_code"],
+      "workflow_history_get_failed",
+    );
+    assertEquals(span.status.code, SpanStatusCode.ERROR);
+    assertEquals(span.status.message, "workflow_history_get_failed");
+    assertEquals(
+      span.attributes["swamp.serve.response.error_reason"],
+      undefined,
+    );
+  });
+});
+
+Deno.test("sendError: an operation failure whose details name a client reason records the reason without marking ERROR", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket, sent } = messageSocket();
+    await withServerSpan("test.request", {}, () => {
+      sendError(
+        socket,
+        "r1",
+        "workflow_history_get_failed",
+        "Workflow run not found",
+        { reason: "not_found" },
+      );
+      return Promise.resolve();
+    });
+
+    const span = findSpan(spans, "test.request");
+    assertEquals(
+      span.attributes["swamp.serve.response.error_code"],
+      "workflow_history_get_failed",
+    );
+    assertEquals(
+      span.attributes["swamp.serve.response.error_reason"],
+      "not_found",
+    );
+    assertEquals(span.status.code, SpanStatusCode.UNSET);
+    assertEquals(sent.length, 1);
+  });
+});
+
+Deno.test("sendError: details naming an unknown reason still mark a server failure ERROR", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket } = messageSocket();
+    await withServerSpan("test.request", {}, () => {
+      sendError(socket, "r1", "workflow_history_get_failed", "boom", {
+        reason: "disk_on_fire",
+      });
+      return Promise.resolve();
+    });
+
+    const span = findSpan(spans, "test.request");
+    assertEquals(
+      span.attributes["swamp.serve.response.error_reason"],
+      undefined,
+    );
+    assertEquals(span.status.code, SpanStatusCode.ERROR);
+  });
+});
+
+Deno.test("sendError: sends the error frame when no span is active", () => {
+  const { socket, sent } = messageSocket();
+  sendError(socket, "r1", "internal_error", "boom");
+  assertEquals(sent.length, 1);
+  assertEquals(sent[0].type, "error");
+});
+
+Deno.test("sendTraced: sends the message inside a swamp.serve.response.send child span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { socket, sent } = messageSocket();
+    await withServerSpan(
+      "test.request",
+      {},
+      () => sendTraced(socket, { type: "done", id: "r1" }),
+    );
+
+    assertEquals(sent, [{ type: "done", id: "r1" }]);
+    const request = findSpan(spans, "test.request");
+    const sendSpan = findSpan(spans, "swamp.serve.response.send");
+    assertEquals(isChildOf(sendSpan, request), true);
+  });
 });

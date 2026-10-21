@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
+import { type Span, withSpan } from "../tracing/mod.ts";
 import {
   fingerprintMatches,
   type RecordFingerprint,
@@ -140,6 +141,11 @@ export class RunIndexCache {
    *
    * `load` should stop when `signal` aborts; the read then rejects with
    * the signal's reason.
+   *
+   * A miss is traced as a `swamp.workflow_runs.index.load` span; a hit
+   * opens none. `run_index.joined_inflight` says whether the snapshot it
+   * returned came from a load another read started, and
+   * `workflow_runs.records` how many runs that snapshot holds.
    */
   async get(
     workflowId: string,
@@ -153,6 +159,32 @@ export class RunIndexCache {
       this.#entries.set(workflowId, cached);
       return cached.snapshot;
     }
+    return await withSpan(
+      "swamp.workflow_runs.index.load",
+      { "workflow.id": workflowId },
+      async (span) => {
+        const snapshot = await this.#miss(
+          workflowId,
+          before,
+          load,
+          span,
+          signal,
+        );
+        span.setAttribute("workflow_runs.records", snapshot.size);
+        return snapshot;
+      },
+    );
+  }
+
+  /** {@link get} once the cache has missed. */
+  async #miss(
+    workflowId: string,
+    before: RunIndexStamp | undefined,
+    load: () => Promise<LoadedRunIndex>,
+    span: Span,
+    signal?: AbortSignal,
+  ): Promise<RunIndexSnapshot> {
+    span.setAttribute("run_index.joined_inflight", false);
     if (!before || this.#racy(before)) {
       return await this.#load(workflowId, before, load);
     }
@@ -160,10 +192,12 @@ export class RunIndexCache {
     const running = this.#loading.get(workflowId);
     if (running && sameStamp(running.stamp, before)) {
       try {
+        span.setAttribute("run_index.joined_inflight", true);
         return await running.snapshot;
       } catch (error) {
         // Its reader gave up, not the load: this reader still wants it.
         if (!running.signal?.aborted || signal?.aborted) throw error;
+        span.setAttribute("run_index.joined_inflight", false);
       }
     }
     const snapshot = this.#load(workflowId, before, load);

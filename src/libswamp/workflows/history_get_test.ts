@@ -44,6 +44,11 @@ import {
   type WorkflowHistoryGetDeps,
   type WorkflowHistoryGetEvent,
 } from "./history_get.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 const testWorkflow = {
   id: "wf-1" as unknown as WorkflowId,
@@ -654,5 +659,221 @@ Deno.test("workflowHistoryGet: without a watermark for runs the not-found is unc
   assertEquals(last.error.details, {
     entityType: "Workflow run or workflow",
     idOrName: "abc",
+  });
+});
+
+const GET_SPAN = "swamp.workflow.history.get";
+const STEP_OUTPUTS_SPAN = "swamp.workflow.step_outputs.resolve";
+const NESTED_WAITS_SPAN = "swamp.workflow.nested_waits.resolve";
+const SIGNAL_WAITS_SPAN = "swamp.workflow.signal_waits.resolve";
+
+/** A suspended parent run whose `call` step waits on a finished child run. */
+function runWaitingOnNestedRun(): {
+  parent: WorkflowRun;
+  nestedLink: NonNullable<WorkflowHistoryGetDeps["nestedLink"]>;
+} {
+  const childWorkflow = RealWorkflow.create({
+    name: "child",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "work", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const parentWorkflow = RealWorkflow.create({
+    name: "parent",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "call", task: StepTask.workflow("child") }),
+        ],
+      }),
+    ],
+  });
+  const parent = RealWorkflowRun.create(parentWorkflow);
+  parent.start();
+  const child = RealWorkflowRun.create(childWorkflow);
+  child.recordParentRun({
+    workflowId: parentWorkflow.id,
+    workflowName: parentWorkflow.name,
+    runId: parent.id,
+    jobName: "main",
+    stepName: "call",
+    nestingDepth: 1,
+    ancestorWorkflowNames: [parentWorkflow.name],
+  });
+  child.start();
+  child.complete();
+  const job = parent.getJob("main")!;
+  job.start();
+  job.getStep("call")!.waitForNestedRun({
+    workflowId: childWorkflow.id,
+    workflowName: childWorkflow.name,
+    runId: child.id,
+  });
+  parent.suspend();
+  return {
+    parent,
+    nestedLink: {
+      runRepo: { findById: () => Promise.resolve(child) },
+      workflowRepo: { findById: () => Promise.resolve(childWorkflow) },
+    },
+  };
+}
+
+Deno.test("workflowHistoryGet: records the argument and the run on the span", async () => {
+  await withCapturedSpans(async (spans) => {
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(createLibSwampContext(), makeDeps(), "my-workflow"),
+    );
+    assertEquals(events[1].kind, "completed");
+    const span = findSpan(spans, GET_SPAN);
+    assertEquals(span.attributes["workflow.id_or_name"], "my-workflow");
+    assertEquals(span.attributes["history.include_outputs"], false);
+    assertEquals(span.attributes["workflow.name"], "my-workflow");
+    assertEquals(span.attributes["workflow.id"], "wf-1");
+    assertEquals(span.attributes["workflow.run_id"], "run-1");
+    assertEquals(span.attributes["workflow.run.status"], "completed");
+    const resolve = findSpan(spans, "swamp.workflow.run_reference.resolve");
+    assertEquals(isChildOf(resolve, span), true);
+    assertEquals(spans.some((s) => s.name === STEP_OUTPUTS_SPAN), false);
+    assertEquals(spans.some((s) => s.name === NESTED_WAITS_SPAN), false);
+    assertEquals(spans.some((s) => s.name === SIGNAL_WAITS_SPAN), false);
+  });
+});
+
+Deno.test("workflowHistoryGet: records a long argument on the span cut to 256 characters", async () => {
+  const long = `wf-${crypto.randomUUID()}-`.padEnd(300, "x");
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(createLibSwampContext(), makeDeps(), long),
+    );
+    const span = findSpan(spans, GET_SPAN);
+    assertEquals(span.attributes["workflow.id_or_name"], long.slice(0, 256));
+  });
+});
+
+Deno.test("workflowHistoryGet: records no run on the span when nothing is found", async () => {
+  const deps = makeDeps({ findWorkflow: () => Promise.resolve(null) });
+  await withCapturedSpans(async (spans) => {
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(createLibSwampContext(), deps, "unknown-workflow"),
+    );
+    assertEquals(events[1].kind, "error");
+    const span = findSpan(spans, GET_SPAN);
+    assertEquals(span.attributes["workflow.id_or_name"], "unknown-workflow");
+    assertEquals("workflow.run_id" in span.attributes, false);
+    assertEquals("workflow.name" in span.attributes, false);
+    assertEquals("workflow.run.status" in span.attributes, false);
+  });
+});
+
+Deno.test("workflowHistoryGet: includeOutputs records the option and resolves step outputs in a child span", async () => {
+  const run = runWithOneStep();
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(run),
+    resolveStepOutputs: () => Promise.resolve({}),
+  });
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(createLibSwampContext(), deps, "my-workflow", {
+        includeOutputs: true,
+      }),
+    );
+    const span = findSpan(spans, GET_SPAN);
+    assertEquals(span.attributes["history.include_outputs"], true);
+    assertEquals(span.attributes["workflow.run_id"], run.id);
+    assertEquals(span.attributes["workflow.run.status"], run.status);
+    const outputs = findSpan(spans, STEP_OUTPUTS_SPAN);
+    assertEquals(isChildOf(outputs, span), true);
+  });
+});
+
+Deno.test("workflowHistoryGet: resolves nested waits in a child span only when the run has them", async () => {
+  const { parent, nestedLink } = runWaitingOnNestedRun();
+  await withCapturedSpans(async (spans) => {
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({ findLatestRun: () => Promise.resolve(parent), nestedLink }),
+        "parent",
+      ),
+    );
+    const completed = events[1] as Extract<
+      WorkflowHistoryGetEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.nestedWaits?.length, 1);
+    const span = findSpan(spans, GET_SPAN);
+    assertEquals(span.attributes["workflow.run.status"], "suspended");
+    assertEquals(isChildOf(findSpan(spans, NESTED_WAITS_SPAN), span), true);
+  });
+
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({
+          findLatestRun: () => Promise.resolve(runWithOneStep()),
+          nestedLink,
+        }),
+        "my-workflow",
+      ),
+    );
+    assertEquals(spans.some((s) => s.name === NESTED_WAITS_SPAN), false);
+  });
+});
+
+Deno.test("workflowHistoryGet: reads signal waits in a child span only for a suspended run with a store", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const supported = {
+    supported: true as const,
+    store: new InMemorySignalWaitStore(),
+  };
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({
+          findLatestRun: () => Promise.resolve(runWaitingForSignal(opened)),
+          signalWaits: supported,
+        }),
+        "my-workflow",
+      ),
+    );
+    const span = findSpan(spans, GET_SPAN);
+    assertEquals(isChildOf(findSpan(spans, SIGNAL_WAITS_SPAN), span), true);
+  });
+
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({
+          findLatestRun: () => Promise.resolve(runWaitingForSignal(opened)),
+          signalWaits: { supported: false, reason: "no store" },
+        }),
+        "my-workflow",
+      ),
+    );
+    assertEquals(spans.some((s) => s.name === SIGNAL_WAITS_SPAN), false);
+  });
+
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({
+          findLatestRun: () => Promise.resolve(runWithOneStep()),
+          signalWaits: supported,
+        }),
+        "my-workflow",
+      ),
+    );
+    assertEquals(spans.some((s) => s.name === SIGNAL_WAITS_SPAN), false);
   });
 });

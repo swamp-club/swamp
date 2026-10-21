@@ -33,6 +33,11 @@ import {
 } from "./run_search.ts";
 import { RunIndexSnapshot } from "../../domain/workflows/run_index_snapshot.ts";
 import type { WorkflowRunSummary } from "../../domain/workflows/workflow_run_summary.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 const now = Date.now();
 
@@ -661,4 +666,63 @@ Deno.test("workflowRunSearch: no reaped marker without a runs watermark", async 
     { kind: "completed" }
   >;
   assertEquals("reapedBefore" in completed.data, false);
+});
+
+Deno.test("workflowRunSearch: records the run selection as a child span with its counts", async () => {
+  // "test" is refused: its one run is scanned but not matched.
+  const deps = makeDeps({
+    isReadable: (_id, name) => Promise.resolve(name !== "test"),
+  });
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowRunSearchEvent>(
+      workflowRunSearch(createLibSwampContext(), deps, {}),
+    );
+    const search = findSpan(spans, "swamp.workflow.run_search");
+    const selection = findSpan(spans, "swamp.workflow.run_selection");
+    assertEquals(isChildOf(selection, search), true);
+    assertEquals(selection.attributes["workflow_runs.workflows"], 2);
+    assertEquals(selection.attributes["workflow_runs.workflows_denied"], 1);
+    assertEquals(selection.attributes["workflow_runs.scanned"], 3);
+    assertEquals(selection.attributes["workflow_runs.matched"], 2);
+  });
+});
+
+Deno.test("workflowRunSearch: records the page size, limit and query on the span", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowRunSearchEvent>(
+      workflowRunSearch(createLibSwampContext(), makeDeps(), {
+        query: "deploy",
+        limit: 1,
+      }),
+    );
+    const search = findSpan(spans, "swamp.workflow.run_search");
+    assertEquals(search.attributes["search.query"], "deploy");
+    assertEquals(search.attributes["workflow_runs.returned"], 1);
+    assertEquals(search.attributes["workflow_runs.limit"], 1);
+  });
+});
+
+Deno.test("workflowRunSearch: records no query or limit on the span when none is given", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowRunSearchEvent>(
+      workflowRunSearch(createLibSwampContext(), makeDeps(), {}),
+    );
+    const search = findSpan(spans, "swamp.workflow.run_search");
+    assertEquals(search.attributes["search.query"], undefined);
+    assertEquals(search.attributes["workflow_runs.limit"], undefined);
+    assertEquals(search.attributes["workflow_runs.returned"], 3);
+  });
+});
+
+Deno.test("workflowRunSearch: records a long query on the span cut to 256 characters", async () => {
+  await withCapturedSpans(async (spans) => {
+    await collect<WorkflowRunSearchEvent>(
+      workflowRunSearch(createLibSwampContext(), makeDeps(), {
+        query: "q".repeat(300),
+      }),
+    );
+    const search = findSpan(spans, "swamp.workflow.run_search");
+    assertEquals(search.attributes["search.query"], "q".repeat(256));
+    assertEquals(search.attributes["workflow_runs.returned"], 0);
+  });
 });

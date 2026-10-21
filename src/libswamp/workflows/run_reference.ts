@@ -32,6 +32,21 @@ import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { PartialMatchResult } from "./run_lookup.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
+import { withSpan } from "../../infrastructure/tracing/mod.ts";
+
+/** The longest argument a span records; longer ones are cut. */
+const TRACED_ARGUMENT_MAX_LENGTH = 256;
+
+/**
+ * A run-or-workflow argument as a span records it: cut to a bounded length,
+ * since a remote caller chooses it (swamp-club#3741).
+ */
+export function tracedArgument(value: string): string {
+  return value.length > TRACED_ARGUMENT_MAX_LENGTH
+    ? value.slice(0, TRACED_ARGUMENT_MAX_LENGTH)
+    : value;
+}
 
 /**
  * What a run-or-workflow argument names. A workflow carries its latest run,
@@ -58,11 +73,33 @@ export interface RunReferenceDeps {
  * matched as a run id prefix across every workflow; failing that, the
  * argument names a workflow, and the read takes its latest run.
  */
-export async function resolveRunReference(
+export function resolveRunReference(
   deps: RunReferenceDeps,
   runIdOrWorkflow: string,
 ): Promise<RunReference> {
-  if (deps.isPartialId(runIdOrWorkflow)) {
+  const partial = deps.isPartialId(runIdOrWorkflow);
+  return withSpan(
+    "swamp.workflow.run_reference.resolve",
+    {
+      "workflow.id_or_name": tracedArgument(runIdOrWorkflow),
+      "workflow.lookup": partial
+        ? (isUuid(runIdOrWorkflow) ? "id" : "prefix")
+        : "name",
+    },
+    async (span) => {
+      const reference = await lookUp(deps, runIdOrWorkflow, partial);
+      span.setAttribute("workflow.lookup.result", reference.kind);
+      return reference;
+    },
+  );
+}
+
+async function lookUp(
+  deps: RunReferenceDeps,
+  runIdOrWorkflow: string,
+  partial: boolean,
+): Promise<RunReference> {
+  if (partial) {
     const result = await deps.matchRunByPartialId(runIdOrWorkflow);
     if (result.status === "found" && result.match) {
       return { kind: "run", run: result.match };

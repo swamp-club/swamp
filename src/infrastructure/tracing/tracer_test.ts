@@ -22,6 +22,7 @@ import { type Span, SpanKind, trace } from "@opentelemetry/api";
 import {
   bindGeneratorToSpan,
   getTracer,
+  markActiveSpanError,
   runDetached,
   setActiveSpanAttributes,
   SpanStatusCode,
@@ -789,4 +790,22 @@ Deno.test("bindGeneratorToSpan: forwards an early break with no tracer registere
   }
 
   assertEquals(unwound, ["inner", "middle"]);
+});
+
+// ── markActiveSpanError tests ──────────────────────────────────────
+
+Deno.test("markActiveSpanError: marks the active span ERROR with the message", async () => {
+  await withCapturedSpans(async (spans) => {
+    await withServerSpan("test.request", {}, () => {
+      markActiveSpanError("boom");
+      return Promise.resolve();
+    });
+    const span = findSpan(spans, "test.request");
+    assertEquals(span.status.code, SpanStatusCode.ERROR);
+    assertEquals(span.status.message, "boom");
+  });
+});
+
+Deno.test("markActiveSpanError: does nothing without an active span", () => {
+  runDetached(() => markActiveSpanError("ignored"));
 });
