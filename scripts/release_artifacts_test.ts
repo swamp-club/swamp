@@ -359,7 +359,7 @@ Deno.test("release downloader refuses corrupt archives and cloud read failures",
     assert(!exists);
   }));
 
-Deno.test("release workflow publishes before UAT and consumers use GCS without GitHub releases", async () => {
+Deno.test("release workflow publishes GCS and GitHub assets before UAT", async () => {
   const text = await Deno.readTextFile(
     join(repo, ".github/workflows/release.yml"),
   );
@@ -368,10 +368,13 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
       string,
       {
         if?: string;
+        needs?: string;
+        permissions?: Record<string, string>;
         steps: {
           name?: string;
           run?: string;
           uses?: string;
+          with?: Record<string, unknown>;
           if?: string;
           env?: Record<string, string>;
         }[];
@@ -383,10 +386,24 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   // outputs that branch-controlled build scripts could change.
   const gate =
     "(github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)";
-  for (const step of steps) {
+  const publisher = workflow.jobs["github-release"];
+  assertEquals(workflow.jobs.release.permissions?.contents, "read");
+  assertEquals(steps[0].with?.["persist-credentials"], false);
+  assertEquals(publisher.permissions?.contents, "write");
+  assertEquals(publisher.needs, "release");
+  assertEquals(publisher.if, gate);
+  assert(
+    publisher.steps.every((s) =>
+      !s.run && !s.uses?.startsWith("actions/checkout@")
+    ),
+  );
+  for (const step of [...steps, ...publisher.steps]) {
     if (
       step.uses?.startsWith("google-github-actions/") ||
-      step.name === "Trigger UAT"
+      step.name === "Trigger UAT" ||
+      step.name === "Create GitHub Release" ||
+      step.name === "Stage GitHub Release assets" ||
+      step.name === "Generate release body"
     ) {
       assertEquals(step.if, gate);
     }
@@ -398,11 +415,65 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   const publish = steps.findIndex((s) =>
     s.name === "Package release artifacts and optionally upload to GCS"
   );
-  const trigger = steps.findIndex((s) => s.name === "Trigger UAT");
-  assert(publish >= 0 && trigger > publish);
+  const stage = steps.findIndex((s) =>
+    s.name === "Stage GitHub Release assets"
+  );
+  assert(publish >= 0 && stage > publish);
+  const trigger = publisher.steps.findIndex((s) => s.name === "Trigger UAT");
+  const githubRelease = publisher.steps.findIndex((s) =>
+    s.name === "Create GitHub Release"
+  );
+  assert(githubRelease >= 0 && githubRelease < trigger);
+  const release = publisher.steps[githubRelease];
+  assertEquals(
+    release.with?.tag_name,
+    "v${{ needs.release.outputs.version }}",
+  );
+  assertEquals(release.with?.fail_on_unmatched_files, true);
+  const publishedFiles = String(release.with?.files).trim().split("\n");
+  assertEquals(
+    String(steps[stage].with?.path).trim().split("\n"),
+    ["dist/release_body.md", ...publishedFiles],
+  );
+  const checksums = steps.find((s) => s.name === "Create checksums");
+  assertEquals(
+    checksums?.run?.split("\n")[0],
+    `sha256sum ${
+      publishedFiles.filter((f) => f !== "dist/checksums.txt")
+        .map((f) => f.replace("dist/", "")).join(" ")
+    } > checksums.txt`,
+  );
+  assertEquals(
+    String(release.with?.files).trim().split("\n"),
+    [
+      "dist/swamp-linux-x86_64",
+      "dist/swamp-linux-aarch64",
+      "dist/swamp-darwin-x86_64",
+      "dist/swamp-darwin-aarch64",
+      "dist/swamp-windows-x86_64.zip",
+      "dist/checksums.txt",
+    ],
+  );
   assert(!text.includes("gh release download"));
-  assert(!text.includes("action-gh-release"));
-  assert(!text.includes("release_body"));
+  assertEquals(release.with?.body_path, "dist/release_body.md");
+  assertEquals(release.with?.generate_release_notes, undefined);
+  const body = steps.findIndex((s) => s.name === "Generate release body");
+  assert(body >= 0 && body < stage);
+  assertStringIncludes(steps[body].run ?? "", "## What's Changed");
+  assertStringIncludes(steps[body].run ?? "", "printenv PR_BODY");
+  assertStringIncludes(steps[body].run ?? "", "### Installation");
+  const instructions = steps[body].run ?? "";
+  assertStringIncludes(instructions, "Run PowerShell as Administrator");
+  assertStringIncludes(instructions, "Invoke swamp by its full path");
+  assertStringIncludes(
+    instructions,
+    "New-Item -ItemType Directory -Force -Path 'C:\\Program Files\\swamp'",
+  );
+  assert(instructions.indexOf("New-Item") < instructions.indexOf("Move-Item"));
+  assertStringIncludes(
+    instructions,
+    "& 'C:\\Program Files\\swamp\\swamp.exe' --version",
+  );
   for (const job of ["windows-smoke", "docker"]) {
     assertEquals(workflow.jobs[job].if, gate);
     assert(

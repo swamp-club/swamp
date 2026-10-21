@@ -22,8 +22,11 @@ jobs:
   release:
     name: Build and Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     # Only run on merged PRs (not closed without merge) or manual trigger
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
 
@@ -32,6 +35,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
+          persist-credentials: false
 
       - name: Select release mode
         env:
@@ -54,6 +58,7 @@ jobs:
           # Format: YYYYMMDD.HHMMSS.0-sha.COMMITSHA (matches SI convention)
           VERSION=$(date -u +%Y%m%d.%H%M%S).0-sha.$(git rev-parse --short=8 HEAD)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
       - name: Build dashboard
@@ -103,7 +108,7 @@ jobs:
       - name: Create checksums
         working-directory: dist
         run: |
-          sha256sum swamp-* > checksums.txt
+          sha256sum swamp-linux-x86_64 swamp-linux-aarch64 swamp-darwin-x86_64 swamp-darwin-aarch64 swamp-windows-x86_64.zip > checksums.txt
           cat checksums.txt
 
       - name: Authenticate to Google Cloud
@@ -124,6 +129,127 @@ jobs:
           DRY_RUN: ${{ !((github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)) }}
         run: bash scripts/upload_release_artifacts.sh "$RELEASE_VERSION"
 
+      - name: Generate release body
+        if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Write changelog section
+          echo "## What's Changed" > /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            printf '* %s (#%s)\n' "$PR_TITLE" "$PR_NUMBER" >> /tmp/release_body.md
+            if [ -n "$PR_BODY" ]; then
+              echo "" >> /tmp/release_body.md
+              printenv PR_BODY >> /tmp/release_body.md
+            fi
+          else
+            git log -1 --pretty="* %s" HEAD >> /tmp/release_body.md
+            COMMIT_BODY=$(git log -1 --pretty=%b HEAD)
+            if [ -n "$COMMIT_BODY" ]; then
+              echo "" >> /tmp/release_body.md
+              echo "$COMMIT_BODY" >> /tmp/release_body.md
+            fi
+          fi
+
+          # Write installation section
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Installation"
+            echo ""
+            echo "**macOS (Apple Silicon):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-darwin-aarch64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**macOS (Intel):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-darwin-x86_64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**Linux (x86_64):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-x86_64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**Linux (aarch64):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-aarch64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**Windows (x86_64):**"
+            echo 'Run PowerShell as Administrator. Invoke swamp by its full path below, or add C:\Program Files\swamp to PATH.'
+            echo '```powershell'
+            echo "Invoke-WebRequest -Uri https://github.com/${REPO}/releases/download/v${VERSION}/swamp-windows-x86_64.zip -OutFile swamp.zip"
+            printf '%s\n' "New-Item -ItemType Directory -Force -Path 'C:\Program Files\swamp' | Out-Null"
+            printf '%s\n' "Expand-Archive swamp.zip -DestinationPath .; Move-Item swamp.exe 'C:\Program Files\swamp\'"
+            printf '%s\n' "& 'C:\Program Files\swamp\swamp.exe' --version"
+            echo '```'
+          } >> /tmp/release_body.md
+
+          cp /tmp/release_body.md dist/release_body.md
+
+      - name: Stage GitHub Release assets
+        if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: github-release-assets
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            dist/release_body.md
+            dist/swamp-linux-x86_64
+            dist/swamp-linux-aarch64
+            dist/swamp-darwin-x86_64
+            dist/swamp-darwin-aarch64
+            dist/swamp-windows-x86_64.zip
+            dist/checksums.txt
+
+  github-release:
+    name: Publish GitHub Release and trigger UAT
+    runs-on: ubuntu-latest
+    needs: release
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
+    permissions:
+      contents: write
+    steps:
+      - name: Download GitHub Release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: github-release-assets
+          path: dist
+
+      - name: Create GitHub Release
+        if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        with:
+          tag_name: v${{ needs.release.outputs.version }}
+          name: swamp ${{ needs.release.outputs.version }}
+          target_commitish: ${{ needs.release.outputs.commit }}
+          body_path: dist/release_body.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/swamp-linux-x86_64
+            dist/swamp-linux-aarch64
+            dist/swamp-darwin-x86_64
+            dist/swamp-darwin-aarch64
+            dist/swamp-windows-x86_64.zip
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Trigger UAT
         if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
@@ -131,7 +257,7 @@ jobs:
           token: ${{ secrets.UAT_TRIGGER_TOKEN }}
           repository: swamp-club/swamp-uat
           event-type: run-uat
-          client-payload: '{"version": "${{ steps.version.outputs.version }}"}'
+          client-payload: '{"version": "${{ needs.release.outputs.version }}"}'
 
   windows-smoke:
     name: Windows Smoke Test
