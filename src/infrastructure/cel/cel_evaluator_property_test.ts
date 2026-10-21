@@ -19,7 +19,8 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { CelEvaluator } from "./cel_evaluator.ts";
+import { Environment } from "cel-js";
+import { CelEvaluator, coerceBigInts } from "./cel_evaluator.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import {
   extractDependencies,
@@ -380,5 +381,75 @@ Deno.test("CelEvaluator.evaluate: embedded interpolation yields the literal text
       },
     ),
     { numRuns: 150 },
+  );
+});
+
+/** JSON-like values whose integers are safe-range bigints, as cel-js returns ints. */
+const arbCelJson = fc.letrec((tie) => ({
+  value: fc.oneof(
+    { depthSize: "small" },
+    arbLetters,
+    fc.double({ noNaN: true, noDefaultInfinity: true }),
+    fc.bigInt({
+      min: BigInt(Number.MIN_SAFE_INTEGER),
+      max: BigInt(Number.MAX_SAFE_INTEGER),
+    }),
+    fc.boolean(),
+    fc.constant(null),
+    fc.array(tie("value"), { maxLength: 4 }),
+    fc.dictionary(arbLetters, tie("value"), { maxKeys: 4 }),
+  ),
+})).value;
+
+function bigIntsAsNumbers(value: unknown): unknown {
+  if (typeof value === "bigint") return Number(value);
+  if (Array.isArray(value)) return value.map(bigIntsAsNumbers);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, bigIntsAsNumbers(v)]),
+    );
+  }
+  return value;
+}
+
+Deno.test("coerceBigInts: JSON-like values come through with ints as numbers", () => {
+  fc.assert(
+    fc.property(arbCelJson, (value) => {
+      assertEquals(coerceBigInts(value), bigIntsAsNumbers(value));
+    }),
+    { numRuns: 200 },
+  );
+});
+
+/** A cel-js duration's value in nanoseconds, the sum cel-js's own valueOf takes. */
+function durationNanos(duration: unknown): bigint {
+  const { seconds, nanos } = duration as { seconds: bigint; nanos: number };
+  return seconds * 1_000_000_000n + BigInt(nanos);
+}
+
+Deno.test("coerceBigInts: a duration's string parses back to the duration it was made from", () => {
+  const env = new Environment();
+  const arbNanos = fc.integer({ min: -1e12, max: 1e12 });
+  fc.assert(
+    fc.property(arbNanos, arbNanos, (a, b) => {
+      // A parsed duration and a difference of two durations store the sign
+      // of their nanos differently; each must format to the value it holds.
+      for (
+        const expression of [
+          `duration('${a}ns')`,
+          `duration('${a}ns') - duration('${b}ns')`,
+        ]
+      ) {
+        const duration = env.evaluate(expression);
+        const text = coerceBigInts(duration);
+        assertEquals(typeof text, "string");
+        assertEquals(
+          durationNanos(env.evaluate(`duration('${text}')`)),
+          durationNanos(duration),
+          `${expression} formatted as ${text}`,
+        );
+      }
+    }),
+    { numRuns: 200 },
   );
 });
