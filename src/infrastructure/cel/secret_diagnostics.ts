@@ -40,7 +40,9 @@
  * (an unlisted variable, or `dyn(...)`) and a map literal keyed by the
  * result pass the check, `type()` passes, and `has()` on a call result
  * fails the check for its own reason, which names no type, so it is not
- * attributed.
+ * attributed. A ternary with a Secret branch is a further escape: the
+ * evaluator binds the call as dyn so the expression keeps its meaning, and
+ * the check, which cannot unify the branches, reports nothing for it.
  */
 
 import type { Environment } from "cel-js";
@@ -89,6 +91,18 @@ function firstLine(error: unknown): string {
 const NAMES_SECRET = new RegExp(`\\b${SECRET_TYPE_NAME}\\b`);
 
 /**
+ * Whether a check error is cel-js refusing to unify ternary branches. At run
+ * time each checked `vault.get` call is bound as dyn, so a ternary with a
+ * Secret branch keeps its meaning (Section 4.2, fact 9); the check cannot
+ * type it, so what follows such a ternary is refused only at run time.
+ */
+function isTernaryUnification(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return code === "incompatible_ternary_branches" ||
+    firstLine(error).startsWith("Ternary branches must have the same type");
+}
+
+/**
  * The static misuse findings for `expression`, authored at `location` (a
  * definition path such as `methods.run.arguments.cmd`). Text that does not
  * parse, holds no direct `vault.get` call, or uses `vault` through an alias
@@ -116,7 +130,7 @@ export function diagnoseSecretMisuse(
   );
   const findings: SecretDiagnostic[] = [];
   const checked = checkEnvironment().check(analysis.source.text);
-  if (!checked.valid) {
+  if (!checked.valid && !isTernaryUnification(checked.error)) {
     const reason = firstLine(checked.error);
     if (NAMES_SECRET.test(reason)) {
       findings.push({

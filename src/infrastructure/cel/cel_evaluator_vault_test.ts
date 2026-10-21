@@ -417,3 +417,31 @@ Deno.test("CelEvaluator vault.get: effectful arguments are rejected before check
     assertEquals(f.ctx.getOperations(), []);
   });
 });
+
+Deno.test("CelEvaluator vault.get: a ternary with a vault.get branch beside a string keeps its meaning, whichever branch is taken, and its result still refuses misuse", async () => {
+  await withVault(async (f) => {
+    const taken = await f.evaluate(
+      "inputs.flag ? vault.get('prod', 'token') : 'none'",
+      { inputs: { flag: true } },
+    );
+    assertEquals(
+      f.bag.registry.issuedEntryOf(taken as string)?.reference,
+      { vaultName: "prod", key: "token" },
+    );
+    assertEquals(
+      await f.evaluate("inputs.flag ? vault.get('prod', 'token') : 'none'", {
+        inputs: { flag: false },
+      }),
+      "none",
+    );
+    assertEquals(
+      await f.evaluate("false ? vault.get('prod', 'token') + '-x' : 'none'"),
+      "none",
+    );
+    const error = await assertRejects(
+      () => f.evaluate("(true ? vault.get('prod', 'token') : 'none') == 'x'"),
+      SecretRefusedError,
+    );
+    assertEquals(error.operation, "Secret == string");
+  });
+});

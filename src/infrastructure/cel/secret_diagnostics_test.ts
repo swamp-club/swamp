@@ -179,3 +179,23 @@ Deno.test("diagnoseSecretMisuse: nothing is evaluated, so a function beside the 
     assertEquals(findings[0].location.includes("hunter2"), false);
   }
 });
+
+Deno.test("diagnoseSecretMisuse: a ternary with a Secret branch is an escape, as the evaluator binds the call as dyn", () => {
+  for (
+    const expression of [
+      "inputs.flag ? vault.get('v', 'k') : 'none'",
+      "false ? vault.get('v', 'k') : 'none'",
+      "inputs.flag ? vault.get('v', 'k') + '-x' : 'none'",
+      // What follows the ternary is refused only at run time.
+      "(inputs.flag ? vault.get('v', 'k') : 'none') == 'x'",
+    ]
+  ) {
+    assertEquals(reasons(expression), [], expression);
+  }
+  // A misuse before the ternary is still reported.
+  assertEquals(
+    reasons("size(vault.get('v', 'k')) > 1 ? vault.get('v', 'j') : 'none'")
+      .length,
+    1,
+  );
+});

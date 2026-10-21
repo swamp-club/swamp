@@ -66,6 +66,11 @@ import {
 } from "../../domain/models/method_execution_service.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import {
+  InvalidExpressionError,
+  SecretRefusedError,
+} from "../../domain/expressions/errors.ts";
+import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
@@ -383,19 +388,44 @@ async function deliverCheckArguments(
       ? { [methodName]: data.methods![methodName] }
       : {},
   });
-  const { definition: resolved, secretBag } = await expressionService
-    .resolveRuntimeExpressionsInDefinition(
-      scoped,
-      sensitiveValues.probeRedactor,
-      undefined,
-      collectAuthoredExpressions(scoped.toData()),
-      {
-        secretBag: new VaultSecretBag(sensitiveValues.sentinels),
-        // The definition is read from the repository as stored, so every
-        // position in it is authored.
-        provenance: ProvenanceMap.authored(),
-      },
-    );
+  // Bound as a run binds them: the definition's input defaults, and the
+  // environment of the machine validate runs on.
+  const inputs = definition.inputs
+    ? new InputValidationService().applyDefaults({}, definition.inputs)
+    : {};
+  const context = await expressionService.buildRuntimeContext(
+    scoped,
+    sensitiveValues,
+    inputs,
+  );
+  let resolved: Definition;
+  let secretBag: VaultSecretBag;
+  try {
+    ({ definition: resolved, secretBag } = await expressionService
+      .resolveRuntimeExpressionsInDefinition(
+        scoped,
+        sensitiveValues.probeRedactor,
+        context,
+        collectAuthoredExpressions(scoped.toData()),
+        {
+          secretBag: new VaultSecretBag(sensitiveValues.sentinels),
+          // The definition is read from the repository as stored, so every
+          // position in it is authored.
+          provenance: ProvenanceMap.authored(),
+        },
+      ));
+  } catch (error) {
+    // What validate simply cannot evaluate, an input with no default or an
+    // environment variable unset here, leaves the checks with the stored
+    // text and no bag, as the untyped path leaves them. Anything else, a
+    // refused secret, a denied, missing or unreadable reference, fails the
+    // checks here as it would fail the run.
+    if (!isEvaluationFailure(error)) throw error;
+    return {
+      globalArgs: scoped.globalArguments,
+      unresolvedMethodArgs: unresolvedArgumentsOf(scoped, methodName),
+    };
+  }
   const delivery = await deliverStepSecrets({
     definition: resolved,
     modelDef,
@@ -414,6 +444,17 @@ async function deliverCheckArguments(
       unresolvedArgumentsOf(resolved, methodName),
     vaultSecrets: loaded,
   };
+}
+
+/**
+ * Whether an error of the runtime pass is the evaluator failing to evaluate
+ * an expression with what validate can bind, which degrades, rather than a
+ * reference check, a refusal or a load failing, which fails the checks. A
+ * refusal is never an evaluation failure, whatever class wraps it.
+ */
+function isEvaluationFailure(error: unknown): boolean {
+  return error instanceof InvalidExpressionError &&
+    !(error instanceof SecretRefusedError);
 }
 
 /** Converts raw validation results to the presentation format. */

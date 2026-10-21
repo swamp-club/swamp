@@ -645,6 +645,32 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
         other: { arguments: { note: "${{ vault.get('prod', 'canary-7') }}" } },
       },
     }));
+    const defaultedDef = await f.save(Definition.create({
+      name: "defaulted",
+      type: f.type.normalized,
+      inputs: {
+        properties: { vaultName: { type: "string", default: "prod" } },
+      },
+      globalArguments: {
+        token: "${{ vault.get(inputs.vaultName, 'canary-8') }}",
+      },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const unsetVariable = `SWAMP_UNSET_${
+      crypto.randomUUID().replaceAll("-", "")
+    }`;
+    const envlessDef = await f.save(Definition.create({
+      name: "envless",
+      type: f.type.normalized,
+      globalArguments: { token: `\${{ env.${unsetVariable} }}` },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const missingDef = await f.save(Definition.create({
+      name: "missing",
+      type: f.type.normalized,
+      globalArguments: { token: "${{ vault.get('prod', 'no-such-key') }}" },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
     const deps = createModelValidateDeps(
       f.repoDir,
       { method: METHOD, createSensitiveValues: f.typedValues },
@@ -702,26 +728,59 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertEquals(f.counting.readsOf(keyOf(4)) - before4, 1);
     assertValueFree(f, JSON.stringify(refused), "the refusal");
 
-    // A runtime expression that needs run-time context cannot be delivered
-    // to a check, so on the typed path the checks fail with the value-free
-    // error instead of degrading to raw text; nothing is read. Another
-    // method's expressions are outside this validation and never evaluated.
+    // What validate cannot evaluate, an input with no default, is left as
+    // its stored text for the check, as the untyped path leaves it; nothing
+    // is read. Another method's expressions are outside this validation and
+    // never evaluated.
     const before6 = f.counting.readsOf(keyOf(6));
     const before7 = f.counting.readsOf(keyOf(7));
     const contextual = await deps.validateModel(contextualDef, f.model, f.type);
-    const contextualCheck = contextual.results.find((r) =>
-      r.name === "Check: see-args"
+    assertEquals(
+      contextual.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(contextual.results),
     );
-    assertEquals(contextualCheck?.passed, false);
-    // The error names the authored call, never cel-js's value-bearing cause.
-    assertStringIncludes(
-      contextualCheck?.error ?? "",
-      "vault.get argument 1 at globalArguments.token",
+    assertEquals(
+      f.checked.at(-1)!.globalArgs.token,
+      "${{ vault.get(inputs.vaultName, 'canary-6') }}",
     );
-    assertEquals(f.checked.length, checksBefore);
+    assertEquals(f.checked.at(-1)!.loaded, false);
     assertEquals(f.counting.readsOf(keyOf(6)) - before6, 0);
     assertEquals(f.counting.readsOf(keyOf(7)) - before7, 0);
-    assertValueFree(f, JSON.stringify(contextual), "the contextual failure");
+
+    // An input with a default is bound as a run binds it, so the reference
+    // resolves and the check sees the value.
+    const before8 = f.counting.readsOf(keyOf(8));
+    const defaulted = await deps.validateModel(defaultedDef, f.model, f.type);
+    assertEquals(
+      defaulted.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(defaulted.results),
+    );
+    assertEquals(f.checked.at(-1)!.globalArgs.token, f.canaries[8].value);
+    assertEquals(f.counting.readsOf(keyOf(8)) - before8, 2);
+
+    // An environment variable unset where validate runs degrades the same way.
+    const envless = await deps.validateModel(envlessDef, f.model, f.type);
+    assertEquals(
+      envless.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+    );
+    assertEquals(
+      f.checked.at(-1)!.globalArgs.token,
+      `\${{ env.${unsetVariable} }}`,
+    );
+
+    // A reference the run would fail to find fails the checks here too.
+    const checksBeforeMissing = f.checked.length;
+    const missing = await deps.validateModel(missingDef, f.model, f.type);
+    const missingCheck = missing.results.find((r) =>
+      r.name === "Check: see-args"
+    );
+    assertEquals(missingCheck?.passed, false);
+    assertStringIncludes(missingCheck?.error ?? "", "no-such-key");
+    assertEquals(f.checked.length, checksBeforeMissing);
+    assertValueFree(f, JSON.stringify(missing), "the missing-key failure");
     await assertNoPlaintextOnDisk(f);
   });
 });

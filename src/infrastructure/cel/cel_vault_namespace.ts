@@ -199,11 +199,16 @@ export async function prepareCheckedVaultCalls(
       value: new CelVaultNamespace(reference, location),
       enumerable: true,
     });
+    // Bound as dyn: cel-js unifies ternary branch types when it plans the
+    // program, and a Secret branch beside a string literal would otherwise
+    // fail where the untyped path worked (design Section 4.2, fact 9). The
+    // value is still the Secret, so every refusal and allowed overload
+    // dispatches on it at run time as before.
     replacements.set(
       call,
-      `${receiver}.get(${JSON.stringify(reference.vaultName)}, ${
+      `dyn(${receiver}.get(${JSON.stringify(reference.vaultName)}, ${
         JSON.stringify(reference.key)
-      })`,
+      }))`,
     );
   }
   const program = env.parse(replace(0, analysis.source.text.length));

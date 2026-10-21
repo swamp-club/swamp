@@ -468,6 +468,11 @@ listed under Phase 1.2 in Section 11. A dependency upgrade must pass both.
 7. Parsed programs contain mutable checker and comprehension state. Successful
    concurrent examples are evidence for a test case, not a concurrency contract.
 8. `size(string)` counts code points. Ordinary `matches` uses JavaScript RegExp.
+9. The planner unifies the branch types of a ternary when it builds a
+   program, before anything runs, and refuses `incompatible_ternary_branches`
+   when they differ: a call declared to return `Secret` beside a string
+   literal fails even in the branch not taken, while a dyn branch unifies
+   with anything.
 
 How they shape the design:
 
@@ -484,6 +489,11 @@ How they shape the design:
   so every reference is a call the existence check finds (fact 6, Section 4.4).
 - The design adds no state to shared programs (fact 7).
 - Fact 8 no longer affects the design. Its pin stays as an upgrade alarm.
+- Each checked `vault.get` call is bound as dyn when the typed evaluator
+  prepares the program (fact 9, Section 4.4), so `flag ? vault.get(...) :
+  'none'` keeps its meaning; the value is the `Secret`, on which every
+  overload still dispatches at run time. The static check in Section 4.3
+  item 4 cannot unify such a ternary and reports nothing for it.
 
 ### 4.3 Refusal
 
@@ -555,7 +565,10 @@ Refusal uses registrations. It does not rewrite expressions.
    refusal, and a failure is the secret's when its error names the `Secret`
    type, so an error unrelated to the result (`string + int`) is never
    reported with a secret code; the container rule's scan is reported beside
-   it. Both findings answer `secret_operation_unsupported`.
+   it. Both findings answer `secret_operation_unsupported`. A ternary with a
+`Secret` branch is a fourth escape: the check cannot unify its branches, the
+evaluator binds the call as dyn (Section 4.4), and what follows the ternary is
+refused only at run time.
 5. **Containers.** cel-js answers `in` and list or map equality without calling
    any handler (fact 2). They cannot reveal a value, because a `Secret` holds
    none, but they would answer by identity: a guard
@@ -645,6 +658,9 @@ result release.
 Phase 3.2 checks each pair once per call site, then binds a private receiver
 holding that checked pair and its authored location. Runtime calls reuse those
 arguments, so a changing getter cannot switch reference identity after checking.
+Phase 3.5 binds each such call as dyn, so the planner's ternary rule (Section
+4.2, fact 9) cannot change an expression's meaning; dispatch on the `Secret`
+value is unchanged.
 The receiver creates a `Secret`, records a Secret read for the container rule,
 and performs no provider I/O. Its types and refusal signatures are registered
 only with the internal option enabled.
@@ -1313,11 +1329,14 @@ diagnostics of Section 10.2 and, on the typed path only (the untyped path
 keeps its inline resolution until Phase 4 removes it), delivers its
 pre-flight check arguments through `deliverStepSecrets`, the refuse-then-load
 step extracted from `executeWorkflow` and shared with the method boundary. The
-pass covers the global arguments and the selected method's arguments only, and
-nothing is delivered when no check applies; a refused destination, a failed
-load, or a runtime expression that needs run-time context validate cannot
-supply (`vault.get(inputs.vaultName, ...)`) fails every applicable check with a
-value-free error, where the untyped path degrades to raw text;
+pass covers the global arguments and the selected method's arguments only,
+binds the definition's input defaults and the environment as a run does, and
+nothing is delivered when no check applies; a refused destination, a denied,
+missing or unreadable reference (its existence check failing), or a failed
+load fails every applicable check with a value-free error, while what validate
+cannot evaluate (an input with no
+default, an environment variable unset where validate runs) is left as its
+stored text for the checks, as the untyped path leaves it;
 `context.runModel` builds its nested run over
 `callerContext.vaultSecrets.registry.independent()`, which carries the option
 and nothing else, so references are checked anew and loaded once per attempt
