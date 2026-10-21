@@ -1857,6 +1857,20 @@ Deno.test("WebhookService.updateEndpoints: a removed route's queue delay is forg
   await service.stop();
 });
 
+Deno.test("WebhookService.updateEndpoints: a run of a route removed while it was queued records no delay", async () => {
+  const { service, runs } = await concurrentService();
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "first run started");
+  await service.handleRequest(await signedDeliveryTo("/hooks/alerts", "{}"));
+
+  service.updateEndpoints([await parseWebhookFlag("/hooks/gh:deploy:secret")]);
+  runs[0].release();
+  await waitFor(() => runs.length === 2, "queued run started");
+  assertEquals(service.queueStatus("/hooks/alerts").lastQueueDelayMs, null);
+  runs[1].release();
+  await service.stop();
+});
+
 Deno.test("WebhookService: overlapping runs consume each pending entry exactly once", async () => {
   const enqueued: string[] = [];
   const deleted: string[] = [];

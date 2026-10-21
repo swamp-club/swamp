@@ -1178,10 +1178,13 @@ export class WebhookService {
           if (event.kind === "started" && event.parentRunId === undefined) {
             runId = event.runId;
             tracked.runId = runId;
-            this.lastQueueDelayMs.set(
-              route,
-              Math.max(0, this.now() - entry.enqueuedAt),
-            );
+            // A route removed while this run was queued keeps no delay.
+            if (this.endpoints.some((e) => e.route === route)) {
+              this.lastQueueDelayMs.set(
+                route,
+                Math.max(0, this.now() - entry.enqueuedAt),
+              );
+            }
             this.emit({
               kind: "webhook_started",
               route,

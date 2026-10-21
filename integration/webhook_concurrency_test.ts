@@ -87,7 +87,7 @@ function completedRuns(events: WebhookEvent[], workflow: string): number {
 interface Harness {
   readonly service: WebhookService;
   readonly events: WebhookEvent[];
-  /** Times the blocking model method was entered. */
+  /** Blocking model methods entered and not yet released. */
   entered(): number;
   /** Releases every blocking model method entered so far. */
   release(): void;

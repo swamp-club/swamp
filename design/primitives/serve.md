@@ -1157,7 +1157,10 @@ scheduler there is no per-workflow exclusion: two deliveries to the same route
 run together (swamp-club#3665), since holding back a run that is already
 isolated from its sibling only adds delay. Shared state is still guarded where
 it is mutated, by the per-step model lock, so two runs whose steps touch the
-same behavior take turns at that step. Raising the limit gives up arrival-order
+same behavior take turns at that step. A waiting step gives up after the lock
+timeout (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default) and its run fails, so a
+route whose step holds a behavior longer than that needs a higher timeout
+before it is given a limit above 1. Raising the limit gives up arrival-order
 execution; a workflow that relies on it (for example, publishing releases in
 merge order) needs the default or its own ordering. Under the default, a
 workflow that must start long work without holding the queue submits it with
