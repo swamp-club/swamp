@@ -366,10 +366,35 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   const workflow = parse(text) as {
     jobs: Record<
       string,
-      { steps: { name?: string; run?: string; uses?: string }[] }
+      {
+        if?: string;
+        steps: {
+          name?: string;
+          run?: string;
+          uses?: string;
+          if?: string;
+          env?: Record<string, string>;
+        }[];
+      }
     >;
   };
   const steps = workflow.jobs.release.steps;
+  // Publishing must depend on immutable event context, never GITHUB_ENV or
+  // outputs that branch-controlled build scripts could change.
+  const gate =
+    "(github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)";
+  for (const step of steps) {
+    if (
+      step.uses?.startsWith("google-github-actions/") ||
+      step.name === "Trigger UAT"
+    ) {
+      assertEquals(step.if, gate);
+    }
+  }
+  const packaging = steps.find((s) =>
+    s.run?.includes("upload_release_artifacts.sh")
+  );
+  assertEquals(packaging?.env?.DRY_RUN, "${{ !(" + gate + ") }}");
   const publish = steps.findIndex((s) =>
     s.name === "Package release artifacts and optionally upload to GCS"
   );
@@ -379,6 +404,7 @@ Deno.test("release workflow publishes before UAT and consumers use GCS without G
   assert(!text.includes("action-gh-release"));
   assert(!text.includes("release_body"));
   for (const job of ["windows-smoke", "docker"]) {
+    assertEquals(workflow.jobs[job].if, gate);
     assert(
       !JSON.stringify(workflow.jobs[job]).includes("GCP_SERVICE_ACCOUNT_KEY"),
     );
