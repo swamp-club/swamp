@@ -24,12 +24,33 @@
  * so a stale lock is refused rather than rewritten and no lock is created.
  * Wires the real Deno, module graph reader and bundler as push does, offline:
  * the shared cache supplies esbuild and the npm registry is unreachable.
+ *
+ * `extension fmt` reads the module graph the same way (swamp-club#3717), but
+ * leniently: a stale lock is reported, and the entry points it refused are
+ * formatted alone, rather than failing the run.
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { TarStream } from "@std/tar/tar-stream";
+import { stringify as stringifyYaml } from "@std/yaml";
+import { getLogger } from "@logtape/logtape";
 import { UserError } from "../src/domain/errors.ts";
+import {
+  checkExtensionQuality,
+  denoToolConfigArgs,
+  extensionLintArgs,
+} from "../src/domain/extensions/extension_quality_checker.ts";
 import { bundleExtension } from "../src/domain/models/bundle.ts";
+import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
+import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
+import {
+  extensionFmt,
+  type ExtensionFmtData,
+  type ExtensionFmtDeps,
+} from "../src/libswamp/extensions/fmt.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { collect } from "../src/libswamp/testing.ts";
 import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
 import {
   type ExtensionProject,
@@ -172,3 +193,235 @@ Deno.test("push lockfile: a package.json project without a lock gets none", asyn
     assertEquals(await exists(join(dir, "deno.lock")), false);
   });
 });
+
+/**
+ * A one-package npm registry on a free localhost port, so the module graph
+ * read resolves a real npm import, and writes a lock unless told not to,
+ * without the network. `fn` gets the environment that points deno at it,
+ * with a fresh DENO_DIR so nothing it caches outlives the test.
+ */
+async function withLockRegistry(
+  fn: (env: Record<string, string>) => Promise<void>,
+): Promise<void> {
+  const encoder = new TextEncoder();
+  const entry = (path: string, text: string) => {
+    const bytes = encoder.encode(text);
+    return {
+      type: "file" as const,
+      path,
+      size: bytes.length,
+      readable: ReadableStream.from([bytes]),
+    };
+  };
+  const tarball = new Uint8Array(
+    await new Response(
+      ReadableStream.from([
+        entry(
+          "package/package.json",
+          JSON.stringify({ name: "lockpkg", version: "1.0.0" }),
+        ),
+        entry("package/index.js", "module.exports = 1;\n"),
+      ]).pipeThrough(new TarStream()).pipeThrough(
+        new CompressionStream("gzip"),
+      ),
+    ).arrayBuffer(),
+  );
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-512", tarball),
+  );
+  const integrity = `sha512-${btoa(String.fromCharCode(...digest))}`;
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/lockpkg") {
+      return Response.json({
+        name: "lockpkg",
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": {
+            name: "lockpkg",
+            version: "1.0.0",
+            dist: { tarball: `${url.origin}/lockpkg.tgz`, integrity },
+          },
+        },
+      });
+    }
+    if (url.pathname === "/lockpkg.tgz") return new Response(tarball);
+    return new Response("not found", { status: 404 });
+  });
+  const denoDir = await Deno.makeTempDir({ prefix: "swamp-lock-deno-dir-" });
+  try {
+    await fn({
+      DENO_DIR: denoDir,
+      NPM_CONFIG_REGISTRY: `http://127.0.0.1:${server.addr.port}/`,
+    });
+  } finally {
+    await server.shutdown();
+    await Deno.remove(denoDir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+}
+
+/** Runs `deno <args>` in `env` and returns its output. */
+async function runDeno(
+  args: string[],
+  env: Record<string, string>,
+): Promise<string> {
+  const output = await new Deno.Command(Deno.execPath(), {
+    args,
+    env,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const decoder = new TextDecoder();
+  return (decoder.decode(output.stderr) + decoder.decode(output.stdout))
+    .trim();
+}
+
+/** fmt's dependencies, as createExtensionFmtDeps wires them, in `env`. */
+function fmtDeps(env: Record<string, string>): ExtensionFmtDeps {
+  return {
+    checkQuality: (files, denoConfigPath) =>
+      checkExtensionQuality(files, Deno.execPath(), denoConfigPath, env),
+    runFmt: (files, denoConfigPath) =>
+      runDeno(["fmt", ...denoToolConfigArgs(denoConfigPath), ...files], env),
+    runLint: async (files, denoConfigPath) =>
+      runDeno(
+        [...(await extensionLintArgs(denoConfigPath)), "--fix", ...files],
+        env,
+      ),
+  };
+}
+
+/**
+ * A one-model extension at the repository root, which holds the project
+ * deno.json mapping `lockpkg`; the model imports it. Returns the manifest.
+ */
+async function writeLockExtension(
+  dir: string,
+  range: string,
+): Promise<string> {
+  await Deno.writeTextFile(
+    join(dir, ".swamp.yaml"),
+    stringifyYaml({ swampVersion: "0.1.0" }),
+  );
+  await Deno.writeTextFile(
+    join(dir, "deno.json"),
+    JSON.stringify({ imports: { lockpkg: `npm:lockpkg@${range}` } }),
+  );
+  await Deno.mkdir(join(dir, "extensions", "models"), { recursive: true });
+  await Deno.writeTextFile(
+    join(dir, "extensions", "models", "m.ts"),
+    'import value from "lockpkg";\n\nexport const m = value;\n',
+  );
+  const manifestPath = join(dir, "manifest.yaml");
+  await Deno.writeTextFile(
+    manifestPath,
+    stringifyYaml({
+      manifestVersion: 1,
+      name: "@test/lock",
+      version: "2026.10.21.1",
+      models: ["m.ts"],
+    }),
+  );
+  return manifestPath;
+}
+
+/** Writes the lock the project resolves to, as `deno install` would. */
+async function writeCurrentLock(
+  dir: string,
+  env: Record<string, string>,
+): Promise<string> {
+  await runDeno([
+    "info",
+    "--config",
+    join(dir, "deno.json"),
+    join(dir, "extensions", "models", "m.ts"),
+  ], env);
+  return await Deno.readTextFile(join(dir, "deno.lock"));
+}
+
+/**
+ * Runs `extension fmt` (or `fmt --check`) as the command does: resolves the
+ * extension's files leniently with the read-only graph reader, then formats
+ * and lints them under the project config.
+ */
+async function fmtExtension(
+  dir: string,
+  manifestPath: string,
+  env: Record<string, string>,
+  check: boolean,
+): Promise<ExtensionFmtData> {
+  const resolved = await resolveExtensionFiles({
+    repoDir: dir,
+    manifestPath,
+    repoContext: {} as unknown as RepositoryContext,
+    logger: getLogger(["test", "fmt-lockfile"]),
+    moduleGraphReader: new DenoInfoModuleGraphReader(Deno.execPath(), env, {
+      readOnlyLock: true,
+    }),
+    lenientSources: true,
+  });
+  const events = await collect(
+    extensionFmt(createLibSwampContext(), fmtDeps(env), {
+      tsFiles: resolved.allModelFiles,
+      check,
+      denoConfigPath: resolved.denoConfigPath,
+      staleLockfiles: resolved.staleLockfiles,
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error(`fmt did not complete: ${JSON.stringify(events)}`);
+  }
+  return completed.data;
+}
+
+for (const check of [true, false]) {
+  const command = check ? "fmt --check" : "fmt";
+
+  Deno.test(`fmt lockfile: ${command} on a deno.json project without a lock creates none`, async () => {
+    await withLockRegistry(async (env) => {
+      await withProject({}, async (dir) => {
+        const manifestPath = await writeLockExtension(dir, "^1.0.0");
+        const data = await fmtExtension(dir, manifestPath, env, check);
+        assertEquals(data.passed, true);
+        assertEquals(data.staleLockfiles, []);
+        assertEquals(await exists(join(dir, "deno.lock")), false);
+      });
+    });
+  });
+
+  Deno.test(`fmt lockfile: ${command} leaves a current deno.lock byte-for-byte unchanged`, async () => {
+    await withLockRegistry(async (env) => {
+      await withProject({}, async (dir) => {
+        const manifestPath = await writeLockExtension(dir, "^1.0.0");
+        const lock = await writeCurrentLock(dir, env);
+        const data = await fmtExtension(dir, manifestPath, env, check);
+        assertEquals(data.passed, true);
+        assertEquals(data.staleLockfiles, []);
+        assertEquals(await Deno.readTextFile(join(dir, "deno.lock")), lock);
+      });
+    });
+  });
+
+  Deno.test(`fmt lockfile: ${command} leaves a stale deno.lock unchanged and reports it`, async () => {
+    await withLockRegistry(async (env) => {
+      await withProject({}, async (dir) => {
+        const manifestPath = await writeLockExtension(dir, "^1.0.0");
+        const lock = await writeCurrentLock(dir, env);
+        // deno.json moves the specifier on; the lock still records ^1.0.0.
+        await writeLockExtension(dir, "~1.0.0");
+        const data = await fmtExtension(dir, manifestPath, env, check);
+        assertEquals(data.passed, true);
+        assertEquals(data.staleLockfiles, [{
+          lockPath: join(dir, "deno.lock"),
+          projectFile: join(dir, "deno.json"),
+          projectDir: dir,
+          entryPoints: [join(dir, "extensions", "models", "m.ts")],
+        }]);
+        assertEquals(await Deno.readTextFile(join(dir, "deno.lock")), lock);
+      });
+    });
+  });
+}

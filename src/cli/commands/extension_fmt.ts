@@ -121,13 +121,14 @@ export const extensionFmtCommand = new Command()
       allWebhookFiles,
       additionalFilePaths,
       extensionsRoot,
+      staleLockfiles,
     } = await resolveExtensionFiles({
       repoDir,
       manifestPath: absoluteManifestPath,
       repoContext,
       logger: cliCtx.logger,
       extensionsDir,
-      moduleGraphReader: await createModuleGraphReader(),
+      moduleGraphReader: await createModuleGraphReader({ readOnlyLock: true }),
       lenientSources: true,
     });
 
@@ -160,6 +161,7 @@ export const extensionFmtCommand = new Command()
         tsFiles,
         check: options.check ?? false,
         denoConfigPath,
+        staleLockfiles,
       }),
       renderer.handlers(),
     );
