@@ -260,6 +260,9 @@ runs started over WebSocket keep their own traces. Attributes:
 - `datastore.type` and `datastore.engine` (`v2` or `v3`)
 - `swamp.serve.response.error_code` — the code of an error reply; only server
   failures (`internal_error`, `<operation>_failed`) mark the span ERROR
+- `swamp.serve.response.error_reason` — the client reason (`not_found`,
+  `validation_failed`, ...) an `<operation>_failed` reply carries; such a reply
+  is the caller's error and leaves the span unset
 - `swamp.serve.event_loop.lag_max_ms` — the largest event-loop lag in the last
   10s; high values on requests that all end together mean a blocked loop, not
   slow I/O
