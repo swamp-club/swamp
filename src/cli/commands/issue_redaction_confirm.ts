@@ -65,7 +65,7 @@ export async function confirmRedactions(
   if (summary.totalRedactions === 0) return "redacted";
   if (mode === "json" || !deps.isInteractive()) return "redacted";
   const answer = (await deps.ask(
-    "  y = submit redacted\n  w = submit as written\n  N = cancel (any other answer cancels)\nSubmit? [y/w/N] ",
+    "\n  y = submit redacted\n  w = submit as written\n  N = cancel; nothing is sent (any other answer cancels; --no-redact skips redaction)\nSubmit? [y/w/N] ",
   )).toLowerCase();
   if (answer === "y" || answer === "yes") return "redacted";
   if (answer === "w" || answer === "written") return "as-written";

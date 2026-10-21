@@ -791,44 +791,51 @@ function redactColonToken(
     const hasLeft = i > 0;
     const hasRight = j < n - 1;
     const run = parts.slice(i, j + 1);
-    const touchesWord =
-      (hasLeft && run[0] === "" && (run.length === 1 || run[1] !== "")) ||
+    const touchesLeftWord = hasLeft && run[0] === "" &&
+      (run.length === 1 || run[1] !== "");
+    const touchesWord = touchesLeftWord ||
       (hasRight && run[run.length - 1] === "" &&
         (run.length === 1 || run[run.length - 2] !== ""));
+    const left = hasLeft ? pieces[i - 1] ?? "" : "";
+    const right = hasRight ? pieces[j + 1] ?? "" : "";
+    const glueLeft = left.match(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{1,4}$/)?.[0] ?? "";
+    const glueRight = right.match(/^[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f])/)?.[0] ??
+      "";
 
+    // The run by itself first.
     const own = judge(run.join(":"), touchesWord);
-    if (own !== null) {
-      pieces[i] = own;
+    // A unit or word stuck on the end of an address (2001:db8::1ms) starts
+    // with the address's last group, so a run that is no address by itself
+    // is judged with that group, without any group glued on the left. It
+    // counts when the run joins two groups with a single colon, which code
+    // paths (fc::assert, Foo::bar) never do.
+    const runWithUnit = [...run, glueRight].join(":");
+    const unitOnEnd = own === null && glueRight !== "" && !touchesLeftWord &&
+      /[0-9A-Fa-f]:[0-9A-Fa-f]/.test(runWithUnit);
+    const withUnit = unitOnEnd ? judge(runWithUnit, false) : null;
+    // Otherwise, strictly, with the groups glued on either side, so only a
+    // full address or MAC counts once those are added.
+    const full = own === null && withUnit === null && (glueLeft || glueRight)
+      ? judge(
+        [
+          ...(glueLeft ? [glueLeft] : []),
+          ...run,
+          ...(glueRight ? [glueRight] : []),
+        ].join(":"),
+        true,
+      )
+      : null;
+    const replacement = own ?? withUnit ?? full;
+    if (replacement !== null) {
+      pieces[i] = replacement;
       for (let k = i + 1; k <= j; k++) pieces[k] = null;
-    } else {
-      const left = hasLeft ? pieces[i - 1] ?? "" : "";
-      const right = hasRight ? pieces[j + 1] ?? "" : "";
-      const glueLeft = left.match(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{1,4}$/)?.[0] ??
-        "";
-      const glueRight = right.match(/^[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f])/)?.[0] ??
-        "";
-      if (glueLeft || glueRight) {
-        const full = judge(
-          [
-            ...(glueLeft ? [glueLeft] : []),
-            ...run,
-            ...(glueRight ? [glueRight] : []),
-          ]
-            .join(":"),
-          true,
-        );
-        if (full !== null) {
-          pieces[i] = full;
-          for (let k = i + 1; k <= j; k++) pieces[k] = null;
-          if (glueLeft) {
-            pieces[i - 1] = left.slice(0, left.length - glueLeft.length);
-            joinedToPrevious[i] = true;
-          }
-          if (glueRight) {
-            pieces[j + 1] = right.slice(glueRight.length);
-            joinedToPrevious[j + 1] = true;
-          }
-        }
+      if (full !== null && glueLeft) {
+        pieces[i - 1] = left.slice(0, left.length - glueLeft.length);
+        joinedToPrevious[i] = true;
+      }
+      if ((withUnit !== null || full !== null) && glueRight) {
+        pieces[j + 1] = right.slice(glueRight.length);
+        joinedToPrevious[j + 1] = true;
       }
     }
     i = j + 1;

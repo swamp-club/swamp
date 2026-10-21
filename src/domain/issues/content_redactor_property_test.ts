@@ -339,6 +339,26 @@ const arbLabelsAfter = fc.array(arbLabelWord, { maxLength: 3 }).map((words) =>
   words.map((word) => `:${word}`).join("")
 );
 
+// A unit or word stuck on the end of an address (2001:db8::1ms). Addresses
+// made only of "::"-joined groups, or ending in "::", read like code paths
+// (fc::assert) and are left out.
+const arbUnit = fc.constantFrom("ms", "x", "s", "px", "_");
+
+Deno.test("redactIssueContent: an IPv6 address with a unit stuck on the end never survives whole", () => {
+  fc.assert(
+    fc.property(arbBefore, arbIpv6, arbUnit, (before, address, unit) => {
+      fc.pre(!address.endsWith("::"));
+      fc.pre(/[0-9a-f]:[0-9a-f]/i.test(address));
+      // Without its last group the address is the loopback ::1, which the
+      // redactor keeps on purpose before it looks at the stuck-on unit.
+      fc.pre(!/^::0*1:[0-9a-f]{1,4}$/i.test(address));
+      const result = redactIssueContent(`${before}${address}${unit} end`);
+      assert(!result.text.includes(address), result.text);
+      assert(result.summary.totalRedactions >= 1, result.text);
+    }),
+  );
+});
+
 Deno.test("redactIssueContent: an IPv6 address never survives in any form", () => {
   fc.assert(
     fc.property(

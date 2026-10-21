@@ -1122,7 +1122,9 @@ Deno.test("redactIssueContent: an address next to a label colon or a message col
       ["dial 2001:db8:85a3:0:0:8a2e:370:7334:8080", "dial [IP-1]"],
       ["mac aa:bb:cc:dd:ee:ff:8080 up", "mac [IP-1] up"],
       ["x2001:db8:85a3:0:0:8a2e:370:7334 y", "x[IP-1] y"],
-      ["ipv6:2001:db8::5x up", "ipv6:2001:db8::5x up"],
+      ["ipv6:2001:db8::5x up", "ipv6:[IP-1]x up"],
+      ["ping 2001:db8::1ms", "ping [IP-1]ms"],
+      ["ping 2001:db8:85a3::7334x", "ping [IP-1]x"],
       [
         "peer:addr:2001:db8:85a3:0:0:8a2e:370:7334 x",
         "peer:addr:[IP-1] x",
