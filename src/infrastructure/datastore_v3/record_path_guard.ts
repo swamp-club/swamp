@@ -105,8 +105,9 @@ const ATOMIC_WRITE_TEMP =
  * and never committed, so recovering an interrupted writer must leave it
  * (swamp-club#3299): an atomic write's temporary file, a `.lock` file (per
  * model under `data/`, the managed lockfile's under `config/`), a workflow's
- * run index, the auto-definition creation locks, a run log, or pulled
- * extension sources and their install staging under managed config.
+ * run index, the auto-definition creation locks, macOS's `.DS_Store`, a
+ * run log, or pulled extension sources and their install staging under
+ * managed config.
  * `segments` is the key's path from the cache root.
  *
  * Each rule names the artefact exactly, never "any dot segment": data names
@@ -116,6 +117,8 @@ const ATOMIC_WRITE_TEMP =
 export function isCheckoutLocalKey(segments: readonly string[]): boolean {
   const name = segments.at(-1) ?? "";
   if (ATOMIC_WRITE_TEMP.test(name) || name === ".lock") return true;
+  // Finder writes one wherever a directory is browsed; it is never a record.
+  if (name === ".DS_Store") return true;
   if (segments[0] === "workflow-runs" && name === ".runs-index.json") {
     return true;
   }

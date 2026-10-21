@@ -325,9 +325,13 @@ Deno.test("SqliteReadModel: another checkout's upsert and delete of a name never
   });
 });
 
-/** Lists directories as HFS+ does: every name decomposed (NFD). */
+/**
+ * Lists directories as HFS+ does: every name decomposed (NFD), and a path
+ * spelled either way found, so the sweep walks into what it lists on every
+ * filesystem.
+ */
 async function* decomposedReadDir(dir: string): AsyncIterable<Deno.DirEntry> {
-  for await (const entry of Deno.readDir(dir)) {
+  for await (const entry of Deno.readDir(dir.normalize("NFC"))) {
     yield { ...entry, name: entry.name.normalize("NFD") };
   }
 }
@@ -397,6 +401,8 @@ for (const admitsAll of [false, true]) {
         await readModel.catchUp(signal());
         const removed = await readModel.recover("", {
           since: 0,
+          // A caller admitting everything is still overruled by the
+          // checkout's own filter, the check every replay makes.
           admits: admitsAll ? () => true : checkout.admits,
           signal: signal(),
         });

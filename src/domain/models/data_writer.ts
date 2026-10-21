@@ -92,6 +92,8 @@ export class DefaultDataWriter implements DataWriter {
   private data: Data | null = null;
   private lineBuffer: string[] | null = null;
   private finalized = false;
+  /** Whether `getFilePath` handed the caller the content path. */
+  private pathHandedOut = false;
   private readonly deferred: boolean;
   private deferredReceipt: DeferredWriteReceipt | null = null;
 
@@ -133,7 +135,11 @@ export class DefaultDataWriter implements DataWriter {
    * claims later, so a failed method rolls it back (swamp-club#3736).
    */
   getUnfinalizedReceipt(): DeferredWriteReceipt | null {
-    if (this.deferred || this.finalized || !this.allocated) return null;
+    if (
+      this.deferred || this.finalized || !this.allocated || !this.pathHandedOut
+    ) {
+      return null;
+    }
     return {
       type: this.modelType,
       modelId: this.modelId,
@@ -287,6 +293,7 @@ export class DefaultDataWriter implements DataWriter {
       );
     }
 
+    this.pathHandedOut = true;
     return this.allocated.contentPath;
   }
 

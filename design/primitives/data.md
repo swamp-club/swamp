@@ -132,8 +132,8 @@ the path) and `finalizeVersion` (checksum, metadata, marker, catalog). A write
 is durable once `await` returns. Nothing is held back to commit at the end, so a
 method that writes and then throws keeps its writes
 ([remote-execution.md](../enablers/remote-execution.md#writes-are-immediately-durable-not-staged)).
-The exception is a version a file writer allocated with `getFilePath` and never
-finalised: it holds content but no metadata, so no later write or commit ever
+The exception is a version whose path a file writer handed out with
+`getFilePath` and never finalised: it holds content but no metadata, so no later write or commit ever
 claims it, and a failed method rolls it back (`rollbackVersions`) rather than
 leave it in its checkout alone (`in_process_executor.ts`, swamp-club#3736).
 

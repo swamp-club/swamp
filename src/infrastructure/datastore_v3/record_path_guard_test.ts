@@ -169,6 +169,7 @@ Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources 
     "data/t/m/.0f4e2a6c-1b3d-4c5e-8f90-a1b2c3d4e5f6.tmp",
     "data/t/m/.lock",
     "auto-definitions/.auto-definition-create/t-m.lock",
+    "data/t/m/.DS_Store",
     "config/pulled-extensions/.swamp-staging/x/journal.json",
     "config/pulled-extensions/@x/y/mod.ts",
     "outputs/t/run/r-1.log",

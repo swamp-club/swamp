@@ -5019,7 +5019,7 @@ leave every checkout with the same records.
   named exactly: an atomic write's temporary file (`.<uuid>.tmp`), a `.lock`
   file, a workflow's run index (`workflow-runs/<id>/.runs-index.json`), the
   auto-definition creation locks (`auto-definitions/.auto-definition-create/`),
-  run logs, and pulled extension sources and their install staging under
+  macOS's `.DS_Store`, run logs, and pulled extension sources and their install staging under
   managed config (`config/pulled-extensions`); also files the datastore's
   `directories` or `exclude` keep local, checked as every replay checks them
   (`unprojectedReason`), and the stream directories. A dot at the start of a
