@@ -49,11 +49,13 @@ type(garbageCollection) != string && garbageCollection < 5
 A `kind: delete` method leaves a deletion marker as the resource's latest
 version, so queries return deleted resources unless they filter on `lifecycle`.
 It is per version and needs no disk read; match it instead of
-`attributes.deletedAt`:
+`attributes.deletedAt`. A renamed-away name has no row of its own, so
+`"deleted"` always means a deletion marker. `lifecycle != "deleted"` also keeps
+`""` rows pulled from older catalog exports:
 
 ```cel
 modelType == "@swamp/hetzner-cloud/servers" && lifecycle == "active"
-lifecycle != "deleted"  # also keeps "" rows pulled from older catalog exports
+lifecycle != "deleted"
 ```
 
 `swamp data search --lifecycle active` applies the same filter to search.

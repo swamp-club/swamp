@@ -198,7 +198,7 @@ export const dataSearchCommand = withRemoteOptions(
     )
     .option(
       "--lifecycle <lifecycle:string>",
-      "Filter by lifecycle (active, or deleted for deletion markers)",
+      "Filter by lifecycle (active, deleted)",
     )
     .option(
       "--owner-type <type:string>",
