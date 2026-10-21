@@ -1145,11 +1145,12 @@ function failInFlightStep(
   stepRun: StepRun,
   error: string,
   options: StepOptions,
+  code?: string,
 ): void {
   if (options.signal?.aborted) {
-    stepRun.failStoppedByAbort(error);
+    stepRun.failStoppedByAbort(error, code);
   } else {
-    stepRun.fail(error);
+    stepRun.fail(error, code);
   }
 }
 
@@ -6699,7 +6700,8 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      failInFlightStep(stepRun, errorMessage, options);
+      const errorCode = error instanceof UserError ? error.code : undefined;
+      failInFlightStep(stepRun, errorMessage, options, errorCode);
       const isAllowed = !!step.allowFailure;
       if (isAllowed) {
         stepRun.markAllowedFailure();
@@ -6727,6 +6729,7 @@ export class WorkflowExecutionService {
         stepId: stepName,
         runId: run.id,
         error: errorMessage,
+        ...(errorCode !== undefined ? { errorCode } : {}),
         allowedFailure: isAllowed || undefined,
         modelName: taskData.type === "model_method"
           ? taskData.modelIdOrName

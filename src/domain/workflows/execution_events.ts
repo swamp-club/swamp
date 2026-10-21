@@ -136,6 +136,8 @@ export type WorkflowExecutionEvent =
      */
     runId: string;
     error: string;
+    /** Stable code carried by a model-method UserError, when supplied. */
+    errorCode?: string;
     allowedFailure?: boolean;
     /**
      * Populated only when the failing step represents a model-method task

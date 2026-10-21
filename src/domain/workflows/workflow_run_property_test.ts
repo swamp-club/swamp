@@ -41,6 +41,21 @@ import { SignalWait, WAIT_TIMEOUT_STEP_ERROR } from "./signal_wait.ts";
 const JOBS = ["a", "b"];
 const STEPS = ["x", "y", "z"];
 
+Deno.test("StepRun: failure codes round-trip and reset with their error", () => {
+  fc.assert(fc.property(fc.string(), fc.string(), (message, code) => {
+    const step = StepRun.pending("call");
+    step.fail(message, code);
+    const restored = StepRun.fromData(step.toData());
+    assertEquals(restored.error, message);
+    assertEquals(restored.errorCode, code);
+    restored.resetToPending();
+    assertEquals(restored.errorCode, undefined);
+    assertEquals(restored.toData().errorCode, undefined);
+    step.fail("uncoded");
+    assertEquals(step.errorCode, undefined);
+  }));
+});
+
 const TRANSITIONS: ReadonlyArray<(step: StepRun) => void> = [
   (s) => s.start(),
   (s) => s.waitForApproval(),

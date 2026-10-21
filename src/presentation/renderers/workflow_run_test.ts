@@ -1279,7 +1279,7 @@ Deno.test("ConsoleWorkflowRunRenderer: suspended hints keep the command target",
   assertStringIncludes(output, `swamp workflow resume test-pipeline ${target}`);
 });
 
-Deno.test("JsonWorkflowRunRenderer: a failed run's JSON output carries no retry hint", async () => {
+Deno.test("JsonWorkflowRunRenderer: a failed run keeps its step error code and carries no retry hint", async () => {
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
@@ -1289,13 +1289,16 @@ Deno.test("JsonWorkflowRunRenderer: a failed run's JSON output carries no retry 
       workflowName: "test-pipeline",
       commandTarget: " --server ws://build-host:9000",
     });
+    const run = makeRunView("failed");
+    run.jobs[0].steps[0].errorCode = "deployment_refused";
     await consumeStream(
-      toStream(simpleEvents(makeRunView("failed"))),
+      toStream(simpleEvents(run)),
       renderer.handlers(),
     );
     assertEquals(logs.length, 1);
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.status, "failed");
+    assertEquals(parsed.jobs[0].steps[0].errorCode, "deployment_refused");
     assertEquals(logs[0].includes("To retry"), false);
     assertEquals(logs[0].includes("build-host"), false);
   } finally {
