@@ -1022,3 +1022,169 @@ Deno.test("redactIssueContent: redacting already-redacted text is a no-op", () =
   assertEquals(twice.text, once.text);
   assertEquals(twice.summary.totalRedactions, 0);
 });
+
+// --- Git object ids and colon-separated runs (swamp-club#3686) ---
+
+Deno.test("redactIssueContent: a commit id after a git word is kept", () => {
+  const sha1 = "a4fd943795dbca86a77083347c021a329fb32aa0";
+  const sha256 =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  for (
+    const input of [
+      `failed in verify-build for branch issue-3526 at commit ${sha1}.`,
+      `commit id: ${sha1}`,
+      `the commit SHA ${sha1} is on main`,
+      `Run \`git checkout ${sha1}\` to replay it`,
+      `rev=${sha1}`,
+      `git show ${sha256}`,
+      `see https://github.com/swamp-club/swamp/commit/${sha1}`,
+      `see https://github.com/swamp-club/swamp/blob/${sha1}/deno.json`,
+      `commit \`${sha1}\``,
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
+  }
+});
+
+Deno.test("redactIssueContent: hex without git context, or of another length, is still redacted", () => {
+  const sha1 = "a4fd943795dbca86a77083347c021a329fb32aa0";
+  for (
+    const input of [
+      `The value ${sha1} was found`,
+      `token: ${sha1}`,
+      `api key ${sha1}`,
+      `commit token: ${sha1}`,
+      `commit ${"a".repeat(41)}`,
+      `commit ${"a".repeat(63)}`,
+      `commit ${"a".repeat(65)}`,
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertStringIncludes(result.text, "[REDACTED-SECRET-1]", input);
+  }
+});
+
+Deno.test("redactIssueContent: a fast-check replay path is not an IP address", () => {
+  for (
+    const input of [
+      "fast-check reported seed -1781746823, path 992:3:11:17:17:12, endOnFailure true",
+      'path: "3:1:0:0:2:1"',
+      "groups 1:2:3:4:5:6:7",
+      "code Self::new and f::new",
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
+  }
+});
+
+Deno.test("redactIssueContent: compressed IPv6 addresses leave no group in clear", () => {
+  for (
+    const [input, address] of [
+      ["addr 2001:db8:85a3::8a2e:370:7334 x", "2001:db8:85a3"],
+      ["addr 2a00:1450:4009::200e x", "2a00:1450:4009"],
+      ["addr 2001:db8::1 x", "2001:db8"],
+      ["addr ::ffff:a00:1 x", "ffff:a00:1"],
+      ["bind [2001:db8:1::5]:8080", "2001:db8:1"],
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text.includes(address), false, input);
+    assertStringIncludes(result.text, "[IP-1]", input);
+    assertEquals(result.summary.totalRedactions, 1, input);
+  }
+});
+
+Deno.test("redactIssueContent: MAC addresses are still redacted", () => {
+  const result = redactIssueContent("interface aa:bb:cc:dd:ee:0f is up");
+  assertEquals(result.text, "interface [IP-1] is up");
+});
+
+Deno.test("redactIssueContent: an address next to a label colon or a message colon is still redacted", () => {
+  for (
+    const [input, expected] of [
+      ["remote_addr:2a00:1450:4009::200e", "remote_addr:[IP-1]"],
+      [
+        "Error: 2001:db8:85a3:0:0:8a2e:370:7334: no route",
+        "Error: [IP-1]: no route",
+      ],
+      [
+        "ip=2001:db8:85a3:0:0:8a2e:370:7334: x",
+        "ip=[IP-1]: x",
+      ],
+      ["mac aa:bb:cc:dd:ee:ff: x", "mac [IP-1]: x"],
+      ["connect 2001:db8::1: refused", "connect [IP-1]: refused"],
+      ["ipv6:2001:db8::5 up", "ipv6:[IP-1] up"],
+      ["id:2001:db8::5 up", "id:[IP-1] up"],
+      ["dial 2001:db8:85a3:0:0:8a2e:370:7334:8080", "dial [IP-1]"],
+      ["mac aa:bb:cc:dd:ee:ff:8080 up", "mac [IP-1] up"],
+      ["x2001:db8:85a3:0:0:8a2e:370:7334 y", "x[IP-1] y"],
+      ["ipv6:2001:db8::5x up", "ipv6:[IP-1]x up"],
+      ["ping 2001:db8::1ms", "ping [IP-1]ms"],
+      ["ping 2001:db8:85a3::7334x", "ping [IP-1]x"],
+      [
+        "peer:addr:2001:db8:85a3:0:0:8a2e:370:7334 x",
+        "peer:addr:[IP-1] x",
+      ],
+      ["2001:db8:85a3:0:0:8a2e:370:7334:to:host", "[IP-1]:to:host"],
+      ["lvl:warn:aa:bb:cc:dd:ee:ff", "lvl:warn:[IP-1]"],
+      ["client:ip:2001:db8::5 x", "client:ip:[IP-1] x"],
+      ["src:2001:db8::1:dst:2001:db8::2", "src:[IP-1]:dst:[IP-2]"],
+      ["mapped 2001:db8:1:2:3:4:192.0.2.1 x", "mapped [IP-1] x"],
+      ["mapped ::ffff:192.0.2.1 x", "mapped [IP-1] x"],
+    ]
+  ) {
+    assertEquals(redactIssueContent(input).text, expected, input);
+  }
+});
+
+Deno.test("redactIssueContent: generic words or a nearby secret label do not keep a 40-hex value", () => {
+  const hex = "a4fd943795dbca86a77083347c021a329fb32aa0";
+  for (
+    const input of [
+      `ref: ${hex}`,
+      `object = ${hex}`,
+      `parent=${hex}`,
+      `HEAD ${hex}`,
+      `merge ${hex}`,
+      `tree ${hex}`,
+      `GITHUB_TOKEN git ${hex}`,
+      `password for git: ${hex}`,
+      `the api token for commit ${hex}`,
+      `X-Hub-Signature: sha1=${hex}`,
+      `hmac sha1 ${hex}`,
+    ]
+  ) {
+    assertStringIncludes(
+      redactIssueContent(input).text,
+      "[REDACTED-SECRET-1]",
+      input,
+    );
+  }
+});
+
+Deno.test("redactIssueContent: code paths with :: are not IP addresses", () => {
+  for (
+    const input of [
+      "use std::collections::HashMap;",
+      "Foo::bar()",
+      "std::fs::read",
+      "Module::Class::method",
+      "fc::assert(fc.property(...))",
+      "self::add_one",
+      "code Self::new and f::new",
+      "Hashed::abc",
+      "AWS::EC2::VPC",
+      'resource: "model:AWS::EC2::*"',
+      "path a:b:c:d:e:f:g:word and cafe:feed:dead:beef:face:bead:fade:west",
+      "root:x:0:0::/root:/bin/sh",
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
+  }
+});

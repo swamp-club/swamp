@@ -32,6 +32,7 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { requireNonBlank } from "./issue_submit.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
+import { chooseSubmittedContent } from "./issue_redaction_confirm.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -250,8 +251,22 @@ export const issueEditCommand = new Command()
         { label: "title", result: redacted.title },
         { label: "body", result: redacted.body },
       ], ctx.outputMode);
-      title = redacted.title.text;
-      body = redacted.body.text;
+      const chosen = await chooseSubmittedContent(
+        redacted.summary,
+        ctx.outputMode,
+        {
+          redacted: { title: redacted.title.text, body: redacted.body.text },
+          original: { title, body },
+        },
+      );
+      if (!chosen) {
+        renderIssueCancelled(
+          { type: "edit", reason: "cancelled" },
+          ctx.outputMode,
+        );
+        return;
+      }
+      ({ title, body } = chosen);
     }
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });

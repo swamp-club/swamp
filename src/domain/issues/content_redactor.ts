@@ -200,6 +200,22 @@ function isUnlabelledKeyPayload(payload: string): boolean {
   return /\d/.test(payload.replace(VERSION_SUFFIX_RE, ""));
 }
 
+// A git word just before a hex run marks it as an object id (commit <sha>,
+// git checkout <sha>, /commit/<sha>). Only words that name a commit count:
+// ordinary words such as ref, object or head introduce tokens as often as
+// ids. The separators exclude _ and -, so joined forms (commit_<sha>,
+// sha-<hash>) stay with the labelled-key rules.
+const GIT_ID_CONTEXT_RE =
+  /(?:\b(?:commits?|sha(?:1|256)?|rev(?:ision)?|git (?:checkout|show|revert|cherry-pick|reset))(?: (?:id|sha|hash))?[ \t:=#@/"'`]{1,3}|\/(?:commits?|tree|blob)\/)$/i;
+
+// A secret label anywhere in the same window outweighs the git word: in
+// "the api token for commit <hex>" the value is the token.
+const SECRET_LABEL_RE =
+  /token|key|password|passwd|secret|auth|credential|signature|hmac/i;
+
+// Git object ids are 40 (sha1) or 64 (sha256) hex characters.
+const GIT_ID_LENGTHS = new Set([40, 64]);
+
 // Generic long hex strings (40+ chars, like SHA tokens / API keys).
 // The lookbehind excludes any alphanumeric, matching what \b excluded, while
 // still allowing a run that starts right after a joiner.
@@ -243,9 +259,24 @@ const CONNECTION_STRING_RE =
 // longer dotted run.
 const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
 
-// IPv6 (simplified: at least two colons in a hex group sequence)
+// IPv6 candidates: every token of word characters joined by two or more
+// colons, taken whole and judged by redactColonToken. Reading the whole token
+// lets one rule see both the address and the words around it, so an address is
+// redacted whatever touches it (peer:addr:<addr>, <addr>: no route,
+// <addr>:8080, x2001:db8:…) while code paths (std::collections::HashMap,
+// Foo::bar) and runs that cannot hold an address (a fast-check replay path
+// such as 992:3:11:17:17:12, a timestamp) are kept. The lookbehind starts a
+// match only at the start of a word, so a long run without colons is scanned
+// once. A dotted-quad tail (2001:db8::192.0.2.1) is taken with the token so an
+// address with an embedded IPv4 part is judged, and redacted, whole.
 const IPV6_RE =
-  /\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\b|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b|(?:[0-9a-fA-F]{1,4}:){1,6}::[0-9a-fA-F]{0,4}\b/g;
+  /(?<![0-9A-Za-z_])[0-9A-Za-z_]*(?::[0-9A-Za-z_]*){2,}(?:(?<=:\d{1,3})(?:\.\d{1,3}){3}(?![.\d]))?/g;
+
+// One IPv6 group, or the empty group either side of "::".
+const HEX_GROUP_RE = /^[0-9A-Fa-f]{0,4}$/;
+
+// An embedded IPv4 tail, which stands for the last two groups.
+const IPV4_TAIL_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 // Home directory paths with usernames — captures the prefix and username
 // separately so we can reconstruct positionally.
@@ -311,12 +342,27 @@ function isSafeIpv6(ip: string): boolean {
   return false;
 }
 
-function isLikelyTimestamp(s: string): boolean {
-  const parts = s.split(":");
-  if (parts.length !== 3) return false;
-  if (!parts.every((p) => /^\d{1,2}$/.test(p))) return false;
-  const [h, m, sec] = parts.map(Number);
-  return h <= 23 && m <= 59 && sec <= 59;
+// A colon run can hold an address when it has eight or more groups (an
+// address with a port or a label group either side) or six consecutive
+// two-hex groups (a MAC), or, unless it is strict, a "::". Anything else, such
+// as fewer than eight groups of mixed widths with no "::", can hold none.
+// Strict is for a run that touches a word with no single colon between them
+// (Foo::bar, x2001:…), where "::" is as likely a code path as an address.
+function isAddressLikeColonRun(run: string, strict: boolean): boolean {
+  const groups = run.split(":").filter((group) => group !== "");
+  // All zeros is the unspecified address, and the shape of passwd fields
+  // (root:x:0:0::/root): nothing to hide.
+  if (groups.every((group) => /^0+$/.test(group))) return false;
+  const width = groups.length +
+    (IPV4_TAIL_RE.test(groups.at(-1) ?? "") ? 1 : 0);
+  if (width >= 8) return true;
+  if (!strict && run.includes("::")) return true;
+  let twoHexRun = 0;
+  for (const group of groups) {
+    twoHexRun = group.length === 2 ? twoHexRun + 1 : 0;
+    if (twoHexRun === 6) return true;
+  }
+  return false;
 }
 
 // The hash labels above, in their joined form (sha512-<hash>), for the generic
@@ -699,6 +745,112 @@ function isInsideCode(
   );
 }
 
+/**
+ * Redacts each IPv6 address or MAC in one colon token. The token's parts split
+ * into word parts (labels such as peer, addr, warn) and maximal runs of hex
+ * groups between them; each run is judged on its own. A word joined to a run
+ * by one colon is a label and stays whole. A run is judged first by itself
+ * (strictly, needing eight or more groups or a MAC, when exactly "::" touches
+ * a word: Foo::bar), then strictly with the hex group glued onto a
+ * neighbouring word (x2001:db8:…), so a full address glued to a word is still
+ * caught. One colon at either end of a run stays outside the placeholder.
+ */
+function redactColonToken(
+  token: string,
+  placeholders: PlaceholderMap,
+  count: (category: string) => void,
+): string {
+  const parts = token.split(":");
+  const n = parts.length;
+  const isGroup = parts.map((part, k) =>
+    HEX_GROUP_RE.test(part) || (k === n - 1 && IPV4_TAIL_RE.test(part))
+  );
+  // Output text per part (null once folded into a placeholder), and whether
+  // the colon before a part is dropped because a placeholder spans it.
+  const pieces: Array<string | null> = [...parts];
+  const joinedToPrevious: boolean[] = parts.map(() => false);
+
+  const judge = (candidate: string, strict: boolean): string | null => {
+    const lead = /^(?::(?!:)|:::)/.test(candidate) ? ":" : "";
+    const trail = /(?:[^:]:|:::)$/.test(candidate) ? ":" : "";
+    const run = candidate.slice(lead.length, candidate.length - trail.length);
+    if (!isAddressLikeColonRun(run, strict)) return null;
+    if (isSafeIpv6(run)) return candidate;
+    count("IP address");
+    return `${lead}${placeholders.get("IP", run)}${trail}`;
+  };
+
+  let i = 0;
+  while (i < n) {
+    if (!isGroup[i]) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < n && isGroup[j + 1]) j++;
+    const hasLeft = i > 0;
+    const hasRight = j < n - 1;
+    const run = parts.slice(i, j + 1);
+    const touchesLeftWord = hasLeft && run[0] === "" &&
+      (run.length === 1 || run[1] !== "");
+    const touchesWord = touchesLeftWord ||
+      (hasRight && run[run.length - 1] === "" &&
+        (run.length === 1 || run[run.length - 2] !== ""));
+    const left = hasLeft ? pieces[i - 1] ?? "" : "";
+    const right = hasRight ? pieces[j + 1] ?? "" : "";
+    const glueLeft = left.match(/(?<![0-9A-Fa-f])[0-9A-Fa-f]{1,4}$/)?.[0] ?? "";
+    const glueRight = right.match(/^[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f])/)?.[0] ??
+      "";
+
+    // The run by itself first.
+    const own = judge(run.join(":"), touchesWord);
+    // A unit or word stuck on the end of an address (2001:db8::1ms) starts
+    // with the address's last group, so a run that is no address by itself
+    // is judged with that group, without any group glued on the left. It
+    // counts when the run joins two groups with a single colon, which code
+    // paths (fc::assert, Foo::bar) never do.
+    const runWithUnit = [...run, glueRight].join(":");
+    const unitOnEnd = own === null && glueRight !== "" && !touchesLeftWord &&
+      /[0-9A-Fa-f]:[0-9A-Fa-f]/.test(runWithUnit);
+    const withUnit = unitOnEnd ? judge(runWithUnit, false) : null;
+    // Otherwise, strictly, with the groups glued on either side, so only a
+    // full address or MAC counts once those are added.
+    const full = own === null && withUnit === null && (glueLeft || glueRight)
+      ? judge(
+        [
+          ...(glueLeft ? [glueLeft] : []),
+          ...run,
+          ...(glueRight ? [glueRight] : []),
+        ].join(":"),
+        true,
+      )
+      : null;
+    const replacement = own ?? withUnit ?? full;
+    if (replacement !== null) {
+      pieces[i] = replacement;
+      for (let k = i + 1; k <= j; k++) pieces[k] = null;
+      if (full !== null && glueLeft) {
+        pieces[i - 1] = left.slice(0, left.length - glueLeft.length);
+        joinedToPrevious[i] = true;
+      }
+      if ((withUnit !== null || full !== null) && glueRight) {
+        pieces[j + 1] = right.slice(glueRight.length);
+        joinedToPrevious[j + 1] = true;
+      }
+    }
+    i = j + 1;
+  }
+
+  let out = "";
+  for (let k = 0; k < n; k++) {
+    const piece = pieces[k];
+    if (piece === null) continue;
+    if (k > 0 && !joinedToPrevious[k]) out += ":";
+    out += piece;
+  }
+  return out;
+}
+
 function applyRedactions(
   text: string,
   placeholders: PlaceholderMap,
@@ -850,12 +1002,10 @@ function applyRedactions(
   );
 
   // 12. IPv6 (before IPv4 to avoid partial matches on mapped addresses)
-  result = result.replace(IPV6_RE, (match) => {
-    if (isSafeIpv6(match)) return match;
-    if (isLikelyTimestamp(match)) return match;
-    count("IP address");
-    return placeholders.get("IP", match);
-  });
+  result = result.replace(
+    IPV6_RE,
+    (token: string) => redactColonToken(token, placeholders, count),
+  );
 
   // 13. IPv4 (the regex requires exactly 4 octets, so 3-segment version
   //     strings like "1.23.4" never match — no version guard needed)
@@ -905,6 +1055,12 @@ function applyRedactions(
       const preceding = source.slice(Math.max(0, offset - 40), offset);
       if (SAFE_HEX_KEY_RE.test(preceding)) return match;
       if (HASH_LABEL_PREFIX_RE.test(preceding)) return match;
+      if (
+        GIT_ID_LENGTHS.has(match.length) &&
+        GIT_ID_CONTEXT_RE.test(preceding) && !SECRET_LABEL_RE.test(preceding)
+      ) {
+        return match;
+      }
       count("secret");
       return placeholders.get("REDACTED-SECRET", match);
     },

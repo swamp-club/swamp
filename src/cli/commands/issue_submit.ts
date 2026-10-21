@@ -40,6 +40,7 @@ import {
 import {
   createIssueCreateRenderer,
   renderExtensionRepositoryHandoff,
+  renderIssueCancelled,
   renderRedactionNotice,
   renderRedactionSkipped,
 } from "../../presentation/renderers/issue_create.ts";
@@ -50,6 +51,10 @@ import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import { redactIssueTitleAndBody } from "../../domain/issues/content_redactor.ts";
+import {
+  chooseSubmittedContent,
+  type RedactionConfirmDeps,
+} from "./issue_redaction_confirm.ts";
 import {
   type DispatcherDeps,
   dispatchRepositoryReport,
@@ -299,8 +304,10 @@ export async function dispatchExtensionRepositoryReport(
     body: string;
     noRedact?: boolean;
   },
-  deps: Omit<DispatcherDeps, "logger"> = {},
+  deps: Omit<DispatcherDeps, "logger"> & { confirm?: RedactionConfirmDeps } =
+    {},
 ): Promise<void> {
+  const { confirm, ...dispatcherDeps } = deps;
   // Redact sensitive content before dispatching to a third-party repo.
   let title = input.title;
   let body = input.body;
@@ -312,8 +319,23 @@ export async function dispatchExtensionRepositoryReport(
       { label: "title", result: redacted.title },
       { label: "body", result: redacted.body },
     ], ctx.outputMode);
-    title = redacted.title.text;
-    body = redacted.body.text;
+    const chosen = await chooseSubmittedContent(
+      redacted.summary,
+      ctx.outputMode,
+      {
+        redacted: { title: redacted.title.text, body: redacted.body.text },
+        original: { title, body },
+      },
+      confirm,
+    );
+    if (!chosen) {
+      renderIssueCancelled(
+        { type: input.type, reason: "cancelled" },
+        ctx.outputMode,
+      );
+      return;
+    }
+    ({ title, body } = chosen);
   }
 
   const reporterContext = collectReporterContext({
@@ -330,7 +352,7 @@ export async function dispatchExtensionRepositoryReport(
       reporterContext,
       outputMode: ctx.outputMode,
     },
-    { ...deps, logger: ctx.logger },
+    { ...dispatcherDeps, logger: ctx.logger },
   );
   if (result.kind === "refused") {
     throw refusalError(target.extensionName, result.reason, result.guidance);
@@ -354,6 +376,7 @@ export async function submitIssue(
   ctx: CommandContext,
   destination: SubmitDestination,
   input: SubmitIssueInput,
+  promptDeps: { confirm?: RedactionConfirmDeps } = {},
 ): Promise<void> {
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const renderer = createIssueCreateRenderer(ctx.outputMode);
@@ -371,7 +394,23 @@ export async function submitIssue(
       { label: "title", result: redacted.title },
       { label: "body", result: redacted.body },
     ], ctx.outputMode);
-    input = { ...input, title: redacted.title.text, body: redacted.body.text };
+    const chosen = await chooseSubmittedContent(
+      redacted.summary,
+      ctx.outputMode,
+      {
+        redacted: { title: redacted.title.text, body: redacted.body.text },
+        original: { title: input.title, body: input.body },
+      },
+      promptDeps.confirm,
+    );
+    if (!chosen) {
+      renderIssueCancelled(
+        { type: input.type, reason: "cancelled" },
+        ctx.outputMode,
+      );
+      return;
+    }
+    input = { ...input, ...chosen };
   }
 
   if (destination.method === "email") {

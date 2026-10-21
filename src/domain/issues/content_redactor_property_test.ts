@@ -167,3 +167,232 @@ Deno.test("redactIssueContent: one raw value always maps to one placeholder", ()
     ),
   );
 });
+
+// --- Git object ids and colon-separated runs (swamp-club#3686) ---
+
+const HEX_CHARS = "0123456789abcdef".split("");
+
+const arbHex = (minLength: number, maxLength: number) =>
+  fc.stringOf(fc.constantFrom(...HEX_CHARS), { minLength, maxLength });
+
+const arbGitId = fc.oneof(arbHex(40, 40), arbHex(64, 64));
+
+const arbGitContext = fc.constantFrom(
+  "at commit ",
+  "commit id: ",
+  "git checkout ",
+  "rev=",
+  "git show ",
+  "https://github.com/o/r/commit/",
+  "commit `",
+);
+
+const arbHexGroup = arbHex(1, 4);
+
+// Eight groups, never the loopback or link-local addresses the redactor keeps
+// on purpose, and never all zeros (which compresses to a bare "::").
+const arbIpv6Groups = fc.array(arbHexGroup, { minLength: 8, maxLength: 8 })
+  .filter((groups) =>
+    groups.some((g) => parseInt(g, 16) !== 0) &&
+    !groups.slice(0, 7).every((g) => parseInt(g, 16) === 0) &&
+    groups[0].toLowerCase() !== "fe80"
+  );
+
+// The eight-group form, or a compressed form made by zeroing a run of groups
+// and collapsing it to "::" (a run of all eight leaves a bare "::", which
+// names no address).
+const arbIpv6 = fc.oneof(
+  arbIpv6Groups.map((groups) => groups.join(":")),
+  fc.tuple(arbIpv6Groups, fc.nat(7), fc.nat(7)).map(([groups, a, b]) => {
+    const start = Math.min(a, b);
+    const end = Math.max(a, b);
+    const left = groups.slice(0, start);
+    const right = groups.slice(end + 1);
+    return {
+      kept: [...left, ...right],
+      text: `${left.join(":")}::${right.join(":")}`,
+    };
+  }).filter(({ kept, text }) =>
+    // Collapsing every non-zero group leaves the unspecified address (::0),
+    // which the redactor keeps on purpose, as it keeps ::1 and fe80.
+    kept.some((g) => parseInt(g, 16) !== 0) && text !== "::1" &&
+    !text.toLowerCase().startsWith("fe80:")
+  ).map(({ text }) => text),
+);
+
+// What text puts around an address or a colon run: spaces, a label colon
+// before it, a message colon after it, brackets and punctuation. A label
+// ending in a hex character (ipv6:) is left to the glued-word property: it
+// may read as one more group, so a seven-group run after it is redacted.
+const arbBefore = fc.constantFrom(
+  "addr ",
+  "remote_addr:",
+  "ip=",
+  "[",
+  "(",
+);
+const arbAfter = fc.constantFrom(" end", ": no route", ":", ",", "]", ")", "");
+
+Deno.test("redactIssueContent: a git object id after a git word survives", () => {
+  fc.assert(
+    fc.property(arbGitContext, arbGitId, (context, id) => {
+      const input = `${context}${id} landed`;
+      const result = redactIssueContent(input);
+      assertEquals(result.text, input);
+    }),
+  );
+});
+
+Deno.test("redactIssueContent: long hex without git context never survives", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("", "token: ", "key=", "secret ", "commit token: "),
+      arbHex(40, 128),
+      (context, hex) => {
+        const result = redactIssueContent(`saw ${context}${hex} here`);
+        assert(!result.text.includes(hex), `hex survived in: ${result.text}`);
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: a code path with :: survives", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("std", "Foo", "Self", "self", "Module", "fc", "x"),
+      fc.array(
+        fc.stringOf(
+          fc.constantFrom(..."abcdefghijkmnoprstuvwxyzABC_".split("")),
+          {
+            minLength: 1,
+            maxLength: 10,
+          },
+        ).filter((word) => /[g-zG-Z_]/.test(word[0])),
+        { minLength: 1, maxLength: 3 },
+      ),
+      (root, segments) => {
+        const input = `use ${root}::${segments.join("::")};`;
+        assertEquals(redactIssueContent(input).text, input);
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: a colon run that is not an address survives", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbHexGroup, { minLength: 3, maxLength: 7 }).filter((groups) =>
+        !groups.join(":").match(/(?:^|:)(?:[0-9a-f]{2}:){5}[0-9a-f]{2}(?::|$)/)
+      ),
+      arbBefore,
+      arbAfter,
+      (groups, before, after) => {
+        const input = `path ${before}${groups.join(":")}${after}`;
+        const result = redactIssueContent(input);
+        assertEquals(result.text, input);
+      },
+    ),
+  );
+});
+
+// Words glued to an address with no separator: the redactor cannot always
+// tell where the word ends, so these only require that the address does not
+// survive whole. A word glued straight onto "::", or onto one group and then
+// "::" (srcaddr::1:2, srcaddr0::1:2), reads exactly like a code path
+// (Foo::bar, Hashed::abc) and is kept, so those are left out.
+const arbGluedBefore = fc.constantFrom("srcaddr", "x", "0x", "ipv6:", "id:");
+
+Deno.test("redactIssueContent: an IPv6 address glued to a word never survives whole", () => {
+  fc.assert(
+    fc.property(arbGluedBefore, arbIpv6, arbAfter, (before, address, after) => {
+      fc.pre(before.endsWith(":") || !/^[0-9a-f]{0,4}::/i.test(address));
+      // With the first group glued into the word, the rest of the address
+      // must still say something: srcaddr7:0::0 is the word srcaddr7 and the
+      // unspecified address.
+      fc.pre(
+        before.endsWith(":") ||
+          address.split(":").slice(1).some((g) =>
+            g !== "" && parseInt(g, 16) !== 0
+          ),
+      );
+      const result = redactIssueContent(`t ${before}${address}${after} e`);
+      assert(!result.text.includes(address), result.text);
+      assert(result.summary.totalRedactions >= 1, result.text);
+    }),
+  );
+});
+
+// Zero to three word labels, as in structured-log prefixes and keys
+// (peer:addr:<addr>, <addr>:to:host).
+const arbLabelWord = fc.constantFrom(
+  "peer",
+  "addr",
+  "lvl",
+  "warn",
+  "to",
+  "host",
+);
+const arbLabelsBefore = fc.array(arbLabelWord, { maxLength: 3 }).map((words) =>
+  words.map((word) => `${word}:`).join("")
+);
+const arbLabelsAfter = fc.array(arbLabelWord, { maxLength: 3 }).map((words) =>
+  words.map((word) => `:${word}`).join("")
+);
+
+// A unit or word stuck on the end of an address (2001:db8::1ms). Addresses
+// made only of "::"-joined groups, or ending in "::", read like code paths
+// (fc::assert) and are left out.
+const arbUnit = fc.constantFrom("ms", "x", "s", "px", "_");
+
+Deno.test("redactIssueContent: an IPv6 address with a unit stuck on the end never survives whole", () => {
+  fc.assert(
+    fc.property(arbBefore, arbIpv6, arbUnit, (before, address, unit) => {
+      fc.pre(!address.endsWith("::"));
+      fc.pre(/[0-9a-f]:[0-9a-f]/i.test(address));
+      // Without its last group the address is the loopback ::1, which the
+      // redactor keeps on purpose before it looks at the stuck-on unit.
+      fc.pre(!/^::0*1:[0-9a-f]{1,4}$/i.test(address));
+      const result = redactIssueContent(`${before}${address}${unit} end`);
+      assert(!result.text.includes(address), result.text);
+      assert(result.summary.totalRedactions >= 1, result.text);
+    }),
+  );
+});
+
+Deno.test("redactIssueContent: an IPv6 address never survives in any form", () => {
+  fc.assert(
+    fc.property(
+      arbBefore,
+      arbLabelsBefore,
+      arbIpv6,
+      arbLabelsAfter,
+      arbAfter,
+      (before, labelsBefore, address, labelsAfter, after) => {
+        // A message colon right after the address reads as a label colon
+        // when labels follow it, so only one of the two is generated.
+        fc.pre(labelsAfter === "" || !after.startsWith(":"));
+        const result = redactIssueContent(
+          `${before}${labelsBefore}${address}${labelsAfter}${after}`,
+        );
+        assertEquals(
+          result.text,
+          `${before}${labelsBefore}[IP-1]${labelsAfter}${after}`,
+          address,
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: redaction stays idempotent over git ids and addresses", () => {
+  fc.assert(
+    fc.property(arbGitContext, arbGitId, arbIpv6, (context, id, address) => {
+      const once = redactIssueContent(
+        `${context}${id} then ${address} and path 992:3:11:17:17:12`,
+      );
+      const twice = redactIssueContent(once.text);
+      assertEquals(twice.text, once.text);
+      assertEquals(twice.summary.totalRedactions, 0);
+    }),
+  );
+});

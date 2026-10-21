@@ -29,6 +29,8 @@ import { parseRepositoryUrl } from "../../domain/extensions/repository_url.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { GhCliRunner } from "../../infrastructure/process/gh_cli.ts";
 import type { CommandContext } from "../context.ts";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
+import type { RedactionConfirmDeps } from "./issue_redaction_confirm.ts";
 import {
   buildMailtoUrl,
   dispatchExtensionRepositoryReport,
@@ -316,4 +318,87 @@ Deno.test("submitIssue: leaves out the --email hint on the extension path, where
   );
   assertStringIncludes(error.message, "swamp auth login");
   assertEquals(error.message.includes("--email"), false);
+});
+
+// --- Redaction prompt at the submission entry points (swamp-club#3686) ---
+
+const logCtx: CommandContext = { ...testCtx, outputMode: "log" };
+
+function answering(answer: string): RedactionConfirmDeps {
+  return { isInteractive: () => true, ask: () => Promise.resolve(answer) };
+}
+
+const redactable = { title: "Ping fails", body: "host 10.20.30.40 is down" };
+
+Deno.test("submitIssue: cancelling at the redaction prompt sends nothing", async () => {
+  const { calls } = await withMockedFetch(
+    () => Promise.resolve(new Response("{}", { status: 500 })),
+    () =>
+      submitIssue(
+        logCtx,
+        {
+          method: "lab",
+          credentials: {
+            serverUrl: "https://swamp-club.invalid",
+            apiKey: "swamp_test",
+            apiKeyId: "test",
+            username: "tester",
+          },
+        },
+        { type: "bug", ...redactable },
+        { confirm: answering("n") },
+      ),
+  );
+  assertEquals(calls.length, 0);
+});
+
+async function dispatchAnswering(answer: string): Promise<{
+  opened: string[];
+  ghCalls: string[][];
+}> {
+  const opened: string[] = [];
+  const ghCalls: string[][] = [];
+  const repositoryUrl = "https://github.com/adam/cfgmgmt";
+  await dispatchExtensionRepositoryReport(
+    logCtx,
+    {
+      kind: "repository",
+      extensionName: "@adam/cfgmgmt",
+      extensionVersion: "2026.04.22.1",
+      repositoryUrl,
+      parsed: parseRepositoryUrl(repositoryUrl),
+    },
+    { type: "bug", ...redactable },
+    {
+      // gh is unavailable, so the report goes to the browser handoff.
+      ghRunner: {
+        run(args) {
+          ghCalls.push(args);
+          return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
+        },
+      },
+      env: { get: () => undefined },
+      openBrowser: (url) => {
+        opened.push(decodeURIComponent(url.replaceAll("+", " ")));
+        return Promise.resolve();
+      },
+      writeLog: () => {},
+      confirm: answering(answer),
+    },
+  );
+  return { opened, ghCalls };
+}
+
+Deno.test("dispatchExtensionRepositoryReport: the redaction prompt decides what is sent", async () => {
+  const redacted = await dispatchAnswering("y");
+  assertEquals(redacted.opened.length, 1);
+  assertStringIncludes(redacted.opened[0], "host [IP-1] is down");
+
+  const asWritten = await dispatchAnswering("w");
+  assertEquals(asWritten.opened.length, 1);
+  assertStringIncludes(asWritten.opened[0], "host 10.20.30.40 is down");
+
+  const cancelled = await dispatchAnswering("");
+  assertEquals(cancelled.opened, []);
+  assertEquals(cancelled.ghCalls, []);
 });
