@@ -1585,9 +1585,18 @@ export class ExpressionEvaluationService {
         // A typed run evaluates vault.get as the CEL function: the evaluator
         // checks every direct call up front, refuses an alias, and issues
         // the sentinel on release into the step's bag
-        // (design/enablers/typed-secrets.md Sections 3.4 and 4.4). No
-        // pre-screen with validate here: the typed validate rejects an
-        // alias, and skipping on that would leave it as raw text.
+        // (design/enablers/typed-secrets.md Sections 3.4 and 4.4). Text that
+        // is not CEL stays raw, as on the legacy path; the screen is the
+        // legacy parse, which knows nothing of aliases, so an alias still
+        // reaches the typed evaluator and is refused there.
+        const syntax = this.celEvaluator.validate(expr.celExpression);
+        if (!syntax.valid) {
+          if (containsVaultExpression(expr.celExpression)) {
+            getLogger(["swamp", "expressions"])
+              .warn`Skipped vault expression at ${expr.path} because its CEL is syntactically invalid: ${syntax.error}. Raw: ${expr.raw}`;
+          }
+          return expr.raw;
+        }
         return await evaluator.evaluateAsync(
           expr.celExpression,
           celContext,

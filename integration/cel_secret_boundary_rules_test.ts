@@ -93,7 +93,7 @@ Deno.test("no production code outside the CEL adapter imports a Secret module", 
  * needs a decision here.
  */
 const FORWARDING_SITES: readonly string[] = [
-  "src/domain/expressions/expression_evaluation_service.ts new CelEvaluator({ typedSecrets: registry.typedSecrets, })",
+  "src/domain/expressions/expression_evaluation_service.ts new CelEvaluator({ typedSecrets: registry.typedSecrets })",
   "src/domain/vaults/secret_bag_registry.ts new SecretBagRegistry({ typedSecrets: this.typedSecrets })",
 ];
 
@@ -107,7 +107,11 @@ Deno.test("no production code sets the typed-secrets option", async () => {
     for (const className of ["CelEvaluator", "SecretBagRegistry"]) {
       for (const call of constructorCalls(source, className)) {
         if (call.args.length === 0) continue;
-        const args = call.args.join(", ").replace(/\s+/g, " ");
+        // Whitespace and a trailing comma are the formatter's, not the shape's.
+        const args = call.args.join(", ").replace(/\s+/g, " ").replace(
+          /,\s*([}\])])/g,
+          " $1",
+        );
         constructed.push(`${rel} new ${className}(${args})`);
       }
     }

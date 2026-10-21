@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Definition } from "../../domain/definitions/definition.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
 import { markModelWording, wordedText } from "../../domain/behavior_wording.ts";
 import {
   findDefinitionByIdGlobal,
@@ -65,6 +65,7 @@ import {
   unresolvedArgumentsOf,
 } from "../../domain/models/method_execution_service.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
@@ -263,7 +264,10 @@ export function createModelValidateDeps(
 
   // A typed registry (the internal option, set only by tests) turns on the
   // Secret usage diagnostics and the shared pre-flight delivery below; an
-  // untyped one leaves validate as it was (typed-secrets 3.5).
+  // untyped one leaves validate as it was (typed-secrets 3.5). One deps is
+  // one validation run: every definition it validates issues into this one
+  // registry, so a reference's existence is probed once for the run, as a
+  // workflow's steps share one registry.
   const sensitiveValues = options?.createSensitiveValues?.() ??
     new RunSensitiveValues();
   const typed = sensitiveValues.sentinels.typedSecrets;
@@ -366,18 +370,36 @@ async function deliverCheckArguments(
   expressionService: ExpressionEvaluationService,
   sensitiveValues: RunSensitiveValues,
 ): Promise<CheckArgumentDelivery> {
+  // Only what the checks and the method receive is evaluated: the global
+  // arguments and the selected method's arguments. Another method's
+  // expressions are not this validation's to resolve or to fail on.
+  const data = definition.toData();
+  const method = Object.hasOwn(modelDef.methods, methodName)
+    ? modelDef.methods[methodName]
+    : undefined;
+  const scoped = Definition.fromData({
+    ...data,
+    methods: method && Object.hasOwn(data.methods ?? {}, methodName)
+      ? { [methodName]: data.methods![methodName] }
+      : {},
+  });
   const { definition: resolved, secretBag } = await expressionService
     .resolveRuntimeExpressionsInDefinition(
-      definition,
+      scoped,
       sensitiveValues.probeRedactor,
       undefined,
-      collectAuthoredExpressions(definition.toData()),
-      { secretBag: new VaultSecretBag(sensitiveValues.sentinels) },
+      collectAuthoredExpressions(scoped.toData()),
+      {
+        secretBag: new VaultSecretBag(sensitiveValues.sentinels),
+        // The definition is read from the repository as stored, so every
+        // position in it is authored.
+        provenance: ProvenanceMap.authored(),
+      },
     );
   const delivery = await deliverStepSecrets({
     definition: resolved,
     modelDef,
-    method: methodName ? modelDef.methods[methodName] : undefined,
+    method,
     methodName,
     vaultSecrets: secretBag,
     secretLoader: expressionService.secretLoader(sensitiveValues.probeRedactor),

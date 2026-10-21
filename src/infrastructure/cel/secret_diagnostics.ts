@@ -44,6 +44,7 @@
  */
 
 import type { Environment } from "cel-js";
+import { minOf } from "../../domain/array_extrema.ts";
 import {
   SECRET_OPERATION_UNSUPPORTED,
   type SecretRefusalCode,
@@ -110,7 +111,7 @@ export function diagnoseSecretMisuse(
   }
   const at = callLocation(
     expression,
-    Math.min(...analysis.calls.map((call) => call.start)),
+    minOf(analysis.calls.map((call) => call.start)) ?? 0,
     location,
   );
   const findings: SecretDiagnostic[] = [];

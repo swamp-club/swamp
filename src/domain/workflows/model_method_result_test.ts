@@ -21,7 +21,10 @@ import { assertEquals } from "@std/assert";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
-import { storedResourceRecord } from "./model_method_result.ts";
+import {
+  modelMethodResourceResult,
+  storedResourceRecord,
+} from "./model_method_result.ts";
 
 const TYPE = ModelType.create("test/method-result");
 const REFERENCE = "${{ vault.get('prod', 'P') }}";
@@ -105,4 +108,66 @@ Deno.test("storedResourceRecord: nothing written, or a non-JSON resource, answer
     null,
   );
   assertEquals(text.calls, ["findByName:creds"]);
+});
+
+Deno.test("modelMethodResourceResult: a typed consumer is handed the stored record, an untyped one the parsed content, and text or nothing stays as today", async () => {
+  const json = JSON.stringify({ password: REFERENCE, host: "h" });
+  const typed = await modelMethodResourceResult(
+    repo(data("application/json"), json).repo,
+    TYPE,
+    "id-1",
+    "creds",
+    "db",
+    true,
+  ) as Record<string, unknown>;
+  assertEquals(typed.tags, {
+    type: "resource",
+    specName: "creds",
+    modelName: "db",
+    "_swamp.sensitiveFields": JSON.stringify(["password"]),
+  });
+  assertEquals(typed.attributes, { password: REFERENCE, host: "h" });
+  // The untyped consumer, the guard and assert evaluators until Phase 4,
+  // receives the parsed content whatever the run's registry carries.
+  const untyped = repo(data("application/json"), json);
+  assertEquals(
+    await modelMethodResourceResult(
+      untyped.repo,
+      TYPE,
+      "id-1",
+      "creds",
+      "db",
+      false,
+    ),
+    { password: REFERENCE, host: "h" },
+  );
+  assertEquals(untyped.calls, ["getContent:creds"]);
+  // Text content is text for both, and nothing written answers undefined.
+  for (const consumer of [true, false]) {
+    assertEquals(
+      await modelMethodResourceResult(
+        repo(data("text/plain"), "plain text").repo,
+        TYPE,
+        "id-1",
+        "creds",
+        "db",
+        consumer,
+      ),
+      "plain text",
+    );
+    assertEquals(
+      await modelMethodResourceResult(
+        {
+          ...repo(null, "").repo,
+          getContent: () => Promise.resolve(null),
+        } as unknown as UnifiedDataRepository,
+        TYPE,
+        "id-1",
+        "creds",
+        "db",
+        consumer,
+      ),
+      undefined,
+    );
+  }
 });

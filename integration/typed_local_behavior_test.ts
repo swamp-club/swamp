@@ -634,6 +634,17 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       globalArguments: { region: "${{ vault.get('prod', 'canary-4') }}" },
       methods: { [METHOD]: { arguments: {} } },
     }));
+    const contextualDef = await f.save(Definition.create({
+      name: "contextual",
+      type: f.type.normalized,
+      globalArguments: {
+        token: "${{ vault.get(inputs.vaultName, 'canary-6') }}",
+      },
+      methods: {
+        [METHOD]: { arguments: {} },
+        other: { arguments: { note: "${{ vault.get('prod', 'canary-7') }}" } },
+      },
+    }));
     const deps = createModelValidateDeps(
       f.repoDir,
       { method: METHOD, createSensitiveValues: f.typedValues },
@@ -690,6 +701,27 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     // The existence probe ran at evaluation; the refusal made no load.
     assertEquals(f.counting.readsOf(keyOf(4)) - before4, 1);
     assertValueFree(f, JSON.stringify(refused), "the refusal");
+
+    // A runtime expression that needs run-time context cannot be delivered
+    // to a check, so on the typed path the checks fail with the value-free
+    // error instead of degrading to raw text; nothing is read. Another
+    // method's expressions are outside this validation and never evaluated.
+    const before6 = f.counting.readsOf(keyOf(6));
+    const before7 = f.counting.readsOf(keyOf(7));
+    const contextual = await deps.validateModel(contextualDef, f.model, f.type);
+    const contextualCheck = contextual.results.find((r) =>
+      r.name === "Check: see-args"
+    );
+    assertEquals(contextualCheck?.passed, false);
+    // The error names the authored call, never cel-js's value-bearing cause.
+    assertStringIncludes(
+      contextualCheck?.error ?? "",
+      "vault.get argument 1 at globalArguments.token",
+    );
+    assertEquals(f.checked.length, checksBefore);
+    assertEquals(f.counting.readsOf(keyOf(6)) - before6, 0);
+    assertEquals(f.counting.readsOf(keyOf(7)) - before7, 0);
+    assertValueFree(f, JSON.stringify(contextual), "the contextual failure");
     await assertNoPlaintextOnDisk(f);
   });
 });

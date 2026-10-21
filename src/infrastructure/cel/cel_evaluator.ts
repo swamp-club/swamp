@@ -1086,6 +1086,15 @@ export class CelEvaluator {
   }
 
   /**
+   * Whether this evaluator runs with typed secrets: what a delegate that
+   * answers it a record must know, since only the typed environment adapts
+   * one (design/enablers/typed-secrets.md Section 4.5 item 4).
+   */
+  get isTyped(): boolean {
+    return this.typedSecrets;
+  }
+
+  /**
    * Evaluates a CEL expression with the given context.
    *
    * @param expression - The CEL expression to evaluate

@@ -818,6 +818,9 @@ export class DefaultModelValidationService implements ModelValidationService {
         !check.appliesTo.includes(checkContext.method));
     });
 
+    // No check to run means nothing to deliver: no probe, no load.
+    if (applicable.length === 0) return results;
+
     // What the checks receive. In a typed run the shared delivery step
     // provides it, and a refusal or a failed load fails every applicable
     // check: nothing is delivered. Otherwise vault/env expressions in

@@ -194,7 +194,7 @@ import {
 } from "../data/data_record_mapper.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { MethodReportRunner } from "./method_report_runner.ts";
-import { storedResourceRecord } from "./model_method_result.ts";
+import { modelMethodResourceResult } from "./model_method_result.ts";
 import {
   WorkflowReportRunner,
   type WorkflowStepExecutionDetail,
@@ -5882,6 +5882,7 @@ export class WorkflowExecutionService {
           "__guard_",
           stepExprContext,
           options,
+          celEvaluator.isTyped,
         );
         if (
           partitionAuthoredAt(
@@ -6311,6 +6312,7 @@ export class WorkflowExecutionService {
           "__assert_",
           stepExprContext,
           options,
+          celEvaluator.isTyped,
         );
         try {
           if (!options.authoredExpressions.has(task.expr)) {
@@ -7448,6 +7450,12 @@ export class WorkflowExecutionService {
     prefix: string,
     stepExprContext: ExpressionContext | undefined,
     options: StepOptions,
+    /**
+     * Whether the evaluator that reads the result runs with typed secrets,
+     * so a stored record it is handed is adapted (typed-secrets 3.5). An
+     * untyped evaluator keeps receiving the parsed content.
+     */
+    typedConsumer = false,
   ): Record<string, unknown> {
     return {
       method: async (
@@ -7500,32 +7508,21 @@ export class WorkflowExecutionService {
               modelName,
             );
             if (def) {
-              // In a typed run the stored record is returned for the
-              // evaluator to adapt, so a tagged field is a Secret and never
-              // comparable text (typed-secrets 3.5, design Section 4.5 item
-              // 4). The untyped path keeps the parsed content below.
-              if (options.sensitiveValues?.sentinels.typedSecrets) {
-                const stored = await storedResourceRecord(
-                  this.dataRepo,
-                  def.type,
-                  def.definition.id,
-                  resourceHandle.specName,
-                  modelName,
-                );
-                if (stored) return stored;
-              }
-              const raw = await this.dataRepo.getContent(
+              // A typed evaluator is handed the stored record to adapt, so a
+              // tagged field is a Secret and never comparable text
+              // (typed-secrets 3.5, design Section 4.5 item 4). Keyed on the
+              // consuming evaluator, not the run's registry: until Phase 4
+              // the guard and assert evaluators are untyped and keep the
+              // parsed content, whatever the registry carries.
+              const resource = await modelMethodResourceResult(
+                this.dataRepo,
                 def.type,
                 def.definition.id,
                 resourceHandle.specName,
+                modelName,
+                typedConsumer,
               );
-              if (raw) {
-                try {
-                  return JSON.parse(new TextDecoder().decode(raw));
-                } catch {
-                  return new TextDecoder().decode(raw);
-                }
-              }
+              if (resource !== undefined) return resource;
             }
           }
         }

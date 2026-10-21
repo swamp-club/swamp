@@ -53,3 +53,39 @@ export async function storedResourceRecord(
     dataName: specName,
   });
 }
+
+/**
+ * What `model.method` answers for the latest resource `modelName` wrote
+ * under `specName`. A typed consuming evaluator is handed the stored record,
+ * which it adapts so each tagged field is a `Secret` (Section 4.5 item 4);
+ * any other evaluator receives what it always has, the parsed JSON content
+ * or the text. Undefined when nothing was written, so the caller falls back
+ * to the method's raw result.
+ */
+export async function modelMethodResourceResult(
+  dataRepo: UnifiedDataRepository,
+  type: ModelType,
+  modelId: string,
+  specName: string,
+  modelName: string,
+  typedConsumer: boolean,
+): Promise<unknown> {
+  if (typedConsumer) {
+    const stored = await storedResourceRecord(
+      dataRepo,
+      type,
+      modelId,
+      specName,
+      modelName,
+    );
+    if (stored) return stored;
+  }
+  const raw = await dataRepo.getContent(type, modelId, specName);
+  if (!raw) return undefined;
+  const text = new TextDecoder().decode(raw);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}

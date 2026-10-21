@@ -3795,3 +3795,50 @@ Deno.test("validateModel: a refused or failed delivery fails every applicable ch
   }
   assertEquals(executed, 0);
 });
+
+Deno.test("validateModel: with no applicable check nothing is delivered", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { password: '${{ vault.get("my-vault", "MY_SECRET") }}' },
+    checks: { skip: ["skipped"] },
+  });
+  let deliveries = 0;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/vault-check"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ password: z.string() }),
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      skipped: {
+        description: "Skipped by the definition",
+        execute: () => Promise.resolve({ pass: true }),
+      },
+      other: {
+        description: "Applies to another method",
+        appliesTo: ["delete"],
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({
+      method: "create",
+      deliverCheckArguments: () => {
+        deliveries++;
+        return Promise.reject(new Error("never asked"));
+      },
+    }),
+  );
+  assertEquals(deliveries, 0);
+  assertEquals(results.some((r) => r.name.startsWith("Check:")), false);
+});

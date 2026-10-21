@@ -1312,8 +1312,12 @@ with zero loads; `swamp behavior validate` reports the `Secret usage`
 diagnostics of Section 10.2 and, on the typed path only (the untyped path
 keeps its inline resolution until Phase 4 removes it), delivers its
 pre-flight check arguments through `deliverStepSecrets`, the refuse-then-load
-step extracted from `executeWorkflow` and shared with the method boundary, a
-refused destination or a failed load failing every applicable check;
+step extracted from `executeWorkflow` and shared with the method boundary. The
+pass covers the global arguments and the selected method's arguments only, and
+nothing is delivered when no check applies; a refused destination, a failed
+load, or a runtime expression that needs run-time context validate cannot
+supply (`vault.get(inputs.vaultName, ...)`) fails every applicable check with a
+value-free error, where the untyped path degrades to raw text;
 `context.runModel` builds its nested run over
 `callerContext.vaultSecrets.registry.independent()`, which carries the option
 and nothing else, so references are checked anew and loaded once per attempt
@@ -1322,8 +1326,10 @@ the effect gate reads the ambient fault scope (`containerComparison`,
 `release` and the recorded faults) before any delegate work; its routing
 names refuse with `secret_destination_refused` through a per-signature code
 on `registerSecretRefusals`; its inputs are released through the boundary;
-and in a typed run the delegate returns the stored record, which the
-function adapts. A `refuseSecretDestinations` stage with no method checks the
+and a delegate whose consuming evaluator is typed returns the stored record
+(`model_method_result.ts`), which the function adapts. The workflow guard and
+assert evaluators stay untyped until Phase 4, so their delegate keeps
+answering the parsed content whatever the run's registry carries. A `refuseSecretDestinations` stage with no method checks the
 global arguments alone, as validate without `--method` does. Phase 3's exit
 criteria are met in process for the local path; compiled-binary journeys and
 prohibited-sink scans run in swamp-uat when Phase 4 enables the option.
