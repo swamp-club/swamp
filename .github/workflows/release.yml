@@ -5,13 +5,18 @@ on:
     types: [closed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and package without publishing (non-main branches always dry-run)"
+        type: boolean
+        default: true
 
 concurrency:
-  group: release
+  group: release-${{ github.event_name == 'pull_request' && 'main' || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
@@ -26,7 +31,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || 'main' }}
+
+      - name: Select release mode
+        env:
+          PUBLISH_RELEASE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run) }}
+        run: |
+          if [[ "$PUBLISH_RELEASE" == true ]]; then
+            echo "Publishing release from main" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Dry run: building and packaging the selected branch without publishing" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup Deno
         uses: denoland/setup-deno@v2
@@ -91,89 +106,26 @@ jobs:
           sha256sum swamp-* > checksums.txt
           cat checksums.txt
 
-      - name: Generate release body
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_NAME: ${{ github.event_name }}
-          VERSION: ${{ steps.version.outputs.version }}
-          REPO: ${{ github.repository }}
-        run: |
-          # Write changelog section
-          echo "## What's Changed" > /tmp/release_body.md
-          echo "" >> /tmp/release_body.md
-
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            printf '* %s (#%s)\n' "$PR_TITLE" "$PR_NUMBER" >> /tmp/release_body.md
-            if [ -n "$PR_BODY" ]; then
-              echo "" >> /tmp/release_body.md
-              printenv PR_BODY >> /tmp/release_body.md
-            fi
-          else
-            git log -1 --pretty="* %s" HEAD >> /tmp/release_body.md
-            COMMIT_BODY=$(git log -1 --pretty=%b HEAD)
-            if [ -n "$COMMIT_BODY" ]; then
-              echo "" >> /tmp/release_body.md
-              echo "$COMMIT_BODY" >> /tmp/release_body.md
-            fi
-          fi
-
-          # Write installation section
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "### Installation"
-            echo ""
-            echo "**macOS (Apple Silicon):**"
-            echo '```bash'
-            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-darwin-aarch64 -o swamp"
-            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
-            echo '```'
-            echo ""
-            echo "**macOS (Intel):**"
-            echo '```bash'
-            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-darwin-x86_64 -o swamp"
-            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
-            echo '```'
-            echo ""
-            echo "**Linux (x86_64):**"
-            echo '```bash'
-            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-x86_64 -o swamp"
-            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
-            echo '```'
-            echo ""
-            echo "**Linux (aarch64):**"
-            echo '```bash'
-            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-aarch64 -o swamp"
-            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
-            echo '```'
-            echo ""
-            echo "**Windows (x86_64):**"
-            echo '```powershell'
-            echo "Invoke-WebRequest -Uri https://github.com/${REPO}/releases/download/v${VERSION}/swamp-windows-x86_64.zip -OutFile swamp.zip"
-            printf '%s\n' "Expand-Archive swamp.zip -DestinationPath .; Move-Item swamp.exe 'C:\Program Files\swamp\'"
-            echo '```'
-          } >> /tmp/release_body.md
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+      - name: Authenticate to Google Cloud
+        if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: swamp ${{ steps.version.outputs.version }}
-          body_path: /tmp/release_body.md
-          files: |
-            dist/swamp-linux-x86_64
-            dist/swamp-linux-aarch64
-            dist/swamp-darwin-x86_64
-            dist/swamp-darwin-aarch64
-            dist/swamp-windows-x86_64.zip
-            dist/checksums.txt
+          # Service-account JSON key with object create/read access to the
+          # swamp-club-artifacts bucket. Stable promotion runs in swamp-uat.
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
+
+      - name: Package release artifacts and optionally upload to GCS
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GCS_BUCKET: swamp-club-artifacts
+          DRY_RUN: ${{ !((github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)) }}
+        run: bash scripts/upload_release_artifacts.sh "$RELEASE_VERSION"
 
       - name: Trigger UAT
+        if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
           token: ${{ secrets.UAT_TRIGGER_TOKEN }}
@@ -185,6 +137,7 @@ jobs:
     name: Windows Smoke Test
     runs-on: windows-latest
     needs: release
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
     permissions:
       contents: read
 
@@ -193,20 +146,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: main
-          sparse-checkout: scripts/install.ps1
+          sparse-checkout: scripts/download_release_artifact.sh
           sparse-checkout-cone-mode: false
 
-      - name: Download Windows binary from release
+      - name: Download Windows binary from GCS
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
         shell: bash
-        run: |
-          RELEASE_TAG="v${RELEASE_VERSION}"
-          gh release download "${RELEASE_TAG}" \
-            --repo "${{ github.repository }}" \
-            --pattern "swamp-windows-x86_64.zip" \
-            --dir .
+        run: bash scripts/download_release_artifact.sh "$RELEASE_VERSION" windows/x86_64 .
 
       - name: Extract and smoke test
         shell: pwsh
@@ -220,6 +167,7 @@ jobs:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: release
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)
     permissions:
       contents: read
       id-token: write
@@ -230,19 +178,12 @@ jobs:
         with:
           ref: main
 
-      - name: Download Linux binaries from release
+      - name: Download Linux binaries from GCS
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
         run: |
-          mkdir -p docker-build/linux-amd64 docker-build/linux-arm64
-          RELEASE_TAG="v${RELEASE_VERSION}"
-          echo "Downloading binaries from release ${RELEASE_TAG}"
-          gh release download "${RELEASE_TAG}" --pattern "swamp-linux-x86_64" --dir docker-build/linux-amd64
-          gh release download "${RELEASE_TAG}" --pattern "swamp-linux-aarch64" --dir docker-build/linux-arm64
-          mv docker-build/linux-amd64/swamp-linux-x86_64 docker-build/linux-amd64/swamp
-          mv docker-build/linux-arm64/swamp-linux-aarch64 docker-build/linux-arm64/swamp
-          chmod +x docker-build/linux-amd64/swamp docker-build/linux-arm64/swamp
+          bash scripts/download_release_artifact.sh "$RELEASE_VERSION" linux/x86_64 docker-build/linux-amd64
+          bash scripts/download_release_artifact.sh "$RELEASE_VERSION" linux/aarch64 docker-build/linux-arm64
           echo "docker_tag=${RELEASE_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU

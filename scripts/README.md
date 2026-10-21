@@ -1,3 +1,59 @@
+# Release artifacts
+
+The release workflow builds all five variants, uploads versioned archives and
+checksums to `gs://swamp-club-artifacts`, then dispatches UAT. It does not
+create a GitHub Release or read/write `swamp/stable.json`. Windows smoke tests
+and Docker builds download the versioned GCS objects through the public
+`artifacts.swamp-club.com` edge and verify their checksums before use. These
+download-only jobs receive no cloud credentials.
+
+Configure the repository secret `GCP_SERVICE_ACCOUNT_KEY` with a service-account
+JSON key granting object create/read access to the bucket. Stable promotion is
+owned by the separate UAT publisher. Coordinate rollout with
+[swamp-uat#754](https://github.com/swamp-club/swamp-uat/pull/754): that consumer
+must read the versioned GCS artifacts before GitHub Release publication is
+removed.
+
+```sh
+# Requires gcloud authentication, python3, sha256sum, and built dist/ assets
+# including checksums.txt. GCS_BUCKET and BINARIES_DIR override defaults.
+bash scripts/upload_release_artifacts.sh <version>
+
+# Verifies an archive checksum; extracts Unix binaries as <directory>/swamp.
+# For Windows, leaves <directory>/swamp-windows-x86_64.zip for Expand-Archive.
+bash scripts/download_release_artifact.sh <version> linux/x86_64 <directory>
+
+# Local object-store tests; does not contact GCS or publish a release.
+deno run test scripts/release_artifacts_test.ts
+```
+
+To test the actual cross-platform build from a PR branch, manually dispatch the
+Release workflow with that branch selected:
+
+```sh
+gh workflow run release.yml --ref <pr-branch> -f dry_run=true
+```
+
+Manual runs default to dry-run; non-`main` branches always dry-run even if the
+input is false. A dry run builds the dashboard and all five binaries, generates
+and verifies checksums, and packages every artifact, printing the intended GCS
+paths and hashes. It needs no publishing credentials and skips GCS access, UAT
+dispatch, and the downstream Windows-smoke/Docker-publishing jobs (which consume
+published artifacts). A merged PR still publishes normally. To manually publish
+from `main`, explicitly pass `-f dry_run=false`.
+
+For locally built binaries,
+`DRY_RUN=true bash scripts/upload_release_artifacts.sh
+<version>` exercises the
+same packaging without GCS access.
+
+Versioned uploads use create-only generation preconditions. Retries accept only
+identical bytes. Unix archives use Python's USTAR format with name `swamp`, mode
+0755, UID/GID zero, empty owner/group names and zero timestamps, wrapped in gzip
+with an empty filename and zero mtime. Consumers should use the uploaded archive
+directly; any repackager must use this same format. Windows ZIPs are preserved
+byte-for-byte from the build.
+
 # License Compliance
 
 Swamp generates a [CycloneDX](https://cyclonedx.org/) Software Bill of Materials
@@ -43,8 +99,8 @@ A license is resolved for every component:
   to the npm registry if a package isn't cached locally.
 - **JSR** — fetched from the JSR per-version API
   (`api.jsr.io/scopes/{scope}/packages/{name}/versions/{version}`) and persisted
-  to `scripts/jsr_license_cache.json`. Repeat runs and CI read from the cache and
-  never hit the network for already-seen versions. `@std/*` packages that
+  to `scripts/jsr_license_cache.json`. Repeat runs and CI read from the cache
+  and never hit the network for already-seen versions. `@std/*` packages that
   declare no license resolve to MIT (the Deno standard library license).
 
 A component with no resolvable license is emitted as `NOASSERTION`, and the
@@ -82,6 +138,6 @@ view the report in the FOSSA web app, to inspect violations.
 ## Related
 
 - `scripts/audit_deps.ts` (`deno run audit`) — the separate OSV-based
-  vulnerability audit, which scans the same dependency set for known CVEs.
-  Note: `design/surfaces/audit.md` documents the AI agent activity audit, not the OSV
+  vulnerability audit, which scans the same dependency set for known CVEs. Note:
+  `design/surfaces/audit.md` documents the AI agent activity audit, not the OSV
   scanner.
