@@ -392,7 +392,7 @@ Deno.test("SqliteCommitOutbox: a read alone migrates a schema 1 outbox", async (
   });
 });
 
-Deno.test("SqliteCommitOutbox: a schema 2 outbox migrates to 3, keeping its left marks and chain, nothing abandoned (swamp-club#3586)", async () => {
+Deno.test("SqliteCommitOutbox: a schema 2 outbox migrates to the current schema, keeping its left marks and chain, nothing abandoned (swamp-club#3586)", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "outbox.db");
     await schemaTwoOutbox(path);
@@ -407,8 +407,7 @@ Deno.test("SqliteCommitOutbox: a schema 2 outbox migrates to 3, keeping its left
         chainStart: 4,
         floor: 0,
       });
-      assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 3);
-      assertEquals(schemaOf(path), 3);
+      assertEquals(schemaOf(path), COMMIT_OUTBOX_SCHEMA_VERSION);
     } finally {
       await outbox.close();
     }

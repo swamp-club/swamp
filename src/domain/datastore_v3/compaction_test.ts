@@ -121,6 +121,30 @@ Deno.test("foldCommit: a save and a later delete leave the base a replay would",
   assertEquals(base.seqs.get(`|${MODEL}`), 2);
 });
 
+Deno.test("foldCommit: the base keeps a put's file access (swamp-club#3693)", async () => {
+  const base = new MemoryBase();
+  const plain = await savePut("a", 1);
+  const executable = await putOp({
+    intent: plain.intent,
+    key: plain.key,
+    inline: (plain.content as { inline: string }).inline,
+    access: "executable",
+  });
+  foldCommit(base, modelCommit(1, [executable]), 10, SUBDIRS);
+  const key = `|${MODEL}|${dataKey("a", 1)}`;
+  assertEquals(base.records.get(key), {
+    sha256: plain.sha256,
+    content: plain.content,
+    access: "executable",
+  });
+  // A later plain put of the key leaves a plain record.
+  foldCommit(base, modelCommit(2, [plain]), 11, SUBDIRS);
+  assertEquals(base.records.get(key), {
+    sha256: plain.sha256,
+    content: plain.content,
+  });
+});
+
 Deno.test("foldCommit: a refused key and a put under a file are indexed but never materialised", async () => {
   const base = new MemoryBase();
   const refused = await putOp({

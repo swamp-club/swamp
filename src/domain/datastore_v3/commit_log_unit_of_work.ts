@@ -32,6 +32,7 @@ import {
   type UnitOfWork,
   UnrecordedEndError,
 } from "../datastore/unit_of_work.ts";
+import type { FileAccess } from "./file_access.ts";
 import type { Intent } from "./intent.ts";
 import type { Op, PutExpect } from "./op.ts";
 import { CommitRejectedError, type CommitRejection } from "./partition.ts";
@@ -72,6 +73,8 @@ export interface PendingPut {
   readonly key: RecordKey;
   readonly expect?: PutExpect;
   readonly content: ContentSource;
+  /** The materialised file's access (swamp-club#3693); none when plain. */
+  readonly access?: FileAccess;
 }
 
 /**

@@ -119,12 +119,17 @@ import {
   resolveRealPath,
 } from "../persistence/safe_path.ts";
 import { DurableWriteBatch, syncDirectory } from "./atomic_stream_write.ts";
+import {
+  type FileAccess,
+  satisfiesAccess,
+} from "../../domain/datastore_v3/file_access.ts";
 import { currentBootIdentity } from "./boot_identity.ts";
 import {
   type AppliedRecord,
   type FileOwnership,
   type LoadKey,
   ReadModelState,
+  type RecordContent,
   type StoredAtRiskCopy,
   type StoredUnreadableRecord,
   type UnsyncedFile,
@@ -917,10 +922,10 @@ export class SqliteReadModel implements ReadModel {
           );
           continue;
         }
-        const content = file.blob !== undefined
+        const stored = file.blob !== undefined
           ? (file.blob.sha256 === file.sha256 ? { blob: file.blob } : undefined)
           : await this.#inlineAt(file, commits);
-        if (content === undefined) {
+        if (stored === undefined) {
           logger
             .warn`The content ${file.record_key} held before a restart cannot be found; applying every commit again`;
           this.#reset(generation);
@@ -930,7 +935,7 @@ export class SqliteReadModel implements ReadModel {
           file.namespace,
           file.record_key,
           path,
-          content,
+          withAccess(stored, file.access),
           signal,
           batch,
           source,
@@ -1193,7 +1198,7 @@ export class SqliteReadModel implements ReadModel {
         commit.namespace,
         key,
         path,
-        change.put.content,
+        withAccess(change.put.content, change.put.access),
         signal,
         batch,
         source,
@@ -1208,7 +1213,10 @@ export class SqliteReadModel implements ReadModel {
         await this.#unreadable(
           commit.namespace,
           key,
-          { partition: owner, seq: commit.seq, position },
+          withAccess(
+            { partition: owner, seq: commit.seq, position },
+            change.put.access,
+          ),
           blob,
           error,
           signal,
@@ -1234,7 +1242,12 @@ export class SqliteReadModel implements ReadModel {
   async #unreadable(
     namespace: string,
     key: string,
-    put: { readonly partition: string; readonly seq: number; position: number },
+    put: {
+      readonly partition: string;
+      readonly seq: number;
+      readonly position: number;
+      readonly access?: FileAccess;
+    },
     blob: BlobRef,
     error: ChunkMissingError | ChunkIntegrityError,
     signal: AbortSignal,
@@ -1535,7 +1548,7 @@ export class SqliteReadModel implements ReadModel {
           await this.#unreadable(
             namespace,
             record_key,
-            { ...source, position: owner.mark },
+            withAccess({ ...source, position: owner.mark }, content.access),
             content.blob,
             error,
             signal,
@@ -1607,12 +1620,19 @@ export class SqliteReadModel implements ReadModel {
    * read and the guard did not read the file (a bucket outside a replay),
    * it reads it then: a file holding the content is the only copy of a
    * chunk the storage lost, and stays (swamp-club#3617).
+   *
+   * The file is written with the content's access (swamp-club#3693). A
+   * file the guard keeps for its bytes is rewritten all the same when the
+   * put records an access the file lacks, through the batch rather than a
+   * chmod of the path, which would follow a link put there since the guard
+   * looked. A plain put (every put before swamp-club#3693) keeps such a
+   * file whatever its mode, as before.
    */
   async #writeContent(
     namespace: string,
     key: string,
     path: string,
-    content: { readonly blob: BlobRef } | { readonly inline: string },
+    content: RecordContent,
     signal: AbortSignal,
     batch: DurableWriteBatch,
     source: ChangeSource,
@@ -1623,6 +1643,7 @@ export class SqliteReadModel implements ReadModel {
       await this.#syncFile(path);
       batch.touch(dirname(path));
     };
+    let wrongAccess = false;
     if (
       await this.#guardExisting(
         namespace,
@@ -1634,8 +1655,12 @@ export class SqliteReadModel implements ReadModel {
         false,
       )
     ) {
-      await keep();
-      return;
+      wrongAccess = content.access !== undefined &&
+        !await hasAccess(path, content.access);
+      if (!wrongAccess) {
+        await keep();
+        return;
+      }
     }
     const root = this.#cacheRoot(namespace);
     const absentDirectories = this.#paths.takeAbsent(path);
@@ -1652,10 +1677,18 @@ export class SqliteReadModel implements ReadModel {
           written: (info) => {
             written.info = info;
           },
+          ...(content.access === undefined ? {} : { access: content.access }),
         },
       );
     } catch (error) {
-      // A failed write leaves the file as it was.
+      // A failed write leaves the file as it was. One that only meant to
+      // fix the access keeps the right bytes rather than lose them.
+      if (wrongAccess && isChunkError(error) && !signal.aborted) {
+        logger
+          .warn`${key} holds its committed bytes without its ${content.access} access, and its chunks cannot be read to rewrite it: ${error}`;
+        await keep();
+        return;
+      }
       if (
         intended === undefined || !isChunkError(error) || signal.aborted ||
         this.#guarded.has(path)
@@ -2398,7 +2431,7 @@ export class SqliteReadModel implements ReadModel {
           record.namespace,
           record.recordKey,
           path,
-          { blob },
+          withAccess({ blob }, record.access),
           signal,
           batch,
           { partition: record.partition, seq: record.seq },
@@ -2439,7 +2472,10 @@ export class SqliteReadModel implements ReadModel {
       const failing = await this.#unreadable(
         seen.namespace,
         seen.recordKey,
-        { partition: seen.partition, seq: seen.seq, position: seen.position },
+        withAccess(
+          { partition: seen.partition, seq: seen.seq, position: seen.position },
+          seen.access,
+        ),
         blob,
         error,
         signal,
@@ -2705,9 +2741,20 @@ const copiesInFlight = new Set<string>();
 
 function appliedRecord(put: PutOp | null): AppliedRecord | null {
   if (put === null) return null;
-  return "blob" in put.content
-    ? { sha256: put.sha256, blob: put.content.blob }
-    : { sha256: put.sha256 };
+  return withAccess(
+    "blob" in put.content
+      ? { sha256: put.sha256, blob: put.content.blob }
+      : { sha256: put.sha256 },
+    put.access,
+  );
+}
+
+/** `value` with `access` as an optional field (swamp-club#3693). */
+function withAccess<T extends object>(
+  value: T,
+  access: FileAccess | undefined,
+): T & { readonly access?: FileAccess } {
+  return access === undefined ? value : { ...value, access };
 }
 
 /**
@@ -2778,6 +2825,25 @@ async function pathConflict(
     }
   }
   return {};
+}
+
+/**
+ * Whether the file at `path` has `access` (swamp-club#3693), as
+ * {@link satisfiesAccess} judges it. Always true on Windows, which keeps no
+ * modes; false when it cannot be stat'ed, so the write that follows finds
+ * out why.
+ */
+async function hasAccess(
+  path: string,
+  access: FileAccess | undefined,
+): Promise<boolean> {
+  if (Deno.build.os === "windows") return true;
+  try {
+    const { mode } = await Deno.lstat(path);
+    return mode === null || satisfiesAccess(mode, access);
+  } catch {
+    return false;
+  }
 }
 
 /**

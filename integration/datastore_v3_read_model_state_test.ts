@@ -458,6 +458,157 @@ Deno.test("ReadModelState: a schema-4 database migrates to the unreadable-record
     } finally {
       reopened.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 6);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 7);
+  });
+});
+
+Deno.test("ReadModelState: keeps each put's file access through applied records, the restart check, a base load and unreadable records (swamp-club#3693)", async () => {
+  await withState((state) => {
+    state.recordApplied(applied({
+      records: new Map([
+        ["data/x", { sha256: A, access: "executable" as const }],
+        ["data/p", { sha256: B, blob: MULTI, access: "private" as const }],
+        ["data/plain", { sha256: C }],
+      ]),
+      files: new Map([
+        ["data/x", { owner: "p", mark: 1, present: true }],
+        ["data/p", { owner: "p", mark: 1, present: true }],
+        ["data/plain", { owner: "p", mark: 1, present: true }],
+      ]),
+      unsynced: {
+        keys: new Set(["data/x", "data/p", "data/plain"]),
+        boot: "boot-1",
+      },
+    }));
+    assertEquals(state.unsyncedFiles(), [
+      {
+        namespace: "",
+        record_key: "data/p",
+        expect: "present",
+        sha256: B,
+        owner: "p",
+        mark: 1,
+        blob: MULTI,
+        access: "private",
+      },
+      {
+        namespace: "",
+        record_key: "data/plain",
+        expect: "present",
+        sha256: C,
+        owner: "p",
+        mark: 1,
+      },
+      {
+        namespace: "",
+        record_key: "data/x",
+        expect: "present",
+        sha256: A,
+        owner: "p",
+        mark: 1,
+        access: "executable",
+      },
+    ]);
+
+    const unreadable = {
+      namespace: "",
+      recordKey: "data/u",
+      partition: "p",
+      seq: 0,
+      position: 2,
+      blob: MULTI,
+      reason: "missing" as const,
+      lastAttempt: new Date(1_000),
+      access: "private-executable" as const,
+    };
+    state.beginLoad();
+    state.stageBase([
+      {
+        kind: "record",
+        namespace: "",
+        partition: "p",
+        key: "data/x",
+        record: {
+          sha256: A,
+          content: { inline: "eA==" },
+          access: "executable",
+        },
+      },
+      {
+        kind: "record",
+        namespace: "",
+        partition: "p",
+        key: "data/u",
+        record: {
+          sha256: B,
+          content: { blob: MULTI },
+          access: "private-executable",
+        },
+      },
+      {
+        kind: "record",
+        namespace: "",
+        partition: "p",
+        key: "data/plain",
+        record: { sha256: C, content: { inline: "eQ==" } },
+      },
+      ...["data/x", "data/u", "data/plain"].map((key) => ({
+        kind: "file" as const,
+        namespace: "",
+        key,
+        ownership: { owner: "p", mark: 2, present: true },
+      })),
+    ]);
+    assertEquals(state.loadContent("", "data/x"), {
+      inline: "eA==",
+      access: "executable",
+    });
+    assertEquals(state.loadContent("", "data/u"), {
+      blob: MULTI,
+      access: "private-executable",
+    });
+    assertEquals(state.loadContent("", "data/plain"), { inline: "eQ==" });
+    state.finishLoad(5, [unreadable]);
+    assertEquals(state.unreadableRecord("", "data/u"), unreadable);
+  });
+});
+
+Deno.test("ReadModelState: a schema-6 state migrates to the access columns, its records plain, and a file rolled back holding them migrates again (swamp-club#3693)", async () => {
+  await withState((state, path) => {
+    state.recordApplied(applied({
+      records: new Map([["data/a", { sha256: A }]]),
+      files: new Map([["data/a", { owner: "p", mark: 1, present: true }]]),
+      unsynced: { keys: new Set(["data/a"]), boot: "boot-1" },
+    }));
+    state.close();
+    const db = new DatabaseSync(path);
+    db.exec(
+      "ALTER TABLE live_records DROP COLUMN access; " +
+        "ALTER TABLE load_records DROP COLUMN access; " +
+        "ALTER TABLE unreadable_records DROP COLUMN access; " +
+        "PRAGMA user_version=6",
+    );
+    db.close();
+    const reopened = ReadModelState.open(path);
+    try {
+      assertEquals(reopened.unsyncedFiles(), [
+        {
+          namespace: "",
+          record_key: "data/a",
+          expect: "present",
+          sha256: A,
+          owner: "p",
+          mark: 1,
+        },
+      ]);
+    } finally {
+      reopened.close();
+    }
+    // Rolled back by hand: the columns are still there.
+    const rolled = new DatabaseSync(path);
+    rolled.exec("PRAGMA user_version=6");
+    rolled.close();
+    ReadModelState.open(path).close();
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 7);
   });
 });

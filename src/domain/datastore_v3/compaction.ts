@@ -46,6 +46,7 @@ import type { BlobRef } from "./blob_ref.ts";
 import { type LiveDataVersion, projectCatalog } from "./catalog_projection.ts";
 import { type CatalogNameState, foldCatalogActions } from "./catalog_state.ts";
 import type { Commit } from "./commit.ts";
+import type { FileAccess } from "./file_access.ts";
 import {
   decideFile,
   type FileOwnership,
@@ -62,6 +63,8 @@ export interface BaseRecord {
   readonly content:
     | { readonly inline: string }
     | { readonly blob: BlobRef };
+  /** The put's file access (swamp-club#3693); undefined for a plain file. */
+  readonly access?: FileAccess;
 }
 
 /**
@@ -153,6 +156,9 @@ export function foldCommit(
       base.putRecord(namespace, partition, key, {
         sha256: change.put.sha256,
         content: change.put.content,
+        ...(change.put.access === undefined
+          ? {}
+          : { access: change.put.access }),
       });
     }
     if (lexicalRefusal(key, subdirs) !== undefined) continue;

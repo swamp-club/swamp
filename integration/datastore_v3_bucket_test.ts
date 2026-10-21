@@ -68,7 +68,11 @@ import {
   AutoDefinitionChanges,
   recordKeyOf,
 } from "../src/domain/datastore_v3/repository_changes.ts";
-import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
+import type {
+  CommitLogUnitOfWork,
+  TypedChange,
+} from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
+import type { FileAccess } from "../src/domain/datastore_v3/file_access.ts";
 import { V3ReplicationError } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { V3_RESTORE_FAILED_CODE } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
 import { UserError } from "../src/domain/errors.ts";
@@ -805,6 +809,45 @@ async function commitThrough(
   }
 }
 
+/**
+ * One write command in `repoDir` committing an inline-sized and a chunked
+ * auto-definition whose puts carry `access` (swamp-club#3693), as a writer
+ * staging an executable or private file records it.
+ */
+async function writeWithAccess(
+  repoDir: string,
+  access: FileAccess,
+  names: { readonly small: string; readonly large: string },
+): Promise<void> {
+  await requireInitializedRepo({ repoDir, outputMode: "json" });
+  const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+  const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
+  const engine = v3DatastoreFor(repoDir, location).engineFor(
+    () => Promise.resolve(),
+    () => {
+      throw new Error("no run repository needed");
+    },
+  );
+  await engine.runRoot({}, async () => {
+    const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+    const change = (name: string, content: Uint8Array): TypedChange => {
+      const written = new AutoDefinitionChanges(crypto.randomUUID()).write(
+        recordKeyOf(["auto-definitions", name]),
+        content,
+      );
+      if (!("put" in written)) throw new Error("expected a put");
+      return { ...written, put: { ...written.put, access } };
+    };
+    await unit.stageOps([
+      change(names.small, encode("#!/bin/sh\necho hi\n")),
+      change(names.large, new Uint8Array(64 * 1024).fill(7)),
+    ]);
+    await unit.commit();
+  });
+  await flushDatastoreSync();
+  await closeV3Datastores();
+}
+
 /** The record files under a checkout's `.swamp/<subdir>`, sorted. */
 async function recordsIn(repoDir: string, subdir: string): Promise<string[]> {
   const names: string[] = [];
@@ -862,6 +905,44 @@ Deno.test({
         assert(keys.some((key) => key.startsWith("_control/writer/")));
         assert(keys.some((key) => key.startsWith("_control/lineage/")));
       });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: a put's file access travels through the replicated commit to another checkout (swamp-club#3693)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const first = join(root, "first");
+      await initRepo(first);
+      assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+      const second = join(root, "second");
+      await cloneRepo(first, second);
+      await withSidecar(root, async () => {
+        await writeWithAccess(first, "executable", {
+          small: "x.sh",
+          large: "x.bin",
+        });
+        await writeWithAccess(first, "private", {
+          small: "p.key",
+          large: "p.bin",
+        });
+        // One commit per auto-definition: each is its own partition.
+        assertEquals(await restoredCommits(second), 4);
+      });
+      const modeOf = async (name: string) =>
+        ((await Deno.stat(swampPath(second, "auto-definitions", name)))
+          .mode! & 0o777).toString(8);
+      const probe = join(root, "umask-probe");
+      await Deno.writeFile(probe, new Uint8Array());
+      const created = (await Deno.stat(probe)).mode! & 0o777;
+      const executable = (created | ((created & 0o444) >> 2)).toString(8);
+      assertEquals(await modeOf("x.sh"), executable);
+      assertEquals(await modeOf("x.bin"), executable);
+      assertEquals(await modeOf("p.key"), (created & 0o600).toString(8));
+      assertEquals(await modeOf("p.bin"), (created & 0o600).toString(8));
     });
   },
 });

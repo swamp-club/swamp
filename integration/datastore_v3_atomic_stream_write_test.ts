@@ -28,6 +28,7 @@ import {
   DurableWriteBatch,
   writeFileDurably,
 } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
+import { modeWithAccess } from "../src/domain/datastore_v3/file_access.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-durable-write-" });
@@ -317,4 +318,51 @@ Deno.test("DurableWriteBatch: a stale hint that the directory exists still creat
     }
     assertEquals(await Deno.readFile(path), new Uint8Array([7]));
   });
+});
+
+Deno.test({
+  name:
+    "DurableWriteBatch: gives the file its access before the rename (swamp-club#3693)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const plainPath = join(dir, "plain");
+      await writeFileDurably(plainPath, new Uint8Array([1]), signal());
+      // What this process's umask gives a new file.
+      const created = (await Deno.stat(plainPath)).mode! & 0o777;
+      for (const sync of [true, false]) {
+        for (
+          const access of [
+            "executable",
+            "private",
+            "private-executable",
+          ] as const
+        ) {
+          const path = join(dir, `${access}-${sync}`);
+          const batch = new DurableWriteBatch({ sync });
+          const seen: number[] = [];
+          try {
+            await batch.write(
+              path,
+              ReadableStream.from([new Uint8Array([1, 2])]),
+              signal(),
+              { access, written: (info) => seen.push(info.mode! & 0o777) },
+            );
+            await batch.barrier();
+          } finally {
+            batch.discard();
+          }
+          const expected = modeWithAccess(created, access);
+          assertEquals((await Deno.stat(path)).mode! & 0o777, expected);
+          // The stat handed on is the file as renamed into place.
+          assertEquals(seen, [expected]);
+          assertEquals(await Deno.readFile(path), new Uint8Array([1, 2]));
+        }
+      }
+      // A rewrite without access leaves a plain file, whatever was there.
+      const path = join(dir, "executable-true");
+      await writeFileDurably(path, new Uint8Array([3]), signal());
+      assertEquals((await Deno.stat(path)).mode! & 0o777, created);
+    });
+  },
 });

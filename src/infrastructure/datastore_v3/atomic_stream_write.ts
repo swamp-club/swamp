@@ -38,6 +38,10 @@
  */
 
 import { dirname, join } from "@std/path";
+import {
+  type FileAccess,
+  modeWithAccess,
+} from "../../domain/datastore_v3/file_access.ts";
 import { syncDirectory } from "../persistence/sync_directory.ts";
 
 export { syncDirectory };
@@ -92,9 +96,11 @@ export class DurableWriteBatch {
    * its directory. `options.absentDirectories`, the directories above `path`
    * the caller just found absent, deepest first, saves looking them up; an
    * empty list says the directory exists. `options.written` is handed the
-   * temp file's own stat once every byte is written, before the rename. On
-   * failure, including an abort of `signal` while streaming, the temp file
-   * is removed and `path` is left as it was.
+   * temp file's own stat once every byte is written, before the rename.
+   * `options.access` gives the temp file that access before the rename
+   * (swamp-club#3693), so the file is never at `path` without it; it is
+   * ignored on Windows. On failure, including an abort of `signal` while
+   * streaming, the temp file is removed and `path` is left as it was.
    */
   async write(
     path: string,
@@ -103,6 +109,7 @@ export class DurableWriteBatch {
     options: {
       readonly absentDirectories?: readonly string[];
       readonly written?: (info: Deno.FileInfo) => void;
+      readonly access?: FileAccess;
     } = {},
   ): Promise<void> {
     await this.release(path);
@@ -134,6 +141,12 @@ export class DurableWriteBatch {
         }
       }
       signal.throwIfAborted();
+      if (options.access !== undefined && Deno.build.os !== "windows") {
+        // The temp file is this batch's own (created new, under a random
+        // name), so chmod by path cannot follow a link to another file.
+        const created = (await file.stat()).mode ?? 0o666;
+        await Deno.chmod(tmpPath, modeWithAccess(created, options.access));
+      }
       options.written?.(await file.stat());
       if (!this.#sync) {
         // Nothing to sync, so nothing to hold: close before the rename, as

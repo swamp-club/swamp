@@ -50,6 +50,10 @@ import {
 import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
 import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
 import type { CompactedBaseEntry } from "../../domain/datastore_v3/commit_store.ts";
+import {
+  type FileAccess,
+  readFileAccess,
+} from "../../domain/datastore_v3/file_access.ts";
 import type { FileOwnership } from "../../domain/datastore_v3/materialisation.ts";
 import type {
   AtRiskCopy,
@@ -58,12 +62,17 @@ import type {
 } from "../../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
+import {
+  addColumnsIfAbsent,
+  runMigration,
+  type SqliteMigration,
+} from "./sqlite_migration.ts";
 
 /**
  * The schema migrations, in order: migration `i` takes `PRAGMA user_version`
  * `i` to `i + 1`. Append new ones; never edit one that has shipped.
  */
-const MIGRATIONS: readonly string[] = [
+const MIGRATIONS: readonly SqliteMigration[] = [
   // 0 → 1: cursor, partition progress, live records and live data versions.
   `
   CREATE TABLE meta (
@@ -241,6 +250,16 @@ const MIGRATIONS: readonly string[] = [
     inputs TEXT NOT NULL
   ) STRICT;
   `,
+  // 6 → 7 (swamp-club#3693): the file access of each live, staged and
+  // unreadable record's put, so a file written from the state alone (the
+  // compacted base, the check after a restart, an unreadable retry) is
+  // executable or private as its put says. NULL is a plain file, which is
+  // what every put before this schema was.
+  addColumnsIfAbsent([
+    { table: "live_records", column: "access", type: "TEXT" },
+    { table: "load_records", column: "access", type: "TEXT" },
+    { table: "unreadable_records", column: "access", type: "TEXT" },
+  ]),
 ];
 
 export type { FileOwnership };
@@ -261,6 +280,8 @@ export type UnsyncedFile =
       readonly mark: number;
       /** The put's blob; undefined for inline content. */
       readonly blob?: BlobRef;
+      /** The put's file access; undefined for a plain file. */
+      readonly access?: FileAccess;
     }
     | { readonly expect: "absent" | "unknown" }
   );
@@ -274,6 +295,8 @@ export type UnsyncedFile =
 export interface StoredUnreadableRecord extends UnreadableRecord {
   readonly chunkSize?: number;
   readonly chunkMtime?: number;
+  /** The put's file access (swamp-club#3693); undefined for a plain file. */
+  readonly access?: FileAccess;
 }
 
 /**
@@ -315,6 +338,8 @@ export const READ_MODEL_STATE_SCHEMA_VERSION = MIGRATIONS.length;
 export interface AppliedRecord {
   readonly sha256: string;
   readonly blob?: BlobRef;
+  /** The put's file access (swamp-club#3693); undefined for a plain file. */
+  readonly access?: FileAccess;
 }
 
 /** What one applied commit changes in the state. */
@@ -390,8 +415,8 @@ export class ReadModelState {
         "ON CONFLICT (namespace, partition) DO UPDATE SET applied_seq = excluded.applied_seq",
     );
     this.#upsertRecord = db.prepare(
-      "INSERT INTO live_records (namespace, partition, record_key, sha256, blob) VALUES (?, ?, ?, ?, ?) " +
-        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, blob = excluded.blob",
+      "INSERT INTO live_records (namespace, partition, record_key, sha256, blob, access) VALUES (?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, blob = excluded.blob, access = excluded.access",
     );
     this.#deleteRecord = db.prepare(
       "DELETE FROM live_records WHERE namespace = ? AND partition = ? AND record_key = ?",
@@ -428,8 +453,8 @@ export class ReadModelState {
       "DELETE FROM unreadable_records WHERE namespace = ? AND record_key = ?",
     );
     this.#upsertUnreadable = db.prepare(
-      "INSERT OR REPLACE INTO unreadable_records (namespace, record_key, partition, seq, position, blob, chunk, chunk_size, chunk_mtime, reason, last_attempt) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO unreadable_records (namespace, record_key, partition, seq, position, blob, chunk, chunk_size, chunk_mtime, reason, last_attempt, access) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
   }
 
@@ -629,6 +654,7 @@ export class ReadModelState {
               record.blob === undefined
                 ? null
                 : JSON.stringify(record.blob.toJSON()),
+              record.access ?? null,
             );
           }
         }
@@ -735,7 +761,7 @@ export class ReadModelState {
           case "record": {
             const content = entry.record.content;
             this.#db.prepare(
-              "INSERT OR REPLACE INTO load_records (namespace, partition, record_key, sha256, inline, blob) VALUES (?, ?, ?, ?, ?, ?)",
+              "INSERT OR REPLACE INTO load_records (namespace, partition, record_key, sha256, inline, blob, access) VALUES (?, ?, ?, ?, ?, ?, ?)",
             ).run(
               entry.namespace,
               entry.partition,
@@ -743,6 +769,7 @@ export class ReadModelState {
               entry.record.sha256,
               "inline" in content ? content.inline : null,
               "blob" in content ? JSON.stringify(content.blob.toJSON()) : null,
+              entry.record.access ?? null,
             );
             break;
           }
@@ -819,24 +846,25 @@ export class ReadModelState {
     ).all() as unknown as LoadKey[];
   }
 
-  /** The staged content of the record a staged file shows. */
+  /** The staged content of the record a staged file shows, with its access. */
   loadContent(
     namespace: string,
     recordKey: string,
-  ): { readonly blob: BlobRef } | { readonly inline: string } | undefined {
+  ): RecordContent | undefined {
     this.#requireOpen();
     const row = this.#db.prepare(
-      "SELECT r.inline, r.blob FROM load_files AS f JOIN load_records AS r " +
+      "SELECT r.inline, r.blob, r.access FROM load_files AS f JOIN load_records AS r " +
         "ON r.namespace = f.namespace AND r.partition = f.owner AND r.record_key = f.record_key " +
         "WHERE f.namespace = ? AND f.record_key = ?",
     ).get(namespace, recordKey) as
-      | { inline: string | null; blob: string | null }
+      | { inline: string | null; blob: string | null; access: string | null }
       | undefined;
     if (row === undefined) return undefined;
+    const access = accessOf(row.access);
     if (row.blob !== null) {
-      return { blob: BlobRef.fromJSON(JSON.parse(row.blob)) };
+      return { blob: BlobRef.fromJSON(JSON.parse(row.blob)), ...access };
     }
-    return row.inline === null ? undefined : { inline: row.inline };
+    return row.inline === null ? undefined : { inline: row.inline, ...access };
   }
 
   /** The staged ownership of a file a load writes. */
@@ -932,8 +960,8 @@ export class ReadModelState {
     this.#transaction(() => {
       this.#db.exec(`
         DELETE FROM live_records;
-        INSERT INTO live_records (namespace, partition, record_key, sha256, blob)
-          SELECT namespace, partition, record_key, sha256, blob FROM load_records;
+        INSERT INTO live_records (namespace, partition, record_key, sha256, blob, access)
+          SELECT namespace, partition, record_key, sha256, blob, access FROM load_records;
         DELETE FROM data_versions;
         INSERT INTO data_versions (namespace, partition, name, version, metadata)
           SELECT namespace, partition, name, version, metadata FROM load_versions;
@@ -1001,7 +1029,7 @@ export class ReadModelState {
     return this.#snapshot(() => {
       const rows = this.#db.prepare(`
         SELECT u.namespace, u.record_key, m.present, m.owner, m.mark,
-          r.sha256, r.blob, x.record_key AS unreadable
+          r.sha256, r.blob, r.access, x.record_key AS unreadable
         FROM unsynced_keys u
         LEFT JOIN materialised_keys m
           ON m.namespace = u.namespace AND m.record_key = u.record_key
@@ -1019,6 +1047,7 @@ export class ReadModelState {
         mark: number | null;
         sha256: string | null;
         blob: string | null;
+        access: string | null;
         unreadable: string | null;
       }[];
       return rows.map((row): UnsyncedFile => {
@@ -1039,6 +1068,7 @@ export class ReadModelState {
           ...(row.blob === null
             ? {}
             : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+          ...accessOf(row.access),
         };
       });
     });
@@ -1306,6 +1336,7 @@ export class ReadModelState {
       record.chunkMtime ?? null,
       record.reason,
       record.lastAttempt.getTime(),
+      record.access ?? null,
     );
   }
 
@@ -1397,7 +1428,7 @@ function migrate(db: DatabaseSync): void {
     const version = read();
     check(version);
     for (let next = version; next < READ_MODEL_STATE_SCHEMA_VERSION; next++) {
-      db.exec(MIGRATIONS[next]);
+      runMigration(db, MIGRATIONS[next]);
     }
     db.exec(`PRAGMA user_version=${READ_MODEL_STATE_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -1425,6 +1456,7 @@ interface UnreadableRow {
   chunk_mtime: number | null;
   reason: string;
   last_attempt: number;
+  access: string | null;
 }
 
 function unreadableOf(row: UnreadableRow): StoredUnreadableRecord {
@@ -1442,7 +1474,24 @@ function unreadableOf(row: UnreadableRow): StoredUnreadableRecord {
     ...(row.chunk_mtime === null ? {} : { chunkMtime: row.chunk_mtime }),
     reason: row.reason === "damaged" ? "damaged" : "missing",
     lastAttempt: new Date(row.last_attempt),
+    ...accessOf(row.access),
   };
+}
+
+/**
+ * A record's content as the read model writes it: inline bytes or a blob,
+ * with the put's file access when it has one (swamp-club#3693).
+ */
+export type RecordContent =
+  & ({ readonly blob: BlobRef } | { readonly inline: string })
+  & { readonly access?: FileAccess };
+
+/** A stored access column, as an optional field; NULL is a plain file. */
+function accessOf(
+  column: string | null,
+): { readonly access?: FileAccess } {
+  const access = readFileAccess(column ?? undefined);
+  return access === undefined ? {} : { access };
 }
 
 interface AtRiskRow {

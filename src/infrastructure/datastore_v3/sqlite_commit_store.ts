@@ -53,6 +53,7 @@ import {
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
+import { readFileAccess } from "../../domain/datastore_v3/file_access.ts";
 import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
 import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
 import { DEFAULT_CHUNK_GRACE_MS } from "../../domain/datastore_v3/chunk_collector.ts";
@@ -93,6 +94,11 @@ import {
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  addColumnsIfAbsent,
+  runMigration,
+  type SqliteMigration,
+} from "./sqlite_migration.ts";
 
 /**
  * The schema migrations, in order. Migration `i` takes a database at
@@ -100,7 +106,7 @@ import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
  * length. Add a migration by appending to the list; never edit one that has
  * shipped.
  */
-const MIGRATIONS: readonly string[] = [
+const MIGRATIONS: readonly SqliteMigration[] = [
   // 0 → 1: commits and partition heads.
   `
   CREATE TABLE commits (
@@ -325,6 +331,14 @@ const MIGRATIONS: readonly string[] = [
   // unknown one and would call the store corrupt, so it must refuse the
   // store as newer instead.
   `SELECT 1;`,
+  // 6 → 7: a put may carry its file's access (swamp-club#3693), and the
+  // compacted base keeps it. A swamp at schema 6 or below rejects the new
+  // op field as an unknown one and would call the store corrupt, so the
+  // bump makes it refuse the store as newer instead. NULL is a plain file,
+  // which every record compacted before this schema is.
+  addColumnsIfAbsent([
+    { table: "base_records", column: "access", type: "TEXT" },
+  ]),
 ];
 
 /** Error code for a `commits.db` written by a newer swamp. */
@@ -1686,7 +1700,7 @@ function migrate(db: DatabaseSync): void {
     const version = read();
     check(version);
     for (let next = version; next < COMMIT_STORE_SCHEMA_VERSION; next++) {
-      db.exec(MIGRATIONS[next]);
+      runMigration(db, MIGRATIONS[next]);
     }
     db.exec(`PRAGMA user_version=${COMMIT_STORE_SCHEMA_VERSION}`);
     db.exec("COMMIT");
@@ -1970,8 +1984,8 @@ class SqliteCompactedBase implements CompactedBaseWriter {
       "SELECT blob FROM base_records WHERE namespace = ? AND partition = ? AND record_key = ?",
     );
     this.#upsertRecord = db.prepare(
-      "INSERT INTO base_records (namespace, partition, record_key, sha256, inline, blob) VALUES (?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, inline = excluded.inline, blob = excluded.blob",
+      "INSERT INTO base_records (namespace, partition, record_key, sha256, inline, blob, access) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, inline = excluded.inline, blob = excluded.blob, access = excluded.access",
     );
     this.#deleteRecord = db.prepare(
       "DELETE FROM base_records WHERE namespace = ? AND partition = ? AND record_key = ?",
@@ -2096,6 +2110,7 @@ class SqliteCompactedBase implements CompactedBaseWriter {
       record.sha256,
       "inline" in record.content ? record.content.inline : null,
       blob === undefined ? null : JSON.stringify(blob.toJSON()),
+      record.access ?? null,
     );
     for (const sha256 of before) this.#release(namespace, sha256);
   }
@@ -2397,9 +2412,14 @@ function parsePageToken(
 
 function baseRecordOf(row: Record<string, unknown>): BaseRecord {
   const sha256 = row.sha256 as string;
-  return typeof row.blob === "string"
-    ? { sha256, content: { blob: BlobRef.fromJSON(JSON.parse(row.blob)) } }
-    : { sha256, content: { inline: row.inline as string } };
+  const access = readFileAccess(row.access ?? undefined);
+  return {
+    sha256,
+    content: typeof row.blob === "string"
+      ? { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }
+      : { inline: row.inline as string },
+    ...(access === undefined ? {} : { access }),
+  };
 }
 
 function parseMetadata(text: string): DataMetadata {

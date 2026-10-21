@@ -114,6 +114,10 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE outbox_entries ADD COLUMN abandoned_at INTEGER;
   ALTER TABLE outbox_chain ADD COLUMN pending_fence INTEGER;
   `,
+  // 3 → 4 (swamp-club#3693): an entry's commit may hold puts with a file
+  // access. No table changes; a swamp at schema 3 would reject the op
+  // field and call the entry corrupt, so it must refuse the outbox as newer.
+  `SELECT 1;`,
 ];
 
 /** The schema version this outbox writes. */
