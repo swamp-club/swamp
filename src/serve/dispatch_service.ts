@@ -87,6 +87,7 @@ import {
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
+import { TransitionTail } from "./transition_tail.ts";
 
 export { hasPlacement };
 
@@ -201,7 +202,7 @@ export class DispatchService {
   /** Steps waiting for the pool to change (a worker idled or expired). */
   #poolWaiters: Array<() => void> = [];
   /** Serializes lease transitions (sole-writer rule, like the gateway). */
-  #transitionTail: Promise<unknown> = Promise.resolve();
+  readonly #transitions = new TransitionTail("dispatch");
   /**
    * Worker affinity pins: maps an affinity key to the worker that
    * executed the first step in the group. Subsequent steps with the
@@ -1077,9 +1078,11 @@ export class DispatchService {
           definitionName: PENDING_DISPATCH_INSTANCE_NAME,
           methodName,
           inputs,
-        }).catch(() => {})
+        })
       );
-    this.#transitionTail = this.#transitionTail.then(run, run);
+    this.#transitions.run(`pending_dispatch.${methodName}`, run).catch(
+      () => {},
+    );
   }
 
   #leaseTransition(
@@ -1097,9 +1100,7 @@ export class DispatchService {
           inputs,
         })
       );
-    const next = this.#transitionTail.then(run, run);
-    this.#transitionTail = next.then(() => undefined, () => undefined);
-    return next;
+    return this.#transitions.run(`step_lease.${methodName}`, run);
   }
 
   async #defaultRunModelMethod(input: {

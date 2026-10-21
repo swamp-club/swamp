@@ -24,6 +24,7 @@ import {
 } from "../domain/vaults/run_vault_access.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import { z } from "zod";
 import {
   BUILTIN_BUNDLE_PREFIX,
@@ -223,6 +224,26 @@ Deno.test("DispatchService: dispatches a step and completes its lease", async ()
   );
   // The dispatch registry is empty again after completion.
   assertEquals(h.dispatches.forWorker("w1"), []);
+});
+
+Deno.test("DispatchService: each lease transition runs in a dispatch-tail span (swamp-club#3755)", async () => {
+  await withCapturedSpans(async (spans) => {
+    const h = createHarness();
+    await h.service.executeRemote(stepRequest());
+
+    assertEquals(
+      spans
+        .filter((s) => s.name === "swamp.serve.transition")
+        .map((s) => [
+          s.attributes["swamp.transition.tail"],
+          s.attributes["swamp.transition.operation"],
+        ]),
+      [
+        ["dispatch", "step_lease.acquire"],
+        ["dispatch", "step_lease.complete"],
+      ],
+    );
+  });
 });
 
 Deno.test("DispatchService: the step lease records the workflow run it serves", async () => {

@@ -1293,6 +1293,41 @@ Deno.test("DataPlane: without dispatch trace headers the work nests under the re
   });
 });
 
+Deno.test("DataPlane: a resource write splits its lease wait from its persistence in child spans (swamp-club#3755)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    await withCapturedSpans(async (spans) => {
+      const first = await h.plane.handle(writeRequest());
+      assertEquals(first?.status, 200);
+
+      const request = findSpan(spans, "swamp.serve.data_plane");
+      assert(
+        isChildOf(
+          findSpan(spans, "swamp.serve.data_plane.mark_writes"),
+          request,
+        ),
+      );
+      assert(
+        isChildOf(findSpan(spans, "swamp.serve.data_plane.persist"), request),
+      );
+
+      // The lease is marked once per dispatch: a second write only persists.
+      const second = await h.plane.handle(writeRequest());
+      assertEquals(second?.status, 200);
+      assertEquals(
+        spans.filter((s) => s.name === "swamp.serve.data_plane.mark_writes")
+          .length,
+        1,
+      );
+      assertEquals(
+        spans.filter((s) => s.name === "swamp.serve.data_plane.persist")
+          .length,
+        2,
+      );
+    });
+  });
+});
+
 Deno.test("dataPlaneOperation: names operations from the route shape only", () => {
   assertEquals(dataPlaneOperation("GET", ["bundle", "fp"]), "fetch_bundle");
   assertEquals(

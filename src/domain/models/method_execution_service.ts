@@ -106,11 +106,17 @@ function filterDeclaredResourceData(
   declaredResources: Record<string, unknown>,
 ): Data[] {
   const specNames = new Set(Object.keys(declaredResources));
-  return allData.filter((d) =>
-    d.tags["type"] === "resource" &&
-    d.tags["specName"] !== undefined &&
-    specNames.has(d.tags["specName"])
-  );
+  return allData.filter((d) => isDeclaredResourceData(d, specNames));
+}
+
+/** Whether `data` was written for one of the declared resource specs. */
+function isDeclaredResourceData(
+  data: Data,
+  specNames: ReadonlySet<string>,
+): boolean {
+  return data.tags["type"] === "resource" &&
+    data.tags["specName"] !== undefined &&
+    specNames.has(data.tags["specName"]);
 }
 
 /**
@@ -1216,21 +1222,28 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Only check declared resource data (tagged with specName matching a
       // declared resource spec). Block only when ALL declared resource data
       // is deleted — old historical data entries should not cause false positives.
+      // Reads stop at the first live resource, so the check costs the same
+      // however much data the model holds (swamp-club#3755).
       if (methodKind === "read" || methodKind === "update") {
         const resources = modelDef.resources ?? {};
         if (Object.keys(resources).length > 0) {
-          const existingData = await context.dataRepository.findAllForModel(
-            context.modelType,
-            context.modelId,
-          );
-          const resourceData = filterDeclaredResourceData(
-            existingData,
-            resources,
-          );
-          if (
-            resourceData.length > 0 && resourceData.every((d) => d.isDeleted)
+          const specNames = new Set(Object.keys(resources));
+          let deleted: Data | undefined;
+          let live = false;
+          for await (
+            const data of context.dataRepository.iterateForModel(
+              context.modelType,
+              context.modelId,
+            )
           ) {
-            const deleted = resourceData[0];
+            if (!isDeclaredResourceData(data, specNames)) continue;
+            if (!data.isDeleted) {
+              live = true;
+              break;
+            }
+            deleted ??= data;
+          }
+          if (!live && deleted !== undefined) {
             let deletedAt = "unknown";
             try {
               const content = await context.dataRepository.getContent(

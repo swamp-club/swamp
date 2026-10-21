@@ -70,6 +70,7 @@ import {
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
+import { TransitionTail } from "./transition_tail.ts";
 
 const logger = getSwampLogger(["serve", "worker-gateway"]);
 
@@ -349,7 +350,7 @@ export class WorkerGateway {
     tokenName: string,
   ) => Promise<EnrollmentToken | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
-  #transitionTail: Promise<unknown> = Promise.resolve();
+  readonly #transitions = new TransitionTail("gateway");
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -463,7 +464,7 @@ export class WorkerGateway {
     cause: EnrollmentBindingCutoffCause,
     options?: { mint: string },
   ): Promise<string[]> {
-    return await this.#recordTransition(async () => {
+    return await this.#recordTransition("revoke_token", async () => {
       const removed: string[] = [];
       for (const entry of [...this.#workers.values()]) {
         if (entry.tokenName !== tokenName) continue;
@@ -556,7 +557,7 @@ export class WorkerGateway {
       // dispatch twice.
       options?.onRegistered?.();
       if (!unverified) {
-        await this.#recordTransition(() =>
+        await this.#recordTransition("worker_busy", () =>
           this.#runModelMethod({
             typeArg: WORKER_MODEL_TYPE.normalized,
             definitionName: workerDefinitionName(name),
@@ -565,8 +566,7 @@ export class WorkerGateway {
               status: "busy",
               activeDispatchIds: [...entry.activeDispatchIds],
             },
-          })
-        );
+          }));
       }
 
       const dispatchCredential = this.#sessions.issueForDispatch(
@@ -624,13 +624,15 @@ export class WorkerGateway {
       } else if (!settled) {
         if (entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
-          await this.#recordTransition(() =>
-            this.#runModelMethod({
-              typeArg: WORKER_MODEL_TYPE.normalized,
-              definitionName: workerDefinitionName(name),
-              methodName: "set_status",
-              inputs: { status: "idle" },
-            })
+          await this.#recordTransition(
+            "worker_idle",
+            () =>
+              this.#runModelMethod({
+                typeArg: WORKER_MODEL_TYPE.normalized,
+                definitionName: workerDefinitionName(name),
+                methodName: "set_status",
+                inputs: { status: "idle" },
+              }),
           ).catch((error: unknown) => {
             logger.warn("Failed to record idle status for {worker}: {error}", {
               worker: name,
@@ -638,16 +640,18 @@ export class WorkerGateway {
             });
           });
         } else {
-          await this.#recordTransition(() =>
-            this.#runModelMethod({
-              typeArg: WORKER_MODEL_TYPE.normalized,
-              definitionName: workerDefinitionName(name),
-              methodName: "set_status",
-              inputs: {
-                status: "busy",
-                activeDispatchIds: [...entry.activeDispatchIds],
-              },
-            })
+          await this.#recordTransition(
+            "worker_busy",
+            () =>
+              this.#runModelMethod({
+                typeArg: WORKER_MODEL_TYPE.normalized,
+                definitionName: workerDefinitionName(name),
+                methodName: "set_status",
+                inputs: {
+                  status: "busy",
+                  activeDispatchIds: [...entry.activeDispatchIds],
+                },
+              }),
           ).catch((error: unknown) => {
             logger.warn(
               "Failed to record dispatch-end status for {worker}: {error}",
@@ -720,7 +724,7 @@ export class WorkerGateway {
       });
     }
 
-    return await this.#recordTransition<EnrollResult>(async () => {
+    return await this.#recordTransition<EnrollResult>("enroll", async () => {
       // The worker gave up on this attempt while it waited for its turn (its
       // enroll call timed out). Nothing is recorded yet, so skip it rather
       // than delay the live enrollments queued behind it (swamp-club#3405).
@@ -953,14 +957,13 @@ export class WorkerGateway {
     if (!entry || entry.status === "draining") return;
     logger.info("Worker {worker} is draining", { worker: workerName });
     entry.status = "draining";
-    await this.#recordTransition(() =>
+    await this.#recordTransition("worker_draining", () =>
       this.#runModelMethod({
         typeArg: WORKER_MODEL_TYPE.normalized,
         definitionName: workerDefinitionName(workerName),
         methodName: "set_status",
         inputs: { status: "draining" },
-      })
-    );
+      }));
     this.#options.onWorkerDraining?.(this.#snapshot(entry));
   }
 
@@ -978,13 +981,15 @@ export class WorkerGateway {
     entry.channel = null;
     const snapshot = this.#snapshot(entry);
 
-    const recordDisconnect = this.#recordTransition(() =>
-      this.#runModelMethod({
-        typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: workerDefinitionName(name),
-        methodName: "set_status",
-        inputs: { status: "disconnected" },
-      })
+    const recordDisconnect = this.#recordTransition(
+      "worker_disconnected",
+      () =>
+        this.#runModelMethod({
+          typeArg: WORKER_MODEL_TYPE.normalized,
+          definitionName: workerDefinitionName(name),
+          methodName: "set_status",
+          inputs: { status: "disconnected" },
+        }),
     );
     recordDisconnect.catch((error: unknown) => {
       logger.warn(
@@ -1065,7 +1070,7 @@ export class WorkerGateway {
     // here just delays the durable record catching up. A token whose
     // definition is gone has nothing to record, and running `expire` by
     // name would auto-create one.
-    this.#recordTransition(async () => {
+    this.#recordTransition("token_expire", async () => {
       const definitionId = await this.#findTokenDefinitionId(entry.tokenName);
       if (definitionId === null) {
         logger.debug(
@@ -1091,7 +1096,10 @@ export class WorkerGateway {
     this.#removeWorker(entry, "enrollment token expired");
     if (wasConnected) {
       // #recordDisconnected logs its own failures, so this never rejects.
-      this.#recordTransition(() => this.#recordDisconnected(workerName))
+      this.#recordTransition(
+        "worker_disconnected",
+        () => this.#recordDisconnected(workerName),
+      )
         .catch(() => {});
     }
   }
@@ -1191,7 +1199,7 @@ export class WorkerGateway {
       if (!entry || entry.channel === null) return;
       if (probeResult.ok) {
         if (entry.status !== "draining") {
-          await this.#recordTransition(async () => {
+          await this.#recordTransition("verify_passed", async () => {
             entry.status = "idle";
             entry.verifyFailureReason = undefined;
             await this.#runModelMethod({
@@ -1206,7 +1214,7 @@ export class WorkerGateway {
           this.#options.onWorkerIdle?.(snap);
         }
       } else {
-        await this.#recordTransition(async () => {
+        await this.#recordTransition("verify_failed", async () => {
           entry.verifyFailureReason = probeResult.failureReason;
           await this.#runModelMethod({
             typeArg: "swamp/worker",
@@ -1228,7 +1236,7 @@ export class WorkerGateway {
       const entry = this.#workers.get(workerName);
       if (!entry || entry.channel === null) return;
       const reason = error instanceof Error ? error.message : String(error);
-      await this.#recordTransition(async () => {
+      await this.#recordTransition("verify_failed", async () => {
         entry.verifyFailureReason = reason;
         await this.#runModelMethod({
           typeArg: "swamp/worker",
@@ -1277,11 +1285,10 @@ export class WorkerGateway {
   /**
    * Append a transition to the serialized tail. Every durable pool/token
    * mutation flows through here, preserving the sole-writer invariant.
+   * `operation` labels its span (swamp-club#3755).
    */
-  #recordTransition<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.#transitionTail.then(fn, fn);
-    this.#transitionTail = next.then(() => undefined, () => undefined);
-    return next;
+  #recordTransition<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    return this.#transitions.run(operation, fn);
   }
 
   /**

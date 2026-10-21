@@ -682,6 +682,14 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     );
   }
 
+  /** Held in memory, so reading lazily saves nothing; see findAllForModel. */
+  async *iterateForModel(
+    type: ModelTypeInput,
+    modelId: string,
+  ): AsyncIterable<Data> {
+    yield* await this.findAllForModel(type, modelId);
+  }
+
   getContent(
     type: ModelTypeInput,
     modelId: string,

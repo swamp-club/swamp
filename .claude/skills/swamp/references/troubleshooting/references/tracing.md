@@ -205,11 +205,22 @@ work is the root of its own trace:
 A worker dispatch joins the run's trace when serve sends trace headers. Look for
 `swamp.remote.dispatch` under the step's `swamp.model.method`, then the runner's
 `swamp.cli`, and `swamp.serve.data_plane` spans (`swamp.data_plane.operation`)
-for the runner's reads and writes. A runner never inherits `TRACEPARENT` from
-the worker's environment, and serve does not ship its `OTEL_*` settings or trace
-context to workers, so a runner exports with the worker host's own OTel
-settings. Console span output from a runner goes to stderr, because its stdout
-carries the frames it sends to the worker.
+for the runner's reads and writes. A write's children split its time:
+`swamp.serve.data_plane.mark_writes` (the dispatch's first write waiting to mark
+its step lease) and `swamp.serve.data_plane.persist` (the write itself).
+
+Serve records leases, pending dispatches, workers and enrollment tokens one at a
+time, on a dispatch chain and a gateway chain. Each record runs in a
+`swamp.serve.transition` span under the work waiting on it, with
+`swamp.transition.tail` (`dispatch` or `gateway`), `swamp.transition.operation`
+(e.g. `step_lease.mark_writes`, `enroll`), `swamp.transition.queue_wait_ms` and
+`swamp.transition.queue_depth` (transitions ahead of it). A slow write or a
+timed-out `worker.enroll` with a large `queue_wait_ms` is waiting its turn on
+the chain, not writing. A runner never inherits `TRACEPARENT` from the worker's
+environment, and serve does not ship its `OTEL_*` settings or trace context to
+workers, so a runner exports with the worker host's own OTel settings. Console
+span output from a runner goes to stderr, because its stdout carries the frames
+it sends to the worker.
 
 ### Slow `swamp serve` Requests
 

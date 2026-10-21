@@ -265,6 +265,9 @@ function createMockDataRepo(): UnifiedDataRepository {
     findById: () => Promise.resolve(null),
     listVersions: () => Promise.resolve([]),
     findAllForModel: () => Promise.resolve([]),
+    iterateForModel: async function* () {
+      yield* [];
+    },
     save: () => Promise.resolve({ version: 1 }),
     append: () => Promise.resolve(),
     stream: async function* () {},
@@ -1456,7 +1459,8 @@ Deno.test("executeWorkflow - skips validation when model has no globalArguments 
 // ---------- Resource Deletion Tracking Tests ----------
 
 /**
- * Creates a mock DataRepo that returns specific data for findAllForModel.
+ * Creates a mock DataRepo that returns specific data for findAllForModel
+ * and iterateForModel.
  */
 function createMockDataRepoWithData(
   existingData: Data[],
@@ -1468,6 +1472,9 @@ function createMockDataRepoWithData(
   return {
     ...createMockDataRepo(),
     findAllForModel: () => Promise.resolve(existingData),
+    iterateForModel: async function* () {
+      yield* existingData;
+    },
     save: (
       _type: ModelType,
       _modelId: string,
@@ -1663,6 +1670,9 @@ Deno.test("executeWorkflow - read after delete throws UserError", async () => {
   const mockRepo = {
     ...createMockDataRepo(),
     findAllForModel: () => Promise.resolve([deletedData]),
+    iterateForModel: async function* () {
+      yield deletedData;
+    },
     getContent: () => Promise.resolve(markerContent),
   };
 
@@ -1723,6 +1733,9 @@ Deno.test("executeWorkflow - update after delete throws UserError", async () => 
   const mockRepo = {
     ...createMockDataRepo(),
     findAllForModel: () => Promise.resolve([deletedData]),
+    iterateForModel: async function* () {
+      yield deletedData;
+    },
     getContent: () => Promise.resolve(null),
   };
 
@@ -1974,6 +1987,9 @@ Deno.test("executeWorkflow - read succeeds when old data is deleted but current 
   const mockRepo = {
     ...createMockDataRepo(),
     findAllForModel: () => Promise.resolve([oldDeletedData, activeData]),
+    iterateForModel: async function* () {
+      yield* [oldDeletedData, activeData];
+    },
     getContent: () => Promise.resolve(null),
   };
 
@@ -2123,6 +2139,9 @@ Deno.test("executeWorkflow - read blocked when all declared resource data is del
   const mockRepo = {
     ...createMockDataRepo(),
     findAllForModel: () => Promise.resolve([deletedResource]),
+    iterateForModel: async function* () {
+      yield deletedResource;
+    },
     getContent: () => Promise.resolve(markerContent),
   };
 
@@ -2162,6 +2181,132 @@ Deno.test("executeWorkflow - read blocked when all declared resource data is del
     () => service.executeWorkflow(definition, model, "get", contextWithRepo),
     UserError,
     "was deleted at 2026-03-07T10:00:00.000Z",
+  );
+});
+
+/** Declared resource data named `name`, deleted when `deleted` is set. */
+function resourceData(name: string, deleted = false): Data {
+  return Data.create({
+    name,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "my-resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    ...(deleted ? { lifecycle: "deleted" as const } : {}),
+  });
+}
+
+/**
+ * A repository serving `data` lazily that counts the items the
+ * deleted-resource check pulls, and refuses the whole-model read.
+ */
+function createCountingDataRepo(data: Data[]) {
+  const pulled = { count: 0 };
+  const repo: UnifiedDataRepository = {
+    ...createMockDataRepo(),
+    findAllForModel: () => {
+      throw new Error("findAllForModel must not be called");
+    },
+    iterateForModel: async function* () {
+      for (const item of data) {
+        pulled.count++;
+        yield item;
+      }
+    },
+    getContent: () => Promise.resolve(null),
+  };
+  return { repo, pulled };
+}
+
+function createUpdateModel(): ModelDefinition {
+  return {
+    type: ModelType.create("test/update-many-resources"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      touch: {
+        description: "Update the resource",
+        kind: "update",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+}
+
+Deno.test("executeWorkflow - deleted-resource check stops at the first live resource (swamp-club#3755)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const data = Array.from(
+    { length: 1000 },
+    (_, i) => resourceData(`lease-${i}`),
+  );
+  const { repo, pulled } = createCountingDataRepo(data);
+  const { context } = createTestContext({
+    modelType: ModelType.create("test/update-many-resources"),
+  });
+
+  await service.executeWorkflow(
+    Definition.create({ name: "test-definition", globalArguments: {} }),
+    createUpdateModel(),
+    "touch",
+    { ...context, dataRepository: repo },
+  );
+
+  assertEquals(pulled.count, 1);
+});
+
+Deno.test("executeWorkflow - update passes when only the last declared resource is live", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { repo, pulled } = createCountingDataRepo([
+    resourceData("first", true),
+    resourceData("second", true),
+    resourceData("third"),
+  ]);
+  const { context } = createTestContext({
+    modelType: ModelType.create("test/update-many-resources"),
+  });
+
+  await service.executeWorkflow(
+    Definition.create({ name: "test-definition", globalArguments: {} }),
+    createUpdateModel(),
+    "touch",
+    { ...context, dataRepository: repo },
+  );
+
+  assertEquals(pulled.count, 3);
+});
+
+Deno.test("executeWorkflow - update after every resource is deleted names the first deleted one", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { repo } = createCountingDataRepo([
+    resourceData("first", true),
+    resourceData("second", true),
+  ]);
+  const { context } = createTestContext({
+    modelType: ModelType.create("test/update-many-resources"),
+  });
+
+  await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({ name: "test-definition", globalArguments: {} }),
+        createUpdateModel(),
+        "touch",
+        { ...context, dataRepository: repo },
+      ),
+    UserError,
+    "Resource 'first' was deleted at unknown",
   );
 });
 

@@ -167,6 +167,12 @@ function withNameResolution(
         return repo.findAllForModel(type, resolved);
       },
     },
+    iterateForModel: {
+      value: async function* (type: ModelTypeInput, modelId: string) {
+        const resolved = await resolveModelId(definitionRepo, modelId);
+        yield* repo.iterateForModel(type, resolved);
+      },
+    },
     getContent: {
       value: async (
         type: ModelTypeInput,

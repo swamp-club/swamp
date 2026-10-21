@@ -300,6 +300,23 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     return merged;
   }
 
+  async *iterateForModel(
+    type: ModelTypeInput,
+    modelId: string,
+  ): AsyncIterable<Data> {
+    const coerced = coerceModelType(type);
+    const seen = new Set<string>();
+    for await (const data of this.ephemeral.iterateForModel(coerced, modelId)) {
+      seen.add(data.name);
+      yield data;
+    }
+    for await (
+      const data of this.persistent.iterateForModel(coerced, modelId)
+    ) {
+      if (!seen.has(data.name)) yield data;
+    }
+  }
+
   async findAllForType(
     type: ModelTypeInput,
     options?: FindAllForTypeOptions,

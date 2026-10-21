@@ -299,6 +299,29 @@ Deno.test("findAllForModel: returns latest versions", async () => {
   assertEquals(names, ["data-1", "data-2"]);
 });
 
+Deno.test("iterateForModel: yields what findAllForModel returns", async () => {
+  const { repo } = createRepo();
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "data-1" }),
+    TEST_CONTENT,
+  );
+  await repo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "data-2" }),
+    TEST_CONTENT,
+  );
+
+  const iterated = await Array.fromAsync(
+    repo.iterateForModel(TEST_TYPE, TEST_MODEL_ID),
+  );
+  const all = await repo.findAllForModel(TEST_TYPE, TEST_MODEL_ID);
+
+  assertEquals(iterated.map((d) => d.name), all.map((d) => d.name));
+});
+
 Deno.test("findAllGlobal: returns all data across models", async () => {
   const { repo } = createRepo();
   const data1 = createTestData({ name: "data-1" });
