@@ -2375,6 +2375,7 @@ Deno.test("data.latest returns another namespace's sensitive vault refs as store
         content_type: "application/json",
         lifetime: "infinite",
         garbage_collection: "10",
+        lifecycle: "active",
         owner_type: "model-method",
         streaming: 0,
         size: 2,

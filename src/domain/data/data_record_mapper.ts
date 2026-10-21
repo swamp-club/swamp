@@ -31,7 +31,10 @@ import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
-import { garbageCollectionFromColumn } from "./data_metadata.ts";
+import {
+  garbageCollectionFromColumn,
+  lifecycleFromColumn,
+} from "./data_metadata.ts";
 import {
   parseSensitiveFieldsTag,
   resolveSensitiveVaultRefs,
@@ -239,6 +242,7 @@ export function fromRow(
     contentType: row.content_type,
     lifetime: row.lifetime,
     garbageCollection: garbageCollectionFromColumn(row.garbage_collection),
+    lifecycle: lifecycleFromColumn(row.lifecycle),
     ownerType: row.owner_type,
     streaming: row.streaming === 1,
     size: row.size,
@@ -323,6 +327,7 @@ export async function fromData(
     contentType: data.contentType,
     lifetime: data.lifetime,
     garbageCollection: data.garbageCollection,
+    lifecycle: data.lifecycle,
     ownerType: data.ownerDefinition.ownerType,
     streaming: data.streaming,
     size: data.size ?? 0,
@@ -419,6 +424,7 @@ export async function fromResourceHandle(
     contentType: handle.metadata.contentType,
     lifetime: handle.metadata.lifetime,
     garbageCollection: handle.metadata.garbageCollection,
+    lifecycle: handle.metadata.lifecycle ?? "active",
     ownerType: handle.metadata.ownerDefinition.ownerType,
     streaming: handle.metadata.streaming,
     size: handle.size,

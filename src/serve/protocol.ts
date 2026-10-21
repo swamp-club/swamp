@@ -284,6 +284,7 @@ export interface DataSearchPayload {
   query?: string;
   type?: string;
   lifetime?: string;
+  lifecycle?: string;
   ownerType?: string;
   workflow?: string;
   model?: string;

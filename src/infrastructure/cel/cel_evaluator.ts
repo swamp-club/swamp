@@ -99,6 +99,7 @@ const DATA_RECORD_FIELDS = new Set([
   "id",
   "isLatest",
   "jobName",
+  "lifecycle",
   "lifetime",
   "modelId",
   "modelName",

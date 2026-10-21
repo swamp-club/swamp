@@ -167,6 +167,17 @@ export const DataLifecycleSchema = z.enum(["active", "deleted"]);
 export type DataLifecycle = z.infer<typeof DataLifecycleSchema>;
 
 /**
+ * Decodes a catalog lifecycle column. The empty string means unknown (a row
+ * pulled from a catalog export written before the column existed). Rows
+ * pulled from a foreign export are not validated, so any other value is
+ * unknown too rather than a third lifecycle state.
+ */
+export function lifecycleFromColumn(column: string): DataLifecycle | "" {
+  const parsed = DataLifecycleSchema.safeParse(column);
+  return parsed.success ? parsed.data : "";
+}
+
+/**
  * Owner types that can create data.
  */
 export const OwnerTypes = ["model-method", "workflow-step", "manual"] as const;

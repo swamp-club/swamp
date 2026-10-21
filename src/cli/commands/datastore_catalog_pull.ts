@@ -48,6 +48,7 @@ import {
   acceptForeignExportRows,
   parseForeignNamespaces,
 } from "../../domain/data/foreign_catalog_export.ts";
+import { lifecycleFromColumn } from "../../domain/data/data_metadata.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -70,6 +71,9 @@ function exportRowToCatalogRow(row: CatalogExportRow): CatalogRow {
     content_type: row.content_type,
     lifetime: row.lifetime,
     garbage_collection: row.garbage_collection ?? "",
+    // A missing (pre-column export) or unrecognised value is unknown, never
+    // assumed active: older exports hold write-through deletion markers.
+    lifecycle: lifecycleFromColumn(row.lifecycle ?? ""),
     owner_type: row.owner_type,
     streaming: row.streaming,
     size: row.size,

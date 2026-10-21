@@ -48,6 +48,7 @@ function makeRecord(
     contentType: "application/json",
     lifetime: "infinite",
     garbageCollection: 10,
+    lifecycle: "active",
     ownerType: "model-method",
     streaming: false,
     size: 100,

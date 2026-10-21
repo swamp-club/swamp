@@ -40,6 +40,7 @@ function makeRow(version: number, stepName: string): CatalogRow {
     content_type: "application/json",
     lifetime: "infinite",
     garbage_collection: "10",
+    lifecycle: "active",
     owner_type: "model-method",
     streaming: 0,
     size: 0,
@@ -70,6 +71,42 @@ Deno.test("findLatestItemsFromCatalog: lists a data name once when several workf
 
     const items = await findLatestItemsFromCatalog(service, catalog);
     assertEquals(items.map((i) => [i.name, i.version]), [["item-b", 2]]);
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("findLatestItemsFromCatalog: carries each latest row's lifecycle (swamp-club#3706)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-search-adapter-" });
+  const catalog = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    catalog.markPopulated();
+    catalog.upsertNewVersion(makeRow(1, "s1"));
+    catalog.upsertNewVersion({ ...makeRow(2, "s1"), lifecycle: "deleted" });
+    catalog.upsertNewVersion({
+      ...makeRow(1, "s1"),
+      data_name: "item-c",
+      lifecycle: "unrecognised",
+    });
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalog,
+    );
+    const service = new DataQueryService(catalog, dataRepo);
+
+    const items = await findLatestItemsFromCatalog(service, catalog);
+    assertEquals(
+      items.map((i) => [i.name, i.lifecycle]).sort(),
+      [["item-b", "deleted"], ["item-c", ""]],
+    );
   } finally {
     catalog.close();
     if (Deno.build.os === "windows") {

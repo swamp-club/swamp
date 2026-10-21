@@ -105,6 +105,7 @@ function securityRow(dataName = "output"): CatalogRow {
     content_type: "application/json",
     lifetime: "infinite",
     garbage_collection: "10",
+    lifecycle: "active",
     owner_type: "model-method",
     streaming: 0,
     size: 22,

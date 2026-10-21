@@ -20,9 +20,11 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  DataLifecycleSchema,
   garbageCollectionFromColumn,
   GarbageCollectionSchema,
   garbageCollectionToColumn,
+  lifecycleFromColumn,
   LifetimeSchema,
   normalizeLifetime,
 } from "./data_metadata.ts";
@@ -201,4 +203,21 @@ Deno.test("property: garbage collection catalog column round-trips every policy"
 
 Deno.test("garbageCollectionFromColumn: empty column stays unknown", () => {
   assertEquals(garbageCollectionFromColumn(""), "");
+});
+
+Deno.test("property: lifecycle catalog column round-trips every lifecycle", () => {
+  for (const lifecycle of DataLifecycleSchema.options) {
+    assertEquals(lifecycleFromColumn(lifecycle), lifecycle);
+  }
+});
+
+Deno.test("property: any other lifecycle column value is unknown", () => {
+  fc.assert(
+    fc.property(
+      fc.string().filter((s) => !DataLifecycleSchema.safeParse(s).success),
+      (column) => {
+        assertEquals(lifecycleFromColumn(column), "");
+      },
+    ),
+  );
 });

@@ -1875,3 +1875,105 @@ Deno.test("CEL Data Access: data.latest() with a spec name explains the data nam
     catalog.close();
   });
 });
+
+/**
+ * Saves an active "web" and a "db" deleted by a deletion marker, indexing them
+ * through write-through or through a full catalog rebuild, and checks that
+ * data query and CEL data.query() filter on lifecycle the same way.
+ */
+async function assertLifecycleQueries(
+  indexedBy: "write-through" | "rebuild",
+): Promise<void> {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const model = Definition.create({ name: "servers", globalArguments: {} });
+    await definitionRepo.save(type, model);
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    // Populating the empty catalog first sends the saves below through
+    // write-through; otherwise the first query rebuilds it from disk.
+    if (indexedBy === "write-through") await dqs.query('name == ""');
+    try {
+      const saveServer = async (data: Data, body: unknown) =>
+        await dataRepo.save(
+          type,
+          model.id,
+          data,
+          new TextEncoder().encode(JSON.stringify(body)),
+        );
+      const server = (name: string) =>
+        Data.create({
+          name,
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource", specName: "server", modelName: "servers" },
+          ownerDefinition: createOwner("test/model:servers"),
+        });
+      await saveServer(server("web"), { id: 1 });
+      const db = server("db");
+      await saveServer(db, { id: 2 });
+      // What a kind: delete method writes (method_execution_service.ts).
+      await saveServer(db.withDeletionMarker({ version: 2 }), {
+        id: 2,
+        deletedAt: "2026-10-21T00:00:00.000Z",
+      });
+      assertEquals(catalog.isPopulated(), indexedBy === "write-through");
+
+      const versions = (records: unknown[]) =>
+        (records as DataRecord[])
+          .map((r) => `${r.name}@${r.version}:${r.lifecycle}`)
+          .sort();
+
+      assertEquals(versions(await dqs.query('modelName == "servers"')), [
+        "db@2:deleted",
+        "web@1:active",
+      ]);
+      assertEquals(catalog.isPopulated(), true);
+      const live = 'modelName == "servers" && lifecycle == "active"';
+      assertEquals(versions(await dqs.query(live)), ["web@1:active"]);
+      assertEquals(
+        versions(
+          await dqs.query('modelName == "servers" && lifecycle == "deleted"'),
+        ),
+        ["db@2:deleted"],
+      );
+      // lifecycle is per version: the deleted resource's earlier version
+      // is still an active row.
+      assertEquals(
+        versions(await dqs.query(`${live} && isLatest == false`)),
+        ["db@1:active"],
+      );
+
+      const resolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await resolver.buildContext(new RunSensitiveValues());
+      assertExists(context.data);
+      assertEquals(versions(await context.data.query(live)), ["web@1:active"]);
+      assertEquals(await context.data.query(live, "lifecycle"), ["active"]);
+    } finally {
+      catalog.close();
+    }
+  });
+}
+
+Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data query and data.query() alike, on a write-through catalog (swamp-club#3706)", async () => {
+  await assertLifecycleQueries("write-through");
+});
+
+Deno.test("CEL Data Access: lifecycle leaves out a deleted resource in data query and data.query() alike, on a rebuilt catalog (swamp-club#3706)", async () => {
+  await assertLifecycleQueries("rebuild");
+});

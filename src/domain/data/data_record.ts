@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { DataLifecycle } from "./data_metadata.ts";
+
 /**
  * Record returned by data access functions.
  * Represents a single version of a named data item with parsed content.
@@ -48,6 +50,10 @@ export interface DataRecord {
   // string otherwise. Empty string when unknown (a foreign row pulled from
   // a catalog export written before the field existed).
   garbageCollection: number | string;
+  // "deleted" for a deletion marker, "active" otherwise. Empty string when
+  // unknown (a foreign row pulled from a catalog export written before the
+  // field existed).
+  lifecycle: DataLifecycle | "";
   ownerType: string;
   streaming: boolean;
   size: number;

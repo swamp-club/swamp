@@ -419,6 +419,17 @@ Deno.test("buildSpecNameFallback: keeps a model() scope, in both predicates", ()
 
 // ── behavior() and behaviorName (swamp-club#3410) ──────────────────────────
 
+Deno.test("QUERY_FIELDS: lifecycle is a field (swamp-club#3706)", () => {
+  assertEquals(QUERY_FIELDS.has("lifecycle"), true);
+});
+
+Deno.test("buildSpecNameFallback: keeps a lifecycle equality (swamp-club#3706)", () => {
+  assertEquals(
+    specNamePredicateOf(ast('name == "server" && lifecycle == "active"')),
+    'specName == "server" && lifecycle == "active"',
+  );
+});
+
 Deno.test("QUERY_FIELDS: behaviorName is a field, behaviorId and behaviorType are not", () => {
   assertEquals(QUERY_FIELDS.has("behaviorName"), true);
   assertEquals(QUERY_FIELDS.has("behaviorId"), false);

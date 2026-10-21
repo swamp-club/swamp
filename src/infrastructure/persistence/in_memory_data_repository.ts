@@ -135,6 +135,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       content_type: data.contentType,
       lifetime: data.lifetime,
       garbage_collection: garbageCollectionToColumn(data.garbageCollection),
+      lifecycle: data.lifecycle,
       owner_type: data.ownerDefinition.ownerType,
       streaming: data.streaming ? 1 : 0,
       size: data.size ?? 0,

@@ -177,6 +177,7 @@ function buildMetadataMarkdown(item: DataSearchItem): string {
     `**Owner:** ${item.ownerType} ${item.ownerRef}`,
   ];
 
+  if (item.lifecycle === "deleted") lines.push(`**Lifecycle:** deleted`);
   if (item.workflowTag) lines.push(`**Workflow:** ${item.workflowTag}`);
   if (item.jobTag) lines.push(`**Job:** ${item.jobTag}`);
   if (item.stepTag) lines.push(`**Step:** ${item.stepTag}`);
@@ -222,6 +223,13 @@ function buildMetadataElements(item: DataSearchItem): React.ReactElement[] {
     </Text>,
   ];
 
+  if (item.lifecycle === "deleted") {
+    elements.push(
+      <Text key="lifecycle" dimColor wrap="truncate-end">
+        Lifecycle: deleted
+      </Text>,
+    );
+  }
   if (item.workflowTag) {
     elements.push(
       <Text key="wf" dimColor wrap="truncate-end">

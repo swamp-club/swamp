@@ -240,6 +240,8 @@ interface DataRecord {
   lifetime: string;
   // Version retention: a count, or a duration such as "30d"; "" when unknown
   garbageCollection: number | string;
+  // "deleted" for a deletion marker, "active" otherwise; "" when unknown
+  lifecycle: "active" | "deleted" | "";
   ownerType: string;
   streaming: boolean;
   size: number;
@@ -309,6 +311,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `contentType` | string | MIME type |
 | `lifetime` | string | Lifetime policy |
 | `garbageCollection` | int or string | Retention policy: a version count, or a duration such as `"30d"`; `""` when unknown (a foreign row from an export older than the field) |
+| `lifecycle` | string | `"deleted"` for a deletion marker (the version a `kind: delete` method writes), `"active"` otherwise; `""` when unknown (a foreign row from an export older than the field). Per version: under the default latest-only scope, `lifecycle == "active"` keeps only resources that still exist; `lifecycle != "deleted"` also keeps unknown rows |
 | `ownerType` | string | `"model-method"`, `"workflow-step"`, or `"manual"` |
 | `streaming` | bool | Whether data is append-only |
 | `size` | int | Content size in bytes |
@@ -563,9 +566,9 @@ pluralises to `Unknown fields` and lists the available names alphabetically:
 ```
 Error: Unknown field "model" in query predicate.
 Available: attributes, behaviorName, content, contentType, createdAt,
-  dataType, garbageCollection, id, isLatest, jobName, lifetime, modelId,
-  modelName, modelType, name, ns, ownerRef, ownerType, size, source, specName,
-  stepName, streaming, tags, version, workflowName, workflowRunId
+  dataType, garbageCollection, id, isLatest, jobName, lifecycle, lifetime,
+  modelId, modelName, modelType, name, ns, ownerRef, ownerType, size, source,
+  specName, stepName, streaming, tags, version, workflowName, workflowRunId
 Functions: latestRun("<workflow>"), model("<model name or definition id>"),
   behavior("<behavior name or definition id>")
 ```
@@ -601,6 +604,7 @@ CREATE TABLE catalog (
   content_type    TEXT NOT NULL DEFAULT '',
   lifetime        TEXT NOT NULL DEFAULT '',
   garbage_collection TEXT NOT NULL DEFAULT '',
+  lifecycle       TEXT NOT NULL DEFAULT '',
   owner_type      TEXT NOT NULL DEFAULT '',
   streaming       INTEGER NOT NULL DEFAULT 0,
   size            INTEGER NOT NULL DEFAULT 0,
@@ -668,6 +672,12 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 | `finalizeVersion()` | Upsert row |
 | `removeLatestMarker()` | Remove row |
 | `collectGarbage()` | Update version or remove row |
+
+Every row carries its version's `Data.lifecycle` in the `lifecycle` column, so
+the deletion marker a `kind: delete` method saves is a `deleted` row whether
+write-through or a backfill indexed it. A catalog export written before the column existed
+pulls as `""` (unknown) rather than `active`, because such exports can hold
+deletion markers too.
 
 `UnifiedDataRepository` is an interface (in `repositories.ts`). The concrete
 `FileSystemUnifiedDataRepository` requires a `CatalogStore` constructor
@@ -805,6 +815,7 @@ the CEL AST and pushes them into SQL WHERE clauses:
 | `specName == "<literal>"`   | `WHERE spec_name = ?`  | Top-level AND conjuncts only                             |
 | `modelType == "<literal>"` | `WHERE type_normalized = ?` | Top-level AND conjuncts only; `modelType` is the column value |
 | `modelId == "<literal>"` | `WHERE model_id = ?` | Top-level AND conjuncts only |
+| `lifecycle == "<literal>"` | `WHERE lifecycle = ?` | Top-level AND conjuncts only; catalog pull stores only `active`, `deleted` or `""`, so the column equals the field |
 | `workflowRunId == latestRun("<literal>")` | `WHERE workflow_run_id = ?` | Top-level AND conjuncts only, with the resolved run id; a workflow with no runs matches nothing |
 
 All other predicates stay CEL-only and run per row on the narrowed set: OR

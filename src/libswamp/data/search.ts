@@ -23,6 +23,10 @@ import { validationFailed } from "../errors.ts";
 import { UserError } from "../../domain/errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  type DataLifecycle,
+  DataLifecycleSchema,
+} from "../../domain/data/data_metadata.ts";
 /**
  * A single data search result item.
  */
@@ -33,6 +37,9 @@ export interface DataSearchItem {
   contentType: string;
   type: string;
   lifetime: string;
+  // "deleted" for a deletion marker, "active" otherwise; empty when unknown
+  // (a foreign row from a catalog export written before the field existed).
+  lifecycle: DataLifecycle | "";
   ownerType: string;
   ownerRef: string;
   modelId: string;
@@ -80,6 +87,7 @@ export interface DataSearchInput {
   query?: string;
   type?: string;
   lifetime?: string;
+  lifecycle?: string;
   ownerType?: string;
   workflow?: string;
   model?: string;
@@ -156,6 +164,9 @@ function filterData(
   if (input.lifetime) {
     result = result.filter((i) => i.lifetime === input.lifetime);
   }
+  if (input.lifecycle) {
+    result = result.filter((i) => i.lifecycle === input.lifecycle);
+  }
   if (input.ownerType) {
     result = result.filter((i) => i.ownerType === input.ownerType);
   }
@@ -212,6 +223,7 @@ function buildFilters(input: DataSearchInput): Record<string, string> {
   const filters: Record<string, string> = {};
   if (input.type) filters.type = input.type;
   if (input.lifetime) filters.lifetime = input.lifetime;
+  if (input.lifecycle) filters.lifecycle = input.lifecycle;
   if (input.ownerType) filters.ownerType = input.ownerType;
   if (input.workflow) filters.workflow = input.workflow;
   if (input.model) filters.model = input.model;
@@ -241,6 +253,21 @@ export async function* dataSearch(
     { "search.query": input.query ?? "" },
     (async function* () {
       yield { kind: "resolving" };
+
+      if (
+        input.lifecycle &&
+        !DataLifecycleSchema.safeParse(input.lifecycle).success
+      ) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Unknown lifecycle: ${input.lifecycle}. Expected one of: ${
+              DataLifecycleSchema.options.join(", ")
+            }`,
+          ),
+        };
+        return;
+      }
 
       // Validate model if provided
       if (input.model) {

@@ -60,6 +60,7 @@ Deno.test("catalogRow: maps a workflow-step version field for field", () => {
     content_type: "application/json",
     lifetime: "7d",
     garbage_collection: "30d",
+    lifecycle: "active",
     owner_type: "workflow-step",
     streaming: 1,
     size: 42,
@@ -107,4 +108,20 @@ Deno.test("catalogRow: fills absent fields as v2 does", () => {
     ],
     ["", "", 0, 0, "5", "", "", "", "", ""],
   );
+});
+
+Deno.test("catalogRow: a deletion marker's row carries lifecycle deleted (swamp-club#3706)", () => {
+  const metadata = DataMetadataSchema.parse({
+    name: "vpc",
+    id: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    version: 2,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "manual", ownerRef: "me" },
+    createdAt: "2026-10-11T12:00:00.000Z",
+    lifecycle: "deleted",
+  });
+  assertEquals(catalogRow("", "t", "m", metadata).lifecycle, "deleted");
 });

@@ -63,6 +63,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     content_type: "application/json",
     lifetime: "infinite",
     garbage_collection: "10",
+    lifecycle: "active",
     owner_type: "model-method",
     streaming: 0,
     size: 256,
@@ -172,6 +173,87 @@ Deno.test("DataQueryService: specName equality filters through the SQL pushdown"
     'specName == "raw" && size > 0',
   ) as DataRecord[];
   assertEquals(results.map((r) => r.name), ["other"]);
+  catalog.close();
+});
+
+/**
+ * "live" is an active resource. "gone" was deleted: an active v1 under a
+ * latest deletion marker at v2. "unknown" is a row whose lifecycle is not
+ * known (pulled from a catalog export written before the column existed).
+ */
+function seedLifecycleRows(catalog: CatalogStore): void {
+  catalog.upsert(makeRow({ data_name: "live", id: "uuid-live" }));
+  catalog.upsert(
+    makeRow({ data_name: "gone", id: "uuid-gone", version: 1, is_latest: 0 }),
+  );
+  catalog.upsert(
+    makeRow({
+      data_name: "gone",
+      id: "uuid-gone",
+      version: 2,
+      lifecycle: "deleted",
+    }),
+  );
+  catalog.upsert(
+    makeRow({ data_name: "unknown", id: "uuid-unknown", lifecycle: "" }),
+  );
+}
+
+function queryVersions(service: DataQueryService, predicate: string): string[] {
+  return (service.querySync(predicate) as DataRecord[])
+    .map((r) => `${r.name}@${r.version}:${r.lifecycle}`)
+    .sort();
+}
+
+Deno.test("DataQueryService: lifecycle == active leaves out a deleted resource that the default query returns (swamp-club#3706)", () => {
+  const { catalog, service } = setupTest();
+  seedLifecycleRows(catalog);
+
+  assertEquals(queryVersions(service, "true"), [
+    "gone@2:deleted",
+    "live@1:active",
+    "unknown@1:",
+  ]);
+  assertEquals(queryVersions(service, 'lifecycle == "active"'), [
+    "live@1:active",
+  ]);
+  assertEquals(queryVersions(service, 'lifecycle != "deleted"'), [
+    "live@1:active",
+    "unknown@1:",
+  ]);
+  assertEquals(queryVersions(service, 'lifecycle == "deleted"'), [
+    "gone@2:deleted",
+  ]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: lifecycle pushdown returns the same rows as CEL evaluation (swamp-club#3706)", () => {
+  const { catalog, service } = setupTest();
+  seedLifecycleRows(catalog);
+
+  // `|| false` keeps the equality out of the top-level conjuncts, so the
+  // second predicate of each pair is evaluated per row with no pushdown.
+  const pairs: [string, string, string[]][] = [
+    ['lifecycle == "active"', '(lifecycle == "active" || false)', [
+      "live@1:active",
+    ]],
+    [
+      'lifecycle == "active" || name == "gone"',
+      '(lifecycle == "active" || false) || name == "gone"',
+      ["gone@2:deleted", "live@1:active"],
+    ],
+    // lifecycle is per version: past latest, a deleted resource's earlier
+    // active version matches.
+    [
+      'lifecycle == "active" && isLatest == false',
+      '(lifecycle == "active" || false) && isLatest == false',
+      ["gone@1:active"],
+    ],
+  ];
+  for (const [pushed, unpushed, expected] of pairs) {
+    assertEquals(queryVersions(service, pushed), expected, pushed);
+    assertEquals(queryVersions(service, unpushed), expected, unpushed);
+  }
   catalog.close();
 });
 
@@ -2619,6 +2701,24 @@ Deno.test("DataQueryService: metadata-rejected rows do not read bodies", () => {
   catalog.close();
 });
 
+Deno.test("DataQueryService: a lifecycle filter reads no body of a deleted row (swamp-club#3706)", () => {
+  const { catalog, service, dataRepo } = setupLazyTest([
+    { name: "live", specName: "server", body: { id: 1 } },
+    { name: "gone", specName: "server", body: { id: 2, deletedAt: "now" } },
+  ]);
+  const gone = [...catalog.iterate()].find((r) => r.data_name === "gone")!;
+  catalog.upsert({ ...gone, lifecycle: "deleted" });
+  dataRepo.unreadable.add("gone");
+
+  const results = service.querySync(
+    'specName == "server" && lifecycle == "active"',
+  ) as DataRecord[];
+
+  assertEquals(results.map((r) => r.name), ["live"]);
+  assertEquals(dataRepo.reads.get("gone"), undefined);
+  catalog.close();
+});
+
 Deno.test("DataQueryService: unreadable body of a matching row fails the query", () => {
   const { catalog, service, dataRepo } = setupLazyTest([
     { name: "question", specName: "question", body: { value: 1 } },
@@ -3274,6 +3374,7 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
     contentType: "contentType",
     lifetime: "lifetime",
     garbageCollection: "garbageCollection",
+    lifecycle: "lifecycle",
     ownerType: "ownerType",
     streaming: "streaming",
     size: "size",
@@ -5177,6 +5278,7 @@ Deno.test("DataQueryService rename forwards: a stale catalog row under the old n
     content_type: "text/plain",
     lifetime: "infinite",
     garbage_collection: "10",
+    lifecycle: "active",
     owner_type: "model-method",
     streaming: 0,
     size: 3,
