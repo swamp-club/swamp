@@ -126,8 +126,14 @@ export function ownerGoneDecider(
     // check. The run is then judged like one with no row.
     if (ctx.runTracker && tracked?.isLocalTo(liveness.hostname)) {
       // This process drives the run, but no registry here holds it by this
-      // id: a nested run, or one whose start has not been recorded yet.
-      if (tracked.pid === Deno.pid) {
+      // id: a nested run, or one whose start has not been recorded yet. A
+      // row a previous process left under a reused pid (serve as PID 1 in a
+      // container) carries that process's instance id and is not this one.
+      if (
+        tracked.pid === Deno.pid &&
+        (tracked.instanceId === undefined ||
+          tracked.instanceId === ctx.instanceId)
+      ) {
         return { gone: false, why: OWNER_IS_THIS_PROCESS };
       }
       if (!runHasDeadOwner(run, ctx.runTracker, liveness)) {

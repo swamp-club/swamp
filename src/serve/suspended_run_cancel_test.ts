@@ -569,6 +569,28 @@ Deno.test("ownerGoneDecider: a tracker row naming this process never advises sto
   });
 });
 
+Deno.test("ownerGoneDecider: a previous instance's row under this process's reused pid is not taken for this process (swamp-club#3740)", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
+    tracker.register(trackerRow(run, Deno.pid, "old-instance"));
+
+    const gone = await ownerGoneDecider({
+      activeRunRegistry: new ActiveRunRegistry(),
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore: controlPlaneWith([]),
+    })(run);
+
+    assertEquals(gone.gone, false);
+    if (!gone.gone) {
+      assertEquals(
+        gone.why.includes("this serve instance is running it"),
+        false,
+      );
+    }
+  });
+});
+
 Deno.test("ownerGoneDecider: a run this instance drives is never gone", async () => {
   await withTracker(async (tracker) => {
     const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "old-instance");
