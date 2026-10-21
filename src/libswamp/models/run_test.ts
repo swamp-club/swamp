@@ -59,6 +59,7 @@ import type { RunTrackerRepository } from "../../domain/models/run_tracker_repos
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import { typedStagers } from "../../infrastructure/persistence/unit_of_work_binding.ts";
+import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 
 await initializeLogging({});
 
@@ -1971,6 +1972,90 @@ Deno.test("methodExecutionFailed: keeps a worded cause's model spelling (swamp-c
   const error = methodExecutionFailed(cause);
   assertEquals(error.message, 'Behavior "x" stores sensitive output');
   assertEquals(messageFor(error, "model"), 'Model "x" stores sensitive output');
+});
+
+/** A type whose method takes a sensitive argument (swamp-club#3681). */
+function createSensitiveModelDef(): ModelDefinition {
+  return {
+    type: TEST_MODEL_TYPE,
+    version: "1.0.0",
+    methods: {
+      run: {
+        description: "Takes a sensitive argument",
+        arguments: z.object({
+          secret: z.string().meta({ sensitive: true }).optional(),
+          name: z.string().optional(),
+        }),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+}
+
+Deno.test("methodExecutionFailed: passes the message, the stack and the model spelling through the redactor, keeping the cause's marked paths; without one the cause is kept as it is (swamp-club#3681)", () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("hunter22");
+  const cause = markErrorPaths(
+    wordedUserError(wordedText((w) => `${w.Noun} "x" leaked hunter22`)),
+    ["a.b"],
+  );
+  const error = methodExecutionFailed(cause, redactor);
+  assertEquals(error.message, 'Behavior "x" leaked ***');
+  assertEquals(messageFor(error, "model"), 'Model "x" leaked ***');
+  assertEquals(error.cause?.stack?.includes("hunter22"), false);
+  assertEquals(error.cause?.stack?.includes("***"), true);
+  assertEquals(errorPaths(error.cause), ["a.b"]);
+  assertEquals(methodExecutionFailed(cause).cause, cause);
+  assertEquals(methodExecutionFailed(cause, new SecretRedactor()).cause, cause);
+});
+
+Deno.test("modelMethodRun: a method error that echoes a sensitive argument reaches the error event and the output record masked (swamp-club#3681)", async () => {
+  const definition = Definition.create({
+    name: "echo",
+    methods: { run: { arguments: { secret: "TOP-SECRET-VALUE", name: "n" } } },
+  });
+  const saved: ModelOutput[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createSensitiveModelDef()),
+    outputRepo: {
+      ...createFakeOutputRepo(),
+      save: (_type: unknown, _method: unknown, output: ModelOutput) => {
+        saved.push(output);
+        return Promise.resolve();
+      },
+    },
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+    createExecutionService: () =>
+      ({
+        executeWorkflow: () =>
+          Promise.reject(new Error("failed with TOP-SECRET-VALUE")),
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+  };
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("echo", "run"),
+    ),
+  );
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "method_execution_failed");
+    assertEquals(last.error.message, "failed with ***");
+    assertEquals(last.error.cause?.stack?.includes("TOP-SECRET-VALUE"), false);
+  }
+  assertEquals(saved.at(-1)?.error?.message, "failed with ***");
+  assertEquals(
+    saved.at(-1)?.error?.stack?.includes("TOP-SECRET-VALUE"),
+    false,
+  );
 });
 
 Deno.test("modelMethodRun: the run's sensitive values come from createSensitiveValues, and their registry reaches the passes and the delivery", async () => {

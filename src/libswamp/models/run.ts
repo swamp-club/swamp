@@ -110,7 +110,12 @@ import type {
   DataArtifactView,
   ModelMethodRunView,
 } from "./model_method_run_view.ts";
-import { ModelOutput } from "../../domain/models/model_output.ts";
+import {
+  type ErrorRedactor,
+  executionErrorFrom,
+  ModelOutput,
+  redactedError,
+} from "../../domain/models/model_output.ts";
 import { cancelCause } from "../../domain/models/cancel_cause.ts";
 import {
   coerceInputTypes,
@@ -1273,12 +1278,12 @@ export async function* modelMethodRun(
                   ),
               );
             } catch (error) {
-              const errorMessage = error instanceof Error
-                ? error.message
-                : String(error);
-              const errorStack = error instanceof Error
-                ? error.stack
-                : undefined;
+              // The record, the failed-run report and the error event carry
+              // the message and stack through the run's redactor: a method
+              // that echoes a sensitive argument in its error lands it in
+              // none of them (swamp-club#3681).
+              const failure = executionErrorFrom(error, redactor);
+              const errorMessage = failure.message;
 
               if (heartbeatInterval) clearInterval(heartbeatInterval);
 
@@ -1300,7 +1305,7 @@ export async function* modelMethodRun(
                 // short of the cancelled event below (swamp-club#3299).
                 markOutcomeReported();
               } else {
-                output.markFailed({ message: errorMessage, stack: errorStack });
+                output.markFailed(failure);
                 await deps.outputRepo.save(modelType, input.methodName, output);
                 if (deps.runTracker) {
                   deps.runTracker.complete(output.id, "failed");
@@ -1422,7 +1427,10 @@ export async function* modelMethodRun(
                 return;
               }
 
-              yield { kind: "error", error: methodExecutionFailed(error) };
+              yield {
+                kind: "error",
+                error: methodExecutionFailed(error, redactor),
+              };
               return;
             }
 
@@ -1805,15 +1813,20 @@ export function evaluatedCacheProvenanceUnreadable(name: string): SwampError {
 }
 
 /**
- * Creates a SwampError for a method execution failure.
+ * Creates a SwampError for a method execution failure. With a redactor, the
+ * message and the cause's stack are passed through it, so a method that
+ * echoes a sensitive argument in its error never shows it (swamp-club#3681).
  */
-export function methodExecutionFailed(cause: unknown): SwampError {
-  const message = cause instanceof Error ? cause.message : String(cause);
+export function methodExecutionFailed(
+  cause: unknown,
+  redactor?: ErrorRedactor,
+): SwampError {
+  const shown = redactedError(cause, redactor);
   // Keeps the cause's model spelling for `swamp model …` (swamp-club#3437).
-  return carryModelWording(cause, {
+  return carryModelWording(shown, {
     code: "method_execution_failed",
-    message,
-    cause: cause instanceof Error ? cause : undefined,
+    message: executionErrorFrom(cause, redactor).message,
+    cause: shown instanceof Error ? shown : undefined,
   });
 }
 

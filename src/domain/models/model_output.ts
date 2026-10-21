@@ -19,6 +19,8 @@
 
 import { z } from "zod";
 import type { DefinitionId } from "../definitions/definition.ts";
+import { markModelWording, modelWording } from "../behavior_wording.ts";
+import { errorPaths, markErrorPaths } from "../errors.ts";
 
 /**
  * Branded type for ModelOutput IDs.
@@ -91,6 +93,38 @@ export function executionErrorFrom(
     message: clean(message),
     ...(stack === undefined ? {} : { stack: clean(stack) }),
   };
+}
+
+/**
+ * `error` with its message and stack passed through `redactor`, as
+ * {@link executionErrorFrom} reads them, for a caller that rethrows or
+ * reports it (swamp-club#3681): the same value when it is not an Error, the
+ * redactor holds nothing, or nothing changes; otherwise a copy that keeps
+ * its name, cause, own properties (recovered data handles, written
+ * versions), marked paths and model spelling, the spelling redacted too.
+ */
+export function redactedError(
+  error: unknown,
+  redactor?: ErrorRedactor,
+): unknown {
+  if (!(error instanceof Error) || !redactor?.hasSecrets) return error;
+  const failure = executionErrorFrom(error, redactor);
+  if (failure.message === error.message && failure.stack === error.stack) {
+    return error;
+  }
+  const cleaned = new Error(failure.message, { cause: error.cause });
+  cleaned.name = error.name;
+  if (failure.stack !== undefined) cleaned.stack = failure.stack;
+  for (const key of Object.keys(error)) {
+    if (key === "message" || key === "stack" || key === "cause") continue;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    if (descriptor) Object.defineProperty(cleaned, key, descriptor);
+  }
+  const spelling = modelWording(error);
+  if (spelling !== undefined) {
+    markModelWording(cleaned, redactor.redact(spelling));
+  }
+  return markErrorPaths(cleaned, errorPaths(error));
 }
 
 /**
