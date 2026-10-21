@@ -48,6 +48,7 @@ const DOWNGRADES: Record<number, string> = {
     "ALTER TABLE outbox_entries DROP COLUMN left_at_fence; ",
   2: "ALTER TABLE outbox_entries DROP COLUMN abandoned_at; " +
     "ALTER TABLE outbox_chain DROP COLUMN pending_fence; ",
+  3: "",
 };
 
 /** The statements that turn a current outbox into one at `schema`. */
@@ -67,9 +68,13 @@ Deno.test("commit outbox: openers racing on a schema 1 outbox all end on the cur
   await raceOpeners(1);
 });
 
-Deno.test("commit outbox: openers racing on a schema 2 outbox all end on schema 3, with its entry kept (swamp-club#3586)", async () => {
-  assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 3);
+Deno.test("commit outbox: openers racing on a schema 2 outbox all end on the current schema, with its entry kept (swamp-club#3586)", async () => {
   await raceOpeners(2);
+});
+
+Deno.test("commit outbox: openers racing on a schema 3 outbox all end on schema 4, with its entry kept (swamp-club#3693)", async () => {
+  assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 4);
+  await raceOpeners(3);
 });
 
 async function raceOpeners(schema: number): Promise<void> {

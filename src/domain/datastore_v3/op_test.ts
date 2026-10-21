@@ -157,6 +157,7 @@ Deno.test("PutOp.build: refuses callers without the module token", () => {
         { inline: "" },
         "0".repeat(64),
         undefined,
+        undefined,
       ),
     Error,
     "putOp",
@@ -180,6 +181,50 @@ Deno.test("opFromJSON: round-trips every op kind", async () => {
     assert(isOp(parsed));
     assertEquals(parsed.toJSON(), op.toJSON());
   }
+});
+
+Deno.test("putOp: carries a file access, serialized only when set (swamp-club#3693)", async () => {
+  const plain = await putOp({ intent: SAVE, key: KEY, inline: base64("x") });
+  assertEquals(plain.access, undefined);
+  assertEquals("access" in plain.toJSON(), false);
+  for (
+    const access of ["executable", "private", "private-executable"] as const
+  ) {
+    const op = await putOp({
+      intent: SAVE,
+      key: KEY,
+      inline: base64("x"),
+      access,
+    });
+    assertEquals(op.access, access);
+    // The access is not part of the content: the digest is the bytes' own.
+    assertEquals(op.sha256, plain.sha256);
+    const parsed = await opFromJSON(JSON.parse(JSON.stringify(op))) as PutOp;
+    assertEquals(parsed.access, access);
+    assertEquals(parsed.toJSON(), op.toJSON());
+  }
+  const blob = await putOp({
+    intent: SAVE,
+    key: KEY,
+    blob: BlobRef.create({ sha256: "b".repeat(64), size: 9000 }),
+    access: "executable",
+  });
+  assertEquals((await opFromJSON(blob.toJSON()) as PutOp).access, "executable");
+});
+
+Deno.test("putOp: refuses an access outside the three (swamp-club#3693)", async () => {
+  await assertRejects(
+    () =>
+      opFromJSON({
+        kind: "put",
+        intent: SAVE,
+        key: KEY.toString(),
+        inline: base64("x"),
+        access: "0755",
+      }),
+    Error,
+    "A file access must be",
+  );
 });
 
 Deno.test("opFromJSON: refuses unknown fields, so a smuggled digest never lands", async () => {

@@ -23,7 +23,8 @@
  * - `put`: writes a record. Its content is a chunk ({@link BlobRef}) or up
  *   to {@link MAX_INLINE_BYTES} inlined as base64. `expect` makes it
  *   conditional: `"absent"` (create only) or `{ sha256 }` (edit the version
- *   it was loaded from).
+ *   it was loaded from). `access` is the file access the writer's file had
+ *   ({@link FileAccess}, swamp-club#3693); a plain file has none.
  * - `tombstone`: removes one record, by its exact key; there are no prefix
  *   tombstones. `expect: "present"` makes it conditional.
  * - `data-version`: records a data version's metadata. The partition reads
@@ -43,6 +44,7 @@ import {
   DataMetadataSchema,
 } from "../data/data_metadata.ts";
 import { BlobRef, type BlobRefJSON, isSha256Hex } from "./blob_ref.ts";
+import { type FileAccess, readFileAccess } from "./file_access.ts";
 import { createIntent, type Intent } from "./intent.ts";
 import { RecordKey } from "./record_key.ts";
 
@@ -66,6 +68,7 @@ export interface PutOpJSON {
   readonly blob?: BlobRefJSON;
   readonly inline?: string;
   readonly expect?: PutExpect;
+  readonly access?: FileAccess;
 }
 
 /** The serialized form of a {@link TombstoneOp}. */
@@ -113,6 +116,8 @@ export class PutOp {
     /** The SHA-256 of the record's bytes: the blob's, or the inline bytes'. */
     readonly sha256: string,
     readonly expect: PutExpect | undefined,
+    /** The materialised file's access; undefined for a plain file. */
+    readonly access: FileAccess | undefined,
   ) {}
 
   /** @internal Only {@link putOp} can supply the token. */
@@ -123,10 +128,18 @@ export class PutOp {
     content: { readonly blob: BlobRef } | { readonly inline: string },
     sha256: string,
     expect: PutExpect | undefined,
+    access: FileAccess | undefined,
   ): PutOp {
     if (token !== BUILD) throw new Error("Use putOp() to build a put");
     return Object.freeze(
-      new PutOp(intent, key, Object.freeze({ ...content }), sha256, expect),
+      new PutOp(
+        intent,
+        key,
+        Object.freeze({ ...content }),
+        sha256,
+        expect,
+        access,
+      ),
     );
   }
 
@@ -144,6 +157,7 @@ export class PutOp {
         ? { blob: this.content.blob.toJSON() }
         : { inline: this.content.inline }),
       ...(this.expect === undefined ? {} : { expect: this.expect }),
+      ...(this.access === undefined ? {} : { access: this.access }),
     };
   }
 }
@@ -251,10 +265,12 @@ export async function putOp(props: {
   blob?: BlobRef;
   inline?: string;
   expect?: PutExpect;
+  access?: FileAccess;
 }): Promise<PutOp> {
   const intent = createIntent(props.intent);
   const key = requireKey(props.key);
   const expect = readPutExpect(props.expect);
+  const access = readFileAccess(props.access);
   if ((props.blob === undefined) === (props.inline === undefined)) {
     throw new Error("A put carries exactly one of blob and inline");
   }
@@ -269,6 +285,7 @@ export async function putOp(props: {
       { blob: props.blob },
       props.blob.sha256,
       expect,
+      access,
     );
   }
   const inline = props.inline as string;
@@ -280,6 +297,7 @@ export async function putOp(props: {
     { inline },
     await sha256Hex(bytes),
     expect,
+    access,
   );
 }
 
@@ -360,6 +378,7 @@ export async function opFromJSON(value: unknown): Promise<Op> {
         "blob",
         "inline",
         "expect",
+        "access",
       ]);
       return await putOp({
         intent: json.intent as Intent,
@@ -367,6 +386,7 @@ export async function opFromJSON(value: unknown): Promise<Op> {
         blob: json.blob === undefined ? undefined : BlobRef.fromJSON(json.blob),
         inline: json.inline as string | undefined,
         expect: json.expect as PutExpect | undefined,
+        access: json.access as FileAccess | undefined,
       });
     case "tombstone":
       requireOnlyFields(json, ["kind", "intent", "key", "expect"]);

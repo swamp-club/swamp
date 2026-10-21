@@ -31,6 +31,10 @@ import type {
   ContentSource,
   TypedChange,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  type FileAccess,
+  fileAccessOf,
+} from "../../domain/datastore_v3/file_access.ts";
 import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
 import {
   type DataRemoval,
@@ -320,16 +324,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       this.getMetadataPath(type, modelId, dataName, version),
     );
     const metadata = parseYaml(new TextDecoder().decode(metadataBytes));
+    const raw = await this.rawSource(
+      this.getContentPath(type, modelId, dataName, version),
+      metadata,
+    );
     return changes.writeVersion(why, {
       name: dataName,
       version,
       metadata,
       metadataBytes,
       metadataExpect,
-      raw: await this.rawSource(
-        this.getContentPath(type, modelId, dataName, version),
-        metadata,
-      ),
+      raw: raw.content,
+      ...(raw.access === undefined ? {} : { rawAccess: raw.access }),
     });
   }
 
@@ -340,19 +346,25 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * now, and against the metadata's checksum when it has one for this size
    * (an append drops it), so a file changed before the commit is never
    * committed under metadata that does not describe it (swamp-club#3564).
+   * With it, the file's access as the same stat shows it (swamp-club#3693).
    */
   private async rawSource(
     contentPath: string,
     metadata: unknown,
-  ): Promise<ContentSource> {
-    const { size } = await Deno.stat(contentPath);
-    if (size <= MAX_INLINE_BYTES) return await Deno.readFile(contentPath);
+  ): Promise<{ content: ContentSource; access?: FileAccess }> {
+    const { size, mode } = await Deno.stat(contentPath);
+    const access = fileAccessOf(mode);
+    const withAccess = (content: ContentSource) =>
+      access === undefined ? { content } : { content, access };
+    if (size <= MAX_INLINE_BYTES) {
+      return withAccess(await Deno.readFile(contentPath));
+    }
     const recorded = metadata as { size?: unknown; checksum?: unknown } | null;
     const sha256 = recorded?.size === size &&
         typeof recorded.checksum === "string"
       ? recorded.checksum
       : undefined;
-    return async () =>
+    return withAccess(async () =>
       verifiedContentStream(
         (await Deno.open(contentPath)).readable,
         contentPath,
@@ -360,7 +372,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           size,
           ...(sha256 !== undefined ? { sha256 } : {}),
         },
-      );
+      )
+    );
   }
 
   /** The latest marker's bytes, or undefined when there is none. */
@@ -472,26 +485,29 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         dataName,
         version,
       );
-      const files = hasMetadata
-        ? await this.writtenVersionChanges(
+      let files: TypedChange[] = [];
+      if (hasMetadata) {
+        files = await this.writtenVersionChanges(
           changes,
           why,
           type,
           modelId,
           dataName,
           version,
-        )
-        : existsSync(contentPath)
-        ? [
+        );
+      } else if (existsSync(contentPath)) {
+        // No metadata: checked against its size alone.
+        const raw = await this.rawSource(contentPath, undefined);
+        files = [
           changes.writeContent(
             why,
             dataName,
             version,
-            // No metadata: checked against its size alone.
-            await this.rawSource(contentPath, undefined),
+            raw.content,
+            raw.access,
           ),
-        ]
-        : [];
+        ];
+      }
       return [
         ...files,
         ...await this.latestAfterWrite(

@@ -51,6 +51,7 @@
 
 import type { ModelType } from "../models/model_type.ts";
 import type { ContentSource, TypedChange } from "./commit_log_unit_of_work.ts";
+import type { FileAccess } from "./file_access.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
 import { dataVersionOp, type PutExpect, tombstoneOp } from "./op.ts";
 import {
@@ -94,6 +95,11 @@ export interface WrittenVersion {
   readonly metadataExpect?: { readonly sha256: string };
   /** The version's content: bytes, or a stream of the file just written. */
   readonly raw: ContentSource;
+  /**
+   * The content file's access (swamp-club#3693), so every checkout's copy
+   * is executable or private when the writer's was; undefined when plain.
+   */
+  readonly rawAccess?: FileAccess;
 }
 
 /** The typed changes for one model's data and outputs. */
@@ -149,6 +155,8 @@ export class ModelChanges {
         intent,
         this.dataKey(written.name, written.version, "raw"),
         written.raw,
+        undefined,
+        written.rawAccess,
       ),
       this.#put(
         intent,
@@ -173,11 +181,14 @@ export class ModelChanges {
     name: string,
     version: number,
     raw: ContentSource,
+    access?: FileAccess,
   ): TypedChange {
     return this.#put(
       this.#writeIntent(why, name, version),
       this.dataKey(name, version, "raw"),
       raw,
+      undefined,
+      access,
     );
   }
 
@@ -297,8 +308,9 @@ export class ModelChanges {
     key: RecordKey,
     content: ContentSource,
     expect?: { readonly sha256: string },
+    access?: FileAccess,
   ): TypedChange {
-    return putChange(this.partition, intent, key, content, expect);
+    return putChange(this.partition, intent, key, content, expect, access);
   }
 
   #key(...segments: string[]): RecordKey {
@@ -543,6 +555,7 @@ function putChange(
   key: RecordKey,
   content: ContentSource,
   expect?: PutExpect,
+  access?: FileAccess,
 ): TypedChange {
   return {
     partition,
@@ -551,6 +564,7 @@ function putChange(
       key,
       content,
       ...(expect === undefined ? {} : { expect }),
+      ...(access === undefined ? {} : { access }),
     },
   };
 }

@@ -2059,6 +2059,9 @@ model"), all dormant. The opt-in is a later issue.
   it (swamp-club#3532).
 - **Removed versions**: the versions a data name recorded and then removed,
   kept per name as merged ranges. None is ever recorded again.
+- **File access**: what a put records about its file besides the bytes
+  (swamp-club#3693): `executable`, `private` or `private-executable`, absent
+  for a plain file. See "What a materialised file keeps".
 
 **Partitions are aggregates.** A partition key is built only by
 `partitionOf()` (`partition_key.ts`) from the identity of the aggregate it
@@ -3329,6 +3332,35 @@ with a fitness rule against repository file writes, is a later step. The read
 model never calls a repository, and the commit-log unit of work never calls
 the read model.
 
+**What a materialised file keeps** (swamp-club#3693). Its bytes, and its
+file access: whether it is executable (any execute bit on the writer's
+file) and whether it is private (no group or other bits). Never a full
+POSIX mode, an owner or umask bits. The writer records the access from the
+stat it already takes when it stages a data version's content file
+(`rawSource` in `unified_data_repository.ts`); metadata, markers, outputs,
+definitions, runs and lockfiles are always plain. Every checkout derives the
+mode from the one its own umask gave the new temp file
+(`modeWithAccess`, `file_access.ts`): executable adds an execute bit
+wherever a read bit is set, private keeps only the owner's bits, so a 0755
+output is 0755 under umask 022 and a 0600 file never widens. The read model
+applies it on every path that writes a file: a commit, the compacted base, the
+check after a reboot and an unreadable record's retry, so the access is kept
+wherever the read model keeps a put's content (`live_records`,
+`load_records`, `unreadable_records`, `base_records`). A file the
+checkout-copy guard keeps for its bytes is rewritten through a temp file
+when its access differs, never chmodded by path. Windows keeps no modes: a
+Windows writer records none and a Windows checkout applies none. A rename of
+a data name copies the bytes into a new plain file (`saveVersion`), so the
+renamed versions are plain, locally as everywhere.
+
+The field came with `commits.db` schema 7 (`base_records.access`): a swamp
+at schema 6 would reject a put's `access` as an unknown field and call the
+store corrupt, so it refuses the store as newer instead
+(`datastore_v3_schema_newer`). The commit outbox, which holds the same commit
+bodies, goes to schema 4 for the same reason, and `_read_model_v3.db` to
+schema 7. All three are one-way. A plain put serializes as before, so commits
+written before them read as plain files.
+
 **Where its state lives.** Everything the read model keeps is in
 `.swamp/_read_model_v3/`, built from the repository with
 `readModelStateDir(repoDir)` (`swampPath`), never from the datastore resolver:
@@ -3336,7 +3368,7 @@ the read model.
 | File | Holds |
 |---|---|
 | `_catalog_v3.db` | The v3 catalog |
-| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata; since schema 5 (swamp-club#3617, one-way) `unreadable_records`, `at_risk_copies` and `written_files`; since schema 6 (swamp-club#3691) `checkout_filter`, which a reset never clears |
+| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata; since schema 5 (swamp-club#3617, one-way) `unreadable_records`, `at_risk_copies` and `written_files`; since schema 6 (swamp-club#3691) `checkout_filter`, which a reset never clears; since schema 7 (swamp-club#3693, one-way) the file access of each live, staged and unreadable record |
 | `read_model.lock` | The lock that serializes catch-ups across processes |
 | `at-risk/<storage namespace>/<sha256>` | Checkout files moved aside by the checkout-copy guard (swamp-club#3617) |
 
@@ -3404,6 +3436,7 @@ fixed order:
    symlink check `assertSafePath` makes; within one exclusive section a
    directory's real path and whether it is a directory are looked up once
    (`PathCache`), and forgotten whenever the read model removes anything.
+   The temp file gets the put's file access before the rename (see below).
 2. **Catalog.** The projection's actions.
 3. **State.** One transaction holds the index changes, the live versions, the
    ownership of each file the commit wrote or removed, the keys it wrote or
@@ -5470,7 +5503,9 @@ process's identity, and `left_at_fence`; the commit body's `CommitWriter` is
 unchanged, so `commits.db` needs no bump. Schema 3 (swamp-club#3586) adds each
 entry's `abandoned_at` and the chain's `pending_fence` (**Fences**, below);
 neither touches a commit body or `commits.db`, so again only the outbox is
-bumped. Each bump is a one-way upgrade: an older swamp refuses a newer outbox
+bumped. Schema 4 (swamp-club#3693) changes no table: an entry's commit may
+now hold puts with a file access, which a swamp at schema 3 would reject as
+an unknown field. Each bump is a one-way upgrade: an older swamp refuses a newer outbox
 with `commit_outbox_schema_newer` ("upgrade swamp"), since it would land an
 abandoned entry or misjudge a left one. Without replication the outbox sits beside the shared
 `commits.db`, so the first new swamp to open it, a read-only command

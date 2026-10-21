@@ -950,13 +950,14 @@ async function checkChange(change: TypedChange): Promise<TypedChange> {
       "A pending put's content must be bytes or a function returning a stream",
     );
   }
-  // Builds the put once with empty content, so a bad key or expect fails
-  // here rather than blocking the partitions after it at commit.
+  // Builds the put once with empty content, so a bad key, expect or access
+  // fails here rather than blocking the partitions after it at commit.
   await putOp({
     intent,
     key: put.key,
     inline: "",
     ...(put.expect === undefined ? {} : { expect: put.expect }),
+    ...(put.access === undefined ? {} : { access: put.access }),
   });
   const frozen: PendingPut = Object.freeze({
     ...put,
@@ -1511,6 +1512,7 @@ async function storePut(
     key: put.key,
     ...content,
     ...(put.expect === undefined ? {} : { expect: put.expect }),
+    ...(put.access === undefined ? {} : { access: put.access }),
   });
 }
 

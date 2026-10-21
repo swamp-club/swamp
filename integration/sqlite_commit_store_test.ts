@@ -32,7 +32,7 @@ import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import type { Commit } from "../src/domain/datastore_v3/commit.ts";
 import { CommitStoreCorruptError } from "../src/domain/datastore_v3/commit_store.ts";
-import { leaseOp } from "../src/domain/datastore_v3/op.ts";
+import { leaseOp, putOp } from "../src/domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../src/domain/datastore_v3/partition.ts";
 import { WriterFencedError } from "../src/domain/datastore_v3/writer_lease.ts";
 import {
@@ -43,9 +43,11 @@ import { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
 import { UserError } from "../src/domain/errors.ts";
 import {
   blobPut,
+  dataKey,
   deleteVersion,
   MODEL_TYPE,
   modelCommit,
+  modelIntent,
   modelPartition,
   savePut,
   sha256Of,
@@ -461,6 +463,83 @@ Deno.test("SqliteCommitStore: a store whose snapshots carry removed versions is 
       assert(user_version > LAST_SCHEMA_WITHOUT_REMOVED);
     } finally {
       db.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore: a put's file access survives the commit body and the compacted base, at a schema older swamps refuse (swamp-club#3693)", async () => {
+  // Schema 6 is the last whose opFromJSON rejects a put's `access` field as
+  // unknown, so a swamp at 6 must see a newer schema and ask to be
+  // upgraded, not report the store corrupt.
+  const LAST_SCHEMA_WITHOUT_ACCESS = 6;
+  await withStore(async (store, path) => {
+    const blob = BlobRef.create({ sha256: "b".repeat(64), size: 9000 });
+    const inline = await savePut("x", 1);
+    const ops = [
+      await putOp({
+        intent: inline.intent,
+        key: inline.key,
+        inline: (inline.content as { inline: string }).inline,
+        access: "executable",
+      }),
+      await putOp({
+        intent: modelIntent({ kind: "data.save", name: "p", version: 1 }),
+        key: dataKey("p", 1),
+        blob,
+        access: "private",
+      }),
+      await savePut("plain", 1),
+    ];
+    await store.append(modelCommit(1, ops));
+    const [change] = await store.changesSince(0, 10);
+    assertEquals(
+      change.commit.ops.map((op) => op.kind === "put" ? op.access : "?"),
+      ["executable", "private", undefined],
+    );
+    await store.compactHistory(1);
+    const records = new Map(
+      (await store.readCompactedBase(undefined, 100)).entries.flatMap((
+        entry,
+      ) => entry.kind === "record" ? [[entry.key, entry.record]] : []),
+    );
+    assertEquals(records.get(dataKey("x", 1).toString())?.access, "executable");
+    assertEquals(records.get(dataKey("p", 1).toString())?.access, "private");
+    assertEquals(
+      "access" in records.get(dataKey("plain", 1).toString())!,
+      false,
+    );
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const { user_version } = db.prepare("PRAGMA user_version").get() as {
+        user_version: number;
+      };
+      assertEquals(user_version, COMMIT_STORE_SCHEMA_VERSION);
+      assert(user_version > LAST_SCHEMA_WITHOUT_ACCESS);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore: a store rolled back to schema 6 still holding the access column migrates again (swamp-club#3693)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    await SqliteCommitStore.open(path).close();
+    const db = new DatabaseSync(path);
+    db.exec("PRAGMA user_version=6");
+    db.close();
+    const store = SqliteCommitStore.open(path);
+    await store.close();
+    const check = new DatabaseSync(path, { readOnly: true });
+    try {
+      assertEquals(
+        (check.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        }).user_version,
+        COMMIT_STORE_SCHEMA_VERSION,
+      );
+    } finally {
+      check.close();
     }
   });
 });

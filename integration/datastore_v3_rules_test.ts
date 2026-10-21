@@ -148,10 +148,12 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/infrastructure/persistence/unit_of_work_binding.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/infrastructure/persistence/unit_of_work_scope.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   // swamp-club#3250, the data and output repositories' typed builders: the
-  // pure change factory (repository_changes.ts), the types it builds and
-  // the inline limit that decides bytes or a stream. The builders run only
-  // inside stageTyped, which returns before them on every v2 context.
+  // pure change factory (repository_changes.ts), the types it builds, the
+  // inline limit that decides bytes or a stream, and the file access a
+  // content file records (swamp-club#3693). The builders run only inside
+  // stageTyped, which returns before them on every v2 context.
   "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/file_access.ts",
   "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/op.ts",
   "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
   "src/infrastructure/persistence/yaml_output_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
