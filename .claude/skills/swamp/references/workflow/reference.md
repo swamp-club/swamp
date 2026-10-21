@@ -92,6 +92,9 @@ modifying, or removing a schedule takes effect without restart.
   `--max-concurrent-scheduled-runs <n>` (or `max-concurrent-scheduled-runs` in
   serve.yaml) so different workflows run together. A workflow never overlaps
   itself. Separate from `--max-concurrent-runs`, which limits API runs
+- Webhook runs have their own limit, `--max-concurrent-webhook-runs <n>`
+  (default 1); unlike schedules, deliveries to the same route may overlap. See
+  [execution-semantics.md](references/execution-semantics.md#webhook-delivery)
 - No catch-up: missed schedules while serve was down are not fired on startup
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
 - Health endpoint (`/health`) reports scheduled workflows, next fire times and

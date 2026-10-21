@@ -70,6 +70,11 @@ export interface WebhookEntry {
   workflow: string;
   /** Signature verification scheme, when serve reports it. */
   scheme?: string;
+  /** Unset on servers that predate webhook queue reporting (swamp-club#3665). */
+  active?: number;
+  queued?: number;
+  oldestQueuedAt?: string | null;
+  lastQueueDelayMs?: number | null;
 }
 
 interface ComponentHealth {

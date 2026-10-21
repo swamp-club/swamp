@@ -54,6 +54,14 @@ export interface HealthSnapshotWebhook {
   readonly route: string;
   readonly workflow: string;
   readonly scheme: string;
+  /** Runs taken off the queue and not yet settled. */
+  readonly active: number;
+  /** Deliveries waiting to start. */
+  readonly queued: number;
+  /** ISO-8601 enqueue time of the oldest waiting delivery. */
+  readonly oldestQueuedAt: string | null;
+  /** Enqueue-to-start delay of the last run that started. */
+  readonly lastQueueDelayMs: number | null;
 }
 
 /** One kind's last retention pass, from its watermark (swamp-club#3473). */
@@ -125,6 +133,12 @@ export interface WebhookProvider {
     readonly workflowIdOrName: string;
     readonly scheme: string;
   }>;
+  queueStatus(route: string): {
+    readonly active: number;
+    readonly queued: number;
+    readonly oldestQueuedAt: string | null;
+    readonly lastQueueDelayMs: number | null;
+  };
 }
 
 export interface WorkerProvider {
@@ -269,6 +283,7 @@ export class HealthCollector {
         route: ep.route,
         workflow: ep.workflowIdOrName,
         scheme: ep.scheme,
+        ...this.#deps.webhookProvider!.queueStatus(ep.route),
       }))
       : [];
 

@@ -509,6 +509,40 @@ export interface WebhookServiceDeps {
    * (swamp-club#2676). When absent runs are unscoped.
    */
   createVaultAccess?: () => ServeRunVaultScope | undefined;
+  /**
+   * How many webhook runs may be in flight at once, across every route.
+   * Deliveries to the same route may overlap. Defaults to 1: one run at a
+   * time, in arrival order.
+   */
+  maxConcurrentRuns?: number;
+  /** Clock for queue-delay reporting, in epoch ms. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/** A webhook route's queue state, as reported in health. */
+export interface WebhookQueueStatus {
+  /** Runs taken off the queue and not yet settled. */
+  readonly active: number;
+  /** Deliveries waiting to start. */
+  readonly queued: number;
+  /** ISO-8601 enqueue time of the oldest waiting delivery. */
+  readonly oldestQueuedAt: string | null;
+  /** Enqueue-to-start delay of the last run that started. */
+  readonly lastQueueDelayMs: number | null;
+}
+
+interface QueuedWebhookRun {
+  pendingRunId?: string;
+  putPromise?: Promise<void>;
+  workflowIdOrName: string;
+  route: string;
+  payload: WebhookPayload;
+  traceparent?: string;
+  tracestate?: string;
+  sourceIp?: string;
+  replayed?: boolean;
+  /** Epoch ms the entry joined the queue. */
+  enqueuedAt: number;
 }
 
 /** What the webhook service asks before it starts a run. */
@@ -537,8 +571,9 @@ export type WebhookRunAuthorizer = (
 
 /**
  * WebhookService manages webhook endpoint matching, signature verification,
- * and serialized workflow execution. Queues runs to avoid lock contention,
- * matching the pattern used by ScheduledExecutionService.
+ * and queued workflow execution. Up to `maxConcurrentRuns` queued runs
+ * execute at once, as in ScheduledExecutionService, except that runs of the
+ * same route or workflow may overlap: per-model locks guard shared state.
  */
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_QUEUE_DEPTH = 100;
@@ -559,19 +594,13 @@ export interface WebhookEndpointInfo {
 }
 
 export class WebhookService {
-  private readonly runQueue: Array<{
-    pendingRunId?: string;
-    putPromise?: Promise<void>;
-    workflowIdOrName: string;
-    route: string;
-    payload: WebhookPayload;
-    traceparent?: string;
-    tracestate?: string;
-    sourceIp?: string;
-    replayed?: boolean;
-  }> = [];
-  private processing = false;
-  private processingPromise: Promise<void> = Promise.resolve();
+  private readonly runQueue: QueuedWebhookRun[] = [];
+  private readonly maxConcurrentRuns: number;
+  private readonly now: () => number;
+  /** Entries taken off the queue and not yet settled, by settle promise. */
+  private readonly inFlight = new Map<Promise<void>, QueuedWebhookRun>();
+  /** Last enqueue-to-start delay, by route. */
+  private readonly lastQueueDelayMs = new Map<string, number>();
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<
     string,
@@ -583,6 +612,8 @@ export class WebhookService {
 
   constructor(private readonly deps: WebhookServiceDeps) {
     this.endpoints = [...deps.endpoints];
+    this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
+    this.now = deps.now ?? Date.now;
   }
 
   setEventHandler(handler: WebhookEventHandler): void {
@@ -625,6 +656,7 @@ export class WebhookService {
     for (const route of oldByRoute.keys()) {
       if (!newByRoute.has(route)) {
         changed++;
+        this.lastQueueDelayMs.delete(route);
         logger.info("Webhook route removed: {route}", { route });
       }
     }
@@ -642,6 +674,32 @@ export class WebhookService {
       workflowIdOrName: e.workflowIdOrName,
       scheme: e.verifier.scheme,
     }));
+  }
+
+  /**
+   * Returns a route's queue state: its runs in flight, its deliveries waiting
+   * to start, the oldest one's enqueue time, and the last run's
+   * enqueue-to-start delay.
+   */
+  queueStatus(route: string): WebhookQueueStatus {
+    let active = 0;
+    for (const entry of this.inFlight.values()) {
+      if (entry.route === route) active++;
+    }
+    const waiting = this.runQueue.filter((entry) => entry.route === route);
+    const oldest = waiting.reduce<number | undefined>(
+      (min, entry) =>
+        min === undefined || entry.enqueuedAt < min ? entry.enqueuedAt : min,
+      undefined,
+    );
+    return {
+      active,
+      queued: waiting.length,
+      oldestQueuedAt: oldest === undefined
+        ? null
+        : new Date(oldest).toISOString(),
+      lastQueueDelayMs: this.lastQueueDelayMs.get(route) ?? null,
+    };
   }
 
   /**
@@ -837,6 +895,7 @@ export class WebhookService {
       traceparent,
       tracestate,
       sourceIp,
+      enqueuedAt: this.now(),
     });
 
     this.emit({
@@ -845,18 +904,7 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    // Start processing the queue — only store when actually starting.
-    // Detached: the processor runs every queued entry, so it must not carry
-    // this request's span into runs that other deliveries queued.
-    if (!this.processing) {
-      this.processingPromise = runDetached(() => this.processQueue()).catch(
-        (error: unknown) => {
-          logger.error("Webhook queue processing failed: {error}", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      );
-    }
+    this.processQueue();
 
     if (httpResponse) return httpResponse;
     return Response.json({
@@ -924,24 +972,15 @@ export class WebhookService {
   }): void {
     // The pending entry stays in the run tracker for the next boot to replay.
     if (this.draining) return;
-    this.runQueue.push({ ...entry, replayed: true });
-    // Detached: at boot this runs inside the never-ending swamp.cli span.
-    if (!this.processing) {
-      this.processingPromise = runDetached(() => this.processQueue()).catch(
-        (error: unknown) => {
-          logger.error("Webhook replay queue processing failed: {error}", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      );
-    }
+    this.runQueue.push({ ...entry, replayed: true, enqueuedAt: this.now() });
+    this.processQueue();
   }
 
   /**
    * Begin shutdown: reject new deliveries with 503, drop queued runs (their
    * run-tracker pending entries stay, so boot reconciliation replays them),
-   * and wait up to `timeoutMs` for the in-flight run to finish. A timeout of
-   * 0 returns at once. Call {@link stop} afterwards to abort what is left.
+   * and wait up to `timeoutMs` for the in-flight runs to finish. A timeout
+   * of 0 returns at once. Call {@link stop} afterwards to abort what is left.
    */
   async drain(timeoutMs: number): Promise<void> {
     this.draining = true;
@@ -953,7 +992,7 @@ export class WebhookService {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.processingPromise,
+        Promise.allSettled([...this.inFlight.keys()]),
         new Promise<void>((resolve) => {
           timer = setTimeout(resolve, timeoutMs);
         }),
@@ -964,7 +1003,7 @@ export class WebhookService {
   }
 
   /**
-   * Gracefully stop: abort in-flight runs and drain the processing promise.
+   * Gracefully stop: abort in-flight runs and wait for them to settle.
    */
   async stop(): Promise<void> {
     this.stopped = true;
@@ -972,7 +1011,10 @@ export class WebhookService {
     for (const { controller } of this.running.values()) {
       controller.abort();
     }
-    await this.processingPromise;
+    // Runs exit quickly after abort
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight.keys()]);
+    }
   }
 
   /**
@@ -1005,53 +1047,73 @@ export class WebhookService {
     return count;
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
-
-    try {
-      while (this.runQueue.length > 0) {
-        const entry = this.runQueue.shift()!;
-        const { pendingRunId, putPromise } = entry;
-        if (putPromise) await putPromise;
-        // A drain that began while this entry was dequeued leaves it pending
-        // for the next boot to replay rather than starting it now.
-        if (this.draining) break;
-        if (pendingRunId && this.deps.runTracker) {
-          this.deps.runTracker.deletePendingRun(pendingRunId);
-          if (this.deps.controlPlaneStore) {
-            await this.deps.controlPlaneStore.delete(
-              `pending-runs/${pendingRunId}`,
-            ).catch((err: unknown) => {
-              logger.warn(
-                "Control-plane delete failed for pending run {id}: {error}",
-                {
-                  id: pendingRunId!,
-                  error: err instanceof Error ? err.message : String(err),
-                },
-              );
+  /**
+   * Starts queued entries, in arrival order, until `maxConcurrentRuns` are in
+   * flight. Called on every enqueue and whenever a run settles.
+   */
+  private processQueue(): void {
+    while (
+      this.inFlight.size < this.maxConcurrentRuns && this.runQueue.length > 0
+    ) {
+      const entry = this.runQueue.shift()!;
+      // Detached: a launch from a request, from boot replay or from a
+      // settling run must not carry that context's span into this run.
+      const settled: Promise<void> = runDetached(() => this.runEntry(entry))
+        .finally(() => {
+          this.inFlight.delete(settled);
+          try {
+            this.processQueue();
+          } catch (error) {
+            logger.error("Webhook run queue stalled: {error}", {
+              error: error instanceof Error ? error.message : String(error),
             });
           }
-        }
-        // Each entry starts outside any vault scope: the run enters its own
-        // principal's scope, and the queue's inherited context never carries
-        // another entry's (swamp-club#2676).
-        await withoutVaultAccess(() => this.executeWorkflow(entry));
-      }
-    } finally {
-      this.processing = false;
+        });
+      this.inFlight.set(settled, entry);
     }
   }
 
-  private async executeWorkflow(entry: {
-    workflowIdOrName: string;
-    route: string;
-    payload: WebhookPayload;
-    traceparent?: string;
-    tracestate?: string;
-    sourceIp?: string;
-    replayed?: boolean;
-  }): Promise<void> {
+  /** Never rejects: a failure is logged and the queue keeps going. */
+  private async runEntry(entry: QueuedWebhookRun): Promise<void> {
+    try {
+      const { pendingRunId, putPromise } = entry;
+      if (putPromise) await putPromise;
+      // A drain that began while this entry was dequeued leaves it pending
+      // for the next boot to replay rather than starting it now.
+      if (this.draining) return;
+      if (pendingRunId && this.deps.runTracker) {
+        this.deps.runTracker.deletePendingRun(pendingRunId);
+        if (this.deps.controlPlaneStore) {
+          await this.deps.controlPlaneStore.delete(
+            `pending-runs/${pendingRunId}`,
+          ).catch((err: unknown) => {
+            logger.warn(
+              "Control-plane delete failed for pending run {id}: {error}",
+              {
+                id: pendingRunId!,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          });
+        }
+      }
+      // Each entry starts outside any vault scope: the run enters its own
+      // principal's scope, and the queue's inherited context never carries
+      // another entry's (swamp-club#2676).
+      await withoutVaultAccess(() => this.executeWorkflow(entry));
+    } catch (error) {
+      logger.error(
+        "Webhook run for workflow {workflow} on {route} did not start: {error}",
+        {
+          workflow: entry.workflowIdOrName,
+          route: entry.route,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+
+  private async executeWorkflow(entry: QueuedWebhookRun): Promise<void> {
     const { route, payload, traceparent, tracestate, sourceIp } = entry;
     const replayed = entry.replayed ?? false;
     const authorization = await this.authorize({
@@ -1085,8 +1147,8 @@ export class WebhookService {
     const execId = crypto.randomUUID();
     // runId starts empty until the "started" event arrives with the real ID.
     // During this narrow window cancelByRunId() cannot match this run.
-    const inFlight = { controller, runId: "" };
-    this.running.set(execId, inFlight);
+    const tracked = { controller, runId: "" };
+    this.running.set(execId, tracked);
     // stop() may have swept `running` while this run was still dequeuing.
     if (this.stopped) controller.abort();
     let runId = "";
@@ -1115,7 +1177,11 @@ export class WebhookService {
           // this webhook's run is the one without a parent.
           if (event.kind === "started" && event.parentRunId === undefined) {
             runId = event.runId;
-            inFlight.runId = runId;
+            tracked.runId = runId;
+            this.lastQueueDelayMs.set(
+              route,
+              Math.max(0, this.now() - entry.enqueuedAt),
+            );
             this.emit({
               kind: "webhook_started",
               route,

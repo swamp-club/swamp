@@ -198,7 +198,7 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
   );
 });
 
-Deno.test("HealthCollector: includes webhook endpoints", async () => {
+Deno.test("HealthCollector: includes webhook endpoints with their queue state", async () => {
   const deps = makeDeps({
     webhookProvider: {
       listEndpoints: () => [{
@@ -206,15 +206,27 @@ Deno.test("HealthCollector: includes webhook endpoints", async () => {
         workflowIdOrName: "deploy",
         scheme: "github",
       }],
+      queueStatus: (route) => ({
+        active: route === "/hooks/github" ? 2 : 0,
+        queued: 1,
+        oldestQueuedAt: "2026-10-21T00:00:00.000Z",
+        lastQueueDelayMs: 1500,
+      }),
     },
   });
 
   const collector = new HealthCollector(deps);
   const snapshot = await collector.collect();
 
-  assertEquals(snapshot.webhooks.length, 1);
-  assertEquals(snapshot.webhooks[0].route, "/hooks/github");
-  assertEquals(snapshot.webhooks[0].workflow, "deploy");
+  assertEquals(snapshot.webhooks, [{
+    route: "/hooks/github",
+    workflow: "deploy",
+    scheme: "github",
+    active: 2,
+    queued: 1,
+    oldestQueuedAt: "2026-10-21T00:00:00.000Z",
+    lastQueueDelayMs: 1500,
+  }]);
 });
 
 Deno.test("HealthCollector: includes component health", async () => {

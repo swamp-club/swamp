@@ -27,6 +27,14 @@ import {
   healthSnapshotFor,
 } from "./health_snapshot_view.ts";
 
+/** A webhook route's queue state with nothing running or waiting. */
+const IDLE_WEBHOOK = {
+  active: 0,
+  queued: 0,
+  oldestQueuedAt: null,
+  lastQueueDelayMs: null,
+};
+
 function snapshot(): HealthSnapshot {
   return {
     instanceId: "instance-1",
@@ -95,8 +103,18 @@ function snapshot(): HealthSnapshot {
       ],
     },
     webhooks: [
-      { route: "/hooks/nightly", workflow: "nightly", scheme: "hmac" },
-      { route: "/hooks/secret", workflow: "secret-flow", scheme: "hmac" },
+      {
+        route: "/hooks/nightly",
+        workflow: "nightly",
+        scheme: "hmac",
+        ...IDLE_WEBHOOK,
+      },
+      {
+        route: "/hooks/secret",
+        workflow: "secret-flow",
+        scheme: "hmac",
+        ...IDLE_WEBHOOK,
+      },
     ],
     components: [
       {
@@ -226,6 +244,35 @@ Deno.test("healthSnapshotFor: queue data goes with its schedule, and nothing ser
   assertEquals(view.scheduling.timeZone, "Europe/London");
 });
 
+Deno.test("healthSnapshotFor: webhook queue data goes with its webhook", async () => {
+  const full = snapshot();
+  const busy = {
+    ...full,
+    webhooks: full.webhooks.map((w) => ({
+      ...w,
+      active: 3,
+      queued: 2,
+      oldestQueuedAt: "2026-01-01T00:00:00.000Z",
+      lastQueueDelayMs: 1_500,
+    })),
+  };
+  const r = reader(
+    false,
+    (resource) => resource.kind === "workflow" && resource.name === "nightly",
+  );
+  const view = await healthSnapshotFor(busy, r, RESOLVER);
+
+  assertEquals(view.webhooks, [{
+    route: "/hooks/nightly",
+    workflow: "nightly",
+    scheme: "hmac",
+    active: 3,
+    queued: 2,
+    oldestQueuedAt: "2026-01-01T00:00:00.000Z",
+    lastQueueDelayMs: 1_500,
+  }]);
+});
+
 Deno.test("healthSnapshotFor: decides on resolved fields, so model-type and tag grants apply", async () => {
   const r = reader(false, () => true);
   await healthSnapshotFor(snapshot(), r, RESOLVER);
@@ -253,7 +300,12 @@ Deno.test("healthSnapshotFor: an entry naming a workflow by id is decided on its
   const original = snapshot();
   const withId = {
     ...original,
-    webhooks: [{ route: "/hooks/by-id", workflow: "wf-2", scheme: "hmac" }],
+    webhooks: [{
+      route: "/hooks/by-id",
+      workflow: "wf-2",
+      scheme: "hmac",
+      ...IDLE_WEBHOOK,
+    }],
   };
   const denySecret = reader(
     false,
@@ -270,7 +322,12 @@ Deno.test("healthSnapshotFor: an entry that cannot be resolved is hidden", async
   const ghost = {
     ...original,
     activeRuns: [{ ...original.activeRuns[0], resourceName: "ghost" }],
-    webhooks: [{ route: "/hooks/ghost", workflow: "ghost", scheme: "hmac" }],
+    webhooks: [{
+      route: "/hooks/ghost",
+      workflow: "ghost",
+      scheme: "hmac",
+      ...IDLE_WEBHOOK,
+    }],
   };
 
   const view = await healthSnapshotFor(

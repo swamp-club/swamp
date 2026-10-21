@@ -53,6 +53,7 @@ import {
   webhookWorkflowName,
 } from "../lib/triggers.ts";
 import { formatCount } from "../lib/format.ts";
+import { scheduleQueueLabel } from "./schedule_queue.ts";
 import "../styles/triggers.css";
 
 /**
@@ -155,6 +156,8 @@ export function Webhooks(
         recent: summary?.recent ?? [],
         runs: summary?.runs ?? 0,
         failed: summary?.failed ?? 0,
+        active: w.active ?? 0,
+        queueLabel: scheduleQueueLabel(w, now),
       };
     })
     .sort((a, b) => a.route.localeCompare(b.route));

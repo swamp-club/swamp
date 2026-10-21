@@ -85,6 +85,7 @@ without it the default file is optional.
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely |
+| `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
 | `--ws-idle-timeout`, `--queue-timeout` | `SWAMP_WS_IDLE_TIMEOUT`, `SWAMP_QUEUE_TIMEOUT` | unset | Worker-facing |
@@ -212,7 +213,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
-| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules (with their queue state, see Cron below) and webhook endpoints |
+| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules and webhook endpoints, each with its queue state (see Cron and Webhooks below) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
@@ -1146,11 +1147,34 @@ security decision: hooks run only after verification, `transform` sees only
 redacted headers, and a missing type or failing hook returns a generic `500`
 before anything is queued. Hooks run inline with no timeout.
 
-Verified requests on every route join one queue and run one at a time, in
-arrival order (`WebhookService.processQueue`), so a delivery waits for every
-run queued ahead of it to complete or suspend. A workflow that must start long
-work without holding the queue submits it with
+Verified requests on every route join one queue (`WebhookService.processQueue`).
+Up to `--max-concurrent-webhook-runs` entries run at once (default 1: one at a
+time, in arrival order, so a delivery waits for every run queued ahead of it to
+complete or suspend). Above 1, the service starts queued entries in arrival
+order until the limit is reached, and each run that settles (succeeded, failed,
+refused, suspended or cancelled) frees its slot for the next. Unlike the
+scheduler there is no per-workflow exclusion: two deliveries to the same route
+run together (swamp-club#3665), since holding back a run that is already
+isolated from its sibling only adds delay. Shared state is still guarded where
+it is mutated, by the per-step model lock, so two runs whose steps touch the
+same behavior take turns at that step. Raising the limit gives up arrival-order
+execution; a workflow that relies on it (for example, publishing releases in
+merge order) needs the default or its own ordering. Under the default, a
+workflow that must start long work without holding the queue submits it with
 `swamp workflow run --server --detach` and returns (swamp-club#1090).
+
+Each launch starts detached from the request span and outside any vault
+scope, whether it comes from a delivery, boot replay or a run that just
+settled, so no run inherits another's trace or principal. Each webhook entry in
+the health snapshot, `/health` and the dashboard reports its queue state
+(`WebhookService.queueStatus`): `active` (runs of that route in flight,
+including ones waiting on a model lock), `queued` (deliveries waiting for a
+slot), `oldestQueuedAt` and `lastQueueDelayMs` (enqueue-to-start delay of the
+last run that started). A growing `queued` means the limit is the bottleneck;
+a high `active` with slow progress means the runs themselves are waiting. The
+state is per route, so the per-token health view filters it with its webhook;
+the unauthenticated `/health` exposes it as it does schedule queue state. The
+admin serve config reports the limit as `maxConcurrentWebhookRuns`.
 
 A verified request becomes a pending run before it executes, so a crash between
 receipt and completion is replayed at next boot (`src/serve/webhook.ts`). Each
@@ -1318,7 +1342,8 @@ instance, followed by `swamp serve reload` or a restart (see Known limits).
 **Rolling restart.** On SIGTERM an instance stops accepting triggers: `/ready`
 returns 503 `shutting_down`, webhook deliveries get 503 with `Retry-After: 5`,
 and the scheduler stops. Queued webhook and cron runs stay in the run tracker
-for the next boot to replay. In-flight webhook, cron (every in-flight
+for the next boot to replay. In-flight webhook (every in-flight
+run, up to `--max-concurrent-webhook-runs`), cron (every in-flight
 scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
 together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
