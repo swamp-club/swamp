@@ -743,3 +743,60 @@ Deno.test("typed workflow passes: a child workflow binds a parent sentinel as a 
     assertEquals(f.received.at(-1), { password: quotes(f), note: f.token });
   });
 });
+
+Deno.test("typed workflow passes: a step name resolved at run start keeps the sensitive-<vault>.<key> stand-in, for a plain step and for the forEach template its iterations are recorded under", async () => {
+  // Both names read a secret but no `self`, so the run-start pass resolves
+  // them: the forEach template is the identity every iteration's events and
+  // run record carry (`forEachTemplate`), and the plain name is a step's.
+  const workflow = () =>
+    Workflow.create({
+      name: "name-stand-in",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          consume(`p-${PASSWORD}`, { note: "${{ self.c.attributes.host }}" }, {
+            forEach: {
+              item: "c",
+              in: "${{ data.findBySpec('writer', 'creds') }}",
+            },
+          }),
+          consume(`q-${PASSWORD}`, { note: "plain" }),
+        ],
+      })],
+    });
+  const templatesOf = (run: Run) =>
+    new Set(
+      run.events.flatMap((e) =>
+        e.kind === "step_started" && e.forEachTemplate !== undefined
+          ? [e.forEachTemplate]
+          : []
+      ),
+    );
+  const plainNamesOf = (run: Run) =>
+    run.events.flatMap((e) =>
+      e.kind === "step_started" && e.stepId.startsWith("q-") ? [e.stepId] : []
+    );
+  await withFixture(async (f) => {
+    await f.seed();
+    const key = await f.storedKey("c-quotes");
+    const standIn = `sensitive-${VAULT}.${
+      encodeURIComponent(key).replaceAll(".", "%2E")
+    }`;
+    const run = await f.run(workflow(), true);
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals([...templatesOf(run)], [`p-${standIn}`]);
+    assertEquals(plainNamesOf(run), [`q-${standIn}`]);
+    assertEquals(f.received.length, f.canaries.length + 1);
+    // The stand-in is taken from the sentinel: nothing is read for a name.
+    assertEquals(f.loads, []);
+    await assertNothingLeaked(f, run);
+  });
+  await withFixture(async (f) => {
+    await f.seed();
+    const run = await f.run(workflow(), false);
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(templatesOf(run).size, 1);
+    assertEquals(plainNamesOf(run).length, 1);
+    await assertNothingLeaked(f, run);
+  });
+});

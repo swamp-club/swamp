@@ -26,11 +26,13 @@ import {
   isAssertExprPath,
   isAssertMessagePath,
   isGuardPath,
+  isStepNamePath,
   isTaskInputsPath,
   isTaskTargetPath,
   isTriggerInputsPath,
   replaceExpressionsTracked,
   type SpliceOrigin,
+  type SpliceSanitizer,
 } from "../expressions/expression_parser.ts";
 import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import { spliceOrigin } from "../expressions/splice_origin.ts";
@@ -47,6 +49,7 @@ import {
 import type { ExpressionLocation } from "../expressions/expression.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
+import type { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
 import {
   isDefinitionArgumentPath,
   sensitiveSpliceSanitizer,
@@ -589,12 +592,14 @@ export class WorkflowExpressionEvaluator {
       isAssertExprPath(path) || deferredTargetPaths.has(path);
     const originOf = (raw: string) =>
       origins.get(raw) ?? { map: ProvenanceMap.data() };
+    const sensitiveValues = sensitiveValuesOf(context);
     const tracked = replaceExpressionsTracked(
       workflowData,
       evaluatedValues,
       sourceProvenance,
       originOf,
       skipPath,
+      sensitiveValues ? stepNameSanitizer(sensitiveValues) : undefined,
     );
     const evaluated = WorkflowClass.fromData(tracked.data as WorkflowInput);
     const sanitizedTasks = sanitizeTasks(
@@ -619,6 +624,28 @@ export class WorkflowExpressionEvaluator {
       foreignTaskArguments,
     };
   }
+}
+
+/**
+ * Keeps a secret out of a step name the run-start pass resolves. A name is
+ * an identifier, so a recorded value spliced into one becomes its
+ * `sensitive-<vault>.<key>` stand-in, and in a typed run so does a sentinel,
+ * taken from the sentinel without reading a value
+ * (design/enablers/typed-secrets.md, Identifiers). The name of a forEach
+ * step is the identity of its iterations in events and the run record
+ * (`forEachTemplate`), so it is held to the same rule as a plain step's.
+ * Substitution is keyed on raw expression text, so the stand-in is applied
+ * per path: the same expression in a task input keeps its value.
+ */
+function stepNameSanitizer(values: RunSensitiveValues): SpliceSanitizer {
+  return {
+    whole: (value, path) =>
+      isStepNamePath(path) && typeof value === "string"
+        ? values.withPlaceholders(value)
+        : value,
+    embedded: (text, path) =>
+      isStepNamePath(path) ? values.withPlaceholders(text) : text,
+  };
 }
 
 /**
