@@ -122,6 +122,14 @@ export interface ModelEvaluateDeps {
   evaluateAllDefinitions: (
     sensitiveValues: RunSensitiveValues,
   ) => Promise<EvaluatedDefinition[]>;
+  /**
+   * The evaluation's sensitive values, with the registry that carries the
+   * internal typed-secrets option. Only tests set a typed one
+   * (design/enablers/typed-secrets.md Section 10.3): the passes then issue
+   * sentinels for every secret they read and the cache is written from them
+   * through the persisted form. The CLI and serve pass nothing.
+   */
+  createSensitiveValues?: () => RunSensitiveValues;
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
@@ -152,6 +160,8 @@ export function createModelEvaluateDeps(
    * repository built here; an injected repository carries its own.
    */
   unreadableContent?: UnreadableContentLookup,
+  /** See {@link ModelEvaluateDeps.createSensitiveValues}; tests only. */
+  createSensitiveValues?: () => RunSensitiveValues,
 ): ModelEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -211,6 +221,7 @@ export function createModelEvaluateDeps(
         writtenReferences,
       ),
     getEvaluatedPath: (type, id) => evaluatedDefRepo.getPath(type, id),
+    createSensitiveValues,
   };
 }
 
@@ -245,7 +256,8 @@ async function* evaluateAll(
   include: (entry: { definition: Definition; type: ModelType }) => boolean =
     () => true,
 ): AsyncIterable<ModelEvaluateEvent> {
-  const sensitiveValues = new RunSensitiveValues();
+  const sensitiveValues = deps.createSensitiveValues?.() ??
+    new RunSensitiveValues();
   const results = (await deps.evaluateAllDefinitions(sensitiveValues)).filter(
     include,
   );
@@ -293,7 +305,8 @@ async function* evaluateSingle(
   }
 
   const { definition, type } = lookupResult;
-  const sensitiveValues = new RunSensitiveValues();
+  const sensitiveValues = deps.createSensitiveValues?.() ??
+    new RunSensitiveValues();
   const result = await deps.evaluateDefinition(
     definition,
     type,

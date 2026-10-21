@@ -41,6 +41,7 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { SecretLoader } from "../../domain/vaults/secret_loader.ts";
@@ -1452,6 +1453,41 @@ Deno.test("modelMethodRun: a failed expression in another method's arguments doe
   assertEquals(executed, ["run"]);
 });
 
+Deno.test("modelMethodRun: the runtime pass is scoped to the invoked method", async () => {
+  const definition = createTestDefinition("scoped-model", "run");
+  let seenMethod: string | undefined;
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => ({
+      ...createFakeEvaluationService(),
+      resolveRuntimeExpressionsInDefinition: (
+        def: Definition,
+        _redactor: unknown,
+        _ctx: unknown,
+        _authored: unknown,
+        options?: { methodName?: string },
+      ) => {
+        seenMethod = options?.methodName;
+        return Promise.resolve({
+          definition: def,
+          secretBag: new VaultSecretBag(new SecretBagRegistry()),
+        });
+      },
+    }),
+  };
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("scoped-model", "run"),
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "error"), false);
+  assertEquals(seenMethod, "run");
+});
+
 Deno.test("modelMethodRun: an --input override replacing the failed argument lets the method run", async () => {
   const definition = Definition.create({
     name: "consumer",
@@ -1935,4 +1971,81 @@ Deno.test("methodExecutionFailed: keeps a worded cause's model spelling (swamp-c
   const error = methodExecutionFailed(cause);
   assertEquals(error.message, 'Behavior "x" stores sensitive output');
   assertEquals(messageFor(error, "model"), 'Model "x" stores sensitive output');
+});
+
+Deno.test("modelMethodRun: the run's sensitive values come from createSensitiveValues, and their registry reaches the passes and the delivery", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const seen: SecretBagRegistry[] = [];
+  let delivered: SecretBagRegistry | undefined;
+  const typedRegistry = new SecretBagRegistry({ typedSecrets: true });
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    // A typed run's values mask the registry's sentinels through the redactor.
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+    createSensitiveValues: (redactor) =>
+      new RunSensitiveValues(redactor, typedRegistry),
+    createEvaluationService: () => ({
+      ...createFakeEvaluationService(),
+      hasDefinitionExpressions: () => true,
+      evaluateDefinition: (
+        def: Definition,
+        _type: unknown,
+        sensitiveValues: RunSensitiveValues,
+        _inputs: unknown,
+        _ctx: unknown,
+        bag: VaultSecretBag,
+      ) => {
+        seen.push(sensitiveValues.sentinels, bag.registry);
+        return Promise.resolve({
+          definition: def,
+          type: TEST_MODEL_TYPE,
+          hadExpressions: false,
+        });
+      },
+      resolveRuntimeExpressionsInDefinition: (
+        def: Definition,
+        _redactor: unknown,
+        _ctx: unknown,
+        _authored: unknown,
+        options: { secretBag: VaultSecretBag },
+      ) => {
+        seen.push(options.secretBag.registry);
+        return Promise.resolve({
+          definition: def,
+          secretBag: options.secretBag,
+        });
+      },
+    }),
+    createExecutionService: () =>
+      ({
+        executeWorkflow: (
+          _def: Definition,
+          _modelDef: unknown,
+          _method: string,
+          ctx: { vaultSecrets?: VaultSecretBag },
+        ) => {
+          delivered = ctx.vaultSecrets?.registry;
+          return Promise.resolve({ dataHandles: [] });
+        },
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+  };
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+  assertEquals(events.some((e) => e.kind === "error"), false);
+  assertEquals(seen.length, 3);
+  for (const registry of seen) assertEquals(registry, typedRegistry);
+  assertEquals(delivered, typedRegistry);
+  assertEquals(typedRegistry.typedSecrets, true);
 });

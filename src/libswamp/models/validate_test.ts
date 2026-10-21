@@ -40,6 +40,8 @@ import {
   defineModel,
   type ModelDefinition,
 } from "../../domain/models/model.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -585,3 +587,77 @@ Deno.test("modelValidate all with include that accepts nothing reports no models
 
   assertEquals(events[1].kind, "error");
 });
+
+Deno.test(
+  "createModelValidateDeps: a typed registry reports Secret usage with the definition file and location, and an untyped one does not",
+  async () => {
+    await withTempDir(async (dir) => {
+      const type = ModelType.create("test/typed-validate");
+      const modelDef: ModelDefinition = defineModel({
+        type,
+        version: "2026.10.21.1",
+        globalArguments: z.object({ token: z.string() }),
+        methods: {
+          create: {
+            description: "Create",
+            arguments: z.object({}),
+            execute: () => Promise.resolve({}),
+          },
+        },
+      });
+      const definition = Definition.create({
+        name: "typed-validate",
+        globalArguments: { token: "${{ vault.get('v', 'k') == 'x' }}" },
+      });
+      await new YamlDefinitionRepository(dir).save(type, definition);
+      const store = new CatalogStore(":memory:");
+      try {
+        const typed = createModelValidateDeps(
+          dir,
+          {
+            createSensitiveValues: () =>
+              new RunSensitiveValues(
+                undefined,
+                new SecretBagRegistry({ typedSecrets: true }),
+              ),
+          },
+          undefined,
+          new FileSystemUnifiedDataRepository(dir, undefined, store),
+          store,
+        );
+        const { results } = await typed.validateModel(
+          definition,
+          modelDef,
+          type,
+        );
+        const usage = results.find((r) => r.name === "Secret usage");
+        assertEquals(usage?.passed, false);
+        assertStringIncludes(
+          usage?.error ?? "",
+          "secret_operation_unsupported",
+        );
+        assertStringIncludes(usage?.error ?? "", "Secret == string");
+        assertStringIncludes(
+          usage?.error ?? "",
+          `${join(dir, "models")}`,
+        );
+        assertStringIncludes(usage?.error ?? "", "globalArguments.token:1:1");
+
+        const untyped = createModelValidateDeps(
+          dir,
+          undefined,
+          undefined,
+          new FileSystemUnifiedDataRepository(dir, undefined, store),
+          store,
+        );
+        const plain = await untyped.validateModel(definition, modelDef, type);
+        assertEquals(
+          plain.results.some((r) => r.name === "Secret usage"),
+          false,
+        );
+      } finally {
+        store.close();
+      }
+    });
+  },
+);

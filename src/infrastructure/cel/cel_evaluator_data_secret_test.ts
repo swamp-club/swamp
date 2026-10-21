@@ -559,7 +559,7 @@ Deno.test("CelEvaluator data secrets: has(), optional access and key membership 
   );
 });
 
-Deno.test("CelEvaluator data secrets: a model indexed by name and by id reads one view, model.method results are not adapted, and the caller's context is never mutated", async () => {
+Deno.test("CelEvaluator data secrets: a model indexed by name and by id reads one view, model.method results are adapted, and the caller's context is never mutated", async () => {
   const f = fixture();
   Object.freeze(f.context);
   const originalModel = f.context.model;
@@ -570,15 +570,22 @@ Deno.test("CelEvaluator data secrets: a model indexed by name and by id reads on
   assert(f.bag.registry.issuedEntryOf(byName));
   assertEquals(f.context.model, originalModel);
 
+  // model.method answers the record's attributes with its tagged fields as
+  // Secrets (typed-secrets 3.5), so the reference leaves as a data-origin
+  // sentinel and never as comparable text.
   const withMethod = fixture();
   withMethod.context.modelMethod = {
     method: () => Promise.resolve(withMethod.records.main),
   };
-  assertEquals(
-    await withMethod.evaluate("model.method('db', 'run').attributes.password"),
-    REF_A,
-  );
-  assertEquals(withMethod.bag.registry.isEmpty, true);
+  const password = await withMethod.evaluate(
+    "model.method('db', 'run').password",
+  ) as string;
+  const entry = withMethod.bag.registry.issuedEntryOf(password);
+  assertEquals(entry?.dataOrigin, true);
+  assertEquals(entry && "reference" in entry && entry.reference, {
+    vaultName: "prod",
+    key: "A",
+  });
 });
 
 Deno.test("CelEvaluator: with typed secrets off, the same reads return the stored reference text, read with the default options, and issue nothing", async () => {

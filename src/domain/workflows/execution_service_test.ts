@@ -4041,6 +4041,29 @@ Deno.test({
 
 Deno.test({
   name:
+    "DefaultStepExecutor: the step's runtime pass leaves another method's vault and env expressions as authored, so they neither fail the step nor are read",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const unset = `SWAMP_UNSET_${crypto.randomUUID().replaceAll("-", "")}`;
+    const received = await runDefinitionStep(
+      {
+        name: "two-methods",
+        methods: {
+          execute: { arguments: { value: "ok" } },
+          delete: { arguments: { value: `\${{ env.${unset} }}` } },
+        },
+      },
+      "execute",
+      undefined,
+      {},
+    );
+    assertEquals(received, [{ value: "ok" }]);
+  },
+});
+
+Deno.test({
+  name:
     "DefaultStepExecutor: self.globalArguments in a method argument sees the evaluated global argument (swamp-club#2455)",
   sanitizeResources: false,
   sanitizeOps: false,

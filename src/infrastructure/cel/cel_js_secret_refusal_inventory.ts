@@ -35,9 +35,12 @@
  * - `named-delivery`: the value is passed along by design and the callee owns
  *   it (`dyn(dyn)`, `cel.bind`, `optional.of`, `optional.value`,
  *   `optional.orValue`, and the `inputs` of `CelModelNamespace.method`).
- *   Until `model.method` converts its inputs at the boundary (Section 4.5),
- *   the internal environment walks them and refuses a `Secret` there with
- *   `secret_destination_refused`, so none reaches the method.
+ *   `model.method` converts its inputs at the boundary (Section 4.5,
+ *   typed-secrets 3.5): each `Secret` becomes a sentinel of the run's bag
+ *   and the delegate receives a plain copy; with no bag a `Secret` there is
+ *   refused with `secret_destination_refused`. Its string positions, the
+ *   model and method names, are routing arguments whose refusal records
+ *   `secret_destination_refused` rather than `secret_operation_unsupported`.
  * - `argument-walk`: the position takes a list a `Secret` may sit in, and the
  *   handler walks it at run time (`secret_destination_refused` for the vary
  *   list of the data accessors). No signature can refuse an element.

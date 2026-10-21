@@ -23,6 +23,7 @@ import {
   SECRET_OPERATION_UNSUPPORTED,
 } from "../../domain/expressions/errors.ts";
 import {
+  currentFaultScope,
   recordBoundaryFailure,
   recordedFaults,
   recordFault,
@@ -130,4 +131,17 @@ Deno.test("recordSensitiveReference: outside a scope the read fails closed", () 
     Error,
     "outside an expression evaluation",
   );
+});
+
+Deno.test("runInFaultScope: a fresh scope has no container comparison and no release, and currentFaultScope answers it inside and nothing outside", () => {
+  assertEquals(currentFaultScope(), undefined);
+  runInFaultScope((scope) => {
+    assertEquals(scope.containerComparison, false);
+    assertEquals(scope.release, undefined);
+    assertEquals(currentFaultScope(), scope);
+    scope.containerComparison = true;
+    scope.release = (value) => value;
+    assertEquals(currentFaultScope()?.containerComparison, true);
+  });
+  assertEquals(currentFaultScope(), undefined);
 });

@@ -72,7 +72,8 @@ const REFUSED = [
   "inputs.secret in [inputs.other]",
   "inputs.rec.password in [inputs.other, inputs.mixed]",
   "data.latest(inputs.other, 'd', [inputs.mixed])",
-  "model.method('m', 'n', {'p': inputs.mixed, 'q': inputs.other})",
+  "model.method(inputs.secret, 'n', {'p': inputs.other})",
+  "model.method('m', inputs.mixed)",
 ];
 
 Deno.test("CelEvaluator typed secrets: no refusal carries a canary, in any form, whatever the operands hold", () => {

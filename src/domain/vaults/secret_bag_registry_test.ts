@@ -179,3 +179,40 @@ Deno.test("SecretBagRegistry.typedSecrets: off unless asked for, the internal op
     true,
   );
 });
+
+Deno.test("SecretBagRegistry.independent: a new registry carries the option and nothing else", async () => {
+  for (const typed of [true, false]) {
+    const registry = new SecretBagRegistry({ typedSecrets: typed });
+    registry.register({
+      sentinel: sentinel(0),
+      reference: REF,
+      encoding: "raw",
+      dataOrigin: false,
+      location: "loc",
+    });
+    let asked = 0;
+    const ask = () => {
+      asked++;
+      return Promise.resolve();
+    };
+    await registry.confirmExists(REF, ask);
+    const nested = registry.independent();
+    assertEquals(nested.typedSecrets, typed);
+    assertEquals(nested.isEmpty, true);
+    assertEquals(nested.entryOf(sentinel(0)), undefined);
+    assertEquals(nested.drewPrefixOf(sentinel(0)), false);
+    // The parent's answer is not reused: the nested registry asks again.
+    await nested.confirmExists(REF, ask);
+    assertEquals(asked, 2);
+    // And issuing into the nested registry leaves the parent untouched.
+    nested.register({
+      sentinel: sentinel(0, "f".repeat(32)),
+      reference: REF,
+      encoding: "raw",
+      dataOrigin: false,
+      location: "nested",
+    });
+    assertEquals([...registry.all()].length, 1);
+    assertEquals(registry.drewPrefixOf(sentinel(0, "f".repeat(32))), false);
+  }
+});

@@ -194,6 +194,7 @@ import {
 } from "../data/data_record_mapper.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { MethodReportRunner } from "./method_report_runner.ts";
+import { modelMethodResourceResult } from "./model_method_result.ts";
 import {
   WorkflowReportRunner,
   type WorkflowStepExecutionDetail,
@@ -2458,6 +2459,7 @@ export class DefaultStepExecutor implements StepExecutor {
       // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
       // The expression context is passed so that dynamic vault.get() arguments
       // (e.g. vault.get(inputs.vaultName, inputs.secretKey)) can be CEL-evaluated.
+      // Scoped to the step's method, as every delivery's runtime pass is.
       const runtimeResult = await expressionEvaluator
         .resolveRuntimeExpressionsInDefinition(
           executedDefinition,
@@ -2468,6 +2470,7 @@ export class DefaultStepExecutor implements StepExecutor {
             secretBag: stepSecretBag,
             rawGlobalArguments: evaluatedDefinition.globalArguments,
             provenance: definitionProvenance.sanitized,
+            methodName: task.methodName,
           },
         );
       evaluatedDefinition = runtimeResult.definition;
@@ -5881,6 +5884,7 @@ export class WorkflowExecutionService {
           "__guard_",
           stepExprContext,
           options,
+          celEvaluator.isTyped,
         );
         if (
           partitionAuthoredAt(
@@ -6310,6 +6314,7 @@ export class WorkflowExecutionService {
           "__assert_",
           stepExprContext,
           options,
+          celEvaluator.isTyped,
         );
         try {
           if (!options.authoredExpressions.has(task.expr)) {
@@ -7447,6 +7452,12 @@ export class WorkflowExecutionService {
     prefix: string,
     stepExprContext: ExpressionContext | undefined,
     options: StepOptions,
+    /**
+     * Whether the evaluator that reads the result runs with typed secrets,
+     * so a stored record it is handed is adapted (typed-secrets 3.5). An
+     * untyped evaluator keeps receiving the parsed content.
+     */
+    typedConsumer = false,
   ): Record<string, unknown> {
     return {
       method: async (
@@ -7499,18 +7510,21 @@ export class WorkflowExecutionService {
               modelName,
             );
             if (def) {
-              const raw = await this.dataRepo.getContent(
+              // A typed evaluator is handed the stored record to adapt, so a
+              // tagged field is a Secret and never comparable text
+              // (typed-secrets 3.5, design Section 4.5 item 4). Keyed on the
+              // consuming evaluator, not the run's registry: until Phase 4
+              // the guard and assert evaluators are untyped and keep the
+              // parsed content, whatever the registry carries.
+              const resource = await modelMethodResourceResult(
+                this.dataRepo,
                 def.type,
                 def.definition.id,
                 resourceHandle.specName,
+                modelName,
+                typedConsumer,
               );
-              if (raw) {
-                try {
-                  return JSON.parse(new TextDecoder().decode(raw));
-                } catch {
-                  return new TextDecoder().decode(raw);
-                }
-              }
+              if (resource !== undefined) return resource;
             }
           }
         }

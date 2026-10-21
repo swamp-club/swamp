@@ -43,6 +43,7 @@ import {
   runWithRejectionReport,
 } from "./expression_rejection_report.ts";
 import { ProvenanceMap } from "./provenance_map.ts";
+import { InvalidExpressionError } from "./errors.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -1340,6 +1341,139 @@ Deno.test("resolveRuntimeExpressionsInDefinition: resolves only the authored exp
   });
 });
 
+Deno.test("resolveRuntimeExpressionsInDefinition: with a method, resolves the global arguments and that method's expressions and leaves another method's as authored", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    await withMockedEnv({ SWAMP_TEST_SCOPED: "resolved" }, async () => {
+      const unset = `SWAMP_UNSET_${crypto.randomUUID().replaceAll("-", "")}`;
+      const definition = Definition.create({
+        name: "scoped-model",
+        globalArguments: { token: "${{ env.SWAMP_TEST_SCOPED }}" },
+        methods: {
+          run: { arguments: { key: "${{ env.SWAMP_TEST_SCOPED }}-run" } },
+          other: {
+            arguments: {
+              // Fails the pass whenever it is evaluated.
+              key: `\${{ env.${unset} }}`,
+              // The raw text the run method resolves, kept as authored here.
+              shared: "${{ env.SWAMP_TEST_SCOPED }}",
+            },
+          },
+        },
+      });
+      const authored = collectAuthoredExpressions(definition.toData());
+
+      const scoped = await service.resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        authored,
+        { methodName: "run" },
+      );
+      assertEquals(scoped.definition.globalArguments.token, "resolved");
+      assertEquals(
+        scoped.definition.getMethodArguments("run").key,
+        "resolved-run",
+      );
+      assertEquals(
+        scoped.definition.getMethodArguments("other").key,
+        `\${{ env.${unset} }}`,
+      );
+      assertEquals(
+        scoped.definition.getMethodArguments("other").shared,
+        "${{ env.SWAMP_TEST_SCOPED }}",
+      );
+      assertEquals(scoped.failedExpressions, undefined);
+
+      // No method named: the global arguments alone.
+      const globalsOnly = await service.resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        authored,
+        { methodName: "" },
+      );
+      assertEquals(globalsOnly.definition.globalArguments.token, "resolved");
+      assertEquals(
+        globalsOnly.definition.getMethodArguments("run").key,
+        "${{ env.SWAMP_TEST_SCOPED }}-run",
+      );
+
+      // Without the option the whole definition is the pass's, and the
+      // other method's expression fails it.
+      await assertRejects(
+        () =>
+          service.resolveRuntimeExpressionsInDefinition(
+            definition,
+            undefined,
+            undefined,
+            authored,
+          ),
+        InvalidExpressionError,
+        unset,
+      );
+    });
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: keepUnevaluated leaves only the failing expression as authored text, records it, and resolves the rest whatever the order", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    await withMockedEnv({ SWAMP_TEST_KEPT: "resolved" }, async () => {
+      const unset = `SWAMP_UNSET_${crypto.randomUUID().replaceAll("-", "")}`;
+      const unsetRaw = `\${{ env.${unset} }}`;
+      const setRaw = "${{ env.SWAMP_TEST_KEPT }}";
+      for (
+        const [failing, resolving] of [["first", "second"], ["second", "first"]]
+      ) {
+        const definition = Definition.create({
+          name: "kept-model",
+          globalArguments: failing === "first"
+            ? { first: unsetRaw, second: setRaw }
+            : { first: setRaw, second: unsetRaw },
+        });
+        const decided: string[] = [];
+        const result = await service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          collectAuthoredExpressions(definition.toData()),
+          {
+            keepUnevaluated: (error, expression) => {
+              decided.push(expression.path);
+              return error instanceof InvalidExpressionError;
+            },
+          },
+        );
+        assertEquals(result.definition.globalArguments[failing], unsetRaw);
+        assertEquals(result.definition.globalArguments[resolving], "resolved");
+        assertEquals(decided, [`globalArguments.${failing}`]);
+        assertEquals([...result.failedExpressions!.keys()], [unsetRaw]);
+        assertStringIncludes(
+          result.failedExpressions!.get(unsetRaw)!.message,
+          unset,
+        );
+
+        // A decision of false fails the pass with the error, as the default.
+        await assertRejects(
+          () =>
+            service.resolveRuntimeExpressionsInDefinition(
+              definition,
+              undefined,
+              undefined,
+              collectAuthoredExpressions(definition.toData()),
+              { keepUnevaluated: () => false },
+            ),
+          InvalidExpressionError,
+          unset,
+        );
+      }
+    });
+  });
+});
+
 Deno.test("resolveRuntimeExpressionsInData: refuses an env expression absent from the authored set", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -2303,5 +2437,200 @@ Deno.test("resolveVaultExpressionsInDefinition: the deprecated seam loads the va
     );
     assertEquals(resolved.globalArguments.token, "s3cret");
     assertEquals(reads, ["token"]);
+  });
+});
+
+// ============================================================================
+// typed secrets (3.5): the run's registry selects the evaluator
+// ============================================================================
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run evaluates vault.get as the CEL function, checks each reference and issues a sentinel, reading no value", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-runtime-def",
+      globalArguments: { token: "${{ vault.get('v', 'token') }}" },
+      methods: {
+        run: {
+          arguments: { cmd: "echo ${{ vault.get('v', 'token') + '-x' }}" },
+        },
+      },
+    });
+    const { definition: executed, secretBag } = await service
+      .resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        "unrestricted",
+        { secretBag: new VaultSecretBag(registry) },
+      );
+    assertEquals(reads, []);
+    assertEquals(checks, ["token"]);
+    assertEquals(secretBag.registry, registry);
+    const entries = [...registry.all()];
+    assertEquals(entries.length, 2);
+    for (const entry of entries) {
+      assertEquals("value" in entry, false);
+      assertEquals(
+        "reference" in entry && entry.reference,
+        { vaultName: "v", key: "token" },
+      );
+    }
+    const locations = entries.map((entry) =>
+      "location" in entry ? entry.location : ""
+    );
+    assertStringIncludes(locations[0], "globalArguments.token");
+    assertStringIncludes(locations[1], "methods.run.arguments.cmd");
+    // The composition left CEL as text around the sentinel, and a delivery
+    // loads it once.
+    const loaded = await service.secretLoader(undefined).load(
+      secretBag,
+      executed.toData(),
+    );
+    assertEquals(
+      loaded.resolveRaw(executed.getMethodArguments("run").cmd as string),
+      "echo s3cret-x",
+    );
+    assertEquals(reads, ["token"]);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run refuses a vault alias instead of leaving it as raw text", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-alias-def",
+      methods: {
+        run: { arguments: { cmd: "${{ dyn(vault).get('v', 'token') }}" } },
+      },
+    });
+    await assertRejects(
+      () =>
+        service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          "unrestricted",
+          { secretBag: new VaultSecretBag(registry) },
+        ),
+      Error,
+      "vault",
+    );
+    assertEquals(reads, []);
+    assertEquals(checks, []);
+    assertEquals(registry.isEmpty, true);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run fails a missing key at evaluation with secret_reference_unavailable", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads } = countingEvaluator(repoDir, {});
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-missing-def",
+      methods: {
+        run: { arguments: { cmd: "${{ vault.get('v', 'missing') }}" } },
+      },
+    });
+    const error = await assertRejects(
+      () =>
+        service.resolveRuntimeExpressionsInDefinition(
+          definition,
+          undefined,
+          undefined,
+          "unrestricted",
+          { secretBag: new VaultSecretBag(registry) },
+        ),
+      Error,
+      "Secret 'missing' not found in vault 'v'",
+    );
+    assertEquals(
+      (error as { code?: string }).code,
+      "secret_reference_unavailable",
+    );
+    assertEquals(reads, []);
+  });
+});
+
+Deno.test("evaluateDefinition: a typed run evaluates plain expressions as before and keeps vault.get deferred", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const values = new RunSensitiveValues(undefined, registry);
+    const definition = Definition.create({
+      name: "typed-pass-def",
+      inputs: { properties: { host: { type: "string" } } },
+      globalArguments: {
+        target: "${{ 'web-' + inputs.host }}",
+        token: "${{ vault.get('v', 'token') }}",
+      },
+      methods: {
+        run: { arguments: { cmd: "${{ self.globalArguments.target }}" } },
+      },
+    });
+    const result = await service.evaluateDefinition(
+      definition,
+      ModelType.create("command/shell"),
+      values,
+      { host: "a" },
+    );
+    assertEquals(result.definition.globalArguments.target, "web-a");
+    assertEquals(
+      result.definition.globalArguments.token,
+      "${{ vault.get('v', 'token') }}",
+    );
+    assertEquals(result.definition.getMethodArguments("run").cmd, "web-a");
+    assertEquals(reads, []);
+    assertEquals(checks, []);
+    assertEquals(registry.isEmpty, true);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: a typed run keeps the legacy bare-token and backtick argument forms, and leaves text that is not CEL raw", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      "a@b": "s3cret-at",
+      "k-1": "s3cret-dash",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const definition = Definition.create({
+      name: "typed-legacy-forms",
+      methods: {
+        run: {
+          arguments: {
+            at: "${{ vault.get(v, a@b) }}",
+            dash: "${{ vault.get(`v`, `k-1`) }}",
+            prose: "${{ not cel at all {{ }}",
+          },
+        },
+      },
+    });
+    const { definition: executed, secretBag } = await service
+      .resolveRuntimeExpressionsInDefinition(
+        definition,
+        undefined,
+        undefined,
+        "unrestricted",
+        { secretBag: new VaultSecretBag(registry) },
+      );
+    assertEquals(reads, []);
+    assertEquals(checks.sort(), ["a@b", "k-1"]);
+    const args = executed.getMethodArguments("run");
+    const loaded = await service.secretLoader(undefined).load(
+      secretBag,
+      executed.toData(),
+    );
+    assertEquals(loaded.resolveRaw(args.at as string), "s3cret-at");
+    assertEquals(loaded.resolveRaw(args.dash as string), "s3cret-dash");
+    assertEquals(args.prose, "${{ not cel at all {{ }}");
+    assertEquals(reads.sort(), ["a@b", "k-1"]);
   });
 });
