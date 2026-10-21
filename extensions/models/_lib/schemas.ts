@@ -49,6 +49,8 @@ export const Phase = z.enum([
   "verifying",
   "pr_open",
   "pr_failed",
+  // Legacy: pr_merged moved here before merging became shipping. No method
+  // enters it now; stored records that hold it close out with `complete`.
   "releasing",
   "notify",
   "summarizing",
@@ -108,7 +110,6 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   link_pr: ["verifying", "pr_open", "pr_failed"],
   pr_merged: ["pr_open"],
   pr_failed: ["pr_open"],
-  ship: ["releasing"],
   complete: ["implementing", "pr_open", "releasing"],
   notify: ["notify"],
   skip_notify: ["notify"],

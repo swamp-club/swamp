@@ -270,7 +270,7 @@ async function warnIfCarriedElsewhere(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.10.15.1",
+  version: "2026.10.21.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -498,6 +498,16 @@ export const model = {
         "triaged. " +
         "Re-approval needs a fresh adversarial review of the revised plan. " +
         "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.10.21.1",
+      description:
+        "pr_merged now ships: it transitions swamp-club to shipped, with " +
+        "every linked issue, and moves to notify. There is no release step " +
+        "to wait for any more, so ship and its releaseUrl and releaseNotes " +
+        "inputs are removed; a lifecycle left in releasing closes out with " +
+        "complete. No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -2749,7 +2759,8 @@ export const model = {
     pr_merged: {
       rollbackOnFailure: true,
       description:
-        "Record that the linked PR has been merged. Transitions to releasing.",
+        "Record that the linked PR has been merged, which ships it. " +
+        "Transitions to notify and sets swamp-club status to shipped.",
       arguments: z.object({
         mergedAt: z.string().optional().describe(
           "ISO-8601 timestamp of when the PR was merged. Defaults to now.",
@@ -2798,14 +2809,14 @@ export const model = {
 
         handles.push(
           await context.writeResource("state", "state-main", {
-            phase: "releasing",
+            phase: "notify",
             issueNumber,
             updatedAt: now,
           }),
         );
 
         context.logger.info(
-          "PR merged (attempt {attempt}) \u2014 awaiting release build",
+          "PR merged (attempt {attempt}) \u2014 shipped, awaiting contributor notification",
           { attempt },
         );
 
@@ -2813,26 +2824,36 @@ export const model = {
           context.globalArgs,
           context.logger,
         );
-        await recordLifecycle(sc, {
-          step: "pr_merged",
-          targetStatus: "in_progress",
-          summary:
-            `PR merged (attempt ${attempt}): ${prContent.url} \u2014 awaiting release`,
-          emoji: "\u{1F389}",
-          payload: {
-            url: prContent.url,
-            attempt,
-            mergedAt: args.mergedAt ?? now,
-          },
-          isVerbose: false,
-        });
-        await mirrorMilestone(
-          sc,
-          await readLinkedIssues(context.readResource),
-          issueNumber,
-          { step: "pr_merged", url: prContent.url, attempt },
-          context.logger,
-        );
+        if (sc) {
+          // Transition before the entry post — see the note in `triage`.
+          recordUpstreamChange(
+            context.logger,
+            "status transition to shipped",
+            await sc.transitionStatus("shipped"),
+          );
+          const linked = await readLinkedIssues(context.readResource);
+          await advanceLinked(sc, linked, "shipped", context.logger);
+          await recordLifecycle(sc, {
+            step: "pr_merged",
+            targetStatus: "shipped",
+            summary:
+              `PR merged (attempt ${attempt}): ${prContent.url} \u2014 shipped`,
+            emoji: "\u{1F389}",
+            payload: {
+              url: prContent.url,
+              attempt,
+              mergedAt: args.mergedAt ?? now,
+            },
+            isVerbose: false,
+          });
+          await mirrorMilestone(
+            sc,
+            linked,
+            issueNumber,
+            { step: "pr_merged", url: prContent.url, attempt },
+            context.logger,
+          );
+        }
 
         return { dataHandles: handles };
       },
@@ -2924,88 +2945,6 @@ export const model = {
         );
 
         return { dataHandles: handles };
-      },
-    },
-
-    ship: {
-      rollbackOnFailure: true,
-      description:
-        "Mark the release as shipped after the release build completes. " +
-        "Transitions to done and sets swamp-club status to shipped.",
-      arguments: z.object({
-        releaseUrl: z.string().optional().describe(
-          "URL of the release (e.g., GitHub release page, package registry). Optional.",
-        ),
-        releaseNotes: z.string().optional().describe(
-          "Brief release notes or summary. Optional.",
-        ),
-      }),
-      execute: async (
-        args: { releaseUrl?: string; releaseNotes?: string },
-        context: {
-          globalArgs: GlobalArgs;
-          logger: {
-            info: (msg: string, props: Record<string, unknown>) => void;
-            warning: (msg: string, props: Record<string, unknown>) => void;
-          };
-          writeResource: (
-            specName: string,
-            instanceName: string,
-            data: Record<string, unknown>,
-          ) => Promise<{ name: string }>;
-          readResource?: (
-            instanceName: string,
-            version?: number,
-          ) => Promise<Record<string, unknown> | null>;
-        },
-      ) => {
-        const { issueNumber } = context.globalArgs;
-        const now = new Date().toISOString();
-
-        const stateHandle = await context.writeResource("state", "state-main", {
-          phase: "notify",
-          issueNumber,
-          updatedAt: now,
-        });
-
-        context.logger.info("Shipped — awaiting contributor notification", {});
-
-        const sc = await createSwampClubClient(
-          context.globalArgs,
-          context.logger,
-        );
-        if (sc) {
-          // Transition before the entry post — see the note in `triage`.
-          recordUpstreamChange(
-            context.logger,
-            "status transition to shipped",
-            await sc.transitionStatus("shipped"),
-          );
-          const linked = await readLinkedIssues(context.readResource);
-          await advanceLinked(sc, linked, "shipped", context.logger);
-          await recordLifecycle(sc, {
-            step: "shipped",
-            targetStatus: "shipped",
-            summary: args.releaseUrl
-              ? `Shipped: ${args.releaseUrl}`
-              : "Shipped",
-            emoji: "\u{1F680}",
-            payload: {
-              releaseUrl: args.releaseUrl,
-              releaseNotes: args.releaseNotes,
-            },
-            isVerbose: false,
-          });
-          await mirrorMilestone(
-            sc,
-            linked,
-            issueNumber,
-            { step: "shipped", releaseUrl: args.releaseUrl },
-            context.logger,
-          );
-        }
-
-        return { dataHandles: [stateHandle] };
       },
     },
 

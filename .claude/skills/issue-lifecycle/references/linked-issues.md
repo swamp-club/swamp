@@ -44,8 +44,8 @@ swamp behavior run @swamp/issue-lifecycle link_issue issue-<N> \
   --input reason="<why the same work fixes it>"
 ```
 
-`link_issue` can run in any phase from `triaging` to `releasing`, and does not
-change N's phase. It:
+`link_issue` can run in any phase from `triaging` until the PR merges, and does
+not change N's phase. It:
 
 - creates the relationship in swamp-club: `related_to` (shown as "Sibling of")
   from N to M, or `duplicate_of` from M to N;
@@ -62,17 +62,17 @@ still links, when M is already related to another issue that has not shipped.
 
 ## What moves with the primary issue
 
-- **Status.** `triage`, `approve`, `fast_forward`, `ship` and `complete` move
-  every linked issue with N. A failure to move one fails the method, and
+- **Status.** `triage`, `approve`, `fast_forward`, `pr_merged` and `complete`
+  move every linked issue with N. A failure to move one fails the method, and
   re-running it is safe.
 - **PR.** `link_pr` records the PR on N and on every linked issue, so each
   reporter's shipped notification links it.
 - **Milestones.** Linked issues get a short "via #N" entry for
   `implementation_started`, `verification_passed`, `attestation_posted`,
-  `pr_linked`, `pr_merged`, `pr_failed`, `shipped` and `complete`. These entries
-  never carry free text such as failure reasons, release notes or N's title,
-  because N may be restricted to admins. If one fails to post, the method warns
-  instead of failing.
+  `pr_linked`, `pr_merged`, `pr_failed` and `complete`. These entries never
+  carry free text such as failure reasons or N's title, because N may be
+  restricted to admins. If one fails to post, the method warns instead of
+  failing.
 - **Attestation.** Posted once, on N. It is keyed by commit, not by issue.
 - **Not copied.** Plans, reviews, approval, classification and verification
   failures stay on N.

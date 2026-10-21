@@ -54,6 +54,11 @@ Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", 
   assertEquals(TRANSITIONS.complete, ["implementing", "pr_open", "releasing"]);
 });
 
+Deno.test("TRANSITIONS: there is no ship — pr_merged ships and releasing closes out with complete", () => {
+  assertEquals(TRANSITIONS.ship, undefined);
+  assertEquals(TRANSITIONS.pr_merged, ["pr_open"]);
+});
+
 Deno.test("TRANSITIONS: start (resume) includes pr_open, pr_failed, releasing, and notify", () => {
   const startPhases = TRANSITIONS.start;
   assertEquals(startPhases.includes("pr_open"), true);

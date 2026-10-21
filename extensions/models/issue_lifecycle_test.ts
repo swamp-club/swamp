@@ -368,8 +368,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.10.15.1", () => {
-  assertEquals(model.version, "2026.10.15.1");
+Deno.test("model: version is 2026.10.21.1", () => {
+  assertEquals(model.version, "2026.10.21.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -549,7 +549,7 @@ Deno.test("post_attestation: a valid document gets as far as needing swamp-club"
 // pr_merged
 // ---------------------------------------------------------------------------
 
-Deno.test("pr_merged: transitions state to releasing and writes mergedAt with attempt", async () => {
+Deno.test("pr_merged: transitions state to notify and writes mergedAt with attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
@@ -564,7 +564,7 @@ Deno.test("pr_merged: transitions state to releasing and writes mergedAt with at
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "releasing");
+    assertEquals(stateWrite!.data.phase, "notify");
     assertEquals(stateWrite!.data.issueNumber, 42);
 
     const prWrite = writes.find((w) => w.specName === "pullRequest");
@@ -675,40 +675,6 @@ Deno.test("pr_failed: rejects empty reason via zod schema", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// ship
-// ---------------------------------------------------------------------------
-
-Deno.test("ship: transitions state to notify", async () => {
-  const { context, writes, restore } = await buildTestContext(42);
-  try {
-    await model.methods.ship.execute({}, context);
-
-    const stateWrite = writes.find((w) => w.specName === "state");
-    assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "notify");
-    assertEquals(stateWrite!.data.issueNumber, 42);
-  } finally {
-    await restore();
-  }
-});
-
-Deno.test("ship: accepts optional releaseUrl and releaseNotes", async () => {
-  const { context, restore } = await buildTestContext(42);
-  try {
-    // Should not throw
-    await model.methods.ship.execute(
-      {
-        releaseUrl: "https://github.com/swamp-club/swamp/releases/tag/v1.0.0",
-        releaseNotes: "Bug fix release",
-      },
-      context,
-    );
-  } finally {
-    await restore();
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Model registration smoke tests (new methods)
 // ---------------------------------------------------------------------------
 
@@ -720,8 +686,8 @@ Deno.test("model: exposes pr_failed method definition", () => {
   assertEquals("pr_failed" in model.methods, true);
 });
 
-Deno.test("model: exposes ship method definition", () => {
-  assertEquals("ship" in model.methods, true);
+Deno.test("model: has no ship method — pr_merged ships", () => {
+  assertEquals("ship" in model.methods, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -2207,7 +2173,6 @@ Deno.test("issue_lifecycle: rollbackOnFailure matches the pinned method set", ()
     "link_pr",
     "pr_merged",
     "pr_failed",
-    "ship",
     "complete",
     "skip_notify",
     "summarize",

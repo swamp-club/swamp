@@ -130,9 +130,9 @@ attestation to flow through.
 
 7. **Drive the lifecycle to `done`.** `link_pr` only reaches `pr_open` — it is
    not the end of the flow, and stopping there leaves the issue parked. Walk the
-   rest: `pr_merged` (→ `releasing`), `ship` or `complete` (→ `notify`),
-   `notify` or `skip_notify` (→ `summarizing`), then `summarize` (→ `done`). See
-   "Closing Out a Shipped Issue" below for the exact commands.
+   rest: `pr_merged` (→ `notify`; merging is shipping, so it sets swamp-club to
+   `shipped`), `notify` or `skip_notify` (→ `summarizing`), then `summarize` (→
+   `done`). See "Closing Out a Shipped Issue" below for the exact commands.
 
 ### Example
 
@@ -248,7 +248,7 @@ can a PR be created.
 
 ### Phase 5: Contributor Notification
 
-After `ship` or `complete`, run `notify`. It checks the author against the
+After `pr_merged` or `complete`, run `notify`. It checks the author against the
 swamp-club team roster itself: team members are skipped, anyone else is thanked
 with a ripple. Never check membership with GitHub — swamp-club handles are not
 GitHub logins.
@@ -343,9 +343,9 @@ Use this table to determine what to do next:
 | `approved`       | Read [references/implementation.md](references/implementation.md); plan needs changes → `iterate`  |
 | `implementing`   | Run code conformance review, then verify                                                           |
 | `verifying`      | Read [references/verification.md](references/verification.md)                                      |
-| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed                            |
+| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged (ships it), `pr_failed` if failed                 |
 | `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)                               |
-| `releasing`      | Check release build: `ship` when done, or `complete` as fallback                                   |
+| `releasing`      | Legacy phase from before merging shipped — run `complete`                                          |
 | `notify`         | Run `notify` — it thanks external authors and skips team members by itself                         |
 | `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet                             |
 | `done`           | Nothing to do — lifecycle is complete                                                              |
@@ -366,13 +366,14 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    ```
    swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
    ```
-3. If the phase is `pr_open`, record the merge:
+3. If the phase is `pr_open`, record the merge — this ships the issue:
    ```
    swamp behavior run @swamp/issue-lifecycle pr_merged issue-<N>
    ```
-4. If the phase is `releasing`, ship it:
+4. If the phase is `releasing` (a lifecycle merged before merging shipped),
+   close it out:
    ```
-   swamp behavior run @swamp/issue-lifecycle ship issue-<N>
+   swamp behavior run @swamp/issue-lifecycle complete issue-<N>
    ```
 5. If the phase is `notify`, run `notify` (see Phase 5).
 6. If the phase is `summarizing`, record the summary:

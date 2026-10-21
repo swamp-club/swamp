@@ -112,7 +112,9 @@ a `pr-cooldown` check — calling `pr_merged` or `pr_failed` within 3 minutes of
 Check the PR status externally (e.g.,
 `gh pr view <url> --json state,statusCheckRollup`):
 
-- **PR merged**: call `pr_merged` to transition to `releasing`
+- **PR merged**: call `pr_merged`. Merging is shipping: it transitions the phase
+  to `notify`, sets the swamp-club status to `shipped` (with every linked
+  issue), and posts a `pr_merged` lifecycle entry
   ```
   swamp behavior run @swamp/issue-lifecycle pr_merged issue-<N>
   ```
@@ -136,31 +138,17 @@ When in `pr_failed`, diagnose and fix the issue. Then either:
   swamp behavior run @swamp/issue-lifecycle implement issue-<N>
   ```
 
-## 5. Ship the Release
+## 5. Ship
 
-After `pr_merged` transitions to `releasing`, wait for the release build to
-complete. Once the release is out, call `ship`:
-
-```
-swamp behavior run @swamp/issue-lifecycle ship issue-<N>
-```
-
-Optionally pass release metadata:
-
-```
-swamp behavior run @swamp/issue-lifecycle ship issue-<N> --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
-```
-
-This transitions the phase to `notify`, transitions the swamp-club status to
-`shipped`, and posts a `shipped` lifecycle entry.
-
-For quick close-out (e.g., the PR merged and you just want to wrap up),
-`complete` still works from `implementing`, `pr_open`, or `releasing`
-(transitions to `notify`).
+There is no separate release step — `pr_merged` ships the issue. For quick
+close-out (e.g., the PR merged and you just want to wrap up), `complete` still
+works from `implementing`, `pr_open`, or `releasing` (transitions to `notify`).
+A lifecycle left in `releasing` from before merging shipped closes out with
+`complete`.
 
 ## 6. Notify the Contributor
 
-After `ship` or `complete`, the phase is `notify`. Run `notify` and let the
+After `pr_merged` or `complete`, the phase is `notify`. Run `notify` and let the
 model decide — it checks the author's swamp-club user id against the swamp-club
 team roster (eligible assignees):
 
