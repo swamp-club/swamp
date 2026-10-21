@@ -1157,8 +1157,8 @@ for (
     ],
     [
       "other",
-      "1 dependency(ies) not audited because of the reason shown above. " +
-      "Resolve the reason above, then re-run.",
+      "1 dependency(ies) not audited. Resolve the reason given in each " +
+      "not-audited finding, then re-run.",
     ],
   ] as const
 ) {
@@ -1191,8 +1191,8 @@ Deno.test("composeScore: dependency-trust with several causes sends the author t
   assertEquals(factor.earnedPoints, 0);
   assertStringIncludes(
     factor.remediation ?? "",
-    "2 dependency(ies) not audited, for different reasons. Apply each " +
-      "one's fix above. Also: 1 loose dependency",
+    "2 dependency(ies) not audited, for different reasons. Apply the fix " +
+      "listed with each not-audited finding. Also: 1 loose dependency",
   );
   assertEquals(factor.remediation?.includes("Re-run"), false);
 });

@@ -618,18 +618,20 @@ function richReadmeRow(
 }
 
 /** Why a dependency with this fix was not audited, for the row's text. */
-const NOT_AUDITED_WHY: Readonly<Record<NotAuditedFix, string>> = {
+const NOT_AUDITED_WHY: Readonly<
+  Record<Exclude<NotAuditedFix, "other">, string>
+> = {
   outage: "an OSV, npm or JSR lookup failed",
   specifier: "no published version matches the specifier",
   name: "the package name is invalid",
   unexpected: "the audit failed unexpectedly",
-  other: "of the reason shown above",
 };
 
 /**
- * The remediation for unaudited dependencies: one shared cause gives its
- * reason and fix, several send the author to each finding's own fix. Only
- * an outage says to re-run.
+ * The remediation for unaudited dependencies: one known cause gives its
+ * reason and fix; several, or one the row cannot name, send the author to
+ * each finding's own fix, which the findings report prints and JSON carries
+ * as `remediation`. Only an outage says to re-run.
  */
 function notAuditedText(
   count: number,
@@ -638,9 +640,13 @@ function notAuditedText(
   const kinds: readonly NotAuditedFix[] = fixes.length > 0 ? fixes : ["other"];
   if (kinds.length > 1) {
     return `${count} dependency(ies) not audited, for different reasons. ` +
-      "Apply each one's fix above.";
+      "Apply the fix listed with each not-audited finding.";
   }
   const fix = kinds[0];
+  if (fix === "other") {
+    return `${count} dependency(ies) not audited. Resolve the reason given ` +
+      "in each not-audited finding, then re-run.";
+  }
   return `${count} dependency(ies) not audited because ${
     NOT_AUDITED_WHY[fix]
   }. ${NOT_AUDITED_FIX[fix]}`;
