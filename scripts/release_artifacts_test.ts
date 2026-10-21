@@ -368,6 +368,8 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
       string,
       {
         if?: string;
+        needs?: string;
+        permissions?: Record<string, string>;
         steps: {
           name?: string;
           run?: string;
@@ -384,11 +386,23 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
   // outputs that branch-controlled build scripts could change.
   const gate =
     "(github.event_name == 'pull_request' && github.event.pull_request.merged == true) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)";
-  for (const step of steps) {
+  const publisher = workflow.jobs["github-release"];
+  assertEquals(workflow.jobs.release.permissions?.contents, "read");
+  assertEquals(steps[0].with?.["persist-credentials"], false);
+  assertEquals(publisher.permissions?.contents, "write");
+  assertEquals(publisher.needs, "release");
+  assertEquals(publisher.if, gate);
+  assert(
+    publisher.steps.every((s) =>
+      !s.run && !s.uses?.startsWith("actions/checkout@")
+    ),
+  );
+  for (const step of [...steps, ...publisher.steps]) {
     if (
       step.uses?.startsWith("google-github-actions/") ||
       step.name === "Trigger UAT" ||
-      step.name === "Create GitHub Release"
+      step.name === "Create GitHub Release" ||
+      step.name === "Stage GitHub Release assets"
     ) {
       assertEquals(step.if, gate);
     }
@@ -400,16 +414,19 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
   const publish = steps.findIndex((s) =>
     s.name === "Package release artifacts and optionally upload to GCS"
   );
-  const trigger = steps.findIndex((s) => s.name === "Trigger UAT");
-  assert(publish >= 0 && trigger > publish);
-  const githubRelease = steps.findIndex((s) =>
+  const stage = steps.findIndex((s) =>
+    s.name === "Stage GitHub Release assets"
+  );
+  assert(publish >= 0 && stage > publish);
+  const trigger = publisher.steps.findIndex((s) => s.name === "Trigger UAT");
+  const githubRelease = publisher.steps.findIndex((s) =>
     s.name === "Create GitHub Release"
   );
-  assert(githubRelease > publish && githubRelease < trigger);
-  const release = steps[githubRelease];
+  assert(githubRelease >= 0 && githubRelease < trigger);
+  const release = publisher.steps[githubRelease];
   assertEquals(
     release.with?.tag_name,
-    "v${{ steps.version.outputs.version }}",
+    "v${{ needs.release.outputs.version }}",
   );
   assertEquals(release.with?.fail_on_unmatched_files, true);
   assertEquals(
