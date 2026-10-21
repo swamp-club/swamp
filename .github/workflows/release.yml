@@ -173,6 +173,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          # Service-account JSON key with object create/read access to the
+          # swamp-club-artifacts bucket. Stable promotion runs in swamp-uat.
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Upload versioned artifacts to GCS
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GCS_BUCKET: swamp-club-artifacts
+        run: bash scripts/upload_release_artifacts.sh "$RELEASE_VERSION"
+
       - name: Trigger UAT
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
