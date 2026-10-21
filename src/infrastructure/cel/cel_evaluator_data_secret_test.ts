@@ -722,24 +722,47 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
   );
 });
 
-Deno.test("CelEvaluator.prepareSynchronousReads: a denied reference fails the prepare with the access error before any sentinel is issued, and a missing vault scope fails closed", async () => {
+Deno.test("CelEvaluator.prepareSynchronousReads: a denied reference is kept and fails the synchronous evaluate that reads its record with the access error before any sentinel is issued, as does a missing vault scope", async () => {
   const f = fixture();
   const name = "${{ model.web.resource.creds.main.attributes.user }}";
   const denying = RunVaultAccess.create({ allowedVaults: ["other"] });
   await runWithVaultAccess(denying, async () => {
-    const denied = await assertRejects(
-      () => f.evaluator.prepareSynchronousReads(name, f.context, f.scope),
+    const prepared = await f.evaluator.prepareSynchronousReads(
+      name,
+      f.context,
+      f.scope,
+    );
+    assertEquals(prepared.authorizedReferences?.size, 0);
+    assertEquals(
+      [...prepared.deniedReferences?.keys() ?? []].sort(),
+      ["prod\u0000A", "prod\u0000B"],
+    );
+    const denied = assertThrows(
+      () =>
+        f.evaluator.evaluate(
+          "model.web.resource.creds.main.attributes.user",
+          f.context,
+          prepared,
+        ),
       InvalidExpressionError,
     );
     assertInstanceOf(denied.cause, VaultAccessDeniedError);
     assertStringIncludes(denied.message, "Reading vault 'prod' is refused");
+    // An expression of the same content that reads no record evaluates.
+    assertEquals(f.evaluator.evaluate("inputs.item", f.context, prepared), "x");
   });
   assertEquals(f.bag.registry.isEmpty, true);
-  await assertRejects(
+  const unscoped = await f.evaluator.prepareSynchronousReads(name, f.context, {
+    secretBag: f.bag,
+  });
+  assertEquals(unscoped.deniedReferences?.size, 2);
+  assertThrows(
     () =>
-      f.evaluator.prepareSynchronousReads(name, f.context, {
-        secretBag: f.bag,
-      }),
+      f.evaluator.evaluate(
+        "model.web.resource.creds.main.attributes.user",
+        f.context,
+        unscoped,
+      ),
     InvalidExpressionError,
     "requires the run's vault check scope",
   );
@@ -762,4 +785,65 @@ Deno.test("CelEvaluator.prepareSynchronousReads: a denied reference fails the pr
     SecretRefusedError,
   );
   assertEquals(refused.code, SECRET_REFERENCE_INVALID);
+});
+
+Deno.test("CelEvaluator.prepareSynchronousReads: a denied record of a named model that the expression never reads does not fail a read of another of its records", async () => {
+  const f = fixture();
+  const web = f.context.model as Record<string, Record<string, unknown>>;
+  const context = {
+    ...f.context,
+    model: {
+      ...web,
+      web: {
+        ...web.web,
+        resource: {
+          ...(web.web.resource as object),
+          legacy: {
+            old: record(
+              "old",
+              { password: "${{ vault.get('restricted', 'X') }}", user: "o" },
+              pathsTag("password"),
+            ),
+          },
+        },
+      },
+    },
+  };
+  const access = RunVaultAccess.create({ allowedVaults: ["prod"] });
+  await runWithVaultAccess(access, async () => {
+    const prepared = await f.evaluator.prepareSynchronousReads(
+      "${{ model.web.resource.creds.main.attributes.user }}",
+      context,
+      f.scope,
+    );
+    assertEquals(
+      [...prepared.authorizedReferences ?? []].sort(),
+      ["prod\u0000A", "prod\u0000B"],
+    );
+    assertEquals([...prepared.deniedReferences?.keys() ?? []], [
+      "restricted\u0000X",
+    ]);
+    assertEquals(
+      f.evaluator.evaluate(
+        "model.web.resource.creds.main.attributes.user",
+        context,
+        prepared,
+      ),
+      "u",
+    );
+    // The denied record fails only the read that touches it, with the
+    // access error, and nothing is issued for it.
+    const denied = assertThrows(
+      () =>
+        f.evaluator.evaluate(
+          "model.web.resource.legacy.old.attributes.user",
+          context,
+          prepared,
+        ),
+      InvalidExpressionError,
+      "Reading vault 'restricted' is refused",
+    );
+    assertInstanceOf(denied.cause, VaultAccessDeniedError);
+    assertEquals(f.bag.registry.isEmpty, true);
+  });
 });

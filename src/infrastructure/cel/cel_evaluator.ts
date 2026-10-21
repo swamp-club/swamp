@@ -716,6 +716,16 @@ export interface EvaluationScope {
    * fails closed on any other, as it does with no set at all.
    */
   readonly authorizedReferences?: ReadonlySet<string>;
+  /**
+   * The sensitive-field references the authorization step could not
+   * authorize, each with the error its check raised: a denial under the
+   * run's vault access, an unavailable vault, or no vault scope to check
+   * under. A synchronous `evaluate` that reads one fails with that error,
+   * before release issues a sentinel. One the evaluation never reads costs
+   * nothing, so a denied record of a named model does not fail a read of
+   * another of its records.
+   */
+  readonly deniedReferences?: ReadonlyMap<string, unknown>;
 }
 
 /**
@@ -1278,24 +1288,36 @@ export class CelEvaluator {
         }
         throw this.evaluationError(error, expression, wrappedContext);
       }
-      this.refuseSynchronousSensitiveReads(faults, scope, expression);
+      this.refuseSynchronousSensitiveReads(
+        faults,
+        scope,
+        expression,
+        wrappedContext,
+      );
       return this.releaseWithSecrets(result, run, expression);
     });
   }
 
   /**
    * Fails a synchronous evaluation closed on a sensitive-field reference it
-   * read that {@link prepareSynchronousReads} did not authorize: the
-   * authorization is asynchronous, so the synchronous path can only accept
-   * what was authorized ahead of it (typed-secrets 3.3 and 4.1).
+   * read that {@link prepareSynchronousReads} did not authorize: with the
+   * error the step's check raised for it, or, for one the step never saw,
+   * naming evaluateAsync, since the authorization is asynchronous and the
+   * synchronous path can only accept what was authorized ahead of it
+   * (typed-secrets 3.3 and 4.1).
    */
   private refuseSynchronousSensitiveReads(
     faults: FaultScope,
     scope: EvaluationScope,
     expression: string,
+    wrappedContext: Record<string, unknown>,
   ): void {
     for (const key of faults.sensitiveReferences.keys()) {
       if (scope.authorizedReferences?.has(key)) continue;
+      const denial = scope.deniedReferences?.get(key);
+      if (denial !== undefined) {
+        throw this.evaluationError(denial, expression, wrappedContext);
+      }
       throw new InvalidExpressionError(
         "a record with sensitive fields requires evaluateAsync for the authorization of its references",
         expression,
@@ -1314,10 +1336,14 @@ export class CelEvaluator {
    * each reference through the scope's vault service under the run's vault
    * access, as the asynchronous path does after evaluation. The scope it
    * returns carries the authorized keys, so a synchronous `evaluate` under
-   * it accepts those reads and keeps failing closed on any other. A denial
-   * fails here, before any evaluation issues a sentinel; a record whose tag
-   * does not parse is left for the evaluation to refuse. With typed secrets
-   * off, or no record read, the scope is returned as given.
+   * it accepts those reads and keeps failing closed on any other. The read
+   * set names models, not records, so a check that fails (a denial, an
+   * unavailable vault, no vault scope) is kept for its reference and fails
+   * the evaluation that reads the record holding it, before release issues
+   * a sentinel; a reference the evaluation never reads costs nothing. A
+   * record whose tag does not parse is left for the evaluation to refuse.
+   * With typed secrets off, or no record read, the scope is returned as
+   * given.
    */
   async prepareSynchronousReads(
     content: unknown,
@@ -1327,6 +1353,7 @@ export class CelEvaluator {
     await prepareExpressionsIn(content, context);
     if (!this.typedSecrets) return scope;
     const authorized = new Set(scope.authorizedReferences ?? []);
+    const denied = new Map(scope.deniedReferences ?? []);
     let changed = false;
     const seen = new Set<string>();
     const wrappedContext = this.wrapNamespaces(context);
@@ -1344,30 +1371,31 @@ export class CelEvaluator {
       );
       for (const reference of references) {
         const key = sensitiveReferenceKey(reference);
-        if (authorized.has(key)) continue;
+        if (authorized.has(key) || denied.has(key)) continue;
+        changed = true;
         if (scope.vault === undefined) {
-          throw new InvalidExpressionError(
-            "a record with sensitive fields requires the run's vault check scope",
-            expr.celExpression,
+          denied.set(
+            key,
+            new Error(
+              "a record with sensitive fields requires the run's vault check scope",
+            ),
           );
+          continue;
         }
         try {
           await scope.vault.service.authorizeRead(
             reference.vaultName,
             reference.key,
           );
+          authorized.add(key);
         } catch (error) {
-          throw this.evaluationError(
-            error,
-            expr.celExpression,
-            wrappedContext,
-          );
+          denied.set(key, error);
         }
-        authorized.add(key);
-        changed = true;
       }
     }
-    return changed ? { ...scope, authorizedReferences: authorized } : scope;
+    return changed
+      ? { ...scope, authorizedReferences: authorized, deniedReferences: denied }
+      : scope;
   }
 
   /** {@link evaluateAsync} with typed secrets on, as {@link evaluateWithSecrets}. */

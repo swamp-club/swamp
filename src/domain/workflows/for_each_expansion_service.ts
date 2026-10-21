@@ -38,7 +38,11 @@ import type { Step } from "./step.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 import { UserError } from "../errors.ts";
-import { SecretRefusedError } from "../expressions/errors.ts";
+import {
+  InvalidExpressionError,
+  SecretRefusedError,
+} from "../expressions/errors.ts";
+import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { keySegment, ProvenanceMap } from "../expressions/provenance_map.ts";
 import { spliceOrigin } from "../expressions/splice_origin.ts";
 
@@ -112,9 +116,15 @@ export function resolveForEachStepName(
       } catch (error) {
         // A secret refusal is loud and names the expression
         // (design/enablers/typed-secrets.md Section 4.3): it fails the
-        // expansion rather than falling back to a suffixed raw name. Every
-        // other failure keeps the fallback this function exists for.
+        // expansion rather than falling back to a suffixed raw name, and so
+        // does a read the run's vault access denies, which the typed
+        // evaluate raises for the record a name reads. Every other failure
+        // keeps the fallback this function exists for.
         if (error instanceof SecretRefusedError) throw error;
+        if (
+          error instanceof InvalidExpressionError &&
+          error.cause instanceof VaultAccessDeniedError
+        ) throw error;
         hadEvalFailure = true;
         return span.raw;
       }
@@ -274,9 +284,9 @@ export class ForEachExpansionService {
   /**
    * The authorization step before a name template is evaluated
    * synchronously: in a typed run it authorizes the sensitive-field
-   * references the template can read, and a denial fails the expansion
-   * before any name is built. Nothing to do for a name without expressions
-   * or an evaluator without the step.
+   * references the template can read, and a denied record a name reads
+   * fails the expansion when that name is evaluated. Nothing to do for a
+   * name without expressions or an evaluator without the step.
    */
   private async prepareName(
     step: Step,

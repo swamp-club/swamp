@@ -19,9 +19,11 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  InvalidExpressionError,
   SECRET_OPERATION_UNSUPPORTED,
   SecretRefusedError,
 } from "../expressions/errors.ts";
+import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
@@ -477,6 +479,37 @@ Deno.test("resolveForEachStepName: a secret refusal in a name fails loudly inste
     "unrestricted",
   );
   assertEquals(missing.hadEvalFailure, true);
+  // A read the run's vault access denies, as the typed evaluate raises it
+  // for a record the name reads, fails loudly too.
+  const denial = new InvalidExpressionError(
+    "Reading vault 'prod' is refused",
+    "self.item.password",
+    undefined,
+    new VaultAccessDeniedError({
+      vaultName: "prod",
+      action: "read",
+      reason: "not allowed",
+    }),
+  );
+  const denying = {
+    ...scoped,
+    evaluate: (): unknown => {
+      throw denial;
+    },
+  };
+  assertThrows(
+    () =>
+      resolveForEachStepName(
+        "step-${{ self.item.password }}",
+        true,
+        ctx,
+        denying,
+        "0",
+        "unrestricted",
+      ),
+    InvalidExpressionError,
+    "Reading vault 'prod' is refused",
+  );
 });
 
 Deno.test("ForEachExpansionService.expand: in a typed run an item that holds a secret leaves forEach.in as a sentinel, the name takes sensitive-<index> from it, and prepare runs before each name (typed-secrets 4.1)", async () => {

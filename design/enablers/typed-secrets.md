@@ -352,10 +352,14 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   `authorizedReferences` the synchronous `evaluate` accepts; any other
   recorded reference still fails closed. Authorization is by vault and key,
   so a record another model holds under an authorized reference reads too,
-  and a reference the content never names does not. A denial fails the
-  prepare, before any name or field is built, and a record whose tag does
-  not parse is left for the evaluation to refuse. Each pass evaluator carries
-  its own authorized set, so one pass never authorizes for another. With the
+  and a reference the content never names does not. The read set names
+  models, not records, so a check that fails (a denial, an unavailable vault,
+  no vault scope) is kept for its reference (`deniedReferences`) and fails
+  the synchronous evaluate that reads the record holding it, with the access
+  error and before release issues a sentinel; a denied record the expression
+  never reads costs nothing. A record whose tag does not parse is left for
+  the evaluation to refuse. Each pass evaluator carries its own authorized
+  and denied sets, so one pass never authorizes for another. With the
   option off the accessors still read tagged fields, and that read authorizes
   each reference under the run's `RunVaultAccess` and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
