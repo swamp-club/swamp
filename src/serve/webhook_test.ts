@@ -1771,6 +1771,7 @@ Deno.test("WebhookService.drain: waits for every in-flight run and leaves the qu
   const deleted: string[] = [];
   const { service, runs, completed } = await concurrentService({
     maxConcurrentRuns: 2,
+    now: () => 1_000,
     runTracker: {
       enqueuePendingRun: (entry: { id: string }) => enqueued.push(entry.id),
       deletePendingRun: (id: string) => deleted.push(id),
@@ -1845,7 +1846,9 @@ Deno.test("WebhookService.queueStatus: reports the oldest waiting delivery and t
 });
 
 Deno.test("WebhookService.updateEndpoints: a removed route's queue delay is forgotten", async () => {
-  const { service, runs, completed } = await concurrentService();
+  const { service, runs, completed } = await concurrentService({
+    now: () => 1_000,
+  });
   await service.handleRequest(await signedDeliveryTo("/hooks/alerts", "{}"));
   await waitFor(() => runs.length === 1, "run started");
   runs[0].release();
