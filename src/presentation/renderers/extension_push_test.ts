@@ -366,6 +366,7 @@ const notAuditedWarning = {
   dependency: "leftpad",
   message: "not audited: OSV lookup failed (HTTP 503)",
   cause: "not-audited" as const,
+  notAuditedFix: "outage" as const,
 };
 
 Deno.test("extensionPushRenderer: JSON dry run records unaudited dependencies under acceptedWarnings.dependencyTrust and warnings.dependencyTrust", async () => {
@@ -424,6 +425,38 @@ Deno.test("extensionPushRenderer: log prints unaudited dependencies in their own
     output.slice(headerAt),
     "OSV lookup failed (HTTP 503)",
   );
+});
+
+Deno.test("extensionPushRenderer: the not-audited block says re-run only when every dependency is down to an outage", async () => {
+  const specifier = {
+    dependency: "ms",
+    message: "not audited: npm lists no version 99.0.0",
+    cause: "not-audited" as const,
+    notAuditedFix: "specifier" as const,
+  };
+  for (
+    const [warnings, header] of [
+      [[specifier], "Dependencies not audited (--yes accepts):"],
+      [
+        [notAuditedWarning, specifier],
+        "Dependencies not audited (--yes accepts):",
+      ],
+      [
+        [notAuditedWarning],
+        "Dependencies not audited (re-run when OSV, npm and JSR are reachable; --yes accepts):",
+      ],
+    ] as const
+  ) {
+    const renderer = createExtensionPushRenderer("log", PATHS);
+    const output = (await capture(() => {
+      renderer.renderDependencyTrustWarnings([...warnings]);
+    })).join("\n");
+    assertStringIncludes(output, header);
+    assertEquals(
+      output.includes("re-run"),
+      header.includes("re-run"),
+    );
+  }
 });
 
 Deno.test("extensionPushRenderer: log prints only the not-audited block when every dependency warning is unaudited", async () => {

@@ -38,6 +38,7 @@ import {
   SLOW_TYPE_CODES,
   stripAnsi,
 } from "./extension_rubric_scorer.ts";
+import { DOC_FAILURE_FALLBACK } from "./extension_doc_failure.ts";
 
 function makeManifest(
   overrides: Partial<ExtensionManifest> = {},
@@ -390,6 +391,7 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
     dependencyTrustPassed: true,
     dependencyTrustBlockerCount: 0,
     dependencyNotAuditedCount: 0,
+    dependencyNotAuditedFixes: [],
     dependencyLooseCount: 0,
   };
 }
@@ -875,6 +877,7 @@ Deno.test(
       dependencyTrustPassed: false,
       dependencyTrustBlockerCount: 0,
       dependencyNotAuditedCount: 0,
+      dependencyNotAuditedFixes: [],
       dependencyLooseCount: 0,
     });
   },
@@ -1009,6 +1012,7 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       dependencyTrustPassed: false,
       dependencyTrustBlockerCount: 0,
       dependencyNotAuditedCount: 0,
+      dependencyNotAuditedFixes: [],
       dependencyLooseCount: 0,
     },
     makeManifest({
@@ -1117,19 +1121,117 @@ Deno.test("composeScore: dependency-trust fails with blockers", () => {
 
 Deno.test("composeScore: dependency-trust earns nothing while a dependency is not audited", () => {
   const score = composeScore(
-    { ...factorsAllEarned(), dependencyNotAuditedCount: 2 },
+    {
+      ...factorsAllEarned(),
+      dependencyNotAuditedCount: 2,
+      dependencyNotAuditedFixes: ["outage"],
+    },
     makeManifest(),
   );
   const factor = score.factors.find((f) => f.id === "dependency-trust")!;
   assertEquals(factor.earnedPoints, 0);
   assertEquals(factor.status, "missing");
+  assertEquals(
+    factor.remediation,
+    "2 dependency(ies) not audited because an OSV, npm or JSR lookup " +
+      "failed. Re-run when OSV, npm and JSR are reachable.",
+  );
+});
+
+for (
+  const [fix, expected] of [
+    [
+      "specifier",
+      "1 dependency(ies) not audited because no published version matches " +
+      "the specifier. Change the specifier to a version the registry publishes.",
+    ],
+    [
+      "name",
+      "1 dependency(ies) not audited because the package name is invalid. " +
+      "Correct the package name in the import.",
+    ],
+    [
+      "unexpected",
+      "1 dependency(ies) not audited because the audit failed unexpectedly. " +
+      "Re-run; if it fails again, report it.",
+    ],
+    [
+      "other",
+      "1 dependency(ies) not audited because of the reason shown above. " +
+      "Resolve the reason above, then re-run.",
+    ],
+  ] as const
+) {
+  Deno.test(`composeScore: dependency-trust names the ${fix} cause, not an outage`, () => {
+    const score = composeScore(
+      {
+        ...factorsAllEarned(),
+        dependencyNotAuditedCount: 1,
+        dependencyNotAuditedFixes: [fix],
+      },
+      makeManifest(),
+    );
+    const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+    assertEquals(factor.earnedPoints, 0);
+    assertEquals(factor.remediation, expected);
+  });
+}
+
+Deno.test("composeScore: dependency-trust with several causes sends the author to each fix and never says re-run", () => {
+  const score = composeScore(
+    {
+      ...factorsAllEarned(),
+      dependencyNotAuditedCount: 2,
+      dependencyNotAuditedFixes: ["outage", "specifier"],
+      dependencyLooseCount: 1,
+    },
+    makeManifest(),
+  );
+  const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+  assertEquals(factor.earnedPoints, 0);
   assertStringIncludes(
     factor.remediation ?? "",
-    "2 dependency(ies) not audited",
+    "2 dependency(ies) not audited, for different reasons. Apply each " +
+      "one's fix above. Also: 1 loose dependency",
+  );
+  assertEquals(factor.remediation?.includes("Re-run"), false);
+});
+
+Deno.test("composeScore: a deno doc failure is named on symbols-docs and has-readme instead of asking for JSDoc", () => {
+  const error =
+    'The registry cannot resolve the bare import "zod"; use an explicit npm: or jsr: specifier (npm:zod@4 for zod).';
+  const factors = {
+    ...factorsAllEarned(),
+    hasReadme: false,
+    percentageDocumentedSymbols: 0,
+  };
+  const failed = composeScore(factors, makeManifest(), undefined, error);
+  const symbols = failed.factors.find((f) => f.id === "symbols-docs")!;
+  assertEquals(symbols.earnedPoints, 0);
+  assertEquals(symbols.status, "missing");
+  assertEquals(
+    symbols.remediation,
+    "deno doc could not analyse the source, so JSDoc coverage could not " +
+      `be measured: ${error}`,
+  );
+  const readme = failed.factors.find((f) => f.id === "has-readme")!;
+  assertEquals(readme.earnedPoints, 0);
+  assertStringIncludes(readme.remediation ?? "", "Add `README.md`");
+  assertStringIncludes(
+    readme.remediation ?? "",
+    "A module-level JSDoc counts only once deno doc can analyse the " +
+      `source: ${error}`,
+  );
+  assertEquals(readme.remediation?.includes("Or add a module-level"), false);
+
+  const analysed = composeScore(factors, makeManifest());
+  assertStringIncludes(
+    analysed.factors.find((f) => f.id === "symbols-docs")!.remediation ?? "",
+    "Add JSDoc to ≥80% of exported symbols in entrypoints (current: 0%).",
   );
   assertStringIncludes(
-    factor.remediation ?? "",
-    "Re-run when all three are reachable",
+    analysed.factors.find((f) => f.id === "has-readme")!.remediation ?? "",
+    "Or add a module-level JSDoc at the top of every entrypoint file.",
   );
 });
 
@@ -1370,6 +1472,71 @@ Deno.test("scoreExtensionTarball: a doc failure names archive files relative to 
   assertEquals(
     score.docAnalysisError,
     "Not in the published archive: models/_lib/gone.ts (imported from models/mod.ts).",
+  );
+});
+
+/**
+ * deno 2.9's output when one npm import names a version npm does not
+ * publish and another npm import resolves: every constraint is reported
+ * missing and the error names whichever import deno was resolving.
+ */
+function unpublishedVersionDocStderr(moduleUrl: string): string {
+  return [
+    "Warning Failed resolving types. Could not find constraint 'zod@4' in the list of packages.",
+    `    at ${moduleUrl}:1:19`,
+    "Warning Failed resolving types. Could not find constraint 'ms@99.0.0' in the list of packages.",
+    `    at ${moduleUrl}:2:34`,
+    `error: Failed resolving 'npm:zod@4' from '${moduleUrl}'.`,
+  ].join("\n");
+}
+
+Deno.test("scoreExtensionTarball: an unpublished npm version from the audit names a doc failure deno's output cannot", async () => {
+  const deps = failingDocDeps(
+    (cwd) =>
+      unpublishedVersionDocStderr(
+        toFileUrl(join(cwd, "models", "mod.ts")).href,
+      ),
+    [],
+  );
+  const manifest = makeManifest({ models: ["mod.ts"] });
+
+  const unexplained = await scoreExtensionTarball(
+    new Uint8Array(0),
+    manifest,
+    deps,
+  );
+  assertEquals(unexplained.docAnalysisError, DOC_FAILURE_FALLBACK);
+
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    manifest,
+    deps,
+    { unpublishedSpecifiers: ["npm:ms@99.0.0"] },
+  );
+  const error =
+    "npm publishes no version matching npm:ms@99.0.0, so deno doc could " +
+    "not resolve the extension's npm imports.";
+  assertEquals(score.docAnalysisError, error);
+  assertStringIncludes(
+    score.factors.find((f) => f.id === "symbols-docs")!.remediation ?? "",
+    error,
+  );
+});
+
+Deno.test("scoreExtensionTarball: a doc failure deno's output explains keeps its own description", async () => {
+  const deps = failingDocDeps(
+    (cwd) => bareZodDocStderr(toFileUrl(join(cwd, "models", "mod.ts")).href),
+    [],
+  );
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    deps,
+    { unpublishedSpecifiers: ["npm:ms@99.0.0"] },
+  );
+  assertEquals(
+    score.docAnalysisError,
+    'The registry cannot resolve the bare import "zod"; use an explicit npm: or jsr: specifier (npm:zod@4 for zod).',
   );
 });
 

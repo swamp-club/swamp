@@ -42,7 +42,11 @@ import {
   qualityCheckLabel,
   type QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
-import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import {
+  type DependencyTrustIssue,
+  notAuditedFixes,
+  onlyOutagesNotAudited,
+} from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
@@ -407,8 +411,13 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     );
     const advisory = warnings.filter((w) => w.cause === undefined);
     if (notAudited.length > 0) {
-      this.logger
-        .warn`Dependencies not audited (re-run when OSV, npm and JSR are reachable; --yes accepts):`;
+      // Only a lookup outage clears on a re-run.
+      if (onlyOutagesNotAudited(notAuditedFixes({ warnings }))) {
+        this.logger
+          .warn`Dependencies not audited (re-run when OSV, npm and JSR are reachable; --yes accepts):`;
+      } else {
+        this.logger.warn`Dependencies not audited (--yes accepts):`;
+      }
       for (const w of notAudited) {
         this.logger.warn`  ${w.dependency}: ${w.message}`;
       }

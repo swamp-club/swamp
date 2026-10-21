@@ -2140,6 +2140,16 @@ warnings gate (an interactive push prompts; `--yes` waives them), never block on
 their own, and never change the exit code. `DependencyTrustResult.passed` keeps
 meaning "no blockers".
 
+The summary and the warning both carry `notAuditedFix`, the fix their
+remediation gives: `outage` (a failed lookup; re-run), `specifier` (no published
+version matches), `name` (an invalid package name), `unexpected` (the audit
+threw) or `other`. Only an `outage` clears on a re-run, so `extension quality`'s
+dependency-trust row and the quality and push not-audited headers say to re-run
+only when every unaudited dependency's fix is `outage`. When `deno doc` fails
+and its output names nothing (one unpublished npm version fails all of deno's
+npm resolution, and deno names whichever import it was resolving), quality's
+`docAnalysisError` names the `specifier` dependencies instead.
+
 ### jsr Dependencies
 
 Each jsr package is looked up once at `https://jsr.io/<name>/meta.json` with

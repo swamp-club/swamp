@@ -27,7 +27,15 @@ import type {
   ExtensionManifest,
   PublishVisibility,
 } from "./extension_manifest.ts";
-import { describeDocFailure } from "./extension_doc_failure.ts";
+import {
+  describeDocFailure,
+  describeUnpublishedSpecifiers,
+  DOC_FAILURE_FALLBACK,
+} from "./extension_doc_failure.ts";
+import {
+  NOT_AUDITED_FIX,
+  type NotAuditedFix,
+} from "./extension_dependency_trust_checker.ts";
 import { markErrorPaths } from "../errors.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts";
@@ -214,6 +222,8 @@ export interface AnalysisFactors {
   dependencyTrustBlockerCount: number;
   /** Dependencies a failed OSV, npm or JSR lookup left unaudited. */
   dependencyNotAuditedCount: number;
+  /** The distinct fixes the unaudited dependencies need. */
+  dependencyNotAuditedFixes: readonly NotAuditedFix[];
   /** Dependencies with a loose specifier: they cost one of the two points. */
   dependencyLooseCount: number;
 }
@@ -232,6 +242,7 @@ export function computeAnalysisFactors(input: {
   dependencyTrustPassed?: boolean;
   dependencyTrustBlockerCount?: number;
   dependencyNotAuditedCount?: number;
+  dependencyNotAuditedFixes?: readonly NotAuditedFix[];
   dependencyLooseCount?: number;
   /** `deno doc` could not analyse the source, so `doc` is empty. */
   docFailed?: boolean;
@@ -283,6 +294,7 @@ export function computeAnalysisFactors(input: {
     dependencyTrustPassed: input.dependencyTrustPassed ?? false,
     dependencyTrustBlockerCount: input.dependencyTrustBlockerCount ?? 0,
     dependencyNotAuditedCount: input.dependencyNotAuditedCount ?? 0,
+    dependencyNotAuditedFixes: input.dependencyNotAuditedFixes ?? [],
     dependencyLooseCount: input.dependencyLooseCount ?? 0,
   };
 }
@@ -395,6 +407,7 @@ export function composeScore(
   factors: AnalysisFactors,
   manifest: ExtensionManifest,
   privateSource: PrivateSourceStanding = { kind: "unknown" },
+  docAnalysisError: string | null = null,
 ): RubricScore {
   const rows: RubricFactor[] = [
     boolRow("has-readme", "Has README or module doc", 2, factors.hasReadme, {
@@ -403,8 +416,11 @@ export function composeScore(
         "entry is copied verbatim to `extension/files/<entry>` in the " +
         "archive, so nested paths like `docs/README.md` won't earn the " +
         "factor. For per-directory layouts (manifest beside README), opt " +
-        "in with `paths.base: manifest`. Or add a module-level JSDoc at " +
-        "the top of every entrypoint file.",
+        "in with `paths.base: manifest`. " +
+        (docAnalysisError === null
+          ? "Or add a module-level JSDoc at the top of every entrypoint file."
+          : "A module-level JSDoc counts only once deno doc can analyse " +
+            `the source: ${docAnalysisError}`),
     }),
     boolRow(
       "readme-example",
@@ -417,7 +433,7 @@ export function composeScore(
       },
     ),
     richReadmeRow(factors.readmeLength, factors.readmeCodeBlockCount),
-    symbolsRow(factors.percentageDocumentedSymbols),
+    symbolsRow(factors.percentageDocumentedSymbols, docAnalysisError),
     boolRow("fast-check", "No slow types (deprecated)", 1, true, {}),
     boolRow(
       "description",
@@ -468,6 +484,7 @@ export function composeScore(
       factors.dependencyTrustPassed,
       factors.dependencyTrustBlockerCount,
       factors.dependencyNotAuditedCount,
+      factors.dependencyNotAuditedFixes,
       factors.dependencyLooseCount,
     ),
   ];
@@ -600,10 +617,40 @@ function richReadmeRow(
   };
 }
 
+/** Why a dependency with this fix was not audited, for the row's text. */
+const NOT_AUDITED_WHY: Readonly<Record<NotAuditedFix, string>> = {
+  outage: "an OSV, npm or JSR lookup failed",
+  specifier: "no published version matches the specifier",
+  name: "the package name is invalid",
+  unexpected: "the audit failed unexpectedly",
+  other: "of the reason shown above",
+};
+
+/**
+ * The remediation for unaudited dependencies: one shared cause gives its
+ * reason and fix, several send the author to each finding's own fix. Only
+ * an outage says to re-run.
+ */
+function notAuditedText(
+  count: number,
+  fixes: readonly NotAuditedFix[],
+): string {
+  const kinds: readonly NotAuditedFix[] = fixes.length > 0 ? fixes : ["other"];
+  if (kinds.length > 1) {
+    return `${count} dependency(ies) not audited, for different reasons. ` +
+      "Apply each one's fix above.";
+  }
+  const fix = kinds[0];
+  return `${count} dependency(ies) not audited because ${
+    NOT_AUDITED_WHY[fix]
+  }. ${NOT_AUDITED_FIX[fix]}`;
+}
+
 function dependencyTrustRow(
   noBlockers: boolean,
   blockerCount: number,
   notAuditedCount: number,
+  notAuditedFixes: readonly NotAuditedFix[],
   looseCount: number,
 ): RubricFactor {
   // An unaudited dependency is unknown, not partly trusted: it loses the
@@ -621,8 +668,7 @@ function dependencyTrustRow(
       `then update or replace the flagged dependencies.` +
       (looseCount > 0 ? ` Also: ${looseText}` : "")
     : notAuditedCount > 0
-    ? `${notAuditedCount} dependency(ies) not audited because an OSV, npm or ` +
-      `JSR lookup failed. Re-run when all three are reachable.` +
+    ? notAuditedText(notAuditedCount, notAuditedFixes) +
       (looseCount > 0 ? ` Also: ${looseText}` : "")
     : looseCount > 0
     ? looseText
@@ -637,7 +683,10 @@ function dependencyTrustRow(
   };
 }
 
-function symbolsRow(pct: number): RubricFactor {
+function symbolsRow(
+  pct: number,
+  docAnalysisError: string | null,
+): RubricFactor {
   const earned = pct >= SYMBOLS_DOCS_FULL_THRESHOLD;
   return {
     id: "symbols-docs",
@@ -647,6 +696,9 @@ function symbolsRow(pct: number): RubricFactor {
     status: earned ? "earned" : "missing",
     remediation: earned
       ? undefined
+      : docAnalysisError !== null
+      ? "deno doc could not analyse the source, so JSDoc coverage could " +
+        `not be measured: ${docAnalysisError}`
       : `Add JSDoc to ≥${
         Math.round(SYMBOLS_DOCS_FULL_THRESHOLD * 100)
       }% of exported symbols in entrypoints (current: ${
@@ -747,8 +799,14 @@ export async function scoreExtensionTarball(
     dependencyTrustPassed?: boolean;
     dependencyTrustBlockerCount?: number;
     dependencyNotAuditedCount?: number;
+    dependencyNotAuditedFixes?: readonly NotAuditedFix[];
     dependencyLooseCount?: number;
     privateSource?: PrivateSourceStanding;
+    /**
+     * Specifiers npm publishes no version for, from the dependency audit:
+     * they name the cause when deno's own output does not.
+     */
+    unpublishedSpecifiers?: string[];
   },
 ): Promise<RubricScore> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_quality_" });
@@ -806,6 +864,12 @@ export async function scoreExtensionTarball(
           err.output,
           await fileUrlRoots(rootAbs),
         );
+        const unpublished = options?.unpublishedSpecifiers ?? [];
+        if (
+          docAnalysisError === DOC_FAILURE_FALLBACK && unpublished.length > 0
+        ) {
+          docAnalysisError = describeUnpublishedSpecifiers(unpublished);
+        }
       }
       if (docAnalysisError === null) {
         lintOutput = await runDenoDocLint(entrypointPaths, logicalRoot, deps);
@@ -822,12 +886,18 @@ export async function scoreExtensionTarball(
       dependencyTrustPassed: options?.dependencyTrustPassed,
       dependencyTrustBlockerCount: options?.dependencyTrustBlockerCount,
       dependencyNotAuditedCount: options?.dependencyNotAuditedCount,
+      dependencyNotAuditedFixes: options?.dependencyNotAuditedFixes,
       dependencyLooseCount: options?.dependencyLooseCount,
       docFailed: docAnalysisError !== null,
     });
 
     return {
-      ...composeScore(analysisFactors, manifest, options?.privateSource),
+      ...composeScore(
+        analysisFactors,
+        manifest,
+        options?.privateSource,
+        docAnalysisError,
+      ),
       docAnalysisError,
     };
   } finally {

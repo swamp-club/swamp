@@ -1032,17 +1032,19 @@ swamp extension quality manifest.yaml --json
 Scores the extension against the 10 client-earnable Swamp Club quality factors
 (README, LICENSE, JSDoc coverage, repository URL, manifest completeness,
 slow-type diagnostics, etc.) and prints per-factor results with remediation
-hints. It runs the same gates push runs; when one fails (safety, fmt/lint,
-collectives, upgrade chain, dependency trust, review errors, size) it still
-prints the rubric, then each failure with its details, and exits non-zero
-(`gateFailures` in `--json`; `excludedFromArchive` lists files a check rejected
-and left out of the scored archive). `registryScorable: false` means the
-registry cannot resolve the extension's bare imports and would score its
-documentation factors 0. `docAnalysisError` (null when it ran) says why
-`deno doc` could not analyse the source; quality scores the documentation
-factors 0 as the registry does, and fails. When every gate passes, the packaged
-tarball is written to `.swamp/cache/packages/<hash>/` and reused by dry-run and
-push while the source tree and swamp version are unchanged.
+hints. A bundle failure prints each compilation error as push does
+(`compilationErrors` in `--json`). It runs the same gates push runs; when one
+fails (safety, fmt/lint, collectives, upgrade chain, dependency trust, review
+errors, size) it still prints the rubric, then each failure with its details,
+and exits non-zero (`gateFailures` in `--json`; `excludedFromArchive` lists
+files a check rejected and left out of the scored archive).
+`registryScorable: false` means the registry cannot resolve the extension's bare
+imports and would score its documentation factors 0. `docAnalysisError` (null
+when it ran) says why `deno doc` could not analyse the source; quality scores
+the documentation factors 0 as the registry does, and fails. When every gate
+passes, the packaged tarball is written to `.swamp/cache/packages/<hash>/` and
+reused by dry-run and push while the source tree and swamp version are
+unchanged.
 
 This step is optional — skipping does not block the push. See the
 `swamp-extension` skill for the full rubric and per-factor guidance.

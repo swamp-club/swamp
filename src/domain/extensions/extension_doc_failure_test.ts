@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   describeDocFailure,
+  describeUnpublishedSpecifiers,
   DOC_FAILURE_FALLBACK,
   MAX_DOC_FAILURE_CHARS,
 } from "./extension_doc_failure.ts";
@@ -144,4 +145,20 @@ Deno.test("describeDocFailure: the reason is capped and control characters are s
   assert(reason.length <= MAX_DOC_FAILURE_CHARS, `length ${reason.length}`);
   assertEquals(reason.includes("\x07"), false);
   assert(reason.endsWith("…"));
+});
+
+Deno.test("describeUnpublishedSpecifiers: names the specifiers npm publishes no version for", () => {
+  assertEquals(
+    describeUnpublishedSpecifiers(["npm:ms@99.0.0"]),
+    "npm publishes no version matching npm:ms@99.0.0, so deno doc could not resolve the extension's npm imports.",
+  );
+  assertEquals(
+    describeUnpublishedSpecifiers([
+      "npm:a@9",
+      "npm:b@9",
+      "npm:c@9",
+      'npm:"d@9',
+    ]),
+    "npm publishes no version matching npm:a@9, npm:b@9, npm:c@9 and 1 more, so deno doc could not resolve the extension's npm imports.",
+  );
 });

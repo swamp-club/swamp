@@ -386,6 +386,104 @@ Deno.test("createExtensionQualityRenderer: a failed run names the invalid accept
   }
 });
 
+Deno.test("createExtensionQualityRenderer: a bundle failure prints each compilation error before the error, in log and JSON", () => {
+  const manifestDir = resolve("/ext");
+  const error = {
+    kind: "error" as const,
+    error: {
+      code: "validation_failed",
+      message: "Bundle compilation failed. Fix the errors above and try again.",
+      details: {
+        compilationErrors: [
+          {
+            file: join(manifestDir, "models", "a.ts"),
+            error: 'Module not found "file:///ext/lib/gone.ts".',
+          },
+          {
+            file: join(manifestDir, "models", "b.ts"),
+            error: "first line\nsecond line",
+          },
+        ],
+      },
+    },
+  } as unknown as Extract<ExtensionQualityEvent, { kind: "error" }>;
+
+  let thrown: unknown;
+  const log = capture(() => {
+    try {
+      createExtensionQualityRenderer("log").handlers({
+        manifestDir,
+        cwd: manifestDir,
+      }).error(error);
+    } catch (e) {
+      thrown = e;
+    }
+  });
+  assert(thrown instanceof UserError);
+  const text = log.join("\n");
+  assertStringIncludes(text, "Bundle compilation failed:");
+  // Paths print openable from cwd, the way push prints them.
+  assertStringIncludes(text, "models");
+  assertEquals(text.includes(manifestDir + "/models"), false);
+  assertStringIncludes(text, 'Module not found "file:///ext/lib/gone.ts".');
+  assertStringIncludes(text, "    first line");
+  assertStringIncludes(text, "    second line");
+
+  const json = capture(() => {
+    try {
+      createExtensionQualityRenderer("json").handlers({ manifestDir })
+        .error(error);
+    } catch {
+      // The run fails after the details print.
+    }
+  });
+  assertEquals(
+    JSON.parse(json[0]).compilationErrors,
+    (error.error.details as { compilationErrors: unknown }).compilationErrors,
+  );
+});
+
+Deno.test("createExtensionQualityRenderer: the not-audited block says re-run only when every dependency is down to an outage", () => {
+  const manifestDir = resolve("/ext");
+  const finding = (dependency: string, fix: "outage" | "specifier") => ({
+    dependency,
+    message: `not audited: ${fix}`,
+    cause: "not-audited" as const,
+    notAuditedFix: fix,
+  });
+  for (
+    const [warnings, header] of [
+      [
+        [finding("a", "outage")],
+        "Dependencies not audited (re-run when OSV, npm and JSR are reachable):",
+      ],
+      [[finding("ms", "specifier")], "Dependencies not audited:"],
+      [
+        [finding("a", "outage"), finding("ms", "specifier")],
+        "Dependencies not audited:",
+      ],
+    ] as const
+  ) {
+    const trust: DependencyTrustResult = {
+      ...emptyTrustResult,
+      warnings: [...warnings],
+    };
+    const log = capture(() =>
+      createExtensionQualityRenderer("log").handlers({
+        manifestDir,
+        cwd: manifestDir,
+      }).completed(
+        completedEvent(makeScore(), { dependencyTrustResult: trust }),
+      )
+    ).join("\n");
+    assertStringIncludes(log, header);
+    assertEquals(
+      log.includes("reachable"),
+      header.includes("reachable"),
+    );
+  }
+});
+
 const SAFETY_FAILURE: LocalGateFailure = {
   gate: "safety",
   message: "Extension has safety errors that must be resolved before pushing.",
@@ -657,6 +755,7 @@ Deno.test("createExtensionQualityRenderer: an unaudited dependency is marked ? w
         dependency: "leftpad",
         message: `not audited: ${reason}`,
         cause: "not-audited",
+        notAuditedFix: "outage",
       },
     ],
     audited: [{
