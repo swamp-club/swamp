@@ -218,7 +218,11 @@ import {
 } from "./reserved_workflow_tags.ts";
 import { wordedError } from "../behavior_wording.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
-import { ModelOutput } from "../models/model_output.ts";
+import {
+  executionErrorFrom,
+  ModelOutput,
+  redactedError,
+} from "../models/model_output.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
@@ -2643,7 +2647,9 @@ export class DefaultStepExecutor implements StepExecutor {
           failedRemoteWrites.push(version);
         }
         stepFailed = true;
-        throw error;
+        // The step's failure, its events and the run record read the message
+        // from what is thrown here (swamp-club#3681).
+        throw redactedError(error, ctx.secretRedactor);
       }
     } finally {
       if (flushLock) {
@@ -3133,12 +3139,16 @@ export class DefaultStepExecutor implements StepExecutor {
       }
     }
 
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
+    // The record, the failed-step report and the step's error carry the
+    // message and stack through the run's redactor: a method that echoes a
+    // sensitive argument in its error lands it in none of them
+    // (swamp-club#3681).
+    const failure = executionErrorFrom(error, ctx.secretRedactor);
+    const errorMessage = failure.message;
     if (aborted) {
       output.markCancelled(cause ?? "aborted");
     } else {
-      output.markFailed({ message: errorMessage, stack: errorStack });
+      output.markFailed(failure);
     }
     await outputRepo.save(modelType, task.methodName, output);
 

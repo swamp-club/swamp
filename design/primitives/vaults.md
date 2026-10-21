@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-09-15 @ uncommitted
+last-verified: 2026-10-21 @ uncommitted
 ---
 
 # swamp vaults
@@ -990,6 +990,9 @@ arguments. For a sensitive argument field, the framework:
    written, since their keys can embed such a value through the instance name.
 3. Shows the field as `"***"` in the generated method summary reports (Markdown
    and JSON).
+4. Passes the error a method throws through the run's redactor. A sensitive
+   argument that the error echoes shows as `***` in the output record, the
+   error event and a workflow step's recorded error.
 
 ### Marking an Argument Field as Sensitive
 
