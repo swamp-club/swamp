@@ -190,9 +190,12 @@ jobs:
             echo '```'
             echo ""
             echo "**Windows (x86_64):**"
+            echo 'Run PowerShell as Administrator. Invoke swamp by its full path below, or add C:\Program Files\swamp to PATH.'
             echo '```powershell'
             echo "Invoke-WebRequest -Uri https://github.com/${REPO}/releases/download/v${VERSION}/swamp-windows-x86_64.zip -OutFile swamp.zip"
+            printf '%s\n' "New-Item -ItemType Directory -Force -Path 'C:\Program Files\swamp' | Out-Null"
             printf '%s\n' "Expand-Archive swamp.zip -DestinationPath .; Move-Item swamp.exe 'C:\Program Files\swamp\'"
+            printf '%s\n' "& 'C:\Program Files\swamp\swamp.exe' --version"
             echo '```'
           } >> /tmp/release_body.md
 

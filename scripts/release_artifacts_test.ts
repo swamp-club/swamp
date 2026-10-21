@@ -462,6 +462,18 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
   assertStringIncludes(steps[body].run ?? "", "## What's Changed");
   assertStringIncludes(steps[body].run ?? "", "printenv PR_BODY");
   assertStringIncludes(steps[body].run ?? "", "### Installation");
+  const instructions = steps[body].run ?? "";
+  assertStringIncludes(instructions, "Run PowerShell as Administrator");
+  assertStringIncludes(instructions, "Invoke swamp by its full path");
+  assertStringIncludes(
+    instructions,
+    "New-Item -ItemType Directory -Force -Path 'C:\\Program Files\\swamp'",
+  );
+  assert(instructions.indexOf("New-Item") < instructions.indexOf("Move-Item"));
+  assertStringIncludes(
+    instructions,
+    "& 'C:\\Program Files\\swamp\\swamp.exe' --version",
+  );
   for (const job of ["windows-smoke", "docker"]) {
     assertEquals(workflow.jobs[job].if, gate);
     assert(
