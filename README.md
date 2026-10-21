@@ -2,9 +2,7 @@
   <img src="banner.png" alt="Swamp — The right way to build with AI">
 </p>
 
-# Swamp
-
-The right way to build with AI.
+# The right way to build with AI
 
 Build AI systems from repeatable behaviors, rather than token-hungry
 agent-centric designs. Swamp is a CLI that teaches your AI agent to break a
@@ -27,9 +25,6 @@ Come join the [swamp party on discord](https://discord.gg/swamp-club).
 ## Getting Started
 
 Swamp runs on macOS and Linux (x86_64 and arm64) and on Windows (x86_64).
-
-Stable releases are promoted after automated user acceptance tests verify the
-versioned build artifacts.
 
 On macOS and Linux:
 
