@@ -1622,9 +1622,11 @@ export class SqliteReadModel implements ReadModel {
    * chunk the storage lost, and stays (swamp-club#3617).
    *
    * The file is written with the content's access (swamp-club#3693). A
-   * file the guard keeps for its bytes is rewritten all the same when its
-   * access is not the content's, through the batch rather than a chmod of
-   * the path, which would follow a link put there since the guard looked.
+   * file the guard keeps for its bytes is rewritten all the same when the
+   * put records an access the file lacks, through the batch rather than a
+   * chmod of the path, which would follow a link put there since the guard
+   * looked. A plain put (every put before swamp-club#3693) keeps such a
+   * file whatever its mode, as before.
    */
   async #writeContent(
     namespace: string,
@@ -1653,7 +1655,8 @@ export class SqliteReadModel implements ReadModel {
         false,
       )
     ) {
-      wrongAccess = !await hasAccess(path, content.access);
+      wrongAccess = content.access !== undefined &&
+        !await hasAccess(path, content.access);
       if (!wrongAccess) {
         await keep();
         return;
@@ -1681,6 +1684,8 @@ export class SqliteReadModel implements ReadModel {
       // A failed write leaves the file as it was. One that only meant to
       // fix the access keeps the right bytes rather than lose them.
       if (wrongAccess && isChunkError(error) && !signal.aborted) {
+        logger
+          .warn`${key} holds its committed bytes without its ${content.access} access, and its chunks cannot be read to rewrite it: ${error}`;
         await keep();
         return;
       }

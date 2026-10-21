@@ -61,7 +61,7 @@ import {
 
 await initializeLogging({});
 
-const POSIX_ONLY = Deno.build.os === "windows";
+const IS_WINDOWS = Deno.build.os === "windows";
 
 /** The modes a test writes, by data name. */
 const MODES = { exec: 0o755, secret: 0o600, plain: 0o644 } as const;
@@ -210,7 +210,7 @@ for (
   Deno.test({
     name:
       `v3 file access: ${label} outputs keep their access in another checkout and in the writer's after its next command`,
-    ignore: POSIX_ONLY,
+    ignore: IS_WINDOWS,
     fn: async () => {
       await withV3Env(async (env) => {
         const writer = writerOf(env);
@@ -234,7 +234,7 @@ for (
 Deno.test({
   name:
     "v3 file access: a checkout built from the compacted base keeps each output's access",
-  ignore: POSIX_ONLY,
+  ignore: IS_WINDOWS,
   fn: async () => {
     await withV3Env(async (env) => {
       const writer = writerOf(env);
@@ -268,7 +268,7 @@ Deno.test({
 Deno.test({
   name:
     "v3 file access: a kept file holding the right bytes with the wrong access is rewritten with its access",
-  ignore: POSIX_ONLY,
+  ignore: IS_WINDOWS,
   fn: async () => {
     await withV3Env(async (env) => {
       const writer = writerOf(env);
@@ -292,8 +292,29 @@ Deno.test({
 
 Deno.test({
   name:
+    "v3 file access: a kept file of a plain put keeps its mode, as before the access was recorded",
+  ignore: IS_WINDOWS,
+  fn: async () => {
+    await withV3Env(async (env) => {
+      const writer = writerOf(env);
+      await writer.write(MAX_INLINE_BYTES * 3);
+      // The plain output was made executable after its commit, as a file
+      // committed before swamp-club#3693 recorded no access at all.
+      const plain = join(writer.root, dataDirOf("plain"), "1", "raw");
+      const before = (await Deno.stat(plain)).ino;
+      await Deno.chmod(plain, 0o755);
+      const storage = new StatStorage(env.storage.inner);
+      await catchUp(env, writer.dir, { chunkStore: new ChunkStore(storage) });
+      assertEquals((await Deno.stat(plain)).ino, before);
+      assertEquals(((await Deno.stat(plain)).mode! & 0o777).toString(8), "755");
+    });
+  },
+});
+
+Deno.test({
+  name:
     "v3 file access: the check after a reboot rewrites a lost file with its access",
-  ignore: POSIX_ONLY,
+  ignore: IS_WINDOWS,
   fn: async () => {
     await withV3Env(async (env) => {
       const writer = writerOf(env);
@@ -326,7 +347,7 @@ Deno.test({
 Deno.test({
   name:
     "v3 file access: an unreadable record written once its chunks are back has its access",
-  ignore: POSIX_ONLY,
+  ignore: IS_WINDOWS,
   fn: async () => {
     await withV3Env(async (env) => {
       const writer = writerOf(env);

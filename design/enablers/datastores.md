@@ -3348,8 +3348,13 @@ check after a reboot and an unreadable record's retry, so the access is kept
 wherever the read model keeps a put's content (`live_records`,
 `load_records`, `unreadable_records`, `base_records`). A file the
 checkout-copy guard keeps for its bytes is rewritten through a temp file
-when its access differs, never chmodded by path. Windows keeps no modes: a
-Windows writer records none and a Windows checkout applies none. A rename of
+when its access differs, never chmodded by path. Only a put that records an access corrects a kept
+file: a plain put, which every put before this change is, keeps whatever
+mode the file has, as before. Private means no group or other bits, so a
+writer whose umask is 077 records every output as private, and a group-only
+file (0640, 0750) is plain or executable and takes the reader's umask.
+Windows keeps no modes: a Windows writer records none and a Windows
+checkout applies none. A rename of
 a data name copies the bytes into a new plain file (`saveVersion`), so the
 renamed versions are plain, locally as everywhere.
 
