@@ -50,6 +50,13 @@ All three share the arithmetic overloads from `registerArithmeticOverloads()`
 (bigint/double mixes), so arithmetic evaluates the same on every surface. They
 differ in which variables and receiver methods are visible.
 
+`CelEvaluator` hands back plain values, not cel-js's own types
+(`coerceBigInts` in `src/infrastructure/cel/cel_evaluator.ts`, following CEL's
+JSON mapping): `int` and `uint` become numbers within the safe-integer range
+(bigint beyond it), a timestamp its ISO 8601 string, a duration its CEL string
+(`90s`, `-1.5s`), bytes a base64 string, and an optional its value or null — at
+any depth in a list or map.
+
 ## Behavior Data
 
 The `model` namespace is keyed by both definition name and definition id

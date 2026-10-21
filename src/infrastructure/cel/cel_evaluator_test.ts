@@ -1504,6 +1504,87 @@ for (const typedSecrets of [false, true]) {
   });
 }
 
+Deno.test("CelEvaluator.evaluate: a timestamp result is its ISO 8601 string", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(
+    evaluator.evaluate("timestamp('2026-01-01T00:00:00Z')", {}),
+    "2026-01-01T00:00:00.000Z",
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: a duration result is its CEL string", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(evaluator.evaluate("duration('90s')", {}), "90s");
+  assertEquals(evaluator.evaluate("duration('1.5s')", {}), "1.5s");
+  assertEquals(evaluator.evaluate("duration('1h')", {}), "3600s");
+  assertEquals(evaluator.evaluate("duration('1ns')", {}), "0.000000001s");
+});
+
+Deno.test("CelEvaluator.evaluate: a negative duration keeps its sign whichever way it was built", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(evaluator.evaluate("duration('-1.5s')", {}), "-1.5s");
+  assertEquals(
+    evaluator.evaluate("duration('1s') - duration('2.5s')", {}),
+    "-1.5s",
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: a uint result is a number within the safe range", () => {
+  const evaluator = new CelEvaluator();
+  assertStrictEquals(evaluator.evaluate("1u", {}), 1);
+  assertStrictEquals(
+    evaluator.evaluate("18446744073709551615u", {}),
+    18446744073709551615n,
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: a bytes result is its base64 string", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(evaluator.evaluate("b'abc'", {}), "YWJj");
+});
+
+Deno.test("CelEvaluator.evaluate: timestamps nested in maps and lists keep their value", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(
+    evaluator.evaluate(
+      "{'t': timestamp('2026-01-01T00:00:00Z'), 'n': 1, 'l': [duration('2s')]}",
+      {},
+    ),
+    { t: "2026-01-01T00:00:00.000Z", n: 1, l: ["2s"] },
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: optionals nested in maps and lists unwrap", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(evaluator.evaluate("[optional.of(1)]", {}), [1]);
+  assertEquals(evaluator.evaluate("{'a': optional.none()}", {}), { a: null });
+});
+
+Deno.test("CelEvaluator.evaluateAsync: a timestamp result is its ISO 8601 string", async () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(
+    await evaluator.evaluateAsync("[timestamp('2026-01-01T00:00:00Z')]", {}),
+    ["2026-01-01T00:00:00.000Z"],
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: with typed secrets, a timestamp result is its ISO 8601 string", () => {
+  const evaluator = new CelEvaluator({ typedSecrets: true });
+  assertEquals(
+    evaluator.evaluate("{'t': timestamp('2026-01-01T00:00:00Z')}", {}),
+    { t: "2026-01-01T00:00:00.000Z" },
+  );
+});
+
+Deno.test("coerceBigInts: other class instances still rebuild from their own fields", () => {
+  class Point {
+    constructor(readonly x: bigint, readonly y: number) {}
+  }
+  const result = coerceBigInts(new Point(2n, 3));
+  assertEquals(Object.getPrototypeOf(result), null);
+  assertEquals({ ...(result as Record<string, unknown>) }, { x: 2, y: 3 });
+});
+
 /** Data delegate over a fixed record set; every other name resolves to null. */
 function missingRecordContext(
   records: Record<string, Record<string, unknown>> = {

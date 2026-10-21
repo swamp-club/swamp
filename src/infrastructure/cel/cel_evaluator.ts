@@ -126,21 +126,79 @@ function unwrapOptional(value: unknown): unknown {
   return value;
 }
 
+/** The shape of cel-js's `uint` value. */
+interface CelUnsignedInt {
+  readonly value: bigint;
+}
+
+/** The shape of cel-js's `google.protobuf.Duration` value. */
+interface CelDuration {
+  readonly seconds: bigint;
+  readonly nanos: number;
+}
+
+// cel-js does not export its uint and duration classes, so take their
+// constructors from a value of each.
+const celTypeProbe = new Environment();
+const UnsignedIntType = (celTypeProbe.evaluate("1u") as object).constructor;
+const DurationType = (celTypeProbe.evaluate("duration('0s')") as object)
+  .constructor;
+
+const NANOS_PER_SECOND = 1_000_000_000n;
+
 /**
- * Recursively converts bigint values to numbers.
- * cel-js v7+ uses bigint for CEL int type, but the rest of the codebase
- * expects regular JS numbers. Values outside Number.MAX_SAFE_INTEGER are
- * left as bigint to avoid silent precision loss.
+ * Formats a duration in CEL's string form (`90s`, `1.5s`, `-1.5s`). cel-js's
+ * own `toString()` misprints negative durations, and its two construction
+ * paths keep the sign of `nanos` differently, so this works from the total.
+ */
+function formatDuration(duration: CelDuration): string {
+  const total = duration.seconds * NANOS_PER_SECOND + BigInt(duration.nanos);
+  const sign = total < 0n ? "-" : "";
+  const magnitude = total < 0n ? -total : total;
+  const seconds = magnitude / NANOS_PER_SECOND;
+  const nanos = magnitude % NANOS_PER_SECOND;
+  if (nanos === 0n) return `${sign}${seconds}s`;
+  const fraction = nanos.toString().padStart(9, "0").replace(/0+$/, "");
+  return `${sign}${seconds}.${fraction}s`;
+}
+
+function coerceInt(value: bigint): number | bigint {
+  if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
+    return Number(value);
+  }
+  return value;
+}
+
+/**
+ * Recursively converts CEL result values to the plain values the rest of
+ * the codebase expects, following CEL's JSON mapping:
+ * - int and uint become numbers; values outside Number.MAX_SAFE_INTEGER are
+ *   left as bigint to avoid silent precision loss
+ * - timestamp becomes its ISO 8601 string, duration its CEL string (`90s`)
+ *   and bytes a base64 string
+ * - optionals unwrap to their value, or null when empty
  */
 export function coerceBigInts(value: unknown): unknown {
   if (typeof value === "bigint") {
-    if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
-      return Number(value);
-    }
-    return value;
+    return coerceInt(value);
+  }
+  if (value instanceof Optional) {
+    return coerceBigInts(value.hasValue() ? value.value() : null);
   }
   if (Array.isArray(value)) {
     return value.map(coerceBigInts);
+  }
+  if (value instanceof Date) {
+    return value.toJSON();
+  }
+  if (value instanceof DurationType) {
+    return formatDuration(value as CelDuration);
+  }
+  if (value instanceof UnsignedIntType) {
+    return coerceInt((value as CelUnsignedInt).value);
+  }
+  if (value instanceof Uint8Array) {
+    return value.toBase64();
   }
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = Object.create(null);
@@ -161,9 +219,8 @@ export function coerceBigInts(value: unknown): unknown {
  * Converts the CEL ints in a value bound for a delegate to numbers, as
  * {@link coerceBigInts} does for results, so the value serializes as JSON.
  * Unlike coerceBigInts it walks only arrays and plain maps and leaves every
- * other object as it is: coerceBigInts rebuilds a Date (a CEL timestamp) as
- * an empty object (swamp-club#3713), and a timestamp in the inputs of
- * model.method reaches the method as its ISO string.
+ * other object as it is, so a timestamp in the inputs of model.method
+ * reaches the method as a Date and serializes as its ISO string.
  */
 function coerceBigIntsForDelegate(value: unknown): unknown {
   if (typeof value === "bigint") return coerceBigInts(value);
