@@ -423,11 +423,11 @@ Deno.test("CelEvaluator typed secrets: model.method delivers its inputs through 
     f,
   );
   const inputs = received as Record<string, unknown>;
-  // Each Secret left as the sentinel of the run's bag, ints stayed bigints,
-  // and nothing is a view or a Secret.
+  // Each Secret left as the sentinel of the run's bag, ints delivered as
+  // numbers (swamp-club#3708), and nothing is a view or a Secret.
   assertEquals(inputs.p, f.s);
   assertEquals(inputs.q, { list: [{ token: f.s }] });
-  assertEquals(inputs.n, 1n);
+  assertEquals(inputs.n, 1);
   assertEquals(inputs.c, `${f.s}-x`);
   const r = inputs.r as Array<{ value(): unknown }>;
   assertEquals(r[0].value(), f.t);
