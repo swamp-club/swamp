@@ -400,27 +400,27 @@ Deno.test("link_pr: a failed PR link on a linked issue fails before the entry po
   });
 });
 
-Deno.test("ship: ships linked issues and keeps the primary's PATCH unchanged", async () => {
+Deno.test("pr_merged: ships the primary and linked issues and keeps the primary's PATCH unchanged", async () => {
   await withLifecycle(1, (club, store) => {
     club.addIssue({ number: 1, status: "in_progress", githubPrUrl: PR });
     club.addIssue({ number: 2, status: "in_progress", githubPrUrl: PR });
     carrying(store, { issueNumber: 2 });
-  }, async ({ club, context }) => {
-    await model.methods.ship.execute(
-      { releaseUrl: "https://x/r/1", releaseNotes: "private notes" },
-      context,
-    );
+    phase(store, "pr_open");
+    store["pullRequest-main"] = { url: PR, attempt: 1, linkedAt: "t" };
+  }, async ({ club, context, store }) => {
+    await model.methods.pr_merged.execute({}, context);
     const primaryPatch = club.calls.filter((c) =>
       c.method === "PATCH" && c.path.endsWith("/issues/1")
     );
     assertEquals(primaryPatch.map((c) => c.body), [{ status: "shipped" }]);
+    assertEquals(store["state-main"].phase, "notify");
+    assertEquals(
+      club.entriesOn(1).map((e) => [e.step, e.targetStatus]),
+      [["pr_merged", "shipped"]],
+    );
     assertEquals(club.issues.get(2)!.status, "shipped");
     assertEquals(club.issues.get(2)!.githubPrUrl, PR);
-    assertEquals(club.stepsOn(2), ["shipped"]);
-    assertEquals(
-      JSON.stringify(club.entriesOn(2)).includes("private notes"),
-      false,
-    );
+    assertEquals(club.stepsOn(2), ["pr_merged"]);
   });
 });
 

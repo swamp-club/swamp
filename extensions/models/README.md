@@ -150,6 +150,7 @@ swamp model output search issue-42 --json
 | `resolve_findings`   | Mark adversarial findings as resolved           | no change                                 |
 | `approve`            | Lock the plan and transition to in_progress     | plan_generated -> approved                |
 | `implement`          | Signal implementation started                   | approved -> implementing                  |
+| `pr_merged`          | Record the merge, which ships the issue         | pr_open -> notify                         |
 | `complete`           | Mark lifecycle done                             | implementing -> done                      |
 | `link_issue`         | Carry another issue with this lifecycle         | no change                                 |
 | `unlink_issue`       | Stop carrying a linked issue                    | no change                                 |
@@ -204,12 +205,13 @@ metrics on the swamp-club side.
 
 Status transitions in swamp-club:
 
-| Method     | swamp-club status |
-| ---------- | ----------------- |
-| `start`    | open              |
-| `triage`   | triaged           |
-| `approve`  | in_progress       |
-| `complete` | shipped           |
+| Method      | swamp-club status |
+| ----------- | ----------------- |
+| `start`     | open              |
+| `triage`    | triaged           |
+| `approve`   | in_progress       |
+| `pr_merged` | shipped           |
+| `complete`  | shipped           |
 
 `link_pr` also records the PR on the swamp-club issue. Issues linked with
 `link_issue` follow these transitions with the primary issue and get its PR;

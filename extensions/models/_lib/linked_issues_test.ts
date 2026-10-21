@@ -130,6 +130,15 @@ Deno.test("mirrorMilestone: warns instead of raising when a post is refused", as
   });
 });
 
+Deno.test("milestoneEntry: a merged PR ships the linked issue", () => {
+  const entry = milestoneEntry(
+    { step: "pr_merged", url: "https://x/pull/1", attempt: 1 },
+    42,
+  );
+  assertEquals(entry.targetStatus, "shipped");
+  assertEquals(entry.summary.includes("awaiting release"), false);
+});
+
 Deno.test("milestoneEntry: names the primary and carries only structured fields", () => {
   const milestones: Milestone[] = [
     { step: "implementation_started" },
@@ -138,8 +147,6 @@ Deno.test("milestoneEntry: names the primary and carries only structured fields"
     { step: "pr_linked", url: "https://x/pull/1", attempt: 1 },
     { step: "pr_merged", url: "https://x/pull/1", attempt: 1 },
     { step: "pr_failed", url: "https://x/pull/1", attempt: 2 },
-    { step: "shipped", releaseUrl: "https://x/releases/1" },
-    { step: "shipped" },
     { step: "complete" },
   ];
   const allowed = new Set([
@@ -148,7 +155,6 @@ Deno.test("milestoneEntry: names the primary and carries only structured fields"
     "attestationId",
     "url",
     "attempt",
-    "releaseUrl",
   ]);
   for (const milestone of milestones) {
     const entry = milestoneEntry(milestone, 42);

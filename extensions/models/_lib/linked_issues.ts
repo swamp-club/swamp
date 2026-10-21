@@ -103,7 +103,6 @@ export type Milestone =
   | { step: "pr_linked"; url: string; attempt: number }
   | { step: "pr_merged"; url: string; attempt: number }
   | { step: "pr_failed"; url: string; attempt: number }
-  | { step: "shipped"; releaseUrl?: string }
   | { step: "complete" };
 
 /**
@@ -165,8 +164,8 @@ export function milestoneEntry(
       return {
         ...base,
         step: milestone.step,
-        targetStatus: "in_progress",
-        summary: `PR merged ${via}: ${milestone.url} — awaiting release`,
+        targetStatus: "shipped",
+        summary: `PR merged ${via}: ${milestone.url} — shipped`,
         emoji: "\u{1F389}",
         payload: {
           primaryIssueNumber,
@@ -186,19 +185,6 @@ export function milestoneEntry(
           url: milestone.url,
           attempt: milestone.attempt,
         },
-      };
-    case "shipped":
-      return {
-        ...base,
-        step: milestone.step,
-        targetStatus: "shipped",
-        summary: milestone.releaseUrl
-          ? `Shipped ${via}: ${milestone.releaseUrl}`
-          : `Shipped ${via}`,
-        emoji: "\u{1F680}",
-        payload: milestone.releaseUrl
-          ? { primaryIssueNumber, releaseUrl: milestone.releaseUrl }
-          : { primaryIssueNumber },
       };
     case "complete":
       return {
