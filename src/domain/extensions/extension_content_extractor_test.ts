@@ -718,6 +718,46 @@ Deno.test("extractContentMetadata extracts globalArguments from inline z.object"
   }
 });
 
+Deno.test("extractContentMetadata marks a global argument sensitive only when its schema does", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const model = {",
+        '  type: "test/sensitive-args",',
+        '  version: "2026.03.01.1",',
+        "  globalArguments: z.object({",
+        '    url: z.string().describe("Base URL"),',
+        "    token: z.string().min(1).meta({ sensitive: true })",
+        '      .describe("Identity token"),',
+        '    note: z.string().describe("sensitive: true is just text here"),',
+        "    flag: z.string().meta({ sensitive: false }),",
+        "  }),",
+        "  methods: {},",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    const args = result.models[0].globalArguments;
+    assertEquals(args.map((a) => [a.name, a.sensitive]), [
+      ["url", undefined],
+      ["token", true],
+      ["note", undefined],
+      ["flag", undefined],
+    ]);
+    assertEquals("sensitive" in args[0], false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extractContentMetadata extracts globalArguments from named schema reference", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

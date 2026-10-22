@@ -663,6 +663,31 @@ Deno.test("acceptanceFor: a site finding in Markdown is an HTML comment on the l
   );
 });
 
+Deno.test("acceptanceFor: a Markdown finding inside a code block is a sidecar entry naming the file and line", () => {
+  const readme = ["# Setup", "```bash", "swamp vault set v k", "```"].join(
+    "\n",
+  );
+  const file = "/ext/docs/README.md";
+  const sites = { [file]: commentSites(readme, file, [3]) };
+  assertEquals(
+    acceptanceFor(
+      { ruleId: "secret-unsafe-docs", file, line: 3 },
+      "/ext",
+      sites,
+    ),
+    {
+      form: "sidecar",
+      file: join("/ext", "quality.yaml"),
+      entry: { rule: "secret-unsafe-docs", file: "docs/README.md", line: 3 },
+    },
+  );
+  // A file the sites do not name still has none.
+  assertEquals(
+    acceptanceFor({ ruleId: "secret-unsafe-docs", file, line: 3 }, "/ext", {}),
+    undefined,
+  );
+});
+
 Deno.test("acceptanceFor: a site finding in a .txt file is one sidecar entry naming the file", () => {
   assertEquals(
     acceptanceFor(

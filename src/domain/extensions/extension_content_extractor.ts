@@ -36,6 +36,7 @@ import type {
   ExtractedWorkflowJob,
   ExtractedWorkflowStep,
 } from "./extension_content.ts";
+import { MARKED_SENSITIVE } from "./extension_review_rules.ts";
 
 /**
  * Reads a source file for its metadata, refusing a symlink: the safety gate
@@ -978,6 +979,13 @@ function extractMethodArguments(
  * Parses individual fields from a z.object({...}) body.
  * Extracts field name, type, description, and whether it's required.
  */
+/**
+ * A `.describe("...")` call, removed from a field's chain before looking for
+ * the sensitive marker so describe text that mentions it does not count.
+ */
+const DESCRIBE_CALL =
+  /\.describe\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)\s*\)/g;
+
 function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
   const args: ExtractedArgument[] = [];
 
@@ -1028,7 +1036,15 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
       !chain.includes(".catch(") &&
       !chain.includes(".prefault(");
 
-    args.push({ name, type: baseType, description, required });
+    args.push({
+      name,
+      type: baseType,
+      description,
+      required,
+      ...(MARKED_SENSITIVE.test(chain.replace(DESCRIBE_CALL, ""))
+        ? { sensitive: true as const }
+        : {}),
+    });
 
     // Advance past this field
     fieldStartPattern.lastIndex = pos;

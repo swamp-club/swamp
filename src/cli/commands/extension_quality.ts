@@ -157,6 +157,7 @@ export const extensionQualityCommand = new Command()
             manifest: resolved.manifest,
             repoDir,
             manifestDir,
+            manifestPath: absoluteManifestPath,
             modelsDir: resolved.modelsDir,
             behaviorsDir: resolved.behaviorsDir,
             allModelFiles: resolved.allModelFiles,

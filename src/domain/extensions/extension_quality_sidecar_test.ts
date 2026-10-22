@@ -253,6 +253,53 @@ Deno.test("sidecarDirectives: a site-scoped rule naming a file with a comment fo
   }
 });
 
+Deno.test("sidecarDirectives: a .md file entry with a line becomes a directive for that one line", () => {
+  const { directives, invalid } = sidecarDirectives(
+    sidecar({
+      accept: [{ rule: "secret-unsafe-docs", file: "README.md", line: 14 }],
+    }),
+    SIDECAR,
+    DIR,
+  );
+  assertEquals(invalid, []);
+  const target = directives[0].target;
+  assertEquals(target.kind, "line");
+  if (target.kind === "line") {
+    assertPathEquals(target.file, join(DIR, "README.md"));
+    assertEquals(target.line, 14);
+  }
+});
+
+Deno.test("sidecarDirectives: a line entry in a source file, or a line without a file, is refused", () => {
+  const source = sidecarDirectives(
+    sidecar({
+      accept: [{ rule: "secret-unsafe-docs", file: "models/m.ts", line: 3 }],
+    }),
+    SIDECAR,
+    DIR,
+  );
+  assertEquals(source.directives, []);
+  assertStringIncludes(source.invalid[0].problem, "comment on the line");
+  assertStringIncludes(source.invalid[0].text, "(models/m.ts:3)");
+
+  const bare = sidecarDirectives(
+    sidecar({ accept: [{ rule: "secret-unsafe-docs", line: 3 }] }),
+    SIDECAR,
+    DIR,
+  );
+  assertEquals(bare.directives, []);
+  assertStringIncludes(bare.invalid[0].problem, "a line needs the file");
+});
+
+Deno.test("parseQualitySidecar: a line must be a positive integer", () => {
+  for (const line of ["0", "-1", "1.5", '"3"']) {
+    const errors = errorsOf(
+      `version: 1\naccept:\n  - rule: secret-unsafe-docs\n    file: README.md\n    line: ${line}\n`,
+    );
+    assertStringIncludes(errors[0], "accept.0.line", line);
+  }
+});
+
 Deno.test("sidecarDirectives: testing-completeness with a file is refused; it belongs in the file or the generated declaration", () => {
   const { directives, invalid } = sidecarDirectives(
     sidecar({

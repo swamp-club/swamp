@@ -23,6 +23,11 @@ export interface ExtractedArgument {
   type: string;
   description: string;
   required: boolean;
+  /**
+   * True when the field is marked `.meta({ sensitive: true })`. Omitted
+   * otherwise, so the metadata of a field that is not sensitive is unchanged.
+   */
+  sensitive?: true;
 }
 
 /** A method extracted from a model definition. */

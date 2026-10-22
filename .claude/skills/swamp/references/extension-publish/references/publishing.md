@@ -790,6 +790,16 @@ One finding per offending line, so each can be accepted on its own.
 | `long-line`             | A line with 500+ non-whitespace characters                          |
 | `base64-run`            | A line with a run of 100+ base64 characters                         |
 | `ipv4-address-literals` | An IPv4 literal in `.md` or `.txt` outside the documentation ranges |
+| `secret-unsafe-docs`    | Docs that put a secret in plaintext or use vault syntax swamp lacks |
+
+`secret-unsafe-docs` reads the packaged Markdown, the manifest `description` and
+describe strings. It flags `vault://`, `<vault:`, `{{ vault ... }}` and
+`swamp vault set`; a `--global-arg` or `--input` secret set to anything but a
+`${{ ... }}` expression; `swamp vault put` with the value on the command line
+(except with `--server`); and credential-shaped literals. Each unaccepted
+finding costs the `secret-safe-docs` rubric point. Fix the docs to use
+`swamp vault put <vault> <key>` (it prompts) and
+`${{ vault.get(<vault>, <key>) }}`.
 
 The review rules (`credentials-sensitive-field`, `schema-strictness`,
 `testing-completeness`), the extension-scoped `bare-specifiers` and
@@ -826,11 +836,11 @@ finding is not right for this extension. A reason after a colon is optional; ask
 the user for one only when it would help a reviewer.
 
 **Site-scoped rules** (`credentials-sensitive-field`, `schema-strictness`,
-`deno-command`, `base64-run`, `long-line`, `ipv4-address-literals`) take a
-comment on the finding's line, or on the line directly above (one blank line in
-between is allowed; several directives may stack), with an optional reason.
-Directive text inside a fenced code block or a `/* ... */` block is
-documentation and is ignored:
+`deno-command`, `base64-run`, `long-line`, `ipv4-address-literals`,
+`secret-unsafe-docs`) take a comment on the finding's line, or on the line
+directly above (one blank line in between is allowed; several directives may
+stack), with an optional reason. Directive text inside a fenced code block or a
+`/* ... */` block is documentation and is ignored:
 
 ```typescript
 apiKey: z.string(), // swamp-quality-ignore credentials-sensitive-field: holds the name of a vault key
@@ -851,10 +861,11 @@ file (the top is conventional):
 // swamp-quality-ignore testing-completeness: thin wrapper covered by the integration suite
 ```
 
-A site rule in a `.txt` file (which has no comment form) and the `generated`
-declaration for a codegen package live in a `quality.yaml` sidecar beside
-`manifest.yaml`. It is discovered by location, never named in the manifest (most
-manifests are regenerated), packaged into the archive root beside
+A site rule in a `.txt` file or `manifest.yaml` (no comment form), a Markdown
+line inside a fenced code block (named by `file` and `line`), and the
+`generated` declaration for a codegen package live in a `quality.yaml` sidecar
+beside `manifest.yaml`. It is discovered by location, never named in the
+manifest (most manifests are regenerated), packaged into the archive root beside
 `manifest.yaml`, and part of the content hash:
 
 ```yaml
@@ -867,13 +878,20 @@ accept:
   - rule: ipv4-address-literals
     file: docs/hosts.txt
     reason: documented lab addresses # optional
+  - rule: secret-unsafe-docs # one line inside a README code block
+    file: README.md
+    line: 42
 ```
+
+A `line` entry needs this swamp release or later; older releases refuse the
+sidecar.
 
 Rules, enforced by construction:
 
 - An acceptance names one finding by file, rule and line. A new match elsewhere
-  still warns. The sidecar refuses site-scoped rules except for `.txt` files,
-  and refuses files outside the manifest's directory.
+  still warns. The sidecar refuses site-scoped rules in source files, and in
+  Markdown files without a `line`, and refuses files outside the manifest's
+  directory.
 - A comment naming an unknown, error-level or otherwise non-acceptable rule
   (`bare-specifiers`, the `adversarial-review-report` family), text after the
   rule id with no colon, or more than 50 per file, is a blocking
@@ -936,13 +954,15 @@ to edit:
 - `sidecar`: append `entry` to the `accept` list of the existing `quality.yaml`;
   create the file as `version: 1` plus `accept:` only when it is absent. Never
   write a second `version:` header. `entry.file` is already relative to the
-  manifest's directory; an extension-scoped rule has no `file`.
+  manifest's directory; an extension-scoped rule has no `file`. A Markdown file
+  with a finding inside a fenced code block takes `entry.line` for every one of
+  its findings and no comments, so no inserted line moves the lines the entries
+  name.
 
 A warning with no `acceptance` cannot be declared where it is: its rule has no
-acceptance form, or its line sits inside a multi-line string, template literal,
-block comment, Markdown fence or HTML comment, where a comment would be ignored
-or would change the string; log mode says `cannot be accepted here`. Offer the
-fix.
+acceptance form, or its line sits inside a multi-line string, template literal
+or block comment, where a comment would be ignored or would change the string;
+log mode says `cannot be accepted here`. Offer the fix.
 
 After editing source files, run `swamp extension fmt manifest.yaml` so the
 formatting gate passes.

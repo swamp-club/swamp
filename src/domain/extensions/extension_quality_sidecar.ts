@@ -49,10 +49,15 @@ import { findRule } from "./extension_rule_catalog.ts";
  *   - rule: ipv4-address-literals  # a site-scoped rule in a .txt file, which has no comment form
  *     file: docs/hosts.txt
  *     reason: documented lab addresses  # optional
+ *   - rule: secret-unsafe-docs     # one line of a Markdown file, inside a code block
+ *     file: README.md
+ *     line: 42
  * ```
  *
- * The sidecar cannot accept a site-scoped rule in a file that has a comment
- * form; that acceptance belongs on the line. It cannot accept an
+ * The sidecar cannot accept a site-scoped rule in a source file, which has
+ * a comment form; that acceptance belongs on the line. A Markdown file takes
+ * a sidecar entry only with a `line`, for a line inside a fenced code block
+ * where an HTML comment would render as part of the block. It cannot accept an
  * error-level rule, and it cannot name a file outside the manifest's
  * directory.
  */
@@ -87,6 +92,9 @@ const SidecarAcceptanceSchema = z.object({
     message:
       "Path must be relative and must not contain '..' components or start with '/'",
   }).optional(),
+  // The one line of `file` the entry accepts: a Markdown line inside a
+  // fenced code block, where no comment can go (swamp-club#3757).
+  line: z.number().int().positive().optional(),
 }).strict();
 
 const QualitySidecarSchema = z.object({
@@ -201,11 +209,17 @@ export function sidecarDirectives(
   sidecar.accept.forEach((entry, index) => {
     const line = index + 1;
     const text = `accept[${index}]: ${entry.rule}${
-      entry.file ? ` (${entry.file})` : ""
+      entry.file
+        ? ` (${entry.file}${entry.line !== undefined ? `:${entry.line}` : ""})`
+        : ""
     }`;
     const reject = (problem: string) =>
       invalid.push({ file: sidecarPath, line, text, problem });
 
+    if (entry.file === undefined && entry.line !== undefined) {
+      reject("a line needs the file it is in");
+      return;
+    }
     if (entry.file === undefined) {
       const problem = validateAcceptance(entry.rule, entry.reason, "sidecar");
       if (problem !== undefined) {
@@ -242,18 +256,22 @@ export function sidecarDirectives(
       );
       return;
     }
-    if (commentFormFor(entry.file) !== "none") {
+    const form = commentFormFor(entry.file);
+    if (form === "line" || (form === "html" && entry.line === undefined)) {
       reject(
         `"${entry.rule}" is site-scoped and ${
           extname(entry.file)
-        } files take the acceptance as a comment on the line; the sidecar names a file only for kinds with no comment form (.txt)`,
+        } files take the acceptance as a comment on the line; the sidecar names a file only for kinds with no comment form (.txt), or a .md file with the line of a code block`,
       );
       return;
     }
+    const file = resolve(manifestDir, entry.file);
     directives.push({
       ruleId: entry.rule,
       ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
-      target: { kind: "file", file: resolve(manifestDir, entry.file) },
+      target: entry.line !== undefined
+        ? { kind: "line", file, line: entry.line }
+        : { kind: "file", file },
       source: "sidecar",
       declaredAt: { file: sidecarPath, line },
     });

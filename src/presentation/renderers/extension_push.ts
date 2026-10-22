@@ -259,9 +259,16 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
-  private fieldLine(field: { name: string; type: string; required: boolean }) {
-    if (field.required) {
+  private fieldLine(
+    field: { name: string; type: string; required: boolean; sensitive?: true },
+  ) {
+    if (field.required && field.sensitive) {
+      this.logger.info`      ${field.name}: ${field.type} (sensitive)`;
+    } else if (field.required) {
       this.logger.info`      ${field.name}: ${field.type}`;
+    } else if (field.sensitive) {
+      this.logger
+        .info`      ${field.name}: ${field.type} (optional, sensitive)`;
     } else {
       this.logger.info`      ${field.name}: ${field.type} (optional)`;
     }

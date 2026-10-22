@@ -225,7 +225,7 @@ const DECLARED_IDENTIFIER =
  * Metadata passed as a variable (`.meta(SENSITIVE)`) or on a later line of a
  * multi-line object is not recognised; write the entry out on the chain.
  */
-const MARKED_SENSITIVE = /(?:^|[^\w$])["']?sensitive["']?\s*:\s*true\b/;
+export const MARKED_SENSITIVE = /(?:^|[^\w$])["']?sensitive["']?\s*:\s*true\b/;
 
 /**
  * Normalizes an identifier to lowercase snake_case so stems and suffixes can
@@ -247,7 +247,7 @@ function normalizeIdentifier(identifier: string): string {
  * is neither a reference to a secret nor a known pagination or idempotency
  * token.
  */
-function namesSecretValue(identifier: string): boolean {
+export function namesSecretValue(identifier: string): boolean {
   const normalized = normalizeIdentifier(identifier);
   if (!SECRET_STEM.test(normalized)) return false;
   if (REFERENCE_SUFFIX.test(normalized)) return false;

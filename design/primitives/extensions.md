@@ -1572,10 +1572,16 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   carries extension-scoped
   acceptances (no catalog rule is one today: `bare-specifiers` is not
   acceptable, since the registry cannot score the extension however it is
-  justified), a site rule for a `.txt` file (no comment form; file-wide, contained in the manifest's directory) and the `generated`
+  justified), a site rule for a `.txt` file or `manifest.yaml` (no comment form; file-wide, contained in the manifest's directory),
+  a site rule on one line of a Markdown file (`file` plus `line`, for a line
+  inside a fenced code block, where an HTML comment would render as part of
+  the block; swamp-club#3757) and the `generated`
   declaration `{ by, source, commit }` agreed with #3065, which accepts
   `testing-completeness` for the package; a file entry names a site-scoped
-  rule in a `.txt` file only, never a file-scoped one. It joins the content
+  rule in a file with no comment form, or in Markdown with a `line`, never a
+  file-scoped one. When any finding in a Markdown file sits where no comment
+  can go, the report offers line entries for every finding in that file and
+  no comments, so applying them all moves no named line. It joins the content
   hash when present (an extension without one keeps its hash), so a changed
   acceptance moves the hash and the review-report path, and is packaged at
   the archive root. A malformed sidecar blocks before any gate.
@@ -1914,6 +1920,15 @@ acceptable on its own (see Declared acceptances):
 - `ipv4-address-literals`: IPv4 address literals in `.md` and `.txt` files
   outside the RFC 5737 documentation, loopback and link-local ranges (found by
   the extensible content rule framework)
+- `secret-unsafe-docs` (`extension_secret_docs_detector.ts`, appended in
+  `runQualityFindings`): docs that put a secret in plaintext or reference a
+  vault with syntax swamp does not resolve, in the packaged Markdown (fenced
+  code for all patterns, prose for credential shapes only), the manifest
+  `description` on the author's own lines and source describe strings. A
+  secret argument is one a schema marks sensitive, or an undeclared name that
+  reads as a secret. Linear-time patterns and a line-length cap, since the
+  registry runs the same check on archives it did not author. An unaccepted
+  finding loses the rubric v4 `secret-safe-docs` point (swamp-club#3757)
 
 ### Binaries
 

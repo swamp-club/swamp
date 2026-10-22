@@ -617,6 +617,8 @@ export interface SidecarAcceptanceEntry {
   rule: string;
   /** Relative to the manifest's directory with forward slashes; absent for an extension-scoped rule. */
   file?: string;
+  /** The one line of `file` the entry accepts: a Markdown line inside a fenced code block. */
+  line?: number;
 }
 
 /**
@@ -795,9 +797,10 @@ function parserReadsDirectiveAbove(
  * has none: a rule with no acceptance form, a collapsed finding standing for
  * several files (each file takes its own), a site finding with no line, a
  * file with no comment form outside the manifest's directory, which the
- * sidecar cannot name, or a line a comment cannot go above (absent from
- * the file's {@link CommentSites} in `sites`). `finding.file` is the
- * absolute path findings carry.
+ * sidecar cannot name, or a source line a comment cannot go above (absent
+ * from the file's {@link CommentSites} in `sites`). A Markdown line no
+ * comment can go above, inside a fenced code block, takes a sidecar entry
+ * naming the line. `finding.file` is the absolute path findings carry.
  */
 export function acceptanceFor(
   finding: AcceptableFinding,
@@ -841,7 +844,22 @@ export function acceptanceFor(
   }
   if (finding.line === undefined) return undefined;
   const indent = sites[finding.file]?.[finding.line];
-  if (indent === undefined) return undefined;
+  if (indent === undefined) {
+    // A Markdown line inside a fenced code block or a multi-line HTML
+    // comment takes no comment above it, so the sidecar names the line.
+    if (form !== "html" || sites[finding.file] === undefined) return undefined;
+    const rel = relative(manifestDir, finding.file);
+    if (escapesDir(rel)) return undefined;
+    return {
+      form: "sidecar",
+      file: sidecarFile,
+      entry: {
+        rule: finding.ruleId,
+        file: rel.replaceAll("\\", "/"),
+        line: finding.line,
+      },
+    };
+  }
   // On its own line above the finding, never at the end of it: several
   // findings on one line each take a directive, and stacked directives all
   // name the line below them.

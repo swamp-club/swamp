@@ -194,6 +194,18 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Keep the behavior spelling if every client and worker that installs this extension runs this swamp release or later; otherwise use the model spelling (export const model, extensions/models/, manifest models:). Accept the finding in quality.yaml to stop this prompt.",
   },
+  // ── Site-scoped (appended by push) ──────────────────────────────────
+  // Acceptable: docs may show the wrong form on purpose to warn against it
+  // (swamp-club#3757). A finding costs the secret-safe-docs rubric point
+  // until it is fixed or accepted.
+  {
+    id: "secret-unsafe-docs",
+    severity: "warning",
+    scope: "site",
+    acceptable: true,
+    remediation:
+      "Show secrets going through a vault: store them with swamp vault put <vault> <key>, which prompts for the value, and pass them as ${{ vault.get(<vault>, <key>) }}. If the line shows the wrong form on purpose, accept it with an HTML comment on the line above, or, inside a code block, with a quality.yaml entry naming the file and line (that entry needs this swamp release or later).",
+  },
   // ── Adversarial-review evidence: warnings, never acceptable here ────
   {
     id: "adversarial-review-report",
