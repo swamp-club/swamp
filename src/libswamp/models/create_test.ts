@@ -744,3 +744,75 @@ Deno.test("modelCreate: records the principal on the span only when given", asyn
     assertEquals(span.attributes["auth.principal.id"], undefined);
   });
 });
+
+Deno.test("modelCreate: a refinement that echoes a sensitive global argument into an issue beside it is described in Zod's words (swamp-club#3681)", async () => {
+  const globalArgsSchema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    confirm: z.string().optional(),
+  }).superRefine((v, ctx) => {
+    ctx.addIssue({
+      code: "custom",
+      path: ["confirm"],
+      message: `confirm must equal ${v.apiKey}`,
+    });
+  });
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/echoing" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/echoing",
+      name: "my-model",
+      globalArguments: { apiKey: "hunter2-long", confirm: "x" },
+    }),
+  );
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertStringIncludes(last.error.message, "confirm: Invalid input");
+  assertEquals(last.error.message.includes("hunter2-long"), false);
+});
+
+Deno.test("modelCreate: a schema that throws while parsing a sensitive global argument has its message withheld (swamp-club#3681)", async () => {
+  const globalArgsSchema = z.object({
+    apiKey: z.string().meta({ sensitive: true }).transform((text): string => {
+      throw new TypeError(`normalized key rejected: ${text.toUpperCase()}`);
+    }),
+  });
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/throwing" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/throwing",
+      name: "my-model",
+      globalArguments: { apiKey: "hunter2-long" },
+    }),
+  );
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertStringIncludes(
+    last.error.message,
+    "the schema threw TypeError while parsing them, and its message is withheld",
+  );
+  assertEquals(last.error.message.includes("HUNTER2-LONG"), false);
+});

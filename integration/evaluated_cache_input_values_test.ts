@@ -24,7 +24,8 @@
  * run's data: it reaches the method, and a method that echoes it in its
  * error lands it in neither the error nor the failure record. A run whose
  * arguments the schema refuses leaves the last good evaluated cache as it
- * was.
+ * was, and a parse the schema refuses or a transform that throws shows
+ * nothing of what the transform made of the value.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -80,6 +81,10 @@ interface Harness {
  * `execute` returns, and the others throw something that echoes it, `fail`
  * an Error, `failText` the bare string, `failCoded` a UserError whose code
  * holds it.
+ * The `refuse*` and `throwMade` methods never run: their schemas refuse
+ * what the transform made of the string, through an issue that echoes it
+ * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
+ * throwing (`throwMade`).
  */
 async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-3681-inputs-" });
@@ -115,6 +120,41 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       fail: method("fail", z.object({ token: secret })),
       failText: method("failText", z.object({ token: secret })),
       failCoded: method("failCoded", z.object({ token: secret })),
+      refuseMade: method(
+        "refuseMade",
+        z.object({
+          token: secret.transform((text) => text.toUpperCase()).refine(
+            () => false,
+            {
+              error: (issue) =>
+                `normalized credential rejected: ${String(issue.input)}`,
+            },
+          ),
+        }),
+      ),
+      refusePiped: method(
+        "refusePiped",
+        z.object({ raw: z.string() }).transform((x) => ({
+          token: x.raw.toUpperCase(),
+        })).pipe(
+          z.object({
+            token: secret.refine(() => false, {
+              error: (issue) =>
+                `pipeline credential rejected: ${String(issue.input)}`,
+            }),
+          }),
+        ),
+      ),
+      throwMade: method(
+        "throwMade",
+        z.object({
+          token: secret.transform((text): string => {
+            throw new Error(
+              `normalized credential rejected: ${text.toUpperCase()}`,
+            );
+          }),
+        }),
+      ),
     },
   });
   try {
@@ -254,6 +294,11 @@ async function filesHolding(root: string, text: string): Promise<string[]> {
     }
   }
   return hits;
+}
+
+/** Every file under `.swamp` (the cache, outputs, logs, runs) holding `text`. */
+function swampFilesHolding(dir: string, text: string): Promise<string[]> {
+  return filesHolding(join(dir, ".swamp"), text);
 }
 
 async function cacheFile(dir: string, name: string): Promise<string> {
@@ -416,5 +461,57 @@ Deno.test("input values: a workflow step whose method throws a UserError with a 
     assertEquals(step.error, "intentional failure");
     assertStringIncludes(step.record, '"errorCode":"auth_failed_***"');
     assertEquals(step.record.includes(h.canary), false);
+  });
+});
+
+Deno.test("input values: a parse the schema refuses under a transform is described in Zod's words and shows nothing of what the transform made of a sensitive argument, in the error event, the failure record and a workflow step's error (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    const made = h.canary.toUpperCase();
+    for (
+      const [name, method, field] of [
+        ["refuse-made", "refuseMade", "token"],
+        ["refuse-piped", "refusePiped", "raw"],
+      ] as const
+    ) {
+      await define(h, name, method, { [field]: "${{ inputs.key }}" });
+      const errors = errorsOf(await run(h, name, method, { key: h.canary }));
+      assertEquals(errors.map((error) => error.code), [
+        "method_execution_failed",
+      ]);
+      assertStringIncludes(errors[0].message, 'Invalid input at "token"');
+      assertEquals(errors[0].message.includes("credential rejected"), false);
+      assertEquals(errors[0].message.includes(made), false);
+      assertEquals(errors[0].message.includes(h.canary), false);
+      assertEquals(await swampFilesHolding(h.dir, made), []);
+      assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    }
+    assertEquals(h.received, []);
+
+    const step = await runStep(h, "refuse-made", "refuseMade", h.canary);
+    assertEquals(step.status, "failed");
+    assertStringIncludes(step.error, 'Invalid input at "token"');
+    assertEquals(step.error.includes("credential rejected"), false);
+    assertEquals(step.error.includes(made), false);
+    assertEquals(step.record.includes(made), false);
+    assertEquals(await swampFilesHolding(h.dir, made), []);
+  });
+});
+
+Deno.test("input values: a schema transform that throws for a sensitive argument has its message withheld, so neither the value nor what was made of it reaches the error event or the failure record (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    const made = h.canary.toUpperCase();
+    await define(h, "throw-made", "throwMade", { token: "${{ inputs.key }}" });
+    const errors = errorsOf(
+      await run(h, "throw-made", "throwMade", { key: h.canary }),
+    );
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertStringIncludes(errors[0].message, "its message is withheld");
+    assertEquals(errors[0].message.includes(made), false);
+    assertEquals(errors[0].message.includes(h.canary), false);
+    assertEquals(h.received, []);
+    assertEquals(await swampFilesHolding(h.dir, made), []);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
   });
 });

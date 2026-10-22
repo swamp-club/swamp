@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import {
+  codeAroundMetadata,
   extractFieldsWithMetadata,
   type FieldMetadata,
   findFieldMetadata,
@@ -927,4 +928,112 @@ Deno.test("findFieldsWhere: a DAG-shaped schema costs one visit per node and cha
   // Only a node with metadata is asked, and the shared leaf is read once
   // under its first path: one question, not a billion.
   assertEquals(asked, 1);
+});
+
+Deno.test("findValuesWithMetadata: with reportRoot, a match on the root schema's own chain reports the root value whole, and is still left out without it (swamp-club#3681)", () => {
+  const made = z.object({ raw: z.string() }).transform((x) => x.raw).pipe(
+    z.string().meta({ marked: true }),
+  );
+  assertEquals(
+    findValuesWithMetadata(made, "MADE", isMarked, { reportRoot: true }).map(
+      (found) => [found.path, found.keys, found.value],
+    ),
+    [["", [], "MADE"]],
+  );
+  assertEquals(findValuesWithMetadata(made, "MADE", isMarked), []);
+  const whole = z.object({ a: z.string() }).meta({ marked: true }).optional();
+  assertEquals(
+    findValuesWithMetadata(whole, { a: "x" }, isMarked, { reportRoot: true })
+      .map((found) => found.path),
+    [""],
+  );
+  assertEquals(findValuesWithMetadata(whole, { a: "x" }, isMarked), []);
+  // A marked field under an unmarked root is reported the same either way.
+  const under = z.object({ a: z.string().meta({ marked: true }) });
+  assertEquals(
+    findValuesWithMetadata(under, { a: "x" }, isMarked, { reportRoot: true })
+      .map((found) => found.path),
+    ["a"],
+  );
+});
+
+Deno.test("codeAroundMetadata: a refinement, a node-level error map or a pipe on a node enclosing a marked field, or on a union or intersection member beside one, writes messages; only a superRefine, a check or a pipe at or above the field adds issues; built-in checks, and code on the field itself or beside it, write nothing above (swamp-club#3681)", () => {
+  const marked = z.string().meta({ marked: true });
+  const code = (schema: z.ZodTypeAny) => codeAroundMetadata(schema, isMarked);
+  const none = { messages: false, issues: false };
+  const messages = { messages: true, issues: false };
+  const both = { messages: true, issues: true };
+  assertEquals(code(z.object({ a: marked })), none);
+  assertEquals(
+    code(
+      z.object({ a: marked.min(3, "short").refine(() => true, "no") }),
+    ),
+    none,
+  );
+  assertEquals(
+    code(z.object({
+      a: marked,
+      b: z.string().transform((s) => s).refine(() => true, "no"),
+    })),
+    none,
+  );
+  assertEquals(code(z.array(marked).min(1, "one at least")), none);
+  assertEquals(
+    code(z.object({ a: marked }).refine(() => true, "static")),
+    messages,
+  );
+  assertEquals(
+    code(z.object({ a: marked }).refine(() => true, { path: ["b"] })),
+    messages,
+  );
+  assertEquals(
+    code(z.object({ a: marked }).optional().refine(() => true)),
+    messages,
+  );
+  assertEquals(
+    code(z.discriminatedUnion("k", [
+      z.object({ k: z.literal("a"), a: marked }),
+      z.object({ k: z.literal("b") }),
+    ], { error: "pick one" })),
+    messages,
+  );
+  assertEquals(
+    code(z.union([
+      z.object({ a: marked }),
+      z.object({ b: z.string() }).refine(() => true, "no"),
+    ])),
+    messages,
+  );
+  assertEquals(code(z.object({ a: marked }).superRefine(() => {})), both);
+  assertEquals(code(z.object({ a: marked }).check(() => {})), both);
+  assertEquals(code(z.object({ a: marked }).transform((v) => v)), both);
+  assertEquals(code(z.preprocess((v) => v, z.object({ a: marked }))), both);
+  assertEquals(
+    code(z.object({ creds: z.object({ a: marked }).superRefine(() => {}) })),
+    both,
+  );
+  assertEquals(
+    code(
+      z.intersection(z.object({ a: marked }), z.any().superRefine(() => {})),
+    ),
+    both,
+  );
+  // Code on the marked node itself adds issues at its own position only.
+  assertEquals(code(z.object({ a: marked.superRefine(() => {}) })), {
+    messages: false,
+    issues: true,
+  });
+  assertEquals(code(z.object({ a: marked.transform((s) => s) })), {
+    messages: false,
+    issues: true,
+  });
+  // A schema that contains itself is entered once.
+  type Node = { a: string; next?: Node | undefined };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({ a: marked, next: node.optional() }).refine(() => true, "no")
+  );
+  assertEquals(code(node), messages);
+  // The answer is kept per schema.
+  const kept = z.object({ a: marked }).superRefine(() => {});
+  assertEquals(code(kept), code(kept));
 });

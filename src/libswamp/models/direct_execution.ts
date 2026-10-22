@@ -22,7 +22,6 @@ import {
   toPersistedForm,
   vaultReferenceText,
 } from "../../domain/secrets/mod.ts";
-import type { z } from "zod";
 import {
   Definition,
   definitionNameViolation,
@@ -55,6 +54,8 @@ import {
 import {
   findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
+  maskRefusedIssues,
+  schemaThrowMessage,
 } from "../../domain/models/sensitive_field_extractor.ts";
 import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
 import type { SwampError } from "../errors.ts";
@@ -554,13 +555,33 @@ export async function resolveOrCreateDefinition(
         !Object.hasOwn(staticArgs, key)
       ),
     );
-    const result = parseGlobalArgumentsLeniently(
-      modelDef.globalArguments,
-      staticArgs,
-      strippedKeys,
-    );
+    // Described as a run's refusal is, so the schema's own code cannot
+    // spell a sensitive value here, and a schema that throws while parsing
+    // is reported as a run reports it (swamp-club#3681).
+    const globalArgsSchema = modelDef.globalArguments;
+    let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
+    try {
+      result = parseGlobalArgumentsLeniently(
+        globalArgsSchema,
+        staticArgs,
+        strippedKeys,
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error: validationFailed(
+          `Invalid global arguments for type '${resolvedType.normalized}': ${
+            schemaThrowMessage(error, globalArgsSchema, "Global arguments")
+          }`,
+        ),
+      };
+    }
     if (!result.success) {
-      const issues = result.issues.map((i: z.ZodIssue) => {
+      const issues = maskRefusedIssues(
+        globalArgsSchema,
+        staticArgs,
+        result.issues,
+      ).map((i) => {
         const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
         return `  ${path}${i.message}`;
       }).join("\n");

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { z } from "zod";
+import { z } from "zod";
 import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
 import { freeRoots, isBlankConstant } from "../expressions/cel_grammar.ts";
 import {
@@ -25,11 +25,16 @@ import {
   scanExpressions,
 } from "../expressions/expression_scanner.ts";
 import {
+  codeAroundMetadata,
   extractFieldsWithMetadata,
   type FieldMetadata,
   findValuesWithMetadata,
   schemaHoldsMetadata,
 } from "./zod_field_metadata.ts";
+import {
+  schemaDeclaredKeys,
+  schemaTransformsValues,
+} from "./zod_type_coercion.ts";
 
 /**
  * Information about a sensitive field extracted from a Zod schema.
@@ -583,13 +588,24 @@ export function redactAllValues(
   return redacted;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+}
+
 /**
  * Recursively collects all string values from a value tree into `out`.
- * Handles strings, arrays, and plain objects (records/maps). A string that
- * is exactly a vault secret sentinel is skipped: it stands for a reference,
+ * Handles strings, arrays, and plain objects (records/maps). An object's own
+ * keys are collected too when `includeKey` accepts them. A string that is
+ * exactly a vault secret sentinel is skipped: it stands for a reference,
  * and the load that delivers its value registers that value.
  */
-function collectSecretStrings(value: unknown, out: string[]): void {
+function collectSecretStrings(
+  value: unknown,
+  out: string[],
+  includeKey?: (key: string) => boolean,
+): void {
   if (value === undefined || value === null) {
     return;
   }
@@ -599,19 +615,60 @@ function collectSecretStrings(value: unknown, out: string[]): void {
   }
   if (Array.isArray(value)) {
     for (const element of value) {
-      collectSecretStrings(element, out);
+      collectSecretStrings(element, out, includeKey);
     }
     return;
   }
-  if (
-    typeof value === "object" &&
-    (Object.getPrototypeOf(value) === Object.prototype ||
-      Object.getPrototypeOf(value) === null)
-  ) {
-    for (const v of Object.values(value as Record<string, unknown>)) {
-      collectSecretStrings(v, out);
+  if (isPlainObject(value)) {
+    for (const [k, v] of Object.entries(value)) {
+      if (includeKey?.(k)) out.push(k);
+      collectSecretStrings(v, out, includeKey);
     }
   }
+}
+
+/** The keys and array indexes a value spells, at any depth. */
+export interface SpelledKeys {
+  /** Every own key of every plain object. */
+  keys: Set<string>;
+  /** Every index of every array. */
+  indices: Set<number>;
+}
+
+/**
+ * Every own key of every plain object in `value`, and every index of every
+ * array, at any depth. A parse's input is read this way to tell the keys
+ * and indexes the method's arguments spelled from those its schema
+ * introduced (swamp-club#3681).
+ */
+export function inputKeysOf(value: unknown): SpelledKeys {
+  const keys = new Set<string>();
+  const indices = new Set<number>();
+  const seen = new Set<object>();
+  const visit = (node: unknown) => {
+    if (typeof node !== "object" || node === null || seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => {
+        indices.add(index);
+        visit(item);
+      });
+    } else if (isPlainObject(node)) {
+      for (const [key, item] of Object.entries(node)) {
+        keys.add(key);
+        visit(item);
+      }
+    }
+  };
+  visit(value);
+  return { keys, indices };
+}
+
+/** The keys of {@link inputKeysOf}. */
+export function objectKeysOf(value: unknown): Set<string> {
+  return inputKeysOf(value).keys;
 }
 
 /**
@@ -648,6 +705,256 @@ export function extractSensitiveFieldValues(
   }
 
   return [...new Set(secrets)];
+}
+
+/** The parts of a parse issue a refusal can echo. */
+export interface RefusedIssue {
+  readonly path: readonly PropertyKey[];
+  /** What the failing check received, reported with `reportInput`. */
+  readonly input?: unknown;
+}
+
+/**
+ * The secret text a refused parse of `input` against `schema` may echo:
+ * the `input` of every issue at, under or above a sensitive position of
+ * `input`, which under a transform is what the transform made of the value
+ * and not the value the caller registered before the parse, plus any object
+ * key in it the parse introduced (swamp-club#3681). When the schema
+ * transforms values anywhere, an issue's path names a position in the
+ * transformed shape, and when the schema's own code encloses a sensitive
+ * position, an issue it adds may sit at any path (see
+ * {@link codeAroundMetadata}), so every issue counts. A schema that marks
+ * nothing yields nothing.
+ *
+ * @param schema - The arguments schema the parse ran
+ * @param input - What the parse received
+ * @param issues - The parse's issues, with their inputs
+ * @returns The text to register with SecretRedactor before reporting
+ */
+export function extractRefusedSensitiveValues(
+  schema: z.ZodTypeAny,
+  input: unknown,
+  issues: readonly RefusedIssue[],
+): string[] {
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return [];
+  }
+  const spelled = objectKeysOf(input);
+  const includeKey = (key: string) => !spelled.has(key);
+  const positions = sensitivePositions(schema, input);
+  const secrets: string[] = [];
+  for (const issue of issues) {
+    if (
+      positions && !positions.some((position) => meets(position, issue.path))
+    ) {
+      continue;
+    }
+    collectSecretStrings(issue.input, secrets, includeKey);
+  }
+  return [...new Set(secrets)];
+}
+
+/**
+ * The sensitive positions of `input` under `schema`, as key paths; a
+ * schema marked at its root gives the root. Undefined when no path can be
+ * trusted (swamp-club#3681): the schema transforms values anywhere, so an
+ * issue's path names a position in the transformed shape, which the input
+ * cannot locate; or its own code encloses a sensitive position (a custom
+ * check, a node-level error map or a pipe on an enclosing node, or on a
+ * union or intersection member beside one), so an issue it adds, written
+ * from the value, may sit at any path. Every issue then counts.
+ */
+function sensitivePositions(
+  schema: z.ZodTypeAny,
+  input: unknown,
+): string[][] | undefined {
+  if (
+    schemaTransformsValues(schema) ||
+    codeAroundMetadata(schema, isSensitive).messages
+  ) {
+    return undefined;
+  }
+  return findValuesWithMetadata(schema, input, isSensitive, {
+    reportRoot: true,
+  }).map((found) => found.keys.map(String));
+}
+
+/** Whether an issue at `path` sits at, under or above `position`. */
+function meets(
+  position: readonly string[],
+  path: readonly PropertyKey[],
+): boolean {
+  const depth = Math.min(position.length, path.length);
+  for (let i = 0; i < depth; i++) {
+    if (position[i] !== String(path[i])) return false;
+  }
+  return true;
+}
+
+/** The names of the errors the runtime itself throws. */
+const STANDARD_ERROR_NAMES: ReadonlySet<string> = new Set([
+  "Error",
+  "AggregateError",
+  "EvalError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TypeError",
+  "URIError",
+]);
+
+/**
+ * The error to report when a schema throws while parsing instead of adding
+ * an issue. A schema marking nothing sensitive has its throw reported as it
+ * is. One marking a field has the message withheld: a transform throws with
+ * whatever it was given or made of it, which nothing has registered, since
+ * the parse delivered nothing (swamp-club#3681). The error's name is written
+ * as the schema's code may have set it, so only a standard name is reported.
+ * A run throws what this returns; a validation reports its message, see
+ * {@link schemaThrowMessage}.
+ *
+ * @param error - What the parse threw
+ * @param schema - The arguments schema the parse ran
+ * @param subject - What was parsed, as the report names it
+ * @returns `error`, or the error that withholds its message
+ */
+export function schemaThrew(
+  error: unknown,
+  schema: z.ZodTypeAny,
+  subject: string,
+): unknown {
+  if (!schemaHoldsMetadata(schema, isSensitive)) return error;
+  const name = error instanceof Error
+    ? STANDARD_ERROR_NAMES.has(error.name) ? error.name : "an error"
+    : `a ${typeof error}`;
+  return new Error(
+    `${subject} validation failed: the schema threw ${name} while parsing ` +
+      `them, and its message is withheld because the schema marks a field ` +
+      `sensitive. A transform refuses a value through ctx.addIssue, which ` +
+      `is reported in Zod's words with the value masked.`,
+  );
+}
+
+/**
+ * The message a validation reports for a schema that threw while parsing:
+ * the withheld message of {@link schemaThrew} when the schema marks a field
+ * sensitive, the throw's own message otherwise.
+ */
+export function schemaThrowMessage(
+  error: unknown,
+  schema: z.ZodTypeAny,
+  subject: string,
+): string {
+  const reported = schemaThrew(error, schema, subject);
+  return reported instanceof Error ? reported.message : String(reported);
+}
+
+/** The mask a refusal shows for a path segment the parse introduced. */
+const MASK = "***";
+
+/** An issue of a refused parse as a refusal may report it: nothing else. */
+export interface ReportedIssue {
+  readonly code: string;
+  /** The issue's path, with every segment the parse introduced masked. */
+  readonly path: (string | number)[];
+  readonly message: string;
+}
+
+/**
+ * The issues of a refused parse of `input` against `schema` as the refusal
+ * may report them (swamp-club#3681), each reduced to its code, path and
+ * message: an issue's other fields hold what the failing check received and
+ * whatever the schema's code set, and travel no further.
+ *
+ * The schema's own code writes an issue's message and may add path
+ * segments, and wherever it holds a sensitive value, what it writes may
+ * spell the value in a form nothing registered. An issue at, under or above
+ * a sensitive position is therefore described in Zod's own words for its
+ * kind instead, read from the issue's fields, which name a type, a bound, a
+ * format or the schema's literals and never the value. When the schema
+ * transforms values anywhere, or its own code encloses a sensitive position
+ * (see {@link codeAroundMetadata}), an issue it adds may sit at any path, so
+ * every issue is described this way; only an issue beside every sensitive
+ * position, in a schema whose code encloses none, keeps its message. When a
+ * `superRefine()`, a `.check()` or a pipe sits at or above a sensitive
+ * position, an issue's fields may be its code's own too, so a described
+ * issue is then `Invalid input` and nothing more. A path segment that
+ * neither the input spelled nor the schema declares, an index into no array
+ * the input holds, or a symbol, came from the schema's code, and is masked
+ * in every issue. A schema that marks nothing keeps every message.
+ *
+ * @param schema - The arguments schema the parse ran
+ * @param input - What the parse received
+ * @param issues - The parse's issues
+ * @returns The issues to format, in order
+ */
+export function maskRefusedIssues(
+  schema: z.ZodTypeAny,
+  input: unknown,
+  issues: readonly z.ZodIssue[],
+): ReportedIssue[] {
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return issues.map(({ code, path, message }) => ({
+      code,
+      path: path.map((segment) => typeof segment === "symbol" ? MASK : segment),
+      message,
+    }));
+  }
+  const spelled = inputKeysOf(input);
+  const declared = schemaDeclaredKeys(schema);
+  const positions = sensitivePositions(schema, input);
+  const unread = schemaTransformsValues(schema) ||
+    codeAroundMetadata(schema, isSensitive).issues;
+  const describe = z.locales.en().localeError;
+  const worded = (issue: z.core.$ZodRawIssue): string => {
+    const described = describe(issue);
+    return typeof described === "string"
+      ? described
+      : described?.message ?? "Invalid input";
+  };
+  const known = (key: string) => spelled.keys.has(key) || declared.has(key);
+  return issues.map((issue) => {
+    const path = issue.path.map((segment) =>
+      typeof segment === "string"
+        ? known(segment) ? segment : MASK
+        : typeof segment === "number" && spelled.indices.has(segment)
+        ? segment
+        : MASK
+    );
+    const sensitive = !positions ||
+      positions.some((position) => meets(position, issue.path));
+    if (!sensitive) {
+      return { code: issue.code, path, message: issue.message };
+    }
+    if (unread) {
+      return {
+        code: issue.code,
+        path,
+        message: worded({ code: "custom", input: undefined }),
+      };
+    }
+    // Only an invalid-type description reads the input, and for its type
+    // alone, which an instance names after its class: such an input is
+    // described as an object. Unrecognized keys are named as the input
+    // spelled them or the schema declares them, and masked otherwise.
+    // Every other kind is described from the issue's own fields.
+    const trusted: z.core.$ZodRawIssue = issue.code === "invalid_type"
+      ? {
+        ...issue,
+        input: typeof issue.input !== "object" || issue.input === null ||
+            Array.isArray(issue.input) || isPlainObject(issue.input)
+          ? issue.input
+          : {},
+      }
+      : issue.code === "unrecognized_keys"
+      ? {
+        ...issue,
+        keys: issue.keys.map((key) => known(key) ? key : MASK),
+        input: undefined,
+      }
+      : { ...issue, input: undefined };
+    return { code: issue.code, path, message: worded(trusted) };
+  });
 }
 
 /**

@@ -981,6 +981,30 @@ data ranges in the saved text, alongside the raw replay provenance, so a written
 vault reference cannot exempt adjacent input text.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
+A parse the schema refuses registers what each issue at a sensitive position
+received, which under a transform is the transformed spelling, before the
+refusal is reported through the redactor, and reports each issue by its code,
+path and message alone. An issue at, under or above a sensitive position is
+described in Zod's own words for its kind rather than with the message the
+schema's code wrote, since that code holds the value and may spell it in a form
+nothing registered. When the schema transforms values anywhere, or its own code
+encloses a sensitive position (a refinement, a node-level error map or a pipe
+on an enclosing node, or on a union or intersection member beside the
+position), an issue that code adds may sit at any path, so every issue is
+registered and described that way; Zod stores a static refinement message as a
+function, so it cannot be told from one that reads the value. When a
+`superRefine`, a `.check()` or a pipe sits at or above the position, an issue's
+fields may be that code's own too, and a described issue is then
+`Invalid input` and nothing more. A path segment that neither the input spelled
+nor the schema declares, an index into no array the input holds, or a symbol,
+is masked. A schema that throws while parsing instead of adding an issue has
+its message withheld when it marks a field sensitive, since nothing has
+registered what the throw may carry, and the throw's name is reported only when
+it is a standard one. A refusal of the global arguments is registered and
+described the same way. A refused parse is described, and a throw withheld, the
+same way wherever arguments are parsed outside a run: `model validate` and the
+workflow step pre-check report them as failed validations, and `model create`
+and direct execution as their validation error.
 
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in

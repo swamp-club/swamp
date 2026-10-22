@@ -24,7 +24,29 @@ import {
   getObjectShape,
   isRecordSchema,
   parseGlobalArgumentsLeniently,
+  schemaDeclaredKeys,
+  schemaTransformsValues,
 } from "./zod_type_coercion.ts";
+
+Deno.test("schemaTransformsValues: finds nested and wrapped transforms without executing them", () => {
+  const transformed = z.string().transform(() => {
+    throw new Error("must not execute");
+  });
+  for (
+    const schema of [
+      transformed,
+      z.object({ alias: transformed }),
+      z.array(transformed),
+      z.record(z.string(), transformed),
+      z.lazy(() => transformed),
+      z.union([z.string(), transformed]),
+      transformed.optional(),
+    ]
+  ) {
+    assertEquals(schemaTransformsValues(schema), true);
+  }
+  assertEquals(schemaTransformsValues(z.object({ alias: z.string() })), false);
+});
 
 Deno.test("coerces string 'true' to boolean true", () => {
   const schema = z.object({ enabled: z.boolean() });
@@ -637,4 +659,49 @@ Deno.test("parseGlobalArgumentsLeniently: keeps a non-custom refinement issue at
   if (!result.success) {
     assertEquals(result.issues.map((i) => i.message), ["apiKey required"]);
   }
+});
+
+Deno.test("schemaDeclaredKeys: every object key at any depth, through wrappers, arrays, records, tuples, unions, intersections, lazy schemas and both sides of a pipe, without executing a transform (swamp-club#3681)", () => {
+  type Node = { name: string; children: Node[] };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({ name: z.string(), children: z.array(node) })
+  );
+  const schema = z.object({
+    a: z.object({ b: z.string() }).optional(),
+    list: z.array(z.object({ c: z.number() })),
+    rec: z.record(z.string(), z.object({ d: z.boolean() })),
+    tuple: z.tuple([z.object({ e: z.string() })]),
+    either: z.union([z.object({ f: z.string() }), z.object({ g: z.string() })]),
+    both: z.intersection(
+      z.object({ h: z.string() }),
+      z.object({ i: z.string() }),
+    ),
+    tree: node,
+    piped: z.object({ j: z.string() }).transform((): { k: string } => {
+      throw new Error("must not execute");
+    }).pipe(z.object({ k: z.string() })),
+  });
+  assertEquals([...schemaDeclaredKeys(schema)].sort(), [
+    "a",
+    "b",
+    "both",
+    "c",
+    "children",
+    "d",
+    "e",
+    "either",
+    "f",
+    "g",
+    "h",
+    "i",
+    "j",
+    "k",
+    "list",
+    "name",
+    "piped",
+    "rec",
+    "tree",
+    "tuple",
+  ]);
+  assertEquals(schemaDeclaredKeys(z.string()).size, 0);
 });

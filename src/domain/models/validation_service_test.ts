@@ -4013,3 +4013,98 @@ Deno.test("validateModel: scoped to a method, Secret usage diagnoses the global 
   ]);
   assertEquals(results.find((r) => r.name === "Secret usage")?.passed, true);
 });
+
+Deno.test("validateModel: a refinement that echoes a sensitive argument into an issue beside it is described in Zod's words, for global and method arguments alike (swamp-club#3681)", async () => {
+  const service = new DefaultModelValidationService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const echoing = z.object({
+    apiKey: sensitive,
+    confirm: z.string().optional(),
+  }).superRefine((v, ctx) => {
+    ctx.addIssue({
+      code: "custom",
+      path: ["confirm"],
+      message: `confirm must equal ${v.apiKey}`,
+    });
+  });
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: echoing,
+    methods: {
+      write: { ...testExprModel.methods.write, arguments: echoing },
+    },
+  };
+  const results = (await service.validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { apiKey: "hunter2-long", confirm: "x" },
+      methods: {
+        write: { arguments: { apiKey: "hunter2-long", confirm: "x" } },
+      },
+    }),
+    model,
+  )).results;
+  for (const name of ["Global arguments", "Method arguments"]) {
+    const result = results.find((r) => r.name === name);
+    assertEquals(result?.passed, false, name);
+    assertStringIncludes(
+      result?.error ?? "",
+      'Invalid input at "confirm"',
+      name,
+    );
+    assertEquals(result?.error?.includes("hunter2-long"), false, name);
+  }
+});
+
+Deno.test("validateModel: a schema that throws while parsing a sensitive argument has its message withheld, for global and method arguments alike, and one marking nothing has its throw reported as it is (swamp-club#3681)", async () => {
+  const service = new DefaultModelValidationService();
+  const throwing = z.object({
+    apiKey: z.string().meta({ sensitive: true }).transform((text): string => {
+      throw new TypeError(`normalized key rejected: ${text.toUpperCase()}`);
+    }),
+  });
+  const model: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: throwing,
+    methods: {
+      write: { ...testExprModel.methods.write, arguments: throwing },
+    },
+  };
+  const results = (await service.validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { apiKey: "hunter2-long" },
+      methods: { write: { arguments: { apiKey: "hunter2-long" } } },
+    }),
+    model,
+  )).results;
+  for (const name of ["Global arguments", "Method arguments"]) {
+    const result = results.find((r) => r.name === name);
+    assertEquals(result?.passed, false, name);
+    assertStringIncludes(
+      result?.error ?? "",
+      "the schema threw TypeError while parsing them, and its message is withheld",
+      name,
+    );
+    assertEquals(result?.error?.includes("HUNTER2-LONG"), false, name);
+  }
+
+  const plain: ModelDefinition = {
+    ...testExprModel,
+    globalArguments: z.object({
+      key: z.string().transform((text): string => {
+        throw new TypeError(`key rejected: ${text}`);
+      }),
+    }),
+  };
+  const reported = (await service.validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { key: "plain-value" },
+      methods: { write: { arguments: { message: "hello" } } },
+    }),
+    plain,
+  )).results.find((r) => r.name === "Global arguments");
+  assertEquals(reported?.passed, false);
+  assertStringIncludes(reported?.error ?? "", "key rejected: plain-value");
+});

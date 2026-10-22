@@ -46,6 +46,8 @@ import { stripExpressionFields } from "../../domain/expressions/expression_parse
 import {
   findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
+  maskRefusedIssues,
+  schemaThrowMessage,
 } from "../../domain/models/sensitive_field_extractor.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -244,9 +246,35 @@ export async function* modelCreate(
           const hasExpressionArgs = Object.keys(staticArgs).length <
             Object.keys(globalArguments).length;
           if (!hasExpressionArgs) {
-            const result = globalArgsSchema.safeParse(globalArguments);
+            // Described as a run's refusal is, so the schema's own code
+            // cannot spell a sensitive value here, and a schema that throws
+            // while parsing is reported as a run reports it (swamp-club#3681).
+            let result: ReturnType<typeof globalArgsSchema.safeParse>;
+            try {
+              result = globalArgsSchema.safeParse(globalArguments, {
+                reportInput: true,
+              });
+            } catch (error) {
+              yield {
+                kind: "error",
+                error: validationFailed(
+                  `Invalid global arguments for type '${modelType.normalized}': ${
+                    schemaThrowMessage(
+                      error,
+                      globalArgsSchema,
+                      "Global arguments",
+                    )
+                  }`,
+                ),
+              };
+              return;
+            }
             if (!result.success) {
-              const issues = result.error.issues.map((i) => {
+              const issues = maskRefusedIssues(
+                globalArgsSchema,
+                globalArguments,
+                result.error.issues,
+              ).map((i) => {
                 const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
                 return `  ${path}${i.message}`;
               }).join("\n");

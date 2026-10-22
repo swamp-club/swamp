@@ -57,6 +57,17 @@ interface ZodDef {
   in?: z.ZodTypeAny;
   out?: z.ZodTypeAny;
   values?: unknown[];
+  /** The checks the schema runs once its own parse has passed. */
+  checks?: { _zod?: { def?: ZodCheckDef } }[];
+  /** A node-level error map, as `z.object({...}, { error })` sets it. */
+  error?: unknown;
+}
+
+/** The definition of a check a schema runs after its own parse. */
+interface ZodCheckDef {
+  check?: string;
+  /** Set by `.refine()`, whose function only answers yes or no. */
+  fn?: unknown;
 }
 
 /**
@@ -456,6 +467,8 @@ function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
 /** State carried through one {@link findValuesWithMetadata} walk. */
 interface ValueWalk {
   matches: (meta: FieldMetadata) => boolean;
+  /** Report metadata on the root schema's own chain, for the root value. */
+  reportRoot?: boolean;
   found: ValueWithMetadata[];
   /** Paths already in `found`. */
   foundPaths: Set<string>;
@@ -563,7 +576,7 @@ function visitValue(
   };
 
   let current = schema;
-  let reported = atRoot;
+  let reported = atRoot && !walk.reportRoot;
   while (true) {
     const meta = readMetadata(current);
     if (!reported && meta && walk.matches(meta)) {
@@ -708,7 +721,10 @@ function visitValue(
  * reached. A matching node is reported once, and its children are still
  * visited. A value that is not the object or array its schema declares is
  * reported whole when that schema marks anything inside it. Metadata on the
- * root schema itself is not reported.
+ * root schema itself is not reported, unless `reportRoot` asks for it: the
+ * root value is then reported whole when the root schema, or a wrapper or
+ * pipe side on its own chain, matches. No transform or validator is
+ * executed.
  *
  * The walk follows the value, so it visits at most what the value holds and
  * ends on a recursive schema; a value that contains itself is not entered
@@ -725,9 +741,11 @@ export function findValuesWithMetadata(
   schema: z.ZodTypeAny,
   value: unknown,
   matches: (meta: FieldMetadata) => boolean,
+  options: { reportRoot?: boolean } = {},
 ): ValueWithMetadata[] {
   const walk: ValueWalk = {
     matches,
+    reportRoot: options.reportRoot,
     found: [],
     foundPaths: new Set(),
     visited: new Map(),
@@ -904,4 +922,182 @@ export function schemaHoldsMetadata(
   const held = matchWithin(walk, schema) !== undefined;
   answers.set(schema, held);
   return held;
+}
+
+/** What a schema's own code, around the fields `matches` marks, can reach. */
+export interface CodeAroundMetadata {
+  /**
+   * A custom check, a node-level error map or a pipe sits on a node that
+   * encloses a marked field, or on a union or intersection member beside
+   * one. It receives the marked value, so a message it writes may spell it,
+   * and an issue it adds may sit at any path.
+   */
+  messages: boolean;
+  /**
+   * A `superRefine()`, a `.check()` or a pipe sits at or above a marked
+   * field. An issue it adds may carry any code and any fields.
+   */
+  issues: boolean;
+}
+
+/**
+ * Answers of {@link codeAroundMetadata}, per `matches` function and schema.
+ */
+const codeAnswers = new WeakMap<
+  (meta: FieldMetadata) => boolean,
+  WeakMap<z.ZodTypeAny, CodeAroundMetadata>
+>();
+
+/** The nodes that describe one value at a node's position, and the cores. */
+interface Chain {
+  /**
+   * The node, its wrappers down to the core, both sides of a pipe, and at
+   * a union or intersection every member's chain.
+   */
+  nodes: z.ZodTypeAny[];
+  /** The schemas whose children are reached through a value step. */
+  cores: z.ZodTypeAny[];
+}
+
+function chainOf(node: z.ZodTypeAny): Chain {
+  const chain: Chain = { nodes: [], cores: [] };
+  const seen = new Set<z.ZodTypeAny>();
+  const follow = (start: z.ZodTypeAny): void => {
+    let current: z.ZodTypeAny | undefined = start;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      chain.nodes.push(current);
+      const def = getSchemaDef(current);
+      const type = getSchemaType(current);
+      if (
+        type === "pipe" && def.in && def.out &&
+        getSchemaType(def.in) !== "transform"
+      ) {
+        follow(def.out);
+      }
+      if (type === "union") {
+        for (const option of def.options ?? []) follow(option);
+        return;
+      }
+      if (type === "intersection") {
+        for (const side of [def.left, def.right]) if (side) follow(side);
+        return;
+      }
+      const inner = innerSchema(current);
+      if (!inner) {
+        chain.cores.push(current);
+        return;
+      }
+      current = inner;
+    }
+  };
+  follow(node);
+  return chain;
+}
+
+/** The schemas a value step below `core` leads to. */
+function valueChildren(core: z.ZodTypeAny): z.ZodTypeAny[] {
+  const def = getSchemaDef(core);
+  switch (def?.type) {
+    case "object":
+      return [
+        ...Object.values(def.shape ?? {}),
+        ...(def.catchall ? [def.catchall] : []),
+      ];
+    case "record":
+    case "map":
+    case "set":
+      return def.valueType ? [def.valueType] : [];
+    case "array":
+      return def.element ? [def.element] : [];
+    case "tuple":
+      return [...(def.items ?? []), ...(def.rest ? [def.rest] : [])];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Whether a node's own code receives the value and may write a message about
+ * it: a custom check (`.refine()`, `superRefine()`, `.check()`), a node-level
+ * error map, or a pipe. A string message is stored as a function, so a
+ * static message cannot be told from one that reads the input. A built-in
+ * check reports at the node's own position only, and is not counted.
+ */
+function writesMessages(node: z.ZodTypeAny): boolean {
+  const def = getSchemaDef(node);
+  return getSchemaType(node) === "pipe" || def?.error !== undefined ||
+    (def?.checks ?? []).some((check) => check._zod?.def?.check === "custom");
+}
+
+/**
+ * Whether a node's own code may add an issue of any code, with any fields and
+ * any input: a `superRefine()` or `.check()`, or a pipe. A `.refine()` only
+ * answers yes or no, and sets a message.
+ */
+function addsIssues(node: z.ZodTypeAny): boolean {
+  const def = getSchemaDef(node);
+  return getSchemaType(node) === "pipe" ||
+    (def?.checks ?? []).some((check) => {
+      const checkDef = check._zod?.def;
+      return checkDef?.check === "custom" && !("fn" in (checkDef ?? {}));
+    });
+}
+
+/**
+ * Reports what the schema's own code can reach around the fields whose
+ * metadata satisfies `matches`, reading the schema alone (swamp-club#3681).
+ * The chain at each position is read whole (`.optional().refine()` keeps the
+ * refinement on the wrapper), and a union or intersection member counts for
+ * what every other member's subtree marks, since it receives the same value.
+ * A `z.lazy()` schema is entered once. The answer is kept per `matches`
+ * function and schema, as {@link schemaHoldsMetadata} keeps its own.
+ */
+export function codeAroundMetadata(
+  schema: z.ZodTypeAny,
+  matches: (meta: FieldMetadata) => boolean,
+): CodeAroundMetadata {
+  let answers = codeAnswers.get(matches);
+  if (!answers) {
+    answers = new WeakMap();
+    codeAnswers.set(matches, answers);
+  }
+  const known = answers.get(schema);
+  if (known) {
+    return known;
+  }
+  const found: CodeAroundMetadata = { messages: false, issues: false };
+  /** Whether each node's chain or subtree holds a match; null while read. */
+  const holds = new Map<z.ZodTypeAny, boolean | null>();
+  const visit = (node: z.ZodTypeAny): boolean => {
+    const seen = holds.get(node);
+    if (seen !== undefined) {
+      return seen ?? false;
+    }
+    holds.set(node, null);
+    const { nodes, cores } = chainOf(node);
+    const self = nodes.some((member) => {
+      const meta = readMetadata(member);
+      return meta !== undefined && matches(meta);
+    });
+    let below = false;
+    for (const core of cores) {
+      for (const child of valueChildren(core)) {
+        if (visit(child)) {
+          below = true;
+        }
+      }
+    }
+    if (below && nodes.some(writesMessages)) {
+      found.messages = true;
+    }
+    if ((self || below) && nodes.some(addsIssues)) {
+      found.issues = true;
+    }
+    holds.set(node, self || below);
+    return self || below;
+  };
+  visit(schema);
+  answers.set(schema, found);
+  return found;
 }

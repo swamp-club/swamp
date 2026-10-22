@@ -33,6 +33,94 @@ interface ZodDef {
   innerType?: z.ZodTypeAny;
   schema?: z.ZodTypeAny;
   shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
+  catchall?: z.ZodTypeAny;
+  options?: z.ZodTypeAny[];
+  left?: z.ZodTypeAny;
+  right?: z.ZodTypeAny;
+  in?: z.ZodTypeAny;
+  out?: z.ZodTypeAny;
+  getter?: () => z.ZodTypeAny;
+  element?: z.ZodTypeAny;
+  keyType?: z.ZodTypeAny;
+  valueType?: z.ZodTypeAny;
+  items?: z.ZodTypeAny[];
+  rest?: z.ZodTypeAny | null;
+}
+
+/** A transform can change how raw globals contribute to method arguments. */
+export function schemaTransformsValues(schema: z.ZodTypeAny): boolean {
+  const seen = new Set<z.ZodTypeAny>();
+  const visit = (current: z.ZodTypeAny | null | undefined): boolean => {
+    if (!current || seen.has(current)) return false;
+    seen.add(current);
+    const def = getSchemaDef(current);
+    const type = getSchemaType(current);
+    if (type === "pipe" || type === "transform" || type === "effects") {
+      return true;
+    }
+    return [
+      def.innerType,
+      def.schema,
+      def.left,
+      def.right,
+      def.element,
+      def.keyType,
+      def.valueType,
+      def.rest,
+      def.catchall,
+      ...(def.options ?? []),
+      ...(def.items ?? []),
+      ...Object.values(readShape(def) ?? {}),
+      type === "lazy" ? def.getter?.() : undefined,
+    ].some(visit);
+  };
+  return visit(schema);
+}
+
+/**
+ * Every object key `schema` declares, at any depth: the keys of each object
+ * shape reachable through wrappers, array elements, tuple items, record
+ * values, union and intersection members, lazy schemas and both sides of a
+ * pipe. A key a parse reports that neither this set nor the input spells
+ * came from the schema's own code, which may have made it from a value
+ * (swamp-club#3681).
+ */
+export function schemaDeclaredKeys(schema: z.ZodTypeAny): Set<string> {
+  const keys = new Set<string>();
+  const seen = new Set<z.ZodTypeAny>();
+  const visit = (current: z.ZodTypeAny | null | undefined): void => {
+    if (!current || seen.has(current)) return;
+    seen.add(current);
+    const def = getSchemaDef(current);
+    if (!def) return;
+    const shape = readShape(def) ?? {};
+    for (const key of Object.keys(shape)) keys.add(key);
+    const lazy = getSchemaType(current) === "lazy"
+      ? (current as unknown as { _zod?: { innerType?: z.ZodTypeAny } })._zod
+        ?.innerType ?? def.getter?.()
+      : undefined;
+    for (
+      const next of [
+        def.innerType,
+        def.schema,
+        def.left,
+        def.right,
+        def.in,
+        def.out,
+        def.element,
+        def.keyType,
+        def.valueType,
+        def.rest,
+        def.catchall,
+        ...(def.options ?? []),
+        ...(def.items ?? []),
+        ...Object.values(shape),
+        lazy,
+      ]
+    ) visit(next);
+  };
+  visit(schema);
+  return keys;
 }
 
 /**
@@ -227,7 +315,7 @@ function objectRefinementIssues(
   );
   let result;
   try {
-    result = schema.safeParse(raw);
+    result = schema.safeParse(raw, { reportInput: true });
   } catch (error) {
     if (error instanceof z.core.$ZodAsyncError) return [];
     throw error;
@@ -255,6 +343,11 @@ function objectRefinementIssues(
  *
  * Keys in `skipKeys` (global arguments holding an unresolved expression) are
  * neither parsed nor returned, so a default can never replace them.
+ *
+ * Every issue carries the `input` the failing check received, which under a
+ * transform is what the transform made of the value, so a caller can
+ * register what a sensitive field's refusal may echo before it reports it
+ * (swamp-club#3681).
  */
 export function parseGlobalArgumentsLeniently(
   schema: z.ZodTypeAny,
@@ -275,7 +368,9 @@ export function parseGlobalArgumentsLeniently(
     for (const [key, fieldSchema] of Object.entries(shape)) {
       if (skipKeys.has(key)) continue;
       const present = Object.hasOwn(input, key);
-      const result = fieldSchema.safeParse(present ? input[key] : undefined);
+      const result = fieldSchema.safeParse(present ? input[key] : undefined, {
+        reportInput: true,
+      });
       if (result.success) {
         if (present || result.data !== undefined) data[key] = result.data;
       } else if (present) {
@@ -304,6 +399,7 @@ export function parseGlobalArgumentsLeniently(
   }
   const result = (typeof partial === "string" ? schema : partial).safeParse(
     input,
+    { reportInput: true },
   );
   if (!result.success) {
     return { success: false, issues: result.error.issues };

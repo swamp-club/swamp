@@ -223,6 +223,17 @@ changes that aren't tied to a single building block:
   use `--` before the file path)
 - Refactorings that change shared constants, paths, or cross-component contracts
   must include integration tests to verify components still work together
+- A test of how a sensitive method argument is handled (registration with the
+  redactor, a refused parse, replay) is paired with the same schema as a global
+  argument, and covers every shape the schema can deliver (a record, an array, a
+  scalar): the two parse paths differ, and a parsed result is not always a
+  record.
+- Code that decides what a schema's own code may echo treats every custom check
+  and node-level `error` on a node enclosing a sensitive field as dynamic: Zod
+  stores a string message as `() => message`, so a static refinement message
+  cannot be told from an error map that reads the input. A new surface that
+  shows a refused parse formats `maskRefusedIssues(schema, input, issues)` from
+  `src/domain/models/sensitive_field_extractor.ts`, never the raw issues.
 - Tests must run on Linux, macOS, and Windows. Use `assertPathEquals` from
   `src/infrastructure/persistence/path_test_helpers.ts` for path-string
   comparisons — `assertEquals` against forward-slash literals fails on Windows.

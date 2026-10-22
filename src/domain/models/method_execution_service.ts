@@ -36,6 +36,7 @@ import {
   type RemoteLockHolder,
 } from "../datastore/lock_holder_marker.ts";
 import { Definition } from "../definitions/definition.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
@@ -88,7 +89,13 @@ import {
   wordedUserError,
 } from "../behavior_wording.ts";
 import { createDataId } from "../data/data_id.ts";
-import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
+import {
+  extractRefusedSensitiveValues,
+  extractSensitiveFieldValues,
+  maskRefusedIssues,
+  type ReportedIssue,
+  schemaThrew,
+} from "./sensitive_field_extractor.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -135,16 +142,17 @@ function collectPersistedHandles(outputs: ExecutionOutput[]): DataHandle[] {
 }
 
 /**
- * Formats a Zod error into a human-readable string.
+ * Formats the issues of a refused parse, as {@link maskRefusedIssues}
+ * reports them, into a human-readable string.
  */
-function formatZodError(error: { issues: readonly z.ZodIssue[] }): string {
+function formatZodError(error: { issues: readonly ReportedIssue[] }): string {
   if (error.issues.length === 1) {
     const issue = error.issues[0];
     const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
     return `${issue.message}${path}`;
   }
   return error.issues
-    .map((issue: z.ZodIssue) => {
+    .map((issue) => {
       const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
       return `${issue.message}${path}`;
     })
@@ -494,15 +502,18 @@ function preRunRefusalHint(
  * vault sentinels resolved through `secretBag`, the global arguments that
  * hold no unresolved expression merged underneath (per
  * design/primitives/behaviors.md, per-method arguments take precedence),
- * then coerced and parsed. Throws the validation failure the run reports
- * (swamp-club#3681). The raw method arguments and the filtered raw globals
- * keep their sentinels, for the shell's env-var delivery.
+ * then coerced and parsed. Throws the validation failure the run reports,
+ * with what the refusal may echo registered with `redactor` first and the
+ * message passed through it (swamp-club#3681). The raw method arguments
+ * and the filtered raw globals keep their sentinels, for the shell's
+ * env-var delivery.
  */
 function parseMethodArguments(
   definition: Definition,
   method: MethodDefinition,
   methodName: string,
   secretBag: VaultSecretBag | undefined,
+  redactor: SecretRedactor | undefined,
 ): {
   rawMethodArgs: Record<string, unknown>;
   resolvedGlobalArgs: Record<string, unknown>;
@@ -553,11 +564,22 @@ function parseMethodArguments(
     ? resolvedMethodArgs
     : { ...filteredGlobalArgs, ...resolvedMethodArgs };
   const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
-  const argsResult = method.arguments.safeParse(methodArgs);
+  // Each issue carries what its failing check received, so a refusal under
+  // a transform can register the transformed spelling before it is shown.
+  let argsResult: z.ZodSafeParseResult<unknown>;
+  try {
+    argsResult = method.arguments.safeParse(methodArgs, { reportInput: true });
+  } catch (error) {
+    throw schemaThrew(error, method.arguments, "Method arguments");
+  }
 
   if (!argsResult.success) {
-    throw new Error(
-      `Method arguments validation failed: ${formatZodError(argsResult.error)}`,
+    throw refusedParse(
+      "Method arguments",
+      method.arguments,
+      methodArgs,
+      argsResult.error.issues,
+      redactor,
     );
   }
   return {
@@ -566,6 +588,45 @@ function parseMethodArguments(
     filteredRawGlobalArgs,
     parsed: argsResult,
   };
+}
+
+/** `text` through `redactor`, when it holds anything to mask. */
+function redacted(
+  text: string,
+  redactor: SecretRedactor | undefined,
+): string {
+  return redactor?.hasSecrets ? redactor.redact(text) : text;
+}
+
+/**
+ * The error a run reports for a parse its schema refused. What the refusal
+ * may echo is registered with the run's redactor first: the input of each
+ * issue at a sensitive position, which under a transform is the transformed
+ * spelling the values registered before the parse do not cover, and any
+ * key the parse introduced. The issues are then reported as
+ * {@link maskRefusedIssues} describes them, through the redactor
+ * (swamp-club#3681).
+ */
+function refusedParse(
+  subject: "Method arguments" | "Global arguments",
+  schema: z.ZodTypeAny,
+  parseInput: unknown,
+  issues: readonly z.ZodIssue[],
+  redactor: SecretRedactor | undefined,
+): Error {
+  if (redactor) {
+    for (
+      const secret of extractRefusedSensitiveValues(schema, parseInput, issues)
+    ) {
+      redactor.addSecret(secret);
+    }
+  }
+  const described = formatZodError({
+    issues: maskRefusedIssues(schema, parseInput, issues),
+  });
+  return new Error(
+    redacted(`${subject} validation failed: ${described}`, redactor),
+  );
 }
 
 /**
@@ -618,6 +679,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       method,
       context.methodName,
       context.vaultSecrets,
+      context.redactor,
     );
     if (onArgumentsValidated) await onArgumentsValidated();
     const secretBag = context.vaultSecrets;
@@ -1086,16 +1148,24 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         // creation-time fields). swamp model create validates strictly.
         // Unresolved fields are skipped — the Proxy on context.globalArgs
         // guards them — while resolved fields still get their Zod defaults.
-        const globalArgsResult = parseGlobalArgumentsLeniently(
-          globalArgsSchema,
-          coercedGlobalArgs,
-          unresolvedKeys,
-        );
+        let globalArgsResult: ReturnType<typeof parseGlobalArgumentsLeniently>;
+        try {
+          globalArgsResult = parseGlobalArgumentsLeniently(
+            globalArgsSchema,
+            coercedGlobalArgs,
+            unresolvedKeys,
+          );
+        } catch (error) {
+          throw schemaThrew(error, globalArgsSchema, "Global arguments");
+        }
         if (!globalArgsResult.success) {
-          throw new Error(
-            `Global arguments validation failed: ${
-              formatZodError(globalArgsResult)
-            }`,
+          // As a method argument's refusal (swamp-club#3681).
+          throw refusedParse(
+            "Global arguments",
+            globalArgsSchema,
+            coercedGlobalArgs,
+            globalArgsResult.issues,
+            context.redactor,
           );
         }
         // Update definition with parsed values so methods receive correct types
@@ -1411,13 +1481,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       try {
         if (isRemotePlacement) {
           // The worker parses the shipped arguments itself. The caller's
-          // record of the evaluation still needs the parse here, before
-          // anything leaves (swamp-club#3681).
+          // record of the evaluation and the redactor still need the parse
+          // here, before anything leaves (swamp-club#3681).
           parseMethodArguments(
             currentDefinition,
             method,
             methodName,
             context.vaultSecrets,
+            context.redactor,
           );
           if (options.onArgumentsValidated) {
             await options.onArgumentsValidated();
