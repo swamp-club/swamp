@@ -456,6 +456,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/libswamp/extensions/push.ts: indexArchiveTree": UNEVALUATED_TEMP,
   },
   "span-status": {
+    "src/infrastructure/tracing/execution_observer.ts: installExecutionObserver":
+      VALUE_FREE_STATUS,
     "src/infrastructure/persistence/datastore_sync_coordinator.ts: flushDatastoreSyncNamed":
       VALUE_FREE_STATUS,
     "src/infrastructure/persistence/datastore_sync_coordinator.ts: registerDatastoreSyncNamed":

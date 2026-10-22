@@ -7,6 +7,13 @@ messages are excluded from the new observation attributes.
 
 ## Native waterfall
 
+Step dependency waits begin when the expanded job graph is admitted, before
+walking its dependency levels. Scheduler waits begin when a level is reached and
+end when its step generator starts. Waits for generators that never start end
+with `closed` when the job walk exits, including suspension and abandonment.
+Completed steps on resume do not acquire new waits. These observations do not
+cover earlier job dependency waits or graph expansion.
+
 The logical dispatch spans queueing and attempts. Each actual dispatch attempt
 has a fresh identity, even after a no-write disconnect. Its send span captures
 context at send time. Worker dispatch, runner startup, preparation and execution

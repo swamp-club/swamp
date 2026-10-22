@@ -89,6 +89,8 @@ export function dispatchTraceCoverage(
 }
 
 export type ExecutionOperation =
+  | "step.dependency"
+  | "step.scheduler"
   | "dispatch.logical"
   | "dispatch.lock_handoff"
   | "dispatch.lock_reclaim"

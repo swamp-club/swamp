@@ -359,6 +359,10 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import {
+  type ExecutionObservation,
+  observeExecution,
+} from "../remote/observability.ts";
 import { minOf } from "../array_extrema.ts";
 import {
   currentVaultAccess,
@@ -5334,6 +5338,7 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    const stepWaits = new Map<string, ExecutionObservation>();
     try {
       const job = workflow.getJob(jobName);
       if (!job) {
@@ -5462,11 +5467,39 @@ export class WorkflowExecutionService {
       const sortedSteps = this.sortService.sort(effectiveNodes);
       const globalLimit = readGlobalConcurrencyLimit();
 
+      // Admission is before the level walk: later levels already wait here,
+      // even though their generators have not been created yet.
+      for (const node of effectiveNodes) {
+        const status = jobRun.getStep(node.name)?.status;
+        if (status !== undefined && status !== "pending") continue;
+        stepWaits.set(
+          node.name,
+          observeExecution("step.dependency", {
+            "swamp.workflow.run.id": run.id,
+            "job.name": jobName,
+            "step.name": node.name,
+          }),
+        );
+      }
+
       // Execute steps level by level
       let jobFailed = false;
       // Set when an interrupted level leaves a guarded step undecided.
       let jobUndecided = false;
       for (const level of sortedSteps.levels) {
+        for (const stepName of level) {
+          const dependencyWait = stepWaits.get(stepName);
+          if (!dependencyWait) continue;
+          dependencyWait.end("ok");
+          stepWaits.set(
+            stepName,
+            observeExecution("step.scheduler", {
+              "swamp.workflow.run.id": run.id,
+              "job.name": jobName,
+              "step.name": stepName,
+            }),
+          );
+        }
         // After a step failure with an aborted signal, give subsequent
         // levels a fresh cleanup signal so always/completed dependents
         // can run. shouldStepRun() handles condition-based filtering —
@@ -5540,6 +5573,7 @@ export class WorkflowExecutionService {
             levelOptions,
             forEachIndex,
             forEachTemplate,
+            stepWaits,
           );
         });
 
@@ -5717,6 +5751,10 @@ export class WorkflowExecutionService {
       });
       throw error;
     } finally {
+      // A concurrency-limited generator may never start. Its wait still ends
+      // when this walk ends, including suspension and consumer abandonment.
+      for (const wait of stepWaits.values()) wait.end("closed");
+      stepWaits.clear();
       const job = workflow.getJob(jobName);
       if (job?.affinity && !workflow.affinity) {
         getRemoteStepDispatcher()?.releaseAffinity(
@@ -5743,7 +5781,10 @@ export class WorkflowExecutionService {
     options: StepOptions,
     forEachIndex?: number,
     forEachTemplate?: string,
+    stepWaits?: Map<string, ExecutionObservation>,
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    stepWaits?.get(stepName)?.end("ok");
+    stepWaits?.delete(stepName);
     const stepSpan = getTracer().startSpan("swamp.workflow.step", {
       attributes: {
         "step.name": stepName,
