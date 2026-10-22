@@ -712,15 +712,21 @@ Deno.test({
         Error,
         "download failed",
       );
-      const probe = await Deno.open(world.paths.supervisorLock, {
-        read: true,
-        write: true,
-      });
-      try {
-        assertEquals(await probe.tryLock(true), true, "no lock left held");
-      } finally {
-        probe.close();
-      }
+      // Polled, not checked once: under full-suite load the released probe
+      // was once still seen right after the failed launch (swamp-club#3791,
+      // like swamp-club#3560). A probe left held still fails when the wait
+      // runs out.
+      await waitFor(async () => {
+        const probe = await Deno.open(world.paths.supervisorLock, {
+          read: true,
+          write: true,
+        });
+        try {
+          return await probe.tryLock(true);
+        } finally {
+          probe.close();
+        }
+      }, "no lock left held");
       await (await replicator.acquire(world.request(db, 1))).release();
       assertEquals(world.live.length, 1);
     });
