@@ -717,6 +717,26 @@ function sweepBatchAt(path: string): Promise<void> {
   return sweepBatches.get(path) ?? Promise.resolve();
 }
 
+/** Faults a test wraps around what {@link openV3Datastore} opens next. */
+export interface V3DatastoreFaults {
+  /** Wraps the chunk storage, as an unreachable bucket would fail it. */
+  readonly wrapStorage?: (storage: DatastoreStorage) => DatastoreStorage;
+  /** Wraps the commit sink, so a commit can fail where it appends. */
+  readonly wrapSink?: (sink: OutboxCommitSink) => OutboxCommitSink;
+}
+
+let faultsForTesting: V3DatastoreFaults | undefined;
+
+/**
+ * Test seam: wraps the chunk storage and commit sink of every datastore
+ * opened from now on; undefined restores the real ones.
+ */
+export function setV3DatastoreFaultsForTesting(
+  faults: V3DatastoreFaults | undefined,
+): void {
+  faultsForTesting = faults;
+}
+
 /** Error code for {@link DroppedWorkRecoveryRunningError}. */
 export const DROPPED_WORK_RECOVERY_RUNNING_CODE =
   "datastore_v3_dropped_work_recovery_running";
@@ -783,7 +803,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath),
     })
     : undefined;
-  const storage: DatastoreStorage = bucket?.storage ?? fsStorage!;
+  const baseStorage: DatastoreStorage = bucket?.storage ?? fsStorage!;
+  const storage = faultsForTesting?.wrapStorage?.(baseStorage) ?? baseStorage;
   const chunkStore = new ChunkStore(storage);
   const stateDir = readModelStateDir(repoDir);
   ensureDirSync(stateDir);
@@ -807,7 +828,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // other. It refuses a commit, and its preparation, once the process's
   // writer lease is lost, and keeps each commit in the outbox until it
   // landed (swamp-club#3490).
-  const sink: OutboxCommitSink = createOutboxCommitSink({
+  const baseSink: OutboxCommitSink = createOutboxCommitSink({
     commitStore,
     outbox,
     sweepBatch: () => sweepBatchAt(outbox.path),
@@ -815,6 +836,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       ? { assertWriterCurrent: options.assertWriterCurrent }
       : {}),
   });
+  const sink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
   // Bounds every commit's content uploads for the process's lifetime; close
   // aborts what is still in flight.
   const lifetime = new AbortController();
@@ -1019,6 +1041,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
               ? {
                 onRefused: (error) => reconcileRefusedRuns(runRepo(), error),
               }
+              : {}),
+            ...(rootOptions.onEnded !== undefined
+              ? { onEnded: rootOptions.onEnded }
               : {}),
           }, (root) => fn(root));
         },

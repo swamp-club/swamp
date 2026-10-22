@@ -34,19 +34,41 @@ interface SequencedEvent {
   event: SerializedEvent;
 }
 
+/** The run events that report a run's outcome (swamp-club#3759). */
+const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
+  "completed",
+  "cancelled",
+  "suspended",
+]);
+
+/** Options for a {@link RunEventBuffer}. */
+export interface RunEventBufferOptions {
+  /**
+   * Holds the run's outcome event, and every event after it, until the
+   * buffer finishes (swamp-club#3759): a v3 run commits when its root ends,
+   * so followers see the outcome only with `done`, and never before an
+   * `error` that replaces it.
+   */
+  readonly holdOutcome?: boolean;
+}
+
 export class RunEventBuffer {
   readonly #capacity: number;
+  readonly #holdOutcome: boolean;
+  /** Events held from the outcome on, delivered when the buffer is done. */
+  #heldOutcome: SerializedEvent[] | undefined;
   #events: SequencedEvent[] = [];
   #firstIndex = 0;
   #nextSeq = 1;
   #terminal: BufferTerminal | null = null;
   readonly #subscribers = new Set<RunEventSubscriber>();
 
-  constructor(capacity: number) {
+  constructor(capacity: number, options: RunEventBufferOptions = {}) {
     if (capacity < 1) {
       throw new Error("RunEventBuffer capacity must be at least 1");
     }
     this.#capacity = capacity;
+    this.#holdOutcome = options.holdOutcome === true;
   }
 
   get finished(): boolean {
@@ -66,11 +88,27 @@ export class RunEventBuffer {
     return this.#events[this.#firstIndex].seq;
   }
 
+  /**
+   * Adds an event and delivers it, and returns its sequence number. A held
+   * outcome event is delivered, numbered, when the buffer finishes `done`;
+   * until then it returns the number it will have if delivered.
+   */
   push(event: SerializedEvent): number {
     if (this.#terminal !== null) {
       throw new Error("Cannot push to a finished RunEventBuffer");
     }
+    if (
+      this.#holdOutcome &&
+      (this.#heldOutcome !== undefined || OUTCOME_EVENT_KINDS.has(event.kind))
+    ) {
+      this.#heldOutcome ??= [];
+      this.#heldOutcome.push(event);
+      return this.#nextSeq + this.#heldOutcome.length - 1;
+    }
+    return this.#deliver(event);
+  }
 
+  #deliver(event: SerializedEvent): number {
     const seq = this.#nextSeq++;
     this.#events.push({ seq, event });
 
@@ -97,6 +135,12 @@ export class RunEventBuffer {
   finish(terminal: BufferTerminal): void {
     if (this.#terminal !== null) {
       throw new Error("RunEventBuffer is already finished");
+    }
+    // The held outcome goes out only with `done`: an error replaces it.
+    const held = this.#heldOutcome ?? [];
+    this.#heldOutcome = undefined;
+    if (terminal.kind === "done") {
+      for (const event of held) this.#deliver(event);
     }
     this.#terminal = terminal;
 

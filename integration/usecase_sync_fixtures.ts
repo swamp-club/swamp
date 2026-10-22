@@ -564,6 +564,53 @@ export async function runCliRejecting(
   }
 }
 
+/** How an in-process command ended, from {@link runCliCapturing}. */
+export interface CapturedCli {
+  /** What the command wrote to stdout through the console, in order. */
+  readonly stdout: string[];
+  /** The error the command threw, if it threw. */
+  readonly error: unknown;
+  /** The exit code the command set (0 when it set none). */
+  readonly exitCode: number;
+}
+
+/**
+ * Parses the real command in-process and reports how it ended, whether it
+ * threw or only set a failing exit code, with what it wrote to stdout.
+ */
+export async function runCliCapturing(
+  invocation: CliInvocation,
+): Promise<CapturedCli> {
+  const stdout: string[] = [];
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const previousExitCode = Deno.exitCode;
+  Deno.exitCode = 0;
+  const capture = (...args: unknown[]) => {
+    stdout.push(args.map(String).join(" "));
+  };
+  console.log = capture;
+  console.info = capture;
+  let error: unknown;
+  let exitCode = 0;
+  try {
+    await root().parse(invocation.args);
+  } catch (thrown) {
+    error = thrown;
+  } finally {
+    try {
+      await flushDatastoreSync();
+    } catch {
+      // Best effort, as mod.ts: the command's error takes precedence.
+    }
+    exitCode = Deno.exitCode;
+    console.log = originalLog;
+    console.info = originalInfo;
+    Deno.exitCode = previousExitCode;
+  }
+  return { stdout, error, exitCode };
+}
+
 /** A serve request type and payload. */
 export interface ServeInvocation {
   type: string;

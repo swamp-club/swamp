@@ -176,6 +176,7 @@ import {
   recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
+  runFailureForClient,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -609,12 +610,15 @@ export async function handleModelMethodRun(
         const lt = lockTimeoutErrorForClient(error);
         sendError(socket, requestId, lt.code, lt.message, lt.details);
       } else {
-        const message = sanitizeErrorForClient(error);
+        const { code, message } = runFailureForClient(
+          error,
+          "method_execution_failed",
+        );
         const exType = exceptionTypeForClient(error);
         sendError(
           socket,
           requestId,
-          "method_execution_failed",
+          code,
           message,
           exType !== undefined ? { exceptionType: exType } : undefined,
         );
@@ -862,7 +866,9 @@ export async function handleModelMethodRun(
   );
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
-  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
+  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY, {
+    holdOutcome: ctx.holdRepliesUntilCommitted === true,
+  });
   const runController = new AbortController();
   const runId: string = crypto.randomUUID();
   const startedAt = new Date();
@@ -952,8 +958,7 @@ export async function handleModelMethodRun(
         const exType = exceptionTypeForClient(error);
         buffer.finish({
           kind: "error",
-          code: "method_execution_failed",
-          message: sanitizeErrorForClient(error),
+          ...runFailureForClient(error, "method_execution_failed"),
           ...(exType !== undefined && {
             details: { exceptionType: exType },
           }),
@@ -1100,7 +1105,12 @@ export async function handleModelMethodRun(
             }
             // With replication on, the terminal waits for the root's commit
             // and its confirmation below (swamp-club#3489).
-            if (modelLocks && ctx.confirmReplicated === undefined) {
+            // On v3 the root commits after this: it waits too
+            // (swamp-club#3759).
+            if (
+              modelLocks && ctx.confirmReplicated === undefined &&
+              ctx.holdRepliesUntilCommitted !== true
+            ) {
               buffer.finish({ kind: "done" });
               await detachedTelemetry?.finish(null);
             }
@@ -1114,7 +1124,10 @@ export async function handleModelMethodRun(
           }
         },
       );
-      if (!modelLocks || ctx.confirmReplicated !== undefined) {
+      if (
+        !modelLocks || ctx.confirmReplicated !== undefined ||
+        ctx.holdRepliesUntilCommitted === true
+      ) {
         // Reported finished only once its commits are replicated
         // (swamp-club#3489); answered here, so a failure is not answered
         // again below.

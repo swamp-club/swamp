@@ -4792,6 +4792,9 @@ export const serveCommand = new Command()
         syncGate,
         ...(confirmReplicated !== undefined && { confirmReplicated }),
         ...(replicationMark !== undefined && { replicationMark }),
+        // A v3 datastore commits when a request's root ends: its replies
+        // wait for that (swamp-club#3759).
+        ...(v3Location !== undefined && { holdRepliesUntilCommitted: true }),
         workerGateway,
         policySnapshotLoader,
         authConfig,

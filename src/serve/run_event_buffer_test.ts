@@ -304,3 +304,46 @@ Deno.test("RunEventBuffer: error terminal carries code and message", () => {
     assertEquals(t.message, "User cancelled");
   }
 });
+
+Deno.test("RunEventBuffer: holding the outcome, a run's progress streams and its outcome reaches followers only with done (swamp-club#3759)", () => {
+  const buffer = new RunEventBuffer(10, { holdOutcome: true });
+  const sub = collectingSubscriber();
+  buffer.subscribe(sub.subscriber);
+  buffer.push(event("executing"));
+  buffer.push(event("completed"));
+  buffer.push(event("auto_gc_completed"));
+  assertEquals(sub.events.map((e) => e.event.kind), ["executing"]);
+  buffer.finish({ kind: "done" });
+  assertEquals(
+    sub.events.map((e) => [e.seq, e.event.kind]),
+    [[1, "executing"], [2, "completed"], [3, "auto_gc_completed"]],
+  );
+  assertEquals(sub.terminals, [{ kind: "done" }]);
+  // A follower that attaches afterwards replays them too.
+  const late = collectingSubscriber();
+  buffer.subscribe(late.subscriber);
+  assertEquals(late.events.length, 3);
+});
+
+Deno.test("RunEventBuffer: holding the outcome, an error terminal drops the held outcome (swamp-club#3759)", () => {
+  const buffer = new RunEventBuffer(10, { holdOutcome: true });
+  const sub = collectingSubscriber();
+  buffer.subscribe(sub.subscriber);
+  buffer.push(event("executing"));
+  buffer.push(event("completed"));
+  buffer.finish({
+    kind: "error",
+    code: "datastore_v3_commit_unreachable",
+    message: "unreachable",
+  });
+  assertEquals(sub.events.map((e) => e.event.kind), ["executing"]);
+  assertEquals(sub.terminals.map((t) => t.kind), ["error"]);
+});
+
+Deno.test("RunEventBuffer: without holding, the outcome is delivered as it is pushed, as before (swamp-club#3759)", () => {
+  const buffer = new RunEventBuffer(10);
+  const sub = collectingSubscriber();
+  buffer.subscribe(sub.subscriber);
+  buffer.push(event("completed"));
+  assertEquals(sub.events.map((e) => e.event.kind), ["completed"]);
+});

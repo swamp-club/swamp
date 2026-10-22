@@ -29,6 +29,7 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import { rethrowUnrecordedEnd } from "../../domain/datastore/unit_of_work.ts";
 import {
   type CommitLogUnitOfWork,
+  CommitUnreachableError,
   PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -74,6 +75,13 @@ export interface CommitLogRootOptions<T>
    * its root commits.
    */
   readonly onRefused?: (error: PartitionsRefusedError) => Promise<void>;
+  /**
+   * Told once how the root ended: `true` when its commit resolved, whether
+   * `fn` resolved or threw, `false` when it was discarded or its end failed
+   * (swamp-club#3759). A command prints what it held only on `true`. For a
+   * child, a commit rolls its changes up into the open parent.
+   */
+  readonly onEnded?: (committed: boolean) => void;
 }
 
 /**
@@ -152,8 +160,12 @@ export async function runInCommitLogRoot<T>(
     );
   }
   unitOfWorkBinding.requireUnit(markDirty);
-  const { disposition = defaultDisposition, onRefused, ...unitOptions } =
-    options;
+  const {
+    disposition = defaultDisposition,
+    onRefused,
+    onEnded,
+    ...unitOptions
+  } = options;
   const parent = commitLogParentFor(markDirty, currentUnitOfWork());
   const root = createCommitLogUnitOfWork(markDirty, { ...unitOptions, parent });
   const view: CommitLogRoot = {
@@ -164,37 +176,50 @@ export async function runInCommitLogRoot<T>(
     stagedOps: () => root.stagedOps(),
     checkpoint: () => root.checkpoint(),
   };
-  let value: T;
+  // Whether the root's commit resolved, which `onEnded` is told once.
+  let committed = false;
   try {
-    value = await runInUnitOfWork(root, () => fn(view));
-  } catch (error) {
+    let value: T;
     try {
-      if (disposition({ completed: false, error }) === "commit") {
-        await root.commit();
-      } else {
-        await root.abandon();
+      value = await runInUnitOfWork(root, () => fn(view));
+    } catch (error) {
+      try {
+        if (disposition({ completed: false, error }) === "commit") {
+          await root.commit();
+          committed = true;
+        } else {
+          await root.abandon();
+        }
+      } catch (endError) {
+        // An end that could not record the failure says so instead of it.
+        rethrowUnrecordedEnd(endError, error);
+        // So does one that could not reach the storage: nothing of the
+        // operation, its failure included, was committed (swamp-club#3759).
+        if (endError instanceof CommitUnreachableError) {
+          throw endError.during(error);
+        }
+        logger
+          .warn`Ending a commit-log unit of work after a failed operation also failed: ${endError}`;
       }
-    } catch (endError) {
-      // An end that could not record the failure says so instead of it.
-      rethrowUnrecordedEnd(endError, error);
-      logger
-        .warn`Ending a commit-log unit of work after a failed operation also failed: ${endError}`;
+      throw error;
     }
-    throw error;
-  }
-  if (disposition({ completed: true, value }) !== "commit") {
-    await root.abandon();
+    if (disposition({ completed: true, value }) !== "commit") {
+      await root.abandon();
+      return value;
+    }
+    const refused = onRefused === undefined || parent !== undefined
+      ? undefined
+      : await settleRefusals(root, onRefused);
+    await root.commit();
+    committed = true;
+    if (refused !== undefined) {
+      refusalsThrownAfterCommit.add(refused);
+      throw refused;
+    }
     return value;
+  } finally {
+    onEnded?.(committed);
   }
-  const refused = onRefused === undefined || parent !== undefined
-    ? undefined
-    : await settleRefusals(root, onRefused);
-  await root.commit();
-  if (refused !== undefined) {
-    refusalsThrownAfterCommit.add(refused);
-    throw refused;
-  }
-  return value;
 }
 
 /** The settled refusals {@link runInCommitLogRoot} threw after it committed. */

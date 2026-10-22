@@ -29,10 +29,12 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   type CheckpointOptions,
+  commitsThroughCommitLog,
   type RootFlushOutcome,
   type RootUnitOfWork,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { openOutputHold, type OutputHoldMode } from "./committed_output.ts";
 
 /** Options for {@link runCommandInRootUnit}. */
 export interface CommandRootUnitOptions {
@@ -66,6 +68,13 @@ export interface CommandRootUnitOptions {
    * refused after its model lock was lost fails (swamp-club#3373).
    */
   onCleanupError?: (error: unknown) => void;
+  /**
+   * How a v3 root holds the command's stdout until it commits
+   * (swamp-club#3759): `"held"` (the default) from the start, or
+   * `"live-until-outcome"` for a streaming command in log mode, which wraps
+   * its handlers in `holdFromOutcome`. A v2 root holds nothing.
+   */
+  output?: OutputHoldMode;
 }
 
 const logger = getSwampLogger(["cli", "root-unit"]);
@@ -84,7 +93,7 @@ const logger = getSwampLogger(["cli", "root-unit"]);
  *   same handler a combined push-then-release did.
  */
 export async function runCommandInRootUnit<T>(
-  repoContext: Pick<RepositoryContext, "markDirty">,
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   options: CommandRootUnitOptions,
   fn: (root: RootUnitOfWork) => Promise<T>,
 ): Promise<T> {
@@ -102,6 +111,11 @@ export async function runCommandInRootUnit<T>(
       }
     };
 
+  // What the command prints waits for its v3 root's commit.
+  const hold = commitsThroughCommitLog(repoContext)
+    ? openOutputHold(options.output ?? "held")
+    : undefined;
+  let committed = false;
   let outcome: { value: T } | { error: unknown };
   try {
     outcome = {
@@ -109,11 +123,19 @@ export async function runCommandInRootUnit<T>(
         flush,
         pushWhen: options.pushWhen,
         checkpoint: options.checkpoint,
+        ...(hold === undefined ? {} : {
+          commitLog: {
+            onEnded: (rootCommitted: boolean) => {
+              committed = rootCommitted;
+            },
+          },
+        }),
       }, fn),
     };
   } catch (error) {
     outcome = { error };
   }
+  hold?.end(committed);
 
   if (options.release !== undefined) {
     try {

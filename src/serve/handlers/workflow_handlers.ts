@@ -241,6 +241,7 @@ import {
   rejectEditWithoutContent,
   resourceDecider,
   resourceReadability,
+  runFailureForClient,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -542,12 +543,15 @@ export async function handleWorkflowRun(
         const lt = lockTimeoutErrorForClient(error);
         sendError(socket, requestId, lt.code, lt.message, lt.details);
       } else {
-        const message = sanitizeErrorForClient(error);
+        const { code, message } = runFailureForClient(
+          error,
+          "workflow_execution_failed",
+        );
         const exType = exceptionTypeForClient(error);
         sendError(
           socket,
           requestId,
-          "workflow_execution_failed",
+          code,
           message,
           exType !== undefined ? { exceptionType: exType } : undefined,
         );
@@ -560,7 +564,9 @@ export async function handleWorkflowRun(
     return;
   }
 
-  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
+  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY, {
+    holdOutcome: ctx.holdRepliesUntilCommitted === true,
+  });
   const runController = new AbortController();
   let runId: string = crypto.randomUUID();
   const startedAt = new Date();
@@ -703,8 +709,7 @@ export async function handleWorkflowRun(
         const exType = exceptionTypeForClient(error);
         buffer.finish({
           kind: "error",
-          code: "workflow_execution_failed",
-          message: sanitizeErrorForClient(error),
+          ...runFailureForClient(error, "workflow_execution_failed"),
           ...(exType !== undefined && {
             details: { exceptionType: exType },
           }),

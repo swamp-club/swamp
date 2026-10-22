@@ -21,8 +21,13 @@ import {
   assertEquals,
   assertInstanceOf,
   assertRejects,
+  assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import {
+  COMMIT_UNREACHABLE_CODE,
+  CommitUnreachableError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { gunzipSync } from "node:zlib";
@@ -69,6 +74,7 @@ import {
   replicationErrorForClient,
   resolveConnectionCompression,
   resolveDisplayPrincipal,
+  runFailureForClient,
   sanitizeErrorForClient,
   send,
   sendError,
@@ -2455,4 +2461,107 @@ Deno.test("sendTraced: sends the message inside a swamp.serve.response.send chil
     const sendSpan = findSpan(spans, "swamp.serve.response.send");
     assertEquals(isChildOf(sendSpan, request), true);
   });
+});
+
+// ── Replies after a v3 root's commit (swamp-club#3759) ─────────────────
+
+/** A run event frame of `kind` for request `id`. */
+function runEvent(kind: string, id = "r1"): ServerMessage {
+  return { type: "event", id, event: { kind } } as unknown as ServerMessage;
+}
+
+Deno.test("confirmRequest: on v3 without replication, replies wait for the handler and no confirmation runs (swamp-club#3759)", async () => {
+  const { socket, sent } = messageSocket();
+  const handler = Promise.withResolvers<void>();
+  const done = confirmRequest(
+    { holdRepliesUntilCommitted: true },
+    socket,
+    "r1",
+    () => {
+      send(socket, runEvent("executing"));
+      send(socket, runEvent("completed"));
+      send(socket, { type: "done", id: "r1" });
+      return handler.promise;
+    },
+  );
+  assertEquals(
+    sent.map((m) => m.type),
+    ["event"],
+    "progress streams, the outcome waits",
+  );
+  handler.resolve();
+  await done;
+  assertEquals(
+    sent.map((m) =>
+      m.type === "event"
+        ? `event:${(m as { event: { kind: string } }).event.kind}`
+        : m.type
+    ),
+    ["event:executing", "event:completed", "done"],
+  );
+});
+
+Deno.test("confirmRequest: a run's outcome event, and every event after it, waits with the reply (swamp-club#3759)", async () => {
+  const { socket, sent } = messageSocket();
+  const confirm = manualConfirm();
+  const done = confirmRequest(confirm, socket, "r1", () => {
+    send(socket, runEvent("executing"));
+    send(socket, runEvent("completed"));
+    send(socket, runEvent("auto_gc_completed"));
+    send(socket, { type: "done", id: "r1" });
+    return Promise.resolve();
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEquals(sent.length, 1);
+  confirm.calls[0].resolve();
+  await done;
+  assertEquals(sent.map((m) => m.type), ["event", "event", "event", "done"]);
+});
+
+Deno.test("confirmRequest: a commit that fails drops the held outcome event and done, and sends only the error (swamp-club#3759)", async () => {
+  const { socket, sent } = messageSocket();
+  await assertRejects(() =>
+    confirmRequest({ holdRepliesUntilCommitted: true }, socket, "r1", () => {
+      send(socket, runEvent("completed"));
+      send(socket, { type: "done", id: "r1" });
+      return Promise.reject(
+        new CommitUnreachableError(new Error("connect ECONNREFUSED")),
+      );
+    })
+  );
+  assertEquals(sent.map((m) => m.type), ["error"]);
+  assertEquals(
+    (sent[0] as { error: { code: string } }).error.code,
+    COMMIT_UNREACHABLE_CODE,
+  );
+});
+
+Deno.test("confirmRequest: a handler that answers its commit failure with an error drops the held outcome and done (swamp-club#3759)", async () => {
+  const { socket, sent } = messageSocket();
+  await confirmRequest(
+    { holdRepliesUntilCommitted: true },
+    socket,
+    "r1",
+    () => {
+      send(socket, runEvent("completed"));
+      send(socket, { type: "done", id: "r1" });
+      sendError(socket, "r1", "method_execution_failed", "commit failed");
+      return Promise.resolve();
+    },
+  );
+  assertEquals(sent.map((m) => m.type), ["error"]);
+});
+
+Deno.test("runFailureForClient: a commit that could not reach the storage keeps its code, worded for a run; anything else is the fallback (swamp-club#3759)", () => {
+  const unreachable = runFailureForClient(
+    new CommitUnreachableError(new Error("connect ECONNREFUSED")),
+    "method_execution_failed",
+  );
+  assertEquals(unreachable.code, COMMIT_UNREACHABLE_CODE);
+  assertStringIncludes(unreachable.message, "steps had already run");
+  assertEquals(
+    runFailureForClient(new Error("boom"), "method_execution_failed").code,
+    "method_execution_failed",
+  );
 });

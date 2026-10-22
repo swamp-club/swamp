@@ -35,6 +35,8 @@ import {
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
+import { holdFromOutcome } from "../committed_output.ts";
+import { CommitUnreachableError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
@@ -530,13 +532,13 @@ export const workflowResumeCommand = withRemoteOptions(
     // may own the run, and the fallback below must not cancel it.
     let started = false;
     const baseHandlers = renderer.handlers();
-    const handlers = {
+    const handlers = holdFromOutcome({
       ...baseHandlers,
       started: (e: WorkflowRunEvent & { kind: "started" }) => {
         started = true;
         baseHandlers.started(e);
       },
-    };
+    });
 
     // Keep the process alive on Ctrl-C so resume() can record the run as
     // cancelled, as `workflow run` does. Without this, the datastore sync
@@ -565,6 +567,8 @@ export const workflowResumeCommand = withRemoteOptions(
               await pushNamespace(syncService, namespace);
             }
             : undefined,
+          // Progress streams in log mode; the result waits for the commit.
+          output: cliCtx.outputMode === "log" ? "live-until-outcome" : "held",
           onCleanupError: (pushErr) => {
             cliCtx.logger
               .warn`Post-resume push failed; terminal status may be delayed: ${
@@ -640,7 +644,10 @@ export const workflowResumeCommand = withRemoteOptions(
       );
     } catch (error) {
       await runCheckpointer.restoreUncommittedRuns(() => runTracker, error);
-      throw error;
+      // The run's steps ran before its commit failed (swamp-club#3759).
+      throw error instanceof CommitUnreachableError
+        ? error.afterStepsRan()
+        : error;
     } finally {
       await runCheckpointer.close();
       shutdownHandle.dispose();

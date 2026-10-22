@@ -333,3 +333,26 @@ Deno.test("runCommandInRootUnit: a failing checkpoint rejects inside fn, skips t
   assertEquals(cleanupErrors, []);
   assertEquals(events, ["mark(bulk)", "push", "release"]);
 });
+
+Deno.test("runCommandInRootUnit: on v2 the command's output reaches stdout while its root is open, as before (swamp-club#3759)", async () => {
+  const { events, repoContext, push, release } = recorder();
+  const savedLog = console.log;
+  console.log = (...args: unknown[]) => events.push(`stdout ${args.join(" ")}`);
+  try {
+    await assertRejects(
+      () =>
+        runCommandInRootUnit(repoContext, { push, release }, async (root) => {
+          console.log("result");
+          await root.stage({ kind: "bulk", reason: "test" });
+          throw new Error("operation failed");
+        }),
+      Error,
+      "operation failed",
+    );
+  } finally {
+    console.log = savedLog;
+  }
+  // Written as it was printed, before the root's mark and push, and kept
+  // although the command then failed: a v2 root holds nothing.
+  assertEquals(events, ["stdout result", "mark(bulk)", "push", "release"]);
+});

@@ -119,8 +119,10 @@ import { setConsoleGuardJsonMode } from "../domain/models/console_guard.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
-import { closeV3Datastores } from "../infrastructure/datastore_v3/v3_repo_context.ts";
-import { closeV3DatastoresAfterSuccess } from "./v3_teardown.ts";
+import {
+  closeV3DatastoresAfterFailure,
+  closeV3DatastoresAfterSuccess,
+} from "./v3_teardown.ts";
 
 // Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
@@ -3065,11 +3067,7 @@ async function runInvocation(
     } catch {
       // Best effort — don't shadow the original error.
     }
-    try {
-      await closeV3Datastores();
-    } catch {
-      // Best effort: the writer lock's TTL expires if its release failed.
-    }
+    await closeV3DatastoresAfterFailure(error);
 
     // The command already ran, so a proof due its weekly refresh still
     // gets one.

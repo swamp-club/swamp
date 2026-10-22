@@ -40,6 +40,8 @@ import {
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
+import { holdFromOutcome } from "../committed_output.ts";
+import { CommitUnreachableError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
@@ -387,6 +389,8 @@ export const workflowRunCommand = new Command()
               await pushNamespace(syncService, namespace);
             }
             : undefined,
+          // Progress streams in log mode; the result waits for the commit.
+          output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
           onCleanupError: (pushErr) => {
             ctx.logger
               .warn`Post-run push failed; terminal status may be delayed: ${
@@ -675,7 +679,7 @@ export const workflowRunCommand = new Command()
               });
 
               const baseHandlers = renderer.handlers();
-              const wrappedHandlers = {
+              const wrappedHandlers = holdFromOutcome({
                 ...baseHandlers,
                 started: (e: WorkflowRunEvent & { kind: "started" }) => {
                   // A nested workflow's started event carries the child's run id;
@@ -683,7 +687,7 @@ export const workflowRunCommand = new Command()
                   if (e.parentRunId === undefined) currentRunId = e.runId;
                   baseHandlers.started(e);
                 },
-              };
+              });
               await consumeStream(eventStream, wrappedHandlers);
 
               if (abort.signal.aborted) {
@@ -752,7 +756,10 @@ export const workflowRunCommand = new Command()
       } finally {
         tracker?.close();
       }
-      throw error;
+      // The run's steps ran before its commit failed (swamp-club#3759).
+      throw error instanceof CommitUnreachableError
+        ? error.afterStepsRan()
+        : error;
     } finally {
       await runCheckpointer.close();
       shutdownHandle?.dispose();

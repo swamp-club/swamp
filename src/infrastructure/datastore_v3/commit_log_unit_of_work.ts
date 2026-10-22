@@ -137,6 +137,7 @@ import {
 } from "../../domain/datastore_v3/commit.ts";
 import {
   type CommitLogUnitOfWork,
+  CommitUnreachableError,
   type ContentSource,
   MayLandLaterError,
   type PartitionRefusal,
@@ -176,6 +177,7 @@ import {
   type VersionFloorSource,
 } from "../persistence/unit_of_work_binding.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { isNetworkFailure } from "./network_failure.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -824,6 +826,11 @@ export function createCommitLogUnitOfWork(
       if (lost !== undefined && !(error instanceof MayLandLaterError)) {
         throw new MayLandLaterError(error, lost.reason);
       }
+      // Given up, so nothing of it can land: a commit that never reached
+      // the storage says so, and a retry is safe (swamp-club#3759).
+      if (lost === undefined && failedReachingStorage(error)) {
+        throw new CommitUnreachableError(error);
+      }
       throw error;
     }
     throwUnconfirmed();
@@ -1161,6 +1168,8 @@ async function appendGroup(
     // A failed barrier fails the group as a failed store does: nothing is
     // prepared or appended.
     await chunks.commit(options.signal);
+  } catch (error) {
+    throw storagePhase(error);
   } finally {
     await chunks.discard();
   }
@@ -1206,7 +1215,11 @@ async function appendGroup(
             // re-checked, with the entry present, the check holds
             // (swamp-club#3586). A batch that starts later sees the entry.
             await outbox.sweepBatch?.();
-            await restoreMissingChunks(stored, options);
+            try {
+              await restoreMissingChunks(stored, options);
+            } catch (error) {
+              throw storagePhase(error);
+            }
           }
         }
         try {
@@ -1359,6 +1372,29 @@ async function landedDespite(
   } catch (readError) {
     throw new MayLandLaterError(error, readError);
   }
+}
+
+/**
+ * The errors a commit met storing or checking its content before its append
+ * (swamp-club#3759): only one of these can say the storage was unreachable.
+ */
+const storagePhaseErrors = new WeakSet<object>();
+
+/** Records that `error` came from storing a commit's content; returns it. */
+function storagePhase(error: unknown): unknown {
+  if (typeof error === "object" && error !== null) {
+    storagePhaseErrors.add(error);
+  }
+  return error;
+}
+
+/**
+ * Whether a commit failed because it could not reach the storage before its
+ * append: a storage call that met a network failure.
+ */
+function failedReachingStorage(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    storagePhaseErrors.has(error) && isNetworkFailure(error);
 }
 
 /**
