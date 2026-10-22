@@ -20,20 +20,12 @@
 import { assertEquals } from "@std/assert";
 import { ExportResultCode } from "@opentelemetry/core";
 import { Resource } from "@opentelemetry/resources";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { FetchOtlpMetricExporter } from "./fetch_otlp_metric_exporter.ts";
 
 Deno.test("FetchOtlpMetricExporter: malformed replies fail and shutdown refuses requests", async () => {
-  let requests = 0;
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen() {} },
-    async (request) => {
-      await request.arrayBuffer();
-      requests++;
-      return new Response("not JSON");
-    },
-  );
   const exporter = new FetchOtlpMetricExporter(
-    `http://127.0.0.1:${server.addr.port}/v1/metrics`,
+    "https://collector.example/v1/metrics",
     {},
   );
   const send = () =>
@@ -43,13 +35,14 @@ Deno.test("FetchOtlpMetricExporter: malformed replies fail and shutdown refuses 
         (result) => resolve(result.code),
       );
     });
-  try {
-    assertEquals(await send(), ExportResultCode.FAILED);
-    await exporter.shutdown();
-    assertEquals(await send(), ExportResultCode.FAILED);
-    assertEquals(requests, 1);
-  } finally {
-    await exporter.shutdown();
-    await server.shutdown();
-  }
+  const { calls } = await withMockedFetch([new Response("not JSON")], async () => {
+    try {
+      assertEquals(await send(), ExportResultCode.FAILED);
+      await exporter.shutdown();
+      assertEquals(await send(), ExportResultCode.FAILED);
+    } finally {
+      await exporter.shutdown();
+    }
+  });
+  assertEquals(calls.length, 1);
 });
