@@ -849,7 +849,11 @@ Deno.test("typed workflow passes: a child workflow binds a parent sentinel as a 
     // Today the parent's sentinel is text in the child's guard, so the
     // comparison is simply false and the step runs.
     assertEquals(run.errors.has("compare"), false);
-    assertEquals(f.received.at(-1), { password: quotes(f), note: f.token });
+    // Both steps run concurrently; either delivery may finish last.
+    assertEquals(f.received.length, 2);
+    assertEquals(f.received.filter((value) => Object.keys(value).length > 0), [
+      { password: quotes(f), note: f.token },
+    ]);
   });
 });
 

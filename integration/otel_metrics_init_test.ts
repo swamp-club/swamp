@@ -19,12 +19,12 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { metrics } from "@opentelemetry/api";
-import { withMockedEnv } from "../persistence/path_test_helpers.ts";
-import { observeExecution } from "../../domain/remote/observability.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { observeExecution } from "../src/domain/remote/observability.ts";
 import {
   initExecutionMetrics,
   shutdownExecutionMetrics,
-} from "./otel_metrics_init.ts";
+} from "../src/infrastructure/tracing/otel_metrics_init.ts";
 
 Deno.test("initExecutionMetrics: requires explicit opt-in and an endpoint", async () => {
   for (
