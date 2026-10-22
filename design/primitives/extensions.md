@@ -1241,10 +1241,14 @@ installed package's own `package.json`: the code the bundle inlines, and so
 what users of the pulled extension run. The archive ships no `package.json`
 or `node_modules/`, so this is the only version a user can get. The installed
 manifest is repo-controlled, so it names a package only when its name is a
-valid npm name equal to its `node_modules/` directory (or the `npm:` alias
-target package.json declares) and its version is strict semver; anything
-else, or a non-registry declaration (`file:`, `link:`, `workspace:`, git, a
-URL), ships as written and raises the `bare-specifiers` finding. The
+valid npm name, its version is strict semver, and the name is the package
+package.json declares (the `npm:` alias target, when it is one) or, for a
+package package.json does not declare, its `node_modules/` directory. So the
+specifier push ships and the one the audit checks are always the same
+package. Anything else, or a non-registry declaration (`file:`, `link:`,
+`workspace:`, git, a URL), ships as written and raises the `bare-specifiers`
+finding; a declared package installed under another name (an alias changed
+without reinstalling) is a stale tree. The
 resolution also records the range package.json declares for the package
 (`dependencies`, then `devDependencies`), which the dependency audit reads.
 Both `npm install` and `deno install` layouts resolve the same way.

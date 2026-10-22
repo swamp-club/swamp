@@ -430,3 +430,27 @@ Deno.test("bareImportResolverFrom: answers the declared specifier only for a res
   assertEquals(resolver.declared?.(A, "x"), undefined);
   assertEquals(resolver.declared?.(A, "other"), undefined);
 });
+
+Deno.test("installedPackageImports: an alias package.json declares over a package installed under the old name is stale, never shipped as one and audited as the other", async () => {
+  const { resolutions, stale } = await installedPackageImports(
+    [{
+      importer: A,
+      specifier: "pad",
+      installedFile: path("node_modules", "pad", "index.js"),
+    }],
+    { dependencies: { "pad": "npm:left-pad@^1.3.0" } },
+    manifestsAt({
+      [path("node_modules", "pad")]: { name: "pad", version: "1.3.0" },
+    }),
+  );
+  assertEquals(resolutions, [{ importer: A, specifier: "pad" }]);
+  assertEquals(stale, [{
+    importer: A,
+    specifier: "pad",
+    packageName: "pad",
+    declaredRange: "^1.3.0",
+    installedVersion: "1.3.0",
+    installedName: "pad",
+    declaredName: "left-pad",
+  }]);
+});

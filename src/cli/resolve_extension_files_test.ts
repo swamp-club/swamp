@@ -3279,6 +3279,7 @@ async function withStaleInstallProject(
         bareImports: [
           { importer: model, specifier: "is-odd" },
           { importer: model, specifier: "ms" },
+          { importer: model, specifier: "pad" },
         ],
         staleInstalls: [
           {
@@ -3293,6 +3294,15 @@ async function withStaleInstallProject(
             packageName: "ms",
             declaredRange: "^3.0.0",
             installedVersion: "2.1.3",
+          },
+          {
+            importer: model,
+            specifier: "pad",
+            packageName: "pad",
+            declaredRange: "^1.3.0",
+            installedVersion: "1.3.0",
+            installedName: "pad",
+            declaredName: "left-pad",
           },
         ],
       },
@@ -3319,7 +3329,9 @@ Deno.test("resolveExtensionFiles: strict resolution (push, quality) fails when n
       error.message,
       `${join(dir, "node_modules")} is out of date with package.json, and ` +
         "push and quality never install into it: is-odd (^3.0.1) is not " +
-        "installed; ms 2.1.3 is installed, outside the declared ^3.0.0. " +
+        "installed; ms 2.1.3 is installed, outside the declared ^3.0.0; " +
+        "pad is installed as pad 1.3.0, but package.json declares " +
+        "left-pad. " +
         `Run 'npm install' or 'deno install' in ${dir} and try again.`,
     );
   });

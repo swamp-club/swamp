@@ -552,3 +552,24 @@ Deno.test("extractSpecifiersFromSource: an installed package.json dependency car
     },
   ]);
 });
+
+Deno.test("extractSpecifiersFromSource: a declaration naming another package never replaces the one that ships", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import p from "pad";\n',
+    file,
+    bareImportResolverFrom([{
+      importer: file,
+      specifier: "pad",
+      target: "npm:pad@1.3.0",
+      declared: "npm:left-pad@^1.3.0",
+    }]),
+  );
+  assertEquals(specs, [{
+    name: "pad",
+    version: "1.3.0",
+    registry: "npm",
+    sourceFile: file,
+    importedAs: "pad",
+  }]);
+});

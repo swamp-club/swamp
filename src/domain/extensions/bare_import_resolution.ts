@@ -274,6 +274,13 @@ export interface StaleInstalledImport {
   declaredRange: string;
   /** The installed version, when one is installed. */
   installedVersion?: string;
+  /**
+   * The package installed in its place, when it is not the one package.json
+   * declares (an `npm:` alias changed without reinstalling).
+   */
+  installedName?: string;
+  /** The package package.json declares, when `installedName` is set. */
+  declaredName?: string;
 }
 
 /** {@link installedPackageImports}' answer. */
@@ -291,12 +298,14 @@ export interface InstalledPackageImports {
  * it, `dependencies` then `devDependencies`.
  *
  * The installed manifest is repo-controlled, so it names a package only
- * when its name is a valid npm name equal to its node_modules directory or
- * the `npm:` alias target package.json declares, and its version is strict
- * semver; otherwise, or for a non-registry declaration, the import stays
- * unresolved and ships as written. An import package.json declares at a
- * registry range that is not installed, or is installed outside that range,
- * is reported in `stale`.
+ * when its name is a valid npm name, its version is strict semver, and the
+ * name is the package package.json declares (the `npm:` alias target, when
+ * it is one) or, for a package package.json does not declare, its
+ * node_modules directory: the shipped specifier and the audited one are
+ * always the same package. Otherwise, or for a non-registry declaration,
+ * the import stays unresolved and ships as written. An import package.json
+ * declares at a registry range that is not installed, is installed outside
+ * that range, or is installed as another package, is reported in `stale`.
  */
 export async function installedPackageImports(
   resolutions: readonly ResolvedBareImport[],
@@ -356,18 +365,31 @@ export async function installedPackageImports(
     if (
       typeof installedName !== "string" ||
       !NPM_PACKAGE_NAME_RE.test(installedName) ||
-      (installedName !== installed.name && installedName !== declared?.name) ||
+      (!declared && installedName !== installed.name) ||
       typeof version !== "string" || !STRICT_SEMVER_RE.test(version)
     ) {
       out.push(unresolved);
       continue;
     }
     const parsed = tryParse(version);
-    const range = declared ? tryParseRange(declared.range) : undefined;
     if (!parsed) {
       out.push(unresolved);
       continue;
     }
+    if (declared && installedName !== declared.name) {
+      stale.push({
+        importer: r.importer,
+        specifier: r.specifier,
+        packageName: name,
+        declaredRange: declared.range,
+        installedVersion: format(parsed),
+        installedName,
+        declaredName: declared.name,
+      });
+      out.push(unresolved);
+      continue;
+    }
+    const range = declared ? tryParseRange(declared.range) : undefined;
     if (declared && range && !satisfies(parsed, range)) {
       stale.push({
         importer: r.importer,

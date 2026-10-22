@@ -302,10 +302,12 @@ export function extractSpecifiersFromSource(
     const resolved = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
     if (!resolved) continue;
     // An installed package.json dependency: audit the range package.json
-    // declares, shipping the installed version.
+    // declares, shipping the installed version. A declaration naming
+    // another package never replaces the one that ships.
     const declared = resolver.declared?.(sourceFile, bare);
     const declaredSpec = declared ? parseSpecifier(declared) : null;
-    const parsed = declaredSpec && resolved.version !== null
+    const parsed = declaredSpec && resolved.version !== null &&
+        declaredSpec.name === resolved.name
       ? { ...declaredSpec, installedVersion: resolved.version }
       : resolved;
 
