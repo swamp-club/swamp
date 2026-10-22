@@ -796,6 +796,43 @@ Deno.test("redactedError: a UserError code that echoes a secret is redacted, and
   assertEquals(redactedError(clean, secretRedactor), clean);
 });
 
+Deno.test("redactedError: a code that is an accessor, non-configurable or inherited is redacted onto the copy without throwing", () => {
+  const accessor = new Error("denied");
+  Object.defineProperty(accessor, "code", {
+    get: () => "auth_failed_hunter2-long",
+    enumerable: true,
+    configurable: true,
+  });
+  const fixed = new Error("denied");
+  Object.defineProperty(fixed, "code", {
+    value: "auth_failed_hunter2-long",
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  class InheritedCodeError extends Error {
+    get code(): string {
+      return "auth_failed_hunter2-long";
+    }
+  }
+  const inherited = new InheritedCodeError("denied");
+  for (const error of [accessor, fixed, inherited]) {
+    const shown = redactedError(error, secretRedactor) as Error & {
+      code?: unknown;
+    };
+    assertEquals(shown === error, false);
+    assertEquals(shown.code, "auth_failed_***");
+    assertEquals(Object.getPrototypeOf(shown), Object.getPrototypeOf(error));
+  }
+  assertEquals(
+    Object.getOwnPropertyDescriptor(
+      redactedError(fixed, secretRedactor),
+      "code",
+    )?.enumerable,
+    false,
+  );
+});
+
 Deno.test("redactedError: an AggregateError keeps its errors, and an error without a cause gains none (swamp-club#3746)", () => {
   const inner = new Error("inner");
   const shown = redactedError(

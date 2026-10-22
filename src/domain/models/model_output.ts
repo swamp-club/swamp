@@ -133,15 +133,22 @@ export function redactedError(
   // the class defines `name` as an accessor.
   cleaned.name = error.name;
   if (failure.stack !== undefined) cleaned.stack = failure.stack;
+  const codeChanged = shownCode !== code;
   for (const key of Object.getOwnPropertyNames(error)) {
     if (key === "message" || key === "stack") continue;
+    if (key === "code" && codeChanged) continue;
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
     if (descriptor) Object.defineProperty(cleaned, key, descriptor);
   }
-  if (shownCode !== code) {
+  // A plain data property whatever the original was, so an accessor or a
+  // non-configurable code cannot make the copy throw.
+  if (codeChanged) {
     Object.defineProperty(cleaned, "code", {
-      ...Object.getOwnPropertyDescriptor(error, "code"),
       value: shownCode,
+      writable: true,
+      enumerable: Object.getOwnPropertyDescriptor(error, "code")?.enumerable ??
+        true,
+      configurable: true,
     });
   }
   // The class is kept, so a coded UserError is still one and a workflow step
