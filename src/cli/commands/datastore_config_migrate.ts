@@ -52,6 +52,7 @@ import {
   adoptV3Config,
   type ConfigAdoptionPlan,
   type ConfigAdoptionSkipReason,
+  type SkippedConfigFile,
 } from "../../infrastructure/datastore_v3/v3_config_adoption.ts";
 import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
@@ -154,7 +155,7 @@ function renderV3Migration(
     ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
   }
   for (const s of plan.skipped) {
-    ctx.logger.warn`Skipped ${s.path}: ${SKIP_REASON_TEXT[s.reason]}`;
+    ctx.logger.warn`Skipped ${s.path}: ${skipReasonText(s)}`;
   }
   if (alreadyMigrated) {
     if (plan.alreadyCommitted === 0) {
@@ -183,9 +184,28 @@ const SKIP_REASON_TEXT: Record<ConfigAdoptionSkipReason, string> = {
   "unreadable": "it could not be read",
   "name-committed":
     "the datastore already holds a definition of this name (another checkout's, or one renamed or deleted since)",
+  "history-compacted":
+    "the datastore's history for this name was compacted, so swamp cannot tell whether its definition was deleted or never committed, and left it out",
   "invalid-path": "its path cannot be stored in the datastore",
   "duplicate-name": "another file declares the same name",
 };
+
+/** The command that recreates a definition of `kind`, for a skip's way out. */
+const RECREATE_COMMAND: Record<SkippedConfigFile["kind"], string | undefined> =
+  {
+    model: "behavior",
+    workflow: "workflow",
+    vault: "vault",
+    lockfile: undefined,
+  };
+
+/** A skip's reason in words, with the way out when there is one. */
+function skipReasonText(s: SkippedConfigFile): string {
+  const text = SKIP_REASON_TEXT[s.reason];
+  const command = RECREATE_COMMAND[s.kind];
+  if (s.reason !== "history-compacted" || command === undefined) return text;
+  return `${text}. If it should exist, recreate it from this file ('swamp ${command} create', then 'swamp ${command} edit' with the file's content), or restore it from git`;
+}
 
 export const datastoreConfigMigrateCommand = new Command()
   .description(

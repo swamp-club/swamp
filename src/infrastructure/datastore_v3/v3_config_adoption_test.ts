@@ -29,14 +29,18 @@ import { createIntent } from "../../domain/datastore_v3/intent.ts";
 import { tombstoneOp } from "../../domain/datastore_v3/op.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import {
-  ConfigChanges,
+  type ReadModel,
+  ReadModelIncompleteError,
+} from "../../domain/datastore_v3/read_model.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
+import {
   type ConfigRemoval,
   recordKeyOf,
 } from "../../domain/datastore_v3/repository_changes.ts";
 import { assertPathEquals } from "../persistence/path_test_helpers.ts";
 import {
   DEFINITION_SCAN_PAGE,
-  definitionHasCommits,
+  definitionCommitState,
   planConfigAdoption,
 } from "./v3_config_adoption.ts";
 
@@ -81,7 +85,7 @@ Deno.test("planConfigAdoption: adopts each named file into the config tier at th
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(
       plan.adoptions.map((a) => [a.kind, a.name, a.id]),
@@ -123,8 +127,8 @@ Deno.test("planConfigAdoption: a name whose definition has commits is not adopte
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(true),
-      definitionHasCommits: (partition) =>
-        Promise.resolve(partition.equals(committed)),
+      definitionCommitState: (partition) =>
+        Promise.resolve(partition.equals(committed) ? "committed" : "none"),
     });
     assertEquals(plan.adoptions.map((a) => a.name), ["other"]);
     // No tier copy at its path: another checkout's, or since renamed or
@@ -150,7 +154,7 @@ Deno.test("planConfigAdoption: unnamed files and repeated names are skipped and 
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(plan.adoptions.map((a) => a.sourcePath), [first]);
     assertEquals(
@@ -182,7 +186,7 @@ Deno.test("planConfigAdoption: symlinks are neither read nor followed", async ()
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(plan.adoptions, []);
     assertEquals(plan.skipped, []);
@@ -195,7 +199,7 @@ Deno.test("planConfigAdoption: a repo with no config trees adopts nothing", asyn
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(plan, { adoptions: [], alreadyCommitted: 0, skipped: [] });
   });
@@ -223,9 +227,9 @@ Deno.test("planConfigAdoption: a file the config tier already holds, edited or n
         asked.push(partition.toString());
         return Promise.resolve(false);
       },
-      definitionHasCommits: (partition) => {
+      definitionCommitState: (partition) => {
         asked.push(partition.toString());
-        return Promise.resolve(false);
+        return Promise.resolve("none");
       },
     });
     assertEquals(plan.adoptions, []);
@@ -243,7 +247,7 @@ Deno.test("planConfigAdoption: a path no record key can name is skipped, not thr
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(plan.adoptions, []);
     assertEquals(
@@ -268,7 +272,7 @@ Deno.test("planConfigAdoption: a tree whose root is a symlink is not read", asyn
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(plan.adoptions, []);
   });
@@ -288,7 +292,7 @@ Deno.test("planConfigAdoption: an unreadable file or directory is reported, not 
         repoDir,
         configBase: join(repoDir, ".swamp", "config"),
         partitionHasCommits: () => Promise.resolve(false),
-        definitionHasCommits: () => Promise.resolve(false),
+        definitionCommitState: () => Promise.resolve("none"),
       });
       assertEquals(plan.adoptions, []);
       assertEquals(
@@ -312,14 +316,14 @@ Deno.test("planConfigAdoption: verifyTierCopies adopts a tier copy the commit lo
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(trusted.adoptions, []);
     const verified = await planConfigAdoption({
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
       verifyTierCopies: true,
     });
     assertEquals(verified.adoptions.map((a) => a.name), ["w1"]);
@@ -344,7 +348,7 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
       lockfileSource,
     });
     assertPathEquals(
@@ -362,7 +366,7 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
         Promise.resolve(
           partition.toString() === "config--lockfile--upstream_extensions",
         ),
-      definitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
       lockfileSource,
     });
     assertEquals(committed.lockfile, undefined);
@@ -371,22 +375,24 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
 
 /**
  * A commit store holding one workflow partition's commits, one tombstone of
- * the given intent each, compacted through `compactedThrough`. Records the
- * seq each read starts from.
+ * the given intent each, compacted through `compactedThrough`, and a read
+ * model whose live records are `live` (undefined: not listable yet).
+ * Records the seq each scanning read starts from.
  */
 function partitionStore(
   kinds: readonly ConfigRemoval[],
   compactedThrough = 0,
+  live: readonly string[] | undefined = [],
 ): {
   store: Pick<CommitStore, "head" | "readPartition">;
+  readModel: Pick<ReadModel, "catchUp" | "liveRecords">;
   reads: number[];
 } {
-  const changes = new ConfigChanges("workflow", "w1");
   const key = recordKeyOf(["config", "workflows", "workflow-w1.yaml"]);
   const commits = kinds.map((kind, i) =>
     Commit.create({
       seq: i + 1,
-      partition: changes.partition,
+      partition: W1,
       namespace: "",
       txnId: `txn-${i + 1}`,
       writer: { host: "host-a", pid: 4242, instance: "cli-1" },
@@ -409,18 +415,29 @@ function partitionStore(
       head: () =>
         Promise.resolve({ seq: commits.length, highestFence: undefined }),
       readPartition: (_namespace, _partition, fromSeq, limit) => {
-        reads.push(fromSeq);
         if (fromSeq <= compactedThrough) {
           return Promise.reject(
             new CommitsCompactedError(compactedThrough, "compacted"),
           );
         }
+        if (limit > 1) reads.push(fromSeq);
         return Promise.resolve(
           commits.slice(fromSeq - 1, fromSeq - 1 + limit).map((
             commit,
           ): CommitChange => ({ cursor: commit.seq, commit })),
         );
       },
+    },
+    readModel: {
+      catchUp: () => Promise.resolve({ applied: 0, cursor: 0 }),
+      liveRecords: () =>
+        live === undefined
+          ? Promise.reject(new ReadModelIncompleteError())
+          : Promise.resolve(live.map((k) => ({
+            key: RecordKey.create(k),
+            sha256: "0".repeat(64),
+            content: { kind: "inline" as const },
+          }))),
     },
   };
 }
@@ -431,22 +448,26 @@ const W1 = partitionOf({
   name: "w1",
 });
 
-Deno.test("definitionHasCommits: finds a definition change after the first page of run output", async () => {
-  const runs = Array<ConfigRemoval>(DEFINITION_SCAN_PAGE + 10).fill(
-    "evaluated-workflow.delete",
+const RUNS = (n: number) =>
+  Array<ConfigRemoval>(n).fill("evaluated-workflow.delete");
+
+Deno.test("definitionCommitState: finds a definition change after the first page of run output", async () => {
+  const { store, readModel, reads } = partitionStore([
+    ...RUNS(DEFINITION_SCAN_PAGE + 10),
+    "definition.delete",
+  ]);
+  assertEquals(
+    await definitionCommitState(store, readModel, "", W1),
+    "committed",
   );
-  const { store, reads } = partitionStore([...runs, "definition.delete"]);
-  assertEquals(await definitionHasCommits(store, "", W1), true);
   assertEquals(reads, [1, DEFINITION_SCAN_PAGE + 1]);
 });
 
-Deno.test("definitionHasCommits: run output alone, over several pages, is no definition", async () => {
-  const { store, reads } = partitionStore(
-    Array<ConfigRemoval>(DEFINITION_SCAN_PAGE * 2).fill(
-      "evaluated-workflow.delete",
-    ),
+Deno.test("definitionCommitState: run output alone, over several pages, is no definition", async () => {
+  const { store, readModel, reads } = partitionStore(
+    RUNS(DEFINITION_SCAN_PAGE * 2),
   );
-  assertEquals(await definitionHasCommits(store, "", W1), false);
+  assertEquals(await definitionCommitState(store, readModel, "", W1), "none");
   assertEquals(reads, [
     1,
     DEFINITION_SCAN_PAGE + 1,
@@ -454,22 +475,94 @@ Deno.test("definitionHasCommits: run output alone, over several pages, is no def
   ]);
 });
 
-Deno.test("definitionHasCommits: stops at the first definition change", async () => {
-  const { store, reads } = partitionStore([
+Deno.test("definitionCommitState: stops at the first definition change", async () => {
+  const { store, readModel, reads } = partitionStore([
     "evaluated-workflow.delete",
     "definition.create",
-    ...Array<ConfigRemoval>(DEFINITION_SCAN_PAGE * 2).fill(
-      "evaluated-workflow.delete",
-    ),
+    ...RUNS(DEFINITION_SCAN_PAGE * 2),
   ]);
-  assertEquals(await definitionHasCommits(store, "", W1), true);
+  assertEquals(
+    await definitionCommitState(store, readModel, "", W1),
+    "committed",
+  );
   assertEquals(reads, [1]);
 });
 
-Deno.test("definitionHasCommits: a partition never written reads nothing, and a compacted one counts as committed", async () => {
-  const empty = partitionStore([]);
-  assertEquals(await definitionHasCommits(empty.store, "", W1), false);
-  assertEquals(empty.reads, []);
-  const compacted = partitionStore(["evaluated-workflow.delete"], 1);
-  assertEquals(await definitionHasCommits(compacted.store, "", W1), true);
+Deno.test("definitionCommitState: a partition never written reads nothing", async () => {
+  const { store, readModel, reads } = partitionStore([]);
+  assertEquals(await definitionCommitState(store, readModel, "", W1), "none");
+  assertEquals(reads, []);
+});
+
+Deno.test("definitionCommitState: a compacted partition with no definition in what is left is compacted", async () => {
+  const { store, readModel, reads } = partitionStore(RUNS(20), 7, [
+    "workflows-evaluated/workflow-w1.yaml",
+  ]);
+  assertEquals(
+    await definitionCommitState(store, readModel, "", W1),
+    "compacted",
+  );
+  // The scan resumes at the first seq compaction left.
+  assertEquals(reads, [8]);
+});
+
+Deno.test("definitionCommitState: a compacted partition is committed when a definition change survives compaction", async () => {
+  const { store, readModel } = partitionStore(
+    [...RUNS(10), "definition.delete", ...RUNS(5)],
+    7,
+  );
+  assertEquals(
+    await definitionCommitState(store, readModel, "", W1),
+    "committed",
+  );
+});
+
+Deno.test("definitionCommitState: a compacted partition is committed when its live records hold a definition file", async () => {
+  const { store, readModel } = partitionStore(RUNS(10), 10, [
+    "config/workflows/workflow-w1.yaml",
+    "workflows-evaluated/workflow-w1.yaml",
+  ]);
+  assertEquals(
+    await definitionCommitState(store, readModel, "", W1),
+    "committed",
+  );
+});
+
+Deno.test("definitionCommitState: a compacted partition the read model cannot list yet is compacted", async () => {
+  const { store, readModel } = partitionStore(RUNS(10), 10, undefined);
+  assertEquals(
+    await definitionCommitState(store, readModel, "", W1),
+    "compacted",
+  );
+});
+
+Deno.test("planConfigAdoption: a compacted name with no tier copy is skipped as history-compacted", async () => {
+  await withTempDir(async (repoDir) => {
+    const configBase = join(repoDir, ".swamp", "config");
+    await writeFile(
+      join(repoDir, "workflows", "workflow-w1.yaml"),
+      `id: ${ID_1}\nname: w1\n`,
+    );
+    await writeFile(
+      join(repoDir, "workflows", "workflow-w2.yaml"),
+      `id: ${ID_2}\nname: w2\n`,
+    );
+    await writeFile(
+      join(configBase, "workflows", "workflow-w2.yaml"),
+      `id: ${ID_2}\nname: w2\n`,
+    );
+    const plan = await planConfigAdoption({
+      repoDir,
+      configBase,
+      partitionHasCommits: () => Promise.resolve(true),
+      definitionCommitState: () => Promise.resolve("compacted"),
+      verifyTierCopies: true,
+    });
+    assertEquals(plan.adoptions, []);
+    assertEquals(plan.alreadyCommitted, 1);
+    assertEquals(
+      plan.skipped.map((s) => [s.name, s.reason]),
+      [["w1", "history-compacted"]],
+    );
+  });
 });

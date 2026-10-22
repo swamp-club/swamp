@@ -64,6 +64,11 @@ import {
 } from "../../domain/datastore_v3/commit_store.ts";
 import { changesDefinition } from "../../domain/datastore_v3/intent.ts";
 import { PutOp, TombstoneOp } from "../../domain/datastore_v3/op.ts";
+import {
+  type LiveRecord,
+  type ReadModel,
+  ReadModelIncompleteError,
+} from "../../domain/datastore_v3/read_model.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   ConfigChanges,
@@ -117,6 +122,12 @@ export type ConfigAdoptionSkipReason =
    * adopted.
    */
   | "name-committed"
+  /**
+   * The name's history in the commit log was compacted, and what is left
+   * shows no definition of it: it may have been deleted, or never
+   * committed, and the two cannot be told apart, so it is left out.
+   */
+  | "history-compacted"
   /** No record key can name the file's path in the config tier. */
   | "invalid-path"
   /** An earlier file of the same kind declares the same name. */
@@ -173,11 +184,14 @@ export interface PlanConfigAdoptionOptions {
   readonly partitionHasCommits: (partition: PartitionKey) => Promise<boolean>;
   /**
    * Whether the commit log holds a change to the definition of a
-   * managed-config `partition`: its create, an edit, a delete or a rename.
-   * The evaluated workflow a run stages into the same partition is not the
+   * managed-config `partition` (its create, an edit, a delete or a rename),
+   * or cannot tell because the partition's history was compacted. The
+   * evaluated workflow a run stages into the same partition is not the
    * definition, so it must not count (swamp-club#3760).
    */
-  readonly definitionHasCommits: (partition: PartitionKey) => Promise<boolean>;
+  readonly definitionCommitState: (
+    partition: PartitionKey,
+  ) => Promise<DefinitionCommitState>;
   /**
    * The repo-local extension lockfile (`upstream_extensions.json` in the
    * repo's extension models directory). Turning managedConfig on moves the
@@ -268,7 +282,8 @@ export async function planConfigAdoption(
         continue;
       }
       seen.add(name);
-      if (await options.definitionHasCommits(changes.partition)) {
+      const state = await options.definitionCommitState(changes.partition);
+      if (state !== "none") {
         if (hasTierCopy) {
           alreadyCommitted++;
         } else {
@@ -276,7 +291,9 @@ export async function planConfigAdoption(
             kind,
             path: sourcePath,
             name,
-            reason: "name-committed",
+            reason: state === "committed"
+              ? "name-committed"
+              : "history-compacted",
           });
         }
         continue;
@@ -417,31 +434,84 @@ export async function planV3ConfigAdoption(
     configBase,
     partitionHasCommits: async (partition) =>
       (await handle.commitStore.head(handle.namespace, partition)).seq > 0,
-    definitionHasCommits: (partition) =>
-      definitionHasCommits(handle.commitStore, handle.namespace, partition),
+    definitionCommitState: (partition) =>
+      definitionCommitState(
+        handle.commitStore,
+        handle.readModel,
+        handle.namespace,
+        partition,
+      ),
     ...options,
   });
 }
 
-/** How many commits {@link definitionHasCommits} reads at a time. */
+/** How many commits {@link definitionCommitState} reads at a time. */
 export const DEFINITION_SCAN_PAGE = 256;
 
 /**
- * Whether any commit of a managed-config partition changes its definition.
- * Reads the partition's commits in seq order and stops at the first that
- * does, so a definition committed before its runs is found in one page. A
- * partition whose history was compacted counts as committed: compaction
- * keeps only live records, so a deleted definition's tombstone may be gone,
- * and a name that cannot be shown never to have been committed is never
- * adopted (swamp-club#3760).
+ * What the commit log says about a managed-config definition: `none` when
+ * no commit of its partition changed it, `committed` when one did, and
+ * `compacted` when part of the partition's history was compacted and
+ * neither the commits left nor the live records show a definition.
+ * Compaction keeps only live records, so a deleted definition's tombstone
+ * may be gone: a compacted name cannot be told from one never committed
+ * (swamp-club#3760).
  */
-export async function definitionHasCommits(
+export type DefinitionCommitState = "none" | "committed" | "compacted";
+
+/**
+ * The {@link DefinitionCommitState} of a managed-config partition. Reads the
+ * partition's commits in seq order and stops at the first that changes the
+ * definition, so a definition committed before its runs is found in one
+ * page. When the history was compacted, it reads the commits left after
+ * the compaction, then the read model's live records once caught up: a
+ * record under `config/` is a definition file (an evaluated workflow is
+ * keyed under `workflows-evaluated/`). An index the read model cannot list
+ * shows none.
+ */
+export async function definitionCommitState(
   store: Pick<CommitStore, "head" | "readPartition">,
+  readModel: Pick<ReadModel, "catchUp" | "liveRecords">,
   namespace: string,
   partition: PartitionKey,
-): Promise<boolean> {
-  if ((await store.head(namespace, partition)).seq === 0) return false;
-  let from = 1;
+): Promise<DefinitionCommitState> {
+  const head = (await store.head(namespace, partition)).seq;
+  if (head === 0) return "none";
+  const scan = await scanForDefinition(store, namespace, partition, 1);
+  if (scan !== "compacted") return scan ? "committed" : "none";
+  const tail = await firstStoredSeq(store, namespace, partition, head);
+  if (
+    tail !== undefined &&
+    await scanForDefinition(store, namespace, partition, tail) === true
+  ) {
+    return "committed";
+  }
+  let records: readonly LiveRecord[];
+  try {
+    // Reading the index needs a whole catch-up once the history was
+    // compacted (a partition's alone leaves it incomplete); only a compacted
+    // partition pays it.
+    await readModel.catchUp(new AbortController().signal);
+    records = await readModel.liveRecords(namespace, partition);
+  } catch (error) {
+    if (error instanceof ReadModelIncompleteError) return "compacted";
+    throw error;
+  }
+  return records.some((r) => r.key.toString().startsWith("config/"))
+    ? "committed"
+    : "compacted";
+}
+
+/**
+ * Whether a commit from seq `from` on changes the partition's definition,
+ * or `compacted` when `from` is at or below its compacted seq.
+ */
+async function scanForDefinition(
+  store: Pick<CommitStore, "readPartition">,
+  namespace: string,
+  partition: PartitionKey,
+  from: number,
+): Promise<boolean | "compacted"> {
   for (;;) {
     let page: readonly CommitChange[];
     try {
@@ -452,7 +522,7 @@ export async function definitionHasCommits(
         DEFINITION_SCAN_PAGE,
       );
     } catch (error) {
-      if (error instanceof CommitsCompactedError) return true;
+      if (error instanceof CommitsCompactedError) return "compacted";
       throw error;
     }
     for (const { commit } of page) {
@@ -468,6 +538,33 @@ export async function definitionHasCommits(
     if (page.length < DEFINITION_SCAN_PAGE) return false;
     from = page[page.length - 1].commit.seq + 1;
   }
+}
+
+/**
+ * The lowest seq of a compacted partition still stored, found by bisecting
+ * `readPartition`'s refusals (the store keeps a partition's compacted seq to
+ * itself); undefined when every commit up to `head` was compacted.
+ */
+async function firstStoredSeq(
+  store: Pick<CommitStore, "readPartition">,
+  namespace: string,
+  partition: PartitionKey,
+  head: number,
+): Promise<number | undefined> {
+  // Seq 1 is compacted; find the lowest seq in (1, head] that is not.
+  let low = 1;
+  let high = head + 1;
+  while (high - low > 1) {
+    const mid = Math.floor((low + high) / 2);
+    try {
+      await store.readPartition(namespace, partition, mid, 1);
+      high = mid;
+    } catch (error) {
+      if (!(error instanceof CommitsCompactedError)) throw error;
+      low = mid;
+    }
+  }
+  return high <= head ? high : undefined;
 }
 
 /**
