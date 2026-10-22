@@ -47,6 +47,13 @@ import {
   vaultReferenceSecret,
 } from "./secret_value.ts";
 import { adaptDataRecord } from "./sensitive_record_adapter.ts";
+import type { NamespaceReader } from "../../domain/data/namespace.ts";
+
+/** The solo reader, whose own records are those of the solo namespace. */
+const SOLO_READER: NamespaceReader = {
+  namespace: "",
+  readsSoloNamespace: false,
+};
 
 const reference = { vaultName: "prod", key: "DB_PASS" };
 
@@ -363,7 +370,7 @@ Deno.test("SecretBoundary.release: an adapter view leaves as plain data, with no
     },
   };
   const released = runInFaultScope(() => {
-    const view = adaptDataRecord(record, "", "data.latest");
+    const view = adaptDataRecord(record, SOLO_READER, "data.latest");
     return new SecretBoundary(bag).release(view) as typeof record;
   });
   structuredClone(released);

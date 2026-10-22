@@ -156,6 +156,32 @@ export function isEmptyNamespace(ns: Namespace): boolean {
   return ns === "";
 }
 
+/**
+ * Who reads a row, for deciding whether the row is the reader's own: the
+ * reader's namespace, and whether it reads the solo namespace as another
+ * namespace, as a v3 checkout does (swamp-club#3691).
+ */
+export interface NamespaceReader {
+  readonly namespace: string;
+  readonly readsSoloNamespace: boolean;
+}
+
+/**
+ * Whether a row of `namespace` is another namespace's to `reader`. A row of
+ * the reader's namespace is its own. A solo row (`""`) in a namespaced
+ * repository was written before the repository set a namespace, so it is
+ * the reader's own too, unless the reader reads the solo namespace as
+ * another namespace. A catalog pull never stores a solo row, so only the
+ * repository's own writes leave one.
+ */
+export function isForeignToReader(
+  namespace: string,
+  reader: NamespaceReader,
+): boolean {
+  if (namespace === reader.namespace) return false;
+  return namespace !== "" || reader.readsSoloNamespace;
+}
+
 export interface NamespacedModelName {
   readonly namespace: string | undefined;
   readonly modelName: string;

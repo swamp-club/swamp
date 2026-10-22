@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { NamespaceReader } from "../../domain/data/namespace.ts";
 import {
   assert,
   assertEquals,
@@ -100,7 +101,15 @@ const tagged = () =>
   );
 
 const base = createQueryEnvironment();
-const view = expressionQueryView("");
+/** The reader of `namespace`; a solo row is its own unless it reads them. */
+function readerOf(
+  namespace: string,
+  readsSoloNamespace = false,
+): NamespaceReader {
+  return { namespace, readsSoloNamespace };
+}
+
+const view = expressionQueryView(readerOf(""));
 const env = view.environment(base);
 
 function program(expression: string, from: Environment = env): QueryProgram {
@@ -151,7 +160,10 @@ Deno.test("queryViewEnvironment: registers the Secret type and the allowed set o
 
 Deno.test("queryViewEnvironment: is built once per base, and another base gets its own", () => {
   assertStrictEquals(queryViewEnvironment(base), env);
-  assertStrictEquals(expressionQueryView("other").environment(base), env);
+  assertStrictEquals(
+    expressionQueryView(readerOf("other")).environment(base),
+    env,
+  );
   const another = createQueryEnvironment();
   const other = queryViewEnvironment(another);
   assertNotStrictEquals(other, env);
@@ -248,7 +260,8 @@ Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, an
     });
     assertStrictEquals(view.record(foreign), foreign);
     assertStrictEquals(
-      expressionQueryView("security").record(foreign).attributes.password ===
+      expressionQueryView(readerOf("security")).record(foreign).attributes
+        .password ===
         REF_A,
       false,
     );
@@ -270,6 +283,19 @@ Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, an
     assertStringIncludes(error.operation, "model 'db' record r1 version 2");
     assertEquals(error.operation.includes("plain-s3cret"), false);
     assertEquals(error.operation.includes("creds-vary-s3cret"), false);
+  });
+});
+
+Deno.test("expressionQueryView.record: a record stamped with the solo namespace is a namespaced reader's own, and another namespace's to a reader that reads the solo namespace (swamp-club#3785)", () => {
+  inScope(() => {
+    const legacy = tagged();
+    const viewed = expressionQueryView(readerOf("eng")).record(legacy);
+    assertEquals(isSecret(viewed.attributes.password), true);
+    assertEquals(isAdaptedView(viewed), true);
+    assertStrictEquals(
+      expressionQueryView(readerOf("eng", true)).record(legacy),
+      legacy,
+    );
   });
 });
 

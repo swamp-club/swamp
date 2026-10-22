@@ -40,6 +40,16 @@ import { SecretBoundary } from "./secret_boundary.ts";
 import { runInFaultScope } from "./secret_fault_context.ts";
 import { isSecret, secretParts } from "./secret_value.ts";
 import { adaptDataRecord, stepsView } from "./sensitive_record_adapter.ts";
+import {
+  isForeignToReader,
+  type NamespaceReader,
+} from "../../domain/data/namespace.ts";
+
+/** The solo reader, whose own records are those of the solo namespace. */
+const SOLO_READER: NamespaceReader = {
+  namespace: "",
+  readsSoloNamespace: false,
+};
 
 /** A field name the strict reader accepts as one path segment. */
 const key = fc.stringMatching(/^[a-z][a-z0-9_-]{0,6}$/);
@@ -140,7 +150,7 @@ Deno.test("adaptDataRecord: the view keeps every untagged value, holds a Secret 
     fc.property(taggedRecord, ({ record, tagged, expected }) => {
       const snapshot = structuredClone(record);
       runInFaultScope((scope) => {
-        const view = adaptDataRecord(record, "", "data.latest") as {
+        const view = adaptDataRecord(record, SOLO_READER, "data.latest") as {
           attributes: Record<string, unknown>;
           content: unknown;
         };
@@ -159,12 +169,37 @@ Deno.test("adaptDataRecord: the view keeps every untagged value, holds a Secret 
   );
 });
 
+/** A namespace a row or a reader can carry, the solo one among them. */
+const namespaceOf = fc.constantFrom("", "eng", "security");
+
+Deno.test("adaptDataRecord: a tagged record is adapted exactly when the data layer reads its namespace as the reader's own (swamp-club#3785)", () => {
+  fc.assert(
+    fc.property(
+      taggedRecord.filter(({ tagged }) => tagged.length > 0),
+      namespaceOf,
+      namespaceOf,
+      fc.boolean(),
+      ({ record }, namespace, readerNamespace, readsSoloNamespace) => {
+        const stamped = { ...record, namespace };
+        const reader = { namespace: readerNamespace, readsSoloNamespace };
+        runInFaultScope((scope) => {
+          const view = adaptDataRecord(stamped, reader, "data.latest");
+          const own = !isForeignToReader(namespace, reader);
+          assertEquals(view !== stamped, own);
+          assertEquals(scope.sensitiveReferences.size > 0, own);
+        });
+      },
+    ),
+    { numRuns: 200 },
+  );
+});
+
 Deno.test("adaptDataRecord: a released view is plain data with a value-less data-origin sentinel for each tagged reference", () => {
   fc.assert(
     fc.property(taggedRecord, ({ record, tagged }) => {
       const bag = new VaultSecretBag(new SecretBagRegistry());
       const released = runInFaultScope(() => {
-        const view = adaptDataRecord(record, "", "data.latest");
+        const view = adaptDataRecord(record, SOLO_READER, "data.latest");
         return new SecretBoundary(bag).release(view) as {
           attributes: Record<string, unknown>;
         };
@@ -247,7 +282,7 @@ Deno.test("stepsView: for any records, the merged view has the keys of mergeStep
         [{ path: [], records }],
       );
       runInFaultScope((scope) => {
-        const view = stepsView({ s: step }, "") as Record<
+        const view = stepsView({ s: step }, SOLO_READER) as Record<
           string,
           Record<string, Record<string, unknown>>
         >;

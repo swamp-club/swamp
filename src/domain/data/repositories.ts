@@ -20,7 +20,7 @@
 import type { Data } from "./data.ts";
 import type { DataId } from "./data_id.ts";
 import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
-import type { Namespace } from "./namespace.ts";
+import { isForeignToReader, type Namespace } from "./namespace.ts";
 
 /**
  * Whether a version's content file can be read as current, from
@@ -62,9 +62,10 @@ export function isForeignNamespace(
     readonly fetchForeignContent?: ForeignContentFetcher;
   },
 ): boolean {
-  if (namespace === repo.namespace) return false;
-  return namespace !== "" ||
-    repo.fetchForeignContent?.readsSoloNamespace === true;
+  return isForeignToReader(namespace, {
+    namespace: repo.namespace,
+    readsSoloNamespace: repo.fetchForeignContent?.readsSoloNamespace === true,
+  });
 }
 
 /**

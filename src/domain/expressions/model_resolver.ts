@@ -313,6 +313,13 @@ export interface DataNamespace {
   readonly namespace?: Namespace;
 
   /**
+   * Whether the reader reads the solo namespace as another namespace, as a
+   * v3 checkout does, so a solo row is not its own (see
+   * `isForeignNamespace`). Absent reads as false.
+   */
+  readonly readsSoloNamespace?: boolean;
+
+  /**
    * Get a specific version of data. Delegates to catalog query with an
    * explicit `version == N` predicate (which opts out of the implicit
    * latest-only filter). Always returns the record as stored.
@@ -1280,6 +1287,8 @@ export class ModelResolver {
 
     return {
       namespace: ownNamespace,
+      readsSoloNamespace:
+        this.dataRepo?.fetchForeignContent?.readsSoloNamespace === true,
       version: async (
         rawModelName: string,
         dataName: string,

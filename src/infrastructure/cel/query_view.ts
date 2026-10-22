@@ -47,6 +47,7 @@
  *   selecting a tagged field trips no trap.
  */
 
+import type { NamespaceReader } from "../../domain/data/namespace.ts";
 import type { ASTNode as CelAstNode, Environment } from "cel-js";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import {
@@ -161,17 +162,18 @@ function keepOpaque(value: object): boolean {
 
 /**
  * The view for one `data.query` call, bound to the calling data namespace's
- * own namespace: records of any other namespace are read as stored, their
- * tags unread, as every accessor reads them.
+ * reader: records of any other namespace are read as stored, their tags
+ * unread, as every accessor reads them, and a solo row is the reader's own
+ * unless it reads the solo namespace (swamp-club#3785).
  */
 export function expressionQueryView(
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
 ): QueryView {
   return {
     environment: queryViewEnvironment,
 
     record(record: DataRecord): DataRecord {
-      return adaptDataRecord(record, ownNamespace, "data.query") as DataRecord;
+      return adaptDataRecord(record, reader, "data.query") as DataRecord;
     },
 
     predicate(

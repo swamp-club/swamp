@@ -41,6 +41,7 @@ import {
 } from "./cel_vault_namespace.ts";
 import { coerceBigInts } from "./cel_coercion.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
+import type { NamespaceReader } from "../../domain/data/namespace.ts";
 import {
   SECRET_DESTINATION_REFUSED,
   SECRET_OPERATION_UNSUPPORTED,
@@ -268,14 +269,18 @@ export class CelDataNamespace {
   }
 
   /**
-   * The reader's own namespace, as the delegate carries it: the namespace
-   * whose records' tagged fields are this repository's to read. Empty, the
-   * solo default a context built without a repository uses, when the
-   * delegate carries none.
+   * The reader as the delegate describes it: its own namespace, whose
+   * records' tagged fields are this repository's to read, and whether it
+   * reads the solo namespace as another namespace. The namespace is empty,
+   * the solo default a context built without a repository uses, and the
+   * solo namespace is the reader's own, when the delegate carries neither.
    */
-  get namespace(): string {
+  get reader(): NamespaceReader {
     const namespace = this.delegate["namespace"];
-    return typeof namespace === "string" ? namespace : "";
+    return {
+      namespace: typeof namespace === "string" ? namespace : "",
+      readsSoloNamespace: this.delegate["readsSoloNamespace"] === true,
+    };
   }
 
   /**
@@ -706,17 +711,17 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
     accessor: DataAccessor,
   ) => unknown = typed
     ? (receiver, result, accessor) =>
-      adaptDataResult(result, receiver.namespace, accessor)
+      adaptDataResult(result, receiver.reader, accessor)
     : (_receiver, result) => result;
   const readOptions: DataReadOptions | undefined = typed
     ? { sensitiveFields: "stored" }
     : undefined;
   // The query view a typed data.query hands the service (typed-secrets
-  // Section 6.2), bound per call to the receiver's own namespace: the one
-  // identity that decides the own-namespace check for the rows a predicate
-  // reads and for the records fromAccessor adapts afterwards.
+  // Section 6.2), bound per call to the receiver's reader: the one identity
+  // that decides the own-namespace check for the rows a predicate reads and
+  // for the records fromAccessor adapts afterwards.
   const queryView: (receiver: CelDataNamespace) => QueryView | undefined = typed
-    ? (receiver) => expressionQueryView(receiver.namespace)
+    ? (receiver) => expressionQueryView(receiver.reader)
     : () => undefined;
 
   // Register namespace types so cel-js recognizes them via constructor
@@ -1304,16 +1309,14 @@ export class CelEvaluator {
     const seen = new Set<string>();
     const wrappedContext = this.wrapNamespaces(context);
     const data = wrappedContext["data"];
-    const ownNamespace = data instanceof CelDataNamespace
-      ? data.namespace
-      : undefined;
+    const reader = data instanceof CelDataNamespace ? data.reader : undefined;
     for (const expr of extractExpressions(content)) {
       if (seen.has(expr.celExpression)) continue;
       seen.add(expr.celExpression);
       const references = synchronousSensitiveReferences(
         expr.celExpression,
         wrappedContext["model"],
-        ownNamespace,
+        reader,
         wrappedContext["steps"],
       );
       for (const reference of references) {
@@ -1510,11 +1513,9 @@ export class CelEvaluator {
     const model = wrappedContext["model"];
     const steps = wrappedContext["steps"];
     const data = wrappedContext["data"];
-    const ownNamespace = data instanceof CelDataNamespace
-      ? data.namespace
-      : undefined;
-    const modelView = modelMapView(model, ownNamespace);
-    const stepsMapView = stepsView(steps, ownNamespace);
+    const reader = data instanceof CelDataNamespace ? data.reader : undefined;
+    const modelView = modelMapView(model, reader);
+    const stepsMapView = stepsView(steps, reader);
     if (modelView === model && stepsMapView === steps) return wrappedContext;
     const context: Record<string, unknown> = Object.create(
       Object.getPrototypeOf(wrappedContext),
