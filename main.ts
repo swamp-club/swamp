@@ -37,6 +37,10 @@ import {
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
 import { VERSION } from "./src/cli/commands/version.ts";
+import {
+  initExecutionMetrics,
+  shutdownExecutionMetrics,
+} from "./src/infrastructure/tracing/otel_metrics_init.ts";
 import { commandSurfaceFromArgs } from "./src/cli/command_surface_args.ts";
 import {
   isDispatchRunnerInvocation,
@@ -68,6 +72,7 @@ if (import.meta.main) {
   // a console span exporter, may print there.
   if (isDispatchRunnerInvocation(Deno.args)) redirectConsoleToStderr();
   const parentCtx = await initTracing();
+  await initExecutionMetrics();
   // Set on the error path; the exit waits until telemetry has drained, so a
   // failing command's spans and logs — its swamp.cli root included — are not
   // cut off by Deno.exit.
@@ -89,6 +94,7 @@ if (import.meta.main) {
     // Deno.exit. Both are no-ops when their signal was never initialized.
     await shutdownLogs();
     await shutdownTracing();
+    await shutdownExecutionMetrics();
   }
 
   // Explicit exit so fire-and-forget promises (background update check,

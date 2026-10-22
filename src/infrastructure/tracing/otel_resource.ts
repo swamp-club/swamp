@@ -19,6 +19,9 @@
 
 import type { Resource } from "@opentelemetry/resources";
 
+// One identity across signals, fresh for each process/counter reset.
+const serviceInstanceId = crypto.randomUUID();
+
 /**
  * Builds the OpenTelemetry {@link Resource} shared by every swamp signal
  * (traces and logs). Both the tracer provider and the logger provider consume
@@ -44,6 +47,7 @@ export function buildOtelResource(
   const serviceName = envGet("OTEL_SERVICE_NAME") ?? "swamp";
 
   return ResourceCtor.default()
+    .merge(new ResourceCtor({ "service.instance.id": serviceInstanceId }))
     .merge(envDetectorSync.detect())
     .merge(
       new ResourceCtor({

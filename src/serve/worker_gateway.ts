@@ -69,6 +69,7 @@ import {
   type MaxEnrollments,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { observeExecutionWork } from "../domain/remote/observability.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import { TransitionTail } from "./transition_tail.ts";
 
@@ -401,7 +402,11 @@ export class WorkerGateway {
     };
     state.channel.register(
       RemoteMethod.enroll,
-      (params) => this.#handleEnroll(state, params),
+      (params, ctx) =>
+        observeExecutionWork("enrollment.request", {
+          "swamp.rpc.request_id": ctx.requestId,
+        }, () =>
+          this.#handleEnroll(state, params), ctx.trace),
     );
     return {
       feed: (raw) => state.channel.handleRaw(raw),

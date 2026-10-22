@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { Resource } from "@opentelemetry/resources";
 import {
   ATTR_SERVICE_NAME,
@@ -29,6 +29,33 @@ const ATTRS = {
   serviceNameAttr: ATTR_SERVICE_NAME,
   serviceVersionAttr: ATTR_SERVICE_VERSION,
 };
+
+Deno.test("buildOtelResource: signals share a process identity and honor an explicit instance", () => {
+  const traces = buildOtelResource(
+    Resource,
+    stubDetector({}),
+    ATTRS,
+    fakeEnv({}),
+  );
+  const metrics = buildOtelResource(
+    Resource,
+    stubDetector({}),
+    ATTRS,
+    fakeEnv({}),
+  );
+  assert(typeof traces.attributes["service.instance.id"] === "string");
+  assertEquals(
+    metrics.attributes["service.instance.id"],
+    traces.attributes["service.instance.id"],
+  );
+  const explicit = buildOtelResource(
+    Resource,
+    stubDetector({ "service.instance.id": "operator-instance" }),
+    ATTRS,
+    fakeEnv({}),
+  );
+  assertEquals(explicit.attributes["service.instance.id"], "operator-instance");
+});
 
 function fakeEnv(
   vars: Record<string, string>,

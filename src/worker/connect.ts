@@ -48,6 +48,11 @@ import {
   type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  observeExecutionWork,
+  traceCarrier,
+} from "../domain/remote/observability.ts";
+import { injectTraceContext } from "../infrastructure/tracing/propagation.ts";
 import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   createTlsHttpClient,
@@ -237,43 +242,49 @@ export async function runWorker(
     attempt++;
     options.onStatus?.({ kind: "connecting", url: options.url, attempt });
     try {
-      const outcome = await connectOnce({
-        options,
-        httpClient,
-        instanceUuid,
-        machineId,
-        session,
-        gate,
-        dataPlaneUrl,
-        cacheDirPath: join(cacheDir, "bundles"),
-        concurrency,
-        onDispatchHandlerRegistered: (handle, channel, close) => {
-          currentDrainHandle = handle;
-          currentChannel = channel;
-          currentCloseConnection = close;
-          if (drainReason !== null) {
-            close();
-            return;
-          }
-          startIdleTimer();
-        },
-        onDispatchStarted: () => {
-          activeDispatches++;
-          clearIdleTimer();
-        },
-        onDispatchFinished: () => {
-          activeDispatches--;
-          dispatchCount++;
-          if (
-            options.maxDispatches !== undefined &&
-            dispatchCount >= options.maxDispatches
-          ) {
-            triggerDrain("max-dispatches");
-          } else if (activeDispatches === 0) {
+      const outcome = await observeExecutionWork("enrollment.connect", {
+        "swamp.worker.machine_id": machineId,
+        "swamp.worker.instance_id": instanceUuid,
+        "swamp.connection.epoch": crypto.randomUUID(),
+        "swamp.enrollment.attempt": attempt,
+      }, () =>
+        connectOnce({
+          options,
+          httpClient,
+          instanceUuid,
+          machineId,
+          session,
+          gate,
+          dataPlaneUrl,
+          cacheDirPath: join(cacheDir, "bundles"),
+          concurrency,
+          onDispatchHandlerRegistered: (handle, channel, close) => {
+            currentDrainHandle = handle;
+            currentChannel = channel;
+            currentCloseConnection = close;
+            if (drainReason !== null) {
+              close();
+              return;
+            }
             startIdleTimer();
-          }
-        },
-      });
+          },
+          onDispatchStarted: () => {
+            activeDispatches++;
+            clearIdleTimer();
+          },
+          onDispatchFinished: () => {
+            activeDispatches--;
+            dispatchCount++;
+            if (
+              options.maxDispatches !== undefined &&
+              dispatchCount >= options.maxDispatches
+            ) {
+              triggerDrain("max-dispatches");
+            } else if (activeDispatches === 0) {
+              startIdleTimer();
+            }
+          },
+        }));
       consecutivePreEnrollFailures = 0;
       options.onStatus?.({ kind: "disconnected", reason: outcome });
       delayMs = RECONNECT_BASE_DELAY_MS;
@@ -307,7 +318,10 @@ export async function runWorker(
       break;
     }
     options.onStatus?.({ kind: "retrying", delayMs });
-    await abortableDelay(delayMs, options.signal);
+    await observeExecutionWork("enrollment.retry", {
+      "swamp.enrollment.attempt": attempt,
+      "swamp.retry.delay_ms": delayMs,
+    }, () => abortableDelay(delayMs, options.signal));
     delayMs = Math.min(delayMs * 2, RECONNECT_MAX_DELAY_MS);
   }
 
@@ -413,6 +427,7 @@ interface ConnectOnceArgs {
 
 /** One socket lifetime: connect, enroll, serve dispatches until close. */
 function connectOnce(args: ConnectOnceArgs): Promise<string> {
+  const lifecycleTrace = traceCarrier(injectTraceContext());
   const { options, instanceUuid, machineId, session, gate } = args;
   return new Promise<string>((resolve, reject) => {
     const defaultCreate = (url: string, headers?: Record<string, string>) => {
@@ -479,18 +494,24 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
     };
 
     socket.onopen = () => {
-      channel.call<EnrollResult>(RemoteMethod.enroll, {
-        token: options.token,
-        instanceUuid,
-        machineId,
-        protocolVersion: REMOTE_PROTOCOL_VERSION,
-        swampVersion: options.swampVersion,
-        platform: Deno.build.os,
-        arch: Deno.build.arch,
-        labels: options.labels ?? {},
-        resourceLimits: { capacity: args.concurrency },
-        ...(gate.admitted ? {} : { needsGatePass: true }),
-      }).then((result) => {
+      observeExecutionWork(
+        "enrollment.request",
+        {},
+        () =>
+          channel.call<EnrollResult>(RemoteMethod.enroll, {
+            token: options.token,
+            instanceUuid,
+            machineId,
+            protocolVersion: REMOTE_PROTOCOL_VERSION,
+            swampVersion: options.swampVersion,
+            platform: Deno.build.os,
+            arch: Deno.build.arch,
+            labels: options.labels ?? {},
+            resourceLimits: { capacity: args.concurrency },
+            ...(gate.admitted ? {} : { needsGatePass: true }),
+          }),
+        lifecycleTrace,
+      ).then((result) => {
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
         // The orchestrator counts the worker as ready once enrollment
@@ -509,6 +530,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
             throw error;
           });
         const handle = registerDispatchHandler({
+          lifecycleTrace,
           channel,
           sessionCredential: () => session.credential,
           dataPlaneUrl: args.dataPlaneUrl,

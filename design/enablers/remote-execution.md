@@ -22,6 +22,9 @@ worker, not a per-step field.
 
 ## Why this shape
 
+For causal trace propagation, bounded metrics, and interpretation of latency,
+see [Remote execution telemetry](remote-execution-telemetry.md).
+
 Three properties drove the design:
 
 - **Workers connect to the orchestrator, never the reverse.** Workers run in

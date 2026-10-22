@@ -121,9 +121,8 @@ Deno.test("FetchOtlpExporter: returns FAILED on HTTP error responses", async () 
 
     const result = await exportAndAwait(exporter, [makeSpan("fail-span")]);
 
-    // Non-ok response still returns SUCCESS because the request completed.
-    // The exporter's job is to send, not to retry. BatchSpanProcessor handles retries.
-    assertEquals(result.code, ExportResultCode.SUCCESS);
+    // A completed HTTP exchange is not collector acceptance.
+    assertEquals(result.code, ExportResultCode.FAILED);
 
     await exporter.shutdown();
   } finally {

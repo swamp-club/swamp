@@ -19,6 +19,14 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  findSpan,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
+import {
+  installExecutionObserver,
+  uninstallExecutionObserver,
+} from "../infrastructure/tracing/execution_observer.ts";
+import {
   createDataPlaneFetch,
   DataPlaneClient,
   dataPlaneUrlFromConnectUrl,
@@ -30,6 +38,36 @@ interface RecordedRequest {
   authorization: string | null;
   body?: string;
 }
+
+Deno.test("DataPlaneClient: partial response failure ends the span and preserves the stream error", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const failure = new Error("body interrupted");
+    let reads = 0;
+    const { client } = clientWith(() =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (reads++ === 0) controller.enqueue(new Uint8Array([1, 2, 3]));
+            else controller.error(failure);
+          },
+        }),
+      )
+    );
+    try {
+      const error = await assertRejects(() =>
+        client.readArtifact("/data/t/m/n/1")
+      );
+      assertEquals(error, failure);
+      const span = findSpan(spans, "swamp.data.client");
+      assertEquals(span.attributes["swamp.outcome"], "error");
+      assertEquals(span.attributes["swamp.response.partial"], true);
+      assertEquals(span.attributes["swamp.response.bytes"], 3);
+    } finally {
+      uninstallExecutionObserver();
+    }
+  });
+});
 
 function clientWith(
   respond: (req: RecordedRequest) => Response,

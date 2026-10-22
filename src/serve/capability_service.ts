@@ -28,6 +28,11 @@
  */
 
 import { ModelType } from "../domain/models/model_type.ts";
+import {
+  dispatchTraceCarrier,
+  dispatchTraceCoverage,
+  observeExecutionWork,
+} from "../domain/remote/observability.ts";
 import { computeChecksum } from "../domain/models/checksum.ts";
 import type { Data } from "../domain/data/data.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
@@ -376,12 +381,17 @@ export class CapabilityService {
     // limit, so a broad predicate returns the rest rather than failing. The
     // exclusion is set here, after the worker's options, so a worker cannot
     // replace it (swamp-club#3129).
-    const records = await this.#repoContext.dataQueryService.query(
-      params.predicate,
-      {
-        ...params.options,
-        excludeModelTypes: workerHiddenStoredTypes(dispatch),
-      },
+    const records = await observeExecutionWork(
+      "query.execute",
+      {},
+      () =>
+        this.#repoContext.dataQueryService.query(
+          params.predicate,
+          {
+            ...params.options,
+            excludeModelTypes: workerHiddenStoredTypes(dispatch),
+          },
+        ),
     );
     // Post-query check: a hidden record in the results means the exclusion
     // above was bypassed. It judges each result's resolved modelType, in any
@@ -397,7 +407,9 @@ export class CapabilityService {
         "Query matched access-control or infrastructure behavior data which is not permitted from workers",
       );
     }
-    return records.map((record) => jsonSafeClone(record));
+    return await observeExecutionWork("query.serialize", {
+      "swamp.query.items": records.length,
+    }, () => Promise.resolve(records.map((record) => jsonSafeClone(record))));
   }
 
   listVersions(
@@ -815,7 +827,32 @@ export class CapabilityService {
         { verb, worker: workerName, requestId: ctx.requestId },
       );
       try {
-        const result = await fn(params);
+        const dispatchId = (params as Record<string, unknown> | null)
+          ?.dispatchId;
+        const dispatch = typeof dispatchId === "string"
+          ? this.#dispatches?.forDispatch(workerName, dispatchId)
+          : undefined;
+        const result = await observeExecutionWork(
+          "rpc.server",
+          {
+            "swamp.rpc.request_id": ctx.requestId,
+            "swamp.trace.coverage": dispatchTraceCoverage(
+              dispatch?.traceHeaders,
+              ctx.trace,
+            ),
+            ...(dispatch
+              ? {
+                "swamp.dispatch.id": dispatch.dispatchId,
+                "swamp.lease.id": dispatch.leaseId,
+              }
+              : {}),
+          },
+          (observation) => {
+            ctx.responseTrace = observation.carrier;
+            return fn(params);
+          },
+          dispatchTraceCarrier(dispatch?.traceHeaders, ctx.trace),
+        );
         const elapsedMs = Math.round(performance.now() - start);
         if (elapsedMs >= SLOW_HANDLER_WARN_MS) {
           capLogger.warn(

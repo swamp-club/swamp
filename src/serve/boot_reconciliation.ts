@@ -456,6 +456,8 @@ export async function replayPendingRuns(
           },
           traceparent: entry.traceparent,
           tracestate: entry.tracestate,
+          receiptTrace: entry.receiptTrace,
+          createdAt: entry.createdAt,
         });
         replayed++;
         logger

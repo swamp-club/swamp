@@ -50,6 +50,10 @@ something a primitive depends on, move it to `enablers/` and give it an
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`.
+  Application execution metrics opt in separately with
+  `OTEL_METRICS_EXPORTER=otlp`; see the
+  [remote telemetry contract](enablers/remote-execution-telemetry.md) for native
+  parentage, metric resets and interpretation of incomplete exports.
 - **Self-update**: version check, integrity check, and OS-scheduled autoupdate
   (launchd / systemd / cron). `src/domain/update/`,
   `src/infrastructure/update/`.

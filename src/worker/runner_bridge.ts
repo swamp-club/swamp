@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RemoteMethod } from "../domain/remote/protocol.ts";
+import { observeExecutionWork } from "../domain/remote/observability.ts";
 import type {
   RpcChannel,
   RpcHandlerContext,
@@ -90,13 +91,17 @@ export function bridgeCapabilityVerbs(
           params as Record<string, unknown>;
         const wrapped = { ...childParams, dispatchId };
         try {
-          const result = await orchestratorChannel.call(verb, wrapped, {
-            signal: combinedSignal,
-            timeoutMs: BRIDGE_CAPABILITY_TIMEOUT_MS,
-            onStream: options.onChildStream
-              ? (event) => options.onChildStream!(event)
-              : undefined,
-          });
+          const result = await observeExecutionWork("rpc.server", {
+            "swamp.rpc.request_id": ctx.requestId,
+            "swamp.dispatch.id": dispatchId,
+          }, () =>
+            orchestratorChannel.call(verb, wrapped, {
+              signal: combinedSignal,
+              timeoutMs: BRIDGE_CAPABILITY_TIMEOUT_MS,
+              onStream: options.onChildStream
+                ? (event) => options.onChildStream!(event)
+                : undefined,
+            }), ctx.trace);
           const elapsedMs = Math.round(performance.now() - start);
           logger.debug(
             "Bridge {verb} completed in {elapsedMs}ms [{dispatchId}] (request {requestId})",

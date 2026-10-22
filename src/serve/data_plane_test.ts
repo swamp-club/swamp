@@ -1227,6 +1227,34 @@ Deno.test("DataPlane: tagOverrides on dispatch are applied to written resources"
 const DISPATCH_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
 const DISPATCH_SPAN_ID = "b7ad6b7169203331";
 
+Deno.test("DataPlane: authenticated return path nests under worker write and records persistence independently", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register({
+      ...activeDispatch(),
+      traceHeaders: {
+        traceparent: `00-${DISPATCH_TRACE_ID}-${DISPATCH_SPAN_ID}-01`,
+      },
+    });
+    await withCapturedSpans(async (spans) => {
+      const workerSpanId = "b7ad6b7169203332";
+      const response = await h.plane.handle(
+        writeRequest({
+          traceparent: `00-${DISPATCH_TRACE_ID}-${workerSpanId}-01`,
+          "x-swamp-request-id": crypto.randomUUID(),
+        }),
+      );
+      assertEquals(response?.status, 200);
+      const server = findSpan(spans, "swamp.serve.data_plane");
+      assertEquals(server.parentSpanId, workerSpanId);
+      assertEquals(server.spanContext().traceId, DISPATCH_TRACE_ID);
+      const persisted = findSpan(spans, "swamp.serve.data_plane.persist");
+      assertEquals(persisted.attributes["swamp.commit.state"], "committed");
+      assertEquals(persisted.attributes["swamp.response.delivery"], "unknown");
+      assert(isChildOf(persisted, server));
+    });
+  });
+});
+
 function writeRequest(headers?: HeadersInit): Request {
   return request("/data/resource", {
     method: "POST",
