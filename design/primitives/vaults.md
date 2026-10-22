@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-10-21 @ uncommitted
+last-verified: 2026-10-22 @ uncommitted
 ---
 
 # swamp vaults
@@ -962,11 +962,23 @@ definition cache (swamp-club#3583). Its definition writes still mask sensitive
 arguments. The behavior replay check covers the global arguments and the
 replayed method's arguments; one that an `--input` override replaces after
 replay is not counted. A plain re-run writes the mask again, so the message
-points at what makes the run replayable: a vault reference. Inside a sensitive
-container, only the leaves a reference covers are left; a string that joins
-text to a reference or a pending runtime expression is written as it is, text
-included. `${{ env.X }}` remains an expression in the cache and resolves at
-runtime on each run, including replay; its value is never cached.
+points at what makes the run replayable: a vault reference. Authored text joined
+to a reference or a pending runtime expression stays as written. Resolved input
+or data text beside it masks the entire sensitive leaf, unless every resolved
+segment is a recorded vault reference, and expression-shaped input data is
+masked too. `${{ env.X }}` remains an expression in the cache and resolves at
+runtime on each run, including replay; its value is never cached. Inside a
+sensitive container, leaves are checked one by one, except where object keys
+could be data: a sensitive object with any data under it, or an array holding
+such an object, is masked whole, and so is an object whose keys came from data
+that holds a sensitive value, so a record's keys reach neither the file,
+`maskedPaths`, the provenance nor the refusal message; their descendant
+provenance and reference paths are removed too. This fails closed: provenance
+does not record every data key on its own, so an authored object holding a
+data-origin vault reference, or a fixed object shape supplied whole from data,
+is masked as well, and such a run is not replayed. `persistedProvenance` records
+data ranges in the saved text, alongside the raw replay provenance, so a written
+vault reference cannot exempt adjacent input text.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 

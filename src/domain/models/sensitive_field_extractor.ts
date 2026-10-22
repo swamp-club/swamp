@@ -114,9 +114,9 @@ function isRuntimeExpressionOnly(value: string): boolean {
 /**
  * Whether a string still holds an expression that reads something at
  * runtime — `vault.get`, `env.X`, a data read a workflow deferred — or one
- * that does not parse and so never becomes a value. Such text is not a value
- * yet, so it carries no secret whatever text surrounds it, and the evaluated
- * cache keeps the string as written (swamp-club#3681). Unlike
+ * that does not parse and so never becomes a value. This describes syntax
+ * only: a caller must check provenance before trusting the surrounding text
+ * or treating an expression-shaped input as pending code. Unlike
  * {@link isLiteralSecret}, which refuses a mixed string at save time because
  * the text around the expression would be stored, this asks only whether the
  * expression part is still to come.
@@ -221,11 +221,20 @@ export function findLiteralSensitiveValues(
   schema: z.ZodTypeAny | undefined,
   args: Record<string, unknown> | undefined,
 ): LiteralSensitiveValue[] {
+  return findSensitiveValues(schema, args).filter(({ value }) =>
+    isLiteralSecret(value)
+  );
+}
+
+/** Sensitive positions, including expression-shaped values supplied as data. */
+export function findSensitiveValues(
+  schema: z.ZodTypeAny | undefined,
+  args: Record<string, unknown> | undefined,
+): LiteralSensitiveValue[] {
   if (!schema || !args) {
     return [];
   }
   return findValuesWithMetadata(schema, args, isSensitive)
-    .filter(({ value }) => isLiteralSecret(value))
     .map(({ path, keys, value }) => ({ path, keys, value }));
 }
 

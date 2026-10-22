@@ -286,6 +286,7 @@ export interface ModelMethodRunDeps {
       writtenReferences?: readonly WrittenReference[];
       /** See the evaluated cache's `maskedPaths`; absent on older caches. */
       maskedPaths?: readonly MaskedPath[];
+      persistedProvenance?: ProvenanceMap | "unreadable";
       /** See the evaluated cache's `provenance`; absent on older caches. */
       provenance?: ProvenanceMap | "unreadable";
       sensitiveFormat?: number;
@@ -300,6 +301,7 @@ export interface ModelMethodRunDeps {
     writtenReferences?: readonly WrittenReference[],
     /** Where the definition holds the mask (swamp-club#3681). */
     maskedPaths?: readonly MaskedPath[],
+    persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
   createVaultService: () => Promise<VaultService>;
@@ -793,6 +795,7 @@ export async function* modelMethodRun(
             let pendingReferences: readonly WrittenReference[] = [];
             let pendingMasked: readonly MaskedPath[] = [];
             let pendingProvenance = ProvenanceMap.authored();
+            let pendingPersistedProvenance = ProvenanceMap.authored();
             // The inputs the definition declares; any other --input key is an
             // override of a method argument, merged below.
             const definitionInputKeys = definition.inputs
@@ -836,7 +839,10 @@ export async function* modelMethodRun(
                 };
                 return;
               }
-              if (lastEval.provenance === "unreadable") {
+              if (
+                lastEval.provenance === "unreadable" ||
+                lastEval.persistedProvenance === "unreadable"
+              ) {
                 exprSpan.end();
                 setupSpan.end();
                 yield {
@@ -864,6 +870,8 @@ export async function* modelMethodRun(
                     ),
                   },
                   recordedMasks: lastEval.maskedPaths ?? [],
+                  provenance: lastEval.provenance,
+                  persistedProvenance: lastEval.persistedProvenance,
                 },
               );
               if (plaintextArgs.length > 0) {
@@ -957,10 +965,12 @@ export async function* modelMethodRun(
                 definition,
                 sensitiveValues,
                 modelDef,
+                executedProvenance,
               );
               pendingSave = persisted.definition;
               pendingReferences = persisted.writtenReferences;
               pendingMasked = persisted.maskedPaths;
+              pendingPersistedProvenance = persisted.persistedProvenance;
               // In raw-copy coordinates, which rehydrate restores exactly.
               pendingProvenance = rawProvenance;
             }
@@ -1058,6 +1068,7 @@ export async function* modelMethodRun(
                   authoredExpressions,
                   pendingReferences,
                   pendingMasked,
+                  pendingPersistedProvenance,
                 ))(pendingSave);
 
             exprSpan.end();

@@ -1304,10 +1304,12 @@ for (const all of [false, true]) {
       }));
     const events = await evaluate({ n: "3", cfg: '{"a":1}' });
     assertEquals(events.at(-1)?.kind, "completed");
+    // The caller's object is data whole: no schema property describes its
+    // keys (swamp-club#3681).
     assertEquals(saved, [{
       inputs: { n: 3, cfg: { a: 1 }, enabled: false },
       provenance: ProvenanceMap.authored().withWholeData("n").withWholeData(
-        "cfg.a",
+        "cfg",
       ),
     }]);
 

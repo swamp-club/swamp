@@ -26,6 +26,7 @@ import {
   type WrittenReference,
 } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { keyPath, ProvenanceMap } from "./provenance_map.ts";
 import {
   type ArgumentSchemas,
   evaluatedCacheHoldsSensitiveArgumentsMessage,
@@ -49,6 +50,111 @@ function recorded(): RunSensitiveValues {
   values.addSecret(SECRET, SOURCE);
   return values;
 }
+
+Deno.test("persistEvaluatedDefinition: resolved sensitive text beside a pending expression or written reference is masked", () => {
+  const schemas = {
+    globalArguments: z.object({ token: z.string().meta({ sensitive: true }) }),
+    methods: {},
+  };
+  const values = recorded();
+  const sentinel = new VaultSecretBag(values.sentinels).addDataSecret(
+    SECRET,
+    SOURCE,
+  );
+  for (
+    const text of [
+      "INPUT-CANARY${{ env.SUFFIX }}",
+      "${{ env.TOKEN }}",
+      "${{ vault.get('untrusted', 'literal-input') }}",
+      `${sentinel}INPUT-CANARY`,
+    ]
+  ) {
+    const definition = Definition.create({
+      name: "mixed-data",
+      globalArguments: { token: text },
+    });
+    const provenance = ProvenanceMap.authored().withWholeData(
+      "globalArguments.token",
+    );
+    const persisted = persistEvaluatedDefinition(
+      definition,
+      [],
+      definition,
+      values,
+      schemas,
+      provenance,
+    );
+    assertEquals(persisted.definition.globalArguments.token, "***");
+    assertEquals(persisted.maskedPaths, [["globalArguments", "token"]]);
+    assertEquals(persisted.writtenReferences, []);
+    if (!text.includes(sentinel)) {
+      assertEquals(
+        findPlaintextSensitiveArguments(schemas, definition.toData(), [], {
+          provenance,
+        }),
+        ["globalArguments.token"],
+      );
+    }
+  }
+  const text = `Bearer ${sentinel}`;
+  const definition = Definition.create({
+    name: "authored-prefix",
+    globalArguments: { token: text },
+  });
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    definition,
+    values,
+    schemas,
+    ProvenanceMap.authored().withRanges("globalArguments.token", [[
+      7,
+      text.length,
+    ]]),
+  );
+  assertEquals(persisted.definition.globalArguments.token, `Bearer ${REF}`);
+  assertEquals(persisted.maskedPaths, []);
+  assertEquals(
+    findPlaintextSensitiveArguments(
+      schemas,
+      persisted.definition.toData(),
+      persisted.writtenReferences,
+      {
+        provenance: ProvenanceMap.authored().withRanges(
+          "globalArguments.token",
+          [[7, text.length]],
+        ),
+        persistedProvenance: persisted.persistedProvenance,
+      },
+    ),
+    [],
+  );
+  const leaky = Definition.create({
+    name: "legacy",
+    globalArguments: { token: `INPUT-CANARY${REF}` },
+  });
+  const reference: WrittenReference = {
+    path: ["globalArguments", "token"],
+    occurrence: 0,
+    vaultName: SOURCE.vaultName,
+    key: SOURCE.key,
+    encoding: "raw",
+    dataOrigin: true,
+  };
+  const prefix = ProvenanceMap.authored().withRanges("globalArguments.token", [[
+    0,
+    "INPUT-CANARY".length,
+  ]]);
+  for (const persistedProvenance of [undefined, prefix]) {
+    assertEquals(
+      findPlaintextSensitiveArguments(schemas, leaky.toData(), [reference], {
+        provenance: prefix,
+        persistedProvenance,
+      }),
+      ["globalArguments.token"],
+    );
+  }
+});
 
 /** The executed copy: a sentinel where the value was spliced, raw in a tag. */
 function executed(bag: VaultSecretBag): Definition {
@@ -634,5 +740,172 @@ Deno.test("plaintextSensitiveArgumentsMessage: names the paths, singular and plu
   assertStringIncludes(
     plaintextSensitiveArgumentsMessage("svc", ["a.b", "c.d"]),
     "the sensitive arguments 'a.b', 'c.d'",
+  );
+});
+
+Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: a plaintext leaf inside a container that arrived whole from data is masked at the container, so its keys reach neither the file, the metadata nor the refusal (swamp-club#3681)", () => {
+  const schemas: ArgumentSchemas = {
+    methods: {
+      record: {
+        arguments: z.object({
+          tokens: z.record(z.string(), z.string().meta({ sensitive: true })),
+          nested: z.object({
+            creds: z.record(z.string(), z.string().meta({ sensitive: true })),
+          }).optional(),
+        }),
+      },
+    },
+  };
+  const keyed = { [INPUT_VALUE]: INPUT_VALUE };
+  const executed = Definition.create({
+    name: "record",
+    methods: {
+      record: { arguments: { tokens: keyed, nested: { creds: keyed } } },
+    },
+  });
+  // The record came whole from an input; the object around `creds` is
+  // authored, so only `creds` carries the keys.
+  const provenance = ProvenanceMap.authored()
+    .withWholeData("methods.record.arguments.tokens")
+    .withWholeData("methods.record.arguments.nested.creds");
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    Definition.create({ name: "record" }),
+    new RunSensitiveValues(),
+    schemas,
+    provenance,
+  );
+  assertEquals(persisted.definition.getMethodArguments("record"), {
+    tokens: "***",
+    nested: { creds: "***" },
+  });
+  assertEquals(persisted.maskedPaths, [
+    ["methods", "record", "arguments", "tokens"],
+    ["methods", "record", "arguments", "nested", "creds"],
+  ]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, executed.toData(), [], {
+      provenance,
+    }),
+    [
+      "methods.record.arguments.tokens",
+      "methods.record.arguments.nested.creds",
+    ],
+  );
+  // A leaf under an authored container is still reported on its own.
+  const authored = findPlaintextSensitiveArguments(
+    schemas,
+    executed.toData(),
+    [],
+    {
+      provenance: ProvenanceMap.authored().withWholeData(
+        keyPath("methods.record.arguments.tokens", INPUT_VALUE),
+      ),
+    },
+  );
+  assertEquals(authored.includes("methods.record.arguments.tokens"), false);
+  assertEquals(
+    authored.includes(keyPath("methods.record.arguments.tokens", INPUT_VALUE)),
+    true,
+  );
+});
+
+Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: a record whose keys came from data is masked at the record when its sensitive values are objects, and an array of data-keyed objects is masked whole, so no key reaches the file, the metadata nor the refusal (swamp-club#3744)", () => {
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({
+      creds: z.record(
+        z.string(),
+        z.object({ user: z.string(), pass: z.string() }).meta({
+          sensitive: true,
+        }),
+      ),
+      lists: z.array(z.record(z.string(), z.string())).meta({
+        sensitive: true,
+      }).optional(),
+    }),
+    methods: {},
+  };
+  const executed = Definition.create({
+    name: "object-record",
+    globalArguments: {
+      creds: { [INPUT_VALUE]: { user: "u", pass: "p" } },
+      lists: [{ [INPUT_VALUE]: "x" }],
+    },
+  });
+  // Both arrived whole from the run's inputs, keys included.
+  const provenance = ProvenanceMap.authored()
+    .withWholeData("globalArguments.creds")
+    .withWholeData("globalArguments.lists");
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    Definition.create({ name: "object-record" }),
+    new RunSensitiveValues(),
+    schemas,
+    provenance,
+  );
+  assertEquals(persisted.definition.globalArguments, {
+    creds: "***",
+    lists: "***",
+  });
+  assertEquals(persisted.maskedPaths, [
+    ["globalArguments", "creds"],
+    ["globalArguments", "lists"],
+  ]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.maskedArguments,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, executed.toData(), [], {
+      provenance,
+    }),
+    ["globalArguments.creds", "globalArguments.lists"],
+  );
+});
+
+Deno.test("findPlaintextSensitiveArguments: with no persistedProvenance a sensitive string holding data and a written reference is data whole, so data after the reference is refused as well as data before it (swamp-club#3744)", () => {
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({ token: z.string().meta({ sensitive: true }) }),
+    methods: {},
+  };
+  const reference: WrittenReference = {
+    path: ["globalArguments", "token"],
+    occurrence: 0,
+    vaultName: SOURCE.vaultName,
+    key: SOURCE.key,
+    encoding: "raw",
+    dataOrigin: true,
+  };
+  const legacy = Definition.create({
+    name: "legacy-suffix",
+    globalArguments: { token: `${REF}INPUT-CANARY` },
+  });
+  // In raw coordinates the suffix follows the secret, which is shorter than
+  // its reference text, so this range falls inside the written reference.
+  const raw = ProvenanceMap.authored().withRanges("globalArguments.token", [[
+    SECRET.length,
+    SECRET.length + "INPUT-CANARY".length,
+  ]]);
+  assertEquals(SECRET.length + "INPUT-CANARY".length < REF.length, true);
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, legacy.toData(), [reference], {
+      provenance: raw,
+    }),
+    ["globalArguments.token"],
   );
 });

@@ -115,3 +115,30 @@ Deno.test("workflowInputsProvenance: on a webhook run a trigger template does no
     true,
   );
 });
+
+Deno.test("workflowInputsProvenance: an object no default or schema property describes is data whole, its keys included, and its keys stay out of the map's paths (swamp-club#3681)", () => {
+  const wf = workflow({
+    key: {},
+    cfg: {
+      type: "object",
+      properties: { token: { type: "string", default: T } },
+    },
+  });
+  const map = workflowInputsProvenance(
+    {
+      key: { "caller-key": null },
+      cfg: { token: T, other: { "inner-key": 1 } },
+    },
+    wf,
+  );
+  assertEquals(map.isWholeDataAt("key"), true);
+  assertEquals(map.isWholeDataAt("cfg"), false);
+  assertEquals(map.hasDataAtOrBelow("cfg.token"), false);
+  assertEquals(map.isWholeDataAt("cfg.other"), true);
+  assertEquals(
+    map.paths().some((path) =>
+      path.includes("caller-key") || path.includes("inner-key")
+    ),
+    false,
+  );
+});
