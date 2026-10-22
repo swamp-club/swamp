@@ -152,20 +152,47 @@ Deno.test("createResourceWriter: persisted content keeps vault references exact 
 
         const text = repo.persisted();
         const references = [
-          JSON.stringify(data.token),
-          JSON.stringify((data.creds as Record<string, unknown>).key),
+          data.token,
+          (data.creds as Record<string, unknown>).key,
         ];
         for (const reference of references) {
-          assert(text.includes(reference), `${reference} missing`);
+          assert(
+            text.includes(JSON.stringify(reference)),
+            `${reference} missing`,
+          );
         }
-        // Between the references, no registered secret survives.
-        let pieces = [text];
-        for (const reference of references) {
-          pieces = pieces.flatMap((piece) => piece.split(reference));
-        }
-        for (const piece of pieces) {
-          assert(redactor.redact(piece) === piece, `secret left in ${piece}`);
-        }
+        // Outside the references, no node of the payload holds a registered
+        // secret. The check is per node, as the writer redacts
+        // (swamp-club#3754): the JSON punctuation between nodes is structure,
+        // not data, and a secret made only of punctuation, such as
+        // quote-colon-quote, matches it (swamp-club#3798). A node must be
+        // unchanged by redaction, and must not hold a drawn secret as raw
+        // text either, which does not rely on how its literal is escaped.
+        const drawnSecrets = [nameSecret, ...secrets];
+        const checkText = (value: string): void => {
+          const literal = JSON.stringify(value);
+          assert(redactor.redact(literal) === literal, `secret in ${literal}`);
+          for (const secret of drawnSecrets) {
+            assert(!value.includes(secret), `secret in ${literal}`);
+          }
+        };
+        const checkNode = (node: unknown): void => {
+          if (typeof node === "string") {
+            if (!references.includes(node)) checkText(node);
+            return;
+          }
+          const json = JSON.stringify(node);
+          assert(!redactor.isSecret(json), `secret in ${json}`);
+          if (Array.isArray(node)) {
+            for (const child of node) checkNode(child);
+          } else if (node !== null && typeof node === "object") {
+            for (const [key, child] of Object.entries(node)) {
+              checkText(key);
+              checkNode(child);
+            }
+          }
+        };
+        checkNode(JSON.parse(text));
       },
     ),
   );
