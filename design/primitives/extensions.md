@@ -652,7 +652,7 @@ which keeps working unchanged:
   pulled extensions keep their `models/` layout. `export const extension`,
   `modelRegistry.extend` and other code names have no behavior spelling.
   `@swamp-club/swamp-testing` exports `defineBehavior`, the same function as
-  `defineModel`, from its first release after swamp-club#3338.
+  `defineModel`, from 0.20261013.52, its first release after swamp-club#3338.
 
 ## Manifest
 
