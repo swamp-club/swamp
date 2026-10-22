@@ -31,8 +31,10 @@ export type DataRange = readonly [number, number];
 /**
  * Where data sits in a tree of values: for each path (in the syntax
  * {@link extractExpressions} reports, `a.b[0].c`, `""` for the root), either
- * the whole subtree is data or some `[start, end)` ranges of the string at
- * that path are. Everything else is authored.
+ * the whole subtree is data, some `[start, end)` ranges of the string at
+ * that path are, or the own keys of the object at that path are while the
+ * values under them are described on their own (a caller's object holding
+ * an authored expression). Everything else is authored.
  *
  * Substitution splices values into a tree as raw text, so an expression found
  * in a later pass is authored only if it does not overlap data. The map holds
@@ -40,28 +42,36 @@ export type DataRange = readonly [number, number];
  * without storing anything the tree does not already hold. Immutable.
  */
 export class ProvenanceMap {
-  static readonly #empty = new ProvenanceMap(new Set(), new Map());
-  static readonly #whole = new ProvenanceMap(new Set([""]), new Map());
+  static readonly #empty = new ProvenanceMap(new Set(), new Map(), new Set());
+  static readonly #whole = new ProvenanceMap(
+    new Set([""]),
+    new Map(),
+    new Set(),
+  );
 
   private constructor(
     private readonly whole: ReadonlySet<string>,
     private readonly ranges: ReadonlyMap<string, readonly DataRange[]>,
+    /** Objects whose own keys are data, their values described on their own. */
+    private readonly keys: ReadonlySet<string>,
   ) {}
 
   /**
-   * A map built in one pass from whole-data paths and per-string ranges.
-   * Linear in the input, where repeated withRanges/withWholeData calls would
-   * copy the map each time.
+   * A map built in one pass from whole-data paths, per-string ranges and
+   * the paths of objects whose own keys are data. Linear in the input,
+   * where repeated withRanges/withWholeData calls would copy the map each
+   * time.
    */
   static fromEntries(
     whole: Iterable<string>,
     ranges: Iterable<readonly [string, readonly DataRange[]]>,
+    keys: Iterable<string> = [],
   ): ProvenanceMap {
     const merged = new Map<string, readonly DataRange[]>();
     for (const [path, value] of ranges) {
       merged.set(path, mergeRanges([...(merged.get(path) ?? []), ...value]));
     }
-    return ProvenanceMap.of(new Set(whole), merged);
+    return ProvenanceMap.of(new Set(whole), merged, new Set(keys));
   }
 
   /** No data anywhere: the tree is entirely authored. */
@@ -76,7 +86,8 @@ export class ProvenanceMap {
 
   /** True when nothing in the tree is data. */
   get isAuthored(): boolean {
-    return this.whole.size === 0 && this.ranges.size === 0;
+    return this.whole.size === 0 && this.ranges.size === 0 &&
+      this.keys.size === 0;
   }
 
   /** True when the whole tree is data. */
@@ -90,6 +101,17 @@ export class ProvenanceMap {
       if (this.whole.has(ancestor)) return true;
     }
     return false;
+  }
+
+  /**
+   * Whether the own keys of the object at `path` are data: the subtree is
+   * data in its entirety, or the keys were recorded as data on their own
+   * while the values under them are described separately, as the keys of a
+   * caller's object that holds an authored expression are
+   * (swamp-club#3681).
+   */
+  hasDataKeysAt(path: string): boolean {
+    return this.isWholeDataAt(path) || this.keys.has(canonicalPath(path));
   }
 
   /**
@@ -116,7 +138,7 @@ export class ProvenanceMap {
   private dataAncestors(): Set<string> {
     if (this.#dataAncestors) return this.#dataAncestors;
     const ancestors = new Set<string>();
-    for (const key of [...this.whole, ...this.ranges.keys()]) {
+    for (const key of [...this.whole, ...this.ranges.keys(), ...this.keys]) {
       for (const ancestor of ancestorsOf(key)) {
         if (ancestors.has(ancestor)) break;
         ancestors.add(ancestor);
@@ -138,13 +160,17 @@ export class ProvenanceMap {
     if (this.isWholeDataAt(path)) return ProvenanceMap.#whole;
     const whole = new Set<string>();
     const ranges = new Map<string, readonly DataRange[]>();
+    const keys = new Set<string>();
     for (const key of this.whole) {
       if (isAtOrUnder(key, path)) whole.add(reroot(key, path));
     }
     for (const [key, value] of this.ranges) {
       if (isAtOrUnder(key, path)) ranges.set(reroot(key, path), value);
     }
-    return ProvenanceMap.of(whole, ranges);
+    for (const key of this.keys) {
+      if (isAtOrUnder(key, path)) keys.add(reroot(key, path));
+    }
+    return ProvenanceMap.of(whole, ranges, keys);
   }
 
   /**
@@ -155,15 +181,20 @@ export class ProvenanceMap {
     path = canonicalPath(path);
     const whole = new Set<string>();
     const ranges = new Map<string, readonly DataRange[]>();
+    const keys = new Set<string>();
     for (const key of this.whole) {
       if (!isAtOrUnder(key, path)) whole.add(key);
     }
     for (const [key, value] of this.ranges) {
       if (!isAtOrUnder(key, path)) ranges.set(key, value);
     }
+    for (const key of this.keys) {
+      if (!isAtOrUnder(key, path)) keys.add(key);
+    }
     for (const key of sub.whole) whole.add(prefix(path, key));
     for (const [key, value] of sub.ranges) ranges.set(prefix(path, key), value);
-    return ProvenanceMap.of(whole, ranges);
+    for (const key of sub.keys) keys.add(prefix(path, key));
+    return ProvenanceMap.of(whole, ranges, keys);
   }
 
   /**
@@ -186,17 +217,20 @@ export class ProvenanceMap {
     };
     const whole = new Set<string>();
     const ranges = new Map<string, readonly DataRange[]>();
+    const keys = new Set<string>();
     for (const key of this.whole) if (!replaced(key)) whole.add(key);
     for (const [key, value] of this.ranges) {
       if (!replaced(key)) ranges.set(key, value);
     }
+    for (const key of this.keys) if (!replaced(key)) keys.add(key);
     for (const [path, sub] of entries) {
       for (const key of sub.whole) whole.add(prefix(path, key));
       for (const [key, value] of sub.ranges) {
         ranges.set(prefix(path, key), value);
       }
+      for (const key of sub.keys) keys.add(prefix(path, key));
     }
-    return ProvenanceMap.of(whole, ranges);
+    return ProvenanceMap.of(whole, ranges, keys);
   }
 
   /** This map with the subtree at `path` marked data in its entirety. */
@@ -212,7 +246,7 @@ export class ProvenanceMap {
     if (merged.length === 0) return next;
     const all = new Map(next.ranges);
     all.set(path, merged);
-    return ProvenanceMap.of(next.whole, all);
+    return ProvenanceMap.of(next.whole, all, next.keys);
   }
 
   /** Union: data in either map is data in the result. */
@@ -224,18 +258,25 @@ export class ProvenanceMap {
     for (const [key, value] of other.ranges) {
       ranges.set(key, mergeRanges([...(ranges.get(key) ?? []), ...value]));
     }
-    return ProvenanceMap.of(whole, ranges);
+    return ProvenanceMap.of(
+      whole,
+      ranges,
+      new Set([...this.keys, ...other.keys]),
+    );
   }
 
   /** Every path the map records, for path rewriting by callers. */
   paths(): string[] {
-    return [...new Set([...this.whole, ...this.ranges.keys()])];
+    return [
+      ...new Set([...this.whole, ...this.ranges.keys(), ...this.keys]),
+    ];
   }
 
   /** This map with each recorded path passed through `rename`. */
   mapPaths(rename: (path: string) => string): ProvenanceMap {
     const whole = new Set<string>();
     const ranges = new Map<string, readonly DataRange[]>();
+    const keys = new Set<string>();
     for (const key of this.whole) whole.add(rename(key));
     for (const [key, value] of this.ranges) {
       const renamed = rename(key);
@@ -244,10 +285,15 @@ export class ProvenanceMap {
         mergeRanges([...(ranges.get(renamed) ?? []), ...value]),
       );
     }
-    return ProvenanceMap.of(whole, ranges);
+    for (const key of this.keys) keys.add(rename(key));
+    return ProvenanceMap.of(whole, ranges, keys);
   }
 
-  /** Serialisable form: paths and ranges only. */
+  /**
+   * Serialisable form: paths and ranges only. `keys` is written only when
+   * an object's keys are data, so a map written before the field existed
+   * reads back as it was written.
+   */
   toData(): ProvenanceMapData {
     return {
       whole: [...this.whole].sort(),
@@ -257,6 +303,7 @@ export class ProvenanceMap {
             [key, value],
           ) => [key, value.map(([s, e]) => [s, e] as [number, number])]),
       ),
+      ...(this.keys.size > 0 ? { keys: [...this.keys].sort() } : {}),
     };
   }
 
@@ -267,12 +314,17 @@ export class ProvenanceMap {
     for (const [key, value] of Object.entries(parsed.ranges)) {
       ranges.set(key, mergeRanges(value.map(([s, e]) => [s, e] as const)));
     }
-    return ProvenanceMap.of(new Set(parsed.whole), ranges);
+    return ProvenanceMap.of(
+      new Set(parsed.whole),
+      ranges,
+      new Set(parsed.keys ?? []),
+    );
   }
 
   private static of(
     wholeIn: ReadonlySet<string>,
     rangesIn: ReadonlyMap<string, readonly DataRange[]>,
+    keysIn: ReadonlySet<string>,
   ): ProvenanceMap {
     const whole = new Set([...wholeIn].map(canonicalPath));
     const ranges = new Map<string, readonly DataRange[]>();
@@ -286,14 +338,23 @@ export class ProvenanceMap {
       );
     }
     if (whole.has("")) return ProvenanceMap.#whole;
+    const underWhole = (key: string) =>
+      [...ancestorsOf(key)].some((a) => whole.has(a));
     const pruned = new Map<string, readonly DataRange[]>();
     for (const [key, value] of ranges) {
       if (value.length === 0) continue;
-      if ([...ancestorsOf(key)].some((a) => whole.has(a))) continue;
+      if (underWhole(key)) continue;
       pruned.set(key, value);
     }
-    if (whole.size === 0 && pruned.size === 0) return ProvenanceMap.#empty;
-    return new ProvenanceMap(whole, pruned);
+    const keys = new Set<string>();
+    for (const key of keysIn) {
+      const path = canonicalPath(key);
+      if (!underWhole(path)) keys.add(path);
+    }
+    if (whole.size === 0 && pruned.size === 0 && keys.size === 0) {
+      return ProvenanceMap.#empty;
+    }
+    return new ProvenanceMap(whole, pruned, keys);
   }
 }
 
@@ -334,6 +395,8 @@ export function routedGlobalProvenance(
 export interface ProvenanceMapData {
   whole: string[];
   ranges: Record<string, [number, number][]>;
+  /** Objects whose own keys are data; absent when there are none. */
+  keys?: string[];
 }
 
 const DataRangesSchema = z.array(
@@ -343,6 +406,7 @@ const DataRangesSchema = z.array(
 
 export const ProvenanceMapDataSchema = z.object({
   whole: z.array(z.string()),
+  keys: z.array(z.string()).optional(),
   // A path may itself be __proto__. Dropping it would turn data-origin
   // characters into authored text when persisted inputs are restored.
   ranges: InputRecordSchema.transform((record, ctx) => {

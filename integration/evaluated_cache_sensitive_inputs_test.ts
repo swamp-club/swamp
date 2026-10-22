@@ -27,7 +27,12 @@
  * the domain builder is refused at the repository.
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { walk } from "@std/fs";
 import { z } from "zod";
 import { modelRegistry } from "../src/domain/models/model.ts";
@@ -44,7 +49,10 @@ import {
   persistEvaluatedDefinition,
   rehydrateEvaluatedDefinition,
 } from "../src/domain/expressions/persisted_evaluation.ts";
-import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
+import {
+  keyPath,
+  ProvenanceMap,
+} from "../src/domain/expressions/provenance_map.ts";
 import { YamlEvaluatedDefinitionRepository } from "../src/infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 
 const INPUT_VALUE = "REPRO-SECRET-7c1e";
@@ -146,6 +154,7 @@ Deno.test("evaluated cache: an input-fed sensitive argument is written as the ma
         persisted.deferredExpressions,
         persisted.writtenReferences,
         persisted.maskedPaths,
+        persisted.persistedProvenance,
       );
 
       assertEquals(await filesHolding(dir, INPUT_VALUE), []);
@@ -153,6 +162,14 @@ Deno.test("evaluated cache: an input-fed sensitive argument is written as the ma
 
       const cached = await repo.findByNameWithProvenance(type, "input-svc");
       if (!cached) throw new Error("evaluated definition not found");
+      assertEquals(cached.persistedProvenance === "unreadable", false);
+      assertEquals(
+        cached.persistedProvenance &&
+          cached.persistedProvenance !== "unreadable"
+          ? cached.persistedProvenance.toData()
+          : undefined,
+        persisted.persistedProvenance.toData(),
+      );
       assertEquals(cached.definition.globalArguments, {
         apiKey: "***",
         token: vaultReferenceText(SOURCE),
@@ -211,6 +228,124 @@ Deno.test("evaluated cache: an input-fed sensitive argument is written as the ma
       assertEquals(error.message.includes(INPUT_VALUE), false);
       assertEquals(await repo.findByName(type, "leaky"), null);
       assertEquals(await filesHolding(dir, INPUT_VALUE), []);
+      for (
+        const apiKey of ["${{ env.TOKEN }}", `${INPUT_VALUE}\${{ env.TOKEN }}`]
+      ) {
+        const bypass = Definition.create({
+          name: "bypass",
+          type: type.normalized,
+          globalArguments: { apiKey, token: "", region: "eu" },
+        });
+        await assertRejects(
+          () =>
+            repo.save(
+              type,
+              bypass,
+              ProvenanceMap.authored().withWholeData("globalArguments.apiKey"),
+            ),
+          UserError,
+        );
+        assertEquals(await repo.findByName(type, "bypass"), null);
+      }
+      const mixedReference = Definition.create({
+        name: "mixed-reference",
+        globalArguments: {
+          apiKey: `${INPUT_VALUE}${vaultReferenceText(SOURCE)}`,
+          token: "",
+          region: "eu",
+        },
+      });
+      await assertRejects(
+        () =>
+          repo.save(
+            type,
+            mixedReference,
+            ProvenanceMap.authored().withRanges("globalArguments.apiKey", [[
+              0,
+              INPUT_VALUE.length,
+            ]]),
+            undefined,
+            [],
+            [{
+              path: ["globalArguments", "apiKey"],
+              occurrence: 0,
+              ...SOURCE,
+              encoding: "raw",
+              dataOrigin: true,
+            }],
+          ),
+        UserError,
+      );
+      assertEquals(await repo.findByName(type, "mixed-reference"), null);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
+Deno.test("evaluated cache: sensitive input keys do not survive in values, provenance, or refusal paths", async () => {
+  await withTempDir(async (dir) => {
+    const type = ModelType.create(
+      `@test/container-keys-${crypto.randomUUID()}`,
+    );
+    const schemas = {
+      globalArguments: z.object({
+        creds: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+      }),
+      methods: {},
+    };
+    modelRegistry.register({ type, version: "2026.01.01.1", ...schemas });
+    try {
+      const executed = Definition.create({
+        name: "key-svc",
+        type: type.normalized,
+        globalArguments: {
+          creds: { [INPUT_VALUE]: "${{ vault.get('prod', 'value') }}" },
+        },
+      });
+      const provenance = ProvenanceMap.authored().withWholeData(
+        keyPath("globalArguments.creds", INPUT_VALUE),
+      );
+      const persisted = persistEvaluatedDefinition(
+        executed,
+        [],
+        executed,
+        new RunSensitiveValues(),
+        schemas,
+        provenance,
+      );
+      assertEquals(persisted.definition.globalArguments, { creds: "***" });
+      assertEquals(persisted.maskedPaths, [["globalArguments", "creds"]]);
+      const repo = new YamlEvaluatedDefinitionRepository(dir);
+      await repo.save(
+        type,
+        persisted.definition,
+        provenance,
+        undefined,
+        persisted.deferredExpressions,
+        persisted.writtenReferences,
+        persisted.maskedPaths,
+        persisted.persistedProvenance,
+      );
+      assertEquals(await filesHolding(dir, INPUT_VALUE), []);
+      const cache = await repo.findByNameWithProvenance(type, executed.name);
+      assertExists(cache);
+      assertEquals(
+        findPlaintextSensitiveArguments(
+          schemas,
+          cache.definition.toData(),
+          cache.writtenReferences,
+          {
+            recordedMasks: cache.maskedPaths,
+          },
+        ),
+        ["globalArguments.creds"],
+      );
+      const error = await assertRejects(
+        () => repo.save(type, executed, provenance),
+        UserError,
+      );
+      assertEquals(error.message.includes(INPUT_VALUE), false);
     } finally {
       modelRegistry.invalidateType(type);
     }

@@ -122,9 +122,11 @@ Deno.test("ProvenanceMap: toData/fromData round-trips (property)", () => {
       fc.array(fc.tuple(path, fc.array(range, { maxLength: 3 })), {
         maxLength: 4,
       }),
-      (whole, ranged) => {
+      fc.array(path, { maxLength: 3 }),
+      (whole, ranged, keyed) => {
         let map = ProvenanceMap.authored();
         for (const [p, r] of ranged) map = map.withRanges(p, r);
+        map = map.union(ProvenanceMap.fromEntries([], [], keyed));
         for (const p of whole) map = map.withWholeData(p);
         const back = ProvenanceMap.fromData(
           JSON.parse(JSON.stringify(map.toData())),
@@ -590,4 +592,56 @@ Deno.test("sentinelIdentityOf: a data-origin reference stands in as data origin,
   assertEquals(identity(reference), identity(legacy));
   assertEquals(identity(reference) !== identity(vault), true);
   assertEquals(identity(reference)!.includes("pw-value"), false);
+});
+
+Deno.test("ProvenanceMap: an object's own keys can be data while its values are described on their own (swamp-club#3681)", () => {
+  const map = ProvenanceMap.fromEntries(
+    ["tokens.secret"],
+    [["tokens.text", [[0, 4]]]],
+    ["tokens"],
+  );
+  assertEquals(map.isAuthored, false);
+  assertEquals(map.hasDataKeysAt("tokens"), true);
+  assertEquals(map.isWholeDataAt("tokens"), false);
+  assertEquals(map.hasDataAtOrBelow("tokens"), true);
+  assertEquals(map.hasDataAtOrBelow(""), true);
+  // The values keep their own standing: an expression at a key is authored.
+  assertEquals(map.hasDataAtOrBelow("tokens.expr"), false);
+  assertEquals(map.overlapsData("tokens.expr", 0, 10), false);
+  assertEquals(map.isWholeDataAt("tokens.secret"), true);
+  assertEquals(map.hasDataKeysAt("tokens.secret"), true);
+  // Carried through re-rooting, grafting and union; persisted and read back.
+  assertEquals(map.subtree("tokens").hasDataKeysAt(""), true);
+  const grafted = ProvenanceMap.authored().graft(
+    "methods.run.arguments.tokens",
+    map.subtree("tokens"),
+  );
+  assertEquals(grafted.hasDataKeysAt("methods.run.arguments.tokens"), true);
+  assertEquals(grafted.isWholeDataAt("methods.run.arguments.tokens"), false);
+  assertEquals(
+    ProvenanceMap.authored().union(map).hasDataKeysAt("tokens"),
+    true,
+  );
+  assertEquals(map.paths().includes("tokens"), true);
+  assertEquals(map.toData(), {
+    whole: ["tokens.secret"],
+    ranges: { "tokens.text": [[0, 4]] },
+    keys: ["tokens"],
+  });
+  assertEquals(
+    ProvenanceMap.fromData(map.toData()).hasDataKeysAt("tokens"),
+    true,
+  );
+  // Under a subtree that is data whole the entry is redundant and dropped.
+  assertEquals(map.withWholeData("tokens").toData(), {
+    whole: ["tokens"],
+    ranges: {},
+  });
+  assertEquals(map.graft("tokens", ProvenanceMap.authored()).isAuthored, true);
+  // A map written before the field existed reads back as it was written.
+  assertEquals(
+    ProvenanceMap.fromData({ whole: [], ranges: {} }).isAuthored,
+    true,
+  );
+  assertEquals(ProvenanceMap.authored().toData(), { whole: [], ranges: {} });
 });

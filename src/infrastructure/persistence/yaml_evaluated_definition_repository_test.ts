@@ -37,6 +37,10 @@ import {
 import { ModelType } from "../../domain/models/model_type.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
+  keyPath,
+  ProvenanceMap,
+} from "../../domain/expressions/provenance_map.ts";
+import {
   captureUnreadableWarnings,
   fakeUnreadableLookup,
 } from "./unreadable_records_test_helpers.ts";
@@ -349,6 +353,72 @@ Deno.test("YamlEvaluatedDefinitionRepository: rejects malformed provenance", asy
   });
 });
 
+Deno.test("YamlEvaluatedDefinitionRepository: persistedProvenance is written beside provenance, both pruned below a masked position, and read back; a malformed one reads as unreadable (swamp-club#3744)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "persisted-provenance",
+      globalArguments: { creds: "***", note: "Bearer x" },
+    });
+    // A key of the masked record came from data: it must not survive in
+    // either map once the record is the mask.
+    const key = "SECRET-KEY-7c1e";
+    const provenance = ProvenanceMap.authored()
+      .withWholeData(keyPath("globalArguments.creds", key))
+      .withRanges("globalArguments.note", [[0, 6]]);
+    const persistedProvenance = ProvenanceMap.authored()
+      .withWholeData(keyPath("globalArguments.creds", key))
+      .withRanges("globalArguments.note", [[7, 8]]);
+    await repo.save(
+      testType,
+      definition,
+      provenance,
+      undefined,
+      undefined,
+      [],
+      [["globalArguments", "creds"]],
+      persistedProvenance,
+    );
+    const path = repo.getPath(testType, definition.id);
+    assertEquals((await Deno.readTextFile(path)).includes(key), false);
+    const cached = await new YamlEvaluatedDefinitionRepository(dir)
+      .findByNameWithProvenance(testType, definition.name);
+    const read = (map: ProvenanceMap | "unreadable" | undefined) =>
+      map instanceof ProvenanceMap ? map.toData() : map;
+    assertEquals(read(cached?.provenance), {
+      whole: ["globalArguments.creds"],
+      ranges: { "globalArguments.note": [[0, 6]] },
+    });
+    assertEquals(read(cached?.persistedProvenance), {
+      whole: ["globalArguments.creds"],
+      ranges: { "globalArguments.note": [[7, 8]] },
+    });
+
+    // A cache written without it reads back with none.
+    await repo.save(testType, definition, undefined);
+    assertEquals(
+      (await new YamlEvaluatedDefinitionRepository(dir)
+        .findByNameWithProvenance(testType, definition.name))
+        ?.persistedProvenance,
+      undefined,
+    );
+
+    await Deno.writeTextFile(
+      path,
+      toCleanYaml({
+        ...definition.toData(),
+        persistedProvenance: { whole: 42, ranges: {} },
+      }),
+    );
+    assertEquals(
+      (await new YamlEvaluatedDefinitionRepository(dir)
+        .findByNameWithProvenance(testType, definition.name))
+        ?.persistedProvenance,
+      "unreadable",
+    );
+  });
+});
+
 Deno.test("YamlEvaluatedDefinitionRepository: records the source typeVersion verbatim", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlEvaluatedDefinitionRepository(dir);
@@ -581,6 +651,46 @@ Deno.test("YamlEvaluatedDefinitionRepository: save refuses a plaintext literal u
       assertEquals((await repo.findByName(type, "joined"))?.globalArguments, {
         apiKey: `Bearer ${ref}`,
       });
+      // Unless the text beside it is data: a reference vouches only for
+      // itself, so data joined to it is refused, whether the ranges come
+      // from the raw provenance or the persisted text's (swamp-club#3744).
+      const prefix = ProvenanceMap.authored().withRanges(
+        "globalArguments.apiKey",
+        [[0, "Bearer ".length]],
+      );
+      for (
+        const [provenance, persistedProvenance] of [
+          [prefix, undefined],
+          [undefined, prefix],
+        ] as const
+      ) {
+        const spliced = Definition.create({
+          name: "spliced",
+          globalArguments: { apiKey: `Bearer ${ref}` },
+        });
+        await assertRejects(
+          () =>
+            repo.save(
+              type,
+              spliced,
+              provenance,
+              undefined,
+              undefined,
+              [{
+                path: ["globalArguments", "apiKey"],
+                occurrence: 0,
+                vaultName: "prod",
+                key: "api-key",
+                encoding: "raw",
+                dataOrigin: false,
+              }],
+              [],
+              persistedProvenance,
+            ),
+          UserError,
+        );
+        assertEquals(await repo.findByName(type, "spliced"), null);
+      }
     } finally {
       modelRegistry.invalidateType(type);
     }

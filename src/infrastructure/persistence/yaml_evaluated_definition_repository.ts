@@ -66,6 +66,7 @@ import {
 import {
   findPlaintextSensitiveArguments,
   type MaskedPath,
+  maskProvenance,
   PLAINTEXT_SENSITIVE_EVALUATED_ARG_CODE,
   plaintextSensitiveArgumentsMessage,
 } from "../../domain/expressions/persisted_evaluation.ts";
@@ -81,6 +82,8 @@ export interface EvaluatedDefinitionCache {
    * replay refuses rather than trusting the expressions it holds.
    */
   provenance?: ProvenanceMap | "unreadable";
+  /** Data ranges in persisted text, before vault references are restored. */
+  persistedProvenance?: ProvenanceMap | "unreadable";
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
   /** Where the file holds vault references in place of sensitive values. */
@@ -108,6 +111,7 @@ const CacheMetadataSchema = z.object({
   ).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
+  persistedProvenance: z.unknown().optional(),
 });
 
 function parseCache(content: string): EvaluatedDefinitionCache | null {
@@ -120,6 +124,16 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
       provenance = ProvenanceMap.fromData(metadata.provenance);
     } catch {
       provenance = "unreadable";
+    }
+  }
+  let persistedProvenance: ProvenanceMap | "unreadable" | undefined;
+  if (metadata.persistedProvenance !== undefined) {
+    try {
+      persistedProvenance = ProvenanceMap.fromData(
+        metadata.persistedProvenance,
+      );
+    } catch {
+      persistedProvenance = "unreadable";
     }
   }
   // `evaluatedInputs` and `resolvedExpressions` were written by unreleased
@@ -140,6 +154,7 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
   return {
     definition: Definition.fromData(definitionData),
     provenance,
+    persistedProvenance,
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
     writtenReferences: metadata.writtenReferences ?? [],
@@ -464,6 +479,8 @@ export class YamlEvaluatedDefinitionRepository {
     type: ModelType,
     definition: Definition,
     writtenReferences: readonly WrittenReference[],
+    provenance: ProvenanceMap | undefined,
+    persistedProvenance: ProvenanceMap | undefined,
   ): Promise<void> {
     const modelDef = await modelRegistry.getOrLoad(type);
     if (!modelDef) return;
@@ -471,7 +488,7 @@ export class YamlEvaluatedDefinitionRepository {
       modelDef,
       definition.toData(),
       writtenReferences,
-      { allowMask: true },
+      { allowMask: true, provenance, persistedProvenance },
     );
     if (paths.length > 0) {
       throw new UserError(
@@ -501,6 +518,7 @@ export class YamlEvaluatedDefinitionRepository {
     writtenReferences: readonly WrittenReference[] = [],
     /** The positions `definition` holds the mask at (swamp-club#3681). */
     maskedPaths: readonly MaskedPath[] = [],
+    persistedProvenance?: ProvenanceMap,
   ): Promise<void> {
     // Fail closed before anything is staged or written: a sensitive argument
     // reaches the cache only as a vault reference or the mask.
@@ -511,6 +529,8 @@ export class YamlEvaluatedDefinitionRepository {
       type,
       definition,
       writtenReferences,
+      provenance,
+      persistedProvenance,
     );
     const targetPath = this.resolveWritePath(type, definition);
     await signalChange(this.markDirty, { kind: "write", path: targetPath }, {
@@ -534,7 +554,12 @@ export class YamlEvaluatedDefinitionRepository {
         : undefined,
       maskedPaths: maskedPaths.length ? maskedPaths : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
-      provenance: provenance?.toData(),
+      provenance: provenance
+        ? maskProvenance(provenance, maskedPaths).toData()
+        : undefined,
+      persistedProvenance: persistedProvenance
+        ? maskProvenance(persistedProvenance, maskedPaths).toData()
+        : undefined,
     };
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;

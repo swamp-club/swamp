@@ -2469,6 +2469,7 @@ export class DefaultStepExecutor implements StepExecutor {
         originalDefinition,
         ctx.sensitiveValues,
         modelDef,
+        definitionProvenance.sanitized,
       );
       await evaluatedDefRepo.save(
         modelType,
@@ -2479,6 +2480,7 @@ export class DefaultStepExecutor implements StepExecutor {
         persisted.deferredExpressions,
         persisted.writtenReferences,
         persisted.maskedPaths,
+        persisted.persistedProvenance,
       );
 
       // Capture pre-vault args for report context (so vault secrets stay as expressions)

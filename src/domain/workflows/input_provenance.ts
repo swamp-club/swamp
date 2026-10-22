@@ -100,7 +100,10 @@ interface AuthoredValue {
 /**
  * Authored where the value equals an authored value for its position,
  * recursing into object properties whose schema declares defaults;
- * otherwise data.
+ * otherwise data. An object that no authored object value and no schema
+ * property describes is data whole, its keys included: they are the
+ * caller's, and a record of secrets keyed by name is then masked at the
+ * record, and its keys stay out of the map's paths (swamp-club#3681).
  */
 function valueProvenance(
   value: unknown,
@@ -117,6 +120,12 @@ function valueProvenance(
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return ProvenanceMap.data();
   }
+  const described = authored.some((candidate) =>
+    candidate.schema?.properties !== undefined ||
+    (candidate.value !== null && typeof candidate.value === "object" &&
+      !Array.isArray(candidate.value))
+  );
+  if (!described) return ProvenanceMap.data();
   let map = ProvenanceMap.authored();
   for (const [key, item] of Object.entries(value)) {
     const nested: AuthoredValue[] = [];

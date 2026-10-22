@@ -154,6 +154,7 @@ export interface ModelEvaluateDeps {
     writtenReferences?: readonly WrittenReference[],
     /** Where the definition holds the mask (swamp-club#3681). */
     maskedPaths?: readonly MaskedPath[],
+    persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   getEvaluatedPath: (type: ModelType, id: DefinitionId) => string;
 }
@@ -234,6 +235,7 @@ export function createModelEvaluateDeps(
       authoredExpressions,
       writtenReferences,
       maskedPaths,
+      persistedProvenance,
     ) =>
       evaluatedDefRepo.save(
         type,
@@ -243,6 +245,7 @@ export function createModelEvaluateDeps(
         undefined,
         writtenReferences,
         maskedPaths,
+        persistedProvenance,
       ),
     getEvaluatedPath: (type, id) => evaluatedDefRepo.getPath(type, id),
     createSensitiveValues,
@@ -268,6 +271,7 @@ async function saveWithoutSecrets(
     source,
     sensitiveValues,
     schemas,
+    result.provenance,
   );
   await deps.saveEvaluatedDefinition(
     result.type,
@@ -276,6 +280,7 @@ async function saveWithoutSecrets(
     result.authoredExpressions,
     persisted.writtenReferences,
     persisted.maskedPaths,
+    persisted.persistedProvenance,
   );
 }
 

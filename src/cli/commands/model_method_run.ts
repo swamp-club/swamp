@@ -475,6 +475,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               authoredExpressions,
               writtenReferences,
               maskedPaths,
+              persistedProvenance,
             ) =>
               repoContext.evaluatedDefinitionRepo.save(
                 type,
@@ -484,6 +485,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 undefined,
                 writtenReferences,
                 maskedPaths,
+                persistedProvenance,
               ),
             createExecutionService: () => new DefaultMethodExecutionService(),
             createVaultService: () =>

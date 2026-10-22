@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-10-21 @ uncommitted
+last-verified: 2026-10-22 @ uncommitted
 ---
 
 # swamp vaults
@@ -963,10 +963,20 @@ arguments. The behavior replay check covers the global arguments and the
 replayed method's arguments; one that an `--input` override replaces after
 replay is not counted. A plain re-run writes the mask again, so the message
 points at what makes the run replayable: a vault reference. Inside a sensitive
-container, only the leaves a reference covers are left; a string that joins
-text to a reference or a pending runtime expression is written as it is, text
-included. `${{ env.X }}` remains an expression in the cache and resolves at
+container, leaves are checked separately. Authored text joined to a reference
+or a pending runtime expression stays as written. Resolved input or data text
+beside it masks the entire sensitive leaf, unless every resolved segment is a
+recorded vault reference. Expression-shaped input data is masked too.
+`${{ env.X }}` remains an expression in the cache and resolves at
 runtime on each run, including replay; its value is never cached.
+A plaintext leaf inside a container that arrived whole from data is masked at
+that container, so a record's keys reach neither the file, `maskedPaths`, the
+provenance nor the refusal message. Sensitive objects supplied as data are
+masked as a whole because their keys can hold secrets; arrays containing such
+objects are masked too. Their descendant provenance and reference paths are
+removed too. `persistedProvenance` records data ranges in the saved text,
+alongside the raw replay provenance, so a written vault reference cannot exempt
+adjacent input text.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 
