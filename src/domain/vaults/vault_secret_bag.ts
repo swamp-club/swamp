@@ -22,6 +22,7 @@ import {
   type DataSecretEntry,
   holdsValue,
   isIssuedEntry,
+  jsonEscaped,
   type RegistryEntry,
   type SecretBagEntry,
   SecretBagRegistry,
@@ -386,6 +387,25 @@ export class VaultSecretBag {
     });
   }
 
+  /**
+   * Adds a written reference an existing file recorded (a cache or run
+   * record's `writtenReferences` entry, design/enablers/typed-secrets.md
+   * Section 8.1), restored at `location` (the record and the position), and
+   * returns a unique sentinel that stands for it. The entry keeps the file's
+   * encoding and origin, so it persists back as it was read and delivery
+   * applies the encoding; no value is read, a load at delivery reads it.
+   */
+  addWrittenReference(
+    reference: SecretReference,
+    encoding: SecretEncoding,
+    dataOrigin: boolean,
+    location: string,
+  ): string {
+    return dataOrigin
+      ? this.issue({ reference, encoding, dataOrigin: true, location })
+      : this.issue({ reference, encoding, dataOrigin: false, location });
+  }
+
   /** The entry behind a sentinel the run issued, if it is one. */
   entryOf(sentinel: string): RegistryEntry | undefined {
     return this.registry.entryOf(sentinel);
@@ -406,15 +426,30 @@ export class VaultSecretBag {
 
   /**
    * The value `sentinel` stands for: a data entry's or a shipped entry's
-   * own, or the value this delivery view loaded for a reference-only entry.
-   * Undefined for text that is not a sentinel of the run. A reference no
-   * load filled throws, so its sentinel is never delivered as a value.
+   * own, or the value this delivery view loaded for a reference-only entry,
+   * in the entry's encoding: a `json` entry delivers the escaped form, and
+   * a `number` or `boolean` entry (a written reference an untyped run
+   * recorded at a scalar leaf) delivers the text, which the trusted
+   * boundary's schema coerces where a scalar is expected and refuses when
+   * the vault now holds something else. Delivery cannot restore a scalar
+   * itself: the sentinel may have flowed from the written position into a
+   * text field. Undefined for text that is not a sentinel of the run. A
+   * reference no load filled throws, so its sentinel is never delivered as
+   * a value.
    */
   private valueOf(sentinel: string): string | undefined {
     const entry = this.registry.entryOf(sentinel);
     if (entry === undefined) return undefined;
     if (holdsValue(entry)) return entry.value;
-    const value = this.loaded?.get(sentinel);
+    const value = this.loadedValueOf(entry);
+    return entry.encoding === "json" ? jsonEscaped(value) : value;
+  }
+
+  /** The value this delivery view loaded for a reference-only entry. */
+  private loadedValueOf(
+    entry: VaultReferenceEntry | DataReferenceEntry,
+  ): string {
+    const value = this.loaded?.get(entry.sentinel);
     if (value === undefined) {
       const { vaultName, key } = entry.reference;
       throw new Error(
@@ -443,7 +478,7 @@ export class VaultSecretBag {
       text,
     );
     for (const { value: secret, source } of secrets) {
-      const escaped = JSON.stringify(secret).slice(1, -1);
+      const escaped = jsonEscaped(secret);
       const forms: [string, SecretEncoding][] = escaped === secret
         ? [[secret, "raw"]]
         : [[secret, "raw"], [escaped, "json"]];
@@ -518,9 +553,12 @@ export class VaultSecretBag {
       }
       const issued = holdsValue(entry)
         ? target.addDataSecret(entry.value, entry.reference, entry.encoding)
-        : entry.dataOrigin
-        ? target.addDataReference(entry.reference, entry.location)
-        : target.addSecret(entry.reference, entry.location);
+        : target.addWrittenReference(
+          entry.reference,
+          entry.encoding,
+          entry.dataOrigin,
+          entry.location,
+        );
       rehomed.set(sentinel, issued);
       return issued;
     };

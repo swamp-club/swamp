@@ -236,7 +236,13 @@ async function filesHolding(repoDir: string, value: string): Promise<string[]> {
   ) {
     if (entry.path.includes(`${join(".swamp", "secrets")}`)) continue;
     if (entry.path.includes(`${join(".swamp", "vault")}`)) continue;
-    const bytes = await Deno.readFile(entry.path);
+    // A file another connection closes between the walk and the read (a
+    // SQLite -shm file) holds nothing to scan.
+    const bytes = await Deno.readFile(entry.path).catch((error) => {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    });
+    if (bytes === undefined) continue;
     if (new TextDecoder("latin1").decode(bytes).includes(value)) {
       found.push(entry.path.slice(repoDir.length));
     }

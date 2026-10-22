@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { UserError } from "../errors.ts";
 import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -33,8 +39,10 @@ import {
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
+  rehydrateRunReferences,
   replayInputs,
 } from "./persisted_workflow.ts";
+import { WorkflowRun } from "./workflow_run.ts";
 
 const SECRET = "Pl41n-s3cret";
 const SOURCE = { vaultName: "prod", key: "api-token" };
@@ -333,4 +341,349 @@ Deno.test("forEachNameWithoutSecrets: in a typed run every sentinel the run issu
     forEachNameWithoutSecrets(`deploy-${vault}`, 2, recorded()),
     `deploy-${vault}`,
   );
+});
+
+// --- typed-secrets 4.4: a typed replay holds references ---
+
+/** A typed run's record. */
+function typedValues(): RunSensitiveValues {
+  return new RunSensitiveValues(
+    undefined,
+    new SecretBagRegistry({ typedSecrets: true }),
+  );
+}
+
+/** A workflow a typed evaluation produced: two sentinels in one task input. */
+function typedWorkflow(bag: VaultSecretBag): {
+  workflow: Workflow;
+  provenance: ProvenanceMap;
+  first: string;
+  second: string;
+} {
+  const first = bag.addSecret(SOURCE, "jobs[0].steps[0].task.inputs.auth");
+  const second = bag.addDataReference(
+    { vaultName: "prod", key: "db-password" },
+    "data",
+  );
+  const workflow = Workflow.create({
+    name: "typed",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "s",
+        task: StepTask.model("m", "run", {
+          auth: `Bearer ${first} ${second} ${"${{ env.X }}"}`,
+        }),
+      })],
+    })],
+  });
+  const provenance = ProvenanceMap.authored().withRanges(
+    "jobs[0].steps[0].task.inputs.auth",
+    [
+      [7, 7 + first.length],
+      [8 + first.length, 8 + first.length + second.length],
+    ],
+  );
+  return { workflow, provenance, first, second };
+}
+
+Deno.test("persistEvaluatedWorkflow: a typed run's cache carries an exact persisted-coordinate map, and a typed replay restores one sentinel copy with no vault read whose map aligns back exactly", async () => {
+  const writer = typedValues();
+  const { workflow, provenance } = typedWorkflow(
+    new VaultSecretBag(writer.sentinels),
+  );
+  const persisted = persistEvaluatedWorkflow(
+    workflow,
+    workflow,
+    undefined,
+    [],
+    writer,
+    provenance,
+  );
+  assertEquals(persisted.writtenReferences.length, 2);
+  const auth = (persisted.workflow.jobs[0].steps[0].task.data as unknown as {
+    inputs: { auth: string };
+  }).inputs.auth;
+  const second = vaultReferenceText({ vaultName: "prod", key: "db-password" });
+  assertEquals(auth, `Bearer ${REF} ${second} ${"${{ env.X }}"}`);
+  const path = "jobs[0].steps[0].task.inputs.auth";
+  assertEquals(persisted.persistedProvenance!.rangesAt(path), [
+    [7, 7 + REF.length],
+    [8 + REF.length, 8 + REF.length + second.length],
+  ]);
+
+  const reader = typedValues();
+  let reads = 0;
+  const restored = await rehydrateEvaluatedWorkflow(
+    {
+      workflow: persisted.workflow,
+      deferredExpressions: persisted.deferredExpressions,
+      writtenReferences: persisted.writtenReferences,
+      persistedProvenance: persisted.persistedProvenance,
+    },
+    () => {
+      reads++;
+      return Promise.resolve(SECRET);
+    },
+    reader,
+  );
+  assertEquals(reads, 0);
+  assertEquals(reader.isEmpty, true);
+  const step = restored.workflow.jobs[0].steps[0];
+  const restoredAuth =
+    (step.task.data as unknown as { inputs: { auth: string } }).inputs
+      .auth;
+  const [a, b] = restoredAuth.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(restoredAuth, `Bearer ${a} ${b} ${"${{ env.X }}"}`);
+  assertEquals(reader.sentinels.issuedEntryOf(a)?.reference, SOURCE);
+  assertEquals(reader.sentinels.issuedEntryOf(b)?.dataOrigin, true);
+  assertEquals(restored.provenance!.rangesAt(path), [
+    [7, 7 + a.length],
+    [8 + a.length, 8 + a.length + b.length],
+  ]);
+  assertEquals(
+    restored.provenance!.overlapsData(
+      path,
+      restoredAuth.indexOf("${{"),
+      restoredAuth.length,
+    ),
+    false,
+  );
+  // The overlay hands each step the same sentinels, rehomed into its bag
+  // with their identity, and the step bag delivers through a load.
+  const stepBag = new VaultSecretBag(reader.sentinels);
+  const forStep = restored.sanitizedTasks!.forStep(step, stepBag) as {
+    inputs: { auth: string };
+  };
+  const [ra, rb] = forStep.inputs.auth.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(reader.sentinels.issuedEntryOf(ra)?.reference, SOURCE);
+  assertEquals(reader.sentinels.issuedEntryOf(rb)?.dataOrigin, true);
+  assertEquals(
+    stepBag.withLoaded(new Map([[ra, "A"], [rb, "B"]])).resolveRaw(
+      forStep.inputs.auth,
+    ),
+    `Bearer A B ${"${{ env.X }}"}`,
+  );
+});
+
+Deno.test("rehydrateEvaluatedWorkflow: a typed replay refuses a cache with references and a value-coordinate map only, and replays an unmapped cache as authored", async () => {
+  const writer = typedValues();
+  const { workflow, provenance } = typedWorkflow(
+    new VaultSecretBag(writer.sentinels),
+  );
+  const persisted = persistEvaluatedWorkflow(
+    workflow,
+    workflow,
+    undefined,
+    [],
+    writer,
+  );
+  assertEquals(persisted.persistedProvenance, undefined);
+  await assertRejects(
+    () =>
+      rehydrateEvaluatedWorkflow(
+        { ...persisted, provenance },
+        () => Promise.resolve(SECRET),
+        typedValues(),
+      ),
+    UserError,
+    "not replayed with references",
+  );
+  const unmapped = await rehydrateEvaluatedWorkflow(
+    persisted,
+    () => Promise.resolve(SECRET),
+    typedValues(),
+  );
+  assertEquals(unmapped.provenance?.isAuthored, true);
+});
+
+Deno.test("persistEvaluatedWorkflow: an untyped write marks every written reference's range in the persisted map, two in one string included", () => {
+  const values = recorded();
+  const workflow = Workflow.create({
+    name: "untyped",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "s",
+        task: StepTask.model("m", "run", {
+          auth: `a ${SECRET} b ${SECRET} ${"${{ env.X }}"}`,
+        }),
+      })],
+    })],
+  });
+  const path = "jobs[0].steps[0].task.inputs.auth";
+  const raw = `a ${SECRET} b ${SECRET} ${"${{ env.X }}"}`;
+  const provenance = ProvenanceMap.authored().withRanges(path, [
+    [2, 2 + SECRET.length],
+    [5 + SECRET.length, 5 + 2 * SECRET.length],
+  ]);
+  assertEquals(raw.slice(2, 2 + SECRET.length), SECRET);
+  const persisted = persistEvaluatedWorkflow(
+    workflow,
+    workflow,
+    undefined,
+    [],
+    values,
+    provenance,
+  );
+  const auth = (persisted.workflow.jobs[0].steps[0].task.data as unknown as {
+    inputs: { auth: string };
+  }).inputs.auth;
+  assertEquals(auth, `a ${REF} b ${REF} ${"${{ env.X }}"}`);
+  const map = persisted.persistedProvenance!;
+  // Each reference is data; the trailing expression is not.
+  assertEquals(map.overlapsData(path, 2, 2 + REF.length), true);
+  assertEquals(
+    map.overlapsData(path, 5 + REF.length, 5 + 2 * REF.length),
+    true,
+  );
+  assertEquals(
+    map.overlapsData(path, auth.lastIndexOf("${{"), auth.length),
+    false,
+  );
+});
+
+// --- typed-secrets 4.4: a typed resume holds references ---
+
+/** A run a typed run wrote: references in its inputs, bindings, error and prompt. */
+function storedTypedRun(): {
+  stored: ReturnType<WorkflowRun["toPersistedData"]>;
+  a: string;
+  b: string;
+} {
+  const workflow = Workflow.create({
+    name: "resumed",
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({ name: "s", task: StepTask.model("m", "run") }),
+        Step.create({ name: "t", task: StepTask.model("m", "run") }),
+      ],
+    })],
+  });
+  const writer = typedValues();
+  const bag = new VaultSecretBag(writer.sentinels);
+  const a = bag.addSecret(SOURCE, "inputs.token");
+  const b = bag.addDataReference(
+    { vaultName: "prod", key: "db-password" },
+    "d",
+  );
+  const run = WorkflowRun.create(workflow);
+  run.attachSensitiveValues(writer);
+  run.captureInputs({ token: `x ${a} y ${b} ${"${{ env.X }}"}`, plain: "p" });
+  run.captureInputsProvenance(
+    ProvenanceMap.authored().withRanges("token", [
+      [2, 2 + a.length],
+      [5 + a.length, 5 + a.length + b.length],
+    ]),
+  );
+  run.captureDeferredExpressions([{
+    id: "11111111-1111-4111-8111-111111111111",
+    expression: "${{ inputs.token }}",
+    bindings: { inputs: { token: `v ${a}`, other: "o" } },
+    provenance: ProvenanceMap.authored().withRanges("inputs.token", [[0, 1]])
+      .toData(),
+  }]);
+  run.start();
+  const s = run.getJob("main")!.getStep("s")!;
+  s.start();
+  s.fail(`rejected ${a}`);
+  return { stored: run.toPersistedData(), a, b };
+}
+
+Deno.test("rehydrateRunReferences: a typed resume restores every written reference as a sentinel of the run's registry, reads nothing, records no value, aligns the inputs map exactly, and writes the run back as it was read", () => {
+  const { stored } = storedTypedRun();
+  assertEquals(JSON.stringify(stored).includes("__SWAMP_VSEC_"), false);
+  assertEquals(
+    (stored.writtenReferences ?? []).map((r) => r.path.join(".")).sort(),
+    [
+      "deferredExpressions.0.bindings.inputs.token",
+      "failureReason",
+      "inputs.token",
+      "inputs.token",
+      "jobs.0.steps.0.error",
+    ],
+  );
+  const values = typedValues();
+  const run = rehydrateRunReferences(WorkflowRun.fromData(stored), values);
+  assertEquals(values.isEmpty, true);
+  const token = run.inputs.token as string;
+  const [a, b] = token.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(token, `x ${a} y ${b} ${"${{ env.X }}"}`);
+  assertEquals(values.sentinels.issuedEntryOf(a)?.reference, SOURCE);
+  assertEquals(values.sentinels.issuedEntryOf(a)?.dataOrigin, false);
+  assertEquals(values.sentinels.issuedEntryOf(b)?.dataOrigin, true);
+  const entryA = values.sentinels.issuedEntryOf(a);
+  assertEquals(
+    entryA !== undefined && "location" in entryA ? entryA.location : undefined,
+    "run " + run.id + ": inputs.token",
+  );
+  for (const entry of values.sentinels.all()) {
+    assertEquals("value" in entry, false);
+  }
+  const error = run.getJob("main")!.getStep("s")!.error!;
+  const [e] = error.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(error, `rejected ${e}`);
+  assertEquals(values.sentinels.issuedEntryOf(e)?.reference, SOURCE);
+  const bound = run.deferredExpressions[0].bindings.inputs as { token: string };
+  const [d] = bound.token.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(bound.token, `v ${d}`);
+  // The inputs map follows the sentinel copy exactly.
+  const map = run.inputsProvenance!;
+  assertEquals(map.rangesAt("token"), [
+    [2, 2 + a.length],
+    [5 + a.length, 5 + a.length + b.length],
+  ]);
+  assertEquals(
+    map.overlapsData("token", token.lastIndexOf("${{"), token.length),
+    false,
+  );
+  // A deferred binding holding a reference is whole data in its map; its
+  // sibling keeps its own standing.
+  const deferredMap = ProvenanceMap.fromData(
+    run.deferredExpressions[0].provenance!,
+  );
+  assertEquals(deferredMap.isWholeDataAt("inputs.token"), true);
+  assertEquals(deferredMap.hasDataAtOrBelow("inputs.other"), false);
+  // Written back, the record is what it was.
+  const again = run.toPersistedData();
+  assertEquals(again.inputs, stored.inputs);
+  assertEquals(
+    again.deferredExpressions?.[0].bindings,
+    stored.deferredExpressions?.[0].bindings,
+  );
+  assertEquals(again.jobs[0].steps[0].error, stored.jobs[0].steps[0].error);
+  assertEquals(
+    again.persistedInputsProvenance,
+    stored.persistedInputsProvenance,
+  );
+  assertEquals(
+    [...(again.writtenReferences ?? [])].map((r) => r.path.join(".")).sort(),
+    [...(stored.writtenReferences ?? [])].map((r) => r.path.join(".")).sort(),
+  );
+});
+
+Deno.test("rehydrateRunReferences: a record without the persisted inputs map fails closed, each input string holding a reference becoming whole data, and one with no map derives nothing", () => {
+  const { stored } = storedTypedRun();
+  const { persistedInputsProvenance: _dropped, ...older } = stored;
+  const values = typedValues();
+  const run = rehydrateRunReferences(WorkflowRun.fromData(older), values);
+  assertEquals(run.inputsProvenance!.isWholeDataAt("token"), true);
+  assertEquals(run.inputsProvenance!.hasDataAtOrBelow("plain"), false);
+  const { inputsProvenance: _noMap, ...unmapped } = older;
+  const derived = rehydrateRunReferences(
+    WorkflowRun.fromData(unmapped),
+    typedValues(),
+  );
+  assertEquals(derived.inputsProvenance, undefined);
+  // The untyped branch is not this function's; a record with no references
+  // is returned with the values attached and nothing issued.
+  const plainValues = typedValues();
+  const { writtenReferences: _refs, ...noRefs } = older;
+  const plain = rehydrateRunReferences(
+    WorkflowRun.fromData({ ...noRefs, inputs: { plain: "p" } }),
+    plainValues,
+  );
+  assertEquals(plainValues.sentinels.isEmpty, true);
+  assertEquals(plain.inputs, { plain: "p" });
 });

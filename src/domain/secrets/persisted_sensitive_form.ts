@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { UserError } from "../errors.ts";
+import {
+  jsonEscaped,
+  restoreScalar,
+  SECRET_ENCODINGS,
+  type SecretEncoding,
+} from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   definedEntry,
@@ -45,7 +50,7 @@ export interface WrittenReference {
    * How the value was written: `raw` text, `json` for its JSON-escaped form
    * inside JSON text, or a whole `number`/`boolean` leaf a coercion produced.
    */
-  encoding: "raw" | "json" | "number" | "boolean";
+  encoding: SecretEncoding;
   /** Whether the value reached the file through a data read. */
   dataOrigin: boolean;
 }
@@ -56,7 +61,7 @@ export const WrittenReferenceSchema = z.object({
   occurrence: z.number().int().nonnegative(),
   vaultName: z.string().min(1),
   key: z.string().min(1),
-  encoding: z.enum(["raw", "json", "number", "boolean"]),
+  encoding: z.enum(SECRET_ENCODINGS),
   dataOrigin: z.boolean(),
 });
 
@@ -94,10 +99,11 @@ interface Segment {
  * and is written as it is. At the positions `applies` accepts, so does
  * every recorded sensitive value: whole or embedded in a string,
  * JSON-escaped, or a whole number or boolean leaf whose text equals one.
- * That value search stays only for plaintext that data reads still bring
- * into CEL; typed-secrets Phase 4 deletes it. Structural fields are never
- * touched because `applies` never accepts them. Text inside inserted
- * references is never searched.
+ * That value search exists for plaintext that legacy data reads still bring
+ * into CEL; a typed run records no value and takes every entry from its
+ * sentinels (typed-secrets 4.4), and 4.6 deletes the search.
+ * Structural fields are never touched because `applies` never accepts
+ * them. Text inside inserted references is never searched.
  */
 export function toPersistedForm<T>(
   data: T,
@@ -108,12 +114,16 @@ export function toPersistedForm<T>(
 ): PersistedForm<T> {
   const writtenReferences: WrittenReference[] = [];
   const registry = values.sentinels;
+  // A typed run records no value, so the search finds nothing; a value a
+  // legacy path still records is written as its reference all the same, as
+  // defence in depth, whatever the registry.
+  const searchesValues = !values.isEmpty;
   if (values.isEmpty && registry.isEmpty) return { data, writtenReferences };
   const entries = values.list();
 
   const escapedSource = new Map<string, SecretSource>();
   for (const { value, source } of entries) {
-    const escaped = JSON.stringify(value).slice(1, -1);
+    const escaped = jsonEscaped(value);
     if (escaped !== value) escapedSource.set(escaped, source);
   }
 
@@ -169,11 +179,11 @@ export function toPersistedForm<T>(
     }
     if (last < text.length) segments.push({ text: text.slice(last) });
 
-    if (options.applies(path)) {
+    if (searchesValues && options.applies(path)) {
       const forms: string[] = [];
       for (const { value } of entries) {
         forms.push(value);
-        const escaped = JSON.stringify(value).slice(1, -1);
+        const escaped = jsonEscaped(value);
         if (escaped !== value) forms.push(escaped);
       }
       for (const form of forms) {
@@ -211,7 +221,7 @@ export function toPersistedForm<T>(
     if (typeof value === "string") return persistString(value, path);
     if (
       (typeof value === "number" || typeof value === "boolean") &&
-      options.applies(path)
+      searchesValues && options.applies(path)
     ) {
       const source = values.sourceOf(String(value));
       if (source) {
@@ -263,7 +273,59 @@ export type VaultReader = (vaultName: string, key: string) => Promise<string>;
 const RESERVED_VAULT = "_token-secrets";
 
 /**
- * Restores the values behind `writtenReferences` into two copies of `data`:
+ * Restores the written references of an existing file as sentinels, reading
+ * no vault (typed-secrets 4.4, design/enablers/typed-secrets.md Section
+ * 8.1): each entry becomes a sentinel `bag` issues for its reference, with
+ * the file's encoding and origin, spliced where the reference text sits, so
+ * the run binds a reference where it held one and a delivery loads the
+ * current value under current authorization. Only the listed entries are
+ * touched: reference text anywhere else stays as it is, and a hand-edited
+ * path through a prototype touches nothing. A reference to the reserved
+ * token vault is refused before any sentinel is issued. `label` names the
+ * record (a definition or workflow name, or a run id) in each entry's
+ * location, for a failed load's error. The returned copy is the only copy:
+ * a typed run has no raw and sanitized pair, because every position holds
+ * the sentinel.
+ */
+export function rehydrateReferences<T>(
+  data: T,
+  writtenReferences: readonly WrittenReference[],
+  bag: VaultSecretBag,
+  label: string,
+): T {
+  if (writtenReferences.length === 0) return data;
+  for (const entry of writtenReferences) {
+    if (entry.vaultName === RESERVED_VAULT) {
+      throw new Error(
+        `Refusing to restore a reference to the reserved vault ${RESERVED_VAULT}`,
+      );
+    }
+  }
+  const restored = structuredClone(data) as T;
+  // Highest occurrence first, so earlier indexes stay valid per string.
+  const ordered = [...writtenReferences].sort((a, b) =>
+    b.occurrence - a.occurrence
+  );
+  for (const entry of ordered) {
+    const sentinel = bag.addWrittenReference(
+      { vaultName: entry.vaultName, key: entry.key },
+      entry.encoding,
+      entry.dataOrigin,
+      `${label}: ${spellPath(entry.path)}`,
+    );
+    replaceAt(restored, entry, vaultReferenceText(entry), sentinel);
+  }
+  return restored;
+}
+
+/**
+ * The legacy branch of rehydration, for an untyped registry: restores the
+ * values behind `writtenReferences` into two copies of `data`, reading each
+ * from the vault. typed-secrets 4.6 (swamp-club#3735) deletes it with the
+ * value search once every run is typed; a typed run restores through
+ * {@link rehydrateReferences}.
+ *
+ * It restores the values into two copies of `data`:
  * `raw` with the real values, `sanitized` with data-origin sentinels issued
  * from `bag` at the paths `sanitizes` accepts (the positions a fresh run
  * sanitizes) and the real values elsewhere. Without a bag both copies hold
@@ -296,13 +358,16 @@ export async function rehydratePersistedForm<T>(
     const value = await read(entry.vaultName, entry.key);
     values.addSecret(value, { vaultName: entry.vaultName, key: entry.key });
     const ref = vaultReferenceText(entry);
-    const text = entry.encoding === "json"
-      ? JSON.stringify(value).slice(1, -1)
-      : value;
+    const text = entry.encoding === "json" ? jsonEscaped(value) : value;
     const restore = (target: unknown, replacement: unknown) =>
       replaceAt(target, entry, ref, replacement);
     if (entry.encoding === "number" || entry.encoding === "boolean") {
-      const leaf = restoreScalar(entry, value);
+      const leaf = restoreScalar(
+        entry.encoding,
+        value,
+        entry,
+        spellPath(entry.path),
+      );
       restore(raw, leaf);
       restore(sanitized, leaf);
     } else {
@@ -328,24 +393,11 @@ export async function rehydratePersistedForm<T>(
   return { raw, sanitized };
 }
 
-/**
- * The number or boolean a coerced value was written from. Throws when the
- * vault now holds something else (a rotated value), rather than restoring
- * NaN or false in its place.
- */
-function restoreScalar(
-  entry: WrittenReference,
-  value: string,
-): number | boolean {
-  if (entry.encoding === "boolean") {
-    if (value === "true" || value === "false") return value === "true";
-  } else if (value.trim() !== "" && Number.isFinite(Number(value))) {
-    return Number(value);
-  }
-  throw new UserError(
-    `The value in vault '${entry.vaultName}' key '${entry.key}' is no longer a ${entry.encoding}, so it cannot be restored where one was written. ` +
-      `Restore the vault value, or run without --last-evaluated so the value is read again.`,
-  );
+/** A written entry's path in dotted form, for a load's errors. */
+function spellPath(path: DataPath): string {
+  return path.map((segment) =>
+    typeof segment === "number" ? `[${segment}]` : segment
+  ).join(".").replaceAll(".[", "[");
 }
 
 function replaceAt(
@@ -357,12 +409,17 @@ function replaceAt(
   if (entry.path.length === 0) return;
   let parent = root as Record<string | number, unknown>;
   for (const segment of entry.path.slice(0, -1)) {
-    const next = parent?.[segment];
+    // Own properties only, so a path through a prototype touches nothing.
+    if (parent === null || typeof parent !== "object") return;
+    if (!Object.hasOwn(parent, segment)) return;
+    const next = parent[segment];
     if (next === null || typeof next !== "object") return;
     parent = next as Record<string | number, unknown>;
   }
   const leafKey = entry.path[entry.path.length - 1];
-  const current = parent?.[leafKey];
+  if (parent === null || typeof parent !== "object") return;
+  if (!Object.hasOwn(parent, leafKey)) return;
+  const current = parent[leafKey];
   if (typeof current !== "string") return;
   if (typeof replacement !== "string") {
     if (current === ref) parent[leafKey] = replacement;

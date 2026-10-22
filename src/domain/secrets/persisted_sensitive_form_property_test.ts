@@ -19,9 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   rehydratePersistedForm,
+  rehydrateReferences,
   toPersistedForm,
 } from "./persisted_sensitive_form.ts";
 import { RunSensitiveValues } from "./run_sensitive_values.ts";
@@ -119,6 +121,76 @@ Deno.test("toPersistedForm: every sentinel of the run persists as its entry's re
           JSON.stringify(restored.raw),
           JSON.stringify(bag.withLoaded(loads).resolveDeep(data)),
         );
+      },
+    ),
+  );
+});
+
+Deno.test("rehydrateReferences: a typed run restores any persisted form to sentinels that persist back identically, with no value and no read (typed-secrets 4.4)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbSecret, { minLength: 1, maxLength: 4 }),
+      fc.jsonValue(),
+      (secrets, noise) => {
+        // Written by a fresh typed run from its sentinels.
+        const writer = new RunSensitiveValues(
+          undefined,
+          new SecretBagRegistry({ typedSecrets: true }),
+        );
+        const writerBag = new VaultSecretBag(writer.sentinels);
+        const sentinels = secrets.map((secret, i) =>
+          secret.dataOrigin
+            ? writerBag.addDataReference(
+              { vaultName: "prod", key: `${secret.key}${i}` },
+              "data",
+            )
+            : writerBag.addSecret(
+              { vaultName: "prod", key: `${secret.key}${i}` },
+              "data",
+            )
+        );
+        const data = {
+          noise,
+          whole: sentinels[0],
+          text: `a${sentinels.join("|")}b${sentinels[0]}`,
+          list: sentinels.map((s) => `<${s}>`),
+        };
+        const form = toPersistedForm(data, writer, { applies: () => false });
+
+        // Read back by another typed run: references again, in a new bag.
+        const reader = new RunSensitiveValues(
+          undefined,
+          new SecretBagRegistry({ typedSecrets: true }),
+        );
+        const readerBag = new VaultSecretBag(reader.sentinels);
+        const restored = rehydrateReferences(
+          form.data,
+          form.writtenReferences,
+          readerBag,
+          "wf",
+        );
+        assertEquals(reader.isEmpty, true);
+        const again = toPersistedForm(restored, reader, {
+          applies: () => false,
+        });
+        assertEquals(JSON.stringify(again.data), JSON.stringify(form.data));
+        assertEquals(
+          again.writtenReferences.length,
+          form.writtenReferences.length,
+        );
+        // Every restored sentinel carries the written entry's identity, and
+        // none holds a value.
+        for (const entry of readerBag.registry.all()) {
+          assertEquals("value" in entry, false);
+        }
+        const restoredFields = JSON.stringify({
+          whole: restored.whole,
+          text: restored.text,
+          list: restored.list,
+        });
+        for (const secret of secrets) {
+          assertEquals(restoredFields.includes(secret.value), false);
+        }
       },
     ),
   );

@@ -177,7 +177,7 @@ expression-facing query view register `Secret`.
 | Accessors                  | Every expression-facing accessor returns tagged fields as `Secret` values and reads no vault.                                                                                                                         |
 | Identifiers                | Names, tags, labels and data-name suffixes keep the `sensitive-<vault>.<key>` stand-in. Step identities keep `sensitive-<index>`. Task selectors, placement, paths, `workingDir` and environment keys refuse secrets. |
 | Shell                      | Today's environment-variable placement for `run`. The two cases that paste a value into the command become refusals.                                                                                                  |
-| Persistence                | `sensitiveFormat` (2 since the masks of swamp-club#3681) and `writtenReferences`, unchanged by this design. Entries come from sentinels.                                                                                                                                 |
+| Persistence                | `sensitiveFormat` (2 since the masks of swamp-club#3681) and `writtenReferences`, unchanged by this design; the caches and the run record gain optional persisted-coordinate provenance fields (Section 8.1). Entries come from sentinels.                                                                                                                                 |
 | Rollout                    | One engine, changed in place. Changes are refusals with stable codes. `validate` reports static cases early, and release notes list them all. There is no repository marker and no migration command.                 |
 | Remote                     | Phase 5. Dispatch carries sentinels and references, and the worker loads each value over the data plane.                                                                                                              |
 
@@ -1104,21 +1104,53 @@ key, an encoding and a data-origin flag
 
 What changes is where entries come from. `toPersistedForm` replaces each
 sentinel with its reference text, `${{ vault.get('v', 'k') }}`, and takes the
-entry from the run's bag registry. It no longer searches for recorded values.
+entry from the run's bag registry. A typed run records no value, so the value
+search finds nothing (typed-secrets 4.4); it stays for the plaintext the legacy
+data reads still bring into CEL, and as defence in depth writes a value any
+path still records as its reference whatever the registry, until 4.6 deletes
+it.
 Every caller passes the registry, including run records
 (`WorkflowRun.toPersistedData`) and direct execution (`direct_execution.ts`),
 and only sentinels with a prefix the registry issued are looked up. Text with
 any other prefix is data and is written as it is, as Section 3.2 says. A
 sentinel with one of the run's prefixes and an unknown index fails the write.
-`rehydratePersistedForm` issues a sentinel in a new bag for each entry and no
-longer reads the vault. Reference text that no entry names stays inert data.
+Rehydration on a typed registry (`rehydrateReferences`) issues a sentinel in a
+bag of the run's registry for each entry, with the entry's encoding and origin
+(`VaultSecretBag.addWrittenReference`), and reads no vault; reference text that
+no entry names stays inert data, and a path through a prototype touches
+nothing. The untyped `rehydratePersistedForm`, which reads each value from the
+vault, is the legacy branch 4.6 deletes.
 
-New writes produce `raw` entries. Entries in existing files keep their encoding,
-and delivery applies it. `json` escapes the value. `number` and `boolean`
-restore the scalar, or fail when the vault now holds something else.
+New writes produce `raw` entries. Entries in existing files keep their encoding
+through rehoming and persist back as they were read, and delivery applies it:
+`json` escapes the loaded value; `number` and `boolean` deliver the text, which
+the schema at the trusted boundary coerces where a scalar is expected and
+refuses when the vault now holds something else. Delivery cannot restore a
+scalar itself, because the sentinel may have flowed from the written position
+into a text field. The untyped rehydrate keeps restoring the scalar, or failing
+when the vault now holds something else, as before. Number and boolean entries
+do not ship to a worker as scalars until Phase 5 carries references. A
+`number` or `boolean` entry a typed run restores and then persists at an
+embedded position (the sentinel flowed into a text field) keeps that encoding
+there; the untyped rehydrate restores a scalar only at a whole leaf and leaves
+such reference text in place, which matters only while the option is test-only.
+
+A persisted copy carries its provenance in its own coordinates: the evaluated
+definition cache's `persistedProvenance` (since swamp-club#3681), the evaluated
+workflow cache's `persistedProvenance` and the run record's
+`persistedInputsProvenance` (typed-secrets 4.4, both optional and written on
+the untyped path too), each exact wherever a sentinel became a reference
+(`sentinelReferenceTextOf`) and with every written reference marked data
+(`withWrittenReferenceRanges`). A typed replay aligns it back onto the sentinel
+copy exactly; one of a cache that holds references and a map in value
+coordinates only is refused, since no copy in hand can realign it, and a typed
+resume of such a run record marks each input string holding a reference whole
+data and continues. Deferred bindings holding a reference are whole data in
+their own map on a typed resume.
 
 Current binaries write and read this format. No reader guard has to ship first,
-and the format version does not change.
+and the format version does not change: the provenance fields are optional, and
+an older reader ignores them.
 
 ### 8.2 Durable state and current values
 
@@ -1539,11 +1571,11 @@ resource up by the handle's data name rather than its spec name, and
 `isJsonMediaType` (`src/domain/data/content_type.ts`) matches the media type
 with parameters and case aside, in `model_method_result.ts` and in the record
 mapper's own attribute parsing. Stated as out of this slice: the resume seam
-builds its sensitive values over an untyped registry until the
-`rehydratePersistedForm` slice, so a resumed run keeps the untyped path (its
-run-start pass is routed through the seam and receives the legacy evaluator);
-`swamp workflow evaluate` builds an untyped registry until the evaluate-cache
-slice, so its `forEach` names keep the value search; `resolveScalarExpression`
+built its sensitive values over an untyped registry until typed-secrets 4.4,
+so a resumed run kept the untyped path (its run-start pass is routed through
+the seam and received the legacy evaluator); `swamp workflow evaluate` built
+an untyped registry until 4.4, so its `forEach` names kept the value search;
+`resolveScalarExpression`
 (task targets), placement and the task selectors keep today's evaluation, their
 refusals being the next slice with child workflow references; step outputs
 (`steps.*.outputs`, `fromResourceHandle`) still read tagged fields eagerly for
@@ -1577,10 +1609,11 @@ sources into the record (`sources`, optional and validated) in a typed run,
 which the nested resolve re-attaches, so a child's deferred expression views
 a parent's outputs through the adapter; the untyped capture is byte-for-byte
 what it was. `resume` takes `secretRedactor` and `sensitiveValues` as `run`
-does, a test seam until the `rehydratePersistedForm` slice: a resumed run
-with written references still rehydrates them through the vault. Stated as
-out of this slice: the query view, masking in run records and the index, the
-rehydrate and evaluate-cache slices, and the release flip. The integration
+does, a test seam that stays until 4.6 turns the typed path on for every
+entry point: until typed-secrets 4.4 a resumed run with written references
+still rehydrated them through the vault. Stated as out of this slice: the
+query view, masking in run records and the index, the rehydrate and
+evaluate-cache slices, and the release flip. The integration
 scenarios cover live, denied (through a principal policy, since the vaults
 list is run-wide and a child's list intersects its parent's), reconstructed
 (an approval, a narrowed vaults list and a tag the writer could not have
@@ -1592,6 +1625,49 @@ implements it (`query_view.ts`), the typed `data.query` handlers pass it and
 adapt the records it answers, and the coverage test proves the view's
 environment. Stated as out of this slice: the legacy empty-namespace rows of
 swamp-club#3785.
+
+Phase 4.4 (swamp-club#3733) lands persistence and resume holding references,
+behind the internal option. Rehydration on a typed registry
+(`rehydrateReferences`, Section 8.1) issues a sentinel in a bag of the run's
+registry for each written reference, with the entry's encoding and origin,
+and reads no vault: behavior and workflow `--last-evaluated`
+(`rehydrateEvaluatedDefinition`, `rehydrateEvaluatedWorkflow`) restore one
+sentinel copy, and resume and retry (`rehydrateRunReferences`, through
+`rehydrateRun`) restore the record's inputs, deferred bindings, step errors,
+approval prompts, assert text and failure reason the same way, so each
+remaining step loads the current value at delivery under the resume's vault
+access and no completed step is rerun. Reference-only entries carry a
+`SecretEncoding` widened in place to the four written encodings, rehoming
+keeps it, and delivery applies it as Section 8.1 says. Provenance on the typed
+path is exact or fails closed: the workflow cache gains `persistedProvenance`
+and the run record `persistedInputsProvenance`, both written on the untyped
+path too, and the definition cache's map is now exact through the
+reference-text resolver; a typed replay of a cache written before its
+persisted map existed is refused with a message to evaluate again, and a typed
+resume of such a record marks the affected input strings whole data.
+`swamp workflow evaluate` takes the `createSensitiveValues` seam
+`swamp behavior evaluate` has and evaluates every pass through
+`passEvaluatorFor` over one `ExpressionEvaluationService`, so with a typed
+registry it writes its cache from registry entries with zero loads and with an
+untyped one it is the raw evaluator it was. The run events that bypassed the
+redactor (`approval_requested.prompt`, `suspended.prompt`,
+`step_skipped.guardResult`) are masked at emission, and the run-carrying events
+read their value fields through `WorkflowRun.mask`, the one display view the
+libswamp run view and so the json output and the serve stream share. The
+persistence matrix (`integration/typed_persistence_seams_test.ts`, on the
+harness `integration/typed_workflow_harness.ts` shares with the passes test)
+runs a suspended child run, its resume and a replay with the option on and
+off: every seam round-trips through `writtenReferences`, the run index holds
+reference text, the output records and the catalog hold neither a value nor a
+sentinel, a record written with the json, number and boolean encodings reads
+back and delivers each, and sentinel-shaped text from another prefix persists
+as data. The v3 copies are the bytes the repositories write, asserted at the
+staging boundary in the run repository tests; control-plane records carry no
+expression-derived run value (wait registrations hold ids and keys, pending
+runs the webhook body), so nothing there converts. Stated as out of this
+slice: the release flip, the untyped branches (the value search, the
+vault-reading rehydrate, the legacy evaluator) and the resume test seam, which
+4.6 removes.
 
 Then turn the path on for every entry point and remove the internal option.
 Delete the regular-expression rewrite, the value search, and the
@@ -1681,12 +1757,12 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
 | Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |
-| Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts`, `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/expressions/persisted_evaluation.ts`, `src/domain/workflows/persisted_workflow.ts` |
+| Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts` (`toPersistedForm`, `rehydrateReferences`, the legacy `rehydratePersistedForm`), `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/vaults/secret_bag_registry.ts` (`SecretEncoding`, `jsonEscaped`, `restoreScalar`), `vault_secret_bag.ts` (`addWrittenReference`, encoding-aware delivery), `src/domain/expressions/persisted_evaluation.ts` (`replayProvenance`, `withWrittenReferenceRanges`), `provenance_map.ts` (`sentinelReferenceTextOf`), `src/domain/workflows/persisted_workflow.ts` (`persistedProvenance`, `rehydrateRunReferences`), `workflow_run.ts` (`persistedInputsProvenance`, `mask`), `integration/typed_persistence_seams_test.ts` |
 | Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
 | Queries (Section 6.2)                         | `src/domain/data/query_view.ts` (the `QueryView` port, `QueryViewRefusal`), `data_query_service.ts` (`DataQueryOptions.view`, `createQueryEnvironment`), `src/infrastructure/cel/query_view.ts` (`expressionQueryView`, `queryViewEnvironment`), `src/infrastructure/cel/cel_evaluator.ts` (the typed `data.query` handlers), `integration/typed_data_secrets_test.ts`                                                                                                                                                                                                                                                                                                                               |
 | Method boundary and checks | `src/domain/models/method_execution_service.ts` (`deliverStepSecrets`, `unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
 | Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` (no bag, no vault: a typed evaluator refuses a `Secret` result) |
-| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination; in a typed run the records a step wrote are kept as stored and each step context carries its output sources, and `resume` takes a sensitive-value record as `run` does), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts`, `integration/typed_workflow_passes_test.ts` |
+| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination; in a typed run the records a step wrote are kept as stored and each step context carries its output sources, and `resume` takes a sensitive-value record as `run` does, restoring a stored run's references as references on a typed registry), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts` (every pass through `passEvaluatorFor`, the `createSensitiveValues` seam), `integration/typed_workflow_passes_test.ts` and `typed_workflow_harness.ts` |
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |

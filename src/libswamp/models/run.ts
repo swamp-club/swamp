@@ -902,17 +902,27 @@ export async function* modelMethodRun(
                 };
                 return;
               }
-              // Sensitive values are cached as vault references; restore them,
-              // real values into evaluatedDefinition and sentinels into the
+              // Sensitive values are cached as vault references. A typed run
+              // restores them as references the delivery loads, reading no
+              // vault here (typed-secrets 4.4); an untyped run restores real
+              // values into evaluatedDefinition and sentinels into the
               // executed copy, exactly as a fresh evaluation would.
-              const vaultService = (lastEval.writtenReferences ?? []).length > 0
-                ? await deps.createVaultService()
-                : undefined;
+              const typedReplay = sensitiveValues.sentinels.typedSecrets;
+              const vaultService =
+                !typedReplay && (lastEval.writtenReferences ?? []).length > 0
+                  ? await deps.createVaultService()
+                  : undefined;
               const restored = await rehydrateEvaluatedDefinition(
                 {
                   definition: lastEval.definition,
                   deferredExpressions: lastEval.deferredExpressions ?? [],
                   writtenReferences: lastEval.writtenReferences ?? [],
+                  ...(lastEval.persistedProvenance instanceof ProvenanceMap
+                    ? { persistedProvenance: lastEval.persistedProvenance }
+                    : {}),
+                  ...(lastEval.provenance instanceof ProvenanceMap
+                    ? { provenance: lastEval.provenance }
+                    : {}),
                 },
                 (vaultName, key) =>
                   vaultService!.get(vaultName, key, "evaluated-cache:replay"),
@@ -922,16 +932,23 @@ export async function* modelMethodRun(
               evaluatedDefinition = restored.definition;
               executedDefinition = restored.executedDefinition;
               deferredExpressions = restored.deferredExpressions;
-              // A cache without provenance predates it and replays as it
-              // always did.
-              rawProvenance = lastEval.provenance ?? ProvenanceMap.authored();
-              executedProvenance = alignProvenance(
-                rawProvenance,
-                evaluatedDefinition.toData(),
-                executedDefinition.toData(),
-                sentinelStandInOf(stepSecretBag.registry),
-                sentinelStandInOf(stepSecretBag.registry),
-              );
+              if (restored.provenance) {
+                // One copy, one map: the typed replay aligned the cache's
+                // persisted-coordinate map onto the sentinel copy.
+                rawProvenance = restored.provenance;
+                executedProvenance = restored.provenance;
+              } else {
+                // A cache without provenance predates it and replays as it
+                // always did.
+                rawProvenance = lastEval.provenance ?? ProvenanceMap.authored();
+                executedProvenance = alignProvenance(
+                  rawProvenance,
+                  evaluatedDefinition.toData(),
+                  executedDefinition.toData(),
+                  sentinelStandInOf(stepSecretBag.registry),
+                  sentinelStandInOf(stepSecretBag.registry),
+                );
+              }
               for (const expression of lastEval.authoredExpressions) {
                 authoredExpressions.add(expression);
               }

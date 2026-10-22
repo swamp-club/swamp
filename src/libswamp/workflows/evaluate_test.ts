@@ -30,6 +30,30 @@ import {
   type WorkflowEvaluateEvent,
   type WorkflowEvaluateItemData,
 } from "./evaluate.ts";
+import type { PassEvaluator } from "../../domain/expressions/expression_evaluation_service.ts";
+import { prepareExpressionsIn } from "../../infrastructure/cel/cel_evaluator.ts";
+
+/**
+ * A legacy-shaped pass over hand-written evaluators: what the untyped seam
+ * hands the evaluation, with the real prepare step.
+ */
+function passOver(
+  evaluate: (expression: string, context: Record<string, unknown>) => unknown,
+  evaluateAsync: (
+    expression: string,
+    context: Record<string, unknown>,
+  ) => Promise<unknown> = (expression, context) =>
+    Promise.resolve(evaluate(expression, context)),
+): WorkflowEvaluateDeps["passEvaluatorFor"] {
+  const pass: PassEvaluator = {
+    typed: false,
+    evaluate,
+    evaluateAsync,
+    validate: () => ({ valid: true }),
+    prepare: (content, context) => prepareExpressionsIn(content, context),
+  };
+  return () => Promise.resolve(pass);
+}
 
 function makeWorkflow(overrides?: {
   name?: string;
@@ -68,8 +92,7 @@ function makeDeps(
           WorkflowEvaluateDeps["buildExpressionContext"]
         > extends Promise<infer T> ? T : never,
       ),
-    evaluateCel: (expr: string) => expr,
-    evaluateCelAsync: (expr: string) => Promise.resolve(expr),
+    passEvaluatorFor: passOver((expr: string) => expr),
     saveEvaluatedWorkflow: () => Promise.resolve(),
     getEvaluatedPath: (id) =>
       `/tmp/.swamp/workflows-evaluated/workflow-${id}.yaml`,
@@ -216,9 +239,7 @@ function makeForEachDeps(
           WorkflowEvaluateDeps["buildExpressionContext"]
         > extends Promise<infer T> ? T : never,
       ),
-    evaluateCel: contextAwareEvaluateCel,
-    evaluateCelAsync: (expr: string, ctx?: unknown) =>
-      Promise.resolve(contextAwareEvaluateCel(expr, ctx)),
+    passEvaluatorFor: passOver(contextAwareEvaluateCel),
     saveEvaluatedWorkflow: () => Promise.resolve(),
     getEvaluatedPath: (id) =>
       `/tmp/.swamp/workflows-evaluated/workflow-${id}.yaml`,
@@ -713,7 +734,7 @@ Deno.test("evaluate: guard expressions remain as strings (not resolved to boolea
   const deps = makeDeps({
     findWorkflowByName: () => Promise.resolve(workflow),
     findWorkflowById: () => Promise.resolve(workflow),
-    evaluateCel: (expr: string, ctx?: unknown) => {
+    passEvaluatorFor: passOver((expr: string, ctx?: unknown) => {
       const context = ctx as Record<string, Record<string, unknown>>;
       if (expr === 'inputs.action != "start"') {
         return context?.inputs?.action !== "start";
@@ -722,7 +743,7 @@ Deno.test("evaluate: guard expressions remain as strings (not resolved to boolea
         return context?.inputs?.action !== "stop";
       }
       return expr;
-    },
+    }),
   });
 
   const events = await collect<WorkflowEvaluateEvent>(
@@ -1169,10 +1190,10 @@ Deno.test("workflowEvaluate: prepares each expression before evaluating it synch
   const deps = makeDeps({
     findWorkflowByName: () => Promise.resolve(workflow),
     buildExpressionContext: () => Promise.resolve(preparingContext(log)),
-    evaluateCel: (expr: string) => {
+    passEvaluatorFor: passOver((expr: string) => {
       log.push(`eval:${expr}`);
       return "vpc-0abc123";
-    },
+    }),
   });
   await collect<WorkflowEvaluateEvent>(
     workflowEvaluate(createLibSwampContext(), deps, {
@@ -1195,11 +1216,13 @@ Deno.test("forEach: prepares each of the step's expressions once before resolvin
   await evaluateForEachWorkflow(workflow, {
     buildExpressionContext: () =>
       Promise.resolve(preparingContext(log, { self: {} })),
-    evaluateCelAsync: () => Promise.resolve(["a", "b"]),
-    evaluateCel: (expr: string, ctx?: unknown) => {
-      log.push(`eval:${expr}`);
-      return contextAwareEvaluateCel(expr, ctx);
-    },
+    passEvaluatorFor: passOver(
+      (expr: string, ctx?: unknown) => {
+        log.push(`eval:${expr}`);
+        return contextAwareEvaluateCel(expr, ctx);
+      },
+      () => Promise.resolve(["a", "b"]),
+    ),
   });
   // Once for the expression the step's name and target share, before
   // either item is resolved — not once per item or per occurrence.
@@ -1327,3 +1350,53 @@ for (const all of [false, true]) {
     assertEquals(saved.length, 1);
   });
 }
+
+Deno.test("forEach: object items under a plain step name expand with the index as the suffix, as the run path names them (typed-secrets 4.4)", async () => {
+  const workflow = makeForEachWorkflow({
+    modelIdOrName: "consumer",
+    methodName: "run",
+    forEachIn: "${{ rows }}",
+    forEachItem: "row",
+    stepName: "deploy",
+    inputs: { host: "${{ self.row.host }}" },
+  });
+  const data = await evaluateForEachWorkflow(workflow, {
+    passEvaluatorFor: passOver(
+      contextAwareEvaluateCel,
+      () => Promise.resolve([{ host: "a" }, { host: "b" }]),
+    ),
+  });
+  assertEquals(data.jobs![0].steps.map((s) => s.name), [
+    "deploy-0",
+    "deploy-1",
+  ]);
+  assertEquals(
+    data.jobs![0].steps.map((s) =>
+      (s.task as { inputs?: { host: string } }).inputs?.host
+    ),
+    ["a", "b"],
+  );
+});
+
+Deno.test("forEach: a step name whose expression fails to evaluate keeps the raw name with the index as the suffix, not the item's text (typed-secrets 4.4)", async () => {
+  const workflow = makeForEachWorkflow({
+    modelIdOrName: "consumer",
+    methodName: "run",
+    forEachIn: '${{ ["x", "y"] }}',
+    forEachItem: "env",
+    stepName: "deploy-${{ self.env.missing() }}",
+  });
+  const data = await evaluateForEachWorkflow(workflow, {
+    passEvaluatorFor: passOver(
+      (expr: string, ctx?: unknown) => {
+        if (expr === "self.env.missing()") throw new Error("no such function");
+        return contextAwareEvaluateCel(expr, ctx);
+      },
+      () => Promise.resolve(["x", "y"]),
+    ),
+  });
+  assertEquals(data.jobs![0].steps.map((s) => s.name), [
+    "deploy-${{ self.env.missing() }}-0",
+    "deploy-${{ self.env.missing() }}-1",
+  ]);
+});

@@ -26,6 +26,7 @@ import {
 } from "../vaults/secret_bag_registry.ts";
 import {
   rehydratePersistedForm,
+  rehydrateReferences,
   toPersistedForm,
   type WrittenReference,
 } from "./persisted_sensitive_form.ts";
@@ -380,4 +381,205 @@ Deno.test("toPersistedForm: a data-origin reference sentinel is written as its r
     dataOrigin: true,
   }]);
   assertEquals(values.list(), []);
+});
+
+// --- typed-secrets 4.4: rehydration holds references ---
+
+/** A typed run's record and a bag of its registry. */
+function typedRun(): { values: RunSensitiveValues; bag: VaultSecretBag } {
+  const values = new RunSensitiveValues(
+    undefined,
+    new SecretBagRegistry({ typedSecrets: true }),
+  );
+  return { values, bag: new VaultSecretBag(values.sentinels) };
+}
+
+Deno.test("rehydrateReferences: issues a sentinel per written reference with its encoding and origin, reads nothing, records no value, and persists back as it was read", () => {
+  const written: WrittenReference[] = [
+    {
+      path: ["run"],
+      occurrence: 0,
+      ...source,
+      encoding: "raw",
+      dataOrigin: false,
+    },
+    {
+      path: ["run"],
+      occurrence: 1,
+      ...source,
+      encoding: "raw",
+      dataOrigin: true,
+    },
+    {
+      path: ["body"],
+      occurrence: 0,
+      ...source,
+      encoding: "json",
+      dataOrigin: false,
+    },
+    {
+      path: ["port"],
+      occurrence: 0,
+      vaultName: "prod",
+      key: "port",
+      encoding: "number",
+      dataOrigin: false,
+    },
+    {
+      path: ["list", 1],
+      occurrence: 0,
+      ...source,
+      encoding: "boolean",
+      dataOrigin: true,
+    },
+  ];
+  const data = {
+    run: `echo ${ref} and ${ref}`,
+    body: `{"k":"${ref}"}`,
+    port: vaultReferenceText({ vaultName: "prod", key: "port" }),
+    list: ["x", ref],
+    other: `untouched ${ref}`,
+  };
+  const { values, bag } = typedRun();
+  const restored = rehydrateReferences(data, written, bag, "run-1");
+  // Nothing recorded: no value exists to search for, and nothing was read.
+  assertEquals(values.isEmpty, true);
+  assertEquals(restored.other, data.other);
+  const sentinelsIn = (text: string) =>
+    text.match(VaultSecretBag.SENTINEL_PATTERN) ?? [];
+  /** The reference-only entry behind a restored sentinel. */
+  const restoredEntry = (sentinel: string | undefined) => {
+    const entry = bag.registry.issuedEntryOf(sentinel ?? "");
+    if (entry === undefined || holdsValue(entry)) {
+      throw new Error("expected a reference-only entry");
+    }
+    return entry;
+  };
+  const [first, second] = sentinelsIn(restored.run);
+  assertEquals(restored.run, `echo ${first} and ${second}`);
+  assertEquals(restoredEntry(first).dataOrigin, false);
+  assertEquals(restoredEntry(second).dataOrigin, true);
+  assertEquals(restoredEntry(first).location, "run-1: run");
+  const [body] = sentinelsIn(restored.body);
+  assertEquals(restoredEntry(body).encoding, "json");
+  assertEquals(restoredEntry(restored.port).encoding, "number");
+  assertEquals(restoredEntry(restored.port).location, "run-1: port");
+  assertEquals(restoredEntry(restored.list[1]).encoding, "boolean");
+  assertEquals(restoredEntry(restored.list[1]).location, "run-1: list[1]");
+  // The persisted form of the restored copy is the file it was read from.
+  const form = toPersistedForm(restored, values, { applies: everywhere });
+  assertEquals(form.data, data);
+  const key = (w: WrittenReference) => `${w.path.join(".")}#${w.occurrence}`;
+  assertEquals(
+    [...form.writtenReferences].sort((a, b) => key(a).localeCompare(key(b))),
+    [...written].sort((a, b) => key(a).localeCompare(key(b))),
+  );
+});
+
+Deno.test("rehydrateReferences: reference text no entry names stays inert, and sentinel-shaped text from another prefix persists as data", () => {
+  const foreign = `__SWAMP_VSEC_${"f".repeat(32)}_0__`;
+  const { values, bag } = typedRun();
+  const data = { run: `${ref} ${foreign}`, note: ref };
+  const restored = rehydrateReferences(
+    data,
+    [{
+      path: ["run"],
+      occurrence: 0,
+      ...source,
+      encoding: "raw",
+      dataOrigin: false,
+    }],
+    bag,
+    "wf",
+  );
+  assertEquals(restored.note, ref);
+  assertEquals(restored.run.endsWith(` ${foreign}`), true);
+  const form = toPersistedForm(restored, values, { applies: everywhere });
+  assertEquals(form.data, data);
+  assertEquals(form.writtenReferences.length, 1);
+});
+
+Deno.test("rehydrateReferences: refuses the reserved token vault before issuing anything", () => {
+  const { bag } = typedRun();
+  assertThrows(
+    () =>
+      rehydrateReferences(
+        {
+          a: ref,
+          b: vaultReferenceText({ vaultName: "_token-secrets", key: "t" }),
+        },
+        [
+          {
+            path: ["a"],
+            occurrence: 0,
+            ...source,
+            encoding: "raw",
+            dataOrigin: false,
+          },
+          {
+            path: ["b"],
+            occurrence: 0,
+            vaultName: "_token-secrets",
+            key: "t",
+            encoding: "raw",
+            dataOrigin: false,
+          },
+        ],
+        bag,
+        "wf",
+      ),
+    Error,
+    "reserved vault",
+  );
+  assertEquals(bag.isEmpty, true);
+  assertEquals(bag.registry.isEmpty, true);
+});
+
+Deno.test("rehydrateReferences: a path through a prototype touches nothing, and an empty file is returned as it is", () => {
+  const { bag } = typedRun();
+  const data = { a: ref };
+  const restored = rehydrateReferences(
+    data,
+    [{
+      path: ["__proto__", "x"],
+      occurrence: 0,
+      ...source,
+      encoding: "raw",
+      dataOrigin: false,
+    }],
+    bag,
+    "wf",
+  );
+  assertEquals(restored, data);
+  assertEquals("x" in Object.prototype, false);
+  assertEquals(rehydrateReferences(data, [], bag, "wf") === data, true);
+});
+
+Deno.test("toPersistedForm: on a typed registry a sentinel becomes its reference, and a value a legacy path still records is written as its reference all the same", () => {
+  const { values, bag } = typedRun();
+  values.addSecret(secret, source);
+  const sentinel = bag.addSecret(source, "run");
+  const form = toPersistedForm(
+    { run: `echo ${sentinel}`, plain: `has ${secret}`, port: 8080 },
+    values,
+    { applies: everywhere },
+  );
+  assertEquals(form.data, {
+    run: `echo ${ref}`,
+    plain: `has ${ref}`,
+    port: 8080,
+  });
+  assertEquals(form.writtenReferences.map((w) => w.path).sort(), [["plain"], [
+    "run",
+  ]]);
+  // Nothing issued and nothing recorded: the typed form writes as it is.
+  const empty = new RunSensitiveValues(
+    undefined,
+    new SecretBagRegistry({ typedSecrets: true }),
+  );
+  const data = { plain: secret };
+  assertEquals(
+    toPersistedForm(data, empty, { applies: everywhere }).data === data,
+    true,
+  );
 });

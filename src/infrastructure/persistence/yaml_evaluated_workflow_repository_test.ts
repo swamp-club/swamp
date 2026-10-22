@@ -518,3 +518,50 @@ Deno.test("YamlEvaluatedWorkflowRepository: the inputs a cache was evaluated wit
     await Deno.remove(tempDir, { recursive: true });
   }
 });
+
+Deno.test("save: the persisted-coordinate map round-trips as an optional field, and a malformed one reads as unreadable (typed-secrets 4.4)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlEvaluatedWorkflowRepository(tempDir);
+    const persisted = ProvenanceMap.authored().withRanges(
+      "jobs[0].steps[0].task.inputs.token",
+      [[0, 5]],
+    );
+    await repo.save(
+      referencingWorkflow(),
+      ProvenanceMap.authored(),
+      new Set(),
+      [],
+      [REFERENCE],
+      undefined,
+      persisted,
+    );
+    const cached = await repo.findByNameWithProvenance("ref-workflow");
+    assertEquals(
+      cached?.persistedProvenance instanceof ProvenanceMap &&
+        cached.persistedProvenance.toData(),
+      persisted.toData(),
+    );
+    // Without one, the field is absent: an older cache reads as before.
+    await repo.save(referencingWorkflow(), undefined, new Set(), [], [
+      REFERENCE,
+    ]);
+    assertEquals(
+      (await repo.findByNameWithProvenance("ref-workflow"))
+        ?.persistedProvenance,
+      undefined,
+    );
+    const path = repo.getPath(referencingWorkflow().id);
+    await Deno.writeTextFile(
+      path,
+      (await Deno.readTextFile(path)) + "\npersistedProvenance: [1, 2]\n",
+    );
+    assertEquals(
+      (await repo.findByNameWithProvenance("ref-workflow"))
+        ?.persistedProvenance,
+      "unreadable",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});

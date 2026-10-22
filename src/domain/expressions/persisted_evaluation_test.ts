@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { Definition } from "../definitions/definition.ts";
 import {
@@ -26,6 +26,11 @@ import {
   type WrittenReference,
 } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import {
+  holdsValue,
+  SecretBagRegistry,
+} from "../vaults/secret_bag_registry.ts";
+import { UserError } from "../errors.ts";
 import { keyPath, ProvenanceMap } from "./provenance_map.ts";
 import { deferredExpressionReference } from "./deferred_expression.ts";
 import {
@@ -38,6 +43,7 @@ import {
   persistEvaluatedDefinition,
   plaintextSensitiveArgumentsMessage,
   rehydrateEvaluatedDefinition,
+  withWrittenReferenceRanges,
 } from "./persisted_evaluation.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
 
@@ -1736,5 +1742,264 @@ Deno.test("persistEvaluatedDefinition, findPlaintextSensitiveArguments and maskS
     JSON.stringify([persisted.definition.toData(), persisted.maskedPaths])
       .includes(INPUT_VALUE),
     false,
+  );
+});
+
+// --- typed-secrets 4.4: a typed replay holds references ---
+
+/** A typed run's record and the step's bag over its registry. */
+function typedStep(): { values: RunSensitiveValues; bag: VaultSecretBag } {
+  const values = new RunSensitiveValues(
+    undefined,
+    new SecretBagRegistry({ typedSecrets: true }),
+  );
+  return { values, bag: new VaultSecretBag(values.sentinels) };
+}
+
+/** A cache a typed run wrote: two references in one argument, one in another. */
+function typedCache() {
+  const writer = typedStep();
+  const first = writer.bag.addSecret(SOURCE, "globalArguments.token");
+  const second = writer.bag.addDataReference(
+    { vaultName: "prod", key: "db-password" },
+    "data",
+  );
+  const definition = Definition.create({
+    name: "consumer",
+    globalArguments: { token: `Bearer ${first} ${second}` },
+    methods: {
+      run: { arguments: { run: `echo ${second} ${"${{ env.X }}"}` } },
+    },
+  });
+  const provenance = ProvenanceMap.authored().withRanges(
+    "globalArguments.token",
+    [[7, 7 + first.length], [
+      8 + first.length,
+      8 + first.length + second.length,
+    ]],
+  ).withRanges("methods.run.arguments.run", [[5, 5 + second.length]]);
+  return {
+    persisted: persistEvaluatedDefinition(
+      definition,
+      [],
+      Definition.create({ name: "consumer" }),
+      writer.values,
+      NO_SCHEMAS,
+      provenance,
+    ),
+    first,
+    second,
+  };
+}
+
+Deno.test("rehydrateEvaluatedDefinition: a typed replay restores one sentinel copy with no vault read and no recorded value, its map aligned exactly from the persisted coordinates", async () => {
+  const { persisted } = typedCache();
+  assertEquals(persisted.writtenReferences.length, 3);
+  const { values, bag } = typedStep();
+  let reads = 0;
+  const restored = await rehydrateEvaluatedDefinition(
+    persisted,
+    () => {
+      reads++;
+      return Promise.resolve(SECRET);
+    },
+    values,
+    bag,
+  );
+  assertEquals(reads, 0);
+  assertEquals(values.isEmpty, true);
+  assertEquals(restored.definition, restored.executedDefinition);
+  const token = restored.definition.globalArguments.token as string;
+  const [a, b] = token.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(token, `Bearer ${a} ${b}`);
+  const entryOf = (sentinel: string) => {
+    const entry = bag.registry.issuedEntryOf(sentinel);
+    if (entry === undefined || holdsValue(entry)) {
+      throw new Error("expected a reference-only entry");
+    }
+    return entry;
+  };
+  assertEquals(entryOf(a).reference, SOURCE);
+  assertEquals(entryOf(a).dataOrigin, false);
+  assertEquals(entryOf(b).dataOrigin, true);
+  assertEquals(entryOf(a).location, "consumer: globalArguments.token");
+  const run = restored.definition.getMethodArguments("run").run as string;
+  const [c] = run.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(run, `echo ${c} ${"${{ env.X }}"}`);
+  // The map is in the sentinel copy's coordinates: each sentinel is data,
+  // the authored text around it is not, whatever the sentinels' lengths.
+  const map = restored.provenance!;
+  assertEquals(map.rangesAt("globalArguments.token"), [
+    [7, 7 + a.length],
+    [8 + a.length, 8 + a.length + b.length],
+  ]);
+  assertEquals(map.rangesAt("methods.run.arguments.run"), [[5, 5 + c.length]]);
+  assertEquals(
+    map.overlapsData(
+      "methods.run.arguments.run",
+      run.indexOf("${{"),
+      run.length,
+    ),
+    false,
+  );
+  // The restored copy persists back as the cache it came from.
+  const again = persistEvaluatedDefinition(
+    restored.definition,
+    [],
+    Definition.create({ name: "consumer" }),
+    values,
+    NO_SCHEMAS,
+    map,
+  );
+  assertEquals(again.definition.toData(), persisted.definition.toData());
+  assertEquals(again.writtenReferences.length, 3);
+  assertEquals(
+    again.persistedProvenance.toData(),
+    persisted.persistedProvenance.toData(),
+  );
+});
+
+Deno.test("rehydrateEvaluatedDefinition: a typed replay refuses a cache with references and a value-coordinate map only, and replays an unmapped cache as authored", async () => {
+  const { persisted } = typedCache();
+  const valueMap = ProvenanceMap.authored().withRanges(
+    "globalArguments.token",
+    [[7, 20]],
+  );
+  const error = await assertRejects(
+    () =>
+      rehydrateEvaluatedDefinition(
+        { ...persisted, persistedProvenance: undefined, provenance: valueMap },
+        () => Promise.resolve(SECRET),
+        typedStep().values,
+        typedStep().bag,
+      ),
+    UserError,
+    "not replayed with references",
+  );
+  assertStringIncludes(error.message, "--last-evaluated");
+  // No map at all: authored, as a cache from before provenance replays.
+  const unmapped = await rehydrateEvaluatedDefinition(
+    { ...persisted, persistedProvenance: undefined, provenance: undefined },
+    () => Promise.resolve(SECRET),
+    typedStep().values,
+    typedStep().bag,
+  );
+  assertEquals(unmapped.provenance?.isAuthored, true);
+  // A value-coordinate map with no references needs no realignment.
+  const plain = await rehydrateEvaluatedDefinition(
+    {
+      definition: Definition.create({
+        name: "plain",
+        globalArguments: { a: "x" },
+      }),
+      deferredExpressions: [],
+      writtenReferences: [],
+      provenance: valueMap,
+    },
+    () => Promise.resolve(SECRET),
+    typedStep().values,
+    typedStep().bag,
+  );
+  assertEquals(plain.provenance, valueMap);
+  // The untyped branch is what it was: values restored, no map returned.
+  const untypedValues = new RunSensitiveValues();
+  const untyped = await rehydrateEvaluatedDefinition(
+    persisted,
+    () => Promise.resolve(SECRET),
+    untypedValues,
+    new VaultSecretBag(untypedValues.sentinels),
+  );
+  assertEquals(untyped.provenance, undefined);
+  assertEquals(untypedValues.isEmpty, false);
+});
+
+Deno.test("withWrittenReferenceRanges: marks each written reference's range as data, keeps other ranges and whole-data paths, and skips a path that is not a string", () => {
+  const ref = vaultReferenceText(SOURCE);
+  const data = {
+    a: `x ${ref} y ${ref} ${"${{ env.X }}"}`,
+    whole: ref,
+    n: 3,
+  };
+  const written = (
+    path: (string | number)[],
+    occurrence: number,
+  ): WrittenReference => ({
+    path,
+    occurrence,
+    ...SOURCE,
+    encoding: "raw",
+    dataOrigin: false,
+  });
+  const map = ProvenanceMap.authored()
+    .withRanges("a", [[0, 1]])
+    .withWholeData("whole");
+  const out = withWrittenReferenceRanges(map, data, [
+    written(["a"], 1),
+    written(["a"], 0),
+    written(["whole"], 0),
+    written(["n"], 0),
+  ]);
+  assertEquals(out.rangesAt("a"), [
+    [0, 1],
+    [2, 2 + ref.length],
+    [5 + ref.length, 5 + 2 * ref.length],
+  ]);
+  assertEquals(
+    out.overlapsData("a", data.a.lastIndexOf("${{"), data.a.length),
+    false,
+  );
+  assertEquals(out.isWholeDataAt("whole"), true);
+  assertEquals(out.hasDataAtOrBelow("n"), false);
+});
+
+Deno.test("persistEvaluatedDefinition: two recorded values in one sensitive argument, joined by authored text, are written as their references and replay (untyped write)", () => {
+  const values = new RunSensitiveValues();
+  const user = "Us3r-n4me-value";
+  const pass = "P4ss-w0rd-value";
+  values.addSecret(user, { vaultName: "prod", key: "user" });
+  values.addSecret(pass, { vaultName: "prod", key: "pass" });
+  const definition = Definition.create({
+    name: "joined",
+    globalArguments: { token: `${user}:${pass}` },
+  });
+  // Both halves are data; the colon between them is authored.
+  const provenance = ProvenanceMap.authored().withRanges(
+    "globalArguments.token",
+    [[0, user.length], [user.length + 1, user.length + 1 + pass.length]],
+  );
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    Definition.create({ name: "joined" }),
+    values,
+    SCHEMAS,
+    provenance,
+  );
+  const refUser = vaultReferenceText({ vaultName: "prod", key: "user" });
+  const refPass = vaultReferenceText({ vaultName: "prod", key: "pass" });
+  assertEquals(
+    persisted.definition.globalArguments.token,
+    `${refUser}:${refPass}`,
+  );
+  assertEquals(persisted.maskedPaths, []);
+  assertEquals(
+    persisted.persistedProvenance.rangesAt("globalArguments.token"),
+    [
+      [0, refUser.length],
+      [refUser.length + 1, refUser.length + 1 + refPass.length],
+    ],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(
+      SCHEMAS,
+      persisted.definition.toData(),
+      persisted.writtenReferences,
+      {
+        recordedMasks: persisted.maskedPaths,
+        provenance,
+        persistedProvenance: persisted.persistedProvenance,
+      },
+    ),
+    [],
   );
 });

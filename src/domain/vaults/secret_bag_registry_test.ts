@@ -18,9 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { UserError } from "../errors.ts";
 import {
   holdsValue,
   isIssuedEntry,
+  jsonEscaped,
+  restoreScalar,
+  SECRET_ENCODINGS,
   SecretBagRegistry,
   SENTINEL_EXACT,
 } from "./secret_bag_registry.ts";
@@ -215,4 +219,29 @@ Deno.test("SecretBagRegistry.independent: a new registry carries the option and 
     assertEquals([...registry.all()].length, 1);
     assertEquals(registry.drewPrefixOf(sentinel(0, "f".repeat(32))), false);
   }
+});
+
+Deno.test("restoreScalar: restores a number or boolean, and a rotated value fails naming the reference and location, never the value (typed-secrets 4.4)", () => {
+  const reference = { vaultName: "prod", key: "port" };
+  assertEquals(restoreScalar("number", "8080", reference, "loc"), 8080);
+  assertEquals(restoreScalar("number", " 1.5 ", reference, "loc"), 1.5);
+  assertEquals(restoreScalar("boolean", "false", reference, "loc"), false);
+  for (
+    const [encoding, value] of [["number", "eight"], ["number", ""], [
+      "boolean",
+      "yes",
+    ]] as const
+  ) {
+    const error = assertThrows(
+      () => restoreScalar(encoding, value, reference, "run-1 inputs.port"),
+      UserError,
+      `no longer a ${encoding}`,
+    );
+    assertEquals(error.message.includes("'prod'"), true);
+    assertEquals(error.message.includes("'port'"), true);
+    assertEquals(error.message.includes("run-1 inputs.port"), true);
+    assertEquals(value !== "" && error.message.includes(value), false);
+  }
+  assertEquals(jsonEscaped('a"b\\c'), 'a\\"b\\\\c');
+  assertEquals(SECRET_ENCODINGS, ["raw", "json", "number", "boolean"]);
 });

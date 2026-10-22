@@ -21,7 +21,17 @@ import {
   type DeferredExpression,
   isDeferredExpression,
 } from "../expressions/deferred_expression.ts";
-import type { ProvenanceMap } from "../expressions/provenance_map.ts";
+import {
+  alignProvenance,
+  indexPath,
+  keyPath,
+  ProvenanceMap,
+  sentinelReferenceTextOf,
+} from "../expressions/provenance_map.ts";
+import {
+  replayProvenance,
+  withWrittenReferenceRanges,
+} from "../expressions/persisted_evaluation.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import { canonicalJson } from "../expressions/expression_references.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
@@ -30,6 +40,7 @@ import {
   type DataPath,
   definedEntry,
   rehydratePersistedForm,
+  rehydrateReferences,
   type RunSensitiveValues,
   toPersistedForm,
   type VaultReader,
@@ -38,6 +49,7 @@ import {
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SanitizedTaskOverlay } from "./expression_evaluators.ts";
 import { Workflow, type WorkflowInput } from "./workflow.ts";
+import { WorkflowRun } from "./workflow_run.ts";
 
 /**
  * The evaluation inputs an evaluated cache records (swamp-club#3583): the
@@ -142,6 +154,13 @@ export interface PersistedEvaluatedWorkflow {
   workflow: Workflow;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
+  /**
+   * Where data sits in the written workflow, in its own coordinates, so a
+   * typed replay can restore references in place of the reference text and
+   * align exactly (typed-secrets 4.4). Set when the caller gave the raw
+   * copy's map.
+   */
+  persistedProvenance?: ProvenanceMap;
 }
 
 function dotted(path: DataPath): string {
@@ -239,6 +258,8 @@ export function persistEvaluatedWorkflow(
   overlay: SanitizedTaskOverlay | undefined,
   deferredExpressions: readonly DeferredExpression[],
   values: RunSensitiveValues,
+  /** Where data sits in `evaluated`, the raw copy (swamp-club#3205). */
+  provenance?: ProvenanceMap,
 ): PersistedEvaluatedWorkflow {
   const base = overlay?.sanitizedData ?? evaluated.toData();
   const file = {
@@ -273,19 +294,53 @@ export function persistEvaluatedWorkflow(
     workflow: Workflow.fromData(workflowData as WorkflowInput),
     deferredExpressions: deferred,
     writtenReferences: form.writtenReferences,
+    ...(provenance
+      ? {
+        // Sentinels stand in for the reference text they are written as, so
+        // the map is exact wherever a sentinel became a reference; a value
+        // the search replaced falls to the differing-span rule, and every
+        // written reference is marked data either way.
+        persistedProvenance: withWrittenReferenceRanges(
+          alignProvenance(
+            provenance,
+            evaluated.toData(),
+            workflowData,
+            sentinelReferenceTextOf(values.sentinels),
+          ),
+          workflowData,
+          form.writtenReferences,
+        ),
+      }
+      : {}),
   };
 }
 
 /**
- * Restores a cached evaluated workflow for replay: the workflow with real
+ * Restores a cached evaluated workflow for replay.
+ *
+ * In a typed run (the registry carries the option) the cache's written
+ * references become sentinels a bag of the run's registry issues, reading
+ * no vault: the workflow and the overlay's sanitized task fields are one
+ * sentinel copy, the step bags rehome the sentinels with their encodings,
+ * and each delivery loads the current value under the principal's current
+ * grants (typed-secrets 4.4). The cache's `persistedProvenance` is aligned
+ * exactly onto that copy and returned as `provenance`; a cache with
+ * references and a value-coordinate map only is refused, and one with no
+ * map replays as authored (see `replayProvenance`).
+ *
+ * In an untyped run the legacy branch restores the workflow with real
  * values, and an overlay whose sanitized task fields carry data-origin
- * sentinels, as a fresh evaluation would produce.
+ * sentinels, as a fresh untyped evaluation would produce.
  */
 export async function rehydrateEvaluatedWorkflow(
   cached: {
     workflow: Workflow;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
+    /** See {@link PersistedEvaluatedWorkflow.persistedProvenance}. */
+    persistedProvenance?: ProvenanceMap;
+    /** Where data sits in the raw copy, as the cache stores it. */
+    provenance?: ProvenanceMap;
   },
   read: VaultReader,
   values: RunSensitiveValues,
@@ -293,6 +348,8 @@ export async function rehydrateEvaluatedWorkflow(
   workflow: Workflow;
   sanitizedTasks?: SanitizedTaskOverlay;
   deferredExpressions: DeferredExpression[];
+  /** Set in a typed run: the map of the restored copy, aligned onto it. */
+  provenance?: ProvenanceMap;
 }> {
   if (cached.writtenReferences.length === 0) {
     return {
@@ -301,6 +358,34 @@ export async function rehydrateEvaluatedWorkflow(
     };
   }
   const bag = new VaultSecretBag(values.sentinels);
+  if (values.sentinels.typedSecrets) {
+    const persisted = cached.workflow.toData();
+    const restored = rehydrateReferences(
+      { ...persisted, deferredExpressions: [...cached.deferredExpressions] },
+      cached.writtenReferences,
+      bag,
+      cached.workflow.name,
+    );
+    const { deferredExpressions, ...restoredData } = restored;
+    const workflow = Workflow.fromData(restoredData as WorkflowInput);
+    return {
+      workflow,
+      sanitizedTasks: SanitizedTaskOverlay.fromSanitizedData(
+        bag,
+        restoredData as WorkflowInput,
+        workflow,
+      ),
+      deferredExpressions,
+      provenance: replayProvenance(
+        cached,
+        persisted,
+        restoredData,
+        bag,
+        `The evaluated workflow cached for "${cached.workflow.name}" was written before it recorded where its references sit, so it is not replayed with references. ` +
+          `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+      ),
+    };
+  }
   const file = {
     ...cached.workflow.toData(),
     deferredExpressions: [...cached.deferredExpressions],
@@ -328,4 +413,86 @@ export async function rehydrateEvaluatedWorkflow(
     ),
     deferredExpressions,
   };
+}
+
+/** A written entry's path below `depth`, spelled as provenance maps spell it. */
+function provenanceKeyBelow(path: DataPath, depth: number): string {
+  return path.slice(depth).reduce<string>(
+    (parent, segment) =>
+      typeof segment === "number"
+        ? indexPath(parent, segment)
+        : keyPath(parent, segment),
+    "",
+  );
+}
+
+/**
+ * Restores a stored run for a typed resume or retry, holding references
+ * (typed-secrets 4.4, design Section 8.2): every written reference of the
+ * record (inputs, deferred bindings, step errors, approval prompts, assert
+ * text, the failure reason) becomes a sentinel a bag of the run's registry
+ * issues, reading no vault and recording no value, so the run-start pass
+ * binds a reference where the run held one and each remaining step loads
+ * the current value at delivery. The record's maps follow the copy: the
+ * inputs map is aligned exactly from `persistedInputsProvenance` through the
+ * reference text each sentinel stands for; a record written before that map
+ * existed fails closed, each input string holding a reference becoming whole
+ * data, so the resume continues and no authored span is mistaken for data.
+ * A deferred binding that holds a reference is whole data in its own map
+ * for the same reason. The run's values are attached. The record's own
+ * `writtenReferences` ride along, so {@link WorkflowRun.toPersistedData}
+ * writes the run back as it was read.
+ */
+export function rehydrateRunReferences(
+  run: WorkflowRun,
+  values: RunSensitiveValues,
+): WorkflowRun {
+  const stored = run.toData();
+  const writtenReferences = stored.writtenReferences ?? [];
+  const bag = new VaultSecretBag(values.sentinels);
+  const restored = rehydrateReferences(
+    stored,
+    writtenReferences,
+    bag,
+    `run ${run.id}`,
+  );
+  const deferredExpressions = (restored.deferredExpressions ?? []).map(
+    (entry, index) => {
+      const bound = writtenReferences.filter((reference) =>
+        reference.path[0] === "deferredExpressions" &&
+        reference.path[1] === index && reference.path[2] === "bindings"
+      );
+      if (bound.length === 0 || entry.provenance === undefined) return entry;
+      let map = ProvenanceMap.fromData(entry.provenance);
+      for (const reference of bound) {
+        map = map.withWholeData(provenanceKeyBelow(reference.path, 3));
+      }
+      return { ...entry, provenance: map.toData() };
+    },
+  );
+  const rehydrated = WorkflowRun.fromData({ ...restored, deferredExpressions });
+  const inputReferences = writtenReferences.filter((reference) =>
+    reference.path[0] === "inputs"
+  );
+  if (inputReferences.length > 0) {
+    const persisted = run.persistedInputsProvenance;
+    const valueCoordinateMap = run.inputsProvenance;
+    if (persisted !== undefined) {
+      rehydrated.captureInputsProvenance(alignProvenance(
+        persisted,
+        stored.inputs ?? {},
+        restored.inputs ?? {},
+        undefined,
+        sentinelReferenceTextOf(values.sentinels),
+      ));
+    } else if (valueCoordinateMap !== undefined) {
+      let map = valueCoordinateMap;
+      for (const reference of inputReferences) {
+        map = map.withWholeData(provenanceKeyBelow(reference.path, 1));
+      }
+      rehydrated.captureInputsProvenance(map);
+    }
+  }
+  rehydrated.attachSensitiveValues(values);
+  return rehydrated;
 }

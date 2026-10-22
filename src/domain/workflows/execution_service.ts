@@ -261,6 +261,7 @@ import {
   persistEvaluatedWorkflow,
   recordableEvaluatedInputs,
   rehydrateEvaluatedWorkflow,
+  rehydrateRunReferences,
   replayInputs,
 } from "./persisted_workflow.ts";
 import {
@@ -1300,8 +1301,12 @@ function suspendedEventFor(
       run,
       jobId: waiting.jobName,
       stepId: waiting.stepName,
-      prompt: stepRun?.approvalPrompt ??
-        (taskData?.type === "manual_approval" ? taskData.prompt : ""),
+      // The prompt is a resolved expression: shown masked, as the record
+      // and the run view show it.
+      prompt: run.mask(
+        stepRun?.approvalPrompt ??
+          (taskData?.type === "manual_approval" ? taskData.prompt : ""),
+      ),
       timeout: gateTimeoutSeconds(stepRun, definitionSteps),
     };
   }
@@ -3825,7 +3830,10 @@ export class WorkflowExecutionService {
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache. Or upgrade swamp.`,
             );
           }
-          if (lastEvaluated.provenance === "unreadable") {
+          if (
+            lastEvaluated.provenance === "unreadable" ||
+            lastEvaluated.persistedProvenance === "unreadable"
+          ) {
             throw new UserError(
               `The evaluated workflow cached for "${workflow.name}" has an unreadable provenance record, so it is not replayed. ` +
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
@@ -3840,15 +3848,24 @@ export class WorkflowExecutionService {
           runInputs = replay.inputs;
           inheritedExpressions = lastEvaluated.inheritedExpressions ??
             new Set();
-          // Sensitive values are cached as vault references: restore real
+          // Sensitive values are cached as vault references. A typed run
+          // restores them as references the deliveries load, reading no
+          // vault here (typed-secrets 4.4); an untyped run restores real
           // values into the workflow and sentinels into the step overlay.
-          const vaultService = lastEvaluated.writtenReferences.length > 0
+          const vaultService = !sensitiveValues.sentinels.typedSecrets &&
+              lastEvaluated.writtenReferences.length > 0
             ? await VaultService.fromRepository(this.repoDir, {
               vaultsDir: this.vaultsDir,
             })
             : undefined;
           const restored = await rehydrateEvaluatedWorkflow(
-            lastEvaluated,
+            {
+              workflow: lastEvaluated.workflow,
+              deferredExpressions: lastEvaluated.deferredExpressions,
+              writtenReferences: lastEvaluated.writtenReferences,
+              persistedProvenance: lastEvaluated.persistedProvenance,
+              provenance: lastEvaluated.provenance,
+            },
             (vaultName, key) =>
               vaultService!.get(vaultName, key, "evaluated-cache:replay"),
             sensitiveValues,
@@ -3864,9 +3881,11 @@ export class WorkflowExecutionService {
           );
           if (cachedReservedTag) throw wordedError(cachedReservedTag);
           sanitizedTasks = restored.sanitizedTasks;
-          // A cache without provenance predates it and replays as it always
-          // did (swamp-club#3205).
-          const cachedProvenance = lastEvaluated.provenance ??
+          // A typed replay aligned the cache's persisted-coordinate map onto
+          // the restored copy; a cache without provenance predates it and
+          // replays as it always did (swamp-club#3205).
+          const cachedProvenance = restored.provenance ??
+            lastEvaluated.provenance ??
             ProvenanceMap.authored();
           workflowProvenance = cachedProvenance;
           stepProvenance = StepProvenanceOverlay.fromWorkflowMaps(
@@ -3964,10 +3983,12 @@ export class WorkflowExecutionService {
             sanitizedTasks,
             deferredExpressions,
             sensitiveValues,
+            evaluation.provenance,
           );
           await this.evaluatedWorkflowRepo.save(
             persistedWorkflow.workflow,
-            // In raw-copy coordinates, which rehydrate restores exactly.
+            // In raw-copy coordinates, which the untyped rehydrate restores
+            // exactly; the typed replay aligns from the persisted map.
             evaluation.provenance,
             authoredExpressions,
             persistedWorkflow.deferredExpressions,
@@ -3977,6 +3998,7 @@ export class WorkflowExecutionService {
                 ProvenanceMap.authored(),
               inheritedExpressions,
             }),
+            persistedWorkflow.persistedProvenance,
           );
           evaluatedWorkflowFingerprint = await computeWorkflowFingerprint(
             persistedWorkflow.workflow,
@@ -4803,9 +4825,11 @@ export class WorkflowExecutionService {
       /**
        * The redactor and sensitive-value record the resume runs with, as
        * {@link run} takes them; tests hand a resume a typed registry this
-       * way (typed-secrets 4.2) until the `rehydratePersistedForm` slice
-       * makes a resume typed itself, when the seam goes. Production callers
-       * pass nothing.
+       * way (typed-secrets 4.2), and with it the resume restores the stored
+       * references as references and loads at delivery (typed-secrets 4.4).
+       * The seam stays until typed-secrets 4.6 turns the typed path on for
+       * every entry point and a resume builds its own typed registry.
+       * Production callers pass nothing.
        */
       secretRedactor?: SecretRedactor;
       sensitiveValues?: RunSensitiveValues;
@@ -4992,9 +5016,10 @@ export class WorkflowExecutionService {
         }
       }
 
-      // Routed through the pass seam for uniformity: a resumed run builds
-      // its sensitive values over an untyped registry until the
-      // rehydratePersistedForm slice, so this is the legacy evaluator.
+      // Routed through the pass seam: with a typed registry (the test seam
+      // above, until typed-secrets 4.6) the restored references bind as
+      // Secrets; a production resume builds an untyped registry and gets the
+      // legacy evaluator.
       const evaluator = new WorkflowExpressionEvaluator(
         await this.expressionEvaluator.passEvaluatorFor(
           sensitiveValuesOf(expressionContext),
@@ -6059,7 +6084,14 @@ export class WorkflowExecutionService {
             stepId: stepName,
             reason: "guarded",
             guardExpression: guardCel,
-            guardResult,
+            // A guard result that holds a secret is refused in a typed run;
+            // text, lists and maps shown are masked either way, and a bare
+            // number or boolean is shown as it is, since the mask would
+            // coerce it.
+            guardResult: typeof guardResult === "number" ||
+                typeof guardResult === "boolean"
+              ? guardResult
+              : options.sensitiveValues.masked(guardResult),
             forEachTemplate,
             forEachIndex,
           };
@@ -6428,7 +6460,9 @@ export class WorkflowExecutionService {
           workflowName: workflow.name,
           jobId: job.name,
           stepId: stepName,
-          prompt: task.prompt,
+          // A resolved expression, shown masked: in a typed run a secret it
+          // holds is a sentinel, which the run's record masks.
+          prompt: String(options.sensitiveValues.masked(task.prompt)),
           timeout: task.timeout,
         };
         // Capture the effective workflow inputs so steps after the gate can
@@ -7723,10 +7757,13 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Restores the values behind a stored run's written references and
-   * attaches the run's record, so the run carries real values in memory and
-   * is written back with references. A run with no references (or one
-   * written before sensitive values were kept off disk) is used as stored.
+   * Restores a stored run's written references and attaches the run's
+   * record, so the run is written back with references. In a typed run the
+   * references become sentinels the deliveries load, and no vault is read
+   * here (typed-secrets 4.4, `rehydrateRunReferences`); in an untyped run
+   * the legacy branch restores the real values into memory. A run with no
+   * references (or one written before sensitive values were kept off disk)
+   * is used as stored.
    */
   private async rehydrateRun(
     run: WorkflowRun,
@@ -7742,6 +7779,9 @@ export class WorkflowExecutionService {
     if (run.writtenReferences.length === 0) {
       run.attachSensitiveValues(sensitiveValues);
       return run;
+    }
+    if (sensitiveValues.sentinels.typedSecrets) {
+      return rehydrateRunReferences(run, sensitiveValues);
     }
     const vaultService = await VaultService.fromRepository(this.repoDir, {
       vaultsDir: this.vaultsDir,

@@ -269,7 +269,10 @@ Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, an
     assertStrictEquals(view.record(untagged), untagged);
     // The service routes content by this identity (QueryView.record).
     const legacy = record({ password: REF_A }, pathsTag("password"));
-    assertStrictEquals(expressionQueryView("infra").record(legacy), legacy);
+    assertStrictEquals(
+      expressionQueryView(readerOf("infra", true)).record(legacy),
+      legacy,
+    );
     const noField = record({ password: REF_A }, pathsTag());
     assertStrictEquals(view.record(noField), noField);
 
