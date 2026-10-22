@@ -43,6 +43,7 @@ import { StepTask } from "../workflows/step_task.ts";
 import {
   AUTHORED_ORIGIN,
   extractExpressions,
+  readSetMap,
   replaceExpressionsTracked,
 } from "./expression_parser.ts";
 import { partitionAuthoredAt } from "./expression_evaluation_service.ts";
@@ -644,4 +645,69 @@ Deno.test("ProvenanceMap: an object's own keys can be data while its values are 
     true,
   );
   assertEquals(ProvenanceMap.authored().toData(), { whole: [], ranges: {} });
+});
+
+Deno.test("readSetMap: a caller's object holding a vouched expression keeps its keys and its other values as data, and the occurrence still substitutes once spliced (swamp-club#3681)", () => {
+  const vaultRef = "${{ vault.get('v', 'k') }}";
+  const constant = "${{ 'public' }}";
+  const vouched = new Set([vaultRef, constant]);
+  const value = {
+    "SECRET-KEY": null,
+    pin: 7381,
+    text: `Bearer ${vaultRef}`,
+    expr: constant,
+    nested: { "INNER-KEY": "plain", list: [constant, "item"] },
+    plain: { "PLAIN-KEY": "x" },
+  };
+  const map = readSetMap(value, vouched);
+  assertEquals(map.hasDataKeysAt(""), true);
+  assertEquals(map.isWholeDataAt(""), false);
+  assertEquals(map.isWholeDataAt(keyPath("", "SECRET-KEY")), true);
+  assertEquals(map.isWholeDataAt("pin"), true);
+  assertEquals(map.rangesAt("text"), [[0, "Bearer ".length]]);
+  assertEquals(map.hasDataAtOrBelow("expr"), false);
+  assertEquals(map.hasDataKeysAt("nested"), true);
+  assertEquals(map.isWholeDataAt(keyPath("nested", "INNER-KEY")), true);
+  assertEquals(map.hasDataAtOrBelow("nested.list[0]"), false);
+  assertEquals(map.isWholeDataAt("nested.list[1]"), true);
+  // A subtree with no vouched occurrence is data whole, keys included.
+  assertEquals(map.isWholeDataAt("plain"), true);
+  // Nothing vouched, or no expression at all: data whole, as before.
+  assertEquals(readSetMap(value, new Set()).isWholeData, true);
+  assertEquals(readSetMap({ "SECRET-KEY": null }, vouched).isWholeData, true);
+  // An occurrence nothing vouches for is data like any other text.
+  assertEquals(
+    readSetMap({ a: "${{ env.X }}", b: constant }, vouched).isWholeDataAt("a"),
+    true,
+  );
+
+  // Spliced whole into an argument, the keys stay data at their new
+  // position and the vouched occurrences still pass the gate.
+  const at = "methods.run.arguments.tokens";
+  const spliced = replaceExpressionsTracked(
+    { methods: { run: { arguments: { tokens: "${{ inputs.key }}" } } } },
+    new Map([["${{ inputs.key }}", value]]),
+    ProvenanceMap.authored(),
+    () => ({ map, authoredRaws: vouched }),
+  );
+  assertEquals(spliced.provenance.hasDataKeysAt(at), true);
+  assertEquals(spliced.provenance.isWholeDataAt(at), false);
+  assertEquals(
+    spliced.provenance.isWholeDataAt(keyPath(at, "SECRET-KEY")),
+    true,
+  );
+  const resolved = replaceExpressionsTracked(
+    spliced.data,
+    new Map([[vaultRef, "VAULT"], [constant, "public"]]),
+    spliced.provenance,
+    () => AUTHORED_ORIGIN,
+  );
+  const tokens = (resolved.data as {
+    methods: { run: { arguments: { tokens: Record<string, unknown> } } };
+  }).methods.run.arguments.tokens;
+  assertEquals(tokens.text, "Bearer VAULT");
+  assertEquals(tokens.expr, "public");
+  assertEquals((tokens.nested as { list: unknown[] }).list, ["public", "item"]);
+  assertEquals(resolved.provenance.hasDataKeysAt(at), true);
+  assertEquals(resolved.provenance.hasDataKeysAt(`${at}.nested`), true);
 });

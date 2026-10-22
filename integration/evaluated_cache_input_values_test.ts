@@ -21,8 +21,10 @@
  * A behavior run whose sensitive argument takes its value from the run's
  * inputs, through the real evaluation and execution services on a
  * throwaway repository (swamp-club#3681). An operator-typed value is the
- * run's data: it reaches the method, and a method that echoes it in its
- * error lands it in neither the error nor the failure record. A run whose
+ * run's data: it reaches the method, and neither the evaluated cache, its
+ * metadata nor a replay keeps it; a method that echoes it in its error
+ * lands it in neither the error nor the failure record. An operator-typed
+ * expression still resolves and replays. A run whose
  * arguments the schema refuses leaves the last good evaluated cache as it
  * was, and a parse the schema refuses or a transform that throws shows
  * nothing of what the transform made of the value.
@@ -65,6 +67,7 @@ await initializeLogging({});
 const VAULT = "secrets";
 const VAULT_VALUE = "VAULT-VALUE-3681-c0ffee";
 const VAULT_REF = `\${{ vault.get('${VAULT}', 'probe') }}`;
+const REFUSED = "evaluated_cache_holds_sensitive_arguments";
 
 const secret = z.string().meta({ sensitive: true });
 
@@ -92,7 +95,8 @@ const PIN = 73816542;
  * throws a fixed text that holds its keys only as fragments of other words.
  * `storePin` writes its sensitive number into a `pinned` resource as a
  * number node, beside a larger number that holds its digits and a note that
- * spells it.
+ * spells it. `record` takes a record of sensitive strings and `container` a
+ * sensitive record; both return.
  * The `refuse*` and `throwMade` methods never run: their schemas refuse
  * what the transform made of the string, through an issue that echoes it
  * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
@@ -169,6 +173,16 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       fail: method("fail", z.object({ token: secret })),
       failText: method("failText", z.object({ token: secret })),
       failCoded: method("failCoded", z.object({ token: secret })),
+      record: method(
+        "record",
+        z.object({ tokens: z.record(z.string(), secret) }),
+      ),
+      container: method(
+        "container",
+        z.object({
+          tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+        }),
+      ),
       failKeys: method(
         "failKeys",
         z.object({
@@ -291,7 +305,7 @@ async function run(
   name: string,
   method: string,
   inputs: Record<string, unknown> = {},
-  options: { lastEvaluated?: boolean } = {},
+  options: { lastEvaluated?: boolean; literalInputs?: boolean } = {},
 ): Promise<ModelMethodRunEvent[]> {
   const repo = createRepositoryContext({ repoDir: h.dir });
   try {
@@ -302,6 +316,7 @@ async function run(
         methodName: method,
         inputs,
         lastEvaluated: options.lastEvaluated ?? false,
+        literalInputs: options.literalInputs,
       }),
     );
   } finally {
@@ -403,6 +418,153 @@ async function cacheOf(
     unknown
   >;
 }
+
+Deno.test("input values: an input value joined to a vault reference in a sensitive argument is masked in the cache, and a replay with another value is refused (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "mixed", "execute", {
+      token: `\${{ inputs.key }}-${VAULT_REF}`,
+    });
+    const events = await run(h, "mixed", "execute", { key: h.canary });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ token: `${h.canary}-${VAULT_VALUE}` }]);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+
+    const cache = await cacheOf(h.dir, "mixed");
+    assertEquals(
+      (cache.methods as Record<string, { arguments: unknown }>).execute
+        .arguments,
+      { token: "***" },
+    );
+    assertEquals(cache.maskedPaths, [[
+      "methods",
+      "execute",
+      "arguments",
+      "token",
+    ]]);
+
+    // A declared input is not a method override: the masked argument stays
+    // masked, so the cached evaluation never runs with the old value.
+    const replay = await run(h, "mixed", "execute", { key: "REPLACED" }, {
+      lastEvaluated: true,
+    });
+    assertEquals(errorsOf(replay).map((error) => error.code), [REFUSED]);
+    assertStringIncludes(
+      errorsOf(replay)[0].message,
+      "'methods.execute.arguments.token'",
+    );
+    assertEquals(h.received.length, 1);
+  });
+});
+
+Deno.test("input values: an operator-typed vault expression in a sensitive argument still resolves, is cached as the reference, and replays (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "typed", "execute", { token: "${{ inputs.key }}" });
+    const events = await run(h, "typed", "execute", { key: VAULT_REF });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ token: VAULT_VALUE }]);
+    assertEquals(await swampFilesHolding(h.dir, VAULT_VALUE), []);
+
+    const cache = await cacheOf(h.dir, "typed");
+    assertEquals(
+      (cache.methods as Record<string, { arguments: unknown }>).execute
+        .arguments,
+      { token: VAULT_REF },
+    );
+    assertEquals(cache.maskedPaths, undefined);
+    // The input expression is what the replay's runtime pass resolves, so
+    // the cache carries it.
+    assertEquals(
+      (cache.authoredExpressions as string[]).includes(VAULT_REF),
+      true,
+    );
+
+    const replay = await run(h, "typed", "execute", { key: VAULT_REF }, {
+      lastEvaluated: true,
+    });
+    assertEquals(errorsOf(replay), []);
+    assertEquals(h.received, [{ token: VAULT_VALUE }, { token: VAULT_VALUE }]);
+  });
+});
+
+Deno.test("input values: a constant expression typed as an input is not kept in the cache's authored set once its value is masked (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "constant", "execute", { token: "${{ inputs.key }}" });
+    const events = await run(h, "constant", "execute", {
+      key: `\${{ '${h.canary}' }}`,
+    });
+    assertEquals(errorsOf(events), []);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    const cache = await cacheOf(h.dir, "constant");
+    assertEquals(cache.authoredExpressions, ["${{ inputs.key }}"]);
+    assertEquals(
+      (cache.methods as Record<string, { arguments: unknown }>).execute
+        .arguments,
+      { token: "***" },
+    );
+  });
+});
+
+Deno.test("input values: a sensitive record whose keys came from an input is masked whole in the cache, and does not replay (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "keys", "container", { tokens: "${{ inputs.key }}" });
+    const events = await run(h, "keys", "container", {
+      key: { [h.canary]: null },
+    });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ tokens: { [h.canary]: null } }]);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    const cache = await cacheOf(h.dir, "keys");
+    assertEquals(cache.maskedPaths, [[
+      "methods",
+      "container",
+      "arguments",
+      "tokens",
+    ]]);
+
+    const replay = await run(h, "keys", "container", {
+      key: { [h.canary]: null },
+    }, { lastEvaluated: true });
+    assertEquals(errorsOf(replay).map((error) => error.code), [REFUSED]);
+    assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
+    assertEquals(h.received.length, 1);
+  });
+});
+
+Deno.test("input values: under --literal-inputs a record of sensitive values is masked at the record, so its keys reach neither the cache, its metadata nor the refusal (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "record", "record", { tokens: "${{ inputs.key }}" });
+    const events = await run(h, "record", "record", {
+      key: { [h.canary]: h.canary },
+    }, { literalInputs: true });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ tokens: { [h.canary]: h.canary } }]);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    const cache = await cacheOf(h.dir, "record");
+    assertEquals(cache.maskedPaths, [[
+      "methods",
+      "record",
+      "arguments",
+      "tokens",
+    ]]);
+    assertEquals(
+      JSON.stringify([cache.provenance, cache.persistedProvenance]).includes(
+        h.canary,
+      ),
+      false,
+    );
+
+    const replay = await run(h, "record", "record", {
+      key: { [h.canary]: h.canary },
+    }, { lastEvaluated: true });
+    assertEquals(errorsOf(replay).map((error) => error.code), [REFUSED]);
+    assertStringIncludes(
+      errorsOf(replay)[0].message,
+      "'methods.record.arguments.tokens'",
+    );
+    assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
+    assertEquals(h.received.length, 1);
+  });
+});
 
 Deno.test("input values: a method that echoes a sensitive argument in its error shows the mask in the error event and the failure record (swamp-club#3681)", async () => {
   await withHarness(async (h) => {
@@ -555,7 +717,7 @@ Deno.test("input values: a workflow step whose method throws a UserError with a 
   });
 });
 
-Deno.test("input values: the keys of a sensitive record an input supplied are not redactor secrets, so a method that echoes them shows them as written and unrelated output that holds a key as a fragment is stored intact (swamp-club#3681)", async () => {
+Deno.test("input values: the keys of a sensitive record an input supplied are not redactor secrets, so a method that echoes them shows them as written and unrelated output that holds a key as a fragment is stored intact, while the cache still masks the record whole (swamp-club#3681)", async () => {
   await withHarness(async (h) => {
     // Keys are identifiers, often short common words. Registered with the
     // redactor they would corrupt every stored text that contains them:
@@ -580,11 +742,18 @@ Deno.test("input values: the keys of a sensitive record an input supplied are no
       true,
     );
     assertEquals(await swampFilesHolding(h.dir, "***uction"), []);
-    // The values are secrets and stay out of every file.
+    // The values are secrets and stay out of every file; the record itself
+    // is masked whole in the cache.
     assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    const cache = await cacheOf(h.dir, "unrelated");
+    assertEquals(
+      (cache.methods as Record<string, { arguments: unknown }>).failUnrelated
+        .arguments,
+      { tokens: "***" },
+    );
 
     // A method that echoes the keys of a sensitive record shows them as it
-    // wrote them.
+    // wrote them; the evaluated definition still masks the record.
     await define(h, "echo-keys", "failKeys", { tokens: "${{ inputs.key }}" });
     const echoed = errorsOf(
       await run(h, "echo-keys", "failKeys", { key: { [h.canary]: null } }),
@@ -594,6 +763,13 @@ Deno.test("input values: the keys of a sensitive record an input supplied are no
       "method_execution_failed",
     ]);
     assertEquals(echoed[0].message, `intentional failure keys ${h.canary}`);
+    assertEquals(
+      await filesHolding(
+        join(h.dir, ".swamp", "definitions-evaluated"),
+        h.canary,
+      ),
+      [],
+    );
   });
 });
 
@@ -704,6 +880,70 @@ Deno.test("input values: a workflow step whose method echoes the keys of a sensi
   });
 });
 
+Deno.test("input values: a sensitive record whose keys came from an input beside an expression the operator typed into it is masked whole in the cache, and does not replay (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "keys-mixed", "container", { tokens: "${{ inputs.key }}" });
+    const events = await run(h, "keys-mixed", "container", {
+      key: { [h.canary]: null, expr: VAULT_REF },
+    });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{
+      tokens: { [h.canary]: null, expr: VAULT_VALUE },
+    }]);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    assertEquals(await swampFilesHolding(h.dir, VAULT_VALUE), []);
+    const cache = await cacheOf(h.dir, "keys-mixed");
+    assertEquals(
+      (cache.methods as Record<string, { arguments: unknown }>).container
+        .arguments,
+      { tokens: "***" },
+    );
+    assertEquals(cache.maskedPaths, [[
+      "methods",
+      "container",
+      "arguments",
+      "tokens",
+    ]]);
+
+    const replay = await run(h, "keys-mixed", "container", {
+      key: { REPLACED: null },
+    }, { lastEvaluated: true });
+    assertEquals(errorsOf(replay).map((error) => error.code), [REFUSED]);
+    assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
+    assertEquals(h.received.length, 1);
+
+    // Echoed by the method, the keys show as written, with a constant typed
+    // beside them as with a vault reference. The definition's one CEL pass
+    // does not re-scan a spliced object, so the constant reaches the method
+    // as typed; only a vault or env reference in it resolves, at runtime.
+    // The evaluated definition still holds the record only as the mask.
+    await define(h, "keys-mixed-echo", "failKeys", {
+      tokens: "${{ inputs.key }}",
+    });
+    const failed = await run(h, "keys-mixed-echo", "failKeys", {
+      key: { [h.canary]: null, expr: "${{ 'public' }}" },
+    });
+    assertEquals(h.received.at(-1), {
+      tokens: { [h.canary]: null, expr: "${{ 'public' }}" },
+    });
+    const errors = errorsOf(failed);
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(
+      errors[0].message,
+      `intentional failure keys ${h.canary},expr`,
+    );
+    assertEquals(
+      await filesHolding(
+        join(h.dir, ".swamp", "definitions-evaluated"),
+        h.canary,
+      ),
+      [],
+    );
+  });
+});
+
 Deno.test("input values: a parse the schema refuses under a transform is described in Zod's words and shows nothing of what the transform made of a sensitive argument, in the error event, the failure record and a workflow step's error (swamp-club#3681)", async () => {
   await withHarness(async (h) => {
     const made = h.canary.toUpperCase();
@@ -778,5 +1018,32 @@ Deno.test("input values: a method that echoes a key its schema's transform deriv
     assertEquals(step.error.includes(made), false);
     assertEquals(step.record.includes(made), false);
     assertEquals(await swampFilesHolding(h.dir, made), []);
+  });
+});
+
+Deno.test("input values: a record of sensitive values whose keys came from an input is masked whole in the cache even when the operator typed a vault reference as every value, and does not replay (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "record-refs", "record", { tokens: "${{ inputs.key }}" });
+    const events = await run(h, "record-refs", "record", {
+      key: { [h.canary]: VAULT_REF },
+    });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ tokens: { [h.canary]: VAULT_VALUE } }]);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+    assertEquals(await swampFilesHolding(h.dir, VAULT_VALUE), []);
+    const cache = await cacheOf(h.dir, "record-refs");
+    assertEquals(cache.maskedPaths, [[
+      "methods",
+      "record",
+      "arguments",
+      "tokens",
+    ]]);
+
+    const replay = await run(h, "record-refs", "record", {
+      key: { REPLACED: VAULT_REF },
+    }, { lastEvaluated: true });
+    assertEquals(errorsOf(replay).map((error) => error.code), [REFUSED]);
+    assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
+    assertEquals(h.received.length, 1);
   });
 });

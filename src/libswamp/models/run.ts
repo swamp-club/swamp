@@ -126,7 +126,10 @@ import {
   coerceInputTypes,
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
-import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
+import {
+  extractInputReferences,
+  readSetMap,
+} from "../../domain/expressions/expression_parser.ts";
 import {
   extractSensitiveFieldValues,
   literalSensitiveGlobalArgsMessage,
@@ -771,22 +774,30 @@ export async function* modelMethodRun(
             // author-written too.
             // Under literalInputs the caller's inputs are data: they vouch for
             // nothing, and every key they supplied is data in the context.
+            const sourceExpressions = collectAuthoredExpressions(
+              definition.toData(),
+            );
             const authoredExpressions = input.literalInputs
-              ? collectAuthoredExpressions(definition.toData())
-              : collectAuthoredExpressions(
-                inputs,
-                collectAuthoredExpressions(definition.toData()),
-              );
+              ? new Set(sourceExpressions)
+              : collectAuthoredExpressions(inputs, new Set(sourceExpressions));
+            // Where data sits in the inputs. The values an operator types are
+            // the run's data, not the definition's source: spliced into a
+            // sensitive argument they are masked in the cache and the
+            // reports like any other data (swamp-club#3681). Only the
+            // expression occurrences the operator typed stay authored, so
+            // they still resolve. Under literalInputs every value is data
+            // whole. A schema default is the definition's own.
             let inputsProvenance = ProvenanceMap.authored();
-            if (input.literalInputs) {
-              for (const key of Object.keys(inputs)) {
-                if (!callerInputKeys.has(key)) {
-                  continue;
-                }
-                inputsProvenance = inputsProvenance.withWholeData(
-                  keySegment(key),
-                );
+            for (const [key, value] of Object.entries(inputs)) {
+              if (!callerInputKeys.has(key)) {
+                continue;
               }
+              inputsProvenance = inputsProvenance.graft(
+                keySegment(key),
+                input.literalInputs
+                  ? ProvenanceMap.data()
+                  : readSetMap(value, collectAuthoredExpressions(value)),
+              );
             }
 
             let deferredExpressions: readonly DeferredExpression[] = [];
@@ -1057,7 +1068,10 @@ export async function* modelMethodRun(
             // Written by the execution service once the method's arguments
             // pass their schema (its onArgumentsValidated), so a run the
             // schema refuses never replaces the last good evaluation that
-            // --last-evaluated reuses (swamp-club#3681).
+            // --last-evaluated reuses (swamp-club#3681). The cache carries
+            // the source's expressions and those an input contributed that
+            // it still holds; an input expression the evaluation consumed
+            // names nothing a replay needs and may hold what was typed.
             const saveEvaluation = pendingSave === undefined
               ? undefined
               : ((saved: Definition) => () =>
@@ -1065,7 +1079,11 @@ export async function* modelMethodRun(
                   modelType,
                   saved,
                   pendingProvenance,
-                  authoredExpressions,
+                  persistedAuthoredExpressions(
+                    sourceExpressions,
+                    authoredExpressions,
+                    saved,
+                  ),
                   pendingReferences,
                   pendingMasked,
                   pendingPersistedProvenance,
@@ -1942,6 +1960,26 @@ export function methodExecutionFailed(
     message: executionErrorFrom(cause, redactor).message,
     cause: shown instanceof Error ? shown : undefined,
   });
+}
+
+/**
+ * The authored set an evaluated cache carries: the source definition's
+ * expressions, and those the run's inputs contributed that `persisted`
+ * still holds, for the runtime pass of a replay. An input expression the
+ * evaluation consumed — a constant, say — names nothing a replay needs, and
+ * may hold what the operator typed (swamp-club#3681).
+ */
+function persistedAuthoredExpressions(
+  source: ReadonlySet<string>,
+  authored: ReadonlySet<string>,
+  persisted: Definition,
+): Set<string> {
+  const held = collectAuthoredExpressions(persisted.toData());
+  const kept = new Set(source);
+  for (const raw of authored) {
+    if (held.has(raw)) kept.add(raw);
+  }
+  return kept;
 }
 
 /**

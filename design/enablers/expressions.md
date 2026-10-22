@@ -1277,6 +1277,15 @@ a data range, which is skipped.
 expression that travels as a value keeps its standing. Examples are a
 `vault.get(...)` passed through method-run `--input`, a step input, a runtime
 global copied through `self.globalArguments`, and a parent's deferred reference.
+A method-run `--input` value is otherwise data: the map for each caller-supplied
+key marks the whole value data except the expression occurrences the operator
+typed, so a plain value spliced into a sensitive argument is masked in the
+evaluated cache and the reports (swamp-club#3681) while the typed expression
+still resolves. An object the operator types keeps its keys and its other
+values as data beside such an occurrence, so a sensitive record it supplies is
+masked at the record whether or not a vault reference or a constant was typed
+into it. Under `--literal-inputs` the whole value is data. A schema default is
+the definition's own and stays authored.
 Data provenance travels with values the same way. The splicing expression
 decides the provenance of what it splices:
 
@@ -1285,8 +1294,10 @@ decides the provenance of what it splices:
 - Any other result, such as computed CEL or an object embedded as JSON, follows
   the read-set rule. An expression occurrence inside it is authored only if its
   raw text appears in the authored parts of the bindings that expression read.
-  Otherwise the whole result is data. The read set comes from the CEL AST and
-  widens to the whole binding root on dynamic access.
+  Everything else in the result is data: the text around such an occurrence,
+  every other value, and the own keys of every object holding one; a subtree
+  holding none is data whole. The read set comes from the CEL AST and widens
+  to the whole binding root on dynamic access.
 
 Authored namespaces are an allow-list:
 
