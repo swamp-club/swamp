@@ -120,8 +120,11 @@ Deno.test("ClubHeartbeatService: sendHeartbeat failure does not stop the service
     },
   });
   service.start();
-  await new Promise((r) => setTimeout(r, 180));
-  service.stop();
+  try {
+    await waitFor(() => callCount >= 2, "heartbeat retries after a failed tick");
+  } finally {
+    service.stop();
+  }
   assertEquals(callCount >= 2, true);
 });
 
