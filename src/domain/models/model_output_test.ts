@@ -780,6 +780,22 @@ Deno.test("redactedError: a coded UserError that echoes a secret stays a UserErr
   assertEquals(errorPaths(error), ["/repo/a"]);
 });
 
+Deno.test("redactedError: a UserError code that echoes a secret is redacted, and the copy stays a UserError (swamp-club#3773)", () => {
+  const error = new UserError("denied", "auth_failed_hunter2-long");
+  const shown = redactedError(error, secretRedactor);
+  if (!(shown instanceof UserError)) {
+    throw new Error("expected the copy to stay a UserError");
+  }
+  assertEquals(shown === error, false);
+  assertEquals(shown.code, "auth_failed_***");
+  assertEquals(shown.message, "denied");
+  // The original is left as it was.
+  assertEquals(error.code, "auth_failed_hunter2-long");
+  // A code with nothing to hide leaves an error with nothing to hide as is.
+  const clean = new UserError("denied", "auth_failed");
+  assertEquals(redactedError(clean, secretRedactor), clean);
+});
+
 Deno.test("redactedError: an AggregateError keeps its errors, and an error without a cause gains none (swamp-club#3746)", () => {
   const inner = new Error("inner");
   const shown = redactedError(

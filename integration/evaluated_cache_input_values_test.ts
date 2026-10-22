@@ -31,6 +31,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
 import { z } from "zod";
+import { UserError } from "../src/domain/errors.ts";
 import {
   Definition,
   type InputsSchema,
@@ -77,7 +78,8 @@ interface Harness {
  * A repository with one local vault holding `probe`, and a type whose
  * methods record the arguments they receive. Each takes a sensitive string:
  * `execute` returns, and the others throw something that echoes it, `fail`
- * an Error, `failText` the bare string.
+ * an Error, `failText` the bare string, `failCoded` a UserError whose code
+ * holds it.
  */
 async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-3681-inputs-" });
@@ -89,6 +91,8 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   };
   const thrown: Record<string, (args: Record<string, unknown>) => unknown> = {
     failText: (args) => `intentional failure ${args.token}`,
+    failCoded: (args) =>
+      new UserError("intentional failure", `auth_failed_${args.token}`),
   };
   const record = (name: string) => (args: unknown) => {
     received.push(args as Record<string, unknown>);
@@ -110,6 +114,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       execute: method("execute", z.object({ token: secret.optional() })),
       fail: method("fail", z.object({ token: secret })),
       failText: method("failText", z.object({ token: secret })),
+      failCoded: method("failCoded", z.object({ token: secret })),
     },
   });
   try {
@@ -399,5 +404,17 @@ Deno.test("input values: arguments the schema refuses never replace the last goo
     });
     assertEquals(errorsOf(replay), []);
     assertEquals(h.received, [{ token: VAULT_VALUE }, { token: VAULT_VALUE }]);
+  });
+});
+
+Deno.test("input values: a workflow step whose method throws a UserError with a code echoing a sensitive argument records the code masked (swamp-club#3773)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "coded", "failCoded", { token: "${{ inputs.key }}" });
+    const step = await runStep(h, "coded", "failCoded", h.canary);
+    assertEquals(step.status, "failed");
+    assertEquals(h.received, [{ token: h.canary }]);
+    assertEquals(step.error, "intentional failure");
+    assertStringIncludes(step.record, '"errorCode":"auth_failed_***"');
+    assertEquals(step.record.includes(h.canary), false);
   });
 });

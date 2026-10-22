@@ -98,7 +98,9 @@ export function executionErrorFrom(
 /**
  * `error` with its message and stack passed through `redactor`, as
  * {@link executionErrorFrom} reads them, for a caller that rethrows or
- * reports it (swamp-club#3681). It is the same value when the redactor holds
+ * reports it (swamp-club#3681). A string `code` is passed through it too,
+ * since a workflow step records it next to the message (swamp-club#3773).
+ * It is the same value when the redactor holds
  * nothing or nothing changes. Otherwise an Error becomes a copy that keeps
  * its class, name, cause, own properties (a code, recovered data handles,
  * written versions, an AggregateError's errors), marked paths and model
@@ -118,7 +120,12 @@ export function redactedError(
     return shown === text ? error : shown;
   }
   const failure = executionErrorFrom(error, redactor);
-  if (failure.message === error.message && failure.stack === error.stack) {
+  const code = (error as { code?: unknown }).code;
+  const shownCode = typeof code === "string" ? redactor.redact(code) : code;
+  if (
+    failure.message === error.message && failure.stack === error.stack &&
+    shownCode === code
+  ) {
     return error;
   }
   const cleaned = new Error(failure.message);
@@ -130,6 +137,12 @@ export function redactedError(
     if (key === "message" || key === "stack") continue;
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
     if (descriptor) Object.defineProperty(cleaned, key, descriptor);
+  }
+  if (shownCode !== code) {
+    Object.defineProperty(cleaned, "code", {
+      ...Object.getOwnPropertyDescriptor(error, "code"),
+      value: shownCode,
+    });
   }
   // The class is kept, so a coded UserError is still one and a workflow step
   // keeps its error code (swamp-club#3748).
