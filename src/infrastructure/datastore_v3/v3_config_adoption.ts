@@ -424,7 +424,7 @@ export async function planV3ConfigAdoption(
 }
 
 /** How many commits {@link definitionHasCommits} reads at a time. */
-const DEFINITION_SCAN_PAGE = 256;
+export const DEFINITION_SCAN_PAGE = 256;
 
 /**
  * Whether any commit of a managed-config partition changes its definition.
@@ -435,8 +435,8 @@ const DEFINITION_SCAN_PAGE = 256;
  * and a name that cannot be shown never to have been committed is never
  * adopted (swamp-club#3760).
  */
-async function definitionHasCommits(
-  store: CommitStore,
+export async function definitionHasCommits(
+  store: Pick<CommitStore, "head" | "readPartition">,
   namespace: string,
   partition: PartitionKey,
 ): Promise<boolean> {

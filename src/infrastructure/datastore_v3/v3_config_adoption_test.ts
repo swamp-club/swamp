@@ -19,9 +19,26 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { Commit } from "../../domain/datastore_v3/commit.ts";
+import {
+  type CommitChange,
+  CommitsCompactedError,
+  type CommitStore,
+} from "../../domain/datastore_v3/commit_store.ts";
+import { createIntent } from "../../domain/datastore_v3/intent.ts";
+import { tombstoneOp } from "../../domain/datastore_v3/op.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  ConfigChanges,
+  type ConfigRemoval,
+  recordKeyOf,
+} from "../../domain/datastore_v3/repository_changes.ts";
 import { assertPathEquals } from "../persistence/path_test_helpers.ts";
-import { planConfigAdoption } from "./v3_config_adoption.ts";
+import {
+  DEFINITION_SCAN_PAGE,
+  definitionHasCommits,
+  planConfigAdoption,
+} from "./v3_config_adoption.ts";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "v3-config-adoption-test-" });
@@ -350,4 +367,109 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
     });
     assertEquals(committed.lockfile, undefined);
   });
+});
+
+/**
+ * A commit store holding one workflow partition's commits, one tombstone of
+ * the given intent each, compacted through `compactedThrough`. Records the
+ * seq each read starts from.
+ */
+function partitionStore(
+  kinds: readonly ConfigRemoval[],
+  compactedThrough = 0,
+): {
+  store: Pick<CommitStore, "head" | "readPartition">;
+  reads: number[];
+} {
+  const changes = new ConfigChanges("workflow", "w1");
+  const key = recordKeyOf(["config", "workflows", "workflow-w1.yaml"]);
+  const commits = kinds.map((kind, i) =>
+    Commit.create({
+      seq: i + 1,
+      partition: changes.partition,
+      namespace: "",
+      txnId: `txn-${i + 1}`,
+      writer: { host: "host-a", pid: 4242, instance: "cli-1" },
+      at: "2026-10-22T00:00:00.000Z",
+      ops: [
+        tombstoneOp({
+          intent: createIntent({
+            kind,
+            definition: { kind: "workflow", name: "w1" },
+          }),
+          key,
+        }),
+      ],
+    })
+  );
+  const reads: number[] = [];
+  return {
+    reads,
+    store: {
+      head: () =>
+        Promise.resolve({ seq: commits.length, highestFence: undefined }),
+      readPartition: (_namespace, _partition, fromSeq, limit) => {
+        reads.push(fromSeq);
+        if (fromSeq <= compactedThrough) {
+          return Promise.reject(
+            new CommitsCompactedError(compactedThrough, "compacted"),
+          );
+        }
+        return Promise.resolve(
+          commits.slice(fromSeq - 1, fromSeq - 1 + limit).map((
+            commit,
+          ): CommitChange => ({ cursor: commit.seq, commit })),
+        );
+      },
+    },
+  };
+}
+
+const W1 = partitionOf({
+  kind: "config",
+  definitionKind: "workflow",
+  name: "w1",
+});
+
+Deno.test("definitionHasCommits: finds a definition change after the first page of run output", async () => {
+  const runs = Array<ConfigRemoval>(DEFINITION_SCAN_PAGE + 10).fill(
+    "evaluated-workflow.delete",
+  );
+  const { store, reads } = partitionStore([...runs, "definition.delete"]);
+  assertEquals(await definitionHasCommits(store, "", W1), true);
+  assertEquals(reads, [1, DEFINITION_SCAN_PAGE + 1]);
+});
+
+Deno.test("definitionHasCommits: run output alone, over several pages, is no definition", async () => {
+  const { store, reads } = partitionStore(
+    Array<ConfigRemoval>(DEFINITION_SCAN_PAGE * 2).fill(
+      "evaluated-workflow.delete",
+    ),
+  );
+  assertEquals(await definitionHasCommits(store, "", W1), false);
+  assertEquals(reads, [
+    1,
+    DEFINITION_SCAN_PAGE + 1,
+    2 * DEFINITION_SCAN_PAGE + 1,
+  ]);
+});
+
+Deno.test("definitionHasCommits: stops at the first definition change", async () => {
+  const { store, reads } = partitionStore([
+    "evaluated-workflow.delete",
+    "definition.create",
+    ...Array<ConfigRemoval>(DEFINITION_SCAN_PAGE * 2).fill(
+      "evaluated-workflow.delete",
+    ),
+  ]);
+  assertEquals(await definitionHasCommits(store, "", W1), true);
+  assertEquals(reads, [1]);
+});
+
+Deno.test("definitionHasCommits: a partition never written reads nothing, and a compacted one counts as committed", async () => {
+  const empty = partitionStore([]);
+  assertEquals(await definitionHasCommits(empty.store, "", W1), false);
+  assertEquals(empty.reads, []);
+  const compacted = partitionStore(["evaluated-workflow.delete"], 1);
+  assertEquals(await definitionHasCommits(compacted.store, "", W1), true);
 });
