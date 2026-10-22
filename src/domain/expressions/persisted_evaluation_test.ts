@@ -570,6 +570,49 @@ Deno.test("persistEvaluatedDefinition: method sensitivity covers global fallback
   );
 });
 
+Deno.test("persistEvaluatedDefinition: a method argument record omitted at its root is masked once, though the globals it falls back to are merged back into it (swamp-club#3750)", () => {
+  const schemas = {
+    globalArguments: z.object({ region: z.string() }),
+    methods: {
+      run: {
+        arguments: z.preprocess(
+          (value) => value,
+          z.object({
+            token: z.string().meta({ sensitive: true }).optional(),
+          }),
+        ),
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "root-record",
+    globalArguments: { region: "eu-west-1" },
+    methods: { run: { arguments: { [INPUT_VALUE]: "x" } } },
+  });
+  // The record's keys came from data, so it is omitted at its root. Written
+  // as an empty record, the root still holds the merged globals, which
+  // found it again on every pass of the masking loop.
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    definition,
+    new RunSensitiveValues(),
+    schemas,
+    ProvenanceMap.authored().withWholeData("methods.run.arguments"),
+  );
+  assertEquals(persisted.definition.getMethodArguments("run"), {});
+  assertEquals(persisted.definition.globalArguments, { region: "eu-west-1" });
+  assertEquals(persisted.maskedPaths, [["methods", "run", "arguments"]]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
+});
+
 /** The executed copy: a sentinel where the value was spliced, raw in a tag. */
 function executed(bag: VaultSecretBag): Definition {
   const sentinel = bag.addDataSecret(SECRET, SOURCE);

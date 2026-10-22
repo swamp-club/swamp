@@ -628,9 +628,15 @@ function maskSensitiveArguments(
       },
       plaintextDataAt,
     );
-    if (!next.length) break;
+    // A position masked already can be found again: an argument root is
+    // written as an empty record, and a method site merges the globals it
+    // falls back to back into it, so only new positions continue the loop.
+    const fresh = next.filter((value) =>
+      !values.some((done) => samePath(position(done), position(value)))
+    );
+    if (!fresh.length) break;
     if (masked === data) masked = structuredClone(data);
-    for (const value of next) {
+    for (const value of fresh) {
       maskAt(masked, position(value));
       values.push(value);
     }

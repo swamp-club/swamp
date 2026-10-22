@@ -967,12 +967,12 @@ caches forwarded step inputs only when the method schema accepts them. If an
 argument is masked, forwarded copies of definition inputs are masked too,
 including inputs read without a declaration and computed input reads; other
 unknown keys are omitted. An input feeding a sensitive argument is therefore
-not saved beside it under an unmarked name. Ordinary accepted overrides,
-including names shared with definition inputs and inputs to preprocessors, keep
-their executed values in the cache. A plain re-run writes the mask again, so the
-message points at what makes the run replayable: a vault reference. Method
-sensitivity also covers global values used as fallback method arguments; the
-mask records their actual global position. Authored text joined
+not saved beside it under an unmarked name. While no argument is masked, the
+accepted step inputs, including names shared with definition inputs and inputs
+to preprocessors, keep their executed values in the cache. A plain re-run writes
+the mask again, so the message points at what makes the run replayable: a vault
+reference. Method sensitivity also covers global values used as fallback method
+arguments; the mask records their actual global position. Authored text joined
 to a reference or a pending runtime expression stays as written. Resolved input
 or data text beside it masks the entire sensitive leaf, unless every resolved
 segment is a recorded vault reference, and expression-shaped input data is
@@ -1002,10 +1002,10 @@ are omitted from the definition cache and recorded as masked too; behavior
 replay refuses that incomplete scope. Runtime-only deferred expressions retain
 their workflow metadata and can still replay when an override replaces the
 sensitive argument. Sensitive deferred arguments that capture non-vault values,
-in their leaves or their keys, are masked before those values reach disk.
-Inputs to preprocessors or
-pipelines with sensitive output fields, and the global arguments a schema with a
-transform may consume, are only potentially sensitive, and no transform runs
+in their leaves or their keys, are masked before those values reach disk. Inputs
+to preprocessors or pipelines with sensitive output fields, and the global
+arguments a schema with a transform may consume, are only potentially sensitive,
+and no transform runs
 during persistence to tell. Only data is masked at such a position, at the
 leaf: an authored literal is already the definition's own text on disk, and a
 vault reference names where the secret lives, so both stay, and a vault-only

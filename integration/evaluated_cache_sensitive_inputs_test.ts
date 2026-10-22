@@ -580,12 +580,14 @@ for (
             cache.maskedPaths.some((path) => path[0] === "deferredExpressions"),
             target === "nested-expression",
           );
-        } else {assertEquals(
+        } else {
+          assertEquals(
             cache.maskedPaths,
             target === "accepted-alias"
               ? [maskedPath, ["methods", "execute", "arguments", "tok"]]
               : [maskedPath],
-          );}
+          );
+        }
 
         const replay = await service.execute(workflow.name, {
           lastEvaluated: true,
