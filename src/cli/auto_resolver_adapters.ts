@@ -319,9 +319,10 @@ export function createAutoResolveInstallerAdapter(
       // reinstall keeps its skill paths and prunes none of them
       // (swamp-club#3727). Otherwise they go to the pulled skills dir.
       const recordedDirs = recordedSkillsDirs(pinnedFiles);
+      const pulledSkillsDirs = [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)];
       const skillsDirs = recordedDirs.length > 0
         ? recordedDirs.map((dir) => join(repoDir, dir))
-        : [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)];
+        : pulledSkillsDirs;
       // A skill conflict the pinned entry records: the conflict is that
       // skill's root, and the entry lists the root or files under it.
       const isRecordedSkill = (path: string) =>
@@ -351,6 +352,9 @@ export function createAutoResolveInstallerAdapter(
           logger,
           lockfileRepository: lockfileRepo,
           skillsDirs,
+          // Dependencies merge into existing skill dirs without a conflict,
+          // so they stay out of the user's tool dirs.
+          dependencySkillsDirs: pulledSkillsDirs,
           repoDir,
           force,
           alreadyPulled: new Set<string>(teamInstalled),

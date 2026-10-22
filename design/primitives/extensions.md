@@ -1812,7 +1812,9 @@ auto-resolve does:
   state is missing and the install proceeds. It writes the skill back into the
   dirs the entry records, so the entry keeps its skill paths and none are
   pruned. An install with no recorded skill dir puts skills in
-  `.swamp/pulled-extensions/skills/` (swamp-club#3727).
+  `.swamp/pulled-extensions/skills/`, and so do the dependencies an install
+  pulls in, since dependencies merge into existing skill dirs without a
+  conflict (swamp-club#3727).
 
 "Intact-but-fails" and "truncated" share one recovery,
 `swamp extension pull <name> --force`, the only way auto-installation state can

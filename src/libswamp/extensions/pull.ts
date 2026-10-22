@@ -277,6 +277,14 @@ export interface InstallContext {
    * repos correctly.
    */
   skillsDirs: string[];
+  /**
+   * Skills destinations for the dependencies this install pulls in, when
+   * they differ from `skillsDirs`. Dependencies never raise skill
+   * conflicts, so the auto-resolver keeps them in the swamp-owned pulled
+   * skills dir while the extension itself goes back to the tool dirs its
+   * lockfile entry records (swamp-club#3727). Defaults to `skillsDirs`.
+   */
+  dependencySkillsDirs?: string[];
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
@@ -2548,6 +2556,7 @@ export async function applyInstall(
             { name: depRef.name, version: lockedEntry.version },
             {
               ...ctx,
+              skillsDirs: ctx.dependencySkillsDirs ?? ctx.skillsDirs,
               depth: ctx.depth + 1,
               channel: lockedEntry.channel,
               expectedChecksum: lockedEntry.checksum,
@@ -2595,6 +2604,7 @@ export async function applyInstall(
           // rolling this install back removes it too.
           const depPending = await installDependencyPending(resolvedRef, {
             ...ctx,
+            skillsDirs: ctx.dependencySkillsDirs ?? ctx.skillsDirs,
             depth: ctx.depth + 1,
             channel: depChannel,
             expectedChecksum: undefined,

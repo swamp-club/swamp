@@ -1900,3 +1900,57 @@ Deno.test("auto_resolver_adapters: install refuses a skill conflict the pinned e
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("auto_resolver_adapters: install keeps a new dependency's skill out of the parent's recorded tool dir", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const id = crypto.randomUUID().slice(0, 8);
+    const parent = `@t/parent-${id}`;
+    const dep = `@t/dep-${id}`;
+    const version = "2026.01.01.1";
+    // The parent's entry records a claude skill, so its own skill goes
+    // back there. The dependency has no entry and ships "bar", which the
+    // user already has as their own claude skill.
+    const lockfilePath = await seedLockfile(repoDir, {
+      [parent]: [
+        `.swamp/pulled-extensions/${parent}/manifest.yaml`,
+        ".claude/skills/foo",
+      ],
+    });
+    const userSkill = join(repoDir, ".claude", "skills", "bar", "SKILL.md");
+    await ensureDir(join(repoDir, ".claude", "skills", "bar"));
+    await Deno.writeTextFile(userSkill, "mine");
+    const archives = new Map([
+      [parent, await packExtension(parent, version, [dep], "foo")],
+      [dep, await packExtension(dep, version, [], "bar")],
+    ]);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (name) =>
+        Promise.resolve({ name, description: "", latestVersion: version }),
+      downloadArchive: (name) => Promise.resolve(archives.get(name)!),
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const result = await adapter.install(parent);
+
+    assertEquals(result?.version, version);
+    assertEquals(await Deno.readTextFile(userSkill), "mine");
+    assertEquals(
+      await Deno.readTextFile(
+        join(repoDir, ".claude", "skills", "foo", "SKILL.md"),
+      ),
+      "x",
+    );
+    assertEquals(
+      await Deno.readTextFile(
+        swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills, "bar", "SKILL.md"),
+      ),
+      "x",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
