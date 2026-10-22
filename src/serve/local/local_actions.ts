@@ -143,9 +143,14 @@ export function actionCommand(
         return { kind: "invalid", message: step.error };
       }
       const verb = type === "workflow.approve" ? "approve" : "reject";
+      // One argv element, so the text can never read as another flag
+      // (swamp-club#3697).
+      const reason = typeof p.reason === "string" && p.reason.trim() !== ""
+        ? [`--reason=${p.reason}`]
+        : [];
       return {
         kind: "command",
-        args: ["workflow", verb, workflow, step, run, "--json"],
+        args: ["workflow", verb, workflow, step, run, ...reason, "--json"],
         detached: false,
         runId,
       };

@@ -33,21 +33,45 @@ interface GateDetailsProps {
    */
   runLink: ReactNode;
   prompt?: string;
+  /** Who started the run, as the run recorded it. */
+  initiatedBy?: string;
+  /** The run's inputs, shown as text. */
+  inputs?: Readonly<Record<string, unknown>>;
   /** The workflow's jobs; null while they load or when they failed to. */
   jobs: readonly WorkflowJobDef[] | null;
   /** Why the jobs could not be read, if they could not. */
   error?: string | null;
 }
 
+/** Up to this many inputs show without a click. */
+const INPUTS_SHOWN_OPEN = 6;
+
+/** An input's value as text: strings as they are, anything else as JSON. */
+function inputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value) ?? String(value);
+}
+
 /**
- * What a gate holds back, shown inline under an approval: the run, the
- * gated step, its prompt, what runs next, and the workflow's jobs with the
- * gate's job and everything downstream of it highlighted.
+ * What a gate holds back, shown inline under an approval: the run, who
+ * started it, the gated step, its prompt, the run's inputs, what runs next,
+ * and the workflow's jobs with the gate's job and everything downstream of
+ * it highlighted.
  */
 export function GateDetails(
-  { workflowName, stepName, runLink, prompt, jobs, error }: GateDetailsProps,
+  {
+    workflowName,
+    stepName,
+    runLink,
+    prompt,
+    initiatedBy,
+    inputs,
+    jobs,
+    error,
+  }: GateDetailsProps,
 ) {
   const ctx = jobs ? gateContext(jobs, stepName) : null;
+  const inputEntries = Object.entries(inputs ?? {});
   return (
     <div className="gate-details">
       <dl className="gate-facts">
@@ -55,6 +79,12 @@ export function GateDetails(
           <dt>Run</dt>
           <dd>{runLink}</dd>
         </div>
+        {initiatedBy && (
+          <div>
+            <dt>Started by</dt>
+            <dd className="mono">{initiatedBy}</dd>
+          </div>
+        )}
         <div>
           <dt>Gated step</dt>
           <dd>
@@ -70,6 +100,27 @@ export function GateDetails(
           <div className="gate-prompt">
             <dt>Prompt</dt>
             <dd>{prompt}</dd>
+          </div>
+        )}
+        {inputEntries.length > 0 && (
+          <div className="gate-inputs">
+            <dt>Inputs</dt>
+            <dd>
+              <details open={inputEntries.length <= INPUTS_SHOWN_OPEN}>
+                <summary>
+                  {inputEntries.length}{" "}
+                  {inputEntries.length === 1 ? "input" : "inputs"}
+                </summary>
+                <dl className="gate-input-list">
+                  {inputEntries.map(([name, value]) => (
+                    <div key={name}>
+                      <dt className="mono">{name}</dt>
+                      <dd className="mono">{inputText(value)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+            </dd>
           </div>
         )}
         <div>

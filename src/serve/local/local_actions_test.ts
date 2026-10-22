@@ -73,6 +73,42 @@ Deno.test("actionCommand: approve and reject name the workflow, the step and the
   );
 });
 
+Deno.test("actionCommand: a decision's reason is one --reason= argument", () => {
+  const payload = {
+    workflowIdOrName: "gated",
+    stepName: "example",
+    runId: RUN,
+  };
+  for (const verb of ["approve", "reject"] as const) {
+    const command = actionCommand(`workflow.${verb}`, {
+      ...payload,
+      reason: "--force\nchecked the ticket",
+    });
+    assertEquals(command, {
+      kind: "command",
+      args: [
+        "workflow",
+        verb,
+        "gated",
+        "example",
+        `--run=${RUN}`,
+        "--reason=--force\nchecked the ticket",
+        "--json",
+      ],
+      detached: false,
+      runId: RUN,
+    });
+    for (const reason of [undefined, "", "   ", 42]) {
+      const without = actionCommand(`workflow.${verb}`, { ...payload, reason });
+      assertEquals(
+        without.kind === "command" &&
+          without.args.some((a) => a.startsWith("--reason")),
+        false,
+      );
+    }
+  }
+});
+
 Deno.test("actionCommand: resume runs on its own; cancel waits", () => {
   const payload = { workflowIdOrName: "@acme/deploy", runId: RUN };
   assertEquals(actionCommand("workflow.resume", payload), {

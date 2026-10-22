@@ -25,6 +25,13 @@ export interface ApprovalInfo {
   suspendedAt?: string;
   prompt?: string;
   inputs?: Readonly<Record<string, unknown>>;
+  /** Who started the run, as the run recorded it. */
+  initiatedBy?: string;
+  /**
+   * Whether this viewer holds `approve` on the gate's workflow. Absent from
+   * a serve that does not say; serve decides on the request either way.
+   */
+  canDecide?: boolean;
   /** On a nested workflow's run, the parent that started it. */
   parentRun?: { workflowName: string; runId: string };
   /** Whether that parent still waits on this run. */

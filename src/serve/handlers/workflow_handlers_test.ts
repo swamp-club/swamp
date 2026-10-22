@@ -2155,3 +2155,135 @@ Deno.test("handleWorkflowApprovals: traces the approvals read, its definitions l
     });
   });
 });
+
+// --- handleWorkflowApprovals canDecide (swamp-club#3697) ---
+
+/**
+ * Saves a workflow with one manual_approval gate and a run suspended at it,
+ * started by `user:alice`.
+ */
+async function seedGatedRun(
+  dir: string,
+  repo: YamlWorkflowRepository,
+  name: string,
+  tags: Record<string, string>,
+): Promise<Workflow> {
+  const workflow = Workflow.create({
+    name,
+    tags,
+    jobs: [
+      Job.create({
+        name: "review",
+        steps: [
+          Step.create({
+            name: "approval",
+            task: StepTask.manualApproval("Ship it?"),
+          }),
+        ],
+      }),
+    ],
+  });
+  await repo.save(workflow);
+  const run = WorkflowRun.create(workflow, {}, "user:alice");
+  run.start();
+  const job = run.getJob("review")!;
+  job.start();
+  const step = job.getStep("approval")!;
+  step.start();
+  step.waitForApproval("Ship it?");
+  run.suspend();
+  await new YamlWorkflowRunRepository(dir).save(workflow.id, run);
+  return workflow;
+}
+
+async function listApprovals(
+  ctx: ConnectionContext,
+  principal: Principal | null,
+): Promise<Array<Record<string, unknown>>> {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowApprovals(
+    socket,
+    ctx,
+    "req-approvals",
+    new AbortController(),
+    principal,
+  );
+  assertEquals(frames.map((f) => f.type), ["workflow.approvals"]);
+  const data = (frames[0].payload as unknown as {
+    data: { approvals: Array<Record<string, unknown>> };
+  }).data;
+  return data.approvals;
+}
+
+function approvalsCtx(
+  dir: string,
+  repo: YamlWorkflowRepository,
+  grants?: Grant[],
+  options: GrantBasedAccessDecisionServiceOptions = {},
+): ConnectionContext {
+  const ctx = workflowEditCtx(dir, repo, grants, options);
+  ctx.repoContext = {
+    ...ctx.repoContext,
+    workflowRunRepo: new YamlWorkflowRunRepository(dir),
+  };
+  (ctx as unknown as Record<string, unknown>).datastoreResolver = {
+    resolvePath: (subdir: string) => join(dir, ".swamp", subdir),
+  };
+  return ctx;
+}
+
+Deno.test("handleWorkflowApprovals: canDecide says whether this caller holds approve on each readable gate's workflow", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await seedGatedRun(dir, repo, "team-a-deploy", { team: "team-a" });
+    await seedGatedRun(dir, repo, "team-b-deploy", { team: "team-b" });
+    await seedGatedRun(dir, repo, "hidden-deploy", { team: "hidden" });
+    const ctx = approvalsCtx(dir, repo, [
+      workflowGrant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "team-*" },
+      }),
+      workflowGrant({
+        actions: ["approve"],
+        resource: { kind: "workflow", pattern: "*" },
+        condition: 'tags.team == "team-a"',
+      }),
+    ]);
+    const approvals = await listApprovals(ctx, WORKFLOW_EDITOR);
+    const byName = new Map(approvals.map((a) => [a.workflowName, a]));
+    // The unreadable workflow's gate is dropped before any flag is set.
+    assertEquals([...byName.keys()].sort(), ["team-a-deploy", "team-b-deploy"]);
+    assertEquals(byName.get("team-a-deploy")?.canDecide, true);
+    assertEquals(byName.get("team-b-deploy")?.canDecide, false);
+    assertEquals(byName.get("team-a-deploy")?.initiatedBy, "user:alice");
+  });
+});
+
+Deno.test("handleWorkflowApprovals: canDecide follows run-implies-approve and its explicit-grant setting", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await seedGatedRun(dir, repo, "deploy", {});
+    const grants = [
+      workflowGrant({
+        actions: ["read", "run"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ];
+    const implied = await listApprovals(
+      approvalsCtx(dir, repo, grants),
+      WORKFLOW_EDITOR,
+    );
+    assertEquals(implied.map((a) => a.canDecide), [true]);
+    const explicit = await listApprovals(
+      approvalsCtx(dir, repo, grants, { runImpliesApprove: false }),
+      WORKFLOW_EDITOR,
+    );
+    assertEquals(explicit.map((a) => a.canDecide), [false]);
+  });
+});
+
+Deno.test("handleWorkflowApprovals: with authorization off every gate can be decided", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await seedGatedRun(dir, repo, "deploy", {});
+    const approvals = await listApprovals(approvalsCtx(dir, repo), null);
+    assertEquals(approvals.map((a) => a.canDecide), [true]);
+  });
+});
