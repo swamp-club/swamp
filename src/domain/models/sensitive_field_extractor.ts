@@ -723,8 +723,13 @@ export interface RefusedIssue {
  * transforms values anywhere, an issue's path names a position in the
  * transformed shape, and when the schema's own code encloses a sensitive
  * position, an issue it adds may sit at any path (see
- * {@link codeAroundMetadata}), so every issue counts. A schema that marks
- * nothing yields nothing.
+ * {@link codeAroundMetadata}), so every issue counts. An issue above a
+ * position, or one that counts for that reason, may have received plain
+ * values beside the sensitive one, and a run shares its redactor across
+ * every step: text `input` holds only at positions the schema leaves plain
+ * (see {@link plainTextsOf}), and a key the schema declares, are left out,
+ * so a region or a field name is not masked out of every later log and
+ * resource. A schema that marks nothing yields nothing.
  *
  * @param schema - The arguments schema the parse ran
  * @param input - What the parse received
@@ -740,7 +745,9 @@ export function extractRefusedSensitiveValues(
     return [];
   }
   const spelled = objectKeysOf(input);
-  const includeKey = (key: string) => !spelled.has(key);
+  const declared = schemaDeclaredKeys(schema);
+  const includeKey = (key: string) => !spelled.has(key) && !declared.has(key);
+  const plain = plainTextsOf(schema, input);
   const positions = sensitivePositions(schema, input);
   const secrets: string[] = [];
   for (const issue of issues) {
@@ -749,9 +756,40 @@ export function extractRefusedSensitiveValues(
     ) {
       continue;
     }
-    collectSecretStrings(issue.input, secrets, includeKey);
+    const texts: string[] = [];
+    collectSecretStrings(issue.input, texts, includeKey);
+    for (const text of texts) {
+      if (!plain.has(text)) secrets.push(text);
+    }
   }
   return [...new Set(secrets)];
+}
+
+/**
+ * The text `input` holds only at positions `schema` leaves plain: every
+ * string in it less those under a sensitive position, a schema marked at its
+ * root included. The schema itself declares such text no secret, so a value
+ * a sensitive position holds counts as sensitive even where a plain position
+ * holds it too.
+ */
+function plainTextsOf(schema: z.ZodTypeAny, input: unknown): Set<string> {
+  const marked: string[] = [];
+  if (isPlainObject(input)) {
+    for (const field of extractSensitiveFields(schema)) {
+      collectSecretStrings(getNestedValue(input, field.path), marked);
+    }
+  }
+  for (
+    const { value } of findValuesWithMetadata(schema, input, isSensitive, {
+      reportRoot: true,
+    })
+  ) {
+    collectSecretStrings(value, marked);
+  }
+  const sensitive = new Set(marked);
+  const texts: string[] = [];
+  collectSecretStrings(input, texts);
+  return new Set(texts.filter((text) => !sensitive.has(text)));
 }
 
 /**
@@ -810,8 +848,10 @@ const STANDARD_ERROR_NAMES: ReadonlySet<string> = new Set([
  * whatever it was given or made of it, which nothing has registered, since
  * the parse delivered nothing (swamp-club#3681). The error's name is written
  * as the schema's code may have set it, so only a standard name is reported.
- * A run throws what this returns; a validation reports its message, see
- * {@link schemaThrowMessage}.
+ * Zod's own error for an async check met by a synchronous parse names no
+ * input and is returned as it is, so its advice to parse asynchronously
+ * reaches the author. A run throws what this returns; a validation reports
+ * its message, see {@link schemaThrowMessage}.
  *
  * @param error - What the parse threw
  * @param schema - The arguments schema the parse ran
@@ -824,6 +864,7 @@ export function schemaThrew(
   subject: string,
 ): unknown {
   if (!schemaHoldsMetadata(schema, isSensitive)) return error;
+  if (error instanceof z.core.$ZodAsyncError) return error;
   const name = error instanceof Error
     ? STANDARD_ERROR_NAMES.has(error.name) ? error.name : "an error"
     : `a ${typeof error}`;

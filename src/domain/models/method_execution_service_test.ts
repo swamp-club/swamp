@@ -6704,3 +6704,81 @@ Deno.test("executeWorkflow: a refusal the schema's own code writes at a sensitiv
     'Global arguments validation failed: Invalid input at "apiKey"',
   );
 });
+
+Deno.test("execute: a refused parse registers the sensitive value with the run's redactor and leaves the plain values beside it out, for method and global arguments alike (swamp-club#3753)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const schema = z.object({
+    token: sensitive.transform((text) => text.toUpperCase()),
+    env: z.string(),
+    region: z.string(),
+  }).refine(
+    (v) => v.env !== "prod" || v.region !== "eu-west-1",
+    "region not allowed in prod",
+  );
+  const args = { token: "hunter2-long", env: "prod", region: "eu-west-1" };
+
+  const methodRedactor = new SecretRedactor();
+  const { context } = createTestContext({ redactor: methodRedactor });
+  const methodError = await assertRejects(
+    () =>
+      service.execute(
+        Definition.create({
+          name: "refused",
+          methods: { write: { arguments: { ...args } } },
+        }),
+        {
+          description: "Refuses at the root",
+          arguments: schema,
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+        context,
+      ),
+    Error,
+  );
+  assertStringIncludes(
+    methodError.message,
+    "Method arguments validation failed: Invalid input",
+  );
+
+  const globalRedactor = new SecretRedactor();
+  const refusing: ModelDefinition = {
+    type: ModelType.create("test/global-refused-plain"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      run: {
+        description: "Never reached",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const globalError = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({ name: "refused-global", globalArguments: args }),
+        refusing,
+        "run",
+        createTestContext({
+          modelType: refusing.type,
+          redactor: globalRedactor,
+        }).context,
+      ),
+    Error,
+  );
+  assertStringIncludes(
+    globalError.message,
+    "Global arguments validation failed: Invalid input",
+  );
+
+  for (const redactor of [methodRedactor, globalRedactor]) {
+    // What the transform made of the value is the run's secret; the plain
+    // values beside it stay readable in every later step's logs and data.
+    assertEquals(redactor.redact("made HUNTER2-LONG"), "made ***");
+    assertEquals(
+      redactor.redact("deployed to prod in eu-west-1"),
+      "deployed to prod in eu-west-1",
+    );
+  }
+});
