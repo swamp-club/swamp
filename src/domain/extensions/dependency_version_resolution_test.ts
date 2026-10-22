@@ -64,6 +64,24 @@ Deno.test("resolveShippedVersion: an exact pin needs neither lock nor registry",
   );
 });
 
+Deno.test("resolveShippedVersion: the installed version wins over the lock and the registry, but not over an exact pin (swamp-club#3630)", () => {
+  assertEquals(
+    resolveShippedVersion(
+      "npm",
+      "x",
+      "^1.0.0",
+      lockOf(["1.2.5"]),
+      NPM,
+      "1.2.0",
+    ),
+    { version: "1.2.0", from: "installed" },
+  );
+  assertEquals(
+    resolveShippedVersion("npm", "x", "1.0.0", lockOf([]), NPM, "1.0.0"),
+    { version: "1.0.0", from: "exact" },
+  );
+});
+
 Deno.test("resolveShippedVersion: the lock's highest satisfying version wins", () => {
   assertEquals(
     resolveShippedVersion(

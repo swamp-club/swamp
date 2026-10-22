@@ -159,7 +159,7 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     scope: "extension",
     acceptable: false,
     remediation:
-      "Map each bare name in the deno.json imports to an explicit npm:, jsr:, node: or URL specifier (such as npm:zod@4), which push writes in its place in the shipped source, or write the specifier in the source yourself, so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
+      "Map each bare name in the deno.json imports to an explicit npm:, jsr:, node: or URL specifier (such as npm:zod@4), or, in a package.json project, declare it as an npm registry dependency and install it in node_modules; push writes the specifier in its place in the shipped source. Or write the specifier in the source yourself, so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
   },
   // ── File-scoped (appended by push) ──────────────────────────────────
   // Not acceptable: the registry cannot list the model however the author

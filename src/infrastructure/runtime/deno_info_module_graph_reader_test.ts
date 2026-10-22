@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join, relative, toFileUrl } from "@std/path";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
@@ -302,6 +302,145 @@ Deno.test("DenoInfoModuleGraphReader: an npm package in a manual node_modules di
     assertEquals(graph.modules.map((m) => relative(dir, m.path)), ["m.ts"]);
     assertEquals(graph.edges, []);
     assertEquals(graph.missing, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
+/** Every path under `dir` with its bytes and mtime, to show nothing changed. */
+async function treeSnapshot(dir: string): Promise<string[]> {
+  const entries: string[] = [];
+  const visit = async (path: string) => {
+    for await (const entry of Deno.readDir(path)) {
+      const child = join(path, entry.name);
+      const stat = await Deno.lstat(child);
+      entries.push(
+        `${relative(dir, child)} ${stat.mtime?.getTime()} ${
+          entry.isFile ? await Deno.readTextFile(child) : ""
+        }`,
+      );
+      if (entry.isDirectory) await visit(child);
+    }
+  };
+  await visit(dir);
+  return entries.sort();
+}
+
+Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare imports to the installed packages and leaves node_modules unchanged (swamp-club#3630)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-pkg-" });
+  try {
+    const pkg = join(dir, "node_modules", "foo");
+    await Deno.mkdir(pkg, { recursive: true });
+    await Deno.writeTextFile(
+      join(pkg, "package.json"),
+      '{"name":"foo","version":"1.2.0","main":"index.js","type":"module"}\n',
+    );
+    await Deno.writeTextFile(join(pkg, "index.js"), "export const g = 2;\n");
+    await Deno.writeTextFile(
+      join(dir, "package.json"),
+      '{"dependencies":{"foo":"^1.0.0","bar":"^2.0.0"}}\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "m.ts"),
+      'import { g } from "foo";\nimport b from "bar";\nexport { b, g };\n',
+    );
+    const before = await treeSnapshot(join(dir, "node_modules"));
+    const graph = await new DenoInfoModuleGraphReader(
+      Deno.execPath(),
+      undefined,
+      { readOnlyLock: true },
+    ).read(join(dir, "m.ts"), { packageJsonDir: dir });
+    assertEquals(await treeSnapshot(join(dir, "node_modules")), before);
+    assertEquals(
+      graph.bareImports?.map((b) => [b.specifier, b.target, b.declared]),
+      [["foo", "npm:foo@1.2.0", "npm:foo@^1.0.0"], [
+        "bar",
+        undefined,
+        undefined,
+      ]],
+    );
+    assertEquals(graph.staleInstalls, [{
+      importer: join(dir, "m.ts"),
+      specifier: "bar",
+      packageName: "bar",
+      declaredRange: "^2.0.0",
+    }]);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
+// Deno itself refuses TypeScript under node_modules once a project config
+// or package.json is in play (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
+// so the no-project case is the one swamp alone could break.
+Deno.test("DenoInfoModuleGraphReader: a repository checked out under a directory named node_modules keeps its local modules", async () => {
+  const outer = await Deno.makeTempDir({ prefix: "graph-reader-ancestor-" });
+  try {
+    const dir = join(outer, "node_modules", "repo");
+    await Deno.mkdir(join(dir, "lib"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "lib", "two.ts"),
+      "export const t = 2;\n",
+    );
+    await Deno.writeTextFile(
+      join(dir, "m.ts"),
+      'import { t } from "./lib/two.ts";\nexport { t };\n',
+    );
+    const graph = await new DenoInfoModuleGraphReader(
+      Deno.execPath(),
+      undefined,
+      { readOnlyLock: true },
+    ).read(join(dir, "m.ts"), {});
+    assertEquals(
+      graph.modules.map((m) => relative(dir, m.path)).sort(),
+      [join("lib", "two.ts"), "m.ts"],
+    );
+    assertEquals(graph.edges.map((e) => relative(dir, e.target)), [
+      join("lib", "two.ts"),
+    ]);
+    assertEquals(graph.missing, []);
+  } finally {
+    await Deno.remove(outer, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
+Deno.test("DenoInfoModuleGraphReader: a package.json project whose package.json does not parse fails the read, rather than checking nothing it declares (swamp-club#3630)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-pkg-bad-" });
+  try {
+    await Deno.mkdir(join(dir, "node_modules"));
+    await Deno.writeTextFile(join(dir, "package.json"), "{ not json");
+    await Deno.writeTextFile(join(dir, "m.ts"), "export const m = 1;\n");
+    await withMockedCommand(
+      () => ({
+        stdout: JSON.stringify({
+          modules: [{
+            kind: "esm",
+            mediaType: "TypeScript",
+            specifier: toFileUrl(join(dir, "m.ts")).href,
+          }],
+        }),
+        code: 0,
+      }),
+      async () => {
+        const error = await assertRejects(
+          () =>
+            new DenoInfoModuleGraphReader("deno").read(join(dir, "m.ts"), {
+              packageJsonDir: dir,
+            }),
+          UserError,
+        );
+        assertStringIncludes(
+          error.message,
+          `Could not read ${join(dir, "package.json")}`,
+        );
+      },
+    );
   } finally {
     await Deno.remove(dir, { recursive: true }).catch((error) => {
       if (Deno.build.os !== "windows") throw error;

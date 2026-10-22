@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { bareImportResolverFrom } from "./bare_import_resolution.ts";
 import {
   extractDependencySpecifiers,
   extractSpecifiersFromSource,
@@ -496,4 +497,111 @@ Deno.test("findImportSpecifiers: ignores import text in comments, strings and te
 
 Deno.test("findImportSpecifiers: leaves out an unterminated specifier", () => {
   assertEquals(findImportSpecifiers('import a from "a\nconst x = 1;'), []);
+});
+
+Deno.test("extractSpecifiersFromSource: an installed package.json dependency carries its declared range and installed version (swamp-club#3630)", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import ms from "ms";\nimport fp from "lodash/fp";\nimport d from "debug";\nimport { z } from "zod";\n',
+    file,
+    bareImportResolverFrom([
+      {
+        importer: file,
+        specifier: "ms",
+        target: "npm:ms@2.1.3",
+        installedVersion: "2.1.3",
+        declared: "npm:ms@^2.1.0",
+      },
+      {
+        importer: file,
+        specifier: "lodash/fp",
+        target: "npm:lodash@4.17.21/fp",
+        installedVersion: "4.17.21",
+        declared: "npm:lodash@4.17.21",
+      },
+      {
+        importer: file,
+        specifier: "debug",
+        target: "npm:debug@4.3.4",
+        installedVersion: "4.3.4",
+      },
+      {
+        importer: file,
+        specifier: "zod",
+        target: "npm:zod@4.3.6",
+        installedVersion: "4.3.6",
+        declared: "npm:zod@^4",
+      },
+    ]),
+  );
+  assertEquals(specs, [
+    {
+      name: "ms",
+      version: "^2.1.0",
+      registry: "npm",
+      installedVersion: "2.1.3",
+      sourceFile: file,
+      importedAs: "ms",
+    },
+    {
+      name: "lodash",
+      version: "4.17.21",
+      registry: "npm",
+      installedVersion: "4.17.21",
+      sourceFile: file,
+      importedAs: "lodash/fp",
+    },
+    {
+      name: "debug",
+      version: "4.3.4",
+      registry: "npm",
+      installedVersion: "4.3.4",
+      sourceFile: file,
+      importedAs: "debug",
+    },
+  ]);
+});
+
+Deno.test("extractSpecifiersFromSource: a declaration naming another package never replaces the one that ships", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import p from "pad";\n',
+    file,
+    bareImportResolverFrom([{
+      importer: file,
+      specifier: "pad",
+      target: "npm:pad@1.3.0",
+      installedVersion: "1.3.0",
+      declared: "npm:left-pad@^1.3.0",
+    }]),
+  );
+  assertEquals(specs, [{
+    name: "pad",
+    version: "1.3.0",
+    registry: "npm",
+    installedVersion: "1.3.0",
+    sourceFile: file,
+    importedAs: "pad",
+  }]);
+});
+
+Deno.test("extractSpecifiersFromSource: a Deno config resolution is never taken for an installed package.json dependency", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import ms from "ms";\n',
+    file,
+    bareImportResolverFrom([{
+      importer: file,
+      specifier: "ms",
+      target: "npm:ms@^2",
+      installedFile: "/ext/node_modules/ms/index.js",
+    }]),
+  );
+  assertEquals(specs, [{
+    name: "ms",
+    version: "^2",
+    registry: "npm",
+    sourceFile: file,
+    importedAs: "ms",
+  }]);
 });

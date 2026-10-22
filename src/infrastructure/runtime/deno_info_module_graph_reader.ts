@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { fromFileUrl, toFileUrl } from "@std/path";
+import { fromFileUrl, join, toFileUrl } from "@std/path";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
@@ -28,7 +28,9 @@ import {
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
 import {
   bareImportsFromDenoInfo,
+  denoInfoRootDir,
   hasUnresolvedBareImports,
+  installedPackageImports,
   isLocalModuleSpecifier,
   type ResolvedBareImport,
   withPackageSpecifiers,
@@ -124,9 +126,12 @@ export async function parseDenoInfoGraph(
   const modules: LocalModule[] = [];
   const edges: LocalEdge[] = [];
   const missingReasons = new Map<string, string>();
+  // Paths are read from the entry point's directory, so a repository under
+  // a directory named node_modules is not taken for an installed package.
+  const rootDir = denoInfoRootDir(json);
 
   for (const m of raw) {
-    if (!isLocalModuleSpecifier(m.specifier)) continue;
+    if (!isLocalModuleSpecifier(m.specifier, rootDir)) continue;
     const path = fromFileUrl(m.specifier);
     if (m.error) {
       missingReasons.set(path, m.error);
@@ -145,7 +150,8 @@ export async function parseDenoInfoGraph(
     for (const dep of m.dependencies ?? []) {
       for (const target of [dep.code, dep.type]) {
         if (
-          !target || !isLocalModuleSpecifier(target.specifier) || !target.span
+          !target || !isLocalModuleSpecifier(target.specifier, rootDir) ||
+          !target.span
         ) continue;
         if (!linesRead) {
           lines = (await files.readText(path))?.split("\n");
@@ -182,6 +188,35 @@ export async function parseDenoInfoGraph(
     missing,
     bareImports: bareImportsFromDenoInfo(json),
   };
+}
+
+/**
+ * The project's package.json. One that cannot be read or parsed fails the
+ * read: read as empty, it would declare nothing, and no dependency would be
+ * checked against the range it declares.
+ */
+async function readProjectPackageJson(projectDir: string): Promise<unknown> {
+  const path = join(projectDir, "package.json");
+  try {
+    return JSON.parse(await Deno.readTextFile(path));
+  } catch (error) {
+    throw markErrorPaths(
+      new UserError(
+        `Could not read ${path}, so push cannot tell which dependencies it ` +
+          `declares: ${error instanceof Error ? error.message : error}`,
+      ),
+      [path],
+    );
+  }
+}
+
+/** A JSON file's value; undefined when it cannot be read or parsed. */
+async function readJson(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await Deno.readTextFile(path));
+  } catch {
+    return undefined;
+  }
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -276,6 +311,18 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         ),
         [entryPoint],
       );
+    }
+    if (!project.denoConfigPath && project.packageJsonDir) {
+      // Read as installed (--node-modules-dir=manual), a bare import names a
+      // file in node_modules; name the package installed there instead
+      // (swamp-club#3630).
+      const installed = await installedPackageImports(
+        graph.bareImports ?? [],
+        await readProjectPackageJson(project.packageJsonDir),
+        (dir) => readJson(join(dir, "package.json")),
+      );
+      graph.bareImports = installed.resolutions;
+      if (installed.stale.length > 0) graph.staleInstalls = installed.stale;
     }
     if (
       project.denoConfigPath &&

@@ -27,6 +27,7 @@
 
 import {
   type ResolvedBareImport,
+  type StaleInstalledImport,
   uniqueBareImports,
 } from "./bare_import_resolution.ts";
 
@@ -79,6 +80,12 @@ export interface SourceModuleGraph {
    * to; absent when the reader recorded none.
    */
   bareImports?: ResolvedBareImport[];
+  /**
+   * The bare imports a package.json project declares that node_modules does
+   * not hold at a version package.json allows (swamp-club#3630); absent
+   * when there are none.
+   */
+  staleInstalls?: StaleInstalledImport[];
 }
 
 /** The project configuration the bundler resolves modules under. */
@@ -117,8 +124,13 @@ export function mergeSourceGraphs(
   const edges = new Map<string, LocalEdge>();
   const missing = new Map<string, MissingLocalModule>();
   const bareImports: ResolvedBareImport[] = [];
+  const staleInstalls = new Map<string, StaleInstalledImport>();
   for (const graph of graphs) {
     for (const b of graph.bareImports ?? []) bareImports.push(b);
+    for (const s of graph.staleInstalls ?? []) {
+      const key = `${s.importer}\0${s.specifier}`;
+      if (!staleInstalls.has(key)) staleInstalls.set(key, s);
+    }
     for (const m of graph.modules) {
       if (!modules.has(m.path)) modules.set(m.path, m);
     }
@@ -136,6 +148,9 @@ export function mergeSourceGraphs(
     edges: [...edges.values()],
     missing: [...missing.values()],
     bareImports: uniqueBareImports(bareImports),
+    ...(staleInstalls.size > 0
+      ? { staleInstalls: [...staleInstalls.values()] }
+      : {}),
   };
 }
 
@@ -205,6 +220,11 @@ export function withoutSymlinkedModules(
       ),
       ...(graph.bareImports
         ? { bareImports: graph.bareImports.filter((b) => keep(b.importer)) }
+        : {}),
+      ...(graph.staleInstalls
+        ? {
+          staleInstalls: graph.staleInstalls.filter((s) => keep(s.importer)),
+        }
         : {}),
     },
     symlinked,

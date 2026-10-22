@@ -369,6 +369,9 @@ export function rewriteZodImports(js: string, origin?: string): string {
  * With `readOnlyLock`, the project's lockfile is never written: `--frozen`
  * when it has one (a lock that no longer satisfies a specifier fails rather
  * than being rewritten), `--no-lock` when it has none (so none is created).
+ * A package.json project's node_modules is read as installed
+ * (`--node-modules-dir=manual`) rather than managed by Deno, which would add
+ * its own `node_modules/.deno/` tree to it (swamp-club#3630).
  */
 export function denoProjectArgs(
   options?: {
@@ -385,7 +388,7 @@ export function denoProjectArgs(
   if (!project) return ["--no-lock", "--node-modules-dir=none"];
   if (!options?.readOnlyLock) return project;
   return [
-    ...project,
+    ...(options.denoConfigPath ? project : ["--node-modules-dir=manual"]),
     options.readOnlyLock.lockPath ? "--frozen" : "--no-lock",
   ];
 }
@@ -1172,9 +1175,9 @@ export async function bundleExtension(
 
   try {
     // When using deno.json, pass --config so the import map governs resolution.
-    // When using package.json, use --node-modules-dir=auto so Deno auto-detects
-    // package.json via cwd and initializes node_modules/.deno/ if needed (this
-    // makes it work with both `npm install` and `deno install`).
+    // When using package.json, Deno auto-detects it via cwd. Local loading
+    // uses --node-modules-dir=auto, which initializes node_modules/.deno/ if
+    // needed; push and quality (readOnlyLock) read the installed tree as is.
     // Otherwise, use --no-lock for the default no-project behavior.
     const args = ["bundle", ...denoProjectArgs(options)];
 

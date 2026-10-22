@@ -22,7 +22,9 @@ import { join, toFileUrl } from "@std/path";
 import {
   bareImportResolverFrom,
   bareImportsFromDenoInfo,
+  denoInfoRootDir,
   hasUnresolvedBareImports,
+  installedPackageImports,
   isLocalModuleSpecifier,
   NO_BARE_IMPORT_RESOLUTION,
   uniqueBareImports,
@@ -158,7 +160,7 @@ Deno.test("uniqueBareImports: one entry per importer and specifier, the first ke
   );
 });
 
-Deno.test("bareImportsFromDenoInfo: a bare import Deno resolves into node_modules is unresolved, so it is never taken for a placed local module", () => {
+Deno.test("bareImportsFromDenoInfo: a bare import Deno resolves into node_modules is unresolved, keeping the installed file, so it is never taken for a placed local module", () => {
   const found = bareImportsFromDenoInfo({
     modules: [{
       specifier: url("models", "a.ts"),
@@ -172,7 +174,11 @@ Deno.test("bareImportsFromDenoInfo: a bare import Deno resolves into node_module
     }],
   });
   assertEquals(found, [
-    { importer: path("models", "a.ts"), specifier: "ms" },
+    {
+      importer: path("models", "a.ts"),
+      specifier: "ms",
+      installedFile: path("node_modules", "ms", "index.js"),
+    },
     {
       importer: path("models", "a.ts"),
       specifier: "@/lib.ts",
@@ -212,4 +218,307 @@ Deno.test("hasUnresolvedBareImports: false when every import has a target", () =
     false,
   );
   assertEquals(hasUnresolvedBareImports([]), false);
+});
+
+/** A manifest reader over `manifests`, keyed by package directory. */
+function manifestsAt(
+  manifests: Record<string, unknown>,
+): (dir: string) => Promise<unknown> {
+  return (dir) => Promise.resolve(manifests[dir]);
+}
+
+const A = path("models", "a.ts");
+
+Deno.test("installedPackageImports: names the installed package at its installed version, with the declared range (swamp-club#3630)", async () => {
+  const { resolutions, stale } = await installedPackageImports(
+    [
+      {
+        importer: A,
+        specifier: "ms",
+        installedFile: path("node_modules", "ms", "index.js"),
+      },
+      {
+        importer: A,
+        specifier: "ms/package.json",
+        installedFile: path("node_modules", "ms", "package.json"),
+      },
+      {
+        importer: A,
+        specifier: "@scope/pkg/sub",
+        installedFile: path("node_modules", "@scope", "pkg", "sub", "x.js"),
+      },
+      { importer: A, specifier: "node-builtin", target: "node:fs" },
+    ],
+    {
+      dependencies: { "ms": "^2.1.0" },
+      devDependencies: { "@scope/pkg": "~1.0.0", "ms": "9.9.9" },
+    },
+    manifestsAt({
+      [path("node_modules", "ms")]: { name: "ms", version: "2.1.3" },
+      [path("node_modules", "@scope", "pkg")]: {
+        name: "@scope/pkg",
+        version: "1.0.4",
+      },
+    }),
+  );
+  assertEquals(stale, []);
+  assertEquals(resolutions.map((r) => [r.specifier, r.target, r.declared]), [
+    ["ms", "npm:ms@2.1.3", "npm:ms@^2.1.0"],
+    ["ms/package.json", "npm:ms@2.1.3/package.json", "npm:ms@^2.1.0"],
+    ["@scope/pkg/sub", "npm:@scope/pkg@1.0.4/sub", "npm:@scope/pkg@~1.0.0"],
+    ["node-builtin", "node:fs", undefined],
+  ]);
+});
+
+Deno.test("installedPackageImports: reads a deno install layout and an npm: alias", async () => {
+  const deno = path("node_modules", ".deno", "ms@2.1.3", "node_modules", "ms");
+  const { resolutions } = await installedPackageImports(
+    [
+      { importer: A, specifier: "ms", installedFile: join(deno, "index.js") },
+      {
+        importer: A,
+        specifier: "pad",
+        installedFile: path("node_modules", "pad", "index.js"),
+      },
+    ],
+    { dependencies: { "ms": "2.1.3", "pad": "npm:left-pad@^1.3.0" } },
+    manifestsAt({
+      [deno]: { name: "ms", version: "2.1.3" },
+      [path("node_modules", "pad")]: { name: "left-pad", version: "1.3.0" },
+    }),
+  );
+  assertEquals(resolutions.map((r) => [r.target, r.declared]), [
+    ["npm:ms@2.1.3", "npm:ms@2.1.3"],
+    ["npm:left-pad@1.3.0", "npm:left-pad@^1.3.0"],
+  ]);
+});
+
+Deno.test("installedPackageImports: an installed package package.json does not declare ships at its installed version, with no declared range", async () => {
+  const { resolutions, stale } = await installedPackageImports(
+    [{
+      importer: A,
+      specifier: "debug",
+      installedFile: path("node_modules", "debug", "index.js"),
+    }],
+    { dependencies: {} },
+    manifestsAt({
+      [path("node_modules", "debug")]: { name: "debug", version: "4.3.4" },
+    }),
+  );
+  assertEquals(stale, []);
+  assertEquals(resolutions, [{
+    importer: A,
+    specifier: "debug",
+    target: "npm:debug@4.3.4",
+    installedFile: path("node_modules", "debug", "index.js"),
+    installedVersion: "4.3.4",
+  }]);
+});
+
+Deno.test("installedPackageImports: a repo-controlled manifest names nothing it cannot prove", async () => {
+  const at = (name: string) => path("node_modules", name);
+  const imports = ["quote", "renamed", "range", "upper", "missing"].map((
+    name,
+  ) => ({
+    importer: A,
+    specifier: name,
+    installedFile: join(at(name), "index.js"),
+  }));
+  const { resolutions, stale } = await installedPackageImports(
+    imports,
+    {},
+    manifestsAt({
+      [at("quote")]: { name: "quote", version: '1.0.0";evil("' },
+      [at("renamed")]: { name: "lodash", version: "4.17.21" },
+      [at("range")]: { name: "range", version: "^1.0.0" },
+      [at("upper")]: { name: "Upper", version: "1.0.0" },
+    }),
+  );
+  assertEquals(stale, []);
+  assertEquals(
+    resolutions,
+    imports.map((r) => ({ importer: r.importer, specifier: r.specifier })),
+  );
+});
+
+Deno.test("installedPackageImports: a non-registry declaration ships as written", async () => {
+  const deps = {
+    "a": "file:../a",
+    "b": "github:user/b",
+    "c": "user/c",
+    "d": "workspace:*",
+    "e": "https://example.com/e.tgz",
+  };
+  const imports = Object.keys(deps).map((name) => ({
+    importer: A,
+    specifier: name,
+    installedFile: path("node_modules", name, "index.js"),
+  }));
+  const manifests: Record<string, unknown> = {};
+  for (const name of Object.keys(deps)) {
+    manifests[path("node_modules", name)] = { name, version: "1.0.0" };
+  }
+  const { resolutions, stale } = await installedPackageImports(
+    imports,
+    { dependencies: deps },
+    manifestsAt(manifests),
+  );
+  assertEquals(stale, []);
+  assertEquals(resolutions.every((r) => r.target === undefined), true);
+});
+
+Deno.test("installedPackageImports: a declared dependency not installed, or installed outside its range, is stale", async () => {
+  const { resolutions, stale } = await installedPackageImports(
+    [
+      { importer: A, specifier: "is-odd" },
+      {
+        importer: A,
+        specifier: "ms",
+        installedFile: path("node_modules", "ms", "index.js"),
+      },
+      { importer: A, specifier: "not-declared" },
+    ],
+    { dependencies: { "is-odd": "^3.0.1", "ms": "^3.0.0" } },
+    manifestsAt({
+      [path("node_modules", "ms")]: { name: "ms", version: "2.1.3" },
+    }),
+  );
+  assertEquals(stale, [
+    {
+      importer: A,
+      specifier: "is-odd",
+      packageName: "is-odd",
+      declaredRange: "^3.0.1",
+    },
+    {
+      importer: A,
+      specifier: "ms",
+      packageName: "ms",
+      declaredRange: "^3.0.0",
+      installedVersion: "2.1.3",
+    },
+  ]);
+  assertEquals(resolutions.every((r) => r.target === undefined), true);
+});
+
+Deno.test("installedPackageImports: a dist-tag declaration accepts the installed version", async () => {
+  const { resolutions, stale } = await installedPackageImports(
+    [{
+      importer: A,
+      specifier: "ms",
+      installedFile: path("node_modules", "ms", "index.js"),
+    }],
+    { dependencies: { "ms": "latest" } },
+    manifestsAt({
+      [path("node_modules", "ms")]: { name: "ms", version: "2.1.3" },
+    }),
+  );
+  assertEquals(stale, []);
+  assertEquals(resolutions[0].target, "npm:ms@2.1.3");
+  assertEquals(resolutions[0].declared, "npm:ms@latest");
+});
+
+Deno.test("bareImportResolverFrom: answers the installed package only for a resolved installed import (swamp-club#3630)", () => {
+  const resolver = bareImportResolverFrom([
+    {
+      importer: A,
+      specifier: "ms",
+      target: "npm:ms@2.1.3",
+      installedVersion: "2.1.3",
+      declared: "npm:ms@^2.1.0",
+    },
+    {
+      importer: A,
+      specifier: "debug",
+      target: "npm:debug@4.3.4",
+      installedVersion: "4.3.4",
+    },
+    { importer: A, specifier: "config", target: "npm:config@1.0.0" },
+    { importer: A, specifier: "x", installedVersion: "1.0.0" },
+  ]);
+  assertEquals(resolver.installed?.(A, "ms"), {
+    version: "2.1.3",
+    declared: "npm:ms@^2.1.0",
+  });
+  assertEquals(resolver.installed?.(A, "debug"), { version: "4.3.4" });
+  assertEquals(resolver.installed?.(A, "config"), undefined);
+  assertEquals(resolver.installed?.(A, "x"), undefined);
+  assertEquals(resolver.installed?.(A, "other"), undefined);
+});
+
+Deno.test("installedPackageImports: an alias package.json declares over a package installed under the old name is stale, never shipped as one and audited as the other", async () => {
+  const { resolutions, stale } = await installedPackageImports(
+    [{
+      importer: A,
+      specifier: "pad",
+      installedFile: path("node_modules", "pad", "index.js"),
+    }],
+    { dependencies: { "pad": "npm:left-pad@^1.3.0" } },
+    manifestsAt({
+      [path("node_modules", "pad")]: { name: "pad", version: "1.3.0" },
+    }),
+  );
+  assertEquals(resolutions, [{ importer: A, specifier: "pad" }]);
+  assertEquals(stale, [{
+    importer: A,
+    specifier: "pad",
+    packageName: "pad",
+    declaredRange: "^1.3.0",
+    installedVersion: "1.3.0",
+    installedName: "pad",
+    declaredName: "left-pad",
+  }]);
+});
+
+Deno.test("isLocalModuleSpecifier: reads node_modules only below the entry point's directory, so a repository under a node_modules ancestor keeps its local modules", () => {
+  const repo = path("node_modules", "repo");
+  const entryDir = join(repo, "extensions", "models");
+  const at = (...parts: string[]) => toFileUrl(join(repo, ...parts)).href;
+  assertEquals(
+    isLocalModuleSpecifier(at("extensions", "models", "m.ts"), entryDir),
+    true,
+  );
+  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts"), entryDir), true);
+  assertEquals(
+    isLocalModuleSpecifier(at("node_modules", "ms", "index.js"), entryDir),
+    false,
+  );
+  // Without a root, every segment is read, as before.
+  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts")), false);
+});
+
+Deno.test("bareImportsFromDenoInfo: under a node_modules ancestor, local importers are kept and only the project's installed packages are installed files", () => {
+  const repo = path("node_modules", "repo");
+  const at = (...parts: string[]) => toFileUrl(join(repo, ...parts)).href;
+  const m = join(repo, "extensions", "models", "m.ts");
+  const found = bareImportsFromDenoInfo({
+    roots: [at("extensions", "models", "m.ts")],
+    modules: [{
+      specifier: at("extensions", "models", "m.ts"),
+      dependencies: [{
+        specifier: "ms",
+        code: { specifier: at("node_modules", "ms", "index.js") },
+      }, {
+        specifier: "@/lib.ts",
+        code: { specifier: at("lib", "lib.ts") },
+      }],
+    }],
+  });
+  assertEquals(found, [
+    {
+      importer: m,
+      specifier: "ms",
+      installedFile: join(repo, "node_modules", "ms", "index.js"),
+    },
+    { importer: m, specifier: "@/lib.ts", target: at("lib", "lib.ts") },
+  ]);
+});
+
+Deno.test("denoInfoRootDir: the first file root's directory, or undefined", () => {
+  assertEquals(
+    denoInfoRootDir({ roots: [url("models", "m.ts")] }),
+    path("models"),
+  );
+  assertEquals(denoInfoRootDir({ roots: ["https://x.test/m.ts"] }), undefined);
+  assertEquals(denoInfoRootDir({}), undefined);
 });

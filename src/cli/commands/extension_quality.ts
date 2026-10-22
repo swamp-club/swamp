@@ -187,6 +187,7 @@ export const extensionQualityCommand = new Command()
             dryRun: true,
             registryChecks: "skip",
             denoConfigPath,
+            packageJsonDir: resolved.packageJsonDir,
             bareImports: resolved.bareImports,
           },
           hashInput: {

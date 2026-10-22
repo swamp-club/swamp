@@ -1752,7 +1752,7 @@ Deno.test("denoProjectArgs: without readOnlyLock the flags are unchanged", () =>
   assertEquals(denoProjectArgs(), ["--no-lock", "--node-modules-dir=none"]);
 });
 
-Deno.test("denoProjectArgs: readOnlyLock freezes an existing lock and disables a missing one", () => {
+Deno.test("denoProjectArgs: readOnlyLock freezes an existing lock, disables a missing one and reads node_modules as installed", () => {
   const lockPath = "/p/deno.lock";
   assertEquals(
     denoProjectArgs({
@@ -1767,11 +1767,11 @@ Deno.test("denoProjectArgs: readOnlyLock freezes an existing lock and disables a
   );
   assertEquals(
     denoProjectArgs({ packageJsonDir: "/p", readOnlyLock: { lockPath } }),
-    ["--node-modules-dir=auto", "--frozen"],
+    ["--node-modules-dir=manual", "--frozen"],
   );
   assertEquals(
     denoProjectArgs({ packageJsonDir: "/p", readOnlyLock: {} }),
-    ["--node-modules-dir=auto", "--no-lock"],
+    ["--node-modules-dir=manual", "--no-lock"],
   );
   assertEquals(denoProjectArgs({ readOnlyLock: {} }), [
     "--no-lock",

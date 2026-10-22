@@ -556,6 +556,40 @@ Deno.test("extensionQuality: bare imports the deno.json import map resolves leav
   );
 });
 
+Deno.test("extensionQuality: bare imports of installed package.json dependencies leave the extension registry-scorable, as push ships them (swamp-club#3630)", async () => {
+  await withQualityFixture(
+    BARE_IMPORT_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      // What the module graph resolves the model's bare "zod" to when zod
+      // 4.1.0 is installed for package.json's ^4.1.0.
+      const bareImports = [{
+        importer: join(repoDir, "models", "echo.ts"),
+        specifier: "zod",
+        target: "npm:zod@4.1.0",
+        installedVersion: "4.1.0",
+        declared: "npm:zod@^4.1.0",
+      }];
+      const input = makeQualityInput(repoDir, manifest, {
+        prepareInput: { packageJsonDir: repoDir, bareImports },
+        hashInput: { bareImports },
+      });
+      const data = completedData(
+        await collect(
+          extensionQuality(ctx, makeQualityDeps(cacheRoot), input),
+        ),
+      );
+      assertEquals(data.registryScorable, true);
+      assertEquals(
+        data.findings.reviewRulesResult.warnings.some((w) =>
+          w.ruleId === "bare-specifiers"
+        ),
+        false,
+      );
+    },
+  );
+});
+
 Deno.test("extensionQuality: an import-map target that could escape its string literal fails quality as it fails push", async () => {
   await withQualityFixture(
     BARE_IMPORT_MODEL_SOURCE,

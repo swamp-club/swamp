@@ -1820,13 +1820,18 @@ export interface QualityFindingsInput {
 /**
  * How push resolves the bare imports `input`'s modules write: as Deno
  * resolved them under the project's Deno config, read from the module
- * graph (swamp-club#3612); without one, not at all, so each ships as
- * written.
+ * graph (swamp-club#3612), or in a package.json project to the package
+ * installed in node_modules (swamp-club#3630); without either, not at all,
+ * so each ships as written.
  */
 export function bareImportResolverFor(
-  input: { denoConfigPath?: string; bareImports?: ResolvedBareImport[] },
+  input: {
+    denoConfigPath?: string;
+    packageJsonDir?: string;
+    bareImports?: ResolvedBareImport[];
+  },
 ): BareImportResolver | undefined {
-  return input.denoConfigPath
+  return input.denoConfigPath || input.packageJsonDir
     ? bareImportResolverFrom(input.bareImports ?? [])
     : undefined;
 }
@@ -1844,8 +1849,9 @@ export function bareSpecifiersMessage(names: string[]): string {
     "bare import only when the project's Deno config (deno.json or " +
     "deno.jsonc imports, an importMap file, a scope covering the module, " +
     "or a workspace root's imports) resolves it to an npm:, jsr:, node: or " +
-    "URL specifier; add such an entry for each, or write the specifier in " +
-    "its place.";
+    "URL specifier, or, with no Deno config, when package.json declares it " +
+    "as an npm registry dependency installed in node_modules; add such an " +
+    "entry or dependency for each, or write the specifier in its place.";
 }
 
 /**
@@ -1963,8 +1969,9 @@ export async function runQualityFindings(
   // Bare imports that ship as written: the server-side scorer cannot
   // resolve them (it strips deno.json and writes a controlled one). Push
   // rewrites the ones Deno resolves under the project config
-  // (swamp-club#3637, #3612), so only the rest count; without a config,
-  // every bare import does.
+  // (swamp-club#3637, #3612) or to an installed package.json dependency
+  // (swamp-club#3630), so only the rest count; without either, every bare
+  // import does.
   const sourceFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
@@ -3179,9 +3186,10 @@ async function createArchive(
     // Copy every local module the entry points reach to its planned path,
     // rewriting the imports the plan names and, under a Deno config, each
     // bare import Deno resolves from that module to an npm:, jsr:, node: or
-    // URL specifier (swamp-club#3637, #3612), so the archive's source
-    // resolves without the project config. Data modules and files with
-    // nothing to rewrite are byte for byte.
+    // URL specifier (swamp-club#3637, #3612), or in a package.json project
+    // to the installed package's npm:<name>@<version> (swamp-club#3630), so
+    // the archive's source resolves without the project config. Data
+    // modules and files with nothing to rewrite are byte for byte.
     const resolver = bareImportResolverFor(input);
     const codeModules = new Set([
       ...input.allModelFiles,

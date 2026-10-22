@@ -36,6 +36,12 @@ export interface DependencySpecifier {
    * to this one; absent for an import written as `npm:` or `jsr:`.
    */
   importedAs?: string;
+  /**
+   * The version installed in a package.json project's node_modules, which
+   * the bundle inlines, when the import resolved to it; `version` is then
+   * the range package.json declares (swamp-club#3630).
+   */
+  installedVersion?: string;
 }
 
 /** A `deno.json` `imports` object. */
@@ -293,8 +299,20 @@ export function extractSpecifiersFromSource(
     if (!target) continue;
     // A `key/` entry must write its target `npm:/name@v/` for Deno to
     // resolve it; the package is the same.
-    const parsed = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
-    if (!parsed) continue;
+    const resolved = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
+    if (!resolved) continue;
+    // An installed package.json dependency ships its installed version and
+    // is audited at the range package.json declares, if it declares one. A
+    // declaration naming another package never replaces the one that ships.
+    const installed = resolver.installed?.(sourceFile, bare);
+    const declaredSpec = installed?.declared
+      ? parseSpecifier(installed.declared)
+      : null;
+    const parsed = !installed
+      ? resolved
+      : declaredSpec && declaredSpec.name === resolved.name
+      ? { ...declaredSpec, installedVersion: installed.version }
+      : { ...resolved, installedVersion: installed.version };
 
     const key = specifierKey(parsed);
     if (seen.has(key)) continue;

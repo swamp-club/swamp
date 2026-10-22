@@ -908,7 +908,7 @@ them.
 | Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                            |
 | ----------------------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Deno config found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | The config governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
-| **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
+| **`package.json` found, bare specifiers** | `--node-modules-dir=manual`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
 | **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
 | **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default                                                                                                          |
 
@@ -919,10 +919,19 @@ asks for, so the two would contradict. The project's other rules still apply.
 The `bare-specifiers` finding names only the bare imports that ship as written
 (see [Bare imports in the shipped source](#bare-imports-in-the-shipped-source)):
 under a Deno config, those Deno does not resolve to an `npm:`, `jsr:`, `node:`
-or URL specifier; without one, every bare import.
+or URL specifier; in package.json mode, those that do not resolve to a
+registry dependency installed in `node_modules/`; with neither, every bare
+import.
 
-In the bare-specifier row, `--node-modules-dir=auto` also creates `.deno/`
-metadata if needed.
+In the bare-specifier row, push, quality and fmt read `node_modules/` as
+installed (`--node-modules-dir=manual`) and never write it (swamp-club#3630):
+Deno managing it (`auto`) adds its own `node_modules/.deno/` tree, even to one
+`npm install` made. The module graph read, the bundle and the lock flags share
+`denoProjectArgs`, so all three follow it. A dependency package.json declares
+at a registry range that is not installed, or is installed outside that
+range, fails push and quality with an install hint naming each package; fmt
+reads past it. Local loading (the extension loader, `serve` reload) still
+bundles with `--node-modules-dir=auto`.
 
 `--node-modules-dir=none` is required in the last two rows. Without it, any
 `package.json` in the directory tree switches Deno to `node_modules/`
@@ -1224,10 +1233,29 @@ beside the relative rewrites above:
   gates read the source on disk, so the archived copy must hold no code they
   did not see.
 
+In package.json mode (swamp-club#3630) the graph is read with
+`--node-modules-dir=manual`, so Deno resolves each bare import to a file in
+`node_modules/`. `installedPackageImports` names the package installed
+there instead, `npm:<name>@<installed version><subpath>`, read from the
+installed package's own `package.json`: the code the bundle inlines, and so
+what users of the pulled extension run. The archive ships no `package.json`
+or `node_modules/`, so this is the only version a user can get. The installed
+manifest is repo-controlled, so it names a package only when its name is a
+valid npm name, its version is strict semver, and the name is the package
+package.json declares (the `npm:` alias target, when it is one) or, for a
+package package.json does not declare, its `node_modules/` directory. So the
+specifier push ships and the one the audit checks are always the same
+package. Anything else, or a non-registry declaration (`file:`, `link:`,
+`workspace:`, git, a URL), ships as written and raises the `bare-specifiers`
+finding; a declared package installed under another name (an alias changed
+without reinstalling) is a stale tree. The resolution also records the range
+package.json declares for the package (`dependencies`, then
+`devDependencies`), which the dependency audit reads. Both `npm install` and
+`deno install` layouts resolve the same way.
+
 The registry's dependency scan then audits these imports as `npm:`/`jsr:`
 specifiers, `deno doc` resolves them so the extension is scored, and a pulled
-extension's source rebundles without the author's config. In package.json
-mode no import is rewritten.
+extension's source rebundles without the author's config.
 
 ## Per-Subdirectory Extension Identity
 
@@ -2038,26 +2066,32 @@ from `@bixu/wheelshop`:
 ### The version that ships
 
 Each `npm:` and `jsr:` specifier is audited at the version the push ships
-(swamp-club#3352), whether the source writes it out or writes a bare import
-the project `deno.json` import map resolves to it (swamp-club#3611). The
-extractor resolves bare imports as the bundler does: an exact key, else the
-longest `key/` prefix, where a key mapped to an `npm:` or `jsr:` package also
-covers its subpaths (`"@std/path"` resolves `@std/path/posix`) unless the
-map has its own `key/` entry. It reads the map as JSON, resolves only the
-bare imports the source uses, and takes only a string literal in import
-position (after `from`, a side-effect `import` or `import(`), with comments
-and template literals blanked, so import text inside a string, comment or
-template literal is never audited. These are the same imports push rewrites
-to their targets in the shipped source (swamp-club#3637), and the audit reads
-every code module the graph reports, JavaScript included, so nothing ships as
-an `npm:`/`jsr:` specifier unaudited. A package
-both written out and mapped at the same specifier is audited once, as the
-written form. The rules live in
+(swamp-club#3352), whether the source writes it out or writes a bare import the
+project `deno.json` import map resolves to it (swamp-club#3611), or, in
+package.json mode, one that resolves to an installed dependency
+(swamp-club#3630). The extractor resolves bare imports as the bundler does: an
+exact key, else the longest `key/` prefix, where a key mapped to an `npm:` or
+`jsr:` package also covers its subpaths (`"@std/path"` resolves
+`@std/path/posix`) unless the map has its own `key/` entry. It reads the map as
+JSON, resolves only the bare imports the source uses, and takes only a string
+literal in import position (after `from`, a side-effect `import` or `import(`),
+with comments and template literals blanked, so import text inside a string,
+comment or template literal is never audited. These are the same imports push
+rewrites to their targets in the shipped source (swamp-club#3637), and the audit
+reads every code module the graph reports, JavaScript included, so nothing ships
+as an `npm:`/`jsr:` specifier unaudited. A package both written out and mapped
+at the same specifier is audited once, as the written form. The rules live in
 `src/domain/extensions/dependency_version_resolution.ts` and run no Deno
 tooling, so they outlive the runtime:
 
 1. An exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version.
-2. Otherwise, the lockfile the bundler honours: the version it records for
+2. Otherwise, in package.json mode, the version installed in `node_modules/`
+   (swamp-club#3630, `from: "installed"`). The audited specifier is the
+   range package.json declares, so a range there raises the loose-specifier
+   finding as an import-map range does; the shipped version is the installed
+   one, which the bundle inlines whatever `deno.lock` records, so the lock is
+   not read for it.
+3. Otherwise, the lockfile the bundler honours: the version it records for
    this import's own specifier (Deno may write `^2.0.0` as `npm:ms@2`, so
    equivalent ranges match), else the highest version it records for the
    package that satisfies the specifier. A higher transitive copy never
@@ -2070,7 +2104,7 @@ tooling, so they outlive the runtime:
    lock formats 4 and 5 as data, capped at 16 MiB. A lock entry that no
    longer satisfies the specifier falls through; push itself never gets
    there, because it refuses a stale lock (below).
-3. Otherwise, the registry. npm resolves the way the registry's scorecard
+4. Otherwise, the registry. npm resolves the way the registry's scorecard
    does: a range to the highest published release that satisfies it, a
    dist-tag through `dist-tags`, no version to `latest`. JSR takes the
    highest version that is neither yanked nor a prerelease, falling back to
