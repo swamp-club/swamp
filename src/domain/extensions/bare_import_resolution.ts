@@ -26,7 +26,14 @@
  * one the extension was bundled with (swamp-club#3612).
  */
 
-import { fromFileUrl, resolve, SEPARATOR, SEPARATOR_PATTERN } from "@std/path";
+import {
+  dirname,
+  fromFileUrl,
+  relative,
+  resolve,
+  SEPARATOR,
+  SEPARATOR_PATTERN,
+} from "@std/path";
 import { format, satisfies, tryParse, tryParseRange } from "@std/semver";
 import { isBareSpecifier } from "../models/bundle.ts";
 
@@ -144,20 +151,40 @@ interface DenoInfoModuleEntry {
 }
 
 /**
+ * The directory of the entry point `deno info --json` output was read from
+ * (its first root), which {@link isLocalModuleSpecifier} reads paths
+ * relative to; undefined when the output names no `file:` root.
+ */
+export function denoInfoRootDir(json: unknown): string | undefined {
+  const root = (json as { roots?: unknown })?.roots;
+  const first = Array.isArray(root) ? root[0] : undefined;
+  return typeof first === "string" && first.startsWith("file:")
+    ? dirname(fromFileUrl(first))
+    : undefined;
+}
+
+/**
  * A `file:` module that is not an npm package installed in a node_modules
- * directory: the extension's own source.
+ * directory: the extension's own source. Only the path from `rootDir`, the
+ * entry point's directory, is read, so a repository checked out under a
+ * directory named node_modules still has local modules.
  */
 export function isLocalModuleSpecifier(
   specifier: unknown,
+  rootDir?: string,
 ): specifier is string {
-  return typeof specifier === "string" && specifier.startsWith("file:") &&
-    !fromFileUrl(specifier).split(/[\\/]/).includes("node_modules");
+  if (typeof specifier !== "string" || !specifier.startsWith("file:")) {
+    return false;
+  }
+  const path = fromFileUrl(specifier);
+  return !(rootDir === undefined ? path : relative(rootDir, path))
+    .split(SEPARATOR_PATTERN).includes("node_modules");
 }
 
-/** A `file:` URL inside a node_modules directory. */
-function isInstalledPackageFile(specifier: string): boolean {
+/** A `file:` URL inside a node_modules directory below `rootDir`. */
+function isInstalledPackageFile(specifier: string, rootDir?: string): boolean {
   return specifier.startsWith("file:") &&
-    !isLocalModuleSpecifier(specifier);
+    !isLocalModuleSpecifier(specifier, rootDir);
 }
 
 /**
@@ -171,9 +198,10 @@ function isInstalledPackageFile(specifier: string): boolean {
 export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
   const modules = (json as { modules?: unknown })?.modules;
   if (!Array.isArray(modules)) return [];
+  const rootDir = denoInfoRootDir(json);
   const found: ResolvedBareImport[] = [];
   for (const m of modules as DenoInfoModuleEntry[]) {
-    if (!isLocalModuleSpecifier(m?.specifier)) continue;
+    if (!isLocalModuleSpecifier(m?.specifier, rootDir)) continue;
     if (!Array.isArray(m.dependencies)) continue;
     const importer = fromFileUrl(m.specifier);
     for (const dep of m.dependencies as DenoInfoDependencyEntry[]) {
@@ -185,7 +213,7 @@ export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
       found.push(
         typeof resolved !== "string"
           ? { importer, specifier }
-          : isInstalledPackageFile(resolved)
+          : isInstalledPackageFile(resolved, rootDir)
           ? { importer, specifier, installedFile: fromFileUrl(resolved) }
           : { importer, specifier, target: resolved },
       );

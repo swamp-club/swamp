@@ -28,6 +28,7 @@ import {
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
 import {
   bareImportsFromDenoInfo,
+  denoInfoRootDir,
   hasUnresolvedBareImports,
   installedPackageImports,
   isLocalModuleSpecifier,
@@ -125,9 +126,12 @@ export async function parseDenoInfoGraph(
   const modules: LocalModule[] = [];
   const edges: LocalEdge[] = [];
   const missingReasons = new Map<string, string>();
+  // Paths are read from the entry point's directory, so a repository under
+  // a directory named node_modules is not taken for an installed package.
+  const rootDir = denoInfoRootDir(json);
 
   for (const m of raw) {
-    if (!isLocalModuleSpecifier(m.specifier)) continue;
+    if (!isLocalModuleSpecifier(m.specifier, rootDir)) continue;
     const path = fromFileUrl(m.specifier);
     if (m.error) {
       missingReasons.set(path, m.error);
@@ -146,7 +150,8 @@ export async function parseDenoInfoGraph(
     for (const dep of m.dependencies ?? []) {
       for (const target of [dep.code, dep.type]) {
         if (
-          !target || !isLocalModuleSpecifier(target.specifier) || !target.span
+          !target || !isLocalModuleSpecifier(target.specifier, rootDir) ||
+          !target.span
         ) continue;
         if (!linesRead) {
           lines = (await files.readText(path))?.split("\n");

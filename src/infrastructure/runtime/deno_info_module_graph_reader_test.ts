@@ -374,6 +374,42 @@ Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare impor
   }
 });
 
+// Deno itself refuses TypeScript under node_modules once a project config
+// or package.json is in play (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
+// so the no-project case is the one swamp alone could break.
+Deno.test("DenoInfoModuleGraphReader: a repository checked out under a directory named node_modules keeps its local modules", async () => {
+  const outer = await Deno.makeTempDir({ prefix: "graph-reader-ancestor-" });
+  try {
+    const dir = join(outer, "node_modules", "repo");
+    await Deno.mkdir(join(dir, "lib"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "lib", "two.ts"),
+      "export const t = 2;\n",
+    );
+    await Deno.writeTextFile(
+      join(dir, "m.ts"),
+      'import { t } from "./lib/two.ts";\nexport { t };\n',
+    );
+    const graph = await new DenoInfoModuleGraphReader(
+      Deno.execPath(),
+      undefined,
+      { readOnlyLock: true },
+    ).read(join(dir, "m.ts"), {});
+    assertEquals(
+      graph.modules.map((m) => relative(dir, m.path)).sort(),
+      [join("lib", "two.ts"), "m.ts"],
+    );
+    assertEquals(graph.edges.map((e) => relative(dir, e.target)), [
+      join("lib", "two.ts"),
+    ]);
+    assertEquals(graph.missing, []);
+  } finally {
+    await Deno.remove(outer, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
 Deno.test("DenoInfoModuleGraphReader: a package.json project whose package.json does not parse fails the read, rather than checking nothing it declares (swamp-club#3630)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "graph-reader-pkg-bad-" });
   try {

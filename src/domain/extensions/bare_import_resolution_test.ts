@@ -22,6 +22,7 @@ import { join, toFileUrl } from "@std/path";
 import {
   bareImportResolverFrom,
   bareImportsFromDenoInfo,
+  denoInfoRootDir,
   hasUnresolvedBareImports,
   installedPackageImports,
   isLocalModuleSpecifier,
@@ -467,4 +468,57 @@ Deno.test("installedPackageImports: an alias package.json declares over a packag
     installedName: "pad",
     declaredName: "left-pad",
   }]);
+});
+
+Deno.test("isLocalModuleSpecifier: reads node_modules only below the entry point's directory, so a repository under a node_modules ancestor keeps its local modules", () => {
+  const repo = path("node_modules", "repo");
+  const entryDir = join(repo, "extensions", "models");
+  const at = (...parts: string[]) => toFileUrl(join(repo, ...parts)).href;
+  assertEquals(
+    isLocalModuleSpecifier(at("extensions", "models", "m.ts"), entryDir),
+    true,
+  );
+  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts"), entryDir), true);
+  assertEquals(
+    isLocalModuleSpecifier(at("node_modules", "ms", "index.js"), entryDir),
+    false,
+  );
+  // Without a root, every segment is read, as before.
+  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts")), false);
+});
+
+Deno.test("bareImportsFromDenoInfo: under a node_modules ancestor, local importers are kept and only the project's installed packages are installed files", () => {
+  const repo = path("node_modules", "repo");
+  const at = (...parts: string[]) => toFileUrl(join(repo, ...parts)).href;
+  const m = join(repo, "extensions", "models", "m.ts");
+  const found = bareImportsFromDenoInfo({
+    roots: [at("extensions", "models", "m.ts")],
+    modules: [{
+      specifier: at("extensions", "models", "m.ts"),
+      dependencies: [{
+        specifier: "ms",
+        code: { specifier: at("node_modules", "ms", "index.js") },
+      }, {
+        specifier: "@/lib.ts",
+        code: { specifier: at("lib", "lib.ts") },
+      }],
+    }],
+  });
+  assertEquals(found, [
+    {
+      importer: m,
+      specifier: "ms",
+      installedFile: join(repo, "node_modules", "ms", "index.js"),
+    },
+    { importer: m, specifier: "@/lib.ts", target: at("lib", "lib.ts") },
+  ]);
+});
+
+Deno.test("denoInfoRootDir: the first file root's directory, or undefined", () => {
+  assertEquals(
+    denoInfoRootDir({ roots: [url("models", "m.ts")] }),
+    path("models"),
+  );
+  assertEquals(denoInfoRootDir({ roots: ["https://x.test/m.ts"] }), undefined);
+  assertEquals(denoInfoRootDir({}), undefined);
 });
