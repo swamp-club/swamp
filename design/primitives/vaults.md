@@ -967,6 +967,8 @@ container, only the leaves a reference covers are left; a string that joins
 text to a reference or a pending runtime expression is written as it is, text
 included. `${{ env.X }}` remains an expression in the cache and resolves at
 runtime on each run, including replay; its value is never cached.
+The cache is written once the method's arguments have passed their schema, so
+a run the schema refuses never replaces the last good evaluation.
 
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in

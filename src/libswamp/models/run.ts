@@ -1044,16 +1044,21 @@ export async function* modelMethodRun(
               };
               return;
             }
-            if (pendingSave) {
-              await deps.saveEvaluatedDefinition(
-                modelType,
-                pendingSave,
-                pendingProvenance,
-                authoredExpressions,
-                pendingReferences,
-                pendingMasked,
-              );
-            }
+            // Written by the execution service once the method's arguments
+            // pass their schema (its onArgumentsValidated), so a run the
+            // schema refuses never replaces the last good evaluation that
+            // --last-evaluated reuses (swamp-club#3681).
+            const saveEvaluation = pendingSave === undefined
+              ? undefined
+              : ((saved: Definition) => () =>
+                deps.saveEvaluatedDefinition(
+                  modelType,
+                  saved,
+                  pendingProvenance,
+                  authoredExpressions,
+                  pendingReferences,
+                  pendingMasked,
+                ))(pendingSave);
 
             exprSpan.end();
 
@@ -1335,7 +1340,10 @@ export async function* modelMethodRun(
                         },
                       },
                     ),
-                    { secretLoader: evaluationService.secretLoader(redactor) },
+                    {
+                      secretLoader: evaluationService.secretLoader(redactor),
+                      onArgumentsValidated: saveEvaluation,
+                    },
                   ),
               );
             } catch (error) {

@@ -167,10 +167,26 @@ function createFakeEvaluationService(): any {
   };
 }
 
+/** What the real service does once the arguments pass: the caller's hook. */
+async function validatedArguments(
+  options?: { onArgumentsValidated?: () => Promise<void> },
+): Promise<void> {
+  await options?.onArgumentsValidated?.();
+}
+
 // deno-lint-ignore no-explicit-any
 function createFakeExecutionService(): any {
   return {
-    executeWorkflow: () => Promise.resolve({ dataHandles: [] }),
+    executeWorkflow: async (
+      _definition: unknown,
+      _modelDef: unknown,
+      _methodName: string,
+      _context: unknown,
+      options?: { onArgumentsValidated?: () => Promise<void> },
+    ) => {
+      await validatedArguments(options);
+      return { dataHandles: [] };
+    },
   };
 }
 
@@ -1354,13 +1370,16 @@ function createFailingEvaluationDeps(
     }),
     createExecutionService: () =>
       ({
-        executeWorkflow: (
+        executeWorkflow: async (
           _def: Definition,
           _modelDef: unknown,
           name: string,
+          _context: unknown,
+          options?: { onArgumentsValidated?: () => Promise<void> },
         ) => {
+          await validatedArguments(options);
           executed.push(name);
-          return Promise.resolve({ dataHandles: [] });
+          return { dataHandles: [] };
         },
         // deno-lint-ignore no-explicit-any
       }) as any,
@@ -2433,4 +2452,78 @@ Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument 
     ),
     false,
   );
+});
+
+Deno.test("modelMethodRun: the evaluation is saved through the execution service's onArgumentsValidated, so a run it refuses before then never replaces the cache (swamp-club#3681)", async () => {
+  const definition = Definition.create({
+    name: "hooked",
+    inputs: { type: "object", properties: { v: { type: "string" } } },
+    methods: { run: { arguments: { key: "${{ inputs.v }}" } } },
+  });
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  evaluationService.evaluateDefinition = (def: Definition) =>
+    Promise.resolve({
+      definition: Definition.fromData({
+        ...def.toData(),
+        methods: { run: { arguments: { key: "resolved" } } },
+      }),
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  const saved: Definition[] = [];
+  const order: string[] = [];
+  const depsWith = (
+    executeWorkflow: (
+      options?: { onArgumentsValidated?: () => Promise<void> },
+    ) => Promise<unknown>,
+  ): ModelMethodRunDeps => ({
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => evaluationService,
+    saveEvaluatedDefinition: (_type, def) => {
+      saved.push(def);
+      order.push("saved");
+      return Promise.resolve();
+    },
+    createExecutionService: () =>
+      ({
+        executeWorkflow: (
+          _def: unknown,
+          _modelDef: unknown,
+          _name: unknown,
+          _context: unknown,
+          options?: { onArgumentsValidated?: () => Promise<void> },
+        ) => executeWorkflow(options),
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+  });
+
+  // Refused before validation passes: nothing is saved.
+  const refused = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      depsWith(() =>
+        Promise.reject(new Error("Method arguments validation failed: no"))
+      ),
+      { ...createTestInput("hooked", "run"), inputs: { v: "x" } },
+    ),
+  );
+  assertEquals(refused.at(-1)?.kind, "error");
+  assertEquals(saved, []);
+
+  // Validated: saved once, before the method body runs.
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      depsWith(async (options) => {
+        await options?.onArgumentsValidated?.();
+        order.push("method");
+        return { dataHandles: [] };
+      }),
+      { ...createTestInput("hooked", "run"), inputs: { v: "x" } },
+    ),
+  );
+  assertEquals(order, ["saved", "method"]);
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].getMethodArguments("run"), { key: "resolved" });
 });

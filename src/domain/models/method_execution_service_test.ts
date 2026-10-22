@@ -6134,3 +6134,171 @@ Deno.test("deliverStepSecrets: with no method named only the global arguments ar
   assertEquals(plain.secrets, undefined);
   assertEquals(loads, ["v/k"]);
 });
+
+Deno.test("executeWorkflow: onArgumentsValidated runs once the arguments pass their schema and before the method, and not at all when they fail (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const order: string[] = [];
+  const recorder: ModelDefinition = {
+    type: ModelType.create("test/validated-hook"),
+    version: "2026.10.21.1",
+    globalArguments: z.object({}),
+    methods: {
+      write: {
+        description: "Records when it runs",
+        arguments: z.object({ message: z.string().min(1) }),
+        execute: () => {
+          order.push("method");
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const { context } = createTestContext();
+  const hook = () => {
+    order.push("validated");
+    return Promise.resolve();
+  };
+
+  await service.executeWorkflow(
+    Definition.create({
+      name: "valid",
+      methods: { write: { arguments: { message: "hello" } } },
+    }),
+    recorder,
+    "write",
+    context,
+    { onArgumentsValidated: hook },
+  );
+  assertEquals(order, ["validated", "method"]);
+
+  order.length = 0;
+  await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({
+          name: "invalid",
+          methods: { write: { arguments: { message: { nested: true } } } },
+        }),
+        recorder,
+        "write",
+        context,
+        { onArgumentsValidated: hook },
+      ),
+    Error,
+    "Method arguments validation failed",
+  );
+  assertEquals(order, []);
+});
+
+Deno.test("executeWorkflow: the arguments are parsed once, so a schema transform runs once and the method receives what that parse produced, with or without onArgumentsValidated (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  let transforms = 0;
+  const received: unknown[] = [];
+  const counting: ModelDefinition = {
+    type: ModelType.create("test/transform-once"),
+    version: "2026.10.21.1",
+    globalArguments: z.object({}),
+    methods: {
+      write: {
+        description: "Counts its transform",
+        arguments: z.object({
+          message: z.string().transform((text) => `${text}#${++transforms}`),
+        }),
+        execute: (args: Record<string, unknown>) => {
+          received.push(args);
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const { context } = createTestContext();
+  const definition = Definition.create({
+    name: "once",
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+
+  await service.executeWorkflow(definition, counting, "write", context, {
+    onArgumentsValidated: () => Promise.resolve(),
+  });
+  assertEquals(transforms, 1);
+  assertEquals(received, [{ message: "hello#1" }]);
+
+  // A replay, which keeps no record, parses the same once.
+  await service.executeWorkflow(definition, counting, "write", context);
+  assertEquals(transforms, 2);
+  assertEquals(received, [{ message: "hello#1" }, { message: "hello#2" }]);
+});
+
+Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its arguments pass their schema and before the dispatch, and neither calls it nor dispatches when they fail (swamp-club#3745)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const order: string[] = [];
+  const recorder: ModelDefinition = {
+    type: ModelType.create("test/validated-hook-placed"),
+    version: "2026.10.21.1",
+    globalArguments: z.object({}),
+    methods: {
+      write: {
+        description: "Runs on a worker",
+        arguments: z.object({ message: z.string().min(1) }),
+        execute: () => {
+          order.push("in-process");
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const hook = () => {
+    order.push("validated");
+    return Promise.resolve();
+  };
+  setRemoteStepDispatcher({
+    executeRemote: () => {
+      order.push("dispatched");
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: recorder.type,
+      placement: { labels: { tier: "remote" } },
+    });
+
+    await service.executeWorkflow(
+      Definition.create({
+        name: "valid",
+        methods: { write: { arguments: { message: "hello" } } },
+      }),
+      recorder,
+      "write",
+      context,
+      { onArgumentsValidated: hook },
+    );
+    assertEquals(order, ["validated", "dispatched"]);
+
+    order.length = 0;
+    await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({
+            name: "invalid",
+            methods: { write: { arguments: { message: { nested: true } } } },
+          }),
+          recorder,
+          "write",
+          context,
+          { onArgumentsValidated: hook },
+        ),
+      Error,
+      "Method arguments validation failed",
+    );
+    assertEquals(order, []);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
