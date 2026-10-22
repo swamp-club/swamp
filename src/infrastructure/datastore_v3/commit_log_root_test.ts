@@ -17,17 +17,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   DATA_ID,
+  dataKey,
   MemoryStorage,
   modelCommit,
+  modelIntent,
   modelPartition,
   savePut,
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import {
+  COMMIT_UNREACHABLE_CODE,
   type CommitLogUnitOfWork,
+  CommitUnreachableError,
   PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { initializeLogging } from "../logging/logger.ts";
@@ -538,5 +547,60 @@ Deno.test("runInCommitLogRoot: onEnded is told once that a discarded root, or on
       disposition: () => "commit",
     }),
     [false],
+  );
+});
+
+Deno.test("runInCommitLogRoot: an operation that failed and whose commit then cannot reach the storage reports both, with the unreachable code (swamp-club#3759)", async () => {
+  const down = { on: false };
+  const base = memory();
+  const storage = new Proxy(base, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      if (
+        !["has", "put", "get", "touch", "statChunks"].includes(String(property))
+      ) {
+        return value.bind(target);
+      }
+      return (...args: unknown[]) =>
+        down.on
+          ? Promise.reject(
+            new Error("S3 headObject failed", {
+              cause: Object.assign(new Error("connect ECONNREFUSED"), {
+                code: "ECONNREFUSED",
+              }),
+            }),
+          )
+          : value.apply(target, args);
+    },
+  });
+  const failure = new Error("the step failed");
+  const error = await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        {
+          ...unitOptions(new MemorySink(), storage),
+          disposition: () => "commit",
+        },
+        async (root) => {
+          await root.stageOp({
+            partition: MODEL,
+            put: {
+              intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+              key: dataKey("a", 1),
+              content: new Uint8Array(100 * 1024).fill(7),
+            },
+          });
+          down.on = true;
+          throw failure;
+        },
+      ),
+    CommitUnreachableError,
+  );
+  assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+  assertStringIncludes(
+    error.message,
+    "The command had also failed: the step failed",
   );
 });

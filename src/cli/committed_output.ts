@@ -27,8 +27,9 @@
  * stdout console methods (`console.log`, `console.info`, `console.debug`),
  * which `writeOutput`, `unguardedConsole.log`, the JSON renderers and the
  * LogTape console sink all write through. When the root ends, what was held
- * is written, in order, if it committed, and dropped if it did not; the
- * command's error then goes to stderr as always. stderr is never held, so
+ * is written, in order, if it committed, and dropped if it did not, but for
+ * debug lines, which go to stderr; the command's error then goes to stderr as
+ * always. stderr is never held, so
  * warnings keep their place.
  *
  * - **Held** (the default): from the root's start.
@@ -114,8 +115,15 @@ export function openOutputHold(mode: OutputHoldMode): OutputHold {
         }
       }
       active = undefined;
-      if (!committed) return;
-      for (const { method, args } of queue) originals.get(method)!(...args);
+      if (committed) {
+        for (const { method, args } of queue) originals.get(method)!(...args);
+        return;
+      }
+      // Nothing it printed stands, but a debug trace the user asked for is
+      // diagnosis, not a result: it goes to stderr, where the error follows.
+      for (const { method, args } of queue) {
+        if (method === "debug") console.error(...args);
+      }
     },
   };
 }

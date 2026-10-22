@@ -29,6 +29,7 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import { rethrowUnrecordedEnd } from "../../domain/datastore/unit_of_work.ts";
 import {
   type CommitLogUnitOfWork,
+  CommitUnreachableError,
   PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -192,6 +193,11 @@ export async function runInCommitLogRoot<T>(
       } catch (endError) {
         // An end that could not record the failure says so instead of it.
         rethrowUnrecordedEnd(endError, error);
+        // So does one that could not reach the storage: nothing of the
+        // operation, its failure included, was committed (swamp-club#3759).
+        if (endError instanceof CommitUnreachableError) {
+          throw endError.during(error);
+        }
         logger
           .warn`Ending a commit-log unit of work after a failed operation also failed: ${endError}`;
       }

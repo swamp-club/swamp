@@ -173,3 +173,21 @@ Deno.test("openOutputHold: inside a held root, a console guard's renderer output
     setConsoleGuardStderrWriter(undefined);
   }
 });
+
+Deno.test("openOutputHold: a root that did not commit sends its held debug lines to stderr and drops the rest (swamp-club#3759)", async () => {
+  const errors: string[] = [];
+  const savedError = console.error;
+  console.error = (...args: unknown[]) => errors.push(args.join(" "));
+  try {
+    await recordingStdout((written) => {
+      const hold = openOutputHold("held");
+      console.debug("trace line");
+      console.info("Rejected step gate");
+      hold.end(false);
+      assertEquals(written, []);
+      assertEquals(errors, ["trace line"]);
+    });
+  } finally {
+    console.error = savedError;
+  }
+});

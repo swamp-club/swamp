@@ -592,6 +592,7 @@ export async function runCliCapturing(
   console.log = capture;
   console.info = capture;
   let error: unknown;
+  let exitCode = 0;
   try {
     await root().parse(invocation.args);
   } catch (thrown) {
@@ -602,11 +603,11 @@ export async function runCliCapturing(
     } catch {
       // Best effort, as mod.ts: the command's error takes precedence.
     }
+    exitCode = Deno.exitCode;
+    console.log = originalLog;
+    console.info = originalInfo;
+    Deno.exitCode = previousExitCode;
   }
-  const exitCode = Deno.exitCode;
-  console.log = originalLog;
-  console.info = originalInfo;
-  Deno.exitCode = previousExitCode;
   return { stdout, error, exitCode };
 }
 

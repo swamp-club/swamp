@@ -215,6 +215,13 @@ export class MayLandLaterError extends UnrecordedEndError {
 /** Error code for {@link CommitUnreachableError}. */
 export const COMMIT_UNREACHABLE_CODE = "datastore_v3_commit_unreachable";
 
+/** How a {@link CommitUnreachableError} is worded. */
+interface CommitUnreachableWording {
+  readonly stepsRan?: boolean;
+  /** The error the operation itself failed with, if it failed. */
+  readonly failure?: unknown;
+}
+
 /**
  * A v3 unit's commit could not reach the datastore's storage to store the
  * content it names, and the unit gave the commit up, so nothing of it was
@@ -224,23 +231,47 @@ export const COMMIT_UNREACHABLE_CODE = "datastore_v3_commit_unreachable";
  * {@link afterStepsRan} says what they did outside swamp may have happened.
  */
 export class CommitUnreachableError extends UserError {
-  constructor(cause: unknown, options: { readonly stepsRan?: boolean } = {}) {
+  readonly #wording: CommitUnreachableWording;
+
+  constructor(
+    cause: unknown,
+    options: CommitUnreachableWording = {},
+  ) {
+    const failed = options.failure === undefined
+      ? ""
+      : `The command had also failed: ${messageOf(options.failure)}. `;
     const recheck = options.stepsRan === true
       ? "Its steps had already run, so check anything they changed outside " +
         "swamp before running it again once the datastore is reachable."
       : "Run it again once the datastore is reachable.";
     super(
       `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
-        `so nothing this command changed was committed. ${recheck}`,
+        `so nothing this command changed was committed. ${failed}${recheck}`,
       COMMIT_UNREACHABLE_CODE,
     );
     this.name = "CommitUnreachableError";
     this.cause = cause;
+    this.#wording = options;
   }
 
   /** This error, for a model method run or workflow run whose steps ran. */
   afterStepsRan(): CommitUnreachableError {
-    return new CommitUnreachableError(this.cause, { stepsRan: true });
+    return new CommitUnreachableError(this.cause, {
+      ...this.#wording,
+      stepsRan: true,
+    });
+  }
+
+  /**
+   * This error, for an operation that had failed with `failure` before its
+   * commit could not reach the storage: the failure's record was not
+   * committed either, so the caller is told both.
+   */
+  during(failure: unknown): CommitUnreachableError {
+    return new CommitUnreachableError(this.cause, {
+      ...this.#wording,
+      failure,
+    });
   }
 }
 
