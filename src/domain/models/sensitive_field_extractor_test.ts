@@ -1884,7 +1884,9 @@ Deno.test("extractRefusedSensitiveValues: text the input holds only at positions
 
 Deno.test("schemaThrew: Zod's own error for an async check, which names no input, is returned as it is; any other throw from a schema marking a field sensitive is withheld, naming only a standard error (swamp-club#3753)", async () => {
   const secret = z.string().meta({ sensitive: true });
-  const asyncChecked = z.object({ token: secret.refine(async () => true) });
+  const asyncChecked = z.object({
+    token: secret.refine(() => Promise.resolve(true)),
+  });
   const thrown = (() => {
     try {
       asyncChecked.safeParse({ token: "hunter2-long" });
