@@ -231,7 +231,7 @@ Deno.test("expressionQueryView.predicate: the operator refusals and the allowed 
   assertEquals(run("size(attributes) == 3"), true);
 });
 
-Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, leaves a foreign and an untagged record as stored, and refuses a malformed one naming data.query and no value", () => {
+Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, answers a foreign record, a legacy row stamped with the empty namespace under a namespaced view, an untagged record and one whose tag names no field as stored, by identity, and refuses a malformed one naming data.query and no value", () => {
   inScope(() => {
     const viewed = view.record(tagged());
     assertEquals(isSecret(viewed.attributes.password), true);
@@ -254,6 +254,11 @@ Deno.test("expressionQueryView.record: adapts an own-namespace tagged record, le
     );
     const untagged = record({ password: REF_A });
     assertStrictEquals(view.record(untagged), untagged);
+    // The service routes content by this identity (QueryView.record).
+    const legacy = record({ password: REF_A }, pathsTag("password"));
+    assertStrictEquals(expressionQueryView("infra").record(legacy), legacy);
+    const noField = record({ password: REF_A }, pathsTag());
+    assertStrictEquals(view.record(noField), noField);
 
     const error = assertThrows(
       () =>

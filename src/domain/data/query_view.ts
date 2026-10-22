@@ -71,7 +71,13 @@ export interface QueryView {
    * the service's own base and memoized by the implementation.
    */
   environment(base: Environment): Environment;
-  /** `record` as the predicate and the projection read it. */
+  /**
+   * `record` as the predicate and the projection read it: a new object when
+   * the view adapted it, and `record` itself when the view leaves it as
+   * stored (another namespace's, or one whose tag names no sensitive
+   * field). The service routes a row's JSON content to the viewed
+   * attributes by that identity alone.
+   */
   record(record: DataRecord): DataRecord;
   /**
    * Evaluates one row's predicate and answers the match. A refusal the

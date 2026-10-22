@@ -1513,15 +1513,18 @@ export class DataQueryService {
               throw new Error("content of a non-text item");
             }
             const loaded = load();
-            if (view && !isForeignNamespace(record.namespace, this.dataRepo)) {
-              // The reader's own JSON, as fromRow decides it (parameters
-              // included) or by the aliased object it leaves at content,
-              // reads the view; another namespace's record is never adapted
-              // and keeps today's content.
-              return isJsonMediaType(loaded.contentType) ||
-                  loaded.content === loaded.attributes
-                ? loadViewed().attributes
-                : loaded.content;
+            if (
+              view &&
+              (isJsonMediaType(loaded.contentType) ||
+                loaded.content === loaded.attributes)
+            ) {
+              // JSON, as fromRow decides it (parameters included) or by the
+              // aliased object it leaves at content, reads the view when the
+              // view adapted the record. A record the view answers as stored
+              // (another namespace's, or an untagged one) keeps today's
+              // content, as the raw branch below reads it.
+              const viewed = loadViewed();
+              if (viewed !== loaded) return viewed.attributes;
             }
             return loaded.contentType === "application/json"
               ? loaded.attributes
@@ -1653,14 +1656,14 @@ export class DataQueryService {
           const projected = contents?.get(r);
           if (view) {
             // Every row's projection runs through the view; what its
-            // context reads depends on the record. The reader's own record
-            // is viewed on first read, after hydration rebuilt it, and its
-            // JSON content, by media type (parameters included) or by the
-            // aliased object, reads the viewed attributes. Another
-            // namespace's record is never adapted, so it reads as the raw
-            // branches below read it, its projected content null where its
-            // bytes are not on this host.
-            const foreign = isForeignNamespace(r.namespace, this.dataRepo);
+            // context reads depends on the view's answer. The record is
+            // viewed on first read, after hydration rebuilt it. When the
+            // view adapted it, its JSON content, by media type (parameters
+            // included) or by the aliased object, reads the viewed
+            // attributes. A record the view answers as stored (another
+            // namespace's, or an untagged one) reads as the raw branches
+            // below read it, its projected content null where its bytes are
+            // not on this host.
             let viewed: DataRecord | undefined;
             const loadViewed = (): DataRecord => {
               if (!viewed) viewed = view.record(r);
@@ -1674,20 +1677,20 @@ export class DataQueryService {
                 : r.content;
             Object.defineProperties(selectCtx, {
               attributes: {
-                get: () => foreign ? r.attributes : loadViewed().attributes,
+                get: () => loadViewed().attributes,
                 enumerable: true,
                 configurable: true,
               },
               content: {
                 get: () => {
-                  if (foreign) return rawContent();
                   const aliased = projected
                     ? projected.content === r.attributes
                     : r.content === r.attributes;
                   if (isJsonMediaType(r.contentType) || aliased) {
-                    return loadViewed().attributes;
+                    const record = loadViewed();
+                    if (record !== r) return record.attributes;
                   }
-                  return projected ? projected.content : r.content;
+                  return rawContent();
                 },
                 enumerable: true,
                 configurable: true,

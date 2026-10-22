@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertStrictEquals,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -5911,11 +5912,23 @@ Deno.test("getLatestRecord: an unpopulated row behind a deletion marker another 
  * answers a function the base lacks, the records it views carry a mark, its
  * projections wrap what the program answered, and it refuses the
  * expressions `refuses` names, as a refusal recorded in the view would.
+ * Like the CEL adapter it answers a record as stored, the same object, when
+ * the record belongs to a namespace other than `ownNamespace` (the solo
+ * namespace unless given) or `asStored` selects it, standing in for a
+ * record whose tag names no sensitive field.
  */
-function fakeView(refuses: (expression: string) => boolean = () => false): {
+function fakeView(
+  refuses: (expression: string) => boolean = () => false,
+  options: {
+    ownNamespace?: string;
+    asStored?: (record: DataRecord) => boolean;
+  } = {},
+): {
   view: QueryView;
   seen: { environments: number; records: DataRecord[]; projections: string[] };
 } {
+  const ownNamespace = options.ownNamespace ?? "";
+  const asStored = options.asStored ?? (() => false);
   const seen = {
     environments: 0,
     records: [] as DataRecord[],
@@ -5934,6 +5947,7 @@ function fakeView(refuses: (expression: string) => boolean = () => false): {
     },
     record(record) {
       seen.records.push(record);
+      if (record.namespace !== ownNamespace || asStored(record)) return record;
       return { ...record, attributes: { ...record.attributes, viewed: true } };
     },
     predicate(expression, program, ctx) {
@@ -6003,8 +6017,21 @@ function writeContent(
   );
 }
 
+/**
+ * A query service over items written with their bytes. The repository is
+ * solo unless `namespace` names its own; each row carries its item's
+ * `namespace`, the empty namespace unless given.
+ */
 function setupWithContent(
-  items: Array<{ name: string; contentType: string; bytes: Uint8Array }>,
+  items: Array<
+    {
+      name: string;
+      contentType: string;
+      bytes: Uint8Array;
+      namespace?: string;
+    }
+  >,
+  options: { namespace?: string } = {},
 ): { catalog: CatalogStore; service: DataQueryService } {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-view-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
@@ -6013,13 +6040,23 @@ function setupWithContent(
     const id = crypto.randomUUID();
     writeContent(dir, item.name, id, item.contentType, item.bytes);
     catalog.upsert(makeRow({
+      namespace: item.namespace ?? "",
       data_name: item.name,
       id,
       content_type: item.contentType,
       size: item.bytes.length,
     }));
   }
-  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    options.namespace === undefined
+      ? undefined
+      : createNamespace(options.namespace),
+  );
   return { catalog, service: new DataQueryService(catalog, dataRepo) };
 }
 
@@ -6271,7 +6308,7 @@ Deno.test("DataQueryService: under a view a content projection on a JSON record 
   catalog.close();
 });
 
-Deno.test("DataQueryService: under a view a foreign-namespace JSON record keeps today's projected content, null where its bytes are not on this host, and is never viewed", async () => {
+Deno.test("DataQueryService: under a view a foreign-namespace JSON record the view answers as stored keeps today's projected content, null where its bytes are not on this host", async () => {
   const { catalog, service } = setupForeignTest(() =>
     Promise.resolve(jsonBytes({ content: "security" }))
   );
@@ -6307,6 +6344,189 @@ Deno.test("DataQueryService: under a view a foreign-namespace JSON record keeps 
       view,
     }) as DataRecord[]).length,
     1,
+  );
+  // The view is asked about the foreign record and answers it as stored.
+  assert(seen.records.length > 0);
+  for (const record of [...seen.records]) {
+    assertEquals(record.namespace, "security");
+    assertStrictEquals(view.record(record), record);
+  }
+  catalog.close();
+});
+
+const CHARSET_JSON = "application/json; charset=utf-8";
+
+/**
+ * Asserts that `name`, a record the view answers as stored, reads under the
+ * view as the raw path reads it: its projected content, sync and async, and
+ * each predicate's match.
+ */
+async function assertReadsAsStored(
+  service: DataQueryService,
+  view: QueryView,
+  name: string,
+  predicates: string[],
+): Promise<void> {
+  const select = `name == "${name}"`;
+  const raw = service.querySync(select, { select: "content" });
+  assertEquals(
+    service.querySync(select, { view, select: "content" }),
+    raw.map((content) => ({ projected: content })),
+    `sync ${name}`,
+  );
+  assertEquals(
+    await service.query(select, { view, select: "content" }),
+    (await service.query(select, { select: "content" })).map((content) => ({
+      projected: content,
+    })),
+    `async ${name}`,
+  );
+  for (const predicate of predicates) {
+    const expression = `${select} && ${predicate}`;
+    assertEquals(
+      (service.querySync(expression, { view }) as DataRecord[]).length,
+      (service.querySync(expression) as DataRecord[]).length,
+      expression,
+    );
+  }
+}
+
+Deno.test("DataQueryService: under a view a legacy row stamped with the empty namespace in a namespaced repository, which the view answers as stored, keeps its JSON text and its raw predicate answers, while the repository's own row reads the viewed attributes", async () => {
+  const { catalog, service } = setupWithContent([
+    {
+      name: "legacy",
+      contentType: CHARSET_JSON,
+      bytes: text('{"k":1}'),
+      namespace: "",
+    },
+    {
+      name: "own",
+      contentType: CHARSET_JSON,
+      bytes: text('{"k":1}'),
+      namespace: "infra",
+    },
+  ], { namespace: "infra" });
+  const { view } = fakeView(undefined, { ownNamespace: "infra" });
+  assertEquals(service.querySync('name == "legacy"', { select: "content" }), [
+    '{"k":1}',
+  ]);
+  await assertReadsAsStored(service, view, "legacy", [
+    "content.k == 1",
+    "type(content) == string",
+    "attributes.viewed == true",
+  ]);
+  assertEquals(
+    service.querySync('name == "legacy"', { view, select: "attributes" }),
+    [{ projected: { k: 1 } }],
+  );
+  assertEquals(
+    service.querySync('name == "own"', { view, select: "content" }),
+    [{ projected: { k: 1, viewed: true } }],
+  );
+  assertEquals(
+    await service.query('name == "own"', { view, select: "content" }),
+    [{ projected: { k: 1, viewed: true } }],
+  );
+  assertEquals(
+    (service.querySync("content.viewed == true", { view }) as DataRecord[])
+      .map((r) => r.name),
+    ["own"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view an own-namespace record the view answers as stored, as the adapter answers an untagged one, keeps its JSON text and its raw predicate answers, while an adapted sibling reads the viewed attributes", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "untagged", contentType: CHARSET_JSON, bytes: text('{"k":2}') },
+    { name: "tagged", contentType: CHARSET_JSON, bytes: text('{"k":2}') },
+  ]);
+  const { view } = fakeView(undefined, {
+    asStored: (record) => record.name === "untagged",
+  });
+  assertEquals(
+    service.querySync('name == "untagged"', { select: "content" }),
+    ['{"k":2}'],
+  );
+  await assertReadsAsStored(service, view, "untagged", [
+    "content.k == 2",
+    "type(content) == string",
+    "attributes.viewed == true",
+  ]);
+  assertEquals(
+    service.querySync('name == "tagged"', { view, select: "content" }),
+    [{ projected: { k: 2, viewed: true } }],
+  );
+  assertEquals(
+    await service.query('name == "tagged"', { view, select: "content" }),
+    [{ projected: { k: 2, viewed: true } }],
+  );
+  assertEquals(
+    (service.querySync("content.viewed == true", { view }) as DataRecord[])
+      .map((r) => r.name),
+    ["tagged"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view a parametrized JSON record whose body does not parse keeps its text when the view answers it as stored, and the empty attributes the view holds when the view adapted it", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "stored", contentType: CHARSET_JSON, bytes: text("not json") },
+    { name: "adapted", contentType: CHARSET_JSON, bytes: text("not json") },
+  ]);
+  const { view } = fakeView(undefined, {
+    asStored: (record) => record.name === "stored",
+  });
+  assertEquals(service.querySync('name == "stored"', { select: "content" }), [
+    "not json",
+  ]);
+  await assertReadsAsStored(service, view, "stored", [
+    "type(content) == string",
+    'content == "not json"',
+  ]);
+  // The fake's mark is all the adapted view's attributes hold: the body
+  // parsed to none.
+  assertEquals(
+    service.querySync('name == "adapted"', { view, select: "content" }),
+    [{ projected: { viewed: true } }],
+  );
+  assertEquals(
+    await service.query('name == "adapted"', { view, select: "content" }),
+    [{ projected: { viewed: true } }],
+  );
+  for (
+    const [predicate, count] of [
+      ["type(content) == map", 1],
+      ["type(content) == string", 0],
+    ] as const
+  ) {
+    assertEquals(
+      (service.querySync(`name == "adapted" && ${predicate}`, {
+        view,
+      }) as DataRecord[]).length,
+      count,
+      predicate,
+    );
+  }
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view reading a text record's content in a predicate or a projection does not consult the view", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "notes", contentType: "text/plain", bytes: text("hello") },
+  ]);
+  const { view, seen } = fakeView();
+  assertEquals(
+    (service.querySync('content.contains("hello")', { view }) as DataRecord[])
+      .map((r) => r.name),
+    ["notes"],
+  );
+  assertEquals(
+    service.querySync('name == "notes"', { view, select: "content" }),
+    [{ projected: "hello" }],
+  );
+  assertEquals(
+    await service.query('name == "notes"', { view, select: "content" }),
+    [{ projected: "hello" }],
   );
   assertEquals(seen.records.length, 0);
   catalog.close();

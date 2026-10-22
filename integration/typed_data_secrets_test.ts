@@ -700,7 +700,46 @@ Deno.test("typed data secrets: data.query predicates and projections refuse on a
       JSON.stringify({ password: reference, user: "c" }),
       "application/json; charset=utf-8",
     );
+    // Two the view answers as stored, untagged: their content keeps the
+    // raw path's text, whether the body parses or not.
+    const plainBody = JSON.stringify({ password: reference, user: "p" });
+    await f.store(
+      "charset-plain",
+      {},
+      plainBody,
+      "application/json; charset=utf-8",
+    );
+    await f.store(
+      "charset-broken",
+      {},
+      "not json",
+      "application/json; charset=utf-8",
+    );
     await f.sync();
+    const asStored = [
+      ["charset-plain", plainBody],
+      ["charset-broken", "not json"],
+    ];
+    for (const [name, body] of asStored) {
+      const predicate = `modelName == "db" && name == "${name}"`;
+      assertEquals(
+        await f.evaluate(`data.query('${predicate}', 'content')`),
+        [body],
+        name,
+      );
+      assertEquals(
+        await f.dqs.query(predicate, { select: "content" }),
+        [body],
+        name,
+      );
+      assertEquals(
+        await f.evaluate(
+          `size(data.query('${predicate} && type(content) == string'))`,
+        ),
+        (await f.dqs.query(`${predicate} && type(content) == string`)).length,
+        name,
+      );
+    }
     const charset = sentinelOf(
       f,
       await f.evaluate(
