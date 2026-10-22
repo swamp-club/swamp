@@ -22355,12 +22355,18 @@ Deno.test({
         const definition = Definition.create({
           name: "input-svc",
           type: modelType.normalized,
+          inputs: {
+            properties: { key: { type: "string" } },
+            required: ["key"],
+          },
           globalArguments: { token: "${{ inputs.key }}", region: "eu-west-1" },
         });
         await new YamlDefinitionRepository(tempDir).save(modelType, definition);
         const step = Step.create({
           name: "step",
-          task: StepTask.model(definition.name, "execute"),
+          task: StepTask.model(definition.name, "execute", {
+            key: "${{ inputs.secret }}",
+          }),
         });
         const context = (): StepExecutionContext => ({
           sensitiveValues: new RunSensitiveValues(),
@@ -22373,11 +22379,11 @@ Deno.test({
           signal: new AbortController().signal,
           step,
           catalogStore,
-          authoredExpressions: new Set(["${{ inputs.key }}"]),
+          authoredExpressions: new Set(["${{ inputs.secret }}"]),
           expressionContext: {
             model: {},
             env: {},
-            inputs: { key: "GLOBAL-CANARY" },
+            inputs: { secret: "GLOBAL-CANARY" },
           },
         });
 
@@ -22460,7 +22466,11 @@ Deno.test({
         const definition = Definition.create({
           name: "step-fed",
           type: modelType.normalized,
+          inputs: { properties: { secret: { type: "string" } } },
           globalArguments: { region: "eu-west-1" },
+          methods: {
+            execute: { arguments: { secret: "${{ inputs.secret }}" } },
+          },
         });
         await new YamlDefinitionRepository(tempDir).save(modelType, definition);
         const step = Step.create({

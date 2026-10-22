@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  expressionReferences,
   freeRoots,
   inputNamesRead,
   isBlankConstant,
@@ -26,6 +27,22 @@ import {
   transformHyphenatedModelRefs,
   typeChecksAsConstant,
 } from "./cel_grammar.ts";
+
+Deno.test("expressionReferences: distinguishes named, computed, and shadowed input reads", () => {
+  assertEquals([
+    ...expressionReferences("inputs.alias + inputs['other']")!.inputs,
+  ], ["alias", "other"]);
+  assertEquals(
+    expressionReferences("inputs['a' + 'lias']")!.opaqueInputs,
+    true,
+  );
+  assertEquals(
+    expressionReferences("cel.bind(inputs, {'a': 1}, inputs.a)")!.roots.has(
+      "inputs",
+    ),
+    false,
+  );
+});
 
 Deno.test("transformHyphenatedModelRefs: rewrites hyphenated model names in code", () => {
   assertEquals(

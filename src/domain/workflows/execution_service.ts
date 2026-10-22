@@ -211,6 +211,7 @@ import {
 } from "../models/validation_service.ts";
 import { buildMethodContext } from "../models/method_context.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
+import { acceptsMethodArgumentKey } from "../models/zod_type_coercion.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import {
   type ReservedTagLookups,
@@ -2391,6 +2392,22 @@ export class DefaultStepExecutor implements StepExecutor {
       ));
     }
 
+    // Definition inputs feed evaluation; copying them into cached method
+    // arguments can leak a sensitive value under an unmarked input name.
+    // Keep schema-accepted method inputs; when evaluation masks an argument,
+    // its forwarded definition-input aliases are masked too. Unknown keys are
+    // omitted. Runtime forwarding below stays unchanged.
+    const cachedDefinition = Definition.fromData(executedDefinition.toData());
+    let cachedProvenance = definitionProvenance.raw;
+    let cachedExecutedProvenance = definitionProvenance.sanitized;
+    const methodSchema = modelDef.methods[task.methodName]?.arguments;
+    const cachedInputKeys = new Set(
+      Object.keys(stepInputs.raw).filter((key) =>
+        methodSchema !== undefined &&
+        acceptsMethodArgumentKey(methodSchema, key)
+      ),
+    );
+
     // Forward all step inputs as method arguments.
     // This runs after expression evaluation, so task.inputs values
     // take precedence over any values resolved from ${{ inputs.X }} expressions.
@@ -2399,6 +2416,12 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     for (const [key, value] of Object.entries(stepInputs.raw)) {
       evaluatedDefinition.setMethodArgument(task.methodName, key, value);
+      if (cachedInputKeys.has(key)) {
+        cachedProvenance = cachedProvenance.graft(
+          methodArgumentPath(task.methodName, key),
+          stepInputs.rawProvenance.subtree(keySegment(key)),
+        );
+      }
       definitionProvenance = {
         ...definitionProvenance,
         raw: definitionProvenance.raw.graft(
@@ -2409,6 +2432,13 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     for (const [key, value] of Object.entries(stepInputs.sanitized)) {
       executedDefinition.setMethodArgument(task.methodName, key, value);
+      if (cachedInputKeys.has(key)) {
+        cachedDefinition.setMethodArgument(task.methodName, key, value);
+        cachedExecutedProvenance = cachedExecutedProvenance.graft(
+          methodArgumentPath(task.methodName, key),
+          stepInputs.sanitizedProvenance.subtree(keySegment(key)),
+        );
+      }
       definitionProvenance = {
         ...definitionProvenance,
         sanitized: definitionProvenance.sanitized.graft(
@@ -2461,23 +2491,24 @@ export class DefaultStepExecutor implements StepExecutor {
       heldLockIds = lockResult.lentLocks ?? lockResult.heldLockIds;
     }
     try {
-      // Save evaluated definition (with vault expressions still raw) for
-      // --last-evaluated. Built from the executed copy, so sensitive values are
-      // written as the vault references they came from, and a literal under a
-      // sensitive argument as the mask, never in plaintext.
+      // Save evaluated arguments with runtime expressions still raw and
+      // sensitive values masked or referenced, without forwarded input aliases.
       const persisted = persistEvaluatedDefinition(
-        executedDefinition,
+        cachedDefinition,
         ctx.expressionContext?.deferredExpressions ?? [],
         originalDefinition,
         ctx.sensitiveValues,
         modelDef,
-        definitionProvenance.sanitized,
+        cachedExecutedProvenance,
+        [...cachedInputKeys].map((
+          key,
+        ) => ["methods", task.methodName, "arguments", key]),
       );
       await evaluatedDefRepo.save(
         modelType,
         persisted.definition,
         // In raw-copy coordinates, which rehydrate restores exactly.
-        definitionProvenance.raw,
+        cachedProvenance,
         authoredExpressions,
         persisted.deferredExpressions,
         persisted.writtenReferences,

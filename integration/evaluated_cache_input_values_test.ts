@@ -890,12 +890,20 @@ Deno.test("input values: a workflow step whose method echoes the keys of a sensi
       assertStringIncludes(error, `intentional failure keys ${h.canary}`);
       // The run record keeps the workflow input it was given, as the replay
       // pins it, and the step's error as the method wrote it. The evaluated
-      // definition holds the sensitive record only as the mask.
+      // definition, its metadata and its provenance hold the record only as
+      // the mask.
+      assertEquals(
+        await filesHolding(
+          join(h.dir, ".swamp", "definitions-evaluated"),
+          h.canary,
+        ),
+        [],
+      );
       const cache = await cacheOf(h.dir, "wf-keys");
       assertEquals(
-        (cache.methods as Record<string, { arguments: { tokens: unknown } }>)
-          .failKeys.arguments.tokens,
-        "***",
+        (cache.methods as Record<string, { arguments: unknown }>).failKeys
+          .arguments,
+        { tokens: "***" },
       );
     } finally {
       repo.catalogStore.close();
