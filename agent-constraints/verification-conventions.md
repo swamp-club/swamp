@@ -110,12 +110,15 @@ against a branch you know touches the guarded paths and check the step status is
 
 ### Authentication
 
-The Claude CLI authenticates via one of two methods:
+Local reviews run `claude -p` on your claude.ai login. No API key is needed.
 
-1. **`~/.config/swamp/verify.env`** — if this file exists with
-   `ANTHROPIC_API_KEY=sk-ant-...`, export it before running the workflow.
-2. **claude.ai login** — if no env file exists, the CLI uses your existing
-   claude.ai login. No additional setup needed.
+`ANTHROPIC_API_KEY` is a CI secret for the API route only. Keep it out of
+`~/.config/swamp/verify.env` and out of the shell that launches the workflows.
+`claude -p` uses an exported key in place of the login, so a key sourced from
+`verify.env` takes over every review, and a stale one fails each review within
+a second with `Invalid API key`. `setup-verify-env` leaves keys it does not
+manage in the file, so delete an `ANTHROPIC_API_KEY` line from an existing
+`verify.env` by hand.
 
 For `reviewer=codex`, install and authenticate the Codex CLI before launching
 the workflow. Provider session limits fail the review; select an available
