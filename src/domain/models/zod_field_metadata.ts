@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { schemaTransformsValues } from "./zod_type_coercion.ts";
 
 /**
  * Metadata a model type attaches to a schema field with `.meta({...})`, read
@@ -221,7 +222,8 @@ export interface ValueWithMetadata {
   /** The metadata that matched */
   meta: FieldMetadata;
   /**
-   * Set when the value is reported conservatively, as what a reshaping node
+   * Set when the value is reported conservatively, as an input a pipeline's
+   * transform may carry into a marked output, or as what a reshaping node
    * delivered whole, rather than as a value a schema node marks itself
    * (swamp-club#3681).
    */
@@ -475,6 +477,8 @@ function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
 /** State carried through one {@link findValuesWithMetadata} walk. */
 interface ValueWalk {
   matches: (meta: FieldMetadata) => boolean;
+  /** Cache inputs precede transforms, whose output keys may differ completely. */
+  rawInputs?: boolean;
   /** Report metadata on the root schema's own chain, for the root value. */
   reportRoot?: boolean;
   /**
@@ -483,8 +487,8 @@ interface ValueWalk {
    */
   transformed?: boolean;
   found: ValueWithMetadata[];
-  /** Paths already in `found`. */
-  foundPaths: Set<string>;
+  /** Paths already in `found`, each with its index there. */
+  foundPaths: Map<string, number>;
   /**
    * Paths each schema has already been walked at. Overlapping union members
    * lead to the same schema at the same place more than once; walking it
@@ -495,6 +499,26 @@ interface ValueWalk {
   ancestors: Set<object>;
   /** Answers already given by {@link matchWithin}; null for no match. */
   within: Map<z.ZodTypeAny, FieldMetadata | null>;
+}
+
+/**
+ * Adds a found value to the walk. Union and intersection members and both
+ * sides of a pipe revisit one value, and a path names one place in it, so a
+ * path seen before is that same value and is reported once. With
+ * `rawInputs`, a raw-input report there gives way to an exact one: what a
+ * schema node marks itself is never only potentially marked, whichever side
+ * of a pipe or member the walk reached first (swamp-club#3751).
+ */
+function record(walk: ValueWalk, entry: ValueWithMetadata): void {
+  const index = walk.foundPaths.get(entry.path);
+  if (index === undefined) {
+    walk.foundPaths.set(entry.path, walk.found.length);
+    walk.found.push(entry);
+  } else if (
+    walk.rawInputs && walk.found[index].rawInput && !entry.rawInput
+  ) {
+    walk.found[index] = entry;
+  }
 }
 
 /**
@@ -578,22 +602,15 @@ function visitValue(
     paths.add(path);
   }
 
-  // Union and intersection members and both sides of a pipe revisit one
-  // value. A path names one place in the value, so a path seen before is
-  // that same value.
-  const report = (meta: FieldMetadata, whole: boolean, rawInput?: true) => {
-    if (!walk.foundPaths.has(path)) {
-      walk.foundPaths.add(path);
-      walk.found.push({
-        path,
-        keys,
-        value,
-        meta,
-        perElement: whole,
-        ...(rawInput ? { rawInput } : {}),
-      });
-    }
-  };
+  const report = (meta: FieldMetadata, whole: boolean, rawInput?: true) =>
+    record(walk, {
+      path,
+      keys,
+      value,
+      meta,
+      perElement: whole,
+      ...(rawInput ? { rawInput } : {}),
+    });
 
   let current = schema;
   let reported = atRoot && !walk.reportRoot;
@@ -618,6 +635,32 @@ function visitValue(
       // `a.pipe(b)`: `b` describes the same value once `a` has accepted it,
       // so what `b` marks is marked here too.
       const pipe = getSchemaDef(current);
+      // Only code on the input side can carry an input into a marked output
+      // under another key. A pipe without any describes one value on both
+      // sides, so the branch below reads what its output marks exactly.
+      if (walk.rawInputs && pipe.out && pipeMayReshape(current, pipe.in)) {
+        const outputMeta = matchWithin(walk, pipe.out);
+        if (outputMeta) {
+          // No transform runs here. Any input may contribute to a marked
+          // output, so preserve only references or masks for those inputs.
+          report(outputMeta, true, true);
+          if (atRoot && isPlainObject(value)) {
+            for (const [key, input] of Object.entries(value)) {
+              record(walk, {
+                path: appendKey(path, key),
+                keys: [...keys, key],
+                value: input,
+                meta: outputMeta,
+                perElement: true,
+                rawInput: true,
+              });
+            }
+          }
+          // The walk goes on as it would without `rawInputs`, so what either
+          // side of the pipe marks at a position the input holds is still
+          // reported exactly, and replaces a raw-input report there.
+        }
+      }
       if (pipe.in && pipe.out && getSchemaType(pipe.in) !== "transform") {
         visitValue(walk, pipe.out, value, path, keys, perElement, reported);
       }
@@ -777,6 +820,22 @@ function reshapes(node: z.ZodTypeAny): boolean {
   );
 }
 
+/**
+ * Whether a pipe may hand its output a value of another shape than its
+ * input: a `z.preprocess()` or `.transform()` anywhere on its input side, a
+ * codec's own transform, or a node on the input side's chain that
+ * {@link reshapes} the value. Without one, both sides describe the same
+ * value, so what the output marks sits at the same position in the input.
+ * An input side it cannot read is answered as one that may reshape.
+ */
+function pipeMayReshape(
+  pipe: z.ZodTypeAny,
+  input: z.ZodTypeAny | undefined,
+): boolean {
+  return input === undefined || reshapes(pipe) ||
+    schemaTransformsValues(input) || chainReshapes(input);
+}
+
 /** Whether any node on a chain of wrappers {@link reshapes} the value. */
 function chainReshapes(node: z.ZodTypeAny): boolean {
   const seen = new Set<z.ZodTypeAny>();
@@ -811,6 +870,13 @@ function chainReshapes(node: z.ZodTypeAny): boolean {
  * root schema itself is not reported, unless `reportRoot` asks for it: the
  * root value is then reported whole when the root schema, or a wrapper or
  * pipe side on its own chain, matches.
+ * With `rawInputs`, a pipeline with matching output metadata whose input
+ * side holds code that may reshape the value reports its input
+ * conservatively instead: its preprocessor or transform may rename fields.
+ * At the root each input key is reported so a caller can replace it. The
+ * positions either side of such a pipe marks in the input are still
+ * reported exactly, and an exact report replaces a raw-input one at the same
+ * path. A pipe with no such code is read exactly, as without `rawInputs`.
  * With `transformed`, the value is read as a parse delivered it: a
  * `.transform()`, codec, `.overwrite()` or `.catch()` that reaches matching
  * metadata reports the whole value it delivered, flagged `rawInput`, since
@@ -834,16 +900,18 @@ export function findValuesWithMetadata(
   value: unknown,
   matches: (meta: FieldMetadata) => boolean,
   options: {
+    rawInputs?: boolean;
     reportRoot?: boolean;
     transformed?: boolean;
   } = {},
 ): ValueWithMetadata[] {
   const walk: ValueWalk = {
     matches,
+    rawInputs: options.rawInputs,
     reportRoot: options.reportRoot,
     transformed: options.transformed,
     found: [],
-    foundPaths: new Set(),
+    foundPaths: new Map(),
     visited: new Map(),
     ancestors: new Set(),
     within: new Map(),
@@ -1010,7 +1078,7 @@ export function schemaHoldsMetadata(
   const walk: ValueWalk = {
     matches,
     found: [],
-    foundPaths: new Set(),
+    foundPaths: new Map(),
     visited: new Map(),
     ancestors: new Set(),
     within: new Map(),

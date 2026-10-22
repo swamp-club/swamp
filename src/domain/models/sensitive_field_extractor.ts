@@ -81,6 +81,11 @@ function isSensitive(meta: FieldMetadata): boolean {
   return Boolean((meta as SensitiveMetadata).sensitive);
 }
 
+/** Whether a schema marks any field, even when a raw input lacks that field. */
+export function hasSensitiveFields(schema: z.ZodTypeAny): boolean {
+  return schemaHoldsMetadata(schema, isSensitive);
+}
+
 function toSensitiveFieldInfo(
   path: string,
   meta: FieldMetadata,
@@ -214,6 +219,12 @@ export interface LiteralSensitiveValue {
   /** The keys that lead to the value from the root of the arguments. */
   keys: (string | number)[];
   value: unknown;
+  /**
+   * Set when the value is only potentially sensitive: an input a pipeline's
+   * transform may carry into a sensitive output, reported with `rawInputs`,
+   * not a value the schema marks itself (swamp-club#3681).
+   */
+  rawInput?: true;
 }
 
 /**
@@ -231,16 +242,25 @@ export function findLiteralSensitiveValues(
   );
 }
 
-/** Sensitive positions, including expression-shaped values supplied as data. */
+/**
+ * Sensitive positions, including expression-shaped values supplied as data.
+ * `rawInputs` conservatively covers inputs to sensitive pipeline outputs.
+ */
 export function findSensitiveValues(
   schema: z.ZodTypeAny | undefined,
   args: Record<string, unknown> | undefined,
+  rawInputs = false,
 ): LiteralSensitiveValue[] {
   if (!schema || !args) {
     return [];
   }
-  return findValuesWithMetadata(schema, args, isSensitive)
-    .map(({ path, keys, value }) => ({ path, keys, value }));
+  return findValuesWithMetadata(schema, args, isSensitive, { rawInputs })
+    .map(({ path, keys, value, rawInput }) => ({
+      path,
+      keys,
+      value,
+      ...(rawInput ? { rawInput } : {}),
+    }));
 }
 
 /**

@@ -986,7 +986,17 @@ does not record every data key on its own, so an authored object holding a
 data-origin vault reference, or a fixed object shape supplied whole from data,
 is masked as well, and such a run is not replayed. `persistedProvenance` records
 data ranges in the saved text, alongside the raw replay provenance, so a written
-vault reference cannot exempt adjacent input text.
+vault reference cannot exempt adjacent input text. Inputs to preprocessors or
+pipelines with sensitive output fields, and the global arguments a schema with a
+transform may consume, are only potentially sensitive, and no transform runs
+during persistence to tell. Only data is masked at such a position, at the
+leaf: an authored literal is already the definition's own text on disk, and a
+vault reference names where the secret lives, so both stay, and a vault-only
+definition replays whatever transforms its type's schemas hold, in the replayed
+method, another method or a non-sensitive global (swamp-club#3681). Such a
+container is omitted whole only when its own keys came from data; run the
+behavior again without `--last-evaluated` in that case. Ordinary masked method
+fields can still be replaced by fresh step inputs.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 A parse the schema refuses registers what each issue at a sensitive position
@@ -1043,7 +1053,10 @@ key under a position the schema itself marks is registered when the parse
 introduced it and the schema does not declare it. A placed step ships its
 worker the secrets a local run registers for its global arguments, read against
 what their parse received, so a plain value is not masked there either. A
-refinement that rewrites the object it validates by reference is not guarded.
+refinement that rewrites the object it validates by reference is not guarded,
+and as stored, the input of a pipeline whose transform feeds a sensitive output
+is masked in the evaluated cache only: the definition's own text is authored,
+and the schema marks the output.
 The keys a sensitive record took from data are not registered: they are
 identifiers, often short and common words, and the redactor replaces every
 occurrence of what it holds, so registering them would corrupt unrelated output
