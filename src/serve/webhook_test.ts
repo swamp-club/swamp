@@ -1645,6 +1645,12 @@ Deno.test("WebhookService.cancelByRunId: a run whose start is not recorded yet i
 
   assertEquals(service.cancelByRunId(""), false);
   assertEquals(service.cancelByRunId("run-1"), false);
+  await service.handleRequest(await signedDelivery("{}"));
+  const queued = service.admissionSnapshots().find((entry) =>
+    entry.phase === "queued"
+  )!;
+  assertEquals(queued.blockingRunIds, []);
+  assertEquals(queued.unknownBlockers, 1);
   release();
   await service.stop();
 });
@@ -1754,6 +1760,17 @@ Deno.test("WebhookService: by default a delivery waits for the run ahead of it",
   assertEquals(service.queueStatus("/hooks/gh").active, 1);
   assertEquals(service.queueStatus("/hooks/alerts").queued, 1);
   assertEquals(runs.length, 1);
+  const waiting = service.admissionSnapshots().find((entry) =>
+    entry.phase === "queued"
+  )!;
+  assertEquals(waiting.blockingRunIds, ["run-1"]);
+  assertEquals(waiting.unknownBlockers, 0);
+  assertEquals(waiting.runId, undefined);
+  const running = service.admissionSnapshots().find((entry) =>
+    entry.runId === "run-1"
+  )!;
+  assertEquals(running.phase, "executing");
+  assertEquals(completed("run-1"), false);
 
   runs[0].release();
   await waitFor(() => runs.length === 2, "delivery B started");
@@ -1761,6 +1778,7 @@ Deno.test("WebhookService: by default a delivery waits for the run ahead of it",
   runs[1].release();
   await waitFor(() => completed("run-2"), "delivery B completed");
   await service.stop();
+  assertEquals(service.admissionSnapshots(), []);
 });
 
 Deno.test("WebhookService: a delivery beyond the limit starts when a run settles", async () => {

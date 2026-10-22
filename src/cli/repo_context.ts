@@ -28,6 +28,7 @@
 import { noteRetentionCandidate } from "./retention_candidate.ts";
 import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
 import { ControlPlaneRetentionWatermarkRepository } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
+import { withRunPhase } from "../domain/remote/run_progress.ts";
 import {
   dirname,
   isAbsolute,
@@ -2715,45 +2716,49 @@ export async function reclaimModelLocks(
   const processDead = options.isProcessDead ?? isProcessGone;
   const start = Date.now();
   let announced = false;
-  while (true) {
-    const info = await globalLock.inspect();
-    if (!info) break;
-    if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) break;
-    // A structural command killed with its hop (a shell step's timeout
-    // takes the whole process tree) leaves its lock behind until the ttl.
-    if (info.hostname === hostname() && processDead(info.pid)) break;
-    // A lock file caught mid-write is reported as held with no nonce and
-    // no list (swamp-club#3148); read it again rather than take a working
-    // structural command for one that skipped nothing.
-    const unreadable = info.nonce === undefined && info.pid === 0;
-    const skipping = lockSkipping(info);
-    if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
-    // A lock file caught mid-write shows no command at work, so it is read
-    // again even after a cancel.
-    if (!unreadable && options.signal?.aborted) {
-      throw new DOMException(
-        `Cancelled while a structural command held by ${info.holder} (pid ${info.pid}) was still working under a lock this run handed down`,
-        "AbortError",
-      );
+  await withRunPhase("waiting_for_lock", {
+    resource: options.displayKey ?? ".datastore.lock",
+  }, async () => {
+    while (true) {
+      const info = await globalLock.inspect();
+      if (!info) break;
+      if (Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs) break;
+      // A structural command killed with its hop (a shell step's timeout
+      // takes the whole process tree) leaves its lock behind until the ttl.
+      if (info.hostname === hostname() && processDead(info.pid)) break;
+      // A lock file caught mid-write is reported as held with no nonce and
+      // no list (swamp-club#3148); read it again rather than take a working
+      // structural command for one that skipped nothing.
+      const unreadable = info.nonce === undefined && info.pid === 0;
+      const skipping = lockSkipping(info);
+      if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
+      // A lock file caught mid-write shows no command at work, so it is read
+      // again even after a cancel.
+      if (!unreadable && options.signal?.aborted) {
+        throw new DOMException(
+          `Cancelled while a structural command held by ${info.holder} (pid ${info.pid}) was still working under a lock this run handed down`,
+          "AbortError",
+        );
+      }
+      if (!announced && !unreadable) {
+        announced = true;
+        write(
+          yellow(
+            `A structural command held by ${info.holder} (pid ${info.pid}) is still working under a lock this run handed down — waiting for it to finish...`,
+          ),
+        );
+      }
+      const elapsed = Date.now() - start;
+      if (elapsed >= timeoutMs) {
+        throw new LockTimeoutError(
+          options.displayKey ?? ".datastore.lock",
+          info,
+          elapsed,
+        );
+      }
+      await pollDelay(options.pollMs ?? 500, options.signal);
     }
-    if (!announced && !unreadable) {
-      announced = true;
-      write(
-        yellow(
-          `A structural command held by ${info.holder} (pid ${info.pid}) is still working under a lock this run handed down — waiting for it to finish...`,
-        ),
-      );
-    }
-    const elapsed = Date.now() - start;
-    if (elapsed >= timeoutMs) {
-      throw new LockTimeoutError(
-        options.displayKey ?? ".datastore.lock",
-        info,
-        elapsed,
-      );
-    }
-    await pollDelay(options.pollMs ?? 500, options.signal);
-  }
+  });
   if (announced) {
     write(dim("Structural command finished, proceeding"));
   }
@@ -3125,35 +3130,41 @@ export async function acquireModelLocks(
     // detection fails (e.g. clock skew, S3 consistency issues).
     const globalWaitStart = Date.now();
     const globalMaxWaitMs = (globalInfo.ttlMs ?? 30_000) * 2;
-    while (true) {
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-      const info = await globalLock.inspect();
-      if (!info) break;
-      // Check if the lock has exceeded its TTL (stale/crashed process)
-      const acquiredAt = new Date(info.acquiredAt).getTime();
-      if (Date.now() - acquiredAt > info.ttlMs) {
-        write(
-          dim(
-            `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
-          ),
-        );
-        await tryForceReleaseStaleLock(globalLock, info);
-        break;
-      }
-      // Hard timeout to prevent indefinite hangs
-      const globalElapsed = Date.now() - globalWaitStart;
-      if (globalElapsed >= globalMaxWaitMs) {
-        const lockOpts = datastoreGlobalLockOptions(config);
-        const displayKey = lockOpts?.namespace
-          ? `${lockOpts.namespace}/.datastore.lock`
-          : ".datastore.lock";
-        throw new LockTimeoutError(
-          displayKey,
-          info,
-          globalElapsed,
-        );
-      }
-    }
+    await withRunPhase(
+      "waiting_for_lock",
+      { resource: ".datastore.lock" },
+      async () => {
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          const info = await globalLock.inspect();
+          if (!info) break;
+          // Check if the lock has exceeded its TTL (stale/crashed process)
+          const acquiredAt = new Date(info.acquiredAt).getTime();
+          if (Date.now() - acquiredAt > info.ttlMs) {
+            write(
+              dim(
+                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+              ),
+            );
+            await tryForceReleaseStaleLock(globalLock, info);
+            break;
+          }
+          // Hard timeout to prevent indefinite hangs
+          const globalElapsed = Date.now() - globalWaitStart;
+          if (globalElapsed >= globalMaxWaitMs) {
+            const lockOpts = datastoreGlobalLockOptions(config);
+            const displayKey = lockOpts?.namespace
+              ? `${lockOpts.namespace}/.datastore.lock`
+              : ".datastore.lock";
+            throw new LockTimeoutError(
+              displayKey,
+              info,
+              globalElapsed,
+            );
+          }
+        }
+      },
+    );
     write(
       dim("Global lock released, proceeding with per-model locks"),
     );
@@ -3274,33 +3285,39 @@ export async function acquireModelLocks(
         // Wait for global lock to be released (with timeout)
         const retryWaitStart = Date.now();
         const retryMaxWaitMs = (postAcquireGlobalInfo.ttlMs ?? 30_000) * 2;
-        while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          const info = await globalLock.inspect();
-          if (!info) break;
-          const acquiredAt = new Date(info.acquiredAt).getTime();
-          if (Date.now() - acquiredAt > info.ttlMs) {
-            write(
-              dim(
-                `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
-              ),
-            );
-            await tryForceReleaseStaleLock(globalLock, info);
-            break;
-          }
-          const retryElapsed = Date.now() - retryWaitStart;
-          if (retryElapsed >= retryMaxWaitMs) {
-            const retryLockOpts = datastoreGlobalLockOptions(config);
-            const retryDisplayKey = retryLockOpts?.namespace
-              ? `${retryLockOpts.namespace}/.datastore.lock`
-              : ".datastore.lock";
-            throw new LockTimeoutError(
-              retryDisplayKey,
-              info,
-              retryElapsed,
-            );
-          }
-        }
+        await withRunPhase(
+          "waiting_for_lock",
+          { resource: ".datastore.lock" },
+          async () => {
+            while (true) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+              const info = await globalLock.inspect();
+              if (!info) break;
+              const acquiredAt = new Date(info.acquiredAt).getTime();
+              if (Date.now() - acquiredAt > info.ttlMs) {
+                write(
+                  dim(
+                    `Global lock held by ${info.holder} appears stale (exceeded TTL of ${info.ttlMs}ms) — proceeding`,
+                  ),
+                );
+                await tryForceReleaseStaleLock(globalLock, info);
+                break;
+              }
+              const retryElapsed = Date.now() - retryWaitStart;
+              if (retryElapsed >= retryMaxWaitMs) {
+                const retryLockOpts = datastoreGlobalLockOptions(config);
+                const retryDisplayKey = retryLockOpts?.namespace
+                  ? `${retryLockOpts.namespace}/.datastore.lock`
+                  : ".datastore.lock";
+                throw new LockTimeoutError(
+                  retryDisplayKey,
+                  info,
+                  retryElapsed,
+                );
+              }
+            }
+          },
+        );
 
         // Restart the entire per-model lock acquisition from scratch —
         // propagate the shared sync service so the retry keeps single-instance

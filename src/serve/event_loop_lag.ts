@@ -67,7 +67,7 @@ export class EventLoopLagMonitor {
     this.#intervalMs = options.intervalMs ??
       DEFAULT_EVENT_LOOP_LAG_INTERVAL_MS;
     this.#windowMs = options.windowMs ?? DEFAULT_EVENT_LOOP_LAG_WINDOW_MS;
-    this.#now = options.now ?? Date.now;
+    this.#now = options.now ?? (() => performance.now());
     this.#setTimeout = options.setTimeout ??
       ((fn, delayMs) =>
         globalThis.setTimeout(fn, delayMs) as unknown as number);

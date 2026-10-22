@@ -37,6 +37,7 @@
  * of whether the extension honored the AbortSignal.
  */
 
+import { withRunPhase } from "../../domain/remote/run_progress.ts";
 import {
   type DatastoreSyncService,
   DEFAULT_SYNC_TIMEOUT_MS,
@@ -367,7 +368,11 @@ export async function registerDatastoreSyncNamed(
     });
     try {
       const lockStart = Date.now();
-      await lock.acquire();
+      await withRunPhase(
+        "waiting_for_lock",
+        { resource: key },
+        () => lock.acquire(),
+      );
       const lockMs = Date.now() - lockStart;
       if (options.slowLockScope) {
         logSlowLock(logger, lockMs, options.slowLockScope, namespace);

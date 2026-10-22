@@ -73,14 +73,15 @@ export async function initExecutionMetrics(): Promise<void> {
   const meterProvider = new MeterProvider({
     resource,
     readers: [reader],
-    views: [
-      new View({
-        instrumentName: "swamp.execution.duration",
-        aggregation: new ExplicitBucketHistogramAggregation(
-          EXECUTION_BUCKETS_SECONDS,
-        ),
-      }),
-    ],
+    views: ["swamp.execution.duration", "swamp.run_steps.state_duration"].map(
+      (instrumentName) =>
+        new View({
+          instrumentName,
+          aggregation: new ExplicitBucketHistogramAggregation(
+            EXECUTION_BUCKETS_SECONDS,
+          ),
+        }),
+    ),
   });
   metrics.setGlobalMeterProvider(meterProvider);
   provider = meterProvider;

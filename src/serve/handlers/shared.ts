@@ -431,6 +431,9 @@ export interface ConnectionContext {
   extensionChangeReloader?: () => Promise<
     import("../protocol.ts").ServeReloadResponse
   >;
+  /** Live receipt admission state for admin diagnostics. */
+  webhookAdmissionSnapshots?: () =>
+    import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[];
   /** Reloads webhook endpoint config from serve.yaml during hot reload. */
   webhookUpdater?: (
     configs: readonly import("../serve_config.ts").WebhookConfigEntry[],

@@ -241,7 +241,11 @@ export class DataPlane {
   }
 
   /** Counts one write request of `dispatchId`; call the result when it ends. */
-  #beginWrite(dispatchId: string): () => void {
+  #beginWrite(dispatch: ActiveDispatch): () => void {
+    const dispatchId = dispatch.dispatchId;
+    const leave = dispatch.progress?.enter("persisting", {
+      worker: dispatch.workerName,
+    });
     let entry = this.#inFlight.get(dispatchId);
     if (entry === undefined) {
       entry = { count: 0, idle: Promise.withResolvers<void>() };
@@ -250,6 +254,7 @@ export class DataPlane {
     entry.count++;
     const counted = entry;
     return () => {
+      leave?.();
       counted.count--;
       if (counted.count === 0) {
         this.#inFlight.delete(dispatchId);
@@ -621,7 +626,7 @@ export class DataPlane {
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.
     await this.#recordWrite(dispatch);
-    const done = this.#beginWrite(dispatch.dispatchId);
+    const done = this.#beginWrite(dispatch);
     let handle: DataHandle;
     try {
       handle = await withSpan(
@@ -770,7 +775,7 @@ export class DataPlane {
       case "content": {
         const body = req.body ?? ReadableStream.from<Uint8Array>([]);
         await this.#recordWrite(dispatch);
-        const done = this.#beginWrite(dispatch.dispatchId);
+        const done = this.#beginWrite(dispatch);
         try {
           const handle = await withSpan(
             "swamp.serve.data_plane.persist",
@@ -786,7 +791,7 @@ export class DataPlane {
       }
       case "finalize": {
         await this.#recordWrite(dispatch);
-        const done = this.#beginWrite(dispatch.dispatchId);
+        const done = this.#beginWrite(dispatch);
         try {
           const handle = await withSpan(
             "swamp.serve.data_plane.persist",

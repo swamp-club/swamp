@@ -32,6 +32,11 @@ import {
 } from "../../domain/remote/observability.ts";
 import { extractTraceContext, injectTraceContext } from "./propagation.ts";
 import {
+  runProgressSnapshots,
+  setRunPhaseDurationRecorder,
+  trackedRunCounts,
+} from "../../domain/remote/run_progress.ts";
+import {
   phaseCoverage,
   type PhaseInterval,
 } from "../../domain/remote/phase_coverage.ts";
@@ -83,7 +88,118 @@ export function installExecutionObserver(): void {
   };
   inFlight.addCallback(counts);
   oldest.addCallback(ages);
+  const activeRuns = meter.createObservableGauge("swamp.runs.observed_active", {
+    unit: "{run}",
+  });
+  const stateDepth = meter.createObservableGauge("swamp.run_steps.in_flight", {
+    unit: "{step}",
+  });
+  const stateAge = meter.createObservableGauge("swamp.run_steps.oldest_age", {
+    unit: "s",
+  });
+  const runCounts: Parameters<typeof activeRuns.addCallback>[0] = (result) => {
+    result.observe(
+      new Set(
+        runProgressSnapshots().filter((p) => !p.scope || p.scope === "step")
+          .map((p) => p.runId),
+      ).size,
+    );
+  };
+  const finalizingRuns = meter.createObservableGauge("swamp.runs.finalizing", {
+    unit: "{run}",
+  });
+  const finalizingCounts: Parameters<typeof finalizingRuns.addCallback>[0] = (
+    result,
+  ) => {
+    const snapshots = runProgressSnapshots().filter((p) =>
+      p.phase === "finalizing"
+    );
+    for (const kind of ["workflow", "model_method"] as const) {
+      const scope = kind === "workflow" ? "run" : "method";
+      result.observe(
+        new Set(snapshots.filter((p) => p.scope === scope).map((p) => p.runId))
+          .size,
+        { kind },
+      );
+    }
+  };
+  finalizingRuns.addCallback(finalizingCounts);
+  const runPhases = [
+    "queued",
+    "waiting_for_lock",
+    "waiting_for_worker",
+    "executing",
+    "persisting",
+    "finalizing",
+  ] as const;
+  const stateDuration = meter.createHistogram(
+    "swamp.run_steps.state_duration",
+    { unit: "s" },
+  );
+  setRunPhaseDurationRecorder((phase, seconds) =>
+    stateDuration.record(seconds, { phase })
+  );
+  const stateCounts: Parameters<typeof stateDepth.addCallback>[0] = (
+    result,
+  ) => {
+    const snapshots = runProgressSnapshots().filter((p) =>
+      !p.scope || p.scope === "step"
+    );
+    for (const phase of runPhases) {
+      result.observe(snapshots.filter((p) => p.phase === phase).length, {
+        phase,
+      });
+    }
+  };
+  const stateAges: Parameters<typeof stateAge.addCallback>[0] = (result) => {
+    const snapshots = runProgressSnapshots().filter((p) =>
+      !p.scope || p.scope === "step"
+    );
+    for (const phase of runPhases) {
+      let age = 0;
+      for (const snapshot of snapshots) {
+        if (snapshot.phase === phase) {
+          age = Math.max(age, snapshot.phaseElapsedMs);
+        }
+      }
+      result.observe(age / 1000, { phase });
+    }
+  };
+  activeRuns.addCallback(runCounts);
+  const trackedRuns = meter.createObservableGauge("swamp.runs.active", {
+    unit: "{run}",
+  });
+  const unavailableSources = meter.createObservableGauge(
+    "swamp.runs.unavailable_sources",
+    { unit: "{source}" },
+  );
+  const trackedCounts: Parameters<typeof meter.addBatchObservableCallback>[0] =
+    (result) => {
+      const counts = trackedRunCounts();
+      result.observe(unavailableSources, counts.unavailableSources);
+      if (counts.unavailableSources === 0) {
+        result.observe(trackedRuns, counts.workflow, { kind: "workflow" });
+        result.observe(trackedRuns, counts.model_method, {
+          kind: "model_method",
+        });
+      }
+    };
+  meter.addBatchObservableCallback(trackedCounts, [
+    trackedRuns,
+    unavailableSources,
+  ]);
+  stateDepth.addCallback(stateCounts);
+  stateAge.addCallback(stateAges);
   dispose = () => {
+    meter.removeBatchObservableCallback(trackedCounts, [
+      trackedRuns,
+      unavailableSources,
+    ]);
+    setRunPhaseDurationRecorder(undefined);
+    activeRuns.removeCallback(runCounts);
+    finalizingRuns.removeCallback(finalizingCounts);
+    stateDepth.removeCallback(stateCounts);
+    stateAge.removeCallback(stateAges);
     inFlight.removeCallback(counts);
     oldest.removeCallback(ages);
     pending.clear();

@@ -333,6 +333,27 @@ const runDoctorCommand = withRemoteOptions(
         const staleRuns = responseToActiveRuns({
           runs: response.staleRuns ?? [],
         });
+        const progressByRun = new Map(
+          [...(response.activeRuns ?? []), ...(response.staleRuns ?? [])]
+            .filter((run) => run.progress !== undefined)
+            .map((run) => [run.id, {
+              progress: run.progress,
+              progressScope: run.progressScope,
+            }]),
+        );
+        if (response.liveProgress) {
+          for (
+            const [runId, progress] of Map.groupBy(
+              response.liveProgress,
+              (p) => p.runId,
+            )
+          ) {
+            progressByRun.set(runId, {
+              progress,
+              progressScope: "process_local",
+            });
+          }
+        }
         if (ctx.outputMode === "json") {
           writeDoctorRunsJson(
             response.totalTracked,
@@ -341,6 +362,11 @@ const runDoctorCommand = withRemoteOptions(
             response.reaped,
             response.orphanedWorkflowRuns,
             response.orphanedReaped,
+            undefined,
+            undefined,
+            undefined,
+            progressByRun,
+            response.webhookAdmissions,
           );
         } else {
           writeDoctorRunsLog(
@@ -350,6 +376,11 @@ const runDoctorCommand = withRemoteOptions(
             !!options.fix,
             response.orphanedWorkflowRuns,
             response.orphanedReaped,
+            undefined,
+            undefined,
+            undefined,
+            progressByRun,
+            response.webhookAdmissions,
           );
         }
         return;

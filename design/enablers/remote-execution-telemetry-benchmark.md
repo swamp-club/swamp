@@ -2,7 +2,10 @@
 
 Status: development evidence, not completed UAT or an end-to-end phase coverage
 attestation. Public manual follow-up: https://swamp-club.com/lab/3787. UAT
-acceptance is being performed manually by the requester.
+acceptance will be performed manually by the requester after merge, using the
+updated CLI. The requester explicitly deferred refreshed 36-worker, cold/warm,
+standard-viewer and coverage/loss evidence until then. Code verification and
+Codex review attestations do not establish these runtime acceptance results.
 
 ## Matched local probe
 

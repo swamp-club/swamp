@@ -29,6 +29,11 @@ import {
 } from "@opentelemetry/sdk-metrics";
 import { observeExecution } from "../../domain/remote/observability.ts";
 import {
+  registerRunProgress,
+  registerTrackedRunSource,
+  removeRunProgress,
+} from "../../domain/remote/run_progress.ts";
+import {
   installExecutionObserver,
   uninstallExecutionObserver,
 } from "./execution_observer.ts";
@@ -125,6 +130,99 @@ Deno.test("execution observer: metrics see pending work without spans, bound lab
       (histogram.dataPoints[0].value as { buckets: { boundaries: number[] } })
         .buckets.boundaries,
       EXECUTION_BUCKETS_SECONDS,
+    );
+    const progress = registerRunProgress({
+      runId: "private-run",
+      workflow: "private-workflow",
+      job: "job",
+      step: "step",
+    });
+    const sibling = registerRunProgress({
+      runId: "private-run",
+      workflow: "private-workflow",
+      job: "job",
+      step: "sibling",
+    });
+    const finalizing = registerRunProgress({
+      runId: "private-finalizing",
+      scope: "run",
+      workflow: "private-workflow",
+    });
+    finalizing.enter("finalizing");
+    const removeTracked = registerTrackedRunSource(
+      () => [{ runId: "private-run", kind: "workflow" }, {
+        runId: "private-method",
+        kind: "model_method",
+      }],
+    );
+    try {
+      const leave = progress.enter("waiting_for_lock", {
+        resource: "private-lock",
+        holderRunId: "private-holder",
+      });
+      await provider.forceFlush();
+      const captured = exporter.getMetrics().at(-1)!;
+      assert(!JSON.stringify(captured).includes("private-"));
+      const live = captured.scopeMetrics.flatMap((s) => s.metrics);
+      assertEquals(
+        live.find((m) => m.descriptor.name === "swamp.runs.finalizing")!
+          .dataPoints.find((p) => p.attributes.kind === "workflow")?.value,
+        1,
+      );
+      const tracked = live.find((m) =>
+        m.descriptor.name === "swamp.runs.active"
+      )!;
+      assertEquals(
+        tracked.dataPoints.find((p) => p.attributes.kind === "workflow")?.value,
+        1,
+      );
+      assertEquals(
+        tracked.dataPoints.find((p) => p.attributes.kind === "model_method")
+          ?.value,
+        1,
+      );
+      assertEquals(
+        live.find((m) => m.descriptor.name === "swamp.runs.observed_active")!
+          .dataPoints[0].value,
+        1,
+      );
+      const depth = live.find((m) =>
+        m.descriptor.name === "swamp.run_steps.in_flight"
+      )!;
+      assertEquals(
+        depth.dataPoints.find((p) => p.attributes.phase === "waiting_for_lock")
+          ?.value,
+        1,
+      );
+      assertEquals(
+        depth.dataPoints.find((p) => p.attributes.phase === "queued")?.value,
+        1,
+      );
+      leave();
+    } finally {
+      removeRunProgress(progress);
+      removeRunProgress(sibling);
+      removeRunProgress(finalizing);
+      removeTracked();
+    }
+    await provider.forceFlush();
+    const settled = exporter.getMetrics().at(-1)!.scopeMetrics.flatMap((s) =>
+      s.metrics
+    );
+    assertEquals(
+      settled.find((m) => m.descriptor.name === "swamp.runs.finalizing")!
+        .dataPoints.find((p) => p.attributes.kind === "workflow")?.value,
+      0,
+    );
+    assertEquals(
+      settled.find((m) => m.descriptor.name === "swamp.runs.observed_active")!
+        .dataPoints[0].value,
+      0,
+    );
+    assert(
+      settled.find((m) =>
+        m.descriptor.name === "swamp.run_steps.state_duration"
+      )!.dataPoints.some((p) => p.attributes.phase === "waiting_for_lock"),
     );
     uninstallExecutionObserver();
     const disabled = observeExecution("dispatch.attempt");

@@ -538,7 +538,13 @@ export interface WebhookQueueStatus {
   readonly lastQueueDelayMs: number | null;
 }
 
+import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts";
+
 interface QueuedWebhookRun {
+  lastProgressAt: string;
+  admittedAt?: number;
+  phaseStartedAt: number;
+  runId?: string;
   queueObservation?: ExecutionObservation;
   receiptId?: string;
   receiptTrace?: TraceCarrier;
@@ -628,6 +634,31 @@ export class WebhookService {
 
   setEventHandler(handler: WebhookEventHandler): void {
     this.eventHandler = handler;
+  }
+
+  /** Admin-only diagnostics; receipt IDs are not workflow run IDs. */
+  admissionSnapshots(): WebhookAdmissionSnapshot[] {
+    const active = [...this.inFlight.values()];
+    return [...this.runQueue, ...active].map((entry) => {
+      const queued = entry.admittedAt === undefined;
+      const blocked = queued && active.length >= this.maxConcurrentRuns
+        ? active
+        : [];
+      return {
+        receiptId: entry.receiptId ?? entry.pendingRunId ?? "unknown",
+        workflow: entry.workflowIdOrName,
+        phase: queued ? "queued" : entry.runId ? "executing" : "starting",
+        phaseElapsedMs: Math.max(0, performance.now() - entry.phaseStartedAt),
+        enqueuedAt: new Date(entry.enqueuedAt).toISOString(),
+        lastProgressAt: entry.lastProgressAt,
+        traceId: entry.receiptTrace?.traceparent.split("-")[1],
+        runId: entry.runId,
+        blockingRunIds: blocked.flatMap((item) =>
+          item.runId ? [item.runId] : []
+        ),
+        unknownBlockers: blocked.filter((item) => !item.runId).length,
+      };
+    });
   }
 
   /**
@@ -930,6 +961,8 @@ export class WebhookService {
     }
 
     this.runQueue.push({
+      phaseStartedAt: performance.now(),
+      lastProgressAt: new Date(this.now()).toISOString(),
       queueObservation: observeExecution("webhook.queue", {
         "swamp.webhook.receipt_id": receiptId,
       }, receipt.carrier),
@@ -1026,6 +1059,8 @@ export class WebhookService {
     const receiptTrace = traceCarrier(entry.receiptTrace);
     this.runQueue.push({
       ...entry,
+      phaseStartedAt: performance.now(),
+      lastProgressAt: new Date(this.now()).toISOString(),
       receiptTrace,
       queueObservation: observeExecution("webhook.queue", {
         "swamp.webhook.receipt_id": entry.pendingRunId,
@@ -1120,6 +1155,9 @@ export class WebhookService {
       this.inFlight.size < this.maxConcurrentRuns && this.runQueue.length > 0
     ) {
       const entry = this.runQueue.shift()!;
+      entry.admittedAt = performance.now();
+      entry.phaseStartedAt = entry.admittedAt;
+      entry.lastProgressAt = new Date(this.now()).toISOString();
       entry.queueObservation?.end("ok");
       // Detached: a launch from a request, from boot replay or from a
       // settling run must not carry that context's span into this run.
@@ -1271,6 +1309,9 @@ export class WebhookService {
           // this webhook's run is the one without a parent.
           if (event.kind === "started" && event.parentRunId === undefined) {
             runId = event.runId;
+            entry.runId = runId;
+            entry.phaseStartedAt = performance.now();
+            entry.lastProgressAt = new Date(this.now()).toISOString();
             observation.attributes({ "workflow.run_id": runId });
             tracked.runId = runId;
             // A route removed while this run was queued keeps no delay.

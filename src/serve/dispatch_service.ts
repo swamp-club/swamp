@@ -30,6 +30,7 @@
  * fails the run.
  */
 
+import { currentRunProgress } from "../domain/remote/run_progress.ts";
 import {
   currentVaultAccess,
   runGeneratorWithoutVaultAccess,
@@ -737,6 +738,7 @@ export class DispatchService {
     }
 
     this.#options.dispatches.register({
+      progress: currentRunProgress(),
       workerName,
       dispatchId,
       leaseId,

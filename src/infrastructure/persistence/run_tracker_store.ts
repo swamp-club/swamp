@@ -19,6 +19,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { traceCarrier } from "../../domain/remote/observability.ts";
+import { registerTrackedRunSource } from "../../domain/remote/run_progress.ts";
 
 function parseReceiptTrace(value: string) {
   try {
@@ -110,6 +111,7 @@ export class RunTrackerStore implements RunTrackerRepository {
   private db: DatabaseSync;
   private readonly dbPath: string;
   private closed = false;
+  private readonly removeObservationSource: () => void;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -117,6 +119,13 @@ export class RunTrackerStore implements RunTrackerRepository {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout=5000");
     this.initializeWithRetry();
+    const localHostname = hostname();
+    this.removeObservationSource = registerTrackedRunSource(() =>
+      this.findAllRunning().filter((run) =>
+        run.pid === Deno.pid && run.hostname === localHostname
+      )
+        .map((run) => ({ runId: run.id, kind: run.runKind }))
+    );
   }
 
   private initializeWithRetry(): void {
@@ -570,6 +579,7 @@ export class RunTrackerStore implements RunTrackerRepository {
   }
 
   close(): void {
+    this.removeObservationSource();
     if (!this.closed) {
       this.closed = true;
       this.db.close();

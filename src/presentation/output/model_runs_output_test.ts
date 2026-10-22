@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
+import { ActiveRun } from "../../domain/models/active_run.ts";
+import type { DoctorRunProgress } from "./model_runs_output.ts";
+import type { WebhookAdmissionSnapshot } from "../../domain/remote/run_progress.ts";
 import {
   writeDoctorRunsJson,
   writeDoctorRunsLog,
@@ -35,6 +38,75 @@ function captureLogs(fn: () => void): string {
   return stripAnsiCode(logs.join("\n"));
 }
 
+Deno.test("doctor output: preserves live blocked-step diagnostics in both modes", () => {
+  const run = ActiveRun.createWorkflowRun({
+    id: "run",
+    workflowName: "workflow",
+    pid: 1,
+    hostname: "host",
+  });
+  const diagnostics: DoctorRunProgress = {
+    progressScope: "process_local_admitted_steps",
+    progress: [{
+      runId: "run",
+      workflow: "workflow",
+      job: "job",
+      step: "step",
+      phase: "waiting_for_lock",
+      phaseElapsedMs: 1200,
+      lastProgressAt: "2026-10-22T10:00:00Z",
+      resource: "resource",
+      holderKnown: true,
+      holderRunId: "holder",
+      traceId: "trace",
+      worker: "worker",
+    }],
+  };
+  const progress = new Map([[run.id, diagnostics]]);
+  const parsed = JSON.parse(
+    captureLogs(() =>
+      writeDoctorRunsJson(
+        1,
+        [run],
+        [],
+        0,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        progress,
+      )
+    ),
+  );
+  assertEquals(parsed.activeRuns[0].progress, diagnostics.progress);
+  assertEquals(parsed.activeRuns[0].progressScope, diagnostics.progressScope);
+  const output = captureLogs(() =>
+    writeDoctorRunsLog(
+      [run],
+      [],
+      0,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      progress,
+    )
+  );
+  for (
+    const value of [
+      "waiting_for_lock",
+      "holder run: holder",
+      "resource",
+      "Trace: trace",
+      "Worker: worker",
+      "2026-10-22T10:00:00Z",
+    ]
+  ) assertStringIncludes(output, value);
+});
+
 Deno.test("writeDoctorRunsJson: reports orphaned method runs when counted", () => {
   const parsed = JSON.parse(
     captureLogs(() => writeDoctorRunsJson(0, [], [], 0, 0, 0, 2, 2)),
@@ -42,6 +114,54 @@ Deno.test("writeDoctorRunsJson: reports orphaned method runs when counted", () =
   assertEquals(parsed.orphanedMethodRuns, 2);
   assertEquals(parsed.orphanedMethodReaped, 2);
   assertEquals(parsed.orphanedWorkflowRuns, 0);
+});
+
+Deno.test("doctor output: a queued receipt is visible before any tracked run exists", () => {
+  const admissions: WebhookAdmissionSnapshot[] = [{
+    receiptId: "receipt",
+    workflow: "workflow",
+    phase: "queued",
+    phaseElapsedMs: 1000,
+    enqueuedAt: "2026-10-22T10:00:00Z",
+    lastProgressAt: "2026-10-22T10:00:00Z",
+    blockingRunIds: [],
+    unknownBlockers: 1,
+  }];
+  const json = JSON.parse(
+    captureLogs(() =>
+      writeDoctorRunsJson(
+        0,
+        [],
+        [],
+        0,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        admissions,
+      )
+    ),
+  );
+  assertEquals(json.webhookAdmissions, admissions);
+  const log = captureLogs(() =>
+    writeDoctorRunsLog(
+      [],
+      [],
+      0,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      admissions,
+    )
+  );
+  assertStringIncludes(log, "receipt (workflow): queued");
+  assertStringIncludes(log, "Holders without a run ID yet: 1");
 });
 
 Deno.test("writeDoctorRunsJson: omits the method run keys when not counted, as for a server", () => {

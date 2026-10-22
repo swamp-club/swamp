@@ -148,6 +148,13 @@ import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_se
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import { hostname } from "node:os";
+import {
+  registerRunProgress,
+  removeRunProgress,
+  type RunProgress,
+  withRunPhase,
+  withRunProgress,
+} from "../../domain/remote/run_progress.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -402,7 +409,8 @@ export async function* modelMethodRun(
   deps: ModelMethodRunDeps,
   input: ModelMethodRunInput,
 ): AsyncGenerator<ModelMethodRunEvent> {
-  yield* withUnitOfWork(ctx, () =>
+  let methodProgress: RunProgress | undefined;
+  const execution = withUnitOfWork(ctx, () =>
     withGeneratorTraceContext(
       input.traceparent,
       input.tracestate,
@@ -412,7 +420,7 @@ export async function* modelMethodRun(
           "model.id_or_name": input.modelIdOrName,
           "method.name": input.methodName,
         },
-        (async function* () {
+        (async function* (): AsyncGenerator<ModelMethodRunEvent> {
           const ephemeral = createEphemeralStore(deps.dataRepo.namespace);
           if (deps.catalogStore) {
             const wrapped = wrapWithEphemeral(
@@ -1212,6 +1220,16 @@ export async function* modelMethodRun(
             });
             output.markRunning(Deno.pid);
             output.setLogFile(logFilePath);
+            methodProgress = registerRunProgress({
+              runId: output.id,
+              model: definition.name,
+              method: input.methodName,
+              scope: "method",
+              traceId: /^0+$/.test(preExecSpan.spanContext().traceId)
+                ? undefined
+                : preExecSpan.spanContext().traceId,
+            });
+            methodProgress.enter("executing");
 
             // Register with the run tracker (if available).
             // Output YAML is only written in terminal state (write-once).
@@ -1285,79 +1303,82 @@ export async function* modelMethodRun(
                 MethodResult
               >(
                 (push) =>
-                  executionService.executeWorkflow(
-                    evaluatedDefinition,
-                    modelDef,
-                    input.methodName,
-                    buildMethodContext(
-                      {
-                        dataRepository: deps.dataRepo,
-                        definitionRepository: deps.definitionRepo,
-                        vaultService,
-                        redactor,
-                        dataQueryService: deps.dataQueryService,
-                        createCelEnvironment: createExtensionCelEnvironment,
-                      },
-                      {
-                        signal: ctx.signal,
-                        repoDir: deps.repoDir,
-                        modelType,
-                        modelId: evaluatedDefinition.id,
-                        globalArgs: evaluatedDefinition.globalArguments,
-                        definition: {
-                          id: evaluatedDefinition.id,
-                          name: evaluatedDefinition.name,
-                          version: evaluatedDefinition.version,
-                          tags: evaluatedDefinition.tags,
+                  withRunProgress(methodProgress!, () =>
+                    executionService.executeWorkflow(
+                      evaluatedDefinition,
+                      modelDef,
+                      input.methodName,
+                      buildMethodContext(
+                        {
+                          dataRepository: deps.dataRepo,
+                          definitionRepository: deps.definitionRepo,
+                          vaultService,
+                          redactor,
+                          dataQueryService: deps.dataQueryService,
+                          createCelEnvironment: createExtensionCelEnvironment,
                         },
-                        methodName: input.methodName,
-                        logger: runLogger,
-                        runtimeTags: input.runtimeTags,
-                        tagOverrides: input.initiatedBy
-                          ? { initiatedBy: input.initiatedBy }
-                          : undefined,
-                        dataOutputOverrides: evaluatedDefinition.resources
-                          ? Object.entries(
-                            evaluatedDefinition.resources,
-                          ).map(([specName, override]) => ({
-                            specName,
-                            lifetime: override.lifetime,
-                            garbageCollection: override.garbageCollection,
-                            vaultName: override.vaultName,
-                          }))
-                          : undefined,
-                        vaultSecrets: secretBag,
-                        skipCheckNames: input.skipCheckNames,
-                        skipCheckLabels: input.skipCheckLabels,
-                        skipAllChecks: input.skipAllChecks,
-                        extensionFilesRoot: modelDef.extensionFilesRoot,
-                        onEvent: (event: MethodExecutionEvent) => {
-                          if (event.type === "output") {
-                            push({
-                              kind: "method_output",
-                              modelName: definition.name,
-                              methodName: input.methodName,
-                              stream: event.stream,
-                              line: event.line,
-                            });
-                          } else {
-                            push({
-                              kind: "method_event",
-                              modelName: definition.name,
-                              methodName: input.methodName,
-                              event,
-                            });
-                          }
+                        {
+                          signal: ctx.signal,
+                          repoDir: deps.repoDir,
+                          modelType,
+                          modelId: evaluatedDefinition.id,
+                          globalArgs: evaluatedDefinition.globalArguments,
+                          definition: {
+                            id: evaluatedDefinition.id,
+                            name: evaluatedDefinition.name,
+                            version: evaluatedDefinition.version,
+                            tags: evaluatedDefinition.tags,
+                          },
+                          methodName: input.methodName,
+                          logger: runLogger,
+                          runtimeTags: input.runtimeTags,
+                          tagOverrides: input.initiatedBy
+                            ? { initiatedBy: input.initiatedBy }
+                            : undefined,
+                          dataOutputOverrides: evaluatedDefinition.resources
+                            ? Object.entries(
+                              evaluatedDefinition.resources,
+                            ).map(([specName, override]) => ({
+                              specName,
+                              lifetime: override.lifetime,
+                              garbageCollection: override.garbageCollection,
+                              vaultName: override.vaultName,
+                            }))
+                            : undefined,
+                          vaultSecrets: secretBag,
+                          skipCheckNames: input.skipCheckNames,
+                          skipCheckLabels: input.skipCheckLabels,
+                          skipAllChecks: input.skipAllChecks,
+                          extensionFilesRoot: modelDef.extensionFilesRoot,
+                          onEvent: (event: MethodExecutionEvent) => {
+                            if (event.type === "output") {
+                              push({
+                                kind: "method_output",
+                                modelName: definition.name,
+                                methodName: input.methodName,
+                                stream: event.stream,
+                                line: event.line,
+                              });
+                            } else {
+                              push({
+                                kind: "method_event",
+                                modelName: definition.name,
+                                methodName: input.methodName,
+                                event,
+                              });
+                            }
+                          },
                         },
+                      ),
+                      {
+                        secretLoader: evaluationService.secretLoader(redactor),
+                        onArgumentsValidated: saveEvaluation,
                       },
-                    ),
-                    {
-                      secretLoader: evaluationService.secretLoader(redactor),
-                      onArgumentsValidated: saveEvaluation,
-                    },
-                  ),
+                    )),
               );
+              methodProgress.enter("finalizing");
             } catch (error) {
+              methodProgress.enter("finalizing");
               // The record, the failed-run report and the error event carry
               // the message and stack through the run's redactor: a method
               // that echoes a sensitive argument in its error lands it in
@@ -1365,7 +1386,9 @@ export async function* modelMethodRun(
               const failure = executionErrorFrom(error, redactor);
               const errorMessage = failure.message;
 
-              if (heartbeatInterval) clearInterval(heartbeatInterval);
+              if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+              }
 
               if (
                 ctx.signal.aborted ||
@@ -1375,7 +1398,9 @@ export async function* modelMethodRun(
                 // row's reason for `swamp model cancel` to fill in.
                 const cause = cancelCause(ctx.signal);
                 output.markCancelled(cause ?? "aborted");
-                await deps.outputRepo.save(modelType, input.methodName, output);
+                await withRunProgress(methodProgress, () =>
+                  withRunPhase("persisting", {}, () =>
+                    deps.outputRepo.save(modelType, input.methodName, output)));
                 if (deps.runTracker) {
                   deps.runTracker.complete(output.id, "cancelled", cause);
                 }
@@ -1386,7 +1411,9 @@ export async function* modelMethodRun(
                 markOutcomeReported();
               } else {
                 output.markFailed(failure);
-                await deps.outputRepo.save(modelType, input.methodName, output);
+                await withRunProgress(methodProgress, () =>
+                  withRunPhase("persisting", {}, () =>
+                    deps.outputRepo.save(modelType, input.methodName, output)));
                 if (deps.runTracker) {
                   deps.runTracker.complete(output.id, "failed");
                 }
@@ -1586,9 +1613,13 @@ export async function* modelMethodRun(
             );
 
             // Mark output as succeeded and save (write-once)
-            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            if (heartbeatInterval) {
+              clearInterval(heartbeatInterval);
+            }
             output.markSucceeded();
-            await deps.outputRepo.save(modelType, input.methodName, output);
+            await withRunProgress(methodProgress, () =>
+              withRunPhase("persisting", {}, () =>
+                deps.outputRepo.save(modelType, input.methodName, output)));
             if (deps.runTracker) {
               deps.runTracker.complete(output.id, "completed");
             }
@@ -1817,6 +1848,11 @@ export async function* modelMethodRun(
         })(),
       ),
     ));
+  try {
+    yield* execution;
+  } finally {
+    if (methodProgress) removeRunProgress(methodProgress);
+  }
 }
 
 /**

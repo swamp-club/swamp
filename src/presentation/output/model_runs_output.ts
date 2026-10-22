@@ -130,6 +130,12 @@ export function writeModelRunsJson(runs: ActiveRun[]): void {
   }));
 }
 
+export interface DoctorRunProgress {
+  readonly progress?:
+    readonly import("../../domain/remote/run_progress.ts").RunProgressSnapshot[];
+  readonly progressScope?: string;
+}
+
 export function writeDoctorRunsLog(
   active: ActiveRun[],
   stale: ActiveRun[],
@@ -140,12 +146,16 @@ export function writeDoctorRunsLog(
   orphanedMethodRuns?: number,
   orphanedMethodReaped?: number,
   orphanedMethodError?: string,
+  progressByRun?: ReadonlyMap<string, DoctorRunProgress>,
+  webhookAdmissions?:
+    readonly import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[],
 ): void {
   if (
     active.length === 0 && stale.length === 0 &&
     (!orphanedWorkflowRuns || orphanedWorkflowRuns === 0) &&
     (!orphanedMethodRuns || orphanedMethodRuns === 0) &&
-    orphanedMethodError === undefined
+    orphanedMethodError === undefined && !webhookAdmissions?.length &&
+    !progressByRun?.size
   ) {
     writeOutput("No active or stale runs.");
     return;
@@ -250,6 +260,61 @@ export function writeDoctorRunsLog(
     );
   }
 
+  for (const [runId, diagnostics] of progressByRun ?? []) {
+    lines.push("");
+    lines.push(
+      `Progress for ${runId} (${
+        diagnostics.progressScope ?? "unknown scope"
+      }):`,
+    );
+    if (!diagnostics.progress?.length) {
+      lines.push("  No live step observations available.");
+    }
+    for (const step of diagnostics.progress ?? []) {
+      lines.push(
+        `  ${
+          step.scope === "method"
+            ? `${step.model}/${step.method}`
+            : step.scope === "run"
+            ? step.workflow
+            : `${step.workflow}/${step.job}/${step.step}`
+        }: ${step.phase} (${formatDuration(step.phaseElapsedMs)})`,
+      );
+      lines.push(`    Last progress: ${step.lastProgressAt}`);
+      if (step.worker) lines.push(`    Worker: ${step.worker}`);
+      if (step.traceId) lines.push(`    Trace: ${step.traceId}`);
+      if (step.phase === "waiting_for_lock") {
+        lines.push(
+          `    Lock: ${step.resource ?? "unknown"}; holder run: ${
+            step.holderRunId ?? "unknown"
+          }`,
+        );
+      }
+    }
+  }
+  if (webhookAdmissions?.length) {
+    lines.push("", bold("Webhook admissions:"));
+    for (const entry of webhookAdmissions) {
+      lines.push(
+        `  ${entry.receiptId} (${entry.workflow}): ${entry.phase} (${
+          formatDuration(entry.phaseElapsedMs)
+        })`,
+      );
+      if (entry.runId) lines.push(`    Run: ${entry.runId}`);
+      lines.push(`    Last progress: ${entry.lastProgressAt}`);
+      if (entry.traceId) lines.push(`    Receipt trace: ${entry.traceId}`);
+      if (entry.blockingRunIds.length) {
+        lines.push(
+          `    Admission slots held by: ${entry.blockingRunIds.join(", ")}`,
+        );
+      }
+      if (entry.unknownBlockers) {
+        lines.push(
+          `    Holders without a run ID yet: ${entry.unknownBlockers}`,
+        );
+      }
+    }
+  }
   writeOutput(lines.join("\n"));
 }
 
@@ -263,6 +328,9 @@ export function writeDoctorRunsJson(
   orphanedMethodRuns?: number,
   orphanedMethodReaped?: number,
   orphanedMethodError?: string,
+  progressByRun?: ReadonlyMap<string, DoctorRunProgress>,
+  webhookAdmissions?:
+    readonly import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[],
 ): void {
   // A run is stale because doctor listed it as stale: an expired heartbeat,
   // or an owner process that is gone while its heartbeat is still fresh.
@@ -278,9 +346,18 @@ export function writeDoctorRunsJson(
     startedAt: r.startedAt.toISOString(),
     heartbeatAt: r.heartbeatAt.toISOString(),
     stale,
+    ...progressByRun?.get(r.id),
   });
   console.log(JSON.stringify({
     totalTracked,
+    ...(progressByRun
+      ? {
+        liveProgress: [...progressByRun.values()].flatMap((entry) =>
+          entry.progress ?? []
+        ),
+      }
+      : {}),
+    ...(webhookAdmissions !== undefined ? { webhookAdmissions } : {}),
     active: activeRuns.length,
     stale: staleRuns.length,
     reaped,

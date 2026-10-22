@@ -20,7 +20,9 @@
 import { assertEquals } from "@std/assert";
 
 Deno.test("observability boundary: domain port and phase accounting have no SDK or infrastructure imports", async () => {
-  for (const file of ["observability.ts", "phase_coverage.ts"]) {
+  for (
+    const file of ["observability.ts", "phase_coverage.ts", "run_progress.ts"]
+  ) {
     const source = await Deno.readTextFile(
       new URL(`../src/domain/remote/${file}`, import.meta.url),
     );

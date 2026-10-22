@@ -5,6 +5,78 @@ adapter lives in infrastructure. Observations do not authorize work or change
 retry, lease, or recovery policy. Payloads, predicates, credentials, and exception
 messages are excluded from the new observation attributes.
 
+## Live progress (scope addition, implementation in progress)
+
+The requester approved live waiting-state diagnosis on lab #3786; the scope
+update is recorded in ripple `4094b0df-2445-4ee4-8ed6-d0d888cf8f4b`.
+CPU, heap/GC, disk/OS pressure and exporter backlog remain a separate follow-up.
+
+`run_progress.ts` keeps process-local run, method and per-admitted-step diagnostic state without
+requiring a recording span. The admin-authorized `run.doctor` response joins
+these snapshots to each tracked run. Each snapshot contains workflow/job/step,
+valid trace ID when available, current phase, monotonic phase age and the wall
+timestamp of its last observed transition. Reading status does not advance that
+timestamp. Parallel steps remain separate. Finished/abandoned steps are removed;
+the existing run tracker remains authoritative for terminal status. Workflow
+observations begin at the first `started` event and survive between steps and
+through generator finalization. Direct method observations begin when their
+output identity is allocated and survive execution, reports and unit-of-work
+cleanup. Top-level `liveProgress` preserves these observations even after a
+tracker row completes. Root and method observations are excluded from step
+metrics. Forwarded workflow events update the last-progress timestamp without
+resetting phase residence.
+
+File-lock waits identify the resource and join locally observed holders by lock
+nonce, including re-keying. A holder outside this process is explicitly unknown;
+a PID is not treated as a run identity. Generic datastore lock acquisition is
+also observed, without assuming a provider supplies run ownership. Worker queue
+and affinity waits, selected-worker execution, and authenticated data-plane
+writes update the same step state. The lag monitor uses `performance.now()`.
+
+Step metrics use only the bounded `phase` label; tracker counts use bounded
+`kind`:
+
+- `swamp.run_steps.in_flight`: current observed step count per phase.
+- `swamp.run_steps.oldest_age`: oldest current phase residence, in seconds.
+- `swamp.run_steps.state_duration`: completed uninterrupted phase residences,
+  in seconds (nested work splits a residence rather than double-counting it).
+- `swamp.runs.observed_active`: distinct runs with admitted step observations;
+  this is not yet an all-lifecycle active-run count.
+- `swamp.runs.active`: running rows from open run trackers owned by this process
+  and host, split by bounded `kind` (`workflow` or `model_method`). Multiple
+  connections to the same tracker do not duplicate runs. This includes registered
+  runs before their first step and between steps. Tracker completion, including
+  suspension, removes them; post-completion report/finalization work is not a
+  running tracker row.
+- `swamp.runs.unavailable_sources`: tracker sources that could not be read on
+  this collection. A nonzero value means the active count is unavailable rather
+  than zero; collectors may retain the previous active datapoint.
+- `swamp.runs.finalizing`: distinct observed workflow or method identities in
+  finalization, split by bounded `kind`. This remains visible after tracker
+  completion until stream cleanup. It may overlap running tracker counts before
+  completion and must not be added to them as a disjoint count.
+
+Remote `run doctor` preserves these fields in JSON and prints step phases,
+last progress, worker, trace and lock holder in human-readable output. It also
+returns `webhookAdmissions`: receipt identity before a run exists, admission
+phase, monotonic phase age, enqueue timestamp, last transition timestamp, receipt
+trace and the root run ID once execution starts. Queued receipts name the active
+runs occupying admission slots; holders that have not emitted a run ID are
+counted explicitly. Admission phase is distinct from execution step phase.
+Replay preserves the original enqueue timestamp; monotonic residence starts at
+replay in the current process. These diagnostics use the existing admin gate.
+
+Global-lock inspection waits before model acquisition and after the acquisition
+race, including lock reclaim, now enter `waiting_for_lock` as well, with
+explicitly unknown run ownership.
+
+Remaining scope: setup before workflow `started` or method output allocation,
+fine-grained direct method persistence phases, and end-to-end
+blocked-webhook acceptance. The real-file-lock integration test establishes live
+local holder diagnosis, and the webhook service test establishes admission
+blocker diagnosis while the holder is running. Neither establishes the broader
+acceptance gate alone.
+
 ## Native waterfall
 
 Step dependency waits begin when the expanded job graph is admitted, before

@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { withRunPhase } from "./run_progress.ts";
+
 /** Versioned, transport-independent observations of remote execution. */
 export const EXECUTION_TELEMETRY_VERSION = 1;
 
@@ -187,7 +189,17 @@ export async function observeExecutionWork<T>(
 ): Promise<T> {
   const observation = observeExecution(operation, attributes, parent, links);
   try {
-    const result = await observation.run(() => fn(observation));
+    const work = () => observation.run(() => fn(observation));
+    const result =
+      await (operation === "dispatch.queue" || operation === "dispatch.affinity"
+        ? withRunPhase("waiting_for_worker", {}, work)
+        : operation === "dispatch.send"
+        ? withRunPhase("executing", {
+          worker: typeof attributes["swamp.worker.id"] === "string"
+            ? attributes["swamp.worker.id"]
+            : undefined,
+        }, work)
+        : work());
     observation.end("ok");
     return result;
   } catch (error) {
