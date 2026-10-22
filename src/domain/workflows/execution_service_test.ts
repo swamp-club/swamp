@@ -17289,6 +17289,231 @@ Deno.test("run(): a failed model-method step records its report artifacts and bo
   });
 });
 
+async function runInitiatedBy(
+  service: WorkflowExecutionService,
+  workflowName: string,
+  initiatedBy: string,
+): Promise<WorkflowExecutionEvent[]> {
+  const events: WorkflowExecutionEvent[] = [];
+  for await (const event of service.run(workflowName, { initiatedBy })) {
+    events.push(event);
+  }
+  return events;
+}
+
+function methodSummaryProvenance(
+  events: WorkflowExecutionEvent[],
+): Record<string, unknown> {
+  const [summary] = completedReport(events, "@swamp/method-summary");
+  assert(summary, "expected a completed method-summary report");
+  return summary.json.provenance as Record<string, unknown>;
+}
+
+Deno.test("run(): a step's method summary carries its workflow provenance on success and failure (swamp-club#3722)", async () => {
+  const failerType = await registerWriteThenThrowModel();
+  await withTempDir(async (tempDir) => {
+    const okType = await registerMethodModel(
+      tempDir,
+      ["ok-model"],
+      () => Promise.resolve({}),
+    );
+    await new YamlDefinitionRepository(tempDir).save(
+      failerType,
+      Definition.create({ name: "failer", type: failerType.normalized }),
+    );
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const okWorkflow = Workflow.create({
+      name: "provenance-ok",
+      jobs: [
+        Job.create({ name: "job1", steps: [methodStep("ok", "ok-model")] }),
+      ],
+    });
+    const failWorkflow = Workflow.create({
+      name: "provenance-fail",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "fail-step",
+              task: StepTask.model("failer", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(okWorkflow);
+    await workflowRepo.save(failWorkflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+
+      const cases = [
+        { workflow: okWorkflow, step: "ok" },
+        { workflow: failWorkflow, step: "fail-step" },
+      ];
+      for (const { workflow, step } of cases) {
+        const events = await runInitiatedBy(
+          service,
+          workflow.name,
+          "user:alice",
+        );
+        const started = events.find((e) => e.kind === "started");
+        assert(started?.kind === "started");
+        const provenance = methodSummaryProvenance(events);
+        assertEquals(provenance.triggeredBy, "workflow", step);
+        assertEquals(provenance.workflowId, workflow.id, step);
+        assertEquals(provenance.workflowRunId, started.runId, step);
+        assertEquals(provenance.stepName, step, step);
+        assertEquals(provenance.initiatedBy, "user:alice", step);
+        assertEquals(provenance.modelVersion, "2026.01.01.1", step);
+        assertEquals(typeof provenance.definitionHash, "string", step);
+      }
+
+      // The step's method run in history records who started it too.
+      const [output] = await methodRunOutputs(tempDir, okType);
+      assertEquals(output.provenance.initiatedBy, "user:alice");
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("run(): an edited definition changes the step's method summary definition hash (swamp-club#3722)", async () => {
+  await withTempDir(async (tempDir) => {
+    const modelType = await registerMethodModel(
+      tempDir,
+      ["ok-model"],
+      () => Promise.resolve({}),
+    );
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const workflow = Workflow.create({
+      name: "provenance-edit",
+      jobs: [
+        Job.create({ name: "job1", steps: [methodStep("ok", "ok-model")] }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+      const definitionRepo = new YamlDefinitionRepository(tempDir);
+
+      const first = methodSummaryProvenance(
+        await runInitiatedBy(service, workflow.name, "user:alice"),
+      );
+      const definition = await definitionRepo.findByName(
+        modelType,
+        "ok-model",
+      );
+      assert(definition);
+      definition.setTag("edited", "yes");
+      await definitionRepo.save(modelType, definition);
+      const second = methodSummaryProvenance(
+        await runInitiatedBy(service, workflow.name, "user:alice"),
+      );
+
+      assertEquals(first.modelVersion, second.modelVersion);
+      assertEquals(first.definitionHash === second.definitionHash, false);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
+Deno.test("run(): a different step input leaves the step's method summary definition hash unchanged (swamp-club#3722)", async () => {
+  await withTempDir(async (tempDir) => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const modelType = ModelType.create(
+      `@test-3722/path-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        execute: {
+          description: "takes a path",
+          arguments: z.object({ path: z.string() }),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    const stored = Definition.create({
+      name: "path-model",
+      type: modelType.normalized,
+    });
+    await new YamlDefinitionRepository(tempDir).save(modelType, stored);
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const workflow = Workflow.create({
+      name: "provenance-inputs",
+      inputs: { properties: { path: { type: "string" } } },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "use-path",
+              task: StepTask.model("path-model", "execute", {
+                path: "${{ inputs.path }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        new DefaultStepExecutor(),
+        undefined,
+        catalogStore,
+      );
+
+      const hashes: unknown[] = [];
+      for (const path of ["/srv/a", "/srv/b"]) {
+        const events: WorkflowExecutionEvent[] = [];
+        for await (
+          const event of service.run(workflow.name, { inputs: { path } })
+        ) {
+          events.push(event);
+        }
+        hashes.push(methodSummaryProvenance(events).definitionHash);
+      }
+
+      const storedHash = await stored.computeHash();
+      assertEquals(hashes, [storedHash, storedHash]);
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
+
 Deno.test("run(): failed forEach iterations record their own vary-suffixed report artifacts", async () => {
   const modelType = await registerWriteThenThrowModel();
   await withTempDir(async (tempDir) => {

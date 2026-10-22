@@ -455,3 +455,60 @@ Deno.test("methodSummaryReport: a binary data handle is read with its content en
       "contentEncoding}' --json`",
   );
 });
+
+Deno.test("methodSummaryReport: a workflow step's provenance reaches the JSON and markdown", async () => {
+  const provenance = {
+    definitionHash: "a1b2c3",
+    modelVersion: "2026.02.09.1",
+    triggeredBy: "workflow" as const,
+    workflowId: "wf-1",
+    workflowRunId: "run-1",
+    stepName: "build",
+    initiatedBy: "user:alice",
+    bundleFingerprint: "fp-1",
+  };
+  const ctx = makeMethodContext({
+    executionStatus: "failed",
+    errorMessage: "boom",
+    provenance,
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertEquals(result.json.provenance, provenance);
+  assertStringIncludes(result.markdown, "## Provenance");
+  assertStringIncludes(
+    result.markdown,
+    "- Triggered by: workflow (run run-1, step build)",
+  );
+  assertStringIncludes(result.markdown, "- Initiated by: user:alice");
+  assertStringIncludes(result.markdown, "- Model version: 2026.02.09.1");
+  assertStringIncludes(result.markdown, "- Definition hash: a1b2c3");
+});
+
+Deno.test("methodSummaryReport: a direct run's provenance shows its trigger without a workflow run", async () => {
+  const ctx = makeMethodContext({
+    provenance: {
+      definitionHash: "d4e5f6",
+      modelVersion: "1",
+      triggeredBy: "manual",
+    },
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertEquals(result.json.provenance, {
+    definitionHash: "d4e5f6",
+    modelVersion: "1",
+    triggeredBy: "manual",
+  });
+  assertStringIncludes(result.markdown, "- Triggered by: manual\n");
+  assertEquals(result.markdown.includes("Initiated by"), false);
+});
+
+Deno.test("methodSummaryReport: no provenance leaves the JSON key and markdown section out", async () => {
+  const result = await methodSummaryReport.execute(makeMethodContext());
+
+  assertEquals("provenance" in result.json, false);
+  assertEquals(result.markdown.includes("## Provenance"), false);
+});

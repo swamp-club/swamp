@@ -72,6 +72,17 @@ interface MethodReportContext extends BaseReportContext {
   errorMessage?: string;
   dataHandles: DataHandle[];
   outputSpecs?: OutputSpecInfo[];
+  // The run's recorded provenance, as `swamp behavior history get` shows it.
+  provenance?: {
+    definitionHash: string; // compare across runs to spot a definition change
+    modelVersion: string; // compare across runs to spot an extension upgrade
+    triggeredBy: "manual" | "workflow" | "model";
+    initiatedBy?: string;
+    workflowId?: string;
+    workflowRunId?: string;
+    stepName?: string;
+    bundleFingerprint?: string;
+  };
 }
 ```
 

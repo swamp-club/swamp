@@ -20,6 +20,7 @@
 import { modelRetrievalCommand } from "../../data/data_query_command.ts";
 import type { MethodReportContext, ReportContext } from "../report_context.ts";
 import type { DataHandle } from "../../models/model.ts";
+import type { ExecutionProvenance } from "../../models/model_output.ts";
 import type { ReportDefinition, ReportResult } from "../report.ts";
 
 /** The command that reads one version of a model's data back. */
@@ -99,6 +100,29 @@ function renderPointersMarkdown(
   return lines;
 }
 
+/**
+ * Renders where the run came from, so a reader can compare two runs: a
+ * changed definition hash or model version separates a definition change
+ * or extension upgrade from a bad input (swamp-club#3722).
+ */
+function renderProvenanceMarkdown(provenance: ExecutionProvenance): string[] {
+  const trigger = provenance.workflowRunId
+    ? `${provenance.triggeredBy} (run ${provenance.workflowRunId}${
+      provenance.stepName ? `, step ${provenance.stepName}` : ""
+    })`
+    : provenance.triggeredBy;
+  const lines: string[] = ["## Provenance", "", `- Triggered by: ${trigger}`];
+  if (provenance.initiatedBy) {
+    lines.push(`- Initiated by: ${provenance.initiatedBy}`);
+  }
+  lines.push(
+    `- Model version: ${provenance.modelVersion}`,
+    `- Definition hash: ${provenance.definitionHash}`,
+    "",
+  );
+  return lines;
+}
+
 export const methodSummaryReport: ReportDefinition = {
   description:
     "Built-in summary of a method execution including narrative, output schema, and data pointers.",
@@ -121,6 +145,7 @@ export const methodSummaryReport: ReportDefinition = {
       dataHandles,
       outputSpecs,
       swampSha,
+      provenance,
     } = context;
 
     // Build narrative
@@ -145,6 +170,12 @@ export const methodSummaryReport: ReportDefinition = {
 
     if (errorMessage) {
       lines.push("## Error", "", errorMessage, "");
+    }
+
+    if (provenance) {
+      for (const line of renderProvenanceMarkdown(provenance)) {
+        lines.push(line);
+      }
     }
 
     // Arguments section — names only, never values (swamp-club#1746).
@@ -188,6 +219,7 @@ export const methodSummaryReport: ReportDefinition = {
       modelType: modelType.normalized,
       methodName,
       ...(swampSha ? { swampSha } : {}),
+      ...(provenance ? { provenance: { ...provenance } } : {}),
       narrative,
       globalArgs: globalKeys,
       methodArgs: methodKeys,

@@ -470,6 +470,100 @@ Deno.test("modelMethodRun: the failed method summary lists data the method wrote
   assertEquals(events[events.length - 1].kind, "error");
 });
 
+function methodSummaryProvenance(
+  events: ModelMethodRunEvent[],
+): Record<string, unknown> {
+  const summary = events.find((e) =>
+    e.kind === "report_completed" && e.reportName === "@swamp/method-summary"
+  );
+  if (summary?.kind !== "report_completed") {
+    throw new Error("expected a completed method-summary report");
+  }
+  return summary.json.provenance as Record<string, unknown>;
+}
+
+Deno.test("modelMethodRun: the method summary carries the run's provenance on success and failure (swamp-club#3722)", async () => {
+  const modelDef = createTestModelDef("run");
+  const input = {
+    ...createTestInput("test-model", "run"),
+    initiatedBy: "user:alice",
+  };
+
+  const succeeded = await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      createTestDeps(createTestDefinition("test-model", "run"), modelDef),
+      input,
+    ),
+  );
+  const failed = await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      {
+        ...createTestDeps(createTestDefinition("test-model", "run"), modelDef),
+        createExecutionService: () =>
+          createFailingExecutionService(new Error("execution boom")),
+      },
+      input,
+    ),
+  );
+
+  for (const events of [succeeded, failed]) {
+    const provenance = methodSummaryProvenance(events);
+    assertEquals(provenance.triggeredBy, "manual");
+    assertEquals(provenance.initiatedBy, "user:alice");
+    assertEquals(provenance.modelVersion, "1.0.0");
+    assertEquals(typeof provenance.definitionHash, "string");
+  }
+  assertEquals(failed.at(-1)?.kind, "error");
+});
+
+Deno.test("modelMethodRun: an edited definition changes the method summary's definition hash (swamp-club#3722)", async () => {
+  const modelDef = createTestModelDef("run");
+  const before = createTestDefinition("test-model", "run");
+  const after = Definition.create({
+    name: "test-model",
+    methods: { run: { arguments: { key: "edited" } } },
+  });
+
+  const hashes: unknown[] = [];
+  for (const definition of [before, after]) {
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(
+        createLibSwampContext(),
+        createTestDeps(definition, modelDef),
+        createTestInput("test-model", "run"),
+      ),
+    );
+    hashes.push(methodSummaryProvenance(events).definitionHash);
+  }
+
+  assertEquals(hashes[0], await before.computeHash());
+  assertEquals(hashes[1], await after.computeHash());
+  assertEquals(hashes[0] === hashes[1], false);
+});
+
+Deno.test("modelMethodRun: a different --input leaves the method summary's definition hash unchanged (swamp-club#3722)", async () => {
+  const modelDef = createTestModelDef("run");
+  const stored = createTestDefinition("test-model", "run").toData();
+  const storedHash = await Definition.fromData(stored).computeHash();
+
+  const hashes: unknown[] = [];
+  for (const value of ["first", "second"]) {
+    // Each run loads the stored definition afresh, as the CLI does.
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(
+        createLibSwampContext(),
+        createTestDeps(Definition.fromData(stored), modelDef),
+        { ...createTestInput("test-model", "run"), inputs: { key: value } },
+      ),
+    );
+    hashes.push(methodSummaryProvenance(events).definitionHash);
+  }
+
+  assertEquals(hashes, [storedHash, storedHash]);
+});
+
 Deno.test("modelMethodRun marks output cancelled on abort", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");

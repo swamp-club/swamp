@@ -20,6 +20,7 @@
 import type { Logger } from "@logtape/logtape";
 import type { ModelType } from "../models/model_type.ts";
 import type { DataHandle } from "../models/model.ts";
+import type { ExecutionProvenance } from "../models/model_output.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { resolveExtensionFile } from "../extensions/extension_file_resolver.ts";
@@ -83,6 +84,13 @@ export interface MethodReportContext extends BaseReportContext {
   /** Output spec schemas from the model type definition. */
   outputSpecs?: OutputSpecInfo[];
   /**
+   * What the run recorded about where it came from: the definition hash,
+   * model version, trigger, initiator and, for a workflow step, the
+   * workflow run and step. The same record `model method history get`
+   * shows (swamp-club#3722).
+   */
+  provenance?: ExecutionProvenance;
+  /**
    * Resolve a path to an asset declared in the extension's
    * `additionalFiles` manifest field. Same semantics as
    * `MethodContext.extensionFile`. Always populated by
@@ -113,6 +121,13 @@ export interface ModelReportContext extends BaseReportContext {
   dataHandles: DataHandle[];
   /** Output spec schemas from the model type definition. */
   outputSpecs?: OutputSpecInfo[];
+  /**
+   * What the run recorded about where it came from: the definition hash,
+   * model version, trigger, initiator and, for a workflow step, the
+   * workflow run and step. The same record `model method history get`
+   * shows (swamp-club#3722).
+   */
+  provenance?: ExecutionProvenance;
 }
 
 /**
@@ -200,6 +215,8 @@ export interface MethodReportInvocation {
   errorMessage?: string;
   dataHandles: DataHandle[];
   outputSpecs?: OutputSpecInfo[];
+  /** The run's recorded provenance, taken from its ModelOutput. */
+  provenance: ExecutionProvenance;
   extensionFilesRoot?: string;
 }
 
@@ -233,6 +250,7 @@ export function buildMethodReportContext(
     errorMessage: invocation.errorMessage,
     dataHandles: invocation.dataHandles,
     outputSpecs: invocation.outputSpecs,
+    provenance: invocation.provenance,
     extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),
   };
 }

@@ -143,7 +143,11 @@ execution status, arguments passed, and data output pointers.
    swamp report get @swamp/method-summary --model <model> --json
    ```
    The JSON output includes `status`, `error`, `narrative`, and `dataProduced`
-   with retrieval commands for any data written before the failure.
+   with retrieval commands for any data written before the failure. Its
+   `provenance` (`definitionHash`, `modelVersion`, `triggeredBy`,
+   `workflowRunId`) tells what changed: compare it with the last successful
+   run's summary — a different hash means the definition changed, a different
+   version means the extension was upgraded, neither points at the inputs.
 
 2. **Inspect the workflow-summary report** (for workflow failures):
    ```bash
