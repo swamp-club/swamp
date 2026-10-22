@@ -2283,6 +2283,17 @@ export class DefaultStepExecutor implements StepExecutor {
       );
     }
 
+    // Over the stored definition, as authored, and before the step's inputs
+    // are written into it (a definition with no expressions is not copied
+    // first): the hash changes only when the definition does, and holds no
+    // resolved value (swamp-club#3722). A direct-execution definition is
+    // built from the step's evaluated arguments, so it is hashed below in
+    // its persisted form, whose sensitive values are vault references.
+    const isDirectExecution = executedBase !== undefined;
+    const storedDefinitionHash = isDirectExecution
+      ? undefined
+      : await originalDefinition.computeHash();
+
     // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
     // The copy that executes: evaluatedDefinition's splices with sensitive
@@ -2563,9 +2574,8 @@ export class DefaultStepExecutor implements StepExecutor {
       }
 
       // Create ModelOutput for tracking
-      // Over the persisted form (before the runtime pass): stable across runs
-      // and free of secrets. Provenance only; nothing compares it.
-      const definitionHash = await persisted.definition.computeHash();
+      const definitionHash = storedDefinitionHash ??
+        await persisted.definition.computeHash();
       const output = ModelOutput.create({
         definitionId: originalDefinition.id,
         methodName: task.methodName,
@@ -2576,6 +2586,7 @@ export class DefaultStepExecutor implements StepExecutor {
           workflowId: ctx.workflowId,
           workflowRunId: ctx.workflowRunId,
           stepName: ctx.stepName,
+          initiatedBy: ctx.initiatedBy,
           bundleFingerprint: modelDef.sourceFingerprint,
         },
       });
@@ -3100,6 +3111,7 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition,
         originalDefinition,
         methodName: task.methodName,
+        provenance: output.provenance,
         reportGlobalArgs,
         reportMethodArgs,
         reportFilterOptions: ctx.reportFilterOptions,
@@ -3249,6 +3261,7 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition,
         originalDefinition,
         methodName: task.methodName,
+        provenance: output.provenance,
         reportGlobalArgs,
         reportMethodArgs,
         reportFilterOptions: ctx.reportFilterOptions,

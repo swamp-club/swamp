@@ -752,6 +752,12 @@ export async function* modelMethodRun(
               lastEvaluated: input.lastEvaluated,
             };
 
+            // Over the stored definition, before the --input overrides below
+            // write into it (a definition with no expressions is not copied
+            // first): the hash then tells a definition edit from a different
+            // input, and no input value reaches it (swamp-club#3722).
+            const definitionHash = await definition.computeHash();
+
             const evaluationService = deps.createEvaluationService();
             let evaluatedDefinition = definition;
             // The copy that executes: the same splices as evaluatedDefinition,
@@ -1216,7 +1222,6 @@ export async function* modelMethodRun(
             const preExecSpan = getTracer().startSpan(
               "swamp.model.method.pre_execute",
             );
-            const definitionHash = await definition.computeHash();
             const output = ModelOutput.create({
               definitionId: definition.id,
               methodName: input.methodName,
@@ -1440,6 +1445,7 @@ export async function* modelMethodRun(
                     errorMessage,
                     dataHandles: recoveredDataHandles(error),
                     outputSpecs: buildOutputSpecs(modelDef),
+                    provenance: output.provenance,
                     extensionFilesRoot: modelDef.extensionFilesRoot,
                   },
                 );
@@ -1662,6 +1668,7 @@ export async function* modelMethodRun(
                   executionStatus: "succeeded",
                   dataHandles,
                   outputSpecs: buildOutputSpecs(modelDef),
+                  provenance: output.provenance,
                   extensionFilesRoot: modelDef.extensionFilesRoot,
                 },
               );

@@ -105,6 +105,7 @@ contexts also have `extensionFile`.
 | `errorMessage?`   | `string`                      | Error message when execution failed                   |
 | `dataHandles`     | `DataHandle[]`                | Data artifacts produced by the method                 |
 | `outputSpecs?`    | `OutputSpecInfo[]`            | Output spec schemas from the behavior type definition |
+| `provenance?`     | `ExecutionProvenance`         | The run's recorded provenance (see below)             |
 | `extensionFile`   | `(relPath: string) => string` | Resolve extension asset path (method-scope only)      |
 
 ### WorkflowReportContext
@@ -417,6 +418,31 @@ the "Required report not found" diagnostic instead of a throw from `execute()`.
 If saving the fallback artifact fails, that error is silently dropped so it
 does not hide the original report error. Only the `WRN` log line then carries
 the error.
+
+## Run Provenance
+
+Method and model scope contexts carry `provenance`, the record the run saved
+about where it came from. It is the same value `swamp behavior history get`
+shows: `definitionHash`, `modelVersion`, `triggeredBy`, and when known
+`initiatedBy`, `workflowId`, `workflowRunId`, `stepName`, `parentOutputId`,
+`callerExtension` and `bundleFingerprint`. A direct run records `triggeredBy: "manual"`; a workflow
+step records `"workflow"` with its workflow, run and step, and the principal
+that started the workflow run as `initiatedBy`.
+
+The builtin `@swamp/method-summary` report copies it into a `provenance` object
+in its JSON and a Provenance section in its markdown. Comparing
+`definitionHash` and `modelVersion` between the last successful run and the
+first failed one tells a definition change or extension upgrade apart from a
+bad input (swamp-club#3722).
+
+`definitionHash` is taken over the stored definition as authored, before any
+`--input` value or workflow step input is written into its arguments and before
+expressions and vault references are resolved. Per-call inputs therefore never
+change it and no resolved value reaches it. A direct-execution (`@type`)
+definition is assembled from the call's arguments, so in a workflow it is
+hashed in its persisted form, where sensitive values are vault references. Run
+records written before this rule hashed the definition after inputs were
+applied, so their hashes are not comparable with newer ones.
 
 ## Sensitive Argument Redaction
 

@@ -22,7 +22,10 @@ import type { ModelType } from "../models/model_type.ts";
 import type { DataHandle, ModelDefinition } from "../models/model.ts";
 import { modelRegistry } from "../models/model.ts";
 import type { Definition } from "../definitions/definition.ts";
-import type { DataArtifactRef } from "../models/model_output.ts";
+import type {
+  DataArtifactRef,
+  ExecutionProvenance,
+} from "../models/model_output.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { buildOutputSpecs } from "../models/output_spec_builder.ts";
@@ -61,6 +64,8 @@ export interface MethodReportArgs {
   /** Original (pre-evaluation) definition, only used for reportSelection. */
   originalDefinition: Definition;
   methodName: string;
+  /** The step's recorded provenance, from its ModelOutput. */
+  provenance: ExecutionProvenance;
 
   // --- Report context inputs ---
   reportGlobalArgs: Record<string, unknown>;
@@ -144,6 +149,7 @@ export class MethodReportRunner {
         executionStatus: "succeeded",
         dataHandles: args.dataHandles,
         outputSpecs: buildOutputSpecs(args.modelDef),
+        provenance: args.provenance,
         extensionFilesRoot: args.modelDef.extensionFilesRoot,
       },
     );
@@ -223,6 +229,7 @@ export class MethodReportRunner {
           errorMessage: args.errorMessage,
           dataHandles: args.dataHandles,
           outputSpecs: buildOutputSpecs(args.modelDef),
+          provenance: args.provenance,
           extensionFilesRoot: args.modelDef.extensionFilesRoot,
         },
       );
