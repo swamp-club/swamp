@@ -1251,15 +1251,14 @@ Provenance therefore also records *where* data sits.
 **Data ranges.** Every substitution returns a `ProvenanceMap` alongside the
 tree. For each path, the map records either that the whole subtree is data,
 which `[start, end)` ranges of the string came from data, or that the own keys
-of the object at that path are data while the values under them are described
-on their own. A pass that runs after substitution evaluates an expression
+of the object at that path are data while the values under them are described on
+their own. A pass that runs after substitution evaluates an expression
 occurrence only if the raw-text rule allows it **and** the occurrence does not
-overlap a data range. Partial overlap
-counts as data, so text spliced next to authored text can never complete an
-expression across the boundary. Paths spell an object key that is not a plain
-segment (one containing `.`, `[`, `]` or `"`, or empty) as `["…"]`, JSON-quoted,
-exactly as expression extraction reports it, so a caller-chosen key can never
-collide with a nested path or an array index.
+overlap a data range. Partial overlap counts as data, so text spliced next to
+authored text can never complete an expression across the boundary. Paths spell
+an object key that is not a plain segment (one containing `.`, `[`, `]` or `"`,
+or empty) as `["…"]`, JSON-quoted, exactly as expression extraction reports it,
+so a caller-chosen key can never collide with a nested path or an array index.
 
 The gate is strictly narrower than the raw-text rule: it never evaluates an
 occurrence that rule refuses. The only thing it changes is refusing
@@ -1314,17 +1313,16 @@ are authored at their new positions.
 parameter is required, and `integration/expression_provenance_rules_test.ts`
 fails on a production save passing `undefined` or an empty map, and on any
 caller of the raw-text gate other than `partitionAuthoredAt`. In memory, a
-binding with no map is authored, which is how it worked before this rule.
-Data is marked where it enters `inputs`, `self` or `run`: workflow caller
-inputs, spliced step inputs, routed direct-execution globals, forEach items,
-child inputs, and `--literal-inputs`. A caller input that is an object is data
-whole, keys included, unless a default or a schema property describes it, in
-which case each property is judged on its own; a record of secrets keyed by
-name is then masked at the record, and its keys never enter a map's paths
-(swamp-club#3681). A transform that rewrites a value holding
-data (input coercion, JSON parsing) makes that value data in its entirety. Raw
-and sanitized copies keep separate maps; where two copies of one string
-differ, only the differing span is data.
+binding with no map is authored, which is how it worked before this rule. Data
+is marked where it enters `inputs`, `self` or `run`: workflow caller inputs,
+spliced step inputs, routed direct-execution globals, forEach items, child
+inputs, and `--literal-inputs`. A caller input that is an object is data whole,
+keys included, unless a default or a schema property describes it, in which case
+each property is judged on its own; a record of secrets keyed by name is then
+masked at the record, and its keys never enter a map's paths (swamp-club#3681).
+A transform that rewrites a value holding data (input coercion, JSON parsing)
+makes that value data in its entirety. Raw and sanitized copies keep separate
+maps; where two copies of one string differ, only the differing span is data.
 
 Evaluated caches and run records store the map, as ranges only and never text.
 The field doubles as the format marker. An artifact with the field present but

@@ -235,11 +235,27 @@ function plaintextValues(
       ? new Set<string | number>(options.method.replaced ?? [])
       : undefined;
     for (const entry of findSensitiveValues(site.schema, site.args)) {
+      const wholeMap = options.provenance ?? persistedMap;
+      // A sensitive value inside an object whose keys came from data (a
+      // record of objects an input supplied) is reported at that object, as
+      // a leaf inside it is below: reported at its own position, the
+      // record's key would reach the file, the metadata and the refusal.
+      const keyed = dataKeyedContainer(site, entry.keys, wholeMap);
+      if (keyed) {
+        if (!replaced?.has(entry.keys[0])) {
+          found.set(JSON.stringify(position(keyed)), keyed);
+        }
+        continue;
+      }
       const whole = { site, keys: entry.keys, path: entry.path };
       const wholePath = position(whole);
-      // Input-derived container keys are data too. A leaf mask would leave
-      // those keys in the file, metadata, and refusal message.
-      const wholeMap = options.provenance ?? persistedMap;
+      // Any data under a sensitive object, or an array holding one, masks
+      // it whole. Its keys may be data, and provenance does not record every
+      // data key on its own (a caller's key beside a described object's
+      // properties is recorded only as a data leaf under it), so a leaf mask
+      // could leave a data key in the file, the metadata and the refusal
+      // message. This fails closed: an authored object holding a
+      // data-origin vault reference is masked too and does not replay.
       if (
         hasObjectKeys(entry.value) &&
         wholeMap?.hasDataAtOrBelow(provenancePath(wholePath))
@@ -320,7 +336,10 @@ function position({ site, keys }: PlaintextValue): MaskedPath {
  * The shallowest object with keys between the site's root and `keys` whose
  * keys `map` marks data, if any: whole with its values, or on their own
  * beside an authored expression the caller typed into it (swamp-club#3681).
- * Array indexes reveal no input text, so an array is passed through.
+ * Array indexes reveal no input text, so an array is passed through. A fixed
+ * object shape supplied whole from data counts too: without the schema the
+ * walk cannot tell its keys from a record's, so it fails closed and masks
+ * the object's other values with it.
  */
 function dataKeyedContainer(
   site: ArgumentSite,
@@ -633,7 +652,11 @@ export function persistEvaluatedDefinition(
   };
   // Sensitive leaves whose resolved segments are entirely references keep
   // only those reference ranges as data. Raw replay ranges use the original
-  // secret lengths and cannot safely be compared with persisted text.
+  // secret lengths and cannot safely be compared with persisted text. A
+  // written reference always stands for a value resolved during evaluation,
+  // never for an authored vault.get, which stays an expression; the guards
+  // read these ranges only to tell the text a reference covers from the
+  // text it does not.
   let persistedProvenance = alignProvenance(provenance, data, definitionData);
   for (const site of argumentSites(schemas, definitionData as DefinitionData)) {
     for (const entry of findSensitiveValues(site.schema, site.args)) {

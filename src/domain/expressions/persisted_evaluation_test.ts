@@ -818,3 +818,94 @@ Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: a pla
     true,
   );
 });
+
+Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: a record whose keys came from data is masked at the record when its sensitive values are objects, and an array of data-keyed objects is masked whole, so no key reaches the file, the metadata nor the refusal (swamp-club#3744)", () => {
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({
+      creds: z.record(
+        z.string(),
+        z.object({ user: z.string(), pass: z.string() }).meta({
+          sensitive: true,
+        }),
+      ),
+      lists: z.array(z.record(z.string(), z.string())).meta({
+        sensitive: true,
+      }).optional(),
+    }),
+    methods: {},
+  };
+  const executed = Definition.create({
+    name: "object-record",
+    globalArguments: {
+      creds: { [INPUT_VALUE]: { user: "u", pass: "p" } },
+      lists: [{ [INPUT_VALUE]: "x" }],
+    },
+  });
+  // Both arrived whole from the run's inputs, keys included.
+  const provenance = ProvenanceMap.authored()
+    .withWholeData("globalArguments.creds")
+    .withWholeData("globalArguments.lists");
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    Definition.create({ name: "object-record" }),
+    new RunSensitiveValues(),
+    schemas,
+    provenance,
+  );
+  assertEquals(persisted.definition.globalArguments, {
+    creds: "***",
+    lists: "***",
+  });
+  assertEquals(persisted.maskedPaths, [
+    ["globalArguments", "creds"],
+    ["globalArguments", "lists"],
+  ]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.maskedArguments,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, executed.toData(), [], {
+      provenance,
+    }),
+    ["globalArguments.creds", "globalArguments.lists"],
+  );
+});
+
+Deno.test("findPlaintextSensitiveArguments: with no persistedProvenance a sensitive string holding data and a written reference is data whole, so data after the reference is refused as well as data before it (swamp-club#3744)", () => {
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({ token: z.string().meta({ sensitive: true }) }),
+    methods: {},
+  };
+  const reference: WrittenReference = {
+    path: ["globalArguments", "token"],
+    occurrence: 0,
+    vaultName: SOURCE.vaultName,
+    key: SOURCE.key,
+    encoding: "raw",
+    dataOrigin: true,
+  };
+  const legacy = Definition.create({
+    name: "legacy-suffix",
+    globalArguments: { token: `${REF}INPUT-CANARY` },
+  });
+  // In raw coordinates the suffix follows the secret, which is shorter than
+  // its reference text, so this range falls inside the written reference.
+  const raw = ProvenanceMap.authored().withRanges("globalArguments.token", [[
+    SECRET.length,
+    SECRET.length + "INPUT-CANARY".length,
+  ]]);
+  assertEquals(SECRET.length + "INPUT-CANARY".length < REF.length, true);
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, legacy.toData(), [reference], {
+      provenance: raw,
+    }),
+    ["globalArguments.token"],
+  );
+});
