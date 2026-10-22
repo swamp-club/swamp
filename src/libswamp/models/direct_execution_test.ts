@@ -1619,3 +1619,79 @@ Deno.test("resolveOrCreateDefinition: enforces an object-level globalArguments r
     true,
   );
 });
+
+Deno.test("resolveOrCreateDefinition: a refinement that echoes a sensitive global argument into an issue beside it is described in Zod's words (swamp-club#3681)", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      confirm: z.string().optional(),
+    }).superRefine((v, ctx) => {
+      ctx.addIssue({
+        code: "custom",
+        path: ["confirm"],
+        message: `confirm must equal ${v.apiKey}`,
+      });
+    }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/echoing-model");
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => Promise.resolve(),
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/${id}.yaml`,
+  };
+  const invalid = await resolveOrCreateDefinition(
+    deps,
+    "test/echoing-model",
+    "my-model",
+    "run",
+    { apiKey: "hunter2-long", confirm: "x", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+  assertEquals(invalid.ok, false);
+  if (!invalid.ok) {
+    assertStringIncludes(invalid.error.message, "confirm: Invalid input");
+    assertEquals(invalid.error.message.includes("hunter2-long"), false);
+  }
+});
+
+Deno.test("resolveOrCreateDefinition: a schema that throws while parsing a sensitive global argument has its message withheld (swamp-club#3681)", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().meta({ sensitive: true }).transform(
+        (text): string => {
+          throw new TypeError(`normalized key rejected: ${text.toUpperCase()}`);
+        },
+      ),
+    }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/throwing-model");
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => Promise.resolve(),
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/${id}.yaml`,
+  };
+  const invalid = await resolveOrCreateDefinition(
+    deps,
+    "test/throwing-model",
+    "my-model",
+    "run",
+    { apiKey: "hunter2-long", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+  assertEquals(invalid.ok, false);
+  if (!invalid.ok) {
+    assertStringIncludes(
+      invalid.error.message,
+      "the schema threw TypeError while parsing them, and its message is withheld",
+    );
+    assertEquals(invalid.error.message.includes("HUNTER2-LONG"), false);
+  }
+});

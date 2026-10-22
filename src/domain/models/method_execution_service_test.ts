@@ -54,6 +54,7 @@ import type {
   DataHandle,
   DataWriter,
   MethodContext,
+  MethodDefinition,
   MethodResult,
   ModelDefinition,
 } from "./model.ts";
@@ -6365,5 +6366,419 @@ Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its ar
     assertEquals(order, []);
   } finally {
     setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("execute: a parse the schema refuses under a transform registers what the transform made of a sensitive argument, and the refusal, described in Zod's words, shows nothing of it (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const refusing: Record<string, MethodDefinition> = {
+    refined: {
+      description: "Refuses what its transform made",
+      arguments: z.object({
+        token: sensitive.transform((text) => text.toUpperCase()).refine(
+          () => false,
+          {
+            error: (issue) =>
+              `normalized credential rejected: ${String(issue.input)}`,
+          },
+        ),
+      }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+    piped: {
+      description: "Refuses in a pipeline's output",
+      arguments: z.object({ raw: z.string() }).transform((x) => ({
+        token: x.raw.toUpperCase(),
+      })).pipe(
+        z.object({
+          token: sensitive.refine(() => false, {
+            error: (issue) =>
+              `pipeline credential rejected: ${String(issue.input)}`,
+          }),
+        }),
+      ),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  };
+  for (
+    const [method, args] of [
+      ["refined", { token: "hunter2-long" }],
+      ["piped", { raw: "hunter2-long" }],
+    ] as const
+  ) {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("hunter2-long");
+    const { context } = createTestContext({ redactor, methodName: method });
+    const error = await assertRejects(
+      () =>
+        service.execute(
+          Definition.create({
+            name: "refused",
+            methods: { [method]: { arguments: { ...args } } },
+          }),
+          refusing[method],
+          context,
+        ),
+      Error,
+    );
+    assertEquals(error.message.includes("HUNTER2-LONG"), false);
+    assertEquals(error.message.includes("credential rejected"), false);
+    assertStringIncludes(
+      error.message,
+      'Method arguments validation failed: Invalid input at "token"',
+    );
+    assertEquals(redactor.redact("made HUNTER2-LONG"), "made ***");
+  }
+});
+
+Deno.test("execute: a schema that throws while parsing a sensitive argument has its message withheld, so nothing of the value reaches the error; a schema marking nothing has its throw reported as it is (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const throwing = (sensitive: boolean): MethodDefinition => ({
+    description: "Throws from a transform",
+    arguments: z.object({
+      token: (sensitive ? z.string().meta({ sensitive: true }) : z.string())
+        .transform((text): string => {
+          throw new TypeError(
+            `normalized credential rejected: ${text.toUpperCase()}`,
+          );
+        }),
+    }),
+    execute: () => Promise.resolve({ dataHandles: [] }),
+  });
+  const definition = Definition.create({
+    name: "thrown",
+    methods: { write: { arguments: { token: "hunter2-long" } } },
+  });
+  const { context } = createTestContext({ redactor: new SecretRedactor() });
+  const withheld = await assertRejects(
+    () => service.execute(definition, throwing(true), context),
+    Error,
+  );
+  assertEquals(withheld.message.includes("HUNTER2-LONG"), false);
+  assertEquals(withheld.message.includes("hunter2-long"), false);
+  assertStringIncludes(
+    withheld.message,
+    "Method arguments validation failed: the schema threw TypeError while parsing them, and its message is withheld",
+  );
+  assertEquals((withheld.stack ?? "").includes("HUNTER2-LONG"), false);
+  const shown = await assertRejects(
+    () => service.execute(definition, throwing(false), context),
+    TypeError,
+  );
+  assertEquals(shown.message, "normalized credential rejected: HUNTER2-LONG");
+});
+
+Deno.test("executeWorkflow: a global argument the schema refuses under a transform registers what the transform made of it, and the refusal, described in Zod's words, shows nothing of it; a schema that throws while parsing a sensitive global has its message withheld (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const method: MethodDefinition = {
+    description: "Test method",
+    arguments: z.object({}),
+    execute: () => Promise.resolve({ dataHandles: [] }),
+  };
+  const refusing: ModelDefinition = {
+    type: ModelType.create("test/global-refused-secrets"),
+    version: "1",
+    globalArguments: z.object({
+      apiKey: sensitive.transform((text) => text.toUpperCase()).refine(
+        () => false,
+        { error: (issue) => `normalized key rejected: ${String(issue.input)}` },
+      ),
+    }),
+    methods: { run: method },
+  };
+  const definition = Definition.create({
+    name: "refused-global",
+    globalArguments: { apiKey: "hunter2-long" },
+  });
+  const redactor = new SecretRedactor();
+  const refused = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        definition,
+        refusing,
+        "run",
+        createTestContext({ modelType: refusing.type, redactor }).context,
+      ),
+    Error,
+  );
+  assertEquals(refused.message.includes("HUNTER2-LONG"), false);
+  assertEquals(refused.message.includes("key rejected"), false);
+  assertStringIncludes(
+    refused.message,
+    'Global arguments validation failed: Invalid input at "apiKey"',
+  );
+  assertEquals(redactor.redact("made HUNTER2-LONG"), "made ***");
+
+  const throwing: ModelDefinition = {
+    ...refusing,
+    globalArguments: z.object({
+      apiKey: sensitive.transform((text): string => {
+        throw new TypeError(`normalized key rejected: ${text.toUpperCase()}`);
+      }),
+    }),
+  };
+  const withheld = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        definition,
+        throwing,
+        "run",
+        createTestContext({ modelType: throwing.type }).context,
+      ),
+    Error,
+  );
+  assertEquals(withheld.message.includes("HUNTER2-LONG"), false);
+  assertStringIncludes(
+    withheld.message,
+    "Global arguments validation failed: the schema threw TypeError while parsing them, and its message is withheld",
+  );
+});
+
+Deno.test("execute: a refusal the schema's own code writes at a sensitive position is described in Zod's words with a path segment it introduced masked, a throw's name is reported only when standard, an issue beside the position keeps its message, and an issue above it, or one an enclosing refinement writes beside it, is described too (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const cases: Record<
+    string,
+    { schema: z.ZodTypeAny; args: Record<string, unknown>; expected: string }
+  > = {
+    issue: {
+      schema: z.object({
+        token: sensitive.transform((text, ctx) => {
+          ctx.addIssue({
+            code: "custom",
+            message: `derived credential ${text.toUpperCase()}`,
+          });
+          return z.NEVER;
+        }),
+      }),
+      args: { token: "hunter2-long" },
+      expected: 'Method arguments validation failed: Invalid input at "token"',
+    },
+    issuePath: {
+      schema: z.object({
+        token: sensitive.transform((text, ctx) => {
+          ctx.addIssue({
+            code: "custom",
+            message: "bad credential",
+            path: [text.toUpperCase()],
+          });
+          return z.NEVER;
+        }),
+      }),
+      args: { token: "hunter2-long" },
+      expected:
+        'Method arguments validation failed: Invalid input at "token.***"',
+    },
+    refined: {
+      schema: z.object({
+        token: sensitive.min(32, "token is too short to be a credential"),
+      }),
+      args: { token: "hunter2-long" },
+      expected: "Method arguments validation failed: Too small: expected " +
+        'string to have >=32 characters at "token"',
+    },
+    errorName: {
+      schema: z.object({
+        token: sensitive.transform((text): string => {
+          const error = new Error("withheld message");
+          error.name = `CredentialError:${text.toUpperCase()}`;
+          throw error;
+        }),
+      }),
+      args: { token: "hunter2-long" },
+      expected: "Method arguments validation failed: the schema threw an " +
+        "error while parsing them, and its message is withheld",
+    },
+    beside: {
+      schema: z.object({
+        token: sensitive,
+        count: z.number().min(1, "count must be positive"),
+      }),
+      args: { token: "hunter2-long", count: 0 },
+      expected:
+        'Method arguments validation failed: count must be positive at "count"',
+    },
+    above: {
+      schema: z.object({ token: sensitive, other: z.string() }).refine(
+        () => false,
+        "exactly one of token or other",
+      ),
+      args: { token: "hunter2-long", other: "x" },
+      expected: "Method arguments validation failed: Invalid input",
+    },
+    sibling: {
+      schema: z.object({ token: sensitive, confirm: z.string() }).superRefine(
+        (value, ctx) => {
+          ctx.addIssue({
+            code: "custom",
+            path: ["confirm"],
+            message: `confirm must equal ${value.token}`,
+          });
+        },
+      ),
+      args: { token: "hunter2-long", confirm: "x" },
+      expected:
+        'Method arguments validation failed: Invalid input at "confirm"',
+    },
+    derivedRoot: {
+      schema: z.object({ token: sensitive, other: z.string() }).superRefine(
+        (value, ctx) => {
+          ctx.addIssue({
+            code: "custom",
+            message: `derived credential ${value.token.toUpperCase()}`,
+          });
+        },
+      ),
+      args: { token: "hunter2-long", other: "x" },
+      expected: "Method arguments validation failed: Invalid input",
+    },
+  };
+  for (const [method, { schema, args, expected }] of Object.entries(cases)) {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("hunter2-long");
+    const { context } = createTestContext({ redactor, methodName: method });
+    const error = await assertRejects(
+      () =>
+        service.execute(
+          Definition.create({
+            name: "refused",
+            methods: { [method]: { arguments: { ...args } } },
+          }),
+          {
+            description: method,
+            arguments: schema,
+            execute: () => Promise.resolve({ dataHandles: [] }),
+          },
+          context,
+        ),
+      Error,
+    );
+    assertEquals(error.message.includes("HUNTER2-LONG"), false, method);
+    assertEquals(error.message.includes("hunter2-long"), false, method);
+    assertStringIncludes(error.message, expected, method);
+  }
+});
+
+Deno.test("executeWorkflow: a refusal the schema's own code writes at a sensitive global argument is described in Zod's words (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const refusing: ModelDefinition = {
+    type: ModelType.create("test/global-issue-secrets"),
+    version: "1",
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }).transform((text, ctx) => {
+        ctx.addIssue({
+          code: "custom",
+          message: `global issue ${text.toUpperCase()}`,
+        });
+        return z.NEVER;
+      }).optional(),
+    }),
+    methods: {
+      run: {
+        description: "Never reached",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const redactor = new SecretRedactor();
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({
+          name: "refused-global",
+          globalArguments: { apiKey: "hunter2-long" },
+        }),
+        refusing,
+        "run",
+        createTestContext({ modelType: refusing.type, redactor }).context,
+      ),
+    Error,
+  );
+  assertEquals(error.message.includes("HUNTER2-LONG"), false);
+  assertEquals(error.message.includes("global issue"), false);
+  assertStringIncludes(
+    error.message,
+    'Global arguments validation failed: Invalid input at "apiKey"',
+  );
+});
+
+Deno.test("execute: a refused parse registers the sensitive value with the run's redactor and leaves the plain values beside it out, for method and global arguments alike (swamp-club#3753)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const schema = z.object({
+    token: sensitive.transform((text) => text.toUpperCase()),
+    env: z.string(),
+    region: z.string(),
+  }).refine(
+    (v) => v.env !== "prod" || v.region !== "eu-west-1",
+    "region not allowed in prod",
+  );
+  const args = { token: "hunter2-long", env: "prod", region: "eu-west-1" };
+
+  const methodRedactor = new SecretRedactor();
+  const { context } = createTestContext({ redactor: methodRedactor });
+  const methodError = await assertRejects(
+    () =>
+      service.execute(
+        Definition.create({
+          name: "refused",
+          methods: { write: { arguments: { ...args } } },
+        }),
+        {
+          description: "Refuses at the root",
+          arguments: schema,
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+        context,
+      ),
+    Error,
+  );
+  assertStringIncludes(
+    methodError.message,
+    "Method arguments validation failed: Invalid input",
+  );
+
+  const globalRedactor = new SecretRedactor();
+  const refusing: ModelDefinition = {
+    type: ModelType.create("test/global-refused-plain"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      run: {
+        description: "Never reached",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const globalError = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({ name: "refused-global", globalArguments: args }),
+        refusing,
+        "run",
+        createTestContext({
+          modelType: refusing.type,
+          redactor: globalRedactor,
+        }).context,
+      ),
+    Error,
+  );
+  assertStringIncludes(
+    globalError.message,
+    "Global arguments validation failed: Invalid input",
+  );
+
+  for (const redactor of [methodRedactor, globalRedactor]) {
+    // What the transform made of the value is the run's secret; the plain
+    // values beside it stay readable in every later step's logs and data.
+    assertEquals(redactor.redact("made HUNTER2-LONG"), "made ***");
+    assertEquals(
+      redactor.redact("deployed to prod in eu-west-1"),
+      "deployed to prod in eu-west-1",
+    );
   }
 });

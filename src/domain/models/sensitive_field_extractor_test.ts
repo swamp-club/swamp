@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   buildSensitiveArgRemediations,
+  extractRefusedSensitiveValues,
   extractSensitiveFields,
   extractSensitiveFieldValues,
   findLiteralSensitiveGlobalArgs,
@@ -29,8 +30,12 @@ import {
   holdsRuntimeExpression,
   literalSensitiveGlobalArgsMessage,
   maskLiteralSensitiveValues,
+  maskRefusedIssues,
+  objectKeysOf,
   redactAllValues,
   redactSensitiveValues,
+  schemaThrew,
+  schemaThrowMessage,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
 
@@ -1573,4 +1578,350 @@ Deno.test("holdsRuntimeExpression: true while an expression that reads a root, o
   assertEquals(holdsRuntimeExpression("${{ literal('hunter2') }}"), false);
   assertEquals(holdsRuntimeExpression("${{ 'hunter2' }}"), false);
   assertEquals(holdsRuntimeExpression(""), false);
+});
+
+Deno.test("objectKeysOf: every own key of every plain object at any depth, and nothing of scalars or arrays (swamp-club#3681)", () => {
+  assertEquals(
+    [...objectKeysOf({ a: 1, b: { c: [{ d: null }] } })].sort(),
+    ["a", "b", "c", "d"],
+  );
+  assertEquals([...objectKeysOf(["x", 1, null])], []);
+  assertEquals([...objectKeysOf("x")], []);
+  assertEquals([...objectKeysOf(undefined)], []);
+});
+
+Deno.test("extractRefusedSensitiveValues: the input of an issue at, under or above a sensitive position, as the failing check received it; every issue when the schema transforms values; a key the parse introduced; nothing when the schema marks nothing (swamp-club#3681)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  const plain = z.object({
+    token: secret,
+    count: z.number(),
+    creds: z.object({ key: secret }).optional(),
+  });
+  const input = {
+    token: "raw-token",
+    count: "not-a-number",
+    creds: "not-an-object",
+  };
+  assertEquals(
+    extractRefusedSensitiveValues(plain, input, [
+      { path: ["token"], input: "TRANSFORMED-TOKEN" },
+      { path: ["count"], input: "not-a-number" },
+      { path: ["creds"], input: "not-an-object" },
+      { path: ["creds", "key"], input: "nested-key-value" },
+      { path: [], input: { token: "whole-input" } },
+    ]).sort(),
+    ["TRANSFORMED-TOKEN", "nested-key-value", "not-an-object", "whole-input"],
+  );
+  const piped = z.object({ raw: z.string() }).transform((x) => ({
+    token: x.raw,
+  })).pipe(z.object({ token: secret }));
+  assertEquals(
+    extractRefusedSensitiveValues(piped, { raw: "r" }, [
+      { path: ["token"], input: "MADE" },
+      { path: ["other"], input: "ALSO" },
+    ]).sort(),
+    ["ALSO", "MADE"],
+  );
+  const keyed = z.object({ raw: z.string() }).transform((x) => ({
+    tokens: { [x.raw]: null } as Record<string, unknown>,
+  })).pipe(
+    z.object({
+      tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+    }),
+  );
+  assertEquals(
+    extractRefusedSensitiveValues(keyed, { raw: "r" }, [
+      { path: ["tokens"], input: { MADE: null, raw: null } },
+    ]),
+    ["MADE"],
+  );
+  assertEquals(
+    extractRefusedSensitiveValues(z.object({ count: z.number() }), {
+      count: "x",
+    }, [{ path: ["count"], input: "x" }]),
+    [],
+  );
+});
+
+Deno.test("maskRefusedIssues: an issue at, under or above a sensitive position is described in Zod's words from its fields, every issue when the schema transforms values or its own code encloses a sensitive position, a described issue is only 'Invalid input' when that code may set an issue's fields, a path segment neither spelled nor declared is masked in any issue, an issue beside a sensitive position keeps its message, only code, path and message survive, and a schema that marks nothing keeps every message (swamp-club#3681)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  const issue = (
+    path: PropertyKey[],
+    message: string,
+    fields: Record<string, unknown> = {},
+  ): z.ZodIssue =>
+    ({
+      code: "custom",
+      path,
+      message,
+      input: undefined,
+      ...fields,
+    }) as z.ZodIssue;
+  const plain = z.object({
+    token: secret,
+    count: z.number(),
+    creds: z.object({ key: secret }).optional(),
+    items: z.array(z.string()),
+  });
+  const input = {
+    token: "raw-token",
+    count: 0,
+    creds: { key: "k" },
+    items: ["a", "b"],
+  };
+  const masked = maskRefusedIssues(plain, input, [
+    issue(["token"], "derived RAW-TOKEN"),
+    issue(["token"], "secret too short: RAW", {
+      code: "too_small",
+      minimum: 8,
+      inclusive: true,
+      origin: "string",
+    }),
+    issue(["token", "RAW-TOKEN"], "bad credential"),
+    issue(["creds", "key"], "nested RAW"),
+    issue(["count"], "count must be positive", {
+      code: "too_small",
+      minimum: 1,
+      inclusive: true,
+      origin: "number",
+    }),
+    issue([], "exactly one of token or count"),
+    issue(["RAW-TOKEN"], "root path made"),
+    issue(["creds", 0, "key"], "indexed"),
+    issue(["items", 1], "second item"),
+    issue(["items", 7, Symbol("made")], "made index"),
+    issue(["creds"], "extra keys", {
+      code: "unrecognized_keys",
+      keys: ["count", "RAW-TOKEN"],
+    }),
+    issue(["creds"], "an instance", {
+      code: "invalid_type",
+      expected: "object",
+      input: new Map([["RAW", "TOKEN"]]),
+    }),
+  ]);
+  assertEquals(masked.map((found) => [found.path, found.message]), [
+    [["token"], "Invalid input"],
+    [["token"], "Too small: expected string to have >=8 characters"],
+    [["token", "***"], "Invalid input"],
+    [["creds", "key"], "Invalid input"],
+    [["count"], "count must be positive"],
+    [[], "Invalid input"],
+    [["***"], "root path made"],
+    [["creds", 0, "key"], "indexed"],
+    [["items", 1], "second item"],
+    [["items", "***", "***"], "made index"],
+    [["creds"], 'Unrecognized keys: "count", "***"'],
+    [["creds"], "Invalid input: expected object, received object"],
+  ]);
+  // What the failing check received, and whatever the schema's code set,
+  // travel no further.
+  for (const found of masked) {
+    assertEquals(Object.keys(found), ["code", "path", "message"]);
+  }
+
+  // A refinement on an enclosing node receives the value and may write it
+  // into any issue, at any path: every issue is described. Its fields stay
+  // Zod's own, so a built-in check beside the position keeps its wording.
+  const refined = z.object({ token: secret, count: z.number() }).refine(
+    () => false,
+    "exactly one of token or count",
+  );
+  assertEquals(
+    maskRefusedIssues(refined, { token: "raw-token", count: 0 }, [
+      issue([], "exactly one of token or count"),
+      issue(["count"], "count must be positive", {
+        code: "too_small",
+        minimum: 1,
+        inclusive: true,
+        origin: "number",
+      }),
+    ]).map((found) => [found.path, found.message]),
+    [
+      [[], "Invalid input"],
+      [["count"], "Too small: expected number to be >=1"],
+    ],
+  );
+  // A superRefine on an enclosing node may set an issue's fields too, so a
+  // described issue says nothing a field could spell.
+  const superRefined = z.object({ token: secret, count: z.number() })
+    .superRefine(() => {});
+  assertEquals(
+    maskRefusedIssues(superRefined, { token: "raw-token", count: 0 }, [
+      issue(["count"], "count must equal raw-token"),
+      issue(["count"], "forged bound", {
+        code: "too_small",
+        minimum: 1234,
+        inclusive: true,
+        origin: "number",
+      }),
+    ]).map((found) => [found.path, found.message]),
+    [[["count"], "Invalid input"], [["count"], "Invalid input"]],
+  );
+  // A schema marked at its root holds the value whole.
+  const whole = z.object({ a: z.string() }).meta({ sensitive: true });
+  assertEquals(
+    maskRefusedIssues(whole, { a: "x" }, [issue(["a"], "a is x")]).map((
+      found,
+    ) => [found.path, found.message]),
+    [[["a"], "Invalid input"]],
+  );
+
+  const piped = z.object({ raw: z.string() }).transform((x) => ({
+    token: x.raw,
+  })).pipe(z.object({ token: secret }));
+  assertEquals(
+    maskRefusedIssues(piped, { raw: "r" }, [
+      issue(["token"], "made MADE"),
+      issue([], "whole"),
+      issue(["other"], "x"),
+    ]).map((found) => [found.path, found.message]),
+    [
+      [["token"], "Invalid input"],
+      [[], "Invalid input"],
+      [["***"], "Invalid input"],
+    ],
+  );
+
+  assertEquals(
+    maskRefusedIssues(z.object({ count: z.number() }), { count: "x" }, [
+      issue(["count"], "kept RAW"),
+      issue([Symbol("made")], "symbol"),
+    ]),
+    [
+      { code: "custom", path: ["count"], message: "kept RAW" },
+      { code: "custom", path: ["***"], message: "symbol" },
+    ],
+  );
+});
+
+Deno.test("extractRefusedSensitiveValues: every issue counts when the schema's own code encloses a sensitive position, and a schema marked at its root holds every issue (swamp-club#3681)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  const refined = z.object({ token: secret, count: z.number() }).superRefine(
+    () => {},
+  );
+  assertEquals(
+    extractRefusedSensitiveValues(refined, { token: "raw", count: 0 }, [
+      { path: ["count"], input: { token: "raw-token", count: 0 } },
+    ]),
+    ["raw-token"],
+  );
+  const whole = z.object({ a: z.string() }).meta({ sensitive: true });
+  assertEquals(
+    extractRefusedSensitiveValues(whole, { a: "x" }, [
+      { path: ["a"], input: "x-value" },
+    ]),
+    ["x-value"],
+  );
+});
+
+Deno.test("extractRefusedSensitiveValues: text the input holds only at positions the schema leaves plain, and a key the schema declares, are left out of what a refusal registers, while a value a sensitive position holds is registered even where a plain position holds it too (swamp-club#3753)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  const refused = (schema: z.ZodTypeAny, input: Record<string, unknown>) => {
+    const result = schema.safeParse(input, { reportInput: true });
+    assertEquals(result.success, false);
+    return result.success
+      ? []
+      : extractRefusedSensitiveValues(schema, input, result.error.issues)
+        .sort();
+  };
+  // A refinement above the position receives the whole object.
+  assertEquals(
+    refused(
+      z.object({ token: secret, env: z.string(), region: z.string() }).refine(
+        (v) => v.env !== "prod" || v.region !== "eu-west-1",
+        "region not allowed in prod",
+      ),
+      { token: "hunter2-long", env: "prod", region: "eu-west-1" },
+    ),
+    ["hunter2-long"],
+  );
+  // A strict object's unrecognized key is refused at the root, with the
+  // whole object as its input.
+  assertEquals(
+    refused(z.strictObject({ token: secret, env: z.string() }), {
+      token: "hunter2-long",
+      env: "prod",
+      stray: "stray-value",
+    }),
+    ["hunter2-long"],
+  );
+  // Under a transform, what the transform made of the value is registered
+  // and the plain value it passed through is not.
+  assertEquals(
+    refused(
+      z.object({
+        token: secret.transform((text) => text.toUpperCase()),
+        env: z.string(),
+      }).refine(() => false, "refused"),
+      { token: "hunter2-long", env: "prod" },
+    ),
+    ["HUNTER2-LONG"],
+  );
+  // A field name the schema declares is not a secret, though a transform
+  // made the object that holds it.
+  assertEquals(
+    refused(
+      z.object({ raw: z.string() }).transform((x) => ({
+        token: x.raw.toUpperCase(),
+      })).pipe(z.object({ token: secret }).refine(() => false, "refused")),
+      { raw: "hunter2-long" },
+    ),
+    ["HUNTER2-LONG"],
+  );
+  // The same text at a sensitive and a plain position is sensitive.
+  assertEquals(
+    refused(
+      z.object({ password: secret, user: z.string() }).refine(
+        () => false,
+        "refused",
+      ),
+      { password: "admin-pass", user: "admin-pass" },
+    ),
+    ["admin-pass"],
+  );
+});
+
+Deno.test("schemaThrew: Zod's own error for an async check, which names no input, is returned as it is; any other throw from a schema marking a field sensitive is withheld, naming only a standard error (swamp-club#3753)", async () => {
+  const secret = z.string().meta({ sensitive: true });
+  const asyncChecked = z.object({
+    token: secret.refine(() => Promise.resolve(true)),
+  });
+  const thrown = (() => {
+    try {
+      asyncChecked.safeParse({ token: "hunter2-long" });
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  })();
+  assertEquals(thrown instanceof z.core.$ZodAsyncError, true);
+  assertEquals(schemaThrew(thrown, asyncChecked, "Method arguments"), thrown);
+  assertEquals(
+    (await asyncChecked.safeParseAsync({ token: "hunter2-long" })).success,
+    true,
+  );
+
+  const plain = z.object({ token: secret });
+  const named = new Error("hunter2-long");
+  named.name = "CredentialError:hunter2-long";
+  for (
+    const [error, name] of [
+      [new TypeError("hunter2-long"), "TypeError"],
+      [named, "an error"],
+      ["hunter2-long", "a string"],
+    ] as const
+  ) {
+    const message = schemaThrowMessage(error, plain, "Method arguments");
+    assertStringIncludes(
+      message,
+      `Method arguments validation failed: the schema threw ${name} while parsing them`,
+    );
+    assertEquals(message.includes("hunter2-long"), false);
+  }
+  const unmarked = new TypeError("plain message");
+  assertEquals(
+    schemaThrew(unmarked, z.object({ token: z.string() }), "Method arguments"),
+    unmarked,
+  );
 });

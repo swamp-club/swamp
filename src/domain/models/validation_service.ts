@@ -51,6 +51,8 @@ import { CalVer } from "./calver.ts";
 import {
   findLiteralSensitiveGlobalArgs,
   literalSensitiveGlobalArgsMessage,
+  maskRefusedIssues,
+  schemaThrowMessage,
 } from "./sensitive_field_extractor.ts";
 import {
   DefinitionUpgradeService,
@@ -290,21 +292,23 @@ export class ValidationResult {
   }
 }
 
+/** An issue as a Zod error or {@link maskRefusedIssues} reports it. */
+interface FormattedIssue {
+  readonly path: readonly PropertyKey[];
+  readonly message: string;
+}
+
 /**
  * Formats a Zod error into a human-readable string.
  */
-function formatZodError(error: { issues: readonly z.ZodIssue[] }): string {
-  if (error.issues.length === 1) {
-    const issue = error.issues[0];
-    const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
+function formatZodError(error: { issues: readonly FormattedIssue[] }): string {
+  const describe = (issue: FormattedIssue) => {
+    const path = issue.path.length > 0
+      ? ` at "${issue.path.map(String).join(".")}"`
+      : "";
     return `${issue.message}${path}`;
-  }
-  return error.issues
-    .map((issue) => {
-      const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
-      return `${issue.message}${path}`;
-    })
-    .join("; ");
+  };
+  return error.issues.map(describe).join("; ");
 }
 
 /**
@@ -1079,11 +1083,27 @@ export class DefaultModelValidationService implements ModelValidationService {
     // instances where not all globalArgs are needed (e.g. get/sync/delete
     // don't need creation-time fields). swamp model create has its own
     // strict validation in create.ts.
-    const result = parseGlobalArgumentsLeniently(globalArgsSchema, coerced);
+    // Described as a run's refusal is, so the schema's own code cannot
+    // spell a sensitive value here, and a schema that throws while parsing
+    // is reported as a run reports it (swamp-club#3681).
+    let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
+    try {
+      result = parseGlobalArgumentsLeniently(globalArgsSchema, coerced);
+    } catch (error) {
+      return Promise.resolve(ValidationResult.fail(
+        "Global arguments",
+        schemaThrowMessage(error, globalArgsSchema, "Global arguments"),
+      ));
+    }
     return Promise.resolve(
       result.success
         ? ValidationResult.pass("Global arguments")
-        : ValidationResult.fail("Global arguments", formatZodError(result)),
+        : ValidationResult.fail(
+          "Global arguments",
+          formatZodError({
+            issues: maskRefusedIssues(globalArgsSchema, coerced, result.issues),
+          }),
+        ),
     );
   }
 
@@ -1123,11 +1143,29 @@ export class DefaultModelValidationService implements ModelValidationService {
         }
       }
       const coercedArgs = coerceMethodArgs(staticArgs, methodArgsSchema);
-      const result = methodArgsSchema.safeParse(coercedArgs);
-      if (!result.success) {
+      // Described as a run's refusal is, so the schema's own code cannot
+      // spell a sensitive value here, and a schema that throws while parsing
+      // is reported as a run reports it (swamp-club#3681).
+      let result: ReturnType<typeof methodArgsSchema.safeParse>;
+      try {
+        result = methodArgsSchema.safeParse(coercedArgs, { reportInput: true });
+      } catch (error) {
         errors.push(
-          `Method "${methodName}": ${formatZodError(result.error)}`,
+          `Method "${methodName}": ${
+            schemaThrowMessage(error, methodArgsSchema, "Method arguments")
+          }`,
         );
+        continue;
+      }
+      if (!result.success) {
+        const described = formatZodError({
+          issues: maskRefusedIssues(
+            methodArgsSchema,
+            coercedArgs,
+            result.error.issues,
+          ),
+        });
+        errors.push(`Method "${methodName}": ${described}`);
       }
     }
 
