@@ -23,6 +23,7 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import {
   authorizeReferenceAccess,
   CanonicalResources,
+  canonicalResources,
   recordedRunModel,
   type ReferenceAccess,
   resolveModelTarget,
@@ -1496,6 +1497,13 @@ Deno.test("resolveRunAccess: a failing lookup opens no authorize span", async ()
   });
 });
 
+/** A connection context whose repository holds `workflowRepo`. */
+function repoCtx(workflowRepo: WorkflowRepository): ConnectionContext {
+  return {
+    repoContext: { definitionRepo: {} as DefinitionRepository, workflowRepo },
+  } as unknown as ConnectionContext;
+}
+
 /** An ExtensionWorkflowRepository that counts its full walks. */
 class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
   walks = 0;
@@ -1544,7 +1552,7 @@ Deno.test("CanonicalResources: one extension read serves every workflow in a req
     }
     const extension = new CountingExtensionWorkflowRepository(dir);
     const repo = new CompositeWorkflowRepository(workflowRepo([]), extension);
-    const canonical = new CanonicalResources({} as DefinitionRepository, repo);
+    const canonical = canonicalResources(repoCtx(repo));
 
     for (const workflow of workflows) {
       assertEquals(await canonical.workflowOwners(workflow.id, workflow.name), [
@@ -1571,7 +1579,7 @@ Deno.test("CanonicalResources: lookups started together share one extension read
     }
     const extension = new CountingExtensionWorkflowRepository(dir);
     const repo = new CompositeWorkflowRepository(workflowRepo([]), extension);
-    const canonical = new CanonicalResources({} as DefinitionRepository, repo);
+    const canonical = canonicalResources(repoCtx(repo));
 
     await Promise.all(
       workflows.map((w) => canonical.workflowOwners(w.id, w.name)),
@@ -1590,7 +1598,7 @@ Deno.test("CanonicalResources: workflows found in the repository's own workflows
       workflowRepo([primary]),
       extension,
     );
-    const canonical = new CanonicalResources({} as DefinitionRepository, repo);
+    const canonical = canonicalResources(repoCtx(repo));
 
     await canonical.workflowOwners(primary.id, "own");
 
@@ -1603,11 +1611,11 @@ Deno.test("CanonicalResources: the next request reads the extension workflows ag
     const extension = new CountingExtensionWorkflowRepository(dir);
     const repo = new CompositeWorkflowRepository(workflowRepo([]), extension);
     const late = Workflow.create({ name: "late", tags: { env: "prod" } });
-    const first = new CanonicalResources({} as DefinitionRepository, repo);
+    const first = canonicalResources(repoCtx(repo));
     await first.workflowOwners(late.id, "late");
 
     await writeExtensionWorkflow(dir, late);
-    const next = new CanonicalResources({} as DefinitionRepository, repo);
+    const next = canonicalResources(repoCtx(repo));
 
     assertEquals(await next.workflowOwners(late.id, "late"), [{
       kind: "workflow",
@@ -1638,7 +1646,7 @@ Deno.test("CanonicalResources.workflowOwners: resolves extension workflows as th
       workflowRepo([primaryShared]),
       new ExtensionWorkflowRepository(dir),
     );
-    const canonical = new CanonicalResources({} as DefinitionRepository, repo);
+    const canonical = canonicalResources(repoCtx(repo));
 
     // Shadowed by name, but still found by id.
     assertEquals(await canonical.workflowOwners(extensionShared.id, "shared"), [
@@ -1683,7 +1691,7 @@ Deno.test("CanonicalResources.workflowOwners: an extension read failure fails th
     workflowRepo([]),
     new FailingExtension("unused"),
   );
-  const canonical = new CanonicalResources({} as DefinitionRepository, repo);
+  const canonical = canonicalResources(repoCtx(repo));
 
   await assertRejects(
     () => canonical.workflowOwners(crypto.randomUUID(), "ext"),

@@ -237,7 +237,9 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
 
 /**
  * {@link ExtensionWorkflowRepository.memoizedView}: the source's `findAll`,
- * read at most once, searched the same way the source searches it.
+ * read at most once, searched the same way the source searches it. Every
+ * lookup returns the same `Workflow` instances, so callers must not mutate
+ * them.
  */
 class MemoizedExtensionWorkflows implements WorkflowRepository {
   #all: Promise<Workflow[]> | undefined;

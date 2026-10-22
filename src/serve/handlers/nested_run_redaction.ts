@@ -31,7 +31,7 @@ import type { OrphanedNestedRunError } from "../../domain/workflows/orphaned_nes
 import type { SwampError } from "../../libswamp/errors.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { SerializedEvent } from "../protocol.ts";
-import { canonicalResources } from "./resource_resolution.ts";
+import { CanonicalResources } from "./resource_resolution.ts";
 import { type ConnectionContext, resourceDecider } from "./shared.ts";
 
 /** A workflow a nested-run field names. */
@@ -54,7 +54,13 @@ export function nestedRunReadDecider(
   principal: Principal | null,
 ): (workflow: NamedWorkflow) => Promise<boolean> {
   if (ctx.authConfig.mode === "none") return () => Promise.resolve(true);
-  const canonical = canonicalResources(ctx);
+  // The live repository, not canonicalResources(ctx): a decider can last a
+  // whole run stream, and a per-request view would keep the extension
+  // workflows it first read for all of it (swamp-club#3779).
+  const canonical = new CanonicalResources(
+    ctx.repoContext.definitionRepo,
+    ctx.repoContext.workflowRepo,
+  );
   const allows = resourceDecider(socket, principal, "read", ctx);
   const decided = new Map<string, Promise<boolean>>();
   return (workflow) => {

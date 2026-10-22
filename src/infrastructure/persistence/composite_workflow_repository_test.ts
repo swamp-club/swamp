@@ -363,3 +363,27 @@ Deno.test("CompositeWorkflowRepository.memoizedView: is the composite itself whe
   assertStrictEquals(withoutExtension.memoizedView(), withoutExtension);
   assertStrictEquals(withPlainExtension.memoizedView(), withPlainExtension);
 });
+
+Deno.test("CompositeWorkflowRepository.memoizedView: the primary stays live", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-composite-view-test-" });
+  try {
+    const primary = new InMemoryWorkflowRepository();
+    const view = new CompositeWorkflowRepository(
+      primary,
+      new ExtensionWorkflowRepository(dir),
+    ).memoizedView();
+    assertEquals(await view.findByName("later"), null);
+
+    const later = createTestWorkflow("later");
+    await primary.save(later);
+
+    assertEquals((await view.findByName("later"))?.id, later.id);
+    assertEquals((await view.findById(later.id as WorkflowId))?.id, later.id);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
