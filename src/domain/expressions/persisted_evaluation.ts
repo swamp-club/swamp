@@ -956,6 +956,49 @@ export function persistEvaluatedDefinition(
 }
 
 /**
+ * The arguments of an evaluated definition as a run of `method` shows them
+ * (the completed event, the method-summary report): every sensitive
+ * position of `schemas` that holds data (`provenance`), a literal, or a
+ * container whose keys came from data is the mask, by the same walk the
+ * evaluated cache uses, so what the cache keeps off disk never reaches the
+ * terminal or a report either (swamp-club#3681). A pipeline's raw inputs
+ * count as its sensitive output, the global arguments it may consume
+ * included. A value made only of runtime expressions stays, since its text
+ * names where the secret lives. Only the global arguments and `method`'s
+ * arguments are read, as the run shows only those; `data` is not mutated.
+ */
+export function maskSensitiveArgumentsForDisplay(
+  schemas: ArgumentSchemas,
+  data: DefinitionData,
+  method: string,
+  provenance: ProvenanceMap = ProvenanceMap.authored(),
+): DefinitionData {
+  const masked = maskSensitiveArguments(
+    shownSchemas(schemas, method),
+    data,
+    [],
+    provenance,
+    (path) => provenance.hasDataAtOrBelow(provenancePath(path)),
+    provenance,
+  );
+  return masked.data;
+}
+
+/** The schemas a run of `method` shows: the global arguments and its own. */
+function shownSchemas(
+  schemas: ArgumentSchemas,
+  method: string,
+): ArgumentSchemas {
+  return {
+    globalArguments: schemas.globalArguments,
+    // Own properties only, as argumentSites reads them.
+    methods: Object.hasOwn(schemas.methods, method)
+      ? { [method]: schemas.methods[method] }
+      : {},
+  };
+}
+
+/**
  * Restores a cached evaluated definition for replay: the raw copy for CEL
  * contexts and reports, and the executed copy with data-origin sentinels
  * from the step's bag, exactly as a fresh evaluation would produce.
