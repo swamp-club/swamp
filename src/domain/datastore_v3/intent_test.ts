@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { ModelType } from "../models/model_type.ts";
 import {
+  changesDefinition,
   CONTROL_PLANE_INTENT_TYPES,
   createIntent,
   INTENT_KINDS,
@@ -231,4 +232,34 @@ Deno.test("createIntent: lowercases ids, so the authorised identity is the parti
     { kind: "auto-definition.save", autoDefinition: { id: ID } },
   );
   assertEquals(modelRef(ModelType.create("a/b"), ID.toUpperCase()).id, ID);
+});
+
+Deno.test("changesDefinition: only a definition's own create, edit, delete and renames change it", () => {
+  const definition = { kind: "workflow", name: "w1" };
+  const changing = INTENT_KINDS.filter((kind) => {
+    if (
+      !kind.startsWith("definition.") && !kind.startsWith("evaluated-workflow.")
+    ) {
+      return false;
+    }
+    const extra = kind === "definition.rename-to"
+      ? { from: "w0" }
+      : kind === "definition.rename-from"
+      ? { to: "w2" }
+      : {};
+    return changesDefinition(createIntent({ kind, definition, ...extra }));
+  });
+  assertEquals(changing, [
+    "definition.create",
+    "definition.edit",
+    "definition.delete",
+    "definition.rename-to",
+    "definition.rename-from",
+  ]);
+  assertEquals(
+    changesDefinition(
+      createIntent({ kind: "evaluated-workflow.save", definition }),
+    ),
+    false,
+  );
 });

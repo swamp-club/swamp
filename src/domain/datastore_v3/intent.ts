@@ -271,6 +271,24 @@ export const INTENT_KINDS: readonly IntentKind[] = Object.keys(
   SHAPES,
 ) as IntentKind[];
 
+/**
+ * The kinds that change a managed-config definition itself. The evaluated
+ * workflow a run stages shares the definition's partition but is not the
+ * definition (swamp-club#3760).
+ */
+const DEFINITION_CHANGE_KINDS: ReadonlySet<IntentKind> = new Set<IntentKind>([
+  "definition.create",
+  "definition.edit",
+  "definition.delete",
+  "definition.rename-to",
+  "definition.rename-from",
+]);
+
+/** Whether `intent` creates, edits, deletes or renames a definition. */
+export function changesDefinition(intent: Intent): boolean {
+  return DEFINITION_CHANGE_KINDS.has(intent.kind);
+}
+
 /** The longest name, id or type string an intent accepts. */
 const MAX_FIELD_LENGTH = 1024;
 

@@ -4858,10 +4858,27 @@ disappears from view (the default vault `repo init` writes among it).
 path under the config base, so a later save of it stages the same key.
 
 - **The commit log is the migration record.** v2's sentinel file has no v3
-  intent. A name is adopted only while its partition has no commit
-  (`CommitStore.head`, whose rows compaction never deletes). So a re-run
+  intent. A name is adopted only while no commit of its partition changes
+  its definition (`definition.create`, `.edit`, `.delete`, `.rename-to` or
+  `.rename-from`, `changesDefinition` in `intent.ts`). The evaluated workflow
+  a run stages into the workflow's partition (`evaluated-workflow.*`) is not
+  the definition, so a workflow that ran before the migration is still
+  adopted (swamp-club#3760; before that fix, any commit counted and such a
+  workflow was skipped as `name-committed`). Adoption reads the partition's
+  commits in seq order and stops at the first definition change. So a re-run
   adopts nothing, a name deleted from the tier after adoption is never
   brought back, and a name another checkout committed is never overwritten.
+  A partition whose history was compacted is never adopted: the compacted
+  base keeps only live records, so a deleted definition's tombstone may be
+  gone. When the commits left after the compaction, or a live record under
+  `config/` (read after a read-model catch-up), show a definition, the name
+  is `name-committed`; otherwise it is skipped as `history-compacted`, whose
+  warning says swamp cannot tell a deleted definition from one never
+  committed and names the way out (recreate it from the file with
+  `<kind> create` then `<kind> edit`, or restore it from git). A repo
+  migrated by an affected version recovers by running `datastore config
+  migrate` again, since v3 adoption never moves or deletes the repo-local
+  files, unless the partition was compacted first.
   A file with a config-tier copy at its path is skipped before it is parsed
   or the commit log read, whatever bytes an edit has since given that copy,
   so a repo adopted long ago pays one `lstat` per file.
@@ -4897,9 +4914,10 @@ path under the config base, so a later save of it stages the same key.
   Its JSON keeps the v2 shape (`copiedLockfile`, `copiedPulledExtensions`;
   `pushed` is false) and adds `committed` and `skipped`: files declaring no
   name, a name an earlier file of their kind declares, a path no record key
-  can name, a file or directory that could not be read, or a name the commit
-  log already holds with no tier copy at the file's path (another checkout's
-  definition of it, or one renamed or deleted since).
+  can name, a file or directory that could not be read, a name the commit
+  log already holds a definition of, with no tier copy at the file's path
+  (another checkout's definition of it, or one renamed or deleted since), or
+  a name whose compacted history shows no definition (`history-compacted`).
 - **managedConfig set by hand** in `.swamp.yaml` adopts on the first writing
   command: `requireInitializedRepo` and `requireInitializedRepoUnlocked` run
   adoption in a root of their own, with no flush (on v3 a root's flush

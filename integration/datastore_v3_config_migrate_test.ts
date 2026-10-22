@@ -82,15 +82,16 @@ async function workflowOf(repoDir: string, name: string): Promise<unknown> {
   return rest;
 }
 
-/** The managed-config warnings `fn` logs. */
+/** The managed-config warnings `fn` logs, or those of `category`. */
 async function managedConfigWarnings(
   fn: () => Promise<void>,
+  category: string[] = ["cli", "managed-config"],
 ): Promise<string[]> {
   const captured: LogRecord[] = [];
   await configure({
     sinks: { capture: (record: LogRecord) => captured.push(record) },
     loggers: [{
-      category: ["cli", "managed-config"],
+      category,
       lowestLevel: "warning",
       sinks: ["capture"],
     }],
@@ -379,6 +380,7 @@ Deno.test("v3 config migrate: a stale clone's create of a committed key is refus
       repoDir: repos.repoB,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
+      definitionCommitState: () => Promise.resolve("none"),
     });
     assertEquals(stale.adoptions.length, 4);
     const commits = await commitCount(repos);
@@ -784,5 +786,294 @@ Deno.test("v3 config migrate: a tier copy the commit log never held does not sto
     ) as Record<string, unknown>;
     assertEquals(migrated.committed, 4);
     await assertCheckoutsAgree(repos, datastorePath, "stray tier copy");
+  });
+});
+
+/** Runs a command whose output the test does not read. */
+async function run(repoDir: string, ...args: string[]): Promise<void> {
+  await withMockedEnv(
+    UNSET_ENV,
+    () => runCli({ args: [...args, ...json(repoDir)] }),
+  );
+}
+
+/**
+ * Gives the seeded `m1` a command and `w1` a step that runs it, then runs
+ * both: the workflow run stages its evaluated workflow into `w1`'s config
+ * partition, and the method run stages `m1`'s evaluated definition.
+ */
+async function runSeededConfig(repoDir: string): Promise<void> {
+  const modelPath = join(repoDir, "models", "command", "shell", "m1.yaml");
+  const model = parseYaml(await Deno.readTextFile(modelPath)) as Record<
+    string,
+    unknown
+  >;
+  await Deno.writeTextFile(
+    modelPath,
+    stringifyYaml({ ...model, globalArguments: { run: "echo hi" } }),
+  );
+  const workflowPath = join(repoDir, "workflows", "workflow-w1.yaml");
+  const workflow = parseYaml(await Deno.readTextFile(workflowPath)) as {
+    jobs: { steps: { task: Record<string, unknown> }[] }[];
+  };
+  workflow.jobs[0].steps[0].task = {
+    type: "model_method",
+    modelIdOrName: "m1",
+    methodName: "execute",
+  };
+  await Deno.writeTextFile(workflowPath, stringifyYaml(workflow));
+  await run(repoDir, "workflow", "run", "w1");
+  await run(repoDir, "model", "method", "run", "m1", "execute");
+}
+
+/** The v3 datastore of a row's checkout A. */
+function datastoreOf(repos: RowRepos) {
+  const config = repos.a.datastoreConfig;
+  if (isCustomDatastoreConfig(config)) throw new Error("v3 is filesystem");
+  return v3DatastoreFor(repos.repoA, config);
+}
+
+Deno.test("v3 config migrate: a workflow and a model that ran before it are committed, and the workflow runs after it (swamp-club#3760)", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+
+    const migrated = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(migrated.skipped, []);
+    assertEquals(migrated.committed, 4);
+    assertEquals(migrated.copiedWorkflows, true);
+    assertEquals(migrated.copiedModels, true);
+    assertEquals(migrated.copiedVaults, true);
+
+    const workflow = await workflowOf(repos.repoA, "w1") as { name: string };
+    assertEquals(workflow.name, "w1");
+    await run(repos.repoA, "workflow", "run", "w1");
+    await run(repos.repoA, "model", "method", "run", "m1", "execute");
+    assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
+  });
+});
+
+Deno.test("v3 config migrate: a re-run commits the workflows an affected version skipped (swamp-club#3760)", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+
+    // What an affected version committed: every name whose partition had
+    // no commit at all, so not the workflow that ran.
+    const a = await requireInitializedRepoUnlocked({
+      repoDir: repos.repoA,
+      outputMode: "json",
+    });
+    const configBase = a.datastoreResolver.resolvePath("config");
+    const store = datastoreOf(repos);
+    const hasCommits = async (partition: PartitionKey) =>
+      (await store.commitStore.head(store.namespace, partition)).seq > 0;
+    const affected = await planConfigAdoption({
+      repoDir: repos.repoA,
+      configBase,
+      partitionHasCommits: hasCommits,
+      definitionCommitState: async (partition) =>
+        await hasCommits(partition) ? "committed" : "none",
+    });
+    assertEquals(
+      affected.skipped.map((s) => [s.name, s.reason]),
+      [["w1", "name-committed"]],
+    );
+    await commitConfigAdoption(a.repoContext, configBase, affected);
+    await turnOnManagedConfigByHand(repos.repoA);
+    // Reads hide the repo-local copy and the tier has none.
+    const missing = await withMockedEnv(
+      UNSET_ENV,
+      () =>
+        runCliRejecting({
+          args: ["workflow", "get", "w1", ...json(repos.repoA)],
+        }),
+    );
+    assertInstanceOf(missing, Error);
+
+    const again = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(again.skipped, []);
+    const workflow = await workflowOf(repos.repoA, "w1") as { name: string };
+    assertEquals(workflow.name, "w1");
+    await run(repos.repoA, "workflow", "run", "w1");
+  });
+});
+
+Deno.test("v3 config migrate: a workflow deleted after it ran and was committed is not brought back", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+    await cli(repos.repoA, "datastore", "config", "migrate");
+    await run(repos.repoA, "workflow", "run", "w1");
+    await run(repos.repoA, "workflow", "delete", "w1", "--force");
+
+    const again = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(again.alreadyMigrated, true);
+    assertEquals(
+      (again.skipped as { name: string; reason: string }[]).map((
+        s,
+      ) => [s.name, s.reason]),
+      [["w1", "name-committed"]],
+    );
+    const missing = await withMockedEnv(
+      UNSET_ENV,
+      () =>
+        runCliRejecting({
+          args: ["workflow", "get", "w1", ...json(repos.repoA)],
+        }),
+    );
+    assertInstanceOf(missing, Error);
+  });
+});
+
+/** Compacts every commit checkout A's datastore holds. */
+async function compactAll(repos: RowRepos): Promise<void> {
+  const store = datastoreOf(repos).commitStore;
+  const changes = await store.changesSince(0, 10_000);
+  const fence = store.writerFence();
+  await store.compactHistory(changes[changes.length - 1].cursor, {
+    ...(fence !== undefined ? { fence } : {}),
+  });
+}
+
+Deno.test("v3 config migrate: a workflow whose compacted history shows no definition is skipped as history-compacted, with the way out", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+    await compactAll(repos);
+
+    const migrated = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    // Compaction keeps no tombstones, so a definition deleted before it
+    // cannot be told from one never committed: the name is left out.
+    assertEquals(
+      (migrated.skipped as { name: string; reason: string }[]).map((
+        s,
+      ) => [s.name, s.reason]),
+      [["w1", "history-compacted"]],
+    );
+    assertEquals(migrated.committed, 3);
+
+    const warnings = await managedConfigWarnings(async () => {
+      await withMockedEnv(
+        UNSET_ENV,
+        () =>
+          runCli({
+            args: ["datastore", "config", "migrate", "--repo-dir", repos.repoA],
+          }),
+      );
+    }, ["cli"]);
+    const skip = warnings.find((w) => w.includes("workflow-w1.yaml"));
+    assert(skip !== undefined, warnings.join("\n"));
+    assertStringIncludes(skip, "history for this name was compacted");
+    assertStringIncludes(
+      skip,
+      "'swamp workflow create', then 'swamp workflow edit'",
+    );
+    assertStringIncludes(skip, "restore it from git");
+  });
+});
+
+Deno.test("v3 config migrate: a compacted workflow whose definition is still live stays name-committed", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+    await cli(repos.repoA, "datastore", "config", "migrate");
+    await compactAll(repos);
+    // The repo-local file at a path the tier has no copy at, as another
+    // checkout's file name would be: only the definition in the compacted
+    // base shows that the name is committed.
+    await Deno.rename(
+      join(repos.repoA, "workflows", "workflow-w1.yaml"),
+      join(repos.repoA, "workflows", "renamed-w1.yaml"),
+    );
+
+    const again = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(
+      (again.skipped as { name: string; reason: string }[]).map((
+        s,
+      ) => [s.name, s.reason]),
+      [["w1", "name-committed"]],
+    );
+  });
+});
+
+Deno.test("v3 managedConfig by hand: the first writing command adopts a workflow that ran before it (swamp-club#3760)", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+    await turnOnManagedConfigByHand(repos.repoA);
+
+    await cli(repos.repoA, "model", "create", "command/shell", "m2");
+    const workflow = await workflowOf(repos.repoA, "w1") as { name: string };
+    assertEquals(workflow.name, "w1");
+    await run(repos.repoA, "workflow", "run", "w1");
+  });
+});
+
+Deno.test("v3 config migrate: a workflow renamed after it ran and was committed is not brought back under its old name", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await runSeededConfig(repos.repoA);
+    await cli(repos.repoA, "datastore", "config", "migrate");
+    const { path: _path, ...current } = await cli(
+      repos.repoA,
+      "workflow",
+      "get",
+      "w1",
+    ) as Record<string, unknown>;
+    await edit(repos.repoA, ["workflow", "edit", "w1", "--allow-rename"], {
+      ...current,
+      name: "w1b",
+    });
+    await run(repos.repoA, "workflow", "run", "w1b");
+
+    const again = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(again.alreadyMigrated, true);
+    assertEquals(
+      (again.skipped as { name: string; reason: string }[]).map((
+        s,
+      ) => [s.name, s.reason]),
+      [["w1", "name-committed"]],
+    );
+    const renamed = await workflowOf(repos.repoA, "w1b") as { name: string };
+    assertEquals(renamed.name, "w1b");
+    const missing = await withMockedEnv(
+      UNSET_ENV,
+      () =>
+        runCliRejecting({
+          args: ["workflow", "get", "w1", ...json(repos.repoA)],
+        }),
+    );
+    assertInstanceOf(missing, Error);
   });
 });
