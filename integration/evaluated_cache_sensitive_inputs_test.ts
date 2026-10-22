@@ -54,13 +54,19 @@ import {
   keyPath,
   ProvenanceMap,
 } from "../src/domain/expressions/provenance_map.ts";
+import { deferredExpressionReference } from "../src/domain/expressions/deferred_expression.ts";
 import { YamlEvaluatedDefinitionRepository } from "../src/infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { WorkflowExecutionService } from "../src/domain/workflows/execution_service.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createModelMethodRunDeps } from "../src/serve/deps.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -323,7 +329,14 @@ Deno.test("evaluated cache: sensitive input keys do not survive in values, prove
       );
       const persisted = persistEvaluatedDefinition(
         executed,
-        [],
+        [{
+          id: crypto.randomUUID(),
+          expression: "${{ env.NOTE }}",
+          bindings: { inputs: { creds: { [INPUT_VALUE]: true } } },
+          provenance: ProvenanceMap.authored().withWholeData(
+            keyPath("inputs.creds", INPUT_VALUE),
+          ).toData(),
+        }],
         executed,
         new RunSensitiveValues(),
         schemas,
@@ -368,7 +381,280 @@ Deno.test("evaluated cache: sensitive input keys do not survive in values, prove
 });
 
 for (
+  const target of [
+    "global",
+    "method",
+    "accepted-alias",
+    "direct",
+    "mixed",
+    "literal-expression",
+    "fallback",
+    "nested",
+    "nested-direct",
+    "nested-expression",
+  ] as const
+) {
+  Deno.test(`evaluated cache: workflow ${target} arguments consume mapped step inputs without persisting forwarded copies (swamp-club#3681)`, async () => {
+    const direct = target === "direct" || target === "nested-direct";
+    const deferredNote = target === "nested" || target === "nested-direct";
+    const verify = async (dir: string) => {
+      const inputValue = target === "literal-expression"
+        ? "INPUT-CANARY${{ env.SUFFIX }}"
+        : INPUT_VALUE;
+      const type = ModelType.create(
+        `@test/step-input-${crypto.randomUUID()}`,
+      );
+      const received: { globalArgs: unknown; args: unknown }[] = [];
+      modelRegistry.register({
+        type,
+        version: "2026.01.01.1",
+        globalArguments: z.object({
+          apiKey: z.string().meta({ sensitive: true }).optional(),
+          region: z.string(),
+          token: z.string().optional(),
+        }),
+        methods: {
+          execute: {
+            description: "Records arguments received by the method",
+            arguments: z.object({
+              token: z.string().meta({ sensitive: true }).optional(),
+              note: z.string(),
+              ...(target === "accepted-alias" ? { tok: z.string() } : {}),
+            }),
+            execute: (args, context) => {
+              received.push({ globalArgs: context.globalArgs, args });
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+      const catalog = new CatalogStore(join(dir, "_catalog.db"));
+      try {
+        const inputKey = target === "global" ? "key" : direct ? "token" : "tok";
+        const expression = `\${{ inputs.${inputKey} }}${
+          target === "mixed" ? "${{ env.SUFFIX }}" : ""
+        }`;
+        const definition = Definition.create({
+          name: `svc-${target}`,
+          type: type.normalized,
+          inputs: target === "accepted-alias" ? undefined : {
+            properties: { [inputKey]: { type: "string" } },
+            required: [inputKey],
+          },
+          globalArguments: {
+            region: "eu-west-1",
+            ...(target === "global" ? { apiKey: expression } : {}),
+            ...(target === "fallback" ? { token: expression } : {}),
+          },
+          methods: {
+            execute: {
+              arguments: {
+                note: "source-note",
+                ...(target === "global" || target === "fallback"
+                  ? {}
+                  : { token: expression }),
+              },
+            },
+          },
+        });
+        await new YamlDefinitionRepository(dir).save(type, definition);
+        const workflow = Workflow.create({
+          name: `wf-${target}`,
+          inputs: {
+            properties: {
+              secret: { type: "string" },
+              suffix: { type: "string" },
+            },
+            required: ["secret"],
+          },
+          jobs: [Job.create({
+            name: "main",
+            steps: [Step.create({
+              name: "call",
+              task: StepTask.model(definition.name, "execute", {
+                [inputKey]: "${{ inputs.secret }}",
+                undeclared: "${{ inputs.secret }}",
+                note: deferredNote ? "${{ inputs.suffix }}" : "step-note",
+              }),
+            })],
+          })],
+        });
+        const workflowRepo = new YamlWorkflowRepository(dir);
+        await workflowRepo.save(workflow);
+        let entrypoint = workflow.name;
+        if (target.startsWith("nested")) {
+          const parent = Workflow.create({
+            name: `parent-${target}`,
+            inputs: {
+              properties: { secret: { type: "string" } },
+              required: ["secret"],
+            },
+            jobs: [
+              Job.create({
+                name: "parent",
+                steps: [
+                  Step.create({
+                    name: "child",
+                    task: StepTask.workflow(workflow.name, {
+                      secret: target === "nested-expression"
+                        ? "${{ env.SUFFIX + inputs.secret }}"
+                        : "${{ inputs.secret }}",
+                      suffix: "${{ env.SUFFIX }}",
+                    }),
+                  }),
+                ],
+              }),
+            ],
+          });
+          await workflowRepo.save(parent);
+          entrypoint = parent.name;
+        }
+        const runRepo = new YamlWorkflowRunRepository(dir);
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          runRepo,
+          dir,
+          undefined,
+          undefined,
+          catalog,
+        );
+        const run = await service.execute(entrypoint, {
+          inputs: { secret: inputValue },
+        });
+        assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+        const expected = {
+          globalArgs: {
+            region: "eu-west-1",
+            ...(target === "global" ? { apiKey: inputValue } : {}),
+            ...(target === "fallback" ? { token: inputValue } : {}),
+          },
+          args: {
+            note: deferredNote ? "-suffix" : "step-note",
+            ...(target === "accepted-alias" ? { tok: inputValue } : {}),
+            ...(target === "global" ? {} : {
+              token: (target === "nested-expression" ? "-suffix" : "") +
+                inputValue + (target === "mixed" ? "-suffix" : ""),
+            }),
+          },
+        };
+        assertEquals(received, [expected]);
+        const evaluatedRepo = new YamlEvaluatedDefinitionRepository(dir);
+        const cache = await evaluatedRepo.findByNameWithProvenance(
+          type,
+          definition.name,
+        );
+        assertExists(cache);
+        assertEquals(
+          await filesHolding(
+            join(dir, ".swamp", "definitions-evaluated"),
+            inputValue,
+          ),
+          [],
+        );
+        assertEquals(cache.definition.getMethodArguments("execute"), {
+          ...(target === "accepted-alias" ? { tok: "***" } : {}),
+          note: deferredNote
+            ? deferredExpressionReference(cache.deferredExpressions[0].id)
+            : "step-note",
+          ...(target === "global" || target === "fallback"
+            ? {}
+            : { token: "***" }),
+        });
+        const maskedPath = target === "global"
+          ? ["globalArguments", "apiKey"]
+          : target === "fallback"
+          ? ["globalArguments", "token"]
+          : ["methods", "execute", "arguments", "token"];
+        assertEquals(cache.maskedPaths[0], maskedPath);
+        if (target.startsWith("nested")) {
+          assertEquals(cache.deferredExpressions.length > 0, true);
+          for (const record of cache.deferredExpressions) {
+            assertEquals(
+              Object.keys(record.bindings).filter((key) =>
+                key !== "workflowRunId"
+              ),
+              [],
+            );
+          }
+          assertEquals(
+            cache.maskedPaths.some((path) => path[0] === "deferredExpressions"),
+            target === "nested-expression",
+          );
+        } else {
+          assertEquals(
+            cache.maskedPaths,
+            target === "accepted-alias"
+              ? [maskedPath, ["methods", "execute", "arguments", "tok"]]
+              : [maskedPath],
+          );
+        }
+
+        const replay = await service.execute(workflow.name, {
+          lastEvaluated: true,
+        });
+        // --last-evaluated replays the workflow's pinned inputs, then
+        // evaluates its definition again; it does not read the masked cache.
+        assertEquals(
+          replay.status,
+          "succeeded",
+          JSON.stringify(replay.toData()),
+        );
+        assertEquals(received, [expected, expected]);
+        assertEquals(
+          await filesHolding(
+            join(dir, ".swamp", "definitions-evaluated"),
+            inputValue,
+          ),
+          [],
+        );
+      } finally {
+        catalog.close();
+        modelRegistry.invalidateType(type);
+      }
+    };
+    await withMockedEnv({ SUFFIX: "-suffix" }, () => withTempDir(verify));
+  });
+}
+
+for (
   const [name, schema] of [
+    [
+      "union",
+      z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("one"), target: z.string() }),
+        z.object({ kind: z.literal("two"), other: z.string() }),
+      ]),
+    ],
+    ["catchall", z.object({ kind: z.literal("one") }).catchall(z.string())],
+    [
+      "intersection",
+      z.intersection(
+        z.object({ kind: z.literal("one") }),
+        z.object({ target: z.string() }),
+      ),
+    ],
+    [
+      "declared-input",
+      z.object({ kind: z.literal("one"), target: z.string() }),
+    ],
+    ["custom", z.custom<Record<string, unknown>>()],
+    [
+      "transformed-global",
+      z.object({ target: z.string().meta({ sensitive: true }).optional() }),
+    ],
+    [
+      "masked-discriminator",
+      z.discriminatedUnion("kind", [
+        z.object({
+          kind: z.literal("one").meta({ sensitive: true }),
+          target: z.string(),
+        }),
+        z.object({
+          kind: z.literal("two"),
+          target: z.string().meta({ sensitive: true }),
+        }),
+      ]),
+    ],
     [
       "sensitive-preprocess",
       z.preprocess((value) => {
@@ -397,7 +683,8 @@ for (
     // A step input the workflow spells is the author's own text, so a
     // preprocessor that reads its keys caches and replays them
     // (swamp-club#3681); only data at such a position is masked.
-    const opaque = name === "sensitive-preprocess";
+    const opaque = name === "sensitive-preprocess" ||
+      name === "transformed-global";
     await withTempDir(async (dir) => {
       const repo = createRepositoryContext({ repoDir: dir });
       const type = ModelType.create(
@@ -407,6 +694,13 @@ for (
       modelRegistry.register({
         type,
         version: "2026.01.01.1",
+        ...(name === "transformed-global"
+          ? {
+            globalArguments: z.object({ alias: z.string() }).transform((
+              { alias },
+            ) => ({ target: alias })),
+          }
+          : {}),
         methods: {
           execute: {
             description: "Captures arguments",
@@ -422,14 +716,24 @@ for (
         const definition = Definition.create({
           name: "consumer",
           type: type.normalized,
+          ...(name === "transformed-global"
+            ? { globalArguments: { alias: "${{ inputs.value }}" } }
+            : {}),
+          ...(name === "declared-input"
+            ? {
+              inputs: { properties: { target: { type: "string" as const } } },
+            }
+            : {}),
           methods: {
             execute: {
               // Both sensitive preprocessors read only what the step
-              // supplies (its `alias`, or its first key), so their
-              // definitions spell no arguments of their own.
-              arguments: opaque || name === "preprocess-keys"
-                ? {}
-                : { kind: "one", target: "old" },
+              // supplies (its `alias`, or its first key), and the
+              // transformed global feeds the method from the globals, so
+              // their definitions spell no arguments of their own.
+              arguments: opaque || name === "preprocess-keys" ? {} : {
+                kind: "one",
+                ...(name === "catchall" ? {} : { target: "old" }),
+              },
             },
           },
         });
@@ -445,11 +749,16 @@ for (
                   task: StepTask.model(
                     definition.name,
                     "execute",
-                    {
-                      [name === "preprocess-keys" ? INPUT_VALUE : "alias"]:
+                    name === "transformed-global" ? {} : {
+                      [
                         name === "preprocess-keys"
-                          ? null
-                          : "${{ inputs.value }}",
+                          ? INPUT_VALUE
+                          : name.endsWith("preprocess")
+                          ? "alias"
+                          : "target"
+                      ]: name === "preprocess-keys"
+                        ? null
+                        : "${{ inputs.value }}",
                     },
                   ),
                 }),
@@ -481,7 +790,9 @@ for (
             lastEvaluated: true,
           }),
         );
-        if (opaque) {
+        if (
+          opaque || name === "masked-discriminator"
+        ) {
           assertEquals(
             events.filter((event) => event.kind === "error").map((event) =>
               event.error.code
@@ -495,7 +806,9 @@ for (
             ),
             [],
           );
-          const expected = { target: INPUT_VALUE };
+          const expected = name === "masked-discriminator"
+            ? { kind: "one", target: "new" }
+            : { target: INPUT_VALUE };
           assertEquals(received, [expected]);
           const replay = await service.execute(workflow.name, {
             lastEvaluated: true,

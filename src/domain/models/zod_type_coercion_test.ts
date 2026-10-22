@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import {
+  acceptsMethodArgumentKey,
   coerceMethodArgs,
   getObjectShape,
   isRecordSchema,
@@ -46,6 +47,48 @@ Deno.test("schemaTransformsValues: finds nested and wrapped transforms without e
     assertEquals(schemaTransformsValues(schema), true);
   }
   assertEquals(schemaTransformsValues(z.object({ alias: z.string() })), false);
+});
+
+Deno.test("acceptsMethodArgumentKey: retains composite and catchall keys without running transforms", () => {
+  const left = z.object({ target: z.string() });
+  const right = z.object({ count: z.number() });
+  for (
+    const schema of [
+      left,
+      z.union([left, right]),
+      z.union([left, left]),
+      z.intersection(left, right),
+      z.discriminatedUnion("kind", [
+        left.extend({ kind: z.literal("left") }),
+        right.extend({ kind: z.literal("right") }),
+      ]),
+      left.optional().readonly(),
+      z.lazy(() => left),
+      left.transform(() => {
+        throw new Error("must not execute");
+      }),
+    ]
+  ) {
+    assertEquals(acceptsMethodArgumentKey(schema, "target"), true);
+    assertEquals(acceptsMethodArgumentKey(schema, "undeclared"), false);
+  }
+  for (
+    const schema of [
+      z.object({}).catchall(z.string()),
+      z.object({}).passthrough(),
+      z.record(z.string(), z.string()),
+      z.unknown(),
+      z.custom<Record<string, unknown>>(() => {
+        throw new Error("must not execute");
+      }),
+      z.preprocess(() => {
+        throw new Error("must not execute");
+      }, left),
+    ]
+  ) {
+    assertEquals(acceptsMethodArgumentKey(schema, "target"), true);
+  }
+  assertEquals(acceptsMethodArgumentKey(z.strictObject({}), "target"), false);
 });
 
 Deno.test("coerces string 'true' to boolean true", () => {

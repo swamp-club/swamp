@@ -2402,10 +2402,21 @@ Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument 
       deploy: { arguments: { password: "***" } },
     },
   });
-  const replay = async (inputs: Record<string, unknown> = {}) => {
+  const replay = async (
+    inputs: Record<string, unknown> = {},
+    declaredInput = false,
+  ) => {
+    const definition = createTestDefinition("test-model", "run");
+    if (declaredInput) {
+      definition.setInputs({
+        properties: { secret: { type: "string" } },
+        required: ["secret"],
+      });
+      definition.setMethodArgument("run", "secret", "${{ inputs.secret }}");
+    }
     const deps: ModelMethodRunDeps = {
       ...createTestDeps(
-        createTestDefinition("test-model", "run"),
+        definition,
         createSensitiveModelDef(),
       ),
       loadEvaluatedDefinition: () =>
@@ -2453,6 +2464,22 @@ Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument 
     ),
     false,
   );
+
+  // A declared input with the argument's name feeds evaluation, which replay
+  // skips. It is not a method-argument override and cannot replace the mask.
+  const collision = (await replay({ secret: "OVERRIDE-CANARY" }, true)).at(-1);
+  assertEquals(collision?.kind, "error");
+  if (collision?.kind === "error") {
+    assertEquals(
+      collision.error.code,
+      "evaluated_cache_holds_sensitive_arguments",
+    );
+    assertStringIncludes(
+      collision.error.message,
+      "only if its name is not a declared definition input",
+    );
+    assertEquals(collision.error.message.includes("OVERRIDE-CANARY"), false);
+  }
 });
 
 Deno.test("modelMethodRun: an operator-typed input is data in the evaluation's inputs provenance except the expression it holds, a schema default is authored, and under literalInputs every value is data whole (swamp-club#3681)", async () => {

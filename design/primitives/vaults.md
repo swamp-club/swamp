@@ -959,10 +959,20 @@ plaintext, and neither replays; the error code is
 Workflow `--last-evaluated` replays the workflow cache and its pinned inputs,
 then evaluates each step's definition again; it does not replay the evaluated
 definition cache (swamp-club#3583). Its definition writes still mask sensitive
-arguments. The behavior replay check covers the global arguments and the
-replayed method's arguments; one that an `--input` override replaces after
-replay is not counted. A plain re-run writes the mask again, so the message
-points at what makes the run replayable: a vault reference. Authored text joined
+arguments and forwarded aliases. The behavior replay check covers the global
+arguments and the replayed method's arguments; one that an `--input` override
+replaces after replay is not counted. An `--input` whose name is a declared
+definition input does not replace the cached argument. The evaluated definition
+caches forwarded step inputs only when the method schema accepts them. If an
+argument is masked, forwarded copies of definition inputs are masked too,
+including inputs read without a declaration and computed input reads; other
+unknown keys are omitted. An input feeding a sensitive argument is therefore
+not saved beside it under an unmarked name. While no argument is masked, the
+accepted step inputs, including names shared with definition inputs and inputs
+to preprocessors, keep their executed values in the cache. A plain re-run writes
+the mask again, so the message points at what makes the run replayable: a vault
+reference. Method sensitivity also covers global values used as fallback method
+arguments; the mask records their actual global position. Authored text joined
 to a reference or a pending runtime expression stays as written. Resolved input
 or data text beside it masks the entire sensitive leaf, unless every resolved
 segment is a recorded vault reference, and expression-shaped input data is
@@ -986,17 +996,31 @@ does not record every data key on its own, so an authored object holding a
 data-origin vault reference, or a fixed object shape supplied whole from data,
 is masked as well, and such a run is not replayed. `persistedProvenance` records
 data ranges in the saved text, alongside the raw replay provenance, so a written
-vault reference cannot exempt adjacent input text. Inputs to preprocessors or
-pipelines with sensitive output fields, and the global arguments a schema with a
-transform may consume, are only potentially sensitive, and no transform runs
+vault reference cannot exempt adjacent input text. A deferred expression keeps
+only the captured roots it reads. When an argument is masked, captured scopes
+are omitted from the definition cache and recorded as masked too; behavior
+replay refuses that incomplete scope. Runtime-only deferred expressions retain
+their workflow metadata and can still replay when an override replaces the
+sensitive argument. Sensitive deferred arguments that capture non-vault values,
+in their leaves or their keys, are masked before those values reach disk. Inputs
+to preprocessors or pipelines with sensitive output fields, and the global
+arguments a schema with a transform may consume, are only potentially sensitive,
+and no transform runs
 during persistence to tell. Only data is masked at such a position, at the
 leaf: an authored literal is already the definition's own text on disk, and a
 vault reference names where the secret lives, so both stay, and a vault-only
 definition replays whatever transforms its type's schemas hold, in the replayed
 method, another method or a non-sensitive global (swamp-club#3681). Such a
 container is omitted whole only when its own keys came from data; run the
-behavior again without `--last-evaluated` in that case. Ordinary masked method
-fields can still be replaced by fresh step inputs.
+behavior again without `--last-evaluated` in that case. An omitted argument
+record is written as an empty record, never as the mask, and recorded at its
+root without the key names. When an argument record is omitted, or an
+expression reads the inputs whole or with a computed key, the argument record
+the forwarded step inputs sit in is omitted the same way, since any of their
+names may feed the sensitive output. Ordinary masked method fields can still be
+replaced by fresh step inputs. Masking repeats until the repository guard agrees
+with the masked snapshot, including when a masked discriminator changes which
+union members are checked.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 A parse the schema refuses registers what each issue at a sensitive position

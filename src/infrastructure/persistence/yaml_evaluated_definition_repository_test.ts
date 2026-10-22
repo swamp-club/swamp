@@ -419,6 +419,50 @@ Deno.test("YamlEvaluatedDefinitionRepository: persistedProvenance is written bes
   });
 });
 
+Deno.test("YamlEvaluatedDefinitionRepository: rejects unsupported mask paths before save or replay", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({ name: "mask-paths" });
+    await repo.save(testType, definition, undefined);
+    const path = repo.getPath(testType, definition.id);
+    for (
+      const maskedPath of [
+        ["__proto__", "toString"],
+        ["constructor", "prototype", "toString"],
+        ["globalArguments", 0],
+        ["methods", "run", "name"],
+        ["deferredExpressions", "0", "bindings"],
+        ["deferredExpressions", 0, "expression"],
+      ]
+    ) {
+      await assertRejects(() =>
+        repo.save(
+          testType,
+          definition,
+          undefined,
+          undefined,
+          [],
+          [],
+          [maskedPath],
+        )
+      );
+      await Deno.writeTextFile(
+        path,
+        toCleanYaml({
+          ...definition.toData(),
+          maskedPaths: [maskedPath],
+        }),
+      );
+      await assertRejects(() =>
+        new YamlEvaluatedDefinitionRepository(dir).findByNameWithProvenance(
+          testType,
+          definition.name,
+        )
+      );
+    }
+  });
+});
+
 Deno.test("YamlEvaluatedDefinitionRepository: records the source typeVersion verbatim", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlEvaluatedDefinitionRepository(dir);

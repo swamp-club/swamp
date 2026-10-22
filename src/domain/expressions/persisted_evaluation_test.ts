@@ -27,6 +27,7 @@ import {
 } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { keyPath, ProvenanceMap } from "./provenance_map.ts";
+import { deferredExpressionReference } from "./deferred_expression.ts";
 import {
   type ArgumentSchemas,
   evaluatedCacheHoldsSensitiveArgumentsMessage,
@@ -50,6 +51,192 @@ function recorded(): RunSensitiveValues {
   values.addSecret(SECRET, SOURCE);
   return values;
 }
+
+Deno.test("persistEvaluatedDefinition: an empty deferred scope does not prevent replacement of a masked argument", () => {
+  const schemas = {
+    methods: {
+      run: {
+        arguments: z.object({
+          token: z.string().meta({ sensitive: true }),
+          note: z.string(),
+        }),
+      },
+    },
+  };
+  for (const bindings of [{}, { workflowRunId: crypto.randomUUID() }]) {
+    const id = crypto.randomUUID();
+    const definition = Definition.create({
+      name: "safe-deferred",
+      methods: {
+        run: {
+          arguments: { token: SECRET, note: deferredExpressionReference(id) },
+        },
+      },
+    });
+    const persisted = persistEvaluatedDefinition(
+      definition,
+      [{ id, expression: "${{ env.NOTE }}", bindings }],
+      definition,
+      new RunSensitiveValues(),
+      schemas,
+    );
+    assertEquals(persisted.deferredExpressions[0].bindings, bindings);
+    assertEquals(persisted.maskedPaths, [[
+      "methods",
+      "run",
+      "arguments",
+      "token",
+    ]]);
+    assertEquals(
+      findPlaintextSensitiveArguments(
+        schemas,
+        persisted.definition.toData(),
+        [],
+        {
+          recordedMasks: persisted.maskedPaths,
+          method: { name: "run", replaced: ["token"] },
+        },
+      ),
+      [],
+    );
+  }
+});
+
+Deno.test("persistEvaluatedDefinition: recorded masks never read inherited argument properties", () => {
+  const definition = Definition.create({
+    name: "own-arguments",
+    globalArguments: {},
+  });
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    definition,
+    new RunSensitiveValues(),
+    NO_SCHEMAS,
+    ProvenanceMap.authored(),
+    [],
+    [["globalArguments", "toString"]],
+  );
+  assertEquals(persisted.maskedPaths, []);
+  assertEquals(
+    Object.hasOwn(persisted.definition.globalArguments, "toString"),
+    false,
+  );
+});
+
+Deno.test("persistEvaluatedDefinition: captured input object keys are sensitive even with null leaves", () => {
+  const id = crypto.randomUUID();
+  const definition = Definition.create({
+    name: "deferred-keys",
+    globalArguments: { token: deferredExpressionReference(id) },
+  });
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [{
+      id,
+      expression: "${{ inputs.creds.keys()[0] + env.SUFFIX }}",
+      bindings: { inputs: { creds: { [SECRET]: null } } },
+      provenance: ProvenanceMap.authored().withWholeData("inputs.creds")
+        .toData(),
+    }],
+    definition,
+    new RunSensitiveValues(),
+    {
+      globalArguments: z.object({
+        token: z.string().meta({ sensitive: true }),
+      }),
+      methods: {},
+    },
+  );
+  assertEquals(persisted.definition.globalArguments.token, "***");
+  assertEquals(persisted.deferredExpressions[0].bindings, {});
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.deferredExpressions,
+      persisted.persistedProvenance.toData(),
+      persisted.maskedPaths,
+    ]).includes(SECRET),
+    false,
+  );
+});
+
+Deno.test("persistEvaluatedDefinition: input arrays preserve vault references but mask data object keys", () => {
+  const values = recorded();
+  const sentinel = new VaultSecretBag(values.sentinels).addDataSecret(
+    SECRET,
+    SOURCE,
+  );
+  const schemas = {
+    globalArguments: z.object({
+      tokens: z.array(z.unknown()).meta({ sensitive: true }),
+    }),
+    methods: {},
+  };
+  for (const tokens of [[sentinel], [{ [INPUT_VALUE]: null }]]) {
+    const definition = Definition.create({
+      name: "input-array",
+      globalArguments: { tokens },
+    });
+    const persisted = persistEvaluatedDefinition(
+      definition,
+      [],
+      definition,
+      values,
+      schemas,
+      ProvenanceMap.authored().withWholeData("globalArguments.tokens"),
+    );
+    assertEquals(
+      persisted.definition.globalArguments.tokens,
+      typeof tokens[0] === "string" ? [REF] : "***",
+    );
+    assertEquals(
+      persisted.maskedPaths,
+      typeof tokens[0] === "string" ? [] : [["globalArguments", "tokens"]],
+    );
+  }
+});
+
+Deno.test("persistEvaluatedDefinition: a sensitive whole-input map removes forwarded key names too", () => {
+  const source = Definition.create({
+    name: "input-map",
+    globalArguments: { creds: "${{ inputs }}" },
+  });
+  const executed = Definition.create({
+    name: "input-map",
+    globalArguments: { creds: { [SECRET]: null } },
+    methods: { run: { arguments: { [SECRET]: null } } },
+  });
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    source,
+    new RunSensitiveValues(),
+    {
+      globalArguments: z.object({
+        creds: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+      }),
+      methods: { run: { arguments: z.record(z.string(), z.unknown()) } },
+    },
+    ProvenanceMap.authored().withWholeData("globalArguments.creds"),
+    [["methods", "run", "arguments", SECRET]],
+  );
+  assertEquals(persisted.definition.globalArguments, { creds: "***" });
+  assertEquals(persisted.definition.getMethodArguments("run"), {});
+  assertEquals(persisted.maskedPaths, [["globalArguments", "creds"], [
+    "methods",
+    "run",
+    "arguments",
+  ]]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.persistedProvenance.toData(),
+    ]).includes(SECRET),
+    false,
+  );
+});
 
 Deno.test("persistEvaluatedDefinition: a raw input of a preprocessor into a sensitive output is masked where it holds data, without running the transform; an authored literal there is the type's own text and replays (swamp-club#3681)", () => {
   const schemas = {
@@ -328,6 +515,102 @@ Deno.test("persistEvaluatedDefinition: resolved sensitive text beside a pending 
       ["globalArguments.token"],
     );
   }
+});
+
+Deno.test("persistEvaluatedDefinition: method sensitivity covers global fallbacks at their source, honoring overrides and records", () => {
+  const schema = z.object({ password: z.string().meta({ sensitive: true }) });
+  const definition = Definition.create({
+    name: "fallback",
+    globalArguments: { password: "INPUT-CANARY" },
+  });
+  const schemas = {
+    globalArguments: z.object({ password: z.string() }),
+    methods: { execute: { arguments: schema } },
+  };
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    definition,
+    new RunSensitiveValues(),
+    schemas,
+  );
+  assertEquals(persisted.definition.globalArguments.password, "***");
+  assertEquals(persisted.maskedPaths, [["globalArguments", "password"]]);
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, definition.toData(), []),
+    ["globalArguments.password"],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, definition.toData(), [], {
+      method: { name: "execute", replaced: ["password"] },
+    }),
+    [],
+  );
+  definition.setMethodArgument("execute", "password", "${{ env.PASSWORD }}");
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, definition.toData(), []),
+    [],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(
+      {
+        methods: {
+          execute: {
+            arguments: z.record(
+              z.string(),
+              z.string().meta({ sensitive: true }),
+            ),
+          },
+        },
+      },
+      definition.toData(),
+      [],
+    ),
+    [],
+  );
+});
+
+Deno.test("persistEvaluatedDefinition: a method argument record omitted at its root is masked once, though the globals it falls back to are merged back into it (swamp-club#3750)", () => {
+  const schemas = {
+    globalArguments: z.object({ region: z.string() }),
+    methods: {
+      run: {
+        arguments: z.preprocess(
+          (value) => value,
+          z.object({
+            token: z.string().meta({ sensitive: true }).optional(),
+          }),
+        ),
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "root-record",
+    globalArguments: { region: "eu-west-1" },
+    methods: { run: { arguments: { [INPUT_VALUE]: "x" } } },
+  });
+  // The record's keys came from data, so it is omitted at its root. Written
+  // as an empty record, the root still holds the merged globals, which
+  // found it again on every pass of the masking loop.
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    definition,
+    new RunSensitiveValues(),
+    schemas,
+    ProvenanceMap.authored().withWholeData("methods.run.arguments"),
+  );
+  assertEquals(persisted.definition.getMethodArguments("run"), {});
+  assertEquals(persisted.definition.globalArguments, { region: "eu-west-1" });
+  assertEquals(persisted.maskedPaths, [["methods", "run", "arguments"]]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
 });
 
 /** The executed copy: a sentinel where the value was spliced, raw in a tag. */
@@ -891,7 +1174,7 @@ Deno.test("evaluatedCacheHoldsSensitiveArgumentsMessage: says the run cannot be 
   assertStringIncludes(method, "store the value in a vault");
   assertStringIncludes(
     method,
-    "or, for a method argument, pass it with --input, which replaces the cached one",
+    "or replace a cached method argument with --input only if its name is not a declared definition input",
   );
   const workflow = evaluatedCacheHoldsSensitiveArgumentsMessage(
     "svc",
