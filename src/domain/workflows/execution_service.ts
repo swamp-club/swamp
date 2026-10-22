@@ -2286,7 +2286,8 @@ export class DefaultStepExecutor implements StepExecutor {
     // resolved value (swamp-club#3722). A direct-execution definition is
     // built from the step's evaluated arguments, so it is hashed below in
     // its persisted form, whose sensitive values are vault references.
-    const storedDefinitionHash = executedBase
+    const isDirectExecution = executedBase !== undefined;
+    const storedDefinitionHash = isDirectExecution
       ? undefined
       : await originalDefinition.computeHash();
 

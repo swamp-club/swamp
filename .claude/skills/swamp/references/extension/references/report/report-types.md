@@ -81,6 +81,8 @@ interface MethodReportContext extends BaseReportContext {
     workflowId?: string;
     workflowRunId?: string;
     stepName?: string;
+    parentOutputId?: string; // set when another behavior's method ran this one
+    callerExtension?: string;
     bundleFingerprint?: string;
   };
 }

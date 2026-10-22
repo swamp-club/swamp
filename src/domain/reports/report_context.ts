@@ -86,7 +86,7 @@ export interface MethodReportContext extends BaseReportContext {
   /**
    * What the run recorded about where it came from: the definition hash,
    * model version, trigger, initiator and, for a workflow step, the
-   * workflow run and step. The same record `model method history get`
+   * workflow run and step. The same record `swamp behavior history get`
    * shows (swamp-club#3722).
    */
   provenance?: ExecutionProvenance;
@@ -124,7 +124,7 @@ export interface ModelReportContext extends BaseReportContext {
   /**
    * What the run recorded about where it came from: the definition hash,
    * model version, trigger, initiator and, for a workflow step, the
-   * workflow run and step. The same record `model method history get`
+   * workflow run and step. The same record `swamp behavior history get`
    * shows (swamp-club#3722).
    */
   provenance?: ExecutionProvenance;

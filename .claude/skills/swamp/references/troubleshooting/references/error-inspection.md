@@ -148,6 +148,9 @@ execution status, arguments passed, and data output pointers.
    `workflowRunId`) tells what changed: compare it with the last successful
    run's summary — a different hash means the definition changed, a different
    version means the extension was upgraded, neither points at the inputs.
+   Summaries written before swamp-club#3722 have no `provenance`, and their run
+   history hashes were taken after inputs were applied: compare only runs that
+   both carry `provenance`.
 
 2. **Inspect the workflow-summary report** (for workflow failures):
    ```bash

@@ -424,8 +424,8 @@ the error.
 Method and model scope contexts carry `provenance`, the record the run saved
 about where it came from. It is the same value `swamp behavior history get`
 shows: `definitionHash`, `modelVersion`, `triggeredBy`, and when known
-`initiatedBy`, `workflowId`, `workflowRunId`, `stepName` and
-`bundleFingerprint`. A direct run records `triggeredBy: "manual"`; a workflow
+`initiatedBy`, `workflowId`, `workflowRunId`, `stepName`, `parentOutputId`,
+`callerExtension` and `bundleFingerprint`. A direct run records `triggeredBy: "manual"`; a workflow
 step records `"workflow"` with its workflow, run and step, and the principal
 that started the workflow run as `initiatedBy`.
 
