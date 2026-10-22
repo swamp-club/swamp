@@ -486,8 +486,14 @@ function embeddedRanges(
 }
 
 /**
- * The read-set rule over a whole value: every string in it is data except
- * expression occurrences whose raw text is in `authoredRaws`.
+ * The read-set rule over a whole value: everything in it is data except
+ * expression occurrences whose raw text is in `authoredRaws`. A subtree
+ * holding no such occurrence is data in its entirety, keys included. A
+ * subtree holding one is described part by part: a string keeps the ranges
+ * around its occurrences, an array its items, and an object's own keys are
+ * data on their own, since they came with the value and a sensitive record
+ * takes its keys from them (swamp-club#3681); only the occurrence itself
+ * stays authored, so it still resolves.
  */
 export function readSetMap(
   value: unknown,
@@ -497,21 +503,48 @@ export function readSetMap(
   if (!authoredRaws?.size || !valueContainsExpression(value)) {
     return ProvenanceMap.data();
   }
+  const whole: string[] = [];
   const ranges: [string, DataRange[]][] = [];
+  const keys: string[] = [];
   const visit = (node: unknown, path: string) => {
-    if (typeof node === "string") {
-      const found = readSetRanges(node, authoredRaws);
-      if (found.length > 0) ranges.push([path, found]);
+    if (!holdsAuthoredRaw(node, authoredRaws)) {
+      whole.push(path);
+    } else if (typeof node === "string") {
+      ranges.push([path, readSetRanges(node, authoredRaws)]);
     } else if (Array.isArray(node)) {
       node.forEach((item, index) => visit(item, `${path}[${index}]`));
     } else if (node !== null && typeof node === "object") {
+      keys.push(path);
       for (const [key, item] of Object.entries(node)) {
         visit(item, keyPath(path, key));
       }
     }
   };
   visit(value, "");
-  return ProvenanceMap.fromEntries([], ranges);
+  return ProvenanceMap.fromEntries(whole, ranges, keys);
+}
+
+/** Whether a string in `node` holds an expression occurrence in `authoredRaws`. */
+function holdsAuthoredRaw(
+  node: unknown,
+  authoredRaws: ReadonlySet<string>,
+): boolean {
+  if (typeof node === "string") {
+    if (!containsExpression(node)) return false;
+    for (const span of scanExpressions(node)) {
+      if (authoredRaws.has(span.raw)) return true;
+    }
+    return false;
+  }
+  if (Array.isArray(node)) {
+    return node.some((item) => holdsAuthoredRaw(item, authoredRaws));
+  }
+  if (node !== null && typeof node === "object") {
+    return Object.values(node).some((item) =>
+      holdsAuthoredRaw(item, authoredRaws)
+    );
+  }
+  return false;
 }
 
 /**

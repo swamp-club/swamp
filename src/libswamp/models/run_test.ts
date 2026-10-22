@@ -60,6 +60,7 @@ import type { RunTrackerRepository } from "../../domain/models/run_tracker_repos
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import { typedStagers } from "../../infrastructure/persistence/unit_of_work_binding.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 
 await initializeLogging({});
@@ -2451,6 +2452,111 @@ Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument 
       e.error.code === "evaluated_cache_holds_sensitive_arguments"
     ),
     false,
+  );
+});
+
+Deno.test("modelMethodRun: an operator-typed input is data in the evaluation's inputs provenance except the expression it holds, a schema default is authored, and under literalInputs every value is data whole (swamp-club#3681)", async () => {
+  const definition = Definition.create({
+    name: "typed-inputs",
+    inputs: {
+      type: "object",
+      properties: {
+        plain: { type: "string" },
+        typed: { type: "string" },
+        dflt: { type: "string", default: "from-schema" },
+      },
+    },
+    methods: { run: { arguments: { key: "${{ inputs.plain }}" } } },
+  });
+  const seen: ProvenanceMap[] = [];
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  evaluationService.evaluateDefinition = (
+    def: Definition,
+    _type: unknown,
+    _values: unknown,
+    _inputs: unknown,
+    _context: unknown,
+    _bag: unknown,
+    provenance: { inputs?: ProvenanceMap },
+  ) => {
+    seen.push(provenance.inputs ?? ProvenanceMap.authored());
+    return Promise.resolve({
+      definition: def,
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  };
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => evaluationService,
+  };
+  const inputs = { plain: "INPUT-CANARY", typed: "Bearer ${{ env.HOME }}" };
+  for (const literalInputs of [false, true]) {
+    await collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        ...createTestInput("typed-inputs", "run"),
+        inputs,
+        literalInputs,
+      }),
+    );
+  }
+  const [typed, literal] = seen;
+  assertEquals(typed.isWholeDataAt("plain"), true);
+  assertEquals(typed.isWholeDataAt("typed"), false);
+  assertEquals(typed.rangesAt("typed"), [[0, "Bearer ".length]]);
+  assertEquals(typed.hasDataAtOrBelow("dflt"), false);
+  assertEquals(literal.isWholeDataAt("plain"), true);
+  assertEquals(literal.isWholeDataAt("typed"), true);
+  assertEquals(literal.hasDataAtOrBelow("dflt"), false);
+});
+
+Deno.test("modelMethodRun: the saved evaluation carries the source's expressions and an input expression it still holds, not one the evaluation consumed (swamp-club#3681)", async () => {
+  const definition = Definition.create({
+    name: "authored-set",
+    inputs: {
+      type: "object",
+      properties: { c: { type: "string" }, e: { type: "string" } },
+    },
+    methods: {
+      run: { arguments: { key: "${{ inputs.c }}", name: "${{ inputs.e }}" } },
+    },
+  });
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  // The constant was consumed; the env reference waits for the runtime pass.
+  evaluationService.evaluateDefinition = (def: Definition) =>
+    Promise.resolve({
+      definition: Definition.fromData({
+        ...def.toData(),
+        methods: {
+          run: {
+            arguments: { key: "CONSTANT-CANARY", name: "${{ env.HOME }}" },
+          },
+        },
+      }),
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  const saved: ReadonlySet<string>[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createSensitiveModelDef()),
+    createEvaluationService: () => evaluationService,
+    saveEvaluatedDefinition: (_type, _def, _provenance, authored) => {
+      saved.push(authored);
+      return Promise.resolve();
+    },
+  };
+  await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("authored-set", "run"),
+      inputs: { c: "${{ 'CONSTANT-CANARY' }}", e: "${{ env.HOME }}" },
+    }),
+  );
+  assertEquals(saved.length, 1);
+  assertEquals(
+    [...saved[0]].sort(),
+    ["${{ env.HOME }}", "${{ inputs.c }}", "${{ inputs.e }}"],
   );
 });
 

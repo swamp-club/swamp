@@ -967,7 +967,15 @@ to a reference or a pending runtime expression stays as written. Resolved input
 or data text beside it masks the entire sensitive leaf, unless every resolved
 segment is a recorded vault reference, and expression-shaped input data is
 masked too. `${{ env.X }}` remains an expression in the cache and resolves at
-runtime on each run, including replay; its value is never cached. Inside a
+runtime on each run, including replay; its value is never cached. A value an
+operator types as a `swamp behavior run --input` is the run's data for this
+purpose, exactly as under `--literal-inputs`: joined to a vault reference in a
+sensitive argument it masks the leaf, and a record it supplies is masked whole.
+Only the expression occurrences the operator typed stay authored, so
+`--input key="${{ vault.get(...) }}"` still resolves, is cached as the
+reference, and replays. The cache carries the source definition's expressions
+and those an input contributed that the cache still holds; an input expression
+the evaluation consumed, such as a constant, is not written with it. Inside a
 sensitive container, leaves are checked one by one, except where object keys
 could be data: a sensitive object with any data under it, or an array holding
 such an object, is masked whole, and so is an object whose keys came from data
@@ -1042,6 +1050,9 @@ occurrence of what it holds, so registering them would corrupt unrelated output
 (a stored `production` would read `***uction`) and can make a data write refuse
 over colliding property names. Such a record is masked whole in the cache and
 the reports instead, and a method that echoes its keys shows them as written.
+A record an operator types as an input keeps its keys as data beside an
+expression typed into it, so it is masked at the record as under
+`--literal-inputs`.
 
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in
