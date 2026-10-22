@@ -6228,3 +6228,77 @@ Deno.test("executeWorkflow: the arguments are parsed once, so a schema transform
   assertEquals(transforms, 2);
   assertEquals(received, [{ message: "hello#1" }, { message: "hello#2" }]);
 });
+
+Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its arguments pass their schema and before the dispatch, and neither calls it nor dispatches when they fail (swamp-club#3745)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const order: string[] = [];
+  const recorder: ModelDefinition = {
+    type: ModelType.create("test/validated-hook-placed"),
+    version: "2026.10.21.1",
+    globalArguments: z.object({}),
+    methods: {
+      write: {
+        description: "Runs on a worker",
+        arguments: z.object({ message: z.string().min(1) }),
+        execute: () => {
+          order.push("in-process");
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  const hook = () => {
+    order.push("validated");
+    return Promise.resolve();
+  };
+  setRemoteStepDispatcher({
+    executeRemote: () => {
+      order.push("dispatched");
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: recorder.type,
+      placement: { labels: { tier: "remote" } },
+    });
+
+    await service.executeWorkflow(
+      Definition.create({
+        name: "valid",
+        methods: { write: { arguments: { message: "hello" } } },
+      }),
+      recorder,
+      "write",
+      context,
+      { onArgumentsValidated: hook },
+    );
+    assertEquals(order, ["validated", "dispatched"]);
+
+    order.length = 0;
+    await assertRejects(
+      () =>
+        service.executeWorkflow(
+          Definition.create({
+            name: "invalid",
+            methods: { write: { arguments: { message: { nested: true } } } },
+          }),
+          recorder,
+          "write",
+          context,
+          { onArgumentsValidated: hook },
+        ),
+      Error,
+      "Method arguments validation failed",
+    );
+    assertEquals(order, []);
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
