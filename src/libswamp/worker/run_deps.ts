@@ -108,6 +108,7 @@ export async function createWorkerModelRunDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
+      maskedPaths,
     ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
@@ -116,6 +117,7 @@ export async function createWorkerModelRunDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        maskedPaths,
       ),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>

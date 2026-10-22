@@ -345,6 +345,27 @@ Deno.test("ModelRegistry.resetLoadedFlag re-runs the loader on next ensureLoaded
   assertEquals(loadCount, 2);
 });
 
+Deno.test("ModelRegistry.getOrLoad: answers a registered type without loading, loads extensions for one the index does not know, and answers undefined for one nothing registers (swamp-club#3681)", async () => {
+  const registry = new ModelRegistry();
+  const known = createTestModel("swamp/known");
+  const loadedLater = createTestModel("swamp/loaded-later");
+  registry.register(known);
+  let loadCount = 0;
+  registry.setLoader(() => {
+    loadCount++;
+    registry.register(loadedLater);
+    return Promise.resolve();
+  });
+
+  assertEquals(await registry.getOrLoad(known.type), known);
+  assertEquals(loadCount, 0);
+  assertEquals(await registry.getOrLoad(loadedLater.type), loadedLater);
+  assertEquals(loadCount, 1);
+  // Extensions load once; a type nothing registers stays undefined.
+  assertEquals(await registry.getOrLoad("swamp/never"), undefined);
+  assertEquals(loadCount, 1);
+});
+
 Deno.test("ModelRegistry.register adds model to registry", () => {
   const registry = new ModelRegistry();
   const model = createTestModel("swamp/echo");

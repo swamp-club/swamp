@@ -90,6 +90,11 @@ import {
 } from "../../domain/expressions/provenance_map.ts";
 import { attachBindingProvenance } from "../../domain/expressions/splice_origin.ts";
 import {
+  EVALUATED_CACHE_HOLDS_SENSITIVE_ARGUMENTS_CODE,
+  evaluatedCacheHoldsSensitiveArgumentsMessage,
+  findPlaintextSensitiveArguments,
+  isNewerSensitiveFormat,
+  type MaskedPath,
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
   rehydrateEvaluatedDefinition,
@@ -279,6 +284,8 @@ export interface ModelMethodRunDeps {
       authoredExpressions: ReadonlySet<string>;
       deferredExpressions?: readonly DeferredExpression[];
       writtenReferences?: readonly WrittenReference[];
+      /** See the evaluated cache's `maskedPaths`; absent on older caches. */
+      maskedPaths?: readonly MaskedPath[];
       /** See the evaluated cache's `provenance`; absent on older caches. */
       provenance?: ProvenanceMap | "unreadable";
       sensitiveFormat?: number;
@@ -291,6 +298,8 @@ export interface ModelMethodRunDeps {
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
+    /** Where the definition holds the mask (swamp-club#3681). */
+    maskedPaths?: readonly MaskedPath[],
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
   createVaultService: () => Promise<VaultService>;
@@ -782,7 +791,16 @@ export async function* modelMethodRun(
             let failedExpressions: FailedExpressions = new Map();
             let pendingSave: Definition | undefined;
             let pendingReferences: readonly WrittenReference[] = [];
+            let pendingMasked: readonly MaskedPath[] = [];
             let pendingProvenance = ProvenanceMap.authored();
+            // The inputs the definition declares; any other --input key is an
+            // override of a method argument, merged below.
+            const definitionInputKeys = definition.inputs
+              ? Object.keys(
+                (definition.inputs as { properties?: Record<string, unknown> })
+                  .properties || {},
+              )
+              : [];
             if (input.lastEvaluated) {
               const lastEval = await deps.loadEvaluatedDefinition(
                 modelType,
@@ -806,12 +824,57 @@ export async function* modelMethodRun(
                 };
                 return;
               }
+              // A newer swamp may have written a sensitive value in a form
+              // this one does not recognise, as the mask is to a reader
+              // before it (swamp-club#3681).
+              if (isNewerSensitiveFormat(lastEval)) {
+                exprSpan.end();
+                setupSpan.end();
+                yield {
+                  kind: "error",
+                  error: evaluatedCacheFormatNewer(definition.name),
+                };
+                return;
+              }
               if (lastEval.provenance === "unreadable") {
                 exprSpan.end();
                 setupSpan.end();
                 yield {
                   kind: "error",
                   error: evaluatedCacheProvenanceUnreadable(definition.name),
+                };
+                return;
+              }
+              // A cache holds a sensitive argument that did not come from a
+              // vault as the mask, or in plaintext when an older swamp wrote
+              // it; neither replays (swamp-club#3681). Checked before
+              // rehydration and provenance alignment, which such a cache
+              // would not survive. Only this method's arguments count, and
+              // one an --input override replaces below never executes from
+              // the cache, so it is left out.
+              const plaintextArgs = findPlaintextSensitiveArguments(
+                modelDef,
+                lastEval.definition.toData(),
+                lastEval.writtenReferences ?? [],
+                {
+                  method: {
+                    name: input.methodName,
+                    replaced: Object.keys(inputs).filter((key) =>
+                      !definitionInputKeys.includes(key)
+                    ),
+                  },
+                  recordedMasks: lastEval.maskedPaths ?? [],
+                },
+              );
+              if (plaintextArgs.length > 0) {
+                exprSpan.end();
+                setupSpan.end();
+                yield {
+                  kind: "error",
+                  error: evaluatedCacheHoldsSensitiveArguments(
+                    definition.name,
+                    plaintextArgs,
+                  ),
                 };
                 return;
               }
@@ -886,15 +949,18 @@ export async function* modelMethodRun(
               // --last-evaluated reuses. Snapshotted now because the --input
               // overrides below mutate the definition and are not persisted.
               // Built from the executed copy, so sensitive values are written
-              // as the vault references they came from, never in plaintext.
+              // as the vault references they came from, and a literal under a
+              // sensitive argument as the mask, never in plaintext.
               const persisted = persistEvaluatedDefinition(
                 executedDefinition,
                 [],
                 definition,
                 sensitiveValues,
+                modelDef,
               );
               pendingSave = persisted.definition;
               pendingReferences = persisted.writtenReferences;
+              pendingMasked = persisted.maskedPaths;
               // In raw-copy coordinates, which rehydrate restores exactly.
               pendingProvenance = rawProvenance;
             }
@@ -904,12 +970,6 @@ export async function* modelMethodRun(
             // schema keys (i.e. not used for CEL expression evaluation). They map
             // directly to method argument schema keys, so reject unknown ones here
             // before Zod's default strip mode silently discards them.
-            const definitionInputKeys = definition.inputs
-              ? Object.keys(
-                (definition.inputs as { properties?: Record<string, unknown> })
-                  .properties || {},
-              )
-              : [];
             const overrideInputs = Object.fromEntries(
               Object.entries(inputs).filter(([key]) =>
                 !definitionInputKeys.includes(key)
@@ -991,6 +1051,7 @@ export async function* modelMethodRun(
                 pendingProvenance,
                 authoredExpressions,
                 pendingReferences,
+                pendingMasked,
               );
             }
 
@@ -1801,6 +1862,20 @@ export function evaluatedCacheMayHoldSecrets(name: string): SwampError {
 }
 
 /**
+ * Creates a SwampError for a cached evaluation written in a sensitive-value
+ * format newer than this swamp's, which --last-evaluated must not replay: a
+ * value in a form this swamp does not recognise would run as it is
+ * (swamp-club#3681).
+ */
+export function evaluatedCacheFormatNewer(name: string): SwampError {
+  return {
+    code: "evaluated_cache_format_newer",
+    message:
+      `The evaluated definition cached for "${name}" was written by a newer swamp in a format this one cannot read safely, so it is not replayed. Run the method without --last-evaluated to evaluate it again; that rewrites the cache. Or upgrade swamp.`,
+  };
+}
+
+/**
  * Creates a SwampError for a cached evaluation whose provenance record does
  * not parse: replaying it could evaluate data as authored (swamp-club#3205).
  */
@@ -1809,6 +1884,26 @@ export function evaluatedCacheProvenanceUnreadable(name: string): SwampError {
     code: "evaluated_cache_provenance_unreadable",
     message:
       `The evaluated definition cached for "${name}" has an unreadable provenance record, so it is not replayed. Run the method without --last-evaluated to evaluate it again; that rewrites the cache.`,
+  };
+}
+
+/**
+ * Creates a SwampError for a cached evaluation whose sensitive argument holds
+ * a value that did not come from a vault — the mask this swamp writes, or
+ * plaintext an older one wrote — which --last-evaluated must not replay
+ * (swamp-club#3681). Names the paths, never a value.
+ */
+export function evaluatedCacheHoldsSensitiveArguments(
+  name: string,
+  paths: readonly string[],
+): SwampError {
+  return {
+    code: EVALUATED_CACHE_HOLDS_SENSITIVE_ARGUMENTS_CODE,
+    message: evaluatedCacheHoldsSensitiveArgumentsMessage(
+      name,
+      paths,
+      "method",
+    ),
   };
 }
 

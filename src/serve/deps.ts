@@ -339,6 +339,7 @@ export async function createModelMethodRunDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
+      maskedPaths,
     ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
@@ -347,6 +348,7 @@ export async function createModelMethodRunDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        maskedPaths,
       ),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>

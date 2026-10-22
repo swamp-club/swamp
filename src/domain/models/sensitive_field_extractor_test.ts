@@ -24,7 +24,9 @@ import {
   extractSensitiveFields,
   extractSensitiveFieldValues,
   findLiteralSensitiveGlobalArgs,
+  findLiteralSensitiveValues,
   getNestedValue,
+  holdsRuntimeExpression,
   literalSensitiveGlobalArgsMessage,
   maskLiteralSensitiveValues,
   redactAllValues,
@@ -1523,4 +1525,52 @@ Deno.test("maskLiteralSensitiveValues: a schema that marks nothing is answered w
     },
   }) as Record<string, unknown>;
   assertEquals(maskLiteralSensitiveValues(schema, data) === data, true);
+});
+
+Deno.test("findLiteralSensitiveValues: reports each literal sensitive value with its keys and spelled path (swamp-club#3681)", () => {
+  const schema = z.object({
+    token: z.string().meta({ sensitive: true }),
+    credentials: z.object({ apiKey: z.string().meta({ sensitive: true }) }),
+    users: z.array(z.object({ pw: z.string().meta({ sensitive: true }) })),
+    region: z.string(),
+  });
+  const data = {
+    token: "Bearer ${{ vault.get('v', 'k') }}",
+    credentials: { apiKey: "hunter2" },
+    users: [{ pw: "${{ vault.get('v', 'pw') }}" }, { pw: "plain" }],
+    region: "us-east-1",
+  };
+  const found = findLiteralSensitiveValues(schema, data)
+    .map(({ path, keys, value }) => [path, keys, value])
+    .sort();
+  assertEquals(found, [
+    ["credentials.apiKey", ["credentials", "apiKey"], "hunter2"],
+    ["token", ["token"], "Bearer ${{ vault.get('v', 'k') }}"],
+    ["users[1].pw", ["users", 1, "pw"], "plain"],
+  ]);
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, data),
+    findLiteralSensitiveValues(schema, data).map(({ path }) => path),
+  );
+  assertEquals(findLiteralSensitiveValues(undefined, data), []);
+  assertEquals(findLiteralSensitiveValues(schema, undefined), []);
+});
+
+Deno.test("holdsRuntimeExpression: true while an expression that reads a root, or one that does not parse, is still in the text (swamp-club#3681)", () => {
+  assertEquals(
+    holdsRuntimeExpression("Bearer ${{ vault.get('v', 'k') }}"),
+    true,
+  );
+  assertEquals(holdsRuntimeExpression("token=${{ env.TOKEN }}"), true);
+  assertEquals(
+    holdsRuntimeExpression("s-${{ data.latest('a', 'b').attributes.id }}"),
+    true,
+  );
+  assertEquals(holdsRuntimeExpression("${{ inputs.key }}"), true);
+  assertEquals(holdsRuntimeExpression("${{ not valid ( }}"), true);
+  // Resolved text, a constant expression, and no expression at all.
+  assertEquals(holdsRuntimeExpression("Bearer hunter2"), false);
+  assertEquals(holdsRuntimeExpression("${{ literal('hunter2') }}"), false);
+  assertEquals(holdsRuntimeExpression("${{ 'hunter2' }}"), false);
+  assertEquals(holdsRuntimeExpression(""), false);
 });

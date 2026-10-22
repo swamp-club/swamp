@@ -166,6 +166,7 @@ export function buildModelMethodRunDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
+      maskedPaths,
     ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
@@ -174,6 +175,7 @@ export function buildModelMethodRunDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        maskedPaths,
       ),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>

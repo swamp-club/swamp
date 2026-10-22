@@ -35,7 +35,12 @@ import {
   RunSensitiveValues,
   type WrittenReference,
 } from "../../domain/secrets/mod.ts";
-import { persistEvaluatedDefinition } from "../../domain/expressions/persisted_evaluation.ts";
+import {
+  type ArgumentSchemas,
+  type MaskedPath,
+  persistEvaluatedDefinition,
+} from "../../domain/expressions/persisted_evaluation.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -130,6 +135,16 @@ export interface ModelEvaluateDeps {
    * through the persisted form. The CLI and serve pass nothing.
    */
   createSensitiveValues?: () => RunSensitiveValues;
+  /**
+   * The argument schemas of a model type, so a literal under a sensitive
+   * argument is masked in the cache (swamp-club#3681). It must find every
+   * type the evaluated repository's guard can find, or the guard refuses
+   * what this left unmasked. Undefined for a type no extension registers,
+   * which masks nothing; the guard lets such a type through as well.
+   */
+  lookupModelDefinition: (
+    type: ModelType,
+  ) => Promise<ArgumentSchemas | undefined>;
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
@@ -137,6 +152,8 @@ export interface ModelEvaluateDeps {
     provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
+    /** Where the definition holds the mask (swamp-club#3681). */
+    maskedPaths?: readonly MaskedPath[],
   ) => Promise<void>;
   getEvaluatedPath: (type: ModelType, id: DefinitionId) => string;
 }
@@ -205,12 +222,18 @@ export function createModelEvaluateDeps(
       evaluationService.evaluateDefinition(definition, type, sensitiveValues),
     evaluateAllDefinitions: (sensitiveValues) =>
       evaluationService.evaluateAllDefinitions(sensitiveValues),
+    // Loads extensions to find the type when the index does not know it,
+    // exactly as the repository's guard does, so whatever the guard can see
+    // the mask sees first. Never fetches an extension: evaluate reads every
+    // definition in the repo, installed type or not.
+    lookupModelDefinition: (type) => modelRegistry.getOrLoad(type),
     saveEvaluatedDefinition: (
       type,
       definition,
       provenance,
       authoredExpressions,
       writtenReferences,
+      maskedPaths,
     ) =>
       evaluatedDefRepo.save(
         type,
@@ -219,6 +242,7 @@ export function createModelEvaluateDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        maskedPaths,
       ),
     getEvaluatedPath: (type, id) => evaluatedDefRepo.getPath(type, id),
     createSensitiveValues,
@@ -227,7 +251,8 @@ export function createModelEvaluateDeps(
 
 /**
  * Saves an evaluation with every sensitive value it read written as the
- * vault reference it came from.
+ * vault reference it came from, and any literal under a sensitive argument
+ * as the mask.
  */
 async function saveWithoutSecrets(
   deps: ModelEvaluateDeps,
@@ -235,11 +260,14 @@ async function saveWithoutSecrets(
   sensitiveValues: RunSensitiveValues,
   source: Definition = result.sourceDefinition ?? result.definition,
 ): Promise<void> {
+  const schemas = await deps.lookupModelDefinition(result.type) ??
+    { methods: {} };
   const persisted = persistEvaluatedDefinition(
     result.definition,
     [],
     source,
     sensitiveValues,
+    schemas,
   );
   await deps.saveEvaluatedDefinition(
     result.type,
@@ -247,6 +275,7 @@ async function saveWithoutSecrets(
     result.provenance ?? ProvenanceMap.authored(),
     result.authoredExpressions,
     persisted.writtenReferences,
+    persisted.maskedPaths,
   );
 }
 

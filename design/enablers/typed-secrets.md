@@ -146,7 +146,9 @@ Out of scope, each its own issue if it is needed:
 - Non-string secrets. A sensitive output stored as JSON text keeps today's
   string-on-read behavior.
 - Treating literal inputs that a schema marks sensitive as secrets. Today's
-  handling of literal sensitive arguments is unchanged.
+  handling of literal sensitive arguments is unchanged: they are masked in run
+  output and in the evaluated caches, and `--last-evaluated` refuses a cache
+  holding the mask (swamp-club#3681), but they are not `Secret` values.
 - Evaluating `vault.get` in a `forEach` iteration scope. `vault` stays a runtime
   root, so today's limitation remains. A later change can lift it, because
   `vault.get` no longer reads anything.
@@ -174,7 +176,7 @@ expression-facing query view register `Secret`.
 | Accessors                  | Every expression-facing accessor returns tagged fields as `Secret` values and reads no vault.                                                                                                                         |
 | Identifiers                | Names, tags, labels and data-name suffixes keep the `sensitive-<vault>.<key>` stand-in. Step identities keep `sensitive-<index>`. Task selectors, placement, paths, `workingDir` and environment keys refuse secrets. |
 | Shell                      | Today's environment-variable placement for `run`. The two cases that paste a value into the command become refusals.                                                                                                  |
-| Persistence                | `sensitiveFormat: 1` and `writtenReferences`, unchanged. Entries come from sentinels.                                                                                                                                 |
+| Persistence                | `sensitiveFormat` (2 since the masks of swamp-club#3681) and `writtenReferences`, unchanged by this design. Entries come from sentinels.                                                                                                                                 |
 | Rollout                    | One engine, changed in place. Changes are refusals with stable codes. `validate` reports static cases early, and release notes list them all. There is no repository marker and no migration command.                 |
 | Remote                     | Phase 5. Dispatch carries sentinels and references, and the worker loads each value over the data plane.                                                                                                              |
 
@@ -1014,8 +1016,9 @@ Placement uses the existing quote-context scanner: `resolveForShell`,
 
 ### 8.1 Persisted form
 
-The persisted form is unchanged: `sensitiveFormat: 1` and its
-`writtenReferences` list. Each entry names a path, an occurrence, a vault and
+The persisted form is unchanged by this design: `sensitiveFormat` (version 2
+since the masks of swamp-club#3681; a reader refuses a format newer than its
+own) and its `writtenReferences` list. Each entry names a path, an occurrence, a vault and
 key, an encoding and a data-origin flag
 (`src/domain/secrets/persisted_sensitive_form.ts`).
 

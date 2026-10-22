@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { YamlEvaluatedWorkflowRepository } from "./yaml_evaluated_workflow_repository.ts";
@@ -408,7 +409,7 @@ Deno.test("save: records the sensitive format and written references (swamp-club
       REFERENCE,
     ]);
     const cached = await repo.findByNameWithProvenance("ref-workflow");
-    assertEquals(cached?.sensitiveFormat, 1);
+    assertEquals(cached?.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
     assertEquals(cached?.writtenReferences, [REFERENCE]);
     assertEquals(cached?.workflow.name, "ref-workflow");
   } finally {

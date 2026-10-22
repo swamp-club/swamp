@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   CANCELLED_STEP_ERROR,
@@ -2805,7 +2806,7 @@ Deno.test("WorkflowRun.toPersistedData: writes references at value positions onl
   assertEquals(persisted.inputs?.enabled, "${{ vault.get('v', 'flag') }}");
   // Structural fields are never rewritten, even when they equal a secret.
   assertEquals(persisted.id, run.id);
-  assertEquals(persisted.sensitiveFormat, 1);
+  assertEquals(persisted.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
   assertEquals(
     (persisted.writtenReferences ?? []).map((r) => r.path.join(".")).sort(),
     [

@@ -1140,6 +1140,25 @@ export class ModelRegistry {
   }
 
   /**
+   * The definition of a type, loading what it takes to find it: the type's
+   * own bundle when the index knows it, else every extension, since a
+   * command that never populated the index leaves an extension type
+   * unresolved otherwise. Both loads are memoized, so a command that already
+   * loaded extensions pays nothing. Undefined when no extension registers
+   * the type; never fetches one.
+   */
+  async getOrLoad(
+    type: string | ModelType,
+  ): Promise<ModelDefinition | undefined> {
+    await this.ensureTypeLoaded(type);
+    const found = this.get(type);
+    if (found) return found;
+    await this.ensureLoaded();
+    await this.ensureTypeLoaded(type);
+    return this.get(type);
+  }
+
+  /**
    * Ensures user extensions have been loaded into the registry.
    * On first call, invokes the loader set via {@link setLoader}.
    * Subsequent calls (including concurrent ones) return the cached promise.

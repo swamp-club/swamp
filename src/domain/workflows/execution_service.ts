@@ -251,6 +251,7 @@ import {
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import {
+  isNewerSensitiveFormat,
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
 } from "../expressions/persisted_evaluation.ts";
@@ -2460,12 +2461,14 @@ export class DefaultStepExecutor implements StepExecutor {
     try {
       // Save evaluated definition (with vault expressions still raw) for
       // --last-evaluated. Built from the executed copy, so sensitive values are
-      // written as the vault references they came from, never in plaintext.
+      // written as the vault references they came from, and a literal under a
+      // sensitive argument as the mask, never in plaintext.
       const persisted = persistEvaluatedDefinition(
         executedDefinition,
         ctx.expressionContext?.deferredExpressions ?? [],
         originalDefinition,
         ctx.sensitiveValues,
+        modelDef,
       );
       await evaluatedDefRepo.save(
         modelType,
@@ -2475,6 +2478,7 @@ export class DefaultStepExecutor implements StepExecutor {
         authoredExpressions,
         persisted.deferredExpressions,
         persisted.writtenReferences,
+        persisted.maskedPaths,
       );
 
       // Capture pre-vault args for report context (so vault secrets stay as expressions)
@@ -3757,6 +3761,14 @@ export class WorkflowExecutionService {
             throw new UserError(
               `The evaluated workflow cached for "${workflow.name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. ` +
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+            );
+          }
+          // A newer swamp may have written a sensitive value in a form this
+          // one does not recognise (swamp-club#3681).
+          if (isNewerSensitiveFormat(lastEvaluated)) {
+            throw new UserError(
+              `The evaluated workflow cached for "${workflow.name}" was written by a newer swamp in a format this one cannot read safely, so it is not replayed. ` +
+                `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache. Or upgrade swamp.`,
             );
           }
           if (lastEvaluated.provenance === "unreadable") {
@@ -7649,6 +7661,13 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
     sensitiveValues: RunSensitiveValues,
   ): Promise<WorkflowRun> {
+    // A newer swamp may have written a sensitive value in a form this one
+    // does not recognise, so the record is not resumed (swamp-club#3681).
+    if (isNewerSensitiveFormat(run)) {
+      throw new UserError(
+        `The run record for "${run.workflowName}" was written by a newer swamp in a format this one cannot read safely, so it is not resumed. Upgrade swamp to resume it.`,
+      );
+    }
     if (run.writtenReferences.length === 0) {
       run.attachSensitiveValues(sensitiveValues);
       return run;

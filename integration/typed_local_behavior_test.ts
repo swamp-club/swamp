@@ -45,6 +45,7 @@ import {
 } from "../src/domain/models/model.ts";
 import { ModelInvocationService } from "../src/domain/models/model_invocation_service.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { SENSITIVE_FORMAT_VERSION } from "../src/domain/secrets/persisted_sensitive_form.ts";
 import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import {
@@ -422,7 +423,7 @@ Deno.test("typed local behavior: evaluate writes a reference-safe cache with zer
     assertEquals(args.composed, `x-${f.stored.reference}`);
     assertEquals(args.host, "h");
     assertEquals(args.ref, "${{ vault.get('prod', 'canary-0') }}");
-    assertEquals(cached.sensitiveFormat, 1);
+    assertEquals(cached.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
     const written = cached.writtenReferences ?? [];
     assertEquals(
       written.map((w) => [w.path.join("."), w.occurrence, w.key, w.dataOrigin]),
