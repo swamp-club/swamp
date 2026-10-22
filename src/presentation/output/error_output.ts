@@ -30,6 +30,7 @@ import { messageFor } from "../../domain/behavior_wording.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import { V3_WRITER_BUSY_CODE } from "../../domain/datastore_v3/writer_lease.ts";
+import { COMMIT_UNREACHABLE_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 
 const logger = getSwampLogger(["error"]);
 
@@ -130,6 +131,9 @@ export function buildErrorJson(
  *   blind retry is not safe. So does `datastore_v3_commit_may_land`
  *   (swamp-club#3586): its change may still be committed by a later
  *   command.
+ * - `75` for `datastore_v3_commit_unreachable`: a commit that could not
+ *   reach the datastore's storage was given up, so nothing was committed
+ *   and a retry is safe for the datastore (swamp-club#3759).
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -146,6 +150,8 @@ export function exitCodeForError(error: unknown): number {
   if (code === V3_REPLICATION_UNCONFIRMED_CODE) return 75;
   // Writer lease contention: nothing changed, so a retry is safe.
   if (code === V3_WRITER_BUSY_CODE) return 75;
+  // A commit given up because the storage was unreachable: nothing landed.
+  if (code === COMMIT_UNREACHABLE_CODE) return 75;
   return 1;
 }
 

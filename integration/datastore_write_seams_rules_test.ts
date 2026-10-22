@@ -914,6 +914,9 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/run.ts: runDoctorCommand",
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
   "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",
+  // swamp-club#3759: their result waits for the root's commit.
+  "src/cli/commands/workflow_approve.ts: workflowApproveCommand",
+  "src/cli/commands/workflow_reject.ts: workflowRejectCommand",
   // swamp-club#3279: `datastore gc` sweeps chunks under the global lock's
   // coordinator root, as `datastore compact` runs.
   "src/cli/commands/datastore_gc.ts: datastoreGcCommand",

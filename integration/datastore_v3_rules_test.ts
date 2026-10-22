@@ -186,7 +186,6 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/v3_writer_lock.ts",
   "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
-  "src/cli/mod.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   // swamp-club#3279, the managed lockfile's v3 publish, CLI and serve: it
@@ -256,6 +255,16 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // .swamp holds records, and `doctor datastores --repair` moves them aside.
   "src/cli/commands/doctor_datastores.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
+  // swamp-club#3759: a commit that could not reach the storage. The runs
+  // word it for steps that ran, the error renderer and serve give it its
+  // code, and the CLI's failed teardown shortens the closing sync for it.
+  "src/cli/commands/model_method_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/commands/workflow_resume.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/commands/workflow_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/litestream/v3_replication.ts",
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/serve/handlers/shared.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

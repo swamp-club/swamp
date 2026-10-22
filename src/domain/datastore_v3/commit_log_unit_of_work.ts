@@ -32,6 +32,7 @@ import {
   type UnitOfWork,
   UnrecordedEndError,
 } from "../datastore/unit_of_work.ts";
+import { UserError } from "../errors.ts";
 import type { FileAccess } from "./file_access.ts";
 import type { Intent } from "./intent.ts";
 import type { Op, PutExpect } from "./op.ts";
@@ -208,6 +209,38 @@ export class MayLandLaterError extends UnrecordedEndError {
 
   during(failure: unknown): MayLandLaterError {
     return new MayLandLaterError(failure, this.reason);
+  }
+}
+
+/** Error code for {@link CommitUnreachableError}. */
+export const COMMIT_UNREACHABLE_CODE = "datastore_v3_commit_unreachable";
+
+/**
+ * A v3 unit's commit could not reach the datastore's storage to store the
+ * content it names, and the unit gave the commit up, so nothing of it was
+ * committed and nothing can land later (swamp-club#3759). Running the command
+ * again once the datastore is reachable is safe for the datastore. `cause` is
+ * the storage failure. A run's steps ran before its commit, so
+ * {@link afterStepsRan} says what they did outside swamp may have happened.
+ */
+export class CommitUnreachableError extends UserError {
+  constructor(cause: unknown, options: { readonly stepsRan?: boolean } = {}) {
+    const recheck = options.stepsRan === true
+      ? "Its steps had already run, so check anything they changed outside " +
+        "swamp before running it again once the datastore is reachable."
+      : "Run it again once the datastore is reachable.";
+    super(
+      `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
+        `so nothing this command changed was committed. ${recheck}`,
+      COMMIT_UNREACHABLE_CODE,
+    );
+    this.name = "CommitUnreachableError";
+    this.cause = cause;
+  }
+
+  /** This error, for a model method run or workflow run whose steps ran. */
+  afterStepsRan(): CommitUnreachableError {
+    return new CommitUnreachableError(this.cause, { stepsRan: true });
   }
 }
 

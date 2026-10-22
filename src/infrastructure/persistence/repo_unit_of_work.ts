@@ -117,6 +117,11 @@ export interface CommitLogRootRunOptions<T> {
    * the root of every operation that runs a workflow or a model method.
    */
   reconcileRuns?: boolean;
+  /**
+   * Told once how the root ended: `true` when its commit resolved, `false`
+   * when it was discarded or its end failed (swamp-club#3759).
+   */
+  onEnded?: (committed: boolean) => void;
 }
 
 /**
@@ -543,6 +548,16 @@ async function runInCommitLogEngineRoot<T>(
   ended = true;
   if (options.flush !== undefined) await options.flush({ completed: true });
   return value;
+}
+
+/**
+ * Whether a root over this context commits through a v3 commit log rather
+ * than pushing as a v2 (legacy) root does (swamp-club#3759).
+ */
+export function commitsThroughCommitLog(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): boolean {
+  return commitLogOf(repoContext) !== undefined;
 }
 
 /**

@@ -5367,9 +5367,29 @@ reports a `local` deployment mode on a v3 bucket datastore.
 
 - A write command's replication is still confirmed at teardown, after it
   printed its result, so `--json` can print success and then exit 75 (D1's
-  trade-off, `datastore-litestream.md`). Confirming before the output needs
-  commands to render after their root unit of work ends: planned for Phase
-  4 I, before v3 on buckets is announced.
+  trade-off, `datastore-litestream.md`): the change is kept in `commits.db`
+  and replicated by the next write. That is the only case a success is
+  followed by a failure. Since swamp-club#3759 a command prints its result
+  only once its root has committed. The CLI root helpers
+  (`runCommandInRootUnit`, `runInCoordinatorRoot`) hold what a command
+  writes to stdout while a v3 root is open (`src/cli/committed_output.ts`)
+  and write it out only if the root committed. A commit that fails prints
+  only its error. A run in log mode streams its progress, and holding starts
+  at its outcome. In log mode, a non-streaming command's status lines now print
+  with its result. A v2 root holds nothing. This is the issue's option 2 (a
+  held presenter) rather than rendering after the root in each command:
+  stdout is written from about 1,100 places, and holding at the root seam
+  covers every command, a new one included. Serve holds a request's replies
+  in `confirmRequest` the same way, on every v3 datastore.
+- A commit that cannot reach the datastore's storage before its append (a
+  chunk upload or check that meets a network failure) is given up, and the
+  command fails with `datastore_v3_commit_unreachable` and exits 75: nothing
+  was committed, so running it again is safe for the datastore. A model
+  method run or workflow run says its steps had already run, since what they
+  did outside swamp may have happened. Its closing sync then gets serve's
+  10 s request deadline instead of 60 s: the storage was just found
+  unreachable. When the give-up cannot be recorded, `MayLandLaterError`
+  (`datastore_v3_commit_may_land`, exit 1) still applies.
 - Serve's control plane (heartbeats, pending runs, continuation claims)
   stays in its checkout, so a v3 bucket datastore's serve is not durable
   across instance replacement and reports `local`. That is solo mode's

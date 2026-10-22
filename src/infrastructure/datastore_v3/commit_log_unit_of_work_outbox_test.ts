@@ -24,9 +24,12 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { OUTBOX_RETRY_BOUND_MS } from "../../domain/datastore_v3/commit_outbox.ts";
 import {
+  COMMIT_UNREACHABLE_CODE,
+  CommitUnreachableError,
   MayLandLaterError,
   PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import {
@@ -78,6 +81,92 @@ function blobChange(name: string) {
     },
   };
 }
+
+/** A connection refusal, as the S3 extension wraps its transport's error. */
+function refused(): Error {
+  return new Error("S3 headObject failed key=_blobs/x", {
+    cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:9"), {
+      code: "ECONNREFUSED",
+    }),
+  });
+}
+
+/** `storage` with its bucket calls failing with `failure()` while `down.on`. */
+function failingWhen(
+  storage: MemoryStorage,
+  down: { on: boolean },
+  failure: () => Error,
+): DatastoreStorage {
+  const calls = new Set(["has", "put", "get", "touch", "statChunks"]);
+  return new Proxy(storage, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      if (typeof property !== "string" || !calls.has(property)) {
+        return value.bind(target);
+      }
+      return (...args: unknown[]) =>
+        down.on ? Promise.reject(failure()) : value.apply(target, args);
+    },
+  });
+}
+
+Deno.test("commit-log unit with an outbox: a commit that cannot reach the storage is given up and says so, with nothing prepared (swamp-club#3759)", async () => {
+  const sink = new OutboxMemorySink();
+  const down = { on: true };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, failingWhen(memory(), down, refused)),
+  );
+  await uow.stageOp(blobChange("a"));
+  const error = await assertRejects(
+    () => uow.commit(),
+    CommitUnreachableError,
+  );
+  assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+  assert(error.cause instanceof Error, String(error.cause));
+  assert(error.message.includes("S3 headObject failed"), error.message);
+  assertEquals(sink.entries.size, 0, "nothing can land later");
+  assertEquals(sink.landed.length, 0, "nothing was appended");
+});
+
+Deno.test("commit-log unit with an outbox: a storage failure that is not a network failure keeps its own error (swamp-club#3759)", async () => {
+  const sink = new OutboxMemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(
+      sink,
+      failingWhen(memory(), { on: true }, () => new Error("HTTP 403")),
+    ),
+  );
+  await uow.stageOp(blobChange("a"));
+  const error = await assertRejects(() => uow.commit(), Error, "HTTP 403");
+  assert(!(error instanceof CommitUnreachableError));
+});
+
+Deno.test("commit-log unit with an outbox: a commit that cannot reach the storage and cannot record its give-up says the change may land (swamp-club#3759)", async () => {
+  const sink = new OutboxMemorySink();
+  const down = { on: false };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, failingWhen(memory(), down, refused)),
+  );
+  await uow.stageOp(blobChange("a"));
+  // A first attempt stores the content and prepares the entry, then fails
+  // to append: the entry stays for a retry.
+  sink.beforeAppend = () => {
+    throw new Error("disk full");
+  };
+  await assertRejects(() => uow.checkpoint(), Error, "disk full");
+  assertEquals(sink.entries.size, 1);
+  // The retry cannot reach the storage, and the give-up cannot be written.
+  down.on = true;
+  sink.beforeRemove = () => {
+    throw new Error("outbox locked");
+  };
+  const error = await assertRejects(() => uow.commit(), MayLandLaterError);
+  assert(!(error instanceof CommitUnreachableError));
+});
 
 Deno.test("commit-log unit with an outbox: prepares each commit with its base before appending, and settles it once landed", async () => {
   const sink = new OutboxMemorySink();

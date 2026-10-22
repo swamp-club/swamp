@@ -19,6 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
+import { runCommandInRootUnit } from "../command_root_unit.ts";
 import {
   createWorkflowApproveDeps,
   workflowApprove,
@@ -202,22 +203,29 @@ export const workflowApproveCommand = withRemoteOptions(
       ).findByRunId(runId);
 
     try {
-      await consumeStream(
-        workflowApprove(ctx, deps, {
-          workflowIdOrName,
-          stepName,
-          reason: options.reason as string | undefined,
-          runId: options.run as string | undefined,
-        }),
-        {
-          resolving: () => {},
-          completed: (e) => {
-            renderApproveResult(cliCtx, e.data);
-          },
-          error: (e) => {
-            throw userErrorFromSwampError(e.error);
-          },
-        },
+      // A root of its own, so the result waits for the commit
+      // (swamp-club#3759); it pushes nothing, as the use case did not.
+      await runCommandInRootUnit(
+        repoContext,
+        { push: undefined },
+        () =>
+          consumeStream(
+            workflowApprove(ctx, deps, {
+              workflowIdOrName,
+              stepName,
+              reason: options.reason as string | undefined,
+              runId: options.run as string | undefined,
+            }),
+            {
+              resolving: () => {},
+              completed: (e) => {
+                renderApproveResult(cliCtx, e.data);
+              },
+              error: (e) => {
+                throw userErrorFromSwampError(e.error);
+              },
+            },
+          ),
       );
     } finally {
       runTracker.close();

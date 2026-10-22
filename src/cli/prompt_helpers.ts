@@ -35,6 +35,7 @@
  */
 
 import { UserError } from "../domain/errors.ts";
+import { writeHeldOutput } from "./committed_output.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -64,6 +65,7 @@ export async function promptLine(message: string): Promise<string> {
 
 /** Writes `message` and reads one line; `null` on EOF. */
 async function readLine(message: string): Promise<string | null> {
+  writeHeldOutput();
   await Deno.stderr.write(encoder.encode(message));
   const buf = new Uint8Array(1024);
   const n = await Deno.stdin.read(buf);
@@ -73,6 +75,7 @@ async function readLine(message: string): Promise<string | null> {
 
 /** Writes each line to stderr, ahead of a prompt. */
 async function writeLines(lines: string[]): Promise<void> {
+  writeHeldOutput();
   for (const line of lines) {
     await Deno.stderr.write(encoder.encode(`${line}\n`));
   }
@@ -106,6 +109,7 @@ export async function promptChoice(
   choices: string[],
 ): Promise<string> {
   assertInteractiveStdin();
+  writeHeldOutput();
   while (true) {
     await Deno.stderr.write(encoder.encode(`${message}\n`));
     for (let i = 0; i < choices.length; i++) {

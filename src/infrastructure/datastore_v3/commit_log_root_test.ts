@@ -478,3 +478,65 @@ Deno.test("runInCommitLogRoot: a refusal behind a transient checkpoint failure i
     ["succeeded", "failed"],
   );
 });
+
+/** Runs a root that stages one op, and returns what `onEnded` was told. */
+async function endedWith(
+  sink: MemorySink,
+  options: {
+    readonly fails?: boolean;
+    readonly disposition?: () => "commit" | "discard";
+  } = {},
+): Promise<boolean[]> {
+  const ended: boolean[] = [];
+  await runInCommitLogRoot(
+    { markDirty: contextHook() },
+    {
+      ...unitOptions(sink, memory()),
+      ...(options.disposition !== undefined
+        ? { disposition: options.disposition }
+        : {}),
+      onEnded: (committed) => ended.push(committed),
+    },
+    async (root) => {
+      await root.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+      if (options.fails === true) throw new Error("operation failed");
+    },
+  ).catch(() => {});
+  return ended;
+}
+
+Deno.test("runInCommitLogRoot: onEnded is told once that a root whose commit resolved committed (swamp-club#3759)", async () => {
+  assertEquals(await endedWith(new MemorySink()), [true]);
+  // A failed operation the disposition commits committed too.
+  assertEquals(
+    await endedWith(new MemorySink(), {
+      fails: true,
+      disposition: () => "commit",
+    }),
+    [true],
+  );
+});
+
+Deno.test("runInCommitLogRoot: onEnded is told once that a discarded root, or one whose commit failed, did not commit (swamp-club#3759)", async () => {
+  assertEquals(await endedWith(new MemorySink(), { fails: true }), [false]);
+  assertEquals(
+    await endedWith(new MemorySink(), { disposition: () => "discard" }),
+    [false],
+  );
+  const failing = new MemorySink();
+  failing.beforeAppend = () => {
+    throw new Error("disk full");
+  };
+  assertEquals(await endedWith(failing), [false]);
+  const failingAfterError = new MemorySink();
+  failingAfterError.beforeAppend = () => {
+    throw new Error("disk full");
+  };
+  assertEquals(
+    await endedWith(failingAfterError, {
+      fails: true,
+      disposition: () => "commit",
+    }),
+    [false],
+  );
+});

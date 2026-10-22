@@ -38,6 +38,8 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import { messageFor } from "../../domain/behavior_wording.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
+import { holdFromOutcome } from "../committed_output.ts";
+import { CommitUnreachableError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
@@ -625,6 +627,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           const finished = await runCommandInRootUnit(
             repoContext,
             {
+              // Progress streams in log mode; the result waits for the
+              // commit (swamp-club#3759).
+              output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
               push: locks
                 ? async () => {
                   try {
@@ -718,7 +723,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                         ),
                         initiatedBy,
                       }),
-                      renderer.handlers(),
+                      holdFromOutcome(renderer.handlers()),
                     ));
 
                   if (abort.signal.aborted) {
@@ -745,7 +750,12 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 exitSuppress.dispose();
               }
             },
-          );
+          ).catch((error) => {
+            // The method ran before its commit failed (swamp-club#3759).
+            throw error instanceof CommitUnreachableError
+              ? error.afterStepsRan()
+              : error;
+          });
           if (!finished) return;
 
           ctx.logger.debug("Method run command completed");

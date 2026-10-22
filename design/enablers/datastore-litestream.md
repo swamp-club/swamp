@@ -791,7 +791,10 @@ finish. The default deadline is 60 s.
 > before the command's output. It kept it at teardown (swamp-club#3534): a
 > command renders inside its root unit of work, and a v3 root commits when it
 > ends, so a check before the output would run before the command's own
-> commits landed. Moving it needs each command to render after its root ends.
+> commits landed. Since swamp-club#3759 the output waits for the root's commit
+> (the CLI root helpers hold stdout until it lands), so a command never prints
+> success for a commit that failed; the replication check stays at teardown,
+> and success followed by exit 75 is the one remaining case.
 > The rethrow already finishes the teardown: the CLI's error path runs the
 > auth-gate refresh and records the failure in telemetry before it exits. The
 > supervisor keeps the launching command's environment, which it needs to
@@ -1181,13 +1184,20 @@ success reply inside their root unit of work, before the root commits, so a
 confirmation in the root's flush would come after the reply. Instead, dispatch
 wraps each write request in `confirmRequest` (`src/serve/handlers/shared.ts`):
 
-- While the handler runs, its replies for that request id are held. Run
-  events pass.
+- While the handler runs, its replies for that request id are held. A run's
+  progress events pass; its outcome event (`completed`, `cancelled`,
+  `suspended`) and every event after it are held (swamp-club#3759).
 - When the handler ends, serve calls `confirmV3Replicated` and then sends the
   held replies in order. It does so only if serve's commit mark moved while
   the handler ran. A wrapped request that committed nothing, such as
   `run doctor` without `--fix`, never waits on other writers' commits.
-- A held reply that is already an error goes out without waiting.
+- A held reply that is already an error goes out without waiting. A request
+  that ends in an error drops its held outcome events and `done`, so a client
+  never sees a run finish before the error that replaces it.
+- On a v3 datastore without replication (a filesystem datastore), the
+  replies are held the same way (`holdRepliesUntilCommitted`) and only the
+  confirmation is skipped: the root's commit can still fail
+  (swamp-club#3759).
 
 `CONFIRMED_WRITE_REQUESTS` (`src/serve/write_confirmation.ts`) names the
 wrapped requests:
@@ -1214,7 +1224,9 @@ unheld. Serve confirms where it reports a run finished:
 - an inline run's `done` waits in the request's hold;
 - a detached run (`workflow.run`, `model.method.run`, and resumes through
   `startDetachedResume`, auto-resumes included) confirms before its buffer's
-  terminal.
+  terminal. On v3 its buffer holds the outcome event, and what follows it,
+  until the buffer finishes: followers get them with `done`, and an `error`
+  drops them (swamp-club#3759).
 
 A run with model locks used to report `done` inside its root, while it held
 the locks. With replication on, it reports after the root and the

@@ -52,6 +52,7 @@ import {
   emitSystemAuditEvent,
   lockTimeoutErrorForClient,
   pushChangedToRemote,
+  runFailureForClient,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
 import { resolveRecordedWorkflow } from "./handlers/resource_resolution.ts";
@@ -258,7 +259,9 @@ export async function startDetachedResume(
     };
   }
 
-  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY);
+  const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY, {
+    holdOutcome: ctx.holdRepliesUntilCommitted === true,
+  });
   const runController = new AbortController();
   const runId: string = resolvedRun.id;
   const startedAt = new Date();
@@ -466,9 +469,13 @@ export async function startDetachedResume(
               };
             }
           } finally {
-            // With replication on, a success waits for the root's commit
-            // and its confirmation below (swamp-club#3489).
-            if (terminal.kind !== "done" || !ctx.confirmReplicated) {
+            // On v3 a success waits for the root's commit (swamp-club#3759),
+            // and with replication on for its confirmation below
+            // (swamp-club#3489).
+            if (
+              terminal.kind !== "done" ||
+              (!ctx.confirmReplicated && ctx.holdRepliesUntilCommitted !== true)
+            ) {
               buffer.finish(terminal);
             }
           }
@@ -493,12 +500,12 @@ export async function startDetachedResume(
       }
     } catch (error) {
       // The resume answers its own errors, so only a root that could not
-      // open lands here before the terminal frame was sent.
+      // open, or could not commit, lands here before the terminal frame was
+      // sent.
       if (!buffer.finished) {
         terminal = {
           kind: "error",
-          code: "workflow_resume_failed",
-          message: sanitizeErrorForClient(error),
+          ...runFailureForClient(error, "workflow_resume_failed"),
         };
       }
       throw error;

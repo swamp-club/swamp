@@ -24,10 +24,12 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
+  commitsThroughCommitLog,
   type RootUnitOfWork,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { pushGlobalLockAtEnd } from "../infrastructure/persistence/push_paths.ts";
+import { openOutputHold } from "./committed_output.ts";
 
 /**
  * Runs `fn`, the rest of a command that opened its repository with
@@ -41,14 +43,34 @@ import { pushGlobalLockAtEnd } from "../infrastructure/persistence/push_paths.ts
  * there, a push timeout after `fn` resolved is thrown, and one after `fn`
  * threw is dropped silently so `fn`'s error wins. Other push errors are
  * logged at warn by the coordinator and never thrown.
+ *
+ * On v3, what the command prints waits for the root's commit and is dropped
+ * when it does not land (swamp-club#3759).
  */
-export function runInCoordinatorRoot<T>(
-  repoContext: Pick<RepositoryContext, "markDirty">,
+export async function runInCoordinatorRoot<T>(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   fn: (root: RootUnitOfWork) => Promise<T>,
 ): Promise<T> {
-  return runInRootUnitOfWork(
-    repoContext,
-    { flush: pushGlobalLockAtEnd },
-    fn,
-  );
+  const hold = commitsThroughCommitLog(repoContext)
+    ? openOutputHold("held")
+    : undefined;
+  let committed = false;
+  try {
+    return await runInRootUnitOfWork(
+      repoContext,
+      {
+        flush: pushGlobalLockAtEnd,
+        ...(hold === undefined ? {} : {
+          commitLog: {
+            onEnded: (rootCommitted: boolean) => {
+              committed = rootCommitted;
+            },
+          },
+        }),
+      },
+      fn,
+    );
+  } finally {
+    hold?.end(committed);
+  }
 }

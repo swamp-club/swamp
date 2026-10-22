@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { CommitUnreachableError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
@@ -1099,4 +1100,17 @@ Deno.test("renderError: a worded plain Error prints the model spelling in log mo
   const output = records.join("\n");
   assertStringIncludes(output, "Model type cannot be empty");
   assertEquals(output.includes("Behavior type"), false);
+});
+
+Deno.test("exitCodeForError: returns 75 for a commit that could not reach the storage, since nothing was committed (swamp-club#3759)", () => {
+  assertEquals(
+    exitCodeForError(new CommitUnreachableError(new Error("refused"))),
+    75,
+  );
+  assertEquals(
+    exitCodeForError(
+      new CommitUnreachableError(new Error("refused")).afterStepsRan(),
+    ),
+    75,
+  );
 });
