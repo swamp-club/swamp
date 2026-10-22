@@ -311,18 +311,24 @@ export function createAutoResolveInstallerAdapter(
       // after a conflict, so retries inside it cannot hold the install
       // lock past EXTENSION_INSTALL_LOCK_MAX_WAIT_MS.
       const deadline = AbortSignal.timeout(AUTO_RESOLVE_INSTALL_DEADLINE_MS);
+      const pinnedEntry = await findPinnedEntry(extensionName);
+      const pinnedFiles = (pinnedEntry?.files ?? []).map((f) =>
+        f.replaceAll("\\", "/")
+      );
       // A pinned entry's skills go back where it records them, so the
       // reinstall keeps its skill paths and prunes none of them
       // (swamp-club#3727). Otherwise they go to the pulled skills dir.
-      const recordedDirs = recordedSkillsDirs(
-        (await findPinnedEntry(extensionName))?.files ?? [],
-      );
+      const recordedDirs = recordedSkillsDirs(pinnedFiles);
       const skillsDirs = recordedDirs.length > 0
         ? recordedDirs.map((dir) => join(repoDir, dir))
         : [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)];
+      // A skill conflict the pinned entry records: the conflict is that
+      // skill's root, and the entry lists the root or files under it.
+      const isRecordedSkill = (path: string) =>
+        isUnderAny(path, recordedDirs) &&
+        pinnedFiles.some((f) => f === path || f.startsWith(`${path}/`));
       async function runInstall(force: boolean) {
         const lockfileRepo = await LockfileRepository.create(lockfilePath);
-        const pinnedEntry = await findPinnedEntry(extensionName);
         // installExtension treats a dependency as installed only when
         // lockfileRepo records it. A dependency the team's lockfile records
         // is installed too: seeding it here keeps it from being reinstalled
@@ -375,13 +381,13 @@ export function createAutoResolveInstallerAdapter(
       } catch (error) {
         if (error instanceof ConflictError) {
           // Stale bundle output is regenerable, and a shared skill dir is
-          // merged into with a warning (swamp-club#2494), as is a skill dir
-          // the pinned entry records (swamp-club#3727). Any other conflict
-          // means real files are in the way.
+          // merged into with a warning (swamp-club#2494), as is a skill the
+          // pinned entry records (swamp-club#3727). Any other conflict means
+          // real files are in the way.
           const conflicts = error.conflicts.map((p) => p.replaceAll("\\", "/"));
           const bundleConflicts = conflicts.filter(isBundleArtifactPath);
           const skillConflicts = conflicts.filter((p) =>
-            isPulledSkillPath(p) || isUnderAny(p, recordedDirs)
+            isPulledSkillPath(p) || isRecordedSkill(p)
           );
           const allRetryable = conflicts.length > 0 &&
             bundleConflicts.length + skillConflicts.length === conflicts.length;

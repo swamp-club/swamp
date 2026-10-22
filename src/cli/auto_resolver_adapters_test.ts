@@ -1663,21 +1663,26 @@ Deno.test("auto_resolver_adapters: withInstallLock serializes installs from sepa
   }
 });
 
-/** An extension archive shipping one skill whose SKILL.md reads "x". */
+/** An extension archive shipping skills whose SKILL.md files read "x". */
 async function buildSkillArchive(
   name: string,
   version: string,
-  skill: string,
+  ...skills: string[]
 ): Promise<Uint8Array> {
   const archiveDir = await Deno.makeTempDir({ prefix: "swamp_test_arc_" });
   try {
     const extDir = join(archiveDir, "extension");
-    await ensureDir(join(extDir, "skills", skill));
+    await ensureDir(extDir);
     await Deno.writeTextFile(
       join(extDir, "manifest.yaml"),
-      `manifestVersion: 1\nname: "${name}"\nversion: "${version}"\nskills:\n  - ${skill}\n`,
+      `manifestVersion: 1\nname: "${name}"\nversion: "${version}"\nskills:\n${
+        skills.map((s) => `  - ${s}\n`).join("")
+      }`,
     );
-    await Deno.writeTextFile(join(extDir, "skills", skill, "SKILL.md"), "x");
+    for (const skill of skills) {
+      await ensureDir(join(extDir, "skills", skill));
+      await Deno.writeTextFile(join(extDir, "skills", skill, "SKILL.md"), "x");
+    }
     await createTarGz(extDir, join(archiveDir, "a.tar.gz"));
     return await Deno.readFile(join(archiveDir, "a.tar.gz"));
   } finally {
@@ -1834,6 +1839,62 @@ Deno.test("auto_resolver_adapters: install puts a pinned entry without a recorde
         swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills, "foo", "SKILL.md"),
       ),
       "x",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("auto_resolver_adapters: install refuses a skill conflict the pinned entry does not record", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const name = `@t/drift-${crypto.randomUUID().slice(0, 8)}`;
+    const version = "2026.01.01.1";
+    // The entry is resolved from the team lockfile, so the local one has
+    // no entry and both surviving skill dirs raise conflicts. Only foo is
+    // the extension's; bar is the user's own skill.
+    const lockfilePath = await seedLockfile(repoDir, {});
+    const resolvedDir = join(repoDir, "cache", "config");
+    await ensureDir(resolvedDir);
+    const resolvedPath = join(resolvedDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      resolvedPath,
+      JSON.stringify({
+        [name]: {
+          version,
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [
+            `.swamp/pulled-extensions/${name}/manifest.yaml`,
+            ".claude/skills/foo",
+          ],
+        },
+      }),
+    );
+    await ensureDir(join(repoDir, ".claude", "skills", "foo"));
+    await ensureDir(join(repoDir, ".claude", "skills", "bar"));
+    await Deno.writeTextFile(
+      join(repoDir, ".claude", "skills", "bar", "SKILL.md"),
+      "mine",
+    );
+    const archive = await buildSkillArchive(name, version, "foo", "bar");
+
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: () =>
+        Promise.resolve({ name, description: "", latestVersion: version }),
+      downloadArchive: () => Promise.resolve(archive),
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+      resolvedLockfilePath: () => resolvedPath,
+    });
+
+    assertEquals(await adapter.install(name), null);
+    assertEquals(
+      await Deno.readTextFile(
+        join(repoDir, ".claude", "skills", "bar", "SKILL.md"),
+      ),
+      "mine",
     );
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
