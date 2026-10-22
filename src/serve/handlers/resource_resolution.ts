@@ -668,7 +668,8 @@ const WORKFLOW_OWNER_TYPE = "workflow";
  * resources that own them now — by id, not by the name recorded when they
  * were written — with every resource field present, so conditional denies
  * decide on them. An owner no longer found is judged on its recorded name,
- * as it is today.
+ * as it is today. Definitions are scanned once per request, and extension
+ * workflows read once per request, however many items share them.
  */
 export class CanonicalResources {
   readonly #definitionRepo: DefinitionRepository;
@@ -682,7 +683,9 @@ export class CanonicalResources {
     workflowRepo: WorkflowRepository,
   ) {
     this.#definitionRepo = definitionRepo;
-    this.#workflowRepo = workflowRepo;
+    // One read of the extension workflows per request: each lookup through
+    // the repository itself would walk them all again (swamp-club#3779).
+    this.#workflowRepo = workflowRepo.memoizedView?.() ?? workflowRepo;
   }
 
   #definitionsById(id: string): Promise<DefinitionLookupResult[]> {

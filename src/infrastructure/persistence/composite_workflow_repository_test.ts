@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { CompositeWorkflowRepository } from "./composite_workflow_repository.ts";
+import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import {
   createWorkflowId,
@@ -284,4 +287,79 @@ Deno.test("CompositeWorkflowRepository findAllListings lists findAll, deduplicat
       .map((l) => l.name),
     ["primary-only", "shared"],
   );
+});
+
+/** An ExtensionWorkflowRepository that counts its full walks. */
+class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
+  walks = 0;
+
+  override findAll(): Promise<Workflow[]> {
+    this.walks++;
+    return super.findAll();
+  }
+}
+
+Deno.test("CompositeWorkflowRepository.memoizedView: keeps primary precedence and reads the extension once", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-composite-view-test-" });
+  try {
+    const primaryShared = createTestWorkflow("shared");
+    const extensionShared = createTestWorkflow("shared");
+    const extensionOnly = createTestWorkflow("ext-only");
+    for (const workflow of [extensionShared, extensionOnly]) {
+      await Deno.writeTextFile(
+        join(dir, `${workflow.name}.yaml`),
+        stringifyYaml({
+          id: workflow.id,
+          name: workflow.name,
+          version: 1,
+          jobs: [{
+            name: "job",
+            steps: [{
+              name: "step",
+              task: {
+                type: "model_method",
+                modelIdOrName: "model",
+                methodName: "method",
+              },
+            }],
+          }],
+        }),
+      );
+    }
+    const extension = new CountingExtensionWorkflowRepository(dir);
+    const composite = new CompositeWorkflowRepository(
+      new InMemoryWorkflowRepository([primaryShared]),
+      extension,
+    );
+
+    const view = composite.memoizedView();
+
+    assertEquals((await view.findByName("shared"))?.id, primaryShared.id);
+    assertEquals(
+      (await view.findById(extensionShared.id as WorkflowId))?.id,
+      extensionShared.id,
+    );
+    assertEquals((await view.findByName("ext-only"))?.id, extensionOnly.id);
+    assertEquals(extension.walks, 1);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("CompositeWorkflowRepository.memoizedView: is the composite itself when the extension has no view", () => {
+  const withoutExtension = new CompositeWorkflowRepository(
+    new InMemoryWorkflowRepository(),
+    null,
+  );
+  const withPlainExtension = new CompositeWorkflowRepository(
+    new InMemoryWorkflowRepository(),
+    new InMemoryWorkflowRepository(),
+  );
+
+  assertStrictEquals(withoutExtension.memoizedView(), withoutExtension);
+  assertStrictEquals(withPlainExtension.memoizedView(), withPlainExtension);
 });

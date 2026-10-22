@@ -27,6 +27,7 @@ import {
 } from "./extension_workflow_repository.ts";
 import { assertPathArrayEquals } from "./path_test_helpers.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
+import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { UserError } from "../../domain/errors.ts";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { initializeLogging } from "../logging/logger.ts";
@@ -594,4 +595,109 @@ Deno.test({
       }
     });
   },
+});
+
+/** An ExtensionWorkflowRepository that counts its full walks. */
+class CountingExtensionWorkflowRepository extends ExtensionWorkflowRepository {
+  walks = 0;
+
+  override findAll(): Promise<Workflow[]> {
+    this.walks++;
+    return super.findAll();
+  }
+}
+
+Deno.test("ExtensionWorkflowRepository.memoizedView: reads nothing until a lookup, then walks once for lookups started together", async () => {
+  await withTempDir(async (dir) => {
+    const a = createWorkflowYaml("a");
+    const b = createWorkflowYaml("b");
+    await Deno.writeTextFile(join(dir, "a.yaml"), stringifyYaml(a));
+    await Deno.writeTextFile(join(dir, "b.yaml"), stringifyYaml(b));
+    const repo = new CountingExtensionWorkflowRepository(dir);
+
+    const view = repo.memoizedView();
+    assertEquals(repo.walks, 0);
+
+    const [byName, byId, missing, all] = await Promise.all([
+      view.findByName("a"),
+      view.findById(b.id as WorkflowId),
+      view.findByName("absent"),
+      view.findAll(),
+    ]);
+    await view.findByName("b");
+
+    assertEquals(repo.walks, 1);
+    assertEquals(byName?.id, a.id);
+    assertEquals(byId?.name, "b");
+    assertEquals(missing, null);
+    assertEquals(all.map((w) => w.name), ["a", "b"]);
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository.memoizedView: finds what the repository finds, the first directory winning a name", async () => {
+  await withTempDir(async (dir) => {
+    const baseDir = join(dir, "base");
+    const additionalDir = join(dir, "additional");
+    await ensureDir(baseDir);
+    await ensureDir(additionalDir);
+    const base = createWorkflowYaml("shared");
+    const shadowed = createWorkflowYaml("shared");
+    await Deno.writeTextFile(join(baseDir, "s.yaml"), stringifyYaml(base));
+    await Deno.writeTextFile(
+      join(additionalDir, "s.yaml"),
+      stringifyYaml(shadowed),
+    );
+    const repo = new ExtensionWorkflowRepository(baseDir, [additionalDir]);
+    const view = repo.memoizedView();
+
+    assertEquals(
+      (await view.findByName("shared"))?.id,
+      (await repo.findByName("shared"))?.id,
+    );
+    assertEquals((await view.findByName("shared"))?.id, base.id);
+    assertEquals(
+      await view.findById(shadowed.id as WorkflowId),
+      await repo.findById(shadowed.id as WorkflowId),
+    );
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository.memoizedView: a failed walk fails every lookup in the view", async () => {
+  class FailingRepository extends ExtensionWorkflowRepository {
+    walks = 0;
+    override findAll(): Promise<Workflow[]> {
+      this.walks++;
+      return Promise.reject(new UserError("Failed to read extension workflow"));
+    }
+  }
+  const repo = new FailingRepository("unused");
+  const view = repo.memoizedView();
+
+  await assertRejects(() => view.findByName("a"), UserError);
+  await assertRejects(
+    () => view.findById(crypto.randomUUID() as WorkflowId),
+    UserError,
+  );
+  assertEquals(repo.walks, 1);
+});
+
+Deno.test("ExtensionWorkflowRepository.memoizedView: a new view sees workflows added after an earlier view read", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "a.yaml"),
+      stringifyYaml(createWorkflowYaml("a")),
+    );
+    const repo = new CountingExtensionWorkflowRepository(dir);
+    const first = repo.memoizedView();
+    assertEquals(await first.findByName("late"), null);
+
+    await Deno.writeTextFile(
+      join(dir, "late.yaml"),
+      stringifyYaml(createWorkflowYaml("late")),
+    );
+
+    assertEquals(await first.findByName("late"), null);
+    assertEquals((await repo.memoizedView().findByName("late"))?.name, "late");
+    assertEquals(repo.walks, 2);
+  });
 });
