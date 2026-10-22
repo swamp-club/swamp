@@ -1055,7 +1055,9 @@ export class WebhookService {
   }): void {
     // The pending entry stays in the run tracker for the next boot to replay.
     if (this.draining) return;
-    const original = entry.createdAt ? Date.parse(entry.createdAt) : NaN;
+    const original = typeof entry.createdAt === "string"
+      ? Date.parse(entry.createdAt)
+      : NaN;
     const receiptTrace = traceCarrier(entry.receiptTrace);
     this.runQueue.push({
       ...entry,
