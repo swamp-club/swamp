@@ -54,7 +54,7 @@ import {
 import {
   captureEnvironmentSnapshot,
 } from "../domain/remote/environment_snapshot.ts";
-import { markErrorPaths } from "../domain/errors.ts";
+import { markErrorPaths, UserError } from "../domain/errors.ts";
 import {
   type DispatchParams,
   type DispatchResult,
@@ -796,8 +796,13 @@ export class DispatchService {
           leaseId,
           error: scrub(result.error ?? "remote execution failed"),
         });
+        // A coded UserError the worker's method threw comes back as one, its
+        // code scrubbed like the message (swamp-club#3773).
+        const message = scrub(result.error ?? "Remote execution failed");
         throw markErrorPaths(
-          new Error(scrub(result.error ?? "Remote execution failed")),
+          result.errorCode !== undefined
+            ? new UserError(message, scrub(result.errorCode))
+            : new Error(message),
           result.errorPaths ?? [],
         );
       }

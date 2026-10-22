@@ -98,7 +98,9 @@ export function executionErrorFrom(
 /**
  * `error` with its message and stack passed through `redactor`, as
  * {@link executionErrorFrom} reads them, for a caller that rethrows or
- * reports it (swamp-club#3681). It is the same value when the redactor holds
+ * reports it (swamp-club#3681). A string `code` is passed through it too,
+ * since a workflow step records it next to the message (swamp-club#3773).
+ * It is the same value when the redactor holds
  * nothing or nothing changes. Otherwise an Error becomes a copy that keeps
  * its class, name, cause, own properties (a code, recovered data handles,
  * written versions, an AggregateError's errors), marked paths and model
@@ -118,7 +120,12 @@ export function redactedError(
     return shown === text ? error : shown;
   }
   const failure = executionErrorFrom(error, redactor);
-  if (failure.message === error.message && failure.stack === error.stack) {
+  const code = (error as { code?: unknown }).code;
+  const shownCode = typeof code === "string" ? redactor.redact(code) : code;
+  if (
+    failure.message === error.message && failure.stack === error.stack &&
+    shownCode === code
+  ) {
     return error;
   }
   const cleaned = new Error(failure.message);
@@ -126,10 +133,23 @@ export function redactedError(
   // the class defines `name` as an accessor.
   cleaned.name = error.name;
   if (failure.stack !== undefined) cleaned.stack = failure.stack;
+  const codeChanged = shownCode !== code;
   for (const key of Object.getOwnPropertyNames(error)) {
     if (key === "message" || key === "stack") continue;
+    if (key === "code" && codeChanged) continue;
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
     if (descriptor) Object.defineProperty(cleaned, key, descriptor);
+  }
+  // A plain data property whatever the original was, so an accessor or a
+  // non-configurable code cannot make the copy throw.
+  if (codeChanged) {
+    Object.defineProperty(cleaned, "code", {
+      value: shownCode,
+      writable: true,
+      enumerable: Object.getOwnPropertyDescriptor(error, "code")?.enumerable ??
+        true,
+      configurable: true,
+    });
   }
   // The class is kept, so a coded UserError is still one and a workflow step
   // keeps its error code (swamp-club#3748).

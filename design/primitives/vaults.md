@@ -1016,7 +1016,7 @@ arguments. For a sensitive argument field, the framework:
    and JSON).
 4. Passes the error a method throws through the run's redactor. A sensitive
    argument that the error echoes shows as `***` in the output record, the
-   error event and a workflow step's recorded error.
+   error event and a workflow step's recorded error and error code.
 
 ### Marking an Argument Field as Sensitive
 

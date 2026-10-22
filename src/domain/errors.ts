@@ -106,6 +106,23 @@ export function errorPaths(value: unknown): string[] {
 }
 
 /**
+ * The stable code of a `UserError`, or `undefined` for an error without one,
+ * one whose code is empty, and anything that is not a `UserError`. Reads only
+ * the error itself, never its `cause`, as the workflow job loop does when it
+ * records a step's `errorCode`, so an executor result can carry the code to
+ * the error rebuilt from its message (swamp-club#3773).
+ *
+ * @param error - The thrown value
+ * @returns The code, or `undefined`
+ */
+export function userErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof UserError)) return undefined;
+  return error.code !== undefined && error.code.length > 0
+    ? error.code
+    : undefined;
+}
+
+/**
  * Exhaustiveness check for switch statements.
  * TypeScript will error at compile time if a case is missing.
  */

@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
+import { UserError } from "../domain/errors.ts";
 import "../domain/models/models.ts";
 import { defineModel, modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -242,6 +243,80 @@ Deno.test("runDispatchRunner: releases the dispatch redactor when the dispatch f
     assertEquals(result?.status, "error");
     assertEquals(runFileSink.redactActive(secret), secret);
   } finally {
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+/** Registers a per-run model type whose `run` method throws `thrown`. */
+function throwingRunModel(thrown: Error): ModelType {
+  const type = ModelType.create(`swamp/runner-test-${crypto.randomUUID()}`);
+  defineModel({
+    type,
+    version: "2026.10.22.1",
+    methods: {
+      run: {
+        description: "throws the given error",
+        kind: "action",
+        arguments: z.object({}),
+        execute: () => {
+          throw thrown;
+        },
+      },
+    },
+  });
+  return type;
+}
+
+Deno.test("runDispatchRunner: the result carries the code of a coded UserError the method threw (swamp-club#3773)", async () => {
+  const type = throwingRunModel(
+    new UserError("intentional failure", "auth_failed"),
+  );
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const result = await runRunner(
+      bootstrapFor(cacheDirPath, type.normalized, "secret-3773-unrelated"),
+    );
+
+    assertEquals(result?.status, "error");
+    assertEquals(result?.error, "intentional failure");
+    assertEquals(result?.errorCode, "auth_failed");
+  } finally {
+    modelRegistry.invalidateType(type);
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDispatchRunner: the result error code is scrubbed with the dispatch redactor", async () => {
+  const secret = `canary-${crypto.randomUUID()}`;
+  const type = throwingRunModel(
+    new UserError("intentional failure", `failed_${secret}`),
+  );
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const result = await runRunner(
+      bootstrapFor(cacheDirPath, type.normalized, secret),
+    );
+
+    assertEquals(result?.status, "error");
+    assertEquals(result?.errorCode, "failed_***");
+  } finally {
+    modelRegistry.invalidateType(type);
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDispatchRunner: the result carries no code for an uncoded error", async () => {
+  const type = throwingRunModel(new UserError("intentional failure"));
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  try {
+    const result = await runRunner(
+      bootstrapFor(cacheDirPath, type.normalized, "secret-3773-unrelated"),
+    );
+
+    assertEquals(result?.status, "error");
+    assertEquals(result?.errorCode, undefined);
+  } finally {
+    modelRegistry.invalidateType(type);
     await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
   }
 });

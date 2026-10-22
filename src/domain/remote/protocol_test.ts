@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { markErrorPaths } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 import {
+  dispatchErrorCode,
   dispatchErrorPaths,
   DispatchParamsSchema,
   DispatchResultSchema,
@@ -316,6 +317,54 @@ Deno.test("DispatchResultSchema: drops out-of-bounds errorPaths without failing 
   }
   // A result from a worker without the field still parses.
   assertEquals(DispatchResultSchema.parse(base).errorPaths, undefined);
+});
+
+Deno.test("DispatchResultSchema: carries a UserError's errorCode (swamp-club#3773)", () => {
+  const parsed = DispatchResultSchema.parse({
+    status: "error",
+    error: "intentional failure",
+    errorCode: "auth_failed",
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  });
+  assertEquals(parsed.errorCode, "auth_failed");
+});
+
+Deno.test("DispatchResultSchema: drops an out-of-bounds errorCode without failing the result", () => {
+  const base = {
+    status: "error",
+    error: "boom",
+    outputs: [],
+    logs: [],
+    durationMs: 1,
+  };
+  for (const errorCode of ["", "x".repeat(129), 42, ["auth_failed"]]) {
+    const parsed = DispatchResultSchema.parse({ ...base, errorCode });
+    assertEquals(parsed.errorCode, undefined);
+    assertEquals(parsed.error, "boom");
+  }
+  assertEquals(
+    DispatchResultSchema.parse({ ...base, errorCode: "x".repeat(128) })
+      .errorCode,
+    "x".repeat(128),
+  );
+  // A result from a worker without the field still parses.
+  assertEquals(DispatchResultSchema.parse(base).errorCode, undefined);
+});
+
+Deno.test("dispatchErrorCode: is the code of a coded UserError within the bound", () => {
+  assertEquals(
+    dispatchErrorCode(new UserError("denied", "auth_failed")),
+    "auth_failed",
+  );
+  assertEquals(
+    dispatchErrorCode(new UserError("denied", "x".repeat(129))),
+    undefined,
+  );
+  assertEquals(dispatchErrorCode(new UserError("denied")), undefined);
+  assertEquals(dispatchErrorCode(new Error("denied")), undefined);
+  assertEquals(dispatchErrorCode("denied"), undefined);
 });
 
 Deno.test("dispatchErrorPaths: trims marked paths to what the schema accepts", () => {

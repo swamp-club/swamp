@@ -43,7 +43,7 @@ import {
   type WorkerSnapshot,
 } from "./worker_gateway.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import { errorPaths } from "../domain/errors.ts";
+import { errorPaths, UserError } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
@@ -402,6 +402,66 @@ Deno.test("DispatchService: the lease scrub reads the registration's redactor, s
   );
   const fail = h.transitions.find((t) => t.methodName === "fail");
   assertEquals(fail?.inputs.error, "method failed holding ***");
+});
+
+Deno.test("DispatchService: a remote method error with a code is rethrown as a UserError with that code (swamp-club#3773)", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: "intentional failure",
+      errorCode: "auth_failed",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    UserError,
+    "intentional failure",
+  );
+  assertEquals(error.code, "auth_failed");
+});
+
+Deno.test("DispatchService: a remote method error code is scrubbed with the dispatch redactor", async () => {
+  const h = createHarness();
+  const secret = `s3cret-${crypto.randomUUID()}`;
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: `method failed holding ${secret}`,
+      errorCode: `failed_${secret}`,
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest({ secretValues: [secret] })),
+    UserError,
+    "method failed holding ***",
+  );
+  assertEquals(error.code, "failed_***");
+});
+
+Deno.test("DispatchService: a remote method error without a code is rethrown as a plain Error", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.resolve({
+      status: "error",
+      error: "boom in method",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    })
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    Error,
+    "boom in method",
+  );
+  assertEquals(error instanceof UserError, false);
 });
 
 Deno.test("DispatchService: remote method error keeps the worker's marked paths (swamp-club#2830)", async () => {

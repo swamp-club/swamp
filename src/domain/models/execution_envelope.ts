@@ -89,6 +89,12 @@ export interface ExecutionResult {
    * `error` can carry them to telemetry (swamp-club#2830).
    */
   errorPaths?: string[];
+  /**
+   * The code of the `UserError` the method threw (see `userErrorCode`), so
+   * the error rebuilt from `error` is a `UserError` with that code and a
+   * failed workflow step records it (swamp-club#3773).
+   */
+  errorCode?: string;
   /** Outputs produced during execution. */
   outputs: ExecutionOutput[];
   /** Log lines captured during execution. */

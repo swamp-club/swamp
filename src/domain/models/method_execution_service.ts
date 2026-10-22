@@ -1500,8 +1500,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           currentHandles = collectPersistedHandles(executionResult.outputs);
 
           if (executionResult.status === "error") {
+            // A coded UserError comes back as one, so a failed workflow step
+            // records its code (swamp-club#3773).
+            const message = executionResult.error ?? "Method execution failed";
             const err = markErrorPaths(
-              new Error(executionResult.error ?? "Method execution failed"),
+              executionResult.errorCode !== undefined
+                ? new UserError(message, executionResult.errorCode)
+                : new Error(message),
               executionResult.errorPaths ?? [],
             );
             (err as unknown as Record<string, unknown>).dataHandles =

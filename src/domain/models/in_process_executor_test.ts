@@ -40,7 +40,7 @@ import type {
 } from "./model.ts";
 import type { WorkflowGateService } from "./workflow_gate_service.ts";
 import { z } from "zod";
-import { markErrorPaths } from "../errors.ts";
+import { markErrorPaths, UserError } from "../errors.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
@@ -1097,6 +1097,59 @@ Deno.test("InProcessExecutor: an error result carries the paths the error marked
 
   assertEquals(result.status, "error");
   assertEquals(result.errorPaths, [path]);
+});
+
+function throwingExecutor(error: unknown): MethodExecutor {
+  return {
+    execute: () => {
+      throw error;
+    },
+  };
+}
+
+Deno.test("InProcessExecutor: an error result carries the code of a coded UserError the method threw (swamp-club#3773)", async () => {
+  for (
+    const method of [testMethod, { ...testMethod, rollbackOnFailure: true }]
+  ) {
+    const inProcessExecutor = new InProcessExecutor(
+      throwingExecutor(new UserError("intentional failure", "auth_failed")),
+      testDefinition,
+      method,
+      testModelDef,
+      createMockContext(),
+      "test",
+    );
+
+    const result = await inProcessExecutor.execute(createMockRequest());
+
+    assertEquals(result.status, "error");
+    assertEquals(result.error, "intentional failure");
+    assertEquals(result.errorCode, "auth_failed");
+  }
+});
+
+Deno.test("InProcessExecutor: an error result carries no code for an uncoded UserError, a plain Error or a thrown non-Error", async () => {
+  for (
+    const thrown of [
+      new UserError("intentional failure"),
+      Object.assign(new Error("intentional failure"), { code: "auth_failed" }),
+      "intentional failure",
+    ]
+  ) {
+    const inProcessExecutor = new InProcessExecutor(
+      throwingExecutor(thrown),
+      testDefinition,
+      testMethod,
+      testModelDef,
+      createMockContext(),
+      "test",
+    );
+
+    const result = await inProcessExecutor.execute(createMockRequest());
+
+    assertEquals(result.status, "error");
+    assertEquals(result.errorCode, undefined);
+  }
 });
 
 Deno.test("wrapLoggerWithOutput: the event carries the level the line was logged at (swamp-club#3080)", () => {
