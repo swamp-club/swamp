@@ -423,18 +423,59 @@ Deno.test("DataPlaneClient: a read past the read timeout fails at the read bound
 });
 
 Deno.test("DataPlaneClient: a cancelled write keeps the caller's abort reason", async () => {
-  const client = slowClient({
-    answerAfterMs: 60_000,
-    timeoutMs: 60_000,
-    writeTimeoutMs: 60_000,
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    try {
+      const client = slowClient({
+        answerAfterMs: 60_000,
+        timeoutMs: 60_000,
+        writeTimeoutMs: 60_000,
+      });
+      const controller = new AbortController();
+      const pending = client.writeResource(
+        { specName: "result", name: "result", data: { ok: true } },
+        controller.signal,
+      );
+      const reason = new Error("step cancelled");
+      controller.abort(reason);
+      const error = await assertRejects(() => pending, Error);
+      assertEquals(error, reason);
+      assertEquals(
+        findSpan(spans, "swamp.data.client").attributes["swamp.outcome"],
+        "cancelled",
+      );
+    } finally {
+      uninstallExecutionObserver();
+    }
   });
-  const controller = new AbortController();
-  const pending = client.writeResource(
-    { specName: "result", name: "result", data: { ok: true } },
-    controller.signal,
-  );
-  const reason = new Error("step cancelled");
-  controller.abort(reason);
-  const error = await assertRejects(() => pending, Error);
-  assertEquals(error, reason);
+});
+
+Deno.test("DataPlaneClient: caller cancellation during the response body preserves its reason and outcome", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const controller = new AbortController();
+    const reason = new Error("step cancelled during body");
+    const { client } = clientWith(() =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(stream) {
+            controller.abort(reason);
+            stream.error(reason);
+          },
+        }),
+      )
+    );
+    try {
+      const error = await assertRejects(() =>
+        client.readArtifact("/data/t/m/n/1", controller.signal)
+      );
+      assertEquals(error, reason);
+      assertEquals(
+        findSpan(spans, "swamp.data.client").attributes["swamp.outcome"],
+        "cancelled",
+      );
+    } finally {
+      uninstallExecutionObserver();
+    }
+  });
 });

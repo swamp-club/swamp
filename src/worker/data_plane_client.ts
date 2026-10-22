@@ -158,7 +158,9 @@ export class DataPlaneClient {
         "swamp.reconciliation": "unsupported",
       });
       observation.end(
-        timeoutSignal?.aborted && !init?.signal?.aborted
+        init?.signal?.aborted
+          ? "cancelled"
+          : timeoutSignal?.aborted
           ? "timeout"
           : observationOutcome(error),
       );
@@ -210,7 +212,13 @@ export class DataPlaneClient {
             "swamp.commit.state": init?.write ? "unknown" : "not_applicable",
             "swamp.reconciliation": "unsupported",
           });
-          observation.end(observationOutcome(error));
+          observation.end(
+            init?.signal?.aborted
+              ? "cancelled"
+              : timeoutSignal?.aborted
+              ? "timeout"
+              : observationOutcome(error),
+          );
           reader.releaseLock();
           controller.error(error);
         }
