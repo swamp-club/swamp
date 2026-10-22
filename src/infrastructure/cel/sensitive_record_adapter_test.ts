@@ -22,9 +22,15 @@ import {
   assertEquals,
   assertRejects,
   assertStrictEquals,
+  assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
+import {
+  attachStepOutputSources,
+  type StepOutputRecord,
+  type StepOutputSources,
+} from "../../domain/expressions/step_output_sources.ts";
 import { SENSITIVE_FIELDS_TAG } from "../../domain/models/data_writer.ts";
 import {
   type FaultScope,
@@ -37,6 +43,8 @@ import {
   adaptDataResult,
   adaptModelMethodResult,
   modelMapView,
+  stepsView,
+  synchronousSensitiveReferences,
 } from "./sensitive_record_adapter.ts";
 
 const REF_A = "${{ vault.get('prod', 'A') }}";
@@ -633,4 +641,279 @@ Deno.test("adaptModelMethodResult: a record's attributes with tagged fields as S
   });
   assertEquals(adaptModelMethodResult("text"), "text");
   assertEquals(adaptModelMethodResult(null), null);
+});
+
+/** A step output source: the stored form of one record a step wrote. */
+function source(
+  id: string,
+  attributes: Record<string, unknown>,
+  tags: Record<string, string> = {},
+  namespace = "",
+): StepOutputRecord {
+  return {
+    id,
+    name: `${id}-vary-s3cret`,
+    version: 1,
+    namespace,
+    modelName: "writer",
+    tags: { type: "resource", ...tags },
+    attributes,
+  };
+}
+
+function sourced(
+  outputs: Record<string, unknown>,
+  sources: StepOutputSources,
+): { status: string; outputs: Record<string, unknown> } {
+  return attachStepOutputSources({ status: "succeeded", outputs }, sources);
+}
+
+const locationOf = (secret: unknown): string =>
+  (secretParts(secret)![0] as { location: string }).location;
+
+Deno.test("stepsView: lazy, reads a sourced step's outputs as the adapted merge where a later record wins, records every reference on first read, counts each tagged read, and passes an unsourced step and the originals through", () => {
+  const first = source(
+    "r1",
+    { password: REF_A, user: "u", shared: "first" },
+    pathsTag("password"),
+  );
+  const second = source(
+    "r2",
+    { token: REF_B, shared: "second" },
+    pathsTag("token"),
+  );
+  const seed = sourced(
+    { password: REF_A, user: "u", shared: "second", token: REF_B },
+    [{ path: [], records: [first, second] }],
+  );
+  const wait = { status: "succeeded", outputs: { payload: { ok: true } } };
+  const steps = { seed, wait, skipped: { status: "skipped" } };
+  runInFaultScope((scope) => {
+    const view = stepsView(steps, "") as Record<string, unknown>;
+    assert(view !== steps);
+    assertEquals(Object.keys(view), ["seed", "wait", "skipped"]);
+    assertStrictEquals(view.wait, wait);
+    assertStrictEquals(view.skipped, steps.skipped);
+    const seedView = view.seed as Record<string, unknown>;
+    assert(seedView !== seed);
+    assertEquals(seedView.status, "succeeded");
+    // Nothing is adapted until the outputs are read; then every record is,
+    // selected or not.
+    assertEquals(scope.sensitiveReferences.size, 0);
+    const outputs = seedView.outputs as Record<string, unknown>;
+    assertEquals(scope.sensitiveReferences.size, 2);
+    assertStrictEquals(seedView.outputs, outputs);
+    assertEquals(Object.keys(outputs).sort(), [
+      "password",
+      "shared",
+      "token",
+      "user",
+    ]);
+    assertEquals(outputs.user, "u");
+    assertEquals(outputs.shared, "second");
+    const read = scope.secretsRead;
+    assert(isSecret(outputs.password));
+    assertEquals(scope.secretsRead, read + 1);
+    assert(isSecret(outputs.token));
+    assertEquals(
+      locationOf(outputs.password),
+      "steps.seed.outputs of model 'writer' record r1 version 1 (steps.seed.outputs), field 'password'",
+    );
+    // The context and its flat outputs are untouched.
+    assertEquals(seed.outputs.password, REF_A);
+    assertEquals(Object.keys(seed), ["status", "outputs"]);
+    assertEquals(first.attributes.password, REF_A);
+  });
+  const receiver = new (class {})();
+  assertStrictEquals(stepsView(receiver, ""), receiver);
+  assertEquals(stepsView(undefined, ""), undefined);
+});
+
+Deno.test("stepsView: a later record wins whether its field is tagged or plain, and a child's records nest under its step name", () => {
+  const taggedThenPlain = sourced({}, [{
+    path: [],
+    records: [
+      source("r1", { x: REF_A }, pathsTag("x")),
+      source("r2", { x: "plain" }),
+    ],
+  }]);
+  const plainThenTagged = sourced({}, [{
+    path: [],
+    records: [
+      source("r1", { x: "plain" }),
+      source("r2", { x: REF_A }, pathsTag("x")),
+    ],
+  }]);
+  const child = sourced({}, [
+    {
+      path: ["seed"],
+      records: [
+        source("c1", { password: REF_A, host: "h" }, pathsTag("password")),
+      ],
+    },
+    { path: ["other"], records: [source("c2", { note: "n" })] },
+  ]);
+  runInFaultScope(() => {
+    const view = stepsView(
+      { a: taggedThenPlain, b: plainThenTagged, child },
+      "",
+    ) as Record<string, Record<string, Record<string, unknown>>>;
+    assertEquals(view.a.outputs.x, "plain");
+    assert(isSecret(view.b.outputs.x));
+    const childOutputs = view.child.outputs as Record<
+      string,
+      Record<string, unknown>
+    >;
+    assert(isSecret(childOutputs.seed.password));
+    assertEquals(childOutputs.seed.host, "h");
+    assertEquals(childOutputs.other, { note: "n" });
+    assertEquals(
+      locationOf(childOutputs.seed.password),
+      "steps.child.outputs of model 'writer' record c1 version 1 (steps.child.outputs), field 'password'",
+    );
+  });
+});
+
+Deno.test("stepsView: an invalid source refuses with secret_reference_invalid at first read of the outputs, naming the accessor and never a value, and a record of another namespace stays as stored", () => {
+  const invalid = sourced({ password: "plain-s3cret" }, [{
+    path: [],
+    records: [
+      source("bad", { password: "plain-s3cret" }, pathsTag("password")),
+    ],
+  }]);
+  runInFaultScope((scope) => {
+    const view = stepsView({ bad: invalid }, "") as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const error = assertThrows(() => view.bad.outputs, SecretRefusal);
+    assertEquals(error.code, SECRET_REFERENCE_INVALID);
+    assertStringIncludes(error.message, "(steps.bad.outputs)");
+    assertStringIncludes(error.message, "record bad version 1");
+    assertEquals(error.message.includes("plain-s3cret"), false);
+    assertEquals(error.message.includes("vary"), false);
+    assertEquals(scope.faults.length, 1);
+  });
+  const foreign = sourced({ password: REF_A }, [{
+    path: [],
+    records: [
+      source("f", { password: REF_A }, pathsTag("password"), "security"),
+    ],
+  }]);
+  runInFaultScope((scope) => {
+    const view = stepsView({ f: foreign }, "") as Record<
+      string,
+      Record<string, Record<string, unknown>>
+    >;
+    assertEquals(view.f.outputs.password, REF_A);
+    assertEquals(scope.sensitiveReferences.size, 0);
+  });
+});
+
+Deno.test("synchronousSensitiveReferences: lists the references of the sources of every step the expression names, beside the model map's, and nothing for a computed key, a step without sources, a foreign record or an absent map (typed-secrets 4.2)", () => {
+  const seed = sourced({}, [{
+    path: [],
+    records: [
+      source("r1", { password: REF_A }, pathsTag("password")),
+      source("r2", { token: REF_B }, pathsTag("token")),
+    ],
+  }]);
+  const foreign = sourced({}, [{
+    path: [],
+    records: [
+      source("f", { password: REF_A }, pathsTag("password"), "security"),
+    ],
+  }]);
+  const steps = { seed, foreign, wait: { status: "succeeded", outputs: {} } };
+  const keys = (
+    cel: string,
+    namespace: string | undefined = "",
+    map: unknown = steps,
+    model: unknown = undefined,
+  ): string[] =>
+    synchronousSensitiveReferences(cel, model, namespace, map)
+      .map((r) => `${r.vaultName}/${r.key}`)
+      .sort();
+  assertEquals(keys("steps.seed.outputs.password"), ["prod/A", "prod/B"]);
+  assertEquals(keys("steps['seed'].status"), ["prod/A", "prod/B"]);
+  assertEquals(keys("steps.wait.outputs"), []);
+  assertEquals(keys("steps[inputs.name].outputs"), []);
+  assertEquals(keys("steps.foreign.outputs.password"), []);
+  // With no namespace to name the reader's own, every record is the run's.
+  assertEquals(
+    synchronousSensitiveReferences(
+      "steps.foreign.outputs.password",
+      undefined,
+      undefined,
+      steps,
+    ).map((r) => `${r.vaultName}/${r.key}`),
+    ["prod/A"],
+  );
+  assertEquals(keys("steps.seed.outputs.password", "", null), []);
+  assertEquals(keys("inputs.x"), []);
+  const { model } = modelMap({
+    main: record({ password: REF_B }, pathsTag("password")),
+  });
+  assertEquals(
+    keys(
+      "model.web.resource.creds.main.attributes.user + steps.seed.outputs.user",
+      "",
+      steps,
+      model,
+    ),
+    ["prod/A", "prod/B", "prod/B"],
+  );
+});
+
+Deno.test("stepsView: a later group at the same path replaces the earlier one, as a repeated child step name does in the flat outputs, and a child step named __proto__ reaches nothing shared", () => {
+  const repeated = sourced({}, [
+    {
+      path: ["deploy"],
+      records: [
+        source(
+          "a1",
+          { x: "1", password: REF_A, onlyA: "a" },
+          pathsTag("password"),
+        ),
+      ],
+    },
+    {
+      path: ["deploy"],
+      records: [source("b1", { x: "2", token: REF_B }, pathsTag("token"))],
+    },
+  ]);
+  runInFaultScope((scope) => {
+    const view = stepsView({ call: repeated }, "") as Record<
+      string,
+      Record<string, Record<string, Record<string, unknown>>>
+    >;
+    const deploy = view.call.outputs.deploy;
+    assertEquals(Object.keys(deploy).sort(), ["token", "x"]);
+    assertEquals(deploy.x, "2");
+    assert(isSecret(deploy.token));
+    // Only the winning group's records are adapted and recorded.
+    assertEquals(scope.sensitiveReferences.size, 1);
+  });
+  const proto = sourced({}, [{
+    path: ["__proto__"],
+    records: [
+      source("p1", { isAdmin: "yes", password: REF_A }, pathsTag("password")),
+    ],
+  }]);
+  runInFaultScope(() => {
+    const view = stepsView({ call: proto }, "") as Record<
+      string,
+      Record<string, Record<string, unknown>>
+    >;
+    const outputs = view.call.outputs;
+    assertEquals(Object.getPrototypeOf(outputs), null);
+    assert(Object.hasOwn(outputs, "__proto__"));
+    const child = Object.getOwnPropertyDescriptor(outputs, "__proto__")!
+      .value as Record<string, unknown>;
+    assertEquals(child.isAdmin, "yes");
+    assert(isSecret(child.password));
+    assertEquals("isAdmin" in {}, false);
+    assertEquals(Object.hasOwn(Object.prototype, "isAdmin"), false);
+    assertEquals(Object.hasOwn(Object.prototype, "password"), false);
+  });
 });

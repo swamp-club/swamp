@@ -1,16 +1,17 @@
 ---
 audience: maintainer
 enables: [behaviors, workflows, vaults, serve]
-last-verified: 2026-10-20 @ b7790f667
+last-verified: 2026-10-22 @ bc388c720
 ---
 
 # Typed Secrets for Expressions
 
 **Status:** implementation plan. Phases 0, 1 and 2 have shipped
 (swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
-swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1 to 3.4
-(swamp-club#3619, swamp-club#3625, swamp-club#3626, swamp-club#3627) behind
-the internal option. This revision replaces the earlier engine-2 plan, and
+swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1 to 4.2
+(swamp-club#3619, swamp-club#3625, swamp-club#3626, swamp-club#3627,
+swamp-club#3628, swamp-club#3730, swamp-club#3731) behind the internal
+option. This revision replaces the earlier engine-2 plan, and
 [Why this design](#why-this-design) says what changed. Until Phase 4 ships,
 [expressions](./expressions.md) describes current behavior.
 
@@ -840,10 +841,9 @@ untagged leaf inside it is refused too. The refusal names the accessor, the
 model, the record id, the version and the field path, never the data name,
 which a vary suffix can fill from a resolved secret, and never a value.
 Reference-looking text outside a tagged path stays ordinary text.
-Records a workflow step merges into `model.<name>.resource` with resolved
-plaintext under their tag (`fromResourceHandle`) fail with
-`secret_reference_invalid` on the typed path until Phase 4 keeps live records
-as references.
+On the typed path a workflow step keeps the records it wrote as stored, their
+tags intact (`fromResourceHandle` reads no vault), so the model map view
+adapts them like any other record (typed-secrets 4.2).
 
 Phase 3.3 (swamp-club#3626) ships the adapter for `data.latest`,
 `data.version`, `findBySpec`, `findByTag` and `model.<name>.resource` behind
@@ -856,8 +856,26 @@ registry (`DataReferenceEntry`, `VaultSecretBag.addDataReference`), which
 results are Phase 3.5: in a typed run the delegate returns the stored record
 (`src/domain/workflows/model_method_result.ts`) and the function answers its
 attributes through the adapter (`adaptModelMethodResult`), so a tagged field
-is a `Secret` within the calling expression. `data.query` and step outputs are
-Phase 4.
+is a `Secret` within the calling expression. `data.query` is Phase 4.
+
+Phase 4.2 (swamp-club#3731) adds the steps view (`stepsView`) for live and
+reconstructed `steps.<name>.outputs` and child outputs. A step context
+carries its output sources, the records its outputs were merged from, as
+stored and in write order (`src/domain/expressions/step_output_sources.ts`),
+under a symbol key CEL cannot read; the typed evaluator views the outputs as
+the merge of the adapted records under the accessor `steps.<name>.outputs`, a
+later record's field winning as the flat merge decides, a child's records
+nesting under its step name, and a child step name repeated across jobs
+replacing the earlier step's outputs, as the flat outputs do. The maps the
+view builds have no prototype and its path walk steps into own properties
+only, so a step named `__proto__` reaches nothing shared. All of a step's
+records are adapted on the first
+read of its outputs, selected or not, so every reference is recorded and a
+denied one fails the evaluation before its result is used. The tag of a
+reconstructed or child output is the one the run record kept, as today's
+reader takes it; a tag tampered with there can only refuse or leave inert
+reference text, since every reference is authorized under the run's access
+and names only content the datastore holds.
 
 Extension `readResource` is a trusted plaintext API. It keeps resolving tagged
 fields, including the resource-schema fallback for untagged records, on both
@@ -1110,8 +1128,8 @@ delivery instead of an expression.
 | A guard or assert predicate whose result holds a secret                                                                   | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
 | A data-origin value in a quoted here-document or in PowerShell single quotes                                              | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
 | A malformed sensitive-fields tag or stored reference                                                                      | Treated as absent by the accessors, or left as text; `readResource` already refuses the tag (swamp-club#3530) | `secret_reference_invalid`                                                        |
-| An own-namespace tagged field read by `data.version`, `findBySpec`, `findByTag`, a wildcard `data.latest` or `model.<name>.resource` | The stored reference text                                     | A `Secret`, as `data.latest` returns it                                           |
-| A tagged field the run's vault access refuses, in any record those readers return, including a set read where the expression uses another record | The reference text is returned                                | The evaluation fails with the access error, before its result is used            |
+| An own-namespace tagged field read by `data.version`, `findBySpec`, `findByTag`, a wildcard `data.latest`, `model.<name>.resource`, or a live, reconstructed or child `steps.<name>.outputs` field | The stored reference text, or plaintext in step outputs | A `Secret`, as `data.latest` returns it                                           |
+| A tagged field the run's vault access refuses, in any record those readers return, including a set read where the expression uses another record or another field of a step's outputs | The reference text is returned                                | The evaluation fails with the access error, before its result is used            |
 | `in`, or `==` or `!=` with no scalar-literal or `null` operand, in an expression that reads a secret                      | Compares plaintext or sentinel text, or works                 | `secret_operation_unsupported`, even when the secret is not an operand            |
 | `vault.get` of a missing key, in an expression whose result nothing delivers                                              | The eager read fails the run                                  | `secret_reference_unavailable` (Section 3.4)                                      |
 | A secret in a name, tag, label or data-name suffix                                                                        | The `sensitive-<vault>.<key>` stand-in, found by value search | The same stand-in, taken from the sentinel                                        |
@@ -1240,7 +1258,9 @@ per attempt and at each inline resolution; `sentinelResolverOf` gave way to
 `sentinelStandInOf`, which stands a vault reference in for its identity and a
 data entry for its value. "No bag holds plaintext before delivery" covers
 `vault.get` values: a data entry keeps the value a data read brought into CEL
-until Phase 4 makes data reads return references. The evaluate commands evaluate
+until Phase 4 makes data reads return references; on the typed path, since
+4.2, only `data.query` still brings one, every accessor and the live,
+reconstructed and child step outputs returning references. The evaluate commands evaluate
 no `vault.get`, so they read nothing (Section 3.4).
 
 - `VaultSecretBag` entries hold a reference, an encoding and a data-origin flag.
@@ -1469,6 +1489,39 @@ masking in run records and the index, and the release flip follow.
 `WorkflowExecutionService` with a vault that answers `has` and counts loads,
 with the option on and off.
 
+Phase 4.2 (swamp-club#3731) lands live and reconstructed step outputs and
+child outputs behind the internal option. A step context carries its output
+sources (`StepOutputSources`, `src/domain/expressions/step_output_sources.ts`):
+the records its outputs were merged from, as stored, under a symbol key the
+way the run's sensitive values ride the context, so CEL and the persisted
+forms never see them. `liveStepOutputs` and `StepOutputResolver` return them
+beside the flat outputs, a reference from an older run record taking the
+reader's namespace; in a typed run `fromResourceHandle` and the resolver's
+reader read no vault, so the records in `output.resources`, in
+`model.<name>.resource` and in the sources keep their references and tags,
+and no value enters a bag. The typed evaluator installs the steps view
+beside the model map view (`CelEvaluator.withModelView`), and the
+synchronous authorization step authorizes the references of the sources of
+every step an expression names (`stepTargets` in `expression_references.ts`,
+`synchronousSensitiveReferences`): the available-expression pass evaluates
+`steps.*` synchronously and leaves a failing expression raw, so without it a
+task field reading an untagged sibling of a tagged field would stay
+unresolved. Two string-keyed copies of a step context are kept whole: the
+deferred-binding rebind passes the context's `steps` by reference, since the
+subtree is whole data, and `captureDeferredBindings` serializes each step's
+sources into the record (`sources`, optional and validated) in a typed run,
+which the nested resolve re-attaches, so a child's deferred expression views
+a parent's outputs through the adapter; the untyped capture is byte-for-byte
+what it was. `resume` takes `secretRedactor` and `sensitiveValues` as `run`
+does, a test seam until the `rehydratePersistedForm` slice: a resumed run
+with written references still rehydrates them through the vault. Stated as
+out of this slice: the query view, masking in run records and the index, the
+rehydrate and evaluate-cache slices, and the release flip. The integration
+scenarios cover live, denied (through a principal policy, since the vaults
+list is run-wide and a child's list intersects its parent's), reconstructed
+(an approval, a narrowed vaults list and a tag the writer could not have
+stored), child, deferred and model-map outputs, with the option on and off.
+
 Then turn the path on for every entry point and remove the internal option.
 Delete the regular-expression rewrite, the value search, and the
 expression-facing plaintext resolution of tagged fields.
@@ -1547,11 +1600,11 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | The `Secret` value (Section 3.1)              | `src/infrastructure/cel/secret_value.ts`, `secret_fault_context.ts` (the fault context)                                                                                                                                                                                                                                                                               |
 | Refusals and the container rule (Section 4.3) | `src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`, `secret_registrations.ts`, `container_comparison.ts`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                            |
 | Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope` with `secretResult` and `authorizedReferences`, `prepareSynchronousReads`), `sensitive_record_adapter.ts` (`synchronousSensitiveReferences`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
-| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`passEvaluatorFor`: the registry selects the typed evaluator, bound to the pass's bag, scope and destination; `PassEvaluator.prepare`), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
+| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`passEvaluatorFor`: the registry selects the typed evaluator, bound to the pass's bag, scope and destination; `PassEvaluator.prepare`; the deferred-binding rebind keeps a step context's sources), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `expression_references.ts` (`stepTargets`, the steps an expression reads), `deferred_expression.ts` (a typed capture carries each step's `sources`), `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
 | Static misuse diagnostics (Section 10.2)      | `src/infrastructure/cel/secret_diagnostics.ts` (`diagnoseSecretMisuse`), `cel_evaluator.ts` (`createSecretCheckEnvironment`), `src/domain/models/validation_service.ts` (`diagnoseSecretMisuse`, `deliverCheckArguments`), `src/libswamp/models/validate.ts` |
 | Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
-| Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts`, `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace`), `integration/typed_data_secrets_test.ts` |
+| Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts` (`stepsView` for step outputs), `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace`), `src/domain/expressions/step_output_sources.ts` (a step context's output sources and their persisted form), `src/domain/workflows/step_output_resolver.ts` (sources beside the flat outputs), `integration/typed_data_secrets_test.ts` |
 | Destination policy (Sections 6.3, 7.1)        | `src/domain/models/secret_destinations.ts` (`refuseSecretsInRefusingFields`, `refuseSecretDestinations`, `assertNoSensitiveRefuseConflict`, `SecretDestinationRefusedError`), `zod_field_metadata.ts` (`findFieldsWhere`), `src/domain/vaults/secret_occurrences.ts` (`SecretOccurrences`), `integration/typed_secret_destinations_test.ts` |
 | Sentinels and shell placement | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`, `typedSecrets`), `vault_secret_bag.ts` (`addDataReference`, `planShellPlacement`, `planPowerShellPlacement`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts` (`refuseShellSecretDestinations`), `shell_strategy.ts` (`planSecrets`) |
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
@@ -1562,7 +1615,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Queries                                       | `src/domain/data/data_query_service.ts`                                                                                                                                                                                                                                                                                                                               |
 | Method boundary and checks | `src/domain/models/method_execution_service.ts` (`deliverStepSecrets`, `unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
 | Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` (no bag, no vault: a typed evaluator refuses a `Secret` result) |
-| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts`, `integration/typed_workflow_passes_test.ts` |
+| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination; in a typed run the records a step wrote are kept as stored and each step context carries its output sources, and `resume` takes a sensitive-value record as `run` does), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts`, `integration/typed_workflow_passes_test.ts` |
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |

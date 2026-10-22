@@ -22,18 +22,24 @@
  * writer could store, the view keeps every non-secret value, turns every
  * tagged reference into a Secret, records every reference, mutates nothing,
  * and releases through the boundary as plain data with a sentinel for each
- * reference.
+ * reference. The steps view (typed-secrets 4.2) merges such records as the
+ * flat step outputs do.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import fc from "fast-check";
+import {
+  attachStepOutputSources,
+  type StepOutputRecord,
+} from "../../domain/expressions/step_output_sources.ts";
 import { SENSITIVE_FIELDS_TAG } from "../../domain/models/data_writer.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
+import { mergeStepOutputs } from "../../domain/workflows/step_output_resolver.ts";
 import { SecretBoundary } from "./secret_boundary.ts";
 import { runInFaultScope } from "./secret_fault_context.ts";
-import { isSecret } from "./secret_value.ts";
-import { adaptDataRecord } from "./sensitive_record_adapter.ts";
+import { isSecret, secretParts } from "./secret_value.ts";
+import { adaptDataRecord, stepsView } from "./sensitive_record_adapter.ts";
 
 /** A field name the strict reader accepts as one path segment. */
 const key = fc.stringMatching(/^[a-z][a-z0-9_-]{0,6}$/);
@@ -181,5 +187,100 @@ Deno.test("adaptDataRecord: a released view is plain data with a value-less data
       assertEquals(bag.rawValues, []);
     }),
     { numRuns: 200 },
+  );
+});
+
+const KEYS = ["a", "b", "c", "d", "e"] as const;
+
+interface Field {
+  key: string;
+  tagged: boolean;
+  value: string;
+}
+
+const fieldsArb = fc.uniqueArray(
+  fc.record({
+    key: fc.constantFrom(...KEYS),
+    tagged: fc.boolean(),
+    value: fc.string(),
+  }),
+  { selector: (f) => f.key, minLength: 1, maxLength: KEYS.length },
+);
+
+const recordsArb = fc.array(fieldsArb, { minLength: 1, maxLength: 4 });
+
+const referenceKey = (index: number, key: string) => `k-${index}-${key}`;
+
+function recordOf(index: number, fields: readonly Field[]): StepOutputRecord {
+  const attributes: Record<string, unknown> = {};
+  const tagged: string[] = [];
+  for (const field of fields) {
+    if (field.tagged) {
+      tagged.push(field.key);
+      attributes[field.key] = `\${{ vault.get('v', '${
+        referenceKey(index, field.key)
+      }') }}`;
+    } else {
+      attributes[field.key] = field.value;
+    }
+  }
+  return {
+    id: `r${index}`,
+    name: `n${index}`,
+    version: index + 1,
+    namespace: "",
+    modelName: "writer",
+    tags: tagged.length > 0
+      ? { [SENSITIVE_FIELDS_TAG]: JSON.stringify(tagged) }
+      : {},
+    attributes,
+  };
+}
+
+Deno.test("stepsView: for any records, the merged view has the keys of mergeStepOutputs, each plain winner's value, each tagged winner as a Secret of its own record, and every reference recorded", () => {
+  fc.assert(
+    fc.property(recordsArb, (fieldSets) => {
+      const records = fieldSets.map((fields, index) => recordOf(index, fields));
+      const expected = mergeStepOutputs(records.map((r) => r.attributes))!;
+      const step = attachStepOutputSources(
+        { status: "succeeded", outputs: expected },
+        [{ path: [], records }],
+      );
+      runInFaultScope((scope) => {
+        const view = stepsView({ s: step }, "") as Record<
+          string,
+          Record<string, Record<string, unknown>>
+        >;
+        const outputs = view.s.outputs;
+        assertEquals(Object.keys(outputs).sort(), Object.keys(expected).sort());
+        let references = 0;
+        for (const fields of fieldSets) {
+          references += fields.filter((f) => f.tagged).length;
+        }
+        assertEquals(scope.sensitiveReferences.size, references);
+        for (const key of Object.keys(expected)) {
+          // The winner is the last record holding the key.
+          let winner = -1;
+          for (let index = 0; index < fieldSets.length; index++) {
+            if (fieldSets[index].some((f) => f.key === key)) winner = index;
+          }
+          const field = fieldSets[winner].find((f) => f.key === key)!;
+          const value = outputs[key];
+          if (field.tagged) {
+            assert(isSecret(value), `${key} should be a Secret`);
+            const part = secretParts(value)![0] as {
+              reference: { vaultName: string; key: string };
+              location: string;
+            };
+            assertEquals(part.reference.vaultName, "v");
+            assertEquals(part.reference.key, referenceKey(winner, key));
+            assertStringIncludes(part.location, `record r${winner} `);
+          } else {
+            assertEquals(value, expected[key]);
+            assertEquals(value, field.value);
+          }
+        }
+      });
+    }),
   );
 });

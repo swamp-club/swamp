@@ -50,6 +50,12 @@ import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts
 import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+} from "../src/domain/vaults/run_vault_access.ts";
+import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { WorkflowExecutionService } from "../src/domain/workflows/execution_service.ts";
@@ -89,6 +95,24 @@ interface Fixture {
     typed: boolean,
     extra?: Workflow[],
   ) => Promise<Run>;
+  /** Resumes a suspended run, over a typed registry when `typed`. */
+  resume: (
+    workflowName: string,
+    runId: string,
+    typed: boolean,
+  ) => Promise<Run>;
+  /** Approves the run's waiting manual approval in its record. */
+  approve: (workflowName: string, runId: string) => Promise<void>;
+  /** Saves a workflow, replacing the stored one of the same id. */
+  saveWorkflow: (workflow: Workflow) => Promise<void>;
+  /** Edits a run's stored record in place. */
+  editRun: (
+    workflowName: string,
+    runId: string,
+    edit: (data: Record<string, unknown>) => void,
+  ) => Promise<void>;
+  /** Called by the write methods once their record is written. */
+  hooks: { afterWrite?: () => void };
   /**
    * Writes one tagged record per canary class through a prior run of the
    * real writer, then clears the counters, so a scenario's loads and checks
@@ -151,6 +175,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     }),
   });
   const received: Received[] = [];
+  const hooks: { afterWrite?: () => void } = {};
   const type = ModelType.create(
     `test/typed-passes-${crypto.randomUUID().slice(0, 8)}`,
   );
@@ -195,6 +220,22 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
             password: canaries.find((c) => c.class === "quotes")!.value,
             host: "main",
           });
+          hooks.afterWrite?.();
+          return { dataHandles: [handle] };
+        },
+      },
+      writeClass: {
+        description: "Writes the record of one canary class",
+        arguments: z.object({ cls: z.string() }),
+        execute: async (args, context) => {
+          const cls = (args as { cls: string }).cls;
+          const canary = canaries.find((c) => c.class === cls)!;
+          const handle = await context.writeResource!(
+            "creds",
+            canaryName(canary),
+            { password: canary.value, host: canary.class },
+          );
+          hooks.afterWrite?.();
           return { dataHandles: [handle] };
         },
       },
@@ -230,13 +271,26 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       }
       return found;
     };
-    const run = async (
-      workflow: Workflow,
-      typed: boolean,
-      extra: Workflow[] = [],
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    /** What a run or a resume is handed: a typed registry when `typed`. */
+    const sensitiveValuesFor = (typed: boolean) => {
+      const redactor = new SecretRedactor();
+      return {
+        secretRedactor: redactor,
+        sensitiveValues: typed
+          ? new RunSensitiveValues(
+            redactor,
+            new SecretBagRegistry({ typedSecrets: true }),
+          )
+          : undefined,
+      };
+    };
+    const drive = async (
+      events: (
+        service: WorkflowExecutionService,
+      ) => AsyncIterable<WorkflowExecutionEvent>,
     ): Promise<Run> => {
-      const workflowRepo = new YamlWorkflowRepository(repoDir);
-      for (const w of [workflow, ...extra]) await workflowRepo.save(w);
       const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
       const result: Run = {
         events: [],
@@ -248,29 +302,21 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       try {
         const service = new WorkflowExecutionService(
           workflowRepo,
-          new YamlWorkflowRunRepository(repoDir),
+          runRepo,
           repoDir,
           undefined,
           undefined,
           catalog,
         );
-        const redactor = new SecretRedactor();
-        const sensitiveValues = typed
-          ? new RunSensitiveValues(
-            redactor,
-            new SecretBagRegistry({ typedSecrets: true }),
-          )
-          : undefined;
-        for await (
-          const event of service.run(workflow.name, {
-            secretRedactor: redactor,
-            sensitiveValues,
-          })
-        ) {
+        for await (const event of events(service)) {
           result.events.push(event);
           if (event.kind === "started") result.runId = event.runId;
           if (event.kind === "completed") {
             result.status = event.run.status;
+            result.record = JSON.stringify(event.run.toData());
+          }
+          if (event.kind === "suspended") {
+            result.status = "suspended";
             result.record = JSON.stringify(event.run.toData());
           }
           if (event.kind === "step_failed") {
@@ -290,6 +336,68 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         catalog.close();
       }
       return result;
+    };
+    const run = async (
+      workflow: Workflow,
+      typed: boolean,
+      extra: Workflow[] = [],
+    ): Promise<Run> => {
+      for (const w of [workflow, ...extra]) await workflowRepo.save(w);
+      return await drive((service) =>
+        service.run(workflow.name, sensitiveValuesFor(typed))
+      );
+    };
+    const resume = (
+      workflowName: string,
+      runId: string,
+      typed: boolean,
+    ): Promise<Run> =>
+      drive((service) =>
+        service.resume(workflowName, runId, sensitiveValuesFor(typed))
+      );
+    const storedRun = async (workflowName: string, runId: string) => {
+      const workflow = await workflowRepo.findByName(workflowName);
+      assert(workflow, `no workflow ${workflowName}`);
+      const run = await runRepo.findById(
+        workflow.id,
+        createWorkflowRunId(runId),
+      );
+      assert(run, `no run ${runId}`);
+      return { workflow, run };
+    };
+    const approve = async (
+      workflowName: string,
+      runId: string,
+    ): Promise<void> => {
+      const { workflow, run } = await storedRun(workflowName, runId);
+      const waiting = run.findWaitingApprovalStep();
+      assert(waiting, "no step waits for approval");
+      const step = run.getJob(waiting.jobName)!.getStep(waiting.stepName)!;
+      step.recordApprovalDecision({
+        approved: true,
+        decidedBy: "user:test",
+        decidedAt: new Date().toISOString(),
+      });
+      step.succeed();
+      await runRepo.save(workflow.id, run);
+    };
+    const saveWorkflow = (workflow: Workflow) => workflowRepo.save(workflow);
+    const editRun = async (
+      workflowName: string,
+      runId: string,
+      edit: (data: Record<string, unknown>) => void,
+    ): Promise<void> => {
+      const { workflow, run } = await storedRun(workflowName, runId);
+      const data = run.toData() as unknown as Record<string, unknown>;
+      edit(data);
+      await runRepo.save(
+        workflow.id,
+        WorkflowRun.fromData(
+          data as unknown as Parameters<
+            typeof WorkflowRun.fromData
+          >[0],
+        ),
+      );
     };
     const seed = async (): Promise<void> => {
       const seeded = await run(
@@ -339,6 +447,11 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       loads,
       checks,
       run,
+      resume,
+      approve,
+      saveWorkflow,
+      editRun,
+      hooks,
       seed,
       storedKey,
       filesHolding,
@@ -449,14 +562,10 @@ Deno.test("typed workflow passes: a guard whose result holds a secret refuses be
     }
     assertEquals(run.skipped.size, 0);
     assertEquals(f.received, []);
-    // No guard loaded: not the tagged field, not the vault key. The one
-    // load is the write method's own, reading back the record it wrote for
-    // its step outputs, which stay on the eager read until the outputs
-    // slice adapts them.
-    const quotesKey = await f.storedKey("c-quotes");
-    assertEquals(f.loads.includes(TOKEN_KEY), false);
-    assertEquals(f.loads.includes(quotesKey), false);
-    assert(f.loads.length <= 1, f.loads.join(","));
+    // No guard loaded: not the tagged field, not the vault key, and the
+    // write method's record is kept as stored for its step outputs, so
+    // nothing was read back either (typed-secrets 4.2).
+    assertEquals(f.loads, []);
     // The vault.get guard cost one existence check, answered by has().
     assertEquals(f.checks, [TOKEN_KEY]);
     await assertNothingLeaked(f, run);
@@ -799,4 +908,460 @@ Deno.test("typed workflow passes: a step name resolved at run start keeps the se
     assertEquals(plainNamesOf(run).length, 1);
     await assertNothingLeaked(f, run);
   });
+});
+
+function write(name = "write"): Step {
+  return Step.create({ name, task: StepTask.model("writer", "write", {}) });
+}
+
+function writeClass(cls: string): Step {
+  return Step.create({
+    name: `w-${cls}`,
+    task: StepTask.model("writer", "writeClass", { cls }),
+  });
+}
+
+function gate(dependsOn = "write"): Step {
+  return Step.create({
+    name: "gate",
+    task: StepTask.manualApproval("Continue?"),
+    dependsOn: after(dependsOn),
+  });
+}
+
+const OUTPUT_PASSWORD = "${{ steps.write.outputs.password }}";
+const OUTPUT_HOST = "${{ steps.write.outputs.host }}";
+
+const byHost = (f: Fixture) =>
+  new Map(f.received.map((r) => [r.note, r.password]));
+
+Deno.test("typed workflow passes: a later step reads steps.<name>.outputs through the adapter, so every canary class is delivered exactly with one load each at delivery and none before, a plain sibling stays text, and a guard comparing the tagged field refuses; with the option off the outputs are read eagerly (typed-secrets 4.2)", async () => {
+  const workflow = (f: Fixture) =>
+    Workflow.create({
+      name: "live-outputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          ...f.canaries.flatMap((c) => [
+            writeClass(c.class),
+            consume(`u-${c.class}`, {
+              password: `\${{ steps['w-${c.class}'].outputs.password }}`,
+              note: `\${{ steps['w-${c.class}'].outputs.host }}`,
+            }, { dependsOn: `w-${c.class}` }),
+          ]),
+          consume("compare", {}, {
+            guard: "${{ steps['w-quotes'].outputs.password == 'x' }}",
+            dependsOn: "w-quotes",
+            allowFailure: true,
+          }),
+        ],
+      })],
+    });
+  await withFixture(async (f) => {
+    const run = await f.run(workflow(f), true);
+    // The refused guard fails its step and the run; every delivery ran.
+    assertEquals(run.status, "failed");
+    assertEquals([...run.errors.keys()], ["compare"]);
+    assertStringIncludes(
+      run.errors.get("compare")!,
+      "secret_operation_unsupported",
+    );
+    const delivered = byHost(f);
+    for (const canary of f.canaries) {
+      assertEquals(
+        delivered.get(canary.class),
+        canary.value,
+        `typed: ${canary.class}`,
+      );
+    }
+    assertEquals(f.received.length, f.canaries.length);
+    // One load per delivery: the write steps read nothing back, the guard
+    // loaded nothing, and a data-origin reference is never probed.
+    assertEquals(f.loads.length, f.canaries.length);
+    assertEquals(f.checks, []);
+    await assertNothingLeaked(f, run);
+  });
+  await withFixture(async (f) => {
+    const run = await f.run(workflow(f), false);
+    // Today the completing write step resolves its record eagerly, the
+    // guard compares the plaintext and is false, so the guarded step runs
+    // too, and the deliveries match.
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(run.skipped.size, 0);
+    assertEquals(f.received.length, f.canaries.length + 1);
+    const delivered = byHost(f);
+    for (const canary of f.canaries) {
+      assertEquals(
+        delivered.get(canary.class),
+        canary.value,
+        `untyped: ${canary.class}`,
+      );
+    }
+    assert(f.loads.length >= f.canaries.length);
+  });
+});
+
+Deno.test("typed workflow passes: a step output whose vault the run's access refuses fails the step that reads any field of the record before the result is used, with zero loads; with the option off the eager read-back is refused instead (typed-secrets 4.2)", async () => {
+  const workflow = () =>
+    Workflow.create({
+      name: "denied-outputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          write(),
+          consume("use", { note: OUTPUT_HOST }, { dependsOn: "write" }),
+        ],
+      })],
+    });
+  // A principal policy that lets the record be written, then refuses every
+  // read of the vault: the vaults list cannot do this, since it is run-wide.
+  const readsRefusedAfterWrite = (f: Fixture): RunVaultAccess => {
+    let denyReads = false;
+    f.hooks.afterWrite = () => {
+      denyReads = true;
+    };
+    return RunVaultAccess.create({
+      policy: {
+        principal: "user:tester",
+        decide: (_vault, action) => ({
+          allowed: !(denyReads && action === "read"),
+          reason: denyReads && action === "read"
+            ? "reads are refused once the record is written"
+            : "allowed",
+        }),
+      },
+    });
+  };
+  await withFixture(async (f) => {
+    const run = await runWithVaultAccess(
+      readsRefusedAfterWrite(f),
+      () => f.run(workflow(), true),
+    );
+    assertEquals(run.status, "failed");
+    assertEquals([...run.errors.keys()], ["use"]);
+    assertStringIncludes(run.errors.get("use")!, "refused");
+    assertEquals(f.received, []);
+    assertEquals(f.loads, []);
+    await assertNothingLeaked(f, run);
+  });
+  await withFixture(async (f) => {
+    const run = await runWithVaultAccess(
+      readsRefusedAfterWrite(f),
+      () => f.run(workflow(), false),
+    );
+    // Today the record is resolved eagerly when the write step completes,
+    // and the refusal lands there.
+    assertEquals(run.status, "failed");
+    assertEquals(f.received, []);
+    assertEquals(f.loads, []);
+  });
+});
+
+Deno.test("typed workflow passes: outputs reconstructed from the run record on resume read through the adapter: the resumed step delivers the exact canary with one load and no read at resume, a vaults list narrowed before the resume refuses the read before use, and a tag the writer could not have stored refuses with secret_reference_invalid; with the option off the resume reads the outputs eagerly (typed-secrets 4.2)", async () => {
+  const NAME = "resume-outputs";
+  const workflow = () =>
+    Workflow.create({
+      name: NAME,
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          write(),
+          gate(),
+          consume("use", { password: OUTPUT_PASSWORD, note: OUTPUT_HOST }, {
+            dependsOn: "gate",
+          }),
+        ],
+      })],
+    });
+  /** Runs to the approval, approves it in the record, and hands back the ids. */
+  const suspend = async (
+    f: Fixture,
+    typed: boolean,
+  ): Promise<{ runId: string; workflow: Workflow }> => {
+    const wf = workflow();
+    const run = await f.run(wf, typed);
+    assertEquals(run.status, "suspended", [...run.errors].join("\n"));
+    assert(run.runId);
+    await f.approve(NAME, run.runId);
+    return { runId: run.runId, workflow: wf };
+  };
+  await withFixture(async (f) => {
+    const { runId } = await suspend(f, true);
+    assertEquals(f.loads, []);
+    const resumed = await f.resume(NAME, runId, true);
+    assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
+    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
+    // The resume read the record back as stored; the one load is the
+    // delivery's.
+    assertEquals(f.loads.length, 1);
+    assertEquals(f.checks, []);
+    await assertNothingLeaked(f, resumed);
+  });
+  await withFixture(async (f) => {
+    const { runId, workflow: wf } = await suspend(f, true);
+    // An edit to the workflow narrows a suspended run (resumeVaultAccess).
+    await f.saveWorkflow(
+      Workflow.fromData(
+        { ...wf.toData(), vaults: ["other"] } as Parameters<
+          typeof Workflow.fromData
+        >[0],
+      ),
+    );
+    const resumed = await f.resume(NAME, runId, true);
+    assertEquals(resumed.status, "failed");
+    assertEquals([...resumed.errors.keys()], ["use"]);
+    assertStringIncludes(resumed.errors.get("use")!, "refused");
+    assertEquals(f.received, []);
+    assertEquals(f.loads, []);
+  });
+  await withFixture(async (f) => {
+    const { runId } = await suspend(f, true);
+    // The run record's tag names a plain field, which the writer could not
+    // have stored: the resumed read refuses, naming no value.
+    await f.editRun(NAME, runId, (data) => {
+      const jobs = data.jobs as Array<{
+        steps: Array<{
+          stepName: string;
+          output?: {
+            type?: string;
+            resources?: Record<
+              string,
+              Record<string, { tags: Record<string, string> }>
+            >;
+          };
+        }>;
+      }>;
+      let tagged = 0;
+      for (const job of jobs) {
+        for (const step of job.steps) {
+          if (step.output?.type !== "model_method") continue;
+          for (const instances of Object.values(step.output.resources ?? {})) {
+            for (const record of Object.values(instances)) {
+              record.tags["_swamp.sensitiveFields"] = JSON.stringify([
+                "host",
+              ]);
+              tagged++;
+            }
+          }
+        }
+      }
+      assertEquals(tagged, 1);
+    });
+    const resumed = await f.resume(NAME, runId, true);
+    assertEquals(resumed.status, "failed");
+    assertEquals([...resumed.errors.keys()], ["use"]);
+    assertStringIncludes(
+      resumed.errors.get("use")!,
+      "secret_reference_invalid",
+    );
+    assertStringIncludes(resumed.errors.get("use")!, "(steps.write.outputs)");
+    assertEquals(f.received, []);
+    assertEquals(f.loads, []);
+    await assertNothingLeaked(f, resumed);
+  });
+  await withFixture(async (f) => {
+    const { runId } = await suspend(f, false);
+    const resumed = await f.resume(NAME, runId, false);
+    assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
+    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
+    assert(f.loads.length >= 1);
+  });
+});
+
+Deno.test("typed workflow passes: a parent reads a child workflow's outputs through the adapter, so the tagged field is delivered exactly with one load and a guard comparing it refuses; with the option off it is read eagerly (typed-secrets 4.2)", async () => {
+  const child = () =>
+    Workflow.create({
+      name: "child-outputs",
+      jobs: [Job.create({ name: "main", steps: [write()] })],
+    });
+  const parent = () =>
+    Workflow.create({
+      name: "parent-outputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call",
+            task: StepTask.workflow("child-outputs", {}),
+          }),
+          consume("use", {
+            password: "${{ steps.call.outputs.write.password }}",
+            note: "${{ steps.call.outputs.write.host }}",
+          }, { dependsOn: "call" }),
+          consume("compare", {}, {
+            guard: "${{ steps.call.outputs.write.password == 'x' }}",
+            dependsOn: "call",
+            allowFailure: true,
+          }),
+        ],
+      })],
+    });
+  await withFixture(async (f) => {
+    const run = await f.run(parent(), true, [child()]);
+    assertEquals(run.status, "failed");
+    assertEquals([...run.errors.keys()], ["compare"]);
+    assertStringIncludes(
+      run.errors.get("compare")!,
+      "secret_operation_unsupported",
+    );
+    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
+    assertEquals(f.loads.length, 1);
+    assertEquals(f.checks, []);
+    await assertNothingLeaked(f, run);
+  });
+  await withFixture(async (f) => {
+    const run = await f.run(parent(), false, [child()]);
+    // Today the outputs are read eagerly, the guard compares the plaintext
+    // and is false, so the guarded step runs too.
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(run.skipped.size, 0);
+    assertEquals(f.received.length, 2);
+    assertEquals(
+      f.received.filter((r) => r.password !== undefined),
+      [{ password: quotes(f), note: "main" }],
+    );
+    assert(f.loads.length >= 1);
+  });
+});
+
+Deno.test("typed workflow passes: a child input deferred from the parent that joins a vault.get with a parent step's tagged output delivers both once, the parent's outputs viewed through their persisted sources; with the option off the captured plaintext is delivered (typed-secrets 4.2)", async () => {
+  const child = () =>
+    Workflow.create({
+      name: "child-deferred",
+      inputs: { properties: { combo: { type: "string" } } },
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "deliver",
+            task: StepTask.model("writer", "consume", {
+              password: "${{ inputs.combo }}",
+            }),
+          }),
+        ],
+      })],
+    });
+  const parent = () =>
+    Workflow.create({
+      name: "parent-deferred",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          write(),
+          Step.create({
+            name: "call",
+            task: StepTask.workflow("child-deferred", {
+              combo: `\${{ vault.get('${VAULT}', '${TOKEN_KEY}') + ':' + ` +
+                "steps.write.outputs.password }}",
+            }),
+            dependsOn: after("write"),
+          }),
+        ],
+      })],
+    });
+  await withFixture(async (f) => {
+    const run = await f.run(parent(), true, [child()]);
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(f.received, [{ password: `${f.token}:${quotes(f)}` }]);
+    // One load each at the child's delivery; the vault.get cost one
+    // existence check, the data-origin reference none.
+    assertEquals(f.loads.length, 2);
+    assertEquals(f.checks, [TOKEN_KEY]);
+    await assertNothingLeaked(f, run);
+  });
+  await withFixture(async (f) => {
+    const run = await f.run(parent(), false, [child()]);
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(f.received, [{ password: `${f.token}:${quotes(f)}` }]);
+  });
+});
+
+Deno.test("typed workflow passes: model.<name>.resource of a record a step wrote earlier in the run reads as a Secret through the model map view and is delivered once, instead of refusing; with the option off it holds plaintext (typed-secrets 4.2)", async () => {
+  const workflow = () =>
+    Workflow.create({
+      name: "model-map-live",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          write(),
+          consume("use", {
+            password:
+              "${{ model.writer.resource.creds.main.attributes.password }}",
+            note: "${{ model.writer.resource.creds.main.attributes.host }}",
+          }, { dependsOn: "write" }),
+        ],
+      })],
+    });
+  await withFixture(async (f) => {
+    const run = await f.run(workflow(), true);
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
+    assertEquals(f.loads.length, 1);
+    assertEquals(f.checks, []);
+    await assertNothingLeaked(f, run);
+  });
+  await withFixture(async (f) => {
+    const run = await f.run(workflow(), false);
+    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
+    assert(f.loads.length >= 1);
+  });
+});
+
+Deno.test("typed workflow passes: a child step name repeated across jobs: the parent reads the later job's outputs, with the option on and off (typed-secrets 4.2)", async () => {
+  const classes = (f: Fixture) =>
+    f.canaries.filter((c) => c.unique).slice(0, 2).map((c) => c.class);
+  const child = (f: Fixture) => {
+    const [first, second] = classes(f);
+    return Workflow.create({
+      name: "child-repeat",
+      jobs: [
+        Job.create({
+          name: "a",
+          steps: [Step.create({
+            name: "w",
+            task: StepTask.model("writer", "writeClass", { cls: first }),
+          })],
+        }),
+        Job.create({
+          name: "b",
+          dependsOn: [{ job: "a", condition: TriggerCondition.succeeded() }],
+          steps: [Step.create({
+            name: "w",
+            task: StepTask.model("writer", "writeClass", { cls: second }),
+          })],
+        }),
+      ],
+    });
+  };
+  const parent = () =>
+    Workflow.create({
+      name: "parent-repeat",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call",
+            task: StepTask.workflow("child-repeat", {}),
+          }),
+          consume("use", {
+            password: "${{ steps.call.outputs.w.password }}",
+            note: "${{ steps.call.outputs.w.host }}",
+          }, { dependsOn: "call" }),
+        ],
+      })],
+    });
+  for (const typed of [true, false]) {
+    await withFixture(async (f) => {
+      const [, second] = classes(f);
+      const run = await f.run(parent(), typed, [child(f)]);
+      assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
+      const expected = f.canaries.find((c) => c.class === second)!;
+      assertEquals(f.received, [{ password: expected.value, note: second }]);
+      if (typed) {
+        assertEquals(f.loads.length, 1);
+        await assertNothingLeaked(f, run);
+      }
+    });
+  }
 });

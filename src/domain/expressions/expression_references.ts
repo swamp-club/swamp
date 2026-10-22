@@ -112,6 +112,19 @@ export interface ExpressionReferences {
    * whole, an unknown accessor, or text that does not parse.
    */
   readonly dataWide: boolean;
+  /**
+   * Steps whose context the expression reads through the `steps` map, by
+   * name as written (`steps.<name>` or `steps['<name>']`). The synchronous
+   * passes authorize the sensitive-field references of their output sources
+   * ahead of evaluation (typed-secrets 4.2). A step named by a computed key
+   * is not here; {@link stepsWide} reports it.
+   */
+  readonly stepTargets: ReadonlySet<string>;
+  /**
+   * The expression reads the `steps` map by a computed key or whole, or
+   * does not parse, so it may read any step.
+   */
+  readonly stepsWide: boolean;
   /** The expression reads the process environment. */
   readonly usesEnv: boolean;
   /** The expression reads `self` or `inputs`, so its targets can follow them. */
@@ -162,6 +175,8 @@ interface Accumulator {
   modelTargets: Set<string>;
   syncDataReads: Map<string, MutableSyncDataRead>;
   dataWide: boolean;
+  stepTargets: Set<string>;
+  stepsWide: boolean;
   usesEnv: boolean;
   readsSelfOrInputs: boolean;
   runTargets: { model: string; method: string }[];
@@ -176,6 +191,8 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     modelTargets: new Set(),
     syncDataReads: new Map(),
     dataWide: false,
+    stepTargets: new Set(),
+    stepsWide: false,
     usesEnv: false,
     readsSelfOrInputs: false,
     runTargets: [],
@@ -189,6 +206,7 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
     // Text that does not parse here is not evaluated as this parses it;
     // fail closed rather than guess what it reads.
     acc.dataWide = true;
+    acc.stepsWide = true;
     acc.runsComputed = true;
     acc.usesEnv = true;
     acc.readsSelfOrInputs = true;
@@ -418,6 +436,8 @@ function visit(
       if (name === "data" || name === "model" || name === "file") {
         acc.dataWide = true;
       }
+      // The steps map used whole or aliased can reach any step.
+      if (name === "steps") acc.stepsWide = true;
       // An aliased model namespace (cel.bind, dyn(), a list) still
       // dispatches model.method at evaluation, so it may run any model.
       if (name === "model") acc.runsComputed = true;
@@ -426,6 +446,10 @@ function visit(
     case ".":
     case ".?": {
       const [target, field] = node.args as [ASTNode, string];
+      if (isFree(target, "steps", bound)) {
+        acc.stepTargets.add(field);
+        return;
+      }
       const entry = modelEntry(target, bound);
       if (entry) {
         addModelEntry(entry.name, field, acc);
@@ -443,6 +467,13 @@ function visit(
     case "[]":
     case "[?]": {
       const [target, key] = node.args as [ASTNode, ASTNode];
+      if (isFree(target, "steps", bound)) {
+        const name = stringLiteral(key);
+        if (name === undefined) acc.stepsWide = true;
+        else acc.stepTargets.add(name);
+        visit(key, bound, acc);
+        return;
+      }
       const entry = modelEntry(target, bound);
       if (entry) {
         addModelEntry(entry.name, stringLiteral(key), acc);

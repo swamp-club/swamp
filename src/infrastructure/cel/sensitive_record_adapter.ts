@@ -57,6 +57,10 @@
  *   fire only when CEL reads them, each original object has one view per
  *   evaluation, so `model.<name>` and `model["<id>"]` share it, and each
  *   record is adapted at first read.
+ * - The steps view (typed-secrets 4.2) reads `steps.<name>.outputs` as the
+ *   merge of the adapted records the outputs came from, which the step
+ *   context carries as its output sources (`step_output_sources.ts`), so a
+ *   tagged output field is a Secret too. See {@link stepsView}.
  */
 
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
@@ -69,6 +73,11 @@ import {
 } from "../../domain/models/data_writer.ts";
 import type { SecretReference } from "../../domain/vaults/secret_bag_registry.ts";
 import { analyzeExpression } from "../../domain/expressions/expression_references.ts";
+import {
+  type StepOutputGroup,
+  type StepOutputSources,
+  stepOutputSourcesOf,
+} from "../../domain/expressions/step_output_sources.ts";
 import { isPlainMap } from "./secret_boundary.ts";
 import {
   recordSecretRead,
@@ -77,14 +86,19 @@ import {
 } from "./secret_fault_context.ts";
 import { dataReferenceSecret, type Secret } from "./secret_value.ts";
 
-/** The accessor a record was read through, named in refusals and locations. */
+/**
+ * The accessor a record was read through, named in refusals and locations.
+ * A step output names its step as the expression reads it
+ * (`steps.seed.outputs`); a child output is read through its parent step.
+ */
 export type DataAccessor =
   | "data.latest"
   | "data.version"
   | "data.findBySpec"
   | "data.findByTag"
   | "model.<name>.resource"
-  | "model.method";
+  | "model.method"
+  | `steps.${string}.outputs`;
 
 /** The fields of a record the adapter reads. Anything else passes through. */
 interface RecordLike {
@@ -492,6 +506,120 @@ export function modelMapView(
 }
 
 /**
+ * A lazy view of the `steps` map for one evaluation (typed-secrets 4.2). A
+ * step context that carries its output sources (`step_output_sources.ts`)
+ * reads its `outputs` as the merge of the adapted records of every group,
+ * built on first read: each record is adapted as `data.latest` adapts one,
+ * under the accessor `steps.<name>.outputs`, and its attributes are laid
+ * over the group's path in write order, so a later record's field wins, as
+ * the flat merge decided, a later group at the same path replaces the
+ * earlier one, as a repeated child step name does in the flat outputs, and
+ * a tagged field stays a recording getter. The maps the view builds have no
+ * prototype and the path walk steps into own properties only, so a step
+ * named `__proto__` reaches nothing shared. All of a step's records are
+ * adapted on that first read, selected or not, so
+ * every reference is recorded and a denied one fails the evaluation before
+ * its result is used (the set-read rule). A context with no sources, such
+ * as the payload of a signal wait, passes through unchanged, as does
+ * anything that is not a plain map. The original map and contexts are
+ * never mutated.
+ *
+ * The sources of a reconstructed or child output carry the tag the run
+ * record kept, as today's reader takes it. A tag tampered with there can
+ * only refuse (a tagged path holding no stored reference) or leave a field
+ * as inert reference text: it names only content the datastore holds, and
+ * every reference is authorized under the run's access before its result
+ * is used, so it cannot load what that access would not allow.
+ */
+export function stepsView(
+  steps: unknown,
+  ownNamespace: string | undefined,
+): unknown {
+  if (!isPlainMap(steps)) return steps;
+  const view: object = Object.create(Object.getPrototypeOf(steps));
+  for (const name of Object.keys(steps)) {
+    defineLazy(
+      view,
+      name,
+      () => stepContextView(name, steps[name], ownNamespace),
+    );
+  }
+  return view;
+}
+
+/** One step context with its outputs viewed, or the context as it is. */
+function stepContextView(
+  stepName: string,
+  context: unknown,
+  ownNamespace: string | undefined,
+): unknown {
+  const sources = stepOutputSourcesOf(context);
+  if (sources === undefined || !isPlainMap(context)) return context;
+  const view: object = Object.create(Object.getPrototypeOf(context));
+  for (const key of Object.keys(context)) {
+    if (key !== "outputs") defineValue(view, key, context[key]);
+  }
+  defineLazy(
+    view,
+    "outputs",
+    () => mergedOutputsView(stepName, sources, ownNamespace),
+  );
+  return view;
+}
+
+/**
+ * The outputs a step's sources merge to: each group's adapted records laid
+ * over the group's path, a later record's field winning. Records are walked
+ * last to first, keeping the first definition of each key, so the winning
+ * getter is defined once and keeps the adapter's descriptor. Of two groups
+ * at one path only the last counts: a child step name repeated across jobs
+ * replaces the earlier step's outputs, as `resolveChildOutputs` records it.
+ */
+function mergedOutputsView(
+  stepName: string,
+  sources: StepOutputSources,
+  ownNamespace: string | undefined,
+): Record<string, unknown> {
+  const accessor: DataAccessor = `steps.${stepName}.outputs`;
+  const root: Record<string, unknown> = Object.create(null);
+  const lastAtPath = new Map<string, StepOutputGroup>();
+  for (const group of sources) lastAtPath.set(pathKey(group.path), group);
+  for (const group of lastAtPath.values()) {
+    let target = root;
+    for (const segment of group.path) {
+      const existing = Object.hasOwn(target, segment)
+        ? target[segment]
+        : undefined;
+      if (isPlainMap(existing)) {
+        target = existing;
+        continue;
+      }
+      const next: Record<string, unknown> = Object.create(null);
+      defineValue(target, segment, next);
+      target = next;
+    }
+    for (let index = group.records.length - 1; index >= 0; index--) {
+      const adapted = adaptDataRecord(
+        group.records[index],
+        ownNamespace,
+        accessor,
+      );
+      if (!isRecordLike(adapted)) continue;
+      const attributes = adapted.attributes;
+      for (const key of Object.keys(attributes)) {
+        if (Object.hasOwn(target, key)) continue;
+        Object.defineProperty(
+          target,
+          key,
+          Object.getOwnPropertyDescriptor(attributes, key)!,
+        );
+      }
+    }
+  }
+  return root;
+}
+
+/**
  * The stored references a record's sensitive-fields tag names, read as
  * {@link adaptDataRecord} would read them and without recording or
  * refusing anything: the leaves under a star tag, and the values at each
@@ -527,41 +655,59 @@ function storedReferencesOf(record: RecordLike): SecretReference[] {
 
 /**
  * The sensitive-field references a synchronous evaluation of `celExpression`
- * can read through the model map: those of every `model.<name>.resource`
- * record of the models the expression names, as the same analysis the data
- * namespace's `prepare` runs lists them (`syncDataReads`), restricted to the
- * records {@link modelMapView} adapts (own-namespace, or every record when
- * `ownNamespace` is undefined). Reading a model's `resource` map fires the
- * context's own lazy loader, which the caller has made local first. The
- * authorization step of the synchronous passes authorizes each
- * (design/enablers/typed-secrets.md Section 3.4, typed-secrets 4.1); an
- * expression that reads the model map by a computed key names no model and
- * yields nothing, so such a read still fails closed at evaluation.
+ * can read through the model map and the steps map: those of every
+ * `model.<name>.resource` record of the models the expression names, as the
+ * same analysis the data namespace's `prepare` runs lists them
+ * (`syncDataReads`), and those of the output sources of every step the
+ * expression names (`stepTargets`, typed-secrets 4.2), restricted to the
+ * records {@link modelMapView} and {@link stepsView} adapt (own-namespace,
+ * or every record when `ownNamespace` is undefined). Reading a model's
+ * `resource` map fires the context's own lazy loader, which the caller has
+ * made local first. The authorization step of the synchronous passes
+ * authorizes each (design/enablers/typed-secrets.md Section 3.4,
+ * typed-secrets 4.1); an expression that reads either map by a computed key
+ * names nothing, a step context without sources holds nothing, and an
+ * absent map contributes nothing, so such a read still fails closed at
+ * evaluation.
  */
 export function synchronousSensitiveReferences(
   celExpression: string,
   model: unknown,
   ownNamespace: string | undefined,
+  steps?: unknown,
 ): SecretReference[] {
-  if (!isPlainMap(model)) return [];
   const references: SecretReference[] = [];
-  for (const [ref, read] of analyzeExpression(celExpression).syncDataReads) {
-    if (!read.resource) continue;
-    const modelData = model[ref];
-    if (!isPlainMap(modelData)) continue;
-    const specs = modelData["resource"];
-    if (!isPlainMap(specs)) continue;
-    for (const spec of Object.keys(specs)) {
-      const instances = specs[spec];
-      if (!isPlainMap(instances)) continue;
-      for (const instance of Object.keys(instances)) {
-        const record = instances[instance];
-        if (!isRecordLike(record)) continue;
-        if (ownNamespace !== undefined && record.namespace !== ownNamespace) {
-          continue;
+  const own = (record: RecordLike): boolean =>
+    ownNamespace === undefined || record.namespace === ownNamespace;
+  const analysis = analyzeExpression(celExpression);
+  if (isPlainMap(model)) {
+    for (const [ref, read] of analysis.syncDataReads) {
+      if (!read.resource) continue;
+      const modelData = model[ref];
+      if (!isPlainMap(modelData)) continue;
+      const specs = modelData["resource"];
+      if (!isPlainMap(specs)) continue;
+      for (const spec of Object.keys(specs)) {
+        const instances = specs[spec];
+        if (!isPlainMap(instances)) continue;
+        for (const instance of Object.keys(instances)) {
+          const record = instances[instance];
+          if (!isRecordLike(record) || !own(record)) continue;
+          for (const reference of storedReferencesOf(record)) {
+            references.push(reference);
+          }
         }
-        for (const reference of storedReferencesOf(record)) {
-          references.push(reference);
+      }
+    }
+  }
+  if (isPlainMap(steps)) {
+    for (const name of analysis.stepTargets) {
+      for (const group of stepOutputSourcesOf(steps[name]) ?? []) {
+        for (const record of group.records) {
+          if (!isRecordLike(record) || !own(record)) continue;
+          for (const reference of storedReferencesOf(record)) {
+            references.push(reference);
+          }
         }
       }
     }

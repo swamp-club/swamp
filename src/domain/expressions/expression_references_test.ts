@@ -444,3 +444,48 @@ Deno.test("analyzeExpression: syncDataReads names nothing for a computed model k
   const unparsable = analyzeExpression("model.vpc.resource ++");
   assertEquals(unparsable.syncDataReads.size, 0);
 });
+
+function stepReads(cel: string) {
+  const r = analyzeExpression(cel);
+  return { steps: [...r.stepTargets].sort(), wide: r.stepsWide };
+}
+
+Deno.test("analyzeExpression: stepTargets names the steps read by dot and bracket, and a computed key, the whole map or unparsable text is stepsWide (typed-secrets 4.2)", () => {
+  assertEquals(stepReads("steps.build.outputs.password"), {
+    steps: ["build"],
+    wide: false,
+  });
+  assertEquals(
+    stepReads('steps["build-app"].status + steps.test.outputs.x'),
+    { steps: ["build-app", "test"], wide: false },
+  );
+  assertEquals(stepReads("has(steps.build.outputs)"), {
+    steps: ["build"],
+    wide: false,
+  });
+  assertEquals(stepReads("steps.build.outputs.items.map(i, i.x)"), {
+    steps: ["build"],
+    wide: false,
+  });
+  assertEquals(stepReads("steps[inputs.name].outputs"), {
+    steps: [],
+    wide: true,
+  });
+  assertEquals(stepReads("size(steps)"), { steps: [], wide: true });
+  assertEquals(stepReads("cel.bind(s, steps, s.build.outputs)"), {
+    steps: [],
+    wide: true,
+  });
+  assertEquals(stepReads("steps.build.outputs["), { steps: [], wide: true });
+  // A string is text, a bound name shadows the map, and a field named
+  // steps on another binding is not the map.
+  assertEquals(stepReads("literal('steps.build.outputs')"), {
+    steps: [],
+    wide: false,
+  });
+  assertEquals(stepReads("[1].map(steps, steps.build)"), {
+    steps: [],
+    wide: false,
+  });
+  assertEquals(stepReads("inputs.steps.build"), { steps: [], wide: false });
+});

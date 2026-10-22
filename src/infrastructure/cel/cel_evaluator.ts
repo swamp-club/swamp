@@ -79,6 +79,7 @@ import {
   adaptModelMethodResult,
   type DataAccessor,
   modelMapView,
+  stepsView,
   synchronousSensitiveReferences,
 } from "./sensitive_record_adapter.ts";
 
@@ -1331,8 +1332,10 @@ export class CelEvaluator {
    * prepares the context for every expression in `content` as
    * {@link prepareExpressionsIn} does, and with typed secrets on, it takes
    * the `model.<name>.resource` records those expressions read
-   * synchronously from the same analysis the data namespace's `prepare`
-   * uses, parses their sensitive-fields tags (no vault read) and authorizes
+   * synchronously, from the same analysis the data namespace's `prepare`
+   * uses, and the output sources of the `steps.<name>` contexts they read
+   * (typed-secrets 4.2), parses their sensitive-fields tags (no vault read)
+   * and authorizes
    * each reference through the scope's vault service under the run's vault
    * access, as the asynchronous path does after evaluation. The scope it
    * returns carries the authorized keys, so a synchronous `evaluate` under
@@ -1368,6 +1371,7 @@ export class CelEvaluator {
         expr.celExpression,
         wrappedContext["model"],
         ownNamespace,
+        wrappedContext["steps"],
       );
       for (const reference of references) {
         const key = sensitiveReferenceKey(reference);
@@ -1547,32 +1551,40 @@ export class CelEvaluator {
   /**
    * The context with a plain model map replaced by the accessor adapter's
    * lazy view, so `model.<name>.resource` records read with their tagged
-   * fields as Secrets (typed-secrets 3.3). A context whose `model` is the
-   * method receiver {@link wrapNamespaces} installs, or that has none, is
-   * returned as it is. The copy keeps the caller's context untouched. The
-   * map holds only this repository's records, so a context with no data
-   * namespace to name the reader's own adapts every record it holds.
+   * fields as Secrets (typed-secrets 3.3), and the steps map replaced by its
+   * view, so `steps.<name>.outputs` read through their sources the same way
+   * (typed-secrets 4.2). A context whose `model` is the method receiver
+   * {@link wrapNamespaces} installs, or that has neither map, is returned as
+   * it is. The copy keeps the caller's context untouched. Both maps hold
+   * only this repository's records, so a context with no data namespace to
+   * name the reader's own adapts every record they hold.
    */
   private withModelView(
     wrappedContext: Record<string, unknown>,
   ): Record<string, unknown> {
     const model = wrappedContext["model"];
+    const steps = wrappedContext["steps"];
     const data = wrappedContext["data"];
-    const view = modelMapView(
-      model,
-      data instanceof CelDataNamespace ? data.namespace : undefined,
-    );
-    if (view === model) return wrappedContext;
+    const ownNamespace = data instanceof CelDataNamespace
+      ? data.namespace
+      : undefined;
+    const modelView = modelMapView(model, ownNamespace);
+    const stepsMapView = stepsView(steps, ownNamespace);
+    if (modelView === model && stepsMapView === steps) return wrappedContext;
     const context: Record<string, unknown> = Object.create(
       Object.getPrototypeOf(wrappedContext),
       Object.getOwnPropertyDescriptors(wrappedContext),
     );
-    Object.defineProperty(context, "model", {
-      value: view,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
+    const replace = (key: string, value: unknown): void => {
+      Object.defineProperty(context, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    };
+    if (modelView !== model) replace("model", modelView);
+    if (stepsMapView !== steps) replace("steps", stepsMapView);
     return context;
   }
 

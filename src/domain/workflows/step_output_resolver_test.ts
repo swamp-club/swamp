@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import fc from "fast-check";
 import {
   createDataRepositoryAttributeReader,
@@ -41,6 +41,9 @@ import {
   runWithVaultAccess,
   VaultAccessDeniedError,
 } from "../vaults/run_vault_access.ts";
+
+const REF = "${{ vault.get('prod', 'A') }}";
+const PASSWORD_TAG = { "_swamp.sensitiveFields": JSON.stringify(["password"]) };
 
 function resourceRecord(
   name: string,
@@ -178,12 +181,73 @@ Deno.test("liveStepOutputs: merges attributes of the unstripped JSON resources",
     },
     extra: { c: resourceRecord("c", 1, { attributes: { n: 2 } }) },
   });
-  assertEquals(liveStepOutputs(output), { stdout: "hello", n: 2 });
+  assertEquals(liveStepOutputs(output).outputs, { stdout: "hello", n: 2 });
 });
 
-Deno.test("liveStepOutputs: returns undefined for a stripped output", () => {
+Deno.test("liveStepOutputs: a record missing what a reference needs is left out, as it is from the resolved outputs", () => {
+  const output = modelMethodOutput({
+    result: {
+      a: resourceRecord("a", 1, { attributes: { n: 1 } }),
+      b: resourceRecord("b", 1, { attributes: { n: 2 }, version: undefined }),
+    },
+  });
+  const live = liveStepOutputs(output);
+  assertEquals(live.outputs, { n: 1 });
+  assertEquals(live.sources?.[0].records.map((r) => r.name), ["a"]);
+});
+
+Deno.test("liveStepOutputs: returns no outputs and no sources for a stripped output", () => {
   const output = modelMethodOutput({ result: { a: resourceRecord("a", 1) } });
-  assertEquals(liveStepOutputs(output), undefined);
+  assertEquals(liveStepOutputs(output).outputs, undefined);
+  assertEquals(liveStepOutputs(output).sources, undefined);
+  assertEquals(liveStepOutputs(undefined).outputs, undefined);
+});
+
+Deno.test("liveStepOutputs: the sources are the records as stored, in write order, each with its namespace, tags and attributes (typed-secrets 4.2)", () => {
+  const output = modelMethodOutput({
+    result: {
+      a: resourceRecord("a", 1, {
+        namespace: "acme",
+        tags: PASSWORD_TAG,
+        attributes: { password: REF, user: "u" },
+      }),
+      skipped: resourceRecord("skipped", 1, {
+        contentType: "text/plain",
+        attributes: { ignored: true },
+      }),
+    },
+    extra: {
+      // An older record names no namespace: the reader's stands in.
+      c: resourceRecord("c", 3, { attributes: { user: "v" } }),
+    },
+  });
+  const live = liveStepOutputs(output, "acme");
+  // The flat outputs keep the stored reference text; the sources keep the
+  // record it came from, so the adapter can make it a Secret.
+  assertEquals(live.outputs, { password: REF, user: "v" });
+  assertEquals(live.sources, [{
+    path: [],
+    records: [
+      {
+        id: "data-a-1",
+        name: "a",
+        version: 1,
+        namespace: "acme",
+        modelName: "writer",
+        tags: PASSWORD_TAG,
+        attributes: { password: REF, user: "u" },
+      },
+      {
+        id: "data-c-3",
+        name: "c",
+        version: 3,
+        namespace: "acme",
+        modelName: "writer",
+        tags: { specName: "result" },
+        attributes: { user: "v" },
+      },
+    ],
+  }]);
 });
 
 Deno.test("StepOutputResolver.resolve: reads a model_method step's outputs from the datastore", async () => {
@@ -207,6 +271,59 @@ Deno.test("StepOutputResolver.resolve: reads a model_method step's outputs from 
     "data-a-1": { stdout: "one", shared: "a" },
     "data-b-2": { exitCode: 0, shared: "b" },
   });
+  // The sources are the same reads in write order, each with the reader's
+  // namespace, since the run record names none, and the record's tags.
+  assertEquals(resolved.sources, [{
+    path: [],
+    records: [
+      {
+        id: "data-a-1",
+        name: "a",
+        version: 1,
+        namespace: "",
+        modelName: "writer",
+        tags: { specName: "result" },
+        attributes: { stdout: "one", shared: "a" },
+      },
+      {
+        id: "data-b-2",
+        name: "b",
+        version: 2,
+        namespace: "",
+        modelName: "writer",
+        tags: { specName: "result" },
+        attributes: { exitCode: 0, shared: "b" },
+      },
+    ],
+  }]);
+});
+
+Deno.test("StepOutputResolver.resolve: a source's namespace is the run record's when it has one and the reader's otherwise (typed-secrets 4.2)", async () => {
+  const run = runWithSteps([{
+    name: "write",
+    output: modelMethodOutput({
+      result: {
+        a: resourceRecord("a", 1, { namespace: "acme", tags: PASSWORD_TAG }),
+        b: resourceRecord("b", 1),
+      },
+    }),
+  }]);
+  const resolver = new StepOutputResolver({
+    readAttributes: readerFrom({
+      "a@1": { password: REF },
+      "b@1": { user: "u" },
+    }),
+    namespace: "reader",
+  });
+
+  const resolved = await resolver.resolve(stepOf(run, "write"));
+
+  assertEquals(resolved.sources?.[0].records.map((r) => r.namespace), [
+    "acme",
+    "reader",
+  ]);
+  assertEquals(resolved.sources?.[0].records[0].tags, PASSWORD_TAG);
+  assertEquals(resolved.sources?.[0].records[0].attributes, { password: REF });
 });
 
 Deno.test("StepOutputResolver.resolve: missing or unreadable data contributes nothing", async () => {
@@ -231,9 +348,10 @@ Deno.test("StepOutputResolver.resolve: missing or unreadable data contributes no
   const resolved = await resolver.resolve(stepOf(run, "write"));
 
   assertEquals(resolved.outputs, { fine: true });
+  assertEquals(resolved.sources?.[0].records.map((r) => r.name), ["ok"]);
 });
 
-Deno.test("StepOutputResolver.resolve: a step with no readable resources has no outputs", async () => {
+Deno.test("StepOutputResolver.resolve: a step with no readable resources has no outputs and no sources", async () => {
   const run = runWithSteps([{
     name: "write",
     output: modelMethodOutput({ result: { a: resourceRecord("a", 1) } }),
@@ -243,6 +361,7 @@ Deno.test("StepOutputResolver.resolve: a step with no readable resources has no 
   const resolved = await resolver.resolve(stepOf(run, "write"));
 
   assertEquals(resolved.outputs, undefined);
+  assertEquals(resolved.sources, undefined);
 });
 
 Deno.test("StepOutputResolver.resolve: the read policy filters resources out", async () => {
@@ -309,6 +428,19 @@ Deno.test("StepOutputResolver.resolve: a workflow step resolves its child run's 
   const resolved = await resolver.resolve(stepOf(parent, "child"));
 
   assertEquals(resolved.outputs, { write_record: { stdout: "hello" } });
+  // Each child step's sources are grouped under its name.
+  assertEquals(resolved.sources, [{
+    path: ["write_record"],
+    records: [{
+      id: "data-a-1",
+      name: "a",
+      version: 1,
+      namespace: "",
+      modelName: "writer",
+      tags: { specName: "result" },
+      attributes: { stdout: "hello" },
+    }],
+  }]);
   // The grandchild workflow step is not followed.
   assertEquals(lookups, [`${child.workflowId}/${child.id}`]);
 });
@@ -365,7 +497,9 @@ Deno.test("StepOutputResolver.resolveChildOutputs: returns undefined when no chi
   const child = runWithSteps([{ name: "noop", output: { executed: true } }]);
   const resolver = new StepOutputResolver({ readAttributes: readerFrom({}) });
 
-  assertEquals(await resolver.resolveChildOutputs(child), undefined);
+  const resolved = await resolver.resolveChildOutputs(child);
+  assertEquals(resolved.outputs, undefined);
+  assertEquals(resolved.sources, undefined);
 });
 
 Deno.test("createDataRepositoryAttributeReader: records the sensitive values it resolves (swamp-club#2171)", async () => {
@@ -478,6 +612,61 @@ Deno.test("StepOutputResolver.resolve: a wait_for_signal step's outputs are its 
   const resolved = await resolver.resolve(stepOf(run, "review"));
 
   assertEquals(resolved.outputs, { payload: { verdict: "ship" }, signal });
+  assertEquals(resolved.sources, undefined);
   assertEquals(resolved.attributesByDataId, {});
   assertEquals(reads, 0);
+});
+
+Deno.test("StepOutputResolver.resolveChildOutputs: a step name repeated across jobs: the later job's outputs and sources replace the earlier's, and a step named __proto__ is an own key", async () => {
+  const deploy = () =>
+    Step.create({ name: "deploy", task: StepTask.model("writer", "execute") });
+  const workflow = Workflow.create({
+    name: "child",
+    jobs: [
+      Job.create({ name: "a", steps: [deploy()] }),
+      Job.create({
+        name: "b",
+        steps: [
+          deploy(),
+          Step.create({
+            name: "__proto__",
+            task: StepTask.model("writer", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const job of run.jobs) {
+    job.start();
+    for (const step of job.steps) {
+      const name = `${job.jobName}-${step.stepName}`;
+      step.start();
+      step.succeed(
+        modelMethodOutput({ result: { [name]: resourceRecord(name, 1) } }),
+      );
+    }
+  }
+  const resolver = new StepOutputResolver({
+    readAttributes: readerFrom({
+      "a-deploy@1": { x: 1, onlyA: true },
+      "b-deploy@1": { x: 2 },
+      "b-__proto__@1": { p: true },
+    }),
+  });
+
+  const resolved = await resolver.resolveChildOutputs(run);
+
+  assertEquals(Object.keys(resolved.outputs!).sort(), ["__proto__", "deploy"]);
+  assertEquals(resolved.outputs!.deploy, { x: 2 });
+  assert(Object.hasOwn(resolved.outputs!, "__proto__"));
+  assertEquals(
+    Object.getOwnPropertyDescriptor(resolved.outputs!, "__proto__")!.value,
+    { p: true },
+  );
+  assertEquals(
+    resolved.sources!.map((g) => [g.path, g.records.map((r) => r.name)]),
+    [[["deploy"], ["b-deploy"]], [["__proto__"], ["b-__proto__"]]],
+  );
 });

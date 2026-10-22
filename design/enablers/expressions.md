@@ -232,9 +232,15 @@ sensitive fields from their vault references, as `data.latest` does; history
 shows them as stored. A resolved sensitive value is plaintext inside expressions
 but reaches a step's executing arguments as a sentinel and is written to disk as
 its vault reference; see [Values Read Through
-Expressions](../primitives/vaults.md#values-read-through-expressions). Over
-`swamp serve`, history includes only outputs of behaviors the caller may read as
-data.
+Expressions](../primitives/vaults.md#values-read-through-expressions). Behind
+the typed-secrets internal option (Phase 4.2), a tagged output field is a
+`Secret` instead, as `data.latest` returns it: the outputs are read as stored
+and viewed through the accessor adapter, so no value is loaded before delivery,
+a field the run's vault access refuses fails the evaluation before its result is
+used, and a malformed tag or stored reference refuses with
+`secret_reference_invalid`; see [typed-secrets](./typed-secrets.md) Section 6.1.
+Over `swamp serve`, history includes only outputs of behaviors the caller may
+read as data.
 
 The `steps` namespace exists only once the run does. Like `run.*`, expressions
 reading it stay raw during workflow evaluation and resolve at step execution
