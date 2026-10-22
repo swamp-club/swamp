@@ -103,6 +103,8 @@ export interface ExtensionInstallResultInfo {
  * - `legacy`: lockfile-declared source files exist but the current
  *   per-extension root does not. Auto-resolution must not migrate this
  *   layout because doing so can delete tracked files as an implicit side effect.
+ *   Skill dirs the entry records never count: they are current-layout
+ *   wherever they are, and install writes the skill back into them.
  */
 export type InstallationInspection =
   | { state: "missing"; lockedVersion?: string }

@@ -27,6 +27,7 @@ import {
 } from "../infrastructure/persistence/paths.ts";
 import { assertContainedPath } from "../infrastructure/persistence/safe_path.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
+import { recordedSkillsDirs } from "../domain/repo/skill_dirs.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { join, resolve } from "@std/path";
 import { readInstalledEntries } from "../infrastructure/persistence/installed_entries.ts";
@@ -85,6 +86,12 @@ const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
 // Re-exported for existing importers; they live with SWAMP_SUBDIRS.
 export { isBundleArtifactPath, isPulledSkillPath };
+
+/** Whether a repo-relative path lies under one of the given dirs. */
+function isUnderAny(path: string, dirs: readonly string[]): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  return dirs.some((dir) => normalized.startsWith(`${dir}/`));
+}
 
 /**
  * Registry deadline shared by every call one auto-install makes, the
@@ -240,6 +247,11 @@ export function createAutoResolveInstallerAdapter(
       // output, not source. Clearing the bundle cache (a normal hygiene
       // operation) must not flip the inspection to truncated and steal
       // the user-WIP path from issue #121.
+      //
+      // Skill dirs the entry records are current-layout wherever they are,
+      // and install writes the skill back into them, so a surviving one
+      // never makes the install legacy (swamp-club#3727). They still count
+      // as missing for the truncation check.
       const entry = await findPinnedEntry(extensionName);
       if (!entry) return { state: "missing" };
       // A lockfile entry exists; carry its pinned version so the installer's
@@ -251,6 +263,7 @@ export function createAutoResolveInstallerAdapter(
       // UpstreamExtensionEntry) may omit `files`. Treat an absent or
       // empty list as having no surviving legacy source.
       const files = entry.files ?? [];
+      const skillDirs = recordedSkillsDirs(files);
       const existingFiles: string[] = [];
       const missing: string[] = [];
       for (const relPath of files) {
@@ -260,7 +273,7 @@ export function createAutoResolveInstallerAdapter(
         if (isBundleArtifactPath(relPath)) continue;
         try {
           await Deno.stat(join(repoDir, relPath));
-          existingFiles.push(relPath);
+          if (!isUnderAny(relPath, skillDirs)) existingFiles.push(relPath);
         } catch {
           missing.push(relPath);
         }
@@ -298,9 +311,25 @@ export function createAutoResolveInstallerAdapter(
       // after a conflict, so retries inside it cannot hold the install
       // lock past EXTENSION_INSTALL_LOCK_MAX_WAIT_MS.
       const deadline = AbortSignal.timeout(AUTO_RESOLVE_INSTALL_DEADLINE_MS);
+      const pinnedEntry = await findPinnedEntry(extensionName);
+      const pinnedFiles = (pinnedEntry?.files ?? []).map((f) =>
+        f.replaceAll("\\", "/")
+      );
+      // A pinned entry's skills go back where it records them, so the
+      // reinstall keeps its skill paths and prunes none of them
+      // (swamp-club#3727). Otherwise they go to the pulled skills dir.
+      const recordedDirs = recordedSkillsDirs(pinnedFiles);
+      const pulledSkillsDirs = [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)];
+      const skillsDirs = recordedDirs.length > 0
+        ? recordedDirs.map((dir) => join(repoDir, dir))
+        : pulledSkillsDirs;
+      // A skill conflict the pinned entry records: the conflict is that
+      // skill's root, and the entry lists the root or files under it.
+      const isRecordedSkill = (path: string) =>
+        isUnderAny(path, recordedDirs) &&
+        pinnedFiles.some((f) => f === path || f.startsWith(`${path}/`));
       async function runInstall(force: boolean) {
         const lockfileRepo = await LockfileRepository.create(lockfilePath);
-        const pinnedEntry = await findPinnedEntry(extensionName);
         // installExtension treats a dependency as installed only when
         // lockfileRepo records it. A dependency the team's lockfile records
         // is installed too: seeding it here keeps it from being reinstalled
@@ -322,7 +351,10 @@ export function createAutoResolveInstallerAdapter(
             getChecksum(name, version, channel, deadline),
           logger,
           lockfileRepository: lockfileRepo,
-          skillsDirs: [swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills)],
+          skillsDirs,
+          // Dependencies merge into existing skill dirs without a conflict,
+          // so they stay out of the user's tool dirs.
+          dependencySkillsDirs: pulledSkillsDirs,
           repoDir,
           force,
           alreadyPulled: new Set<string>(teamInstalled),
@@ -353,11 +385,14 @@ export function createAutoResolveInstallerAdapter(
       } catch (error) {
         if (error instanceof ConflictError) {
           // Stale bundle output is regenerable, and a shared skill dir is
-          // merged into with a warning (swamp-club#2494). Any other
-          // conflict means real files are in the way.
+          // merged into with a warning (swamp-club#2494), as is a skill the
+          // pinned entry records (swamp-club#3727). Any other conflict means
+          // real files are in the way.
           const conflicts = error.conflicts.map((p) => p.replaceAll("\\", "/"));
           const bundleConflicts = conflicts.filter(isBundleArtifactPath);
-          const skillConflicts = conflicts.filter(isPulledSkillPath);
+          const skillConflicts = conflicts.filter((p) =>
+            isPulledSkillPath(p) || isRecordedSkill(p)
+          );
           const allRetryable = conflicts.length > 0 &&
             bundleConflicts.length + skillConflicts.length === conflicts.length;
           if (allRetryable) {
