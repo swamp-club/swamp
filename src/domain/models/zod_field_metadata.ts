@@ -487,8 +487,8 @@ interface ValueWalk {
    */
   transformed?: boolean;
   found: ValueWithMetadata[];
-  /** Paths already in `found`. */
-  foundPaths: Set<string>;
+  /** Paths already in `found`, each with its index there. */
+  foundPaths: Map<string, number>;
   /**
    * Paths each schema has already been walked at. Overlapping union members
    * lead to the same schema at the same place more than once; walking it
@@ -499,6 +499,26 @@ interface ValueWalk {
   ancestors: Set<object>;
   /** Answers already given by {@link matchWithin}; null for no match. */
   within: Map<z.ZodTypeAny, FieldMetadata | null>;
+}
+
+/**
+ * Adds a found value to the walk. Union and intersection members and both
+ * sides of a pipe revisit one value, and a path names one place in it, so a
+ * path seen before is that same value and is reported once. With
+ * `rawInputs`, a raw-input report there gives way to an exact one: what a
+ * schema node marks itself is never only potentially marked, whichever side
+ * of a pipe or member the walk reached first (swamp-club#3751).
+ */
+function record(walk: ValueWalk, entry: ValueWithMetadata): void {
+  const index = walk.foundPaths.get(entry.path);
+  if (index === undefined) {
+    walk.foundPaths.set(entry.path, walk.found.length);
+    walk.found.push(entry);
+  } else if (
+    walk.rawInputs && walk.found[index].rawInput && !entry.rawInput
+  ) {
+    walk.found[index] = entry;
+  }
 }
 
 /**
@@ -582,22 +602,15 @@ function visitValue(
     paths.add(path);
   }
 
-  // Union and intersection members and both sides of a pipe revisit one
-  // value. A path names one place in the value, so a path seen before is
-  // that same value.
-  const report = (meta: FieldMetadata, whole: boolean, rawInput?: true) => {
-    if (!walk.foundPaths.has(path)) {
-      walk.foundPaths.add(path);
-      walk.found.push({
-        path,
-        keys,
-        value,
-        meta,
-        perElement: whole,
-        ...(rawInput ? { rawInput } : {}),
-      });
-    }
-  };
+  const report = (meta: FieldMetadata, whole: boolean, rawInput?: true) =>
+    record(walk, {
+      path,
+      keys,
+      value,
+      meta,
+      perElement: whole,
+      ...(rawInput ? { rawInput } : {}),
+    });
 
   let current = schema;
   let reported = atRoot && !walk.reportRoot;
@@ -633,11 +646,8 @@ function visitValue(
           report(outputMeta, true, true);
           if (atRoot && isPlainObject(value)) {
             for (const [key, input] of Object.entries(value)) {
-              const inputPath = appendKey(path, key);
-              if (walk.foundPaths.has(inputPath)) continue;
-              walk.foundPaths.add(inputPath);
-              walk.found.push({
-                path: inputPath,
+              record(walk, {
+                path: appendKey(path, key),
                 keys: [...keys, key],
                 value: input,
                 meta: outputMeta,
@@ -646,7 +656,9 @@ function visitValue(
               });
             }
           }
-          return;
+          // The walk goes on as it would without `rawInputs`, so what either
+          // side of the pipe marks at a position the input holds is still
+          // reported exactly, and replaces a raw-input report there.
         }
       }
       if (pipe.in && pipe.out && getSchemaType(pipe.in) !== "transform") {
@@ -861,8 +873,10 @@ function chainReshapes(node: z.ZodTypeAny): boolean {
  * With `rawInputs`, a pipeline with matching output metadata whose input
  * side holds code that may reshape the value reports its input
  * conservatively instead: its preprocessor or transform may rename fields.
- * At the root each input key is reported so a caller can replace it. A pipe
- * with no such code is read exactly, as without `rawInputs`.
+ * At the root each input key is reported so a caller can replace it. The
+ * positions either side of such a pipe marks in the input are still
+ * reported exactly, and an exact report replaces a raw-input one at the same
+ * path. A pipe with no such code is read exactly, as without `rawInputs`.
  * With `transformed`, the value is read as a parse delivered it: a
  * `.transform()`, codec, `.overwrite()` or `.catch()` that reaches matching
  * metadata reports the whole value it delivered, flagged `rawInput`, since
@@ -897,7 +911,7 @@ export function findValuesWithMetadata(
     reportRoot: options.reportRoot,
     transformed: options.transformed,
     found: [],
-    foundPaths: new Set(),
+    foundPaths: new Map(),
     visited: new Map(),
     ancestors: new Set(),
     within: new Map(),
@@ -1064,7 +1078,7 @@ export function schemaHoldsMetadata(
   const walk: ValueWalk = {
     matches,
     found: [],
-    foundPaths: new Set(),
+    foundPaths: new Map(),
     visited: new Map(),
     ancestors: new Set(),
     within: new Map(),

@@ -169,6 +169,62 @@ Deno.test("persistEvaluatedDefinition: an authored literal under a pipe with no 
   );
 });
 
+Deno.test("persistEvaluatedDefinition: under a pipe whose input side reshapes the value, an authored literal at a field the schema marks itself, or beside a sibling's own transform, is still the mask and refused on replay (swamp-club#3751)", () => {
+  const sensitive = z.string().meta({ sensitive: true });
+  const cases: [string, z.ZodTypeAny, Record<string, unknown>, string][] = [
+    [
+      "a field both sides mark",
+      z.object({ token: sensitive, alias: z.string() }).transform((x) => ({
+        token: x.token,
+      })).pipe(z.object({ token: sensitive })),
+      { token: SECRET, alias: "a" },
+      "a",
+    ],
+    [
+      "a sibling's own transform",
+      z.object({ token: z.string(), n: z.string().transform(Number) }).pipe(
+        z.object({ token: sensitive, n: z.number() }),
+      ),
+      { token: SECRET, n: "1" },
+      "1",
+    ],
+  ];
+  for (const [label, schema, args, plain] of cases) {
+    const schemas = { methods: { run: { arguments: schema } } };
+    const definition = Definition.create({
+      name: "reshaped",
+      methods: { run: { arguments: args } },
+    });
+    const persisted = persistEvaluatedDefinition(
+      definition,
+      [],
+      definition,
+      new RunSensitiveValues(),
+      schemas,
+    );
+    const cached = persisted.definition.getMethodArguments("run");
+    assertEquals(cached.token, "***", label);
+    // The other input is the type's own authored text at a position that is
+    // only potentially sensitive, so it stays.
+    assertEquals(Object.values(cached).includes(plain), true, label);
+    assertEquals(
+      persisted.maskedPaths,
+      [["methods", "run", "arguments", "token"]],
+      label,
+    );
+    assertEquals(
+      findPlaintextSensitiveArguments(
+        schemas,
+        persisted.definition.toData(),
+        persisted.writtenReferences,
+        { recordedMasks: persisted.maskedPaths, method: { name: "run" } },
+      ),
+      ["methods.run.arguments.token"],
+      label,
+    );
+  }
+});
+
 Deno.test("persistEvaluatedDefinition: resolved sensitive text beside a pending expression or written reference is masked", () => {
   const schemas = {
     globalArguments: z.object({ token: z.string().meta({ sensitive: true }) }),

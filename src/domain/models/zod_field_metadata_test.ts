@@ -94,6 +94,69 @@ Deno.test("findValuesWithMetadata: with rawInputs, a pipe whose input side holds
   );
 });
 
+Deno.test("findValuesWithMetadata: with rawInputs, under a pipe whose input side reshapes the value, a field either side marks itself, or the output marks beside a sibling's own transform, is reported exactly, whichever member the walk reaches first (swamp-club#3751)", () => {
+  const marked = z.string().meta({ marked: true });
+  const reported = (schema: z.ZodTypeAny, value: unknown) =>
+    findValuesWithMetadata(schema, value, isMarked, { rawInputs: true })
+      .map(({ keys, rawInput }) => ({ keys, rawInput }));
+  const transform = (): { token: string } => {
+    throw new Error("must not execute");
+  };
+  // Both sides mark `token`; only the input side marks `bearer`.
+  assertEquals(
+    reported(
+      z.object({ token: marked, alias: z.string() }).transform(transform).pipe(
+        z.object({ token: marked }),
+      ),
+      { token: "secret", alias: "a" },
+    ),
+    [
+      { keys: [], rawInput: true },
+      { keys: ["token"], rawInput: undefined },
+      { keys: ["alias"], rawInput: true },
+    ],
+  );
+  assertEquals(
+    reported(
+      z.object({ bearer: marked, alias: z.string() }).transform(transform).pipe(
+        z.object({ token: marked }),
+      ),
+      { bearer: "secret", alias: "a" },
+    ),
+    [
+      { keys: [], rawInput: true },
+      { keys: ["bearer"], rawInput: undefined },
+      { keys: ["alias"], rawInput: true },
+    ],
+  );
+  // A transform on a sibling's own chain leaves `token` exact.
+  assertEquals(
+    reported(
+      z.object({ token: z.string(), n: z.string().transform(Number) }).pipe(
+        z.object({ token: marked, n: z.number() }),
+      ),
+      { token: "secret", n: "1" },
+    ),
+    [
+      { keys: [], rawInput: true },
+      { keys: ["token"], rawInput: undefined },
+      { keys: ["n"], rawInput: true },
+    ],
+  );
+  const piped = z.object({ alias: z.string() }).transform(transform).pipe(
+    z.object({ token: marked }),
+  );
+  const direct = z.object({ alias: marked });
+  for (const members of [[piped, direct], [direct, piped]] as const) {
+    assertEquals(
+      reported(z.union(members), { alias: "secret" }).find(({ keys }) =>
+        keys[0] === "alias"
+      ),
+      { keys: ["alias"], rawInput: undefined },
+    );
+  }
+});
+
 Deno.test("findFieldMetadata: returns metadata set directly on the field", () => {
   const meta = findFieldMetadata(
     z.string().meta({ marked: true, note: "x" }),
