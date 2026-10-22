@@ -200,6 +200,18 @@ export interface MethodDeliveryOptions {
    * reference the arguments carry fails at delivery.
    */
   secretLoader?: SecretLoader;
+  /**
+   * Called once the method's arguments have passed their schema, before the
+   * method body runs (in process or on a worker). A caller that keeps a
+   * record of the evaluation the run is about to execute writes it here, so
+   * arguments the schema refuses never replace the last good record
+   * (swamp-club#3681). In process it follows the one parse of the run, the
+   * parse whose result the method receives, so a schema transform runs
+   * once; a remote dispatch parses here and again on the worker. Not called
+   * when validation fails; an error it throws fails the run before the
+   * method runs.
+   */
+  onArgumentsValidated?: () => Promise<void>;
 }
 
 /**
@@ -478,6 +490,85 @@ function preRunRefusalHint(
 }
 
 /**
+ * The method's arguments as the method receives them, parsed by its schema:
+ * vault sentinels resolved through `secretBag`, the global arguments that
+ * hold no unresolved expression merged underneath (per
+ * design/primitives/behaviors.md, per-method arguments take precedence),
+ * then coerced and parsed. Throws the validation failure the run reports
+ * (swamp-club#3681). The raw method arguments and the filtered raw globals
+ * keep their sentinels, for the shell's env-var delivery.
+ */
+function parseMethodArguments(
+  definition: Definition,
+  method: MethodDefinition,
+  methodName: string,
+  secretBag: VaultSecretBag | undefined,
+): {
+  rawMethodArgs: Record<string, unknown>;
+  resolvedGlobalArgs: Record<string, unknown>;
+  filteredRawGlobalArgs: Record<string, unknown>;
+  parsed: { data: unknown };
+} {
+  // Get raw method arguments (may contain vault sentinel tokens)
+  const rawMethodArgs = definition.getMethodArguments(methodName);
+
+  // Resolve vault sentinels to raw values for method args and global args.
+  // This ensures extension models receive exact secret values with no escaping.
+  const resolvedMethodArgs = secretBag?.resolvesAny
+    ? secretBag.resolveDeep(rawMethodArgs) as Record<string, unknown>
+    : rawMethodArgs;
+  const resolvedGlobalArgs = secretBag?.resolvesAny
+    ? secretBag.resolveDeep(
+      definition.globalArguments,
+    ) as Record<string, unknown>
+    : definition.globalArguments;
+
+  // Merge global args as fallback under per-method args (per design/primitives/behaviors.md:
+  // "at execution time receives the merged set of global arguments and
+  // per-method arguments"). Per-method arguments take precedence.
+  // Exclude global args with unresolved ${{ ... }} expressions (recursively,
+  // including nested objects/arrays) — those are guarded by a Proxy on
+  // context.globalArgs and should not be injected into per-method arguments
+  // where they could pass schema validation as plain strings. Another
+  // templating system's ${{ ... }} text (${{ github.sha }}) is not swamp's
+  // and is merged as the value it is — see containsSwampExpression.
+  const filteredGlobalArgs: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
+    if (containsSwampExpression(value)) {
+      continue;
+    }
+    filteredGlobalArgs[key] = value;
+  }
+  // Build a separate filter from raw (pre-vault-resolution) global args so
+  // vault sentinel tokens are preserved for unresolvedMethodArgs.
+  const filteredRawGlobalArgs: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(definition.globalArguments)) {
+    if (containsSwampExpression(value)) {
+      continue;
+    }
+    filteredRawGlobalArgs[key] = value;
+  }
+
+  const mergedArgs = isRecordSchema(method.arguments)
+    ? resolvedMethodArgs
+    : { ...filteredGlobalArgs, ...resolvedMethodArgs };
+  const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
+  const argsResult = method.arguments.safeParse(methodArgs);
+
+  if (!argsResult.success) {
+    throw new Error(
+      `Method arguments validation failed: ${formatZodError(argsResult.error)}`,
+    );
+  }
+  return {
+    rawMethodArgs,
+    resolvedGlobalArgs,
+    filteredRawGlobalArgs,
+    parsed: argsResult,
+  };
+}
+
+/**
  * Default implementation of the method execution service.
  *
  * Validates definition attributes against the method's schema before execution.
@@ -498,65 +589,38 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   workflowGateService?:
     import("./workflow_gate_service.ts").WorkflowGateService;
 
-  async execute(
+  execute(
     definition: Definition,
     method: MethodDefinition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    // Get raw method arguments (may contain vault sentinel tokens)
-    const rawMethodArgs = definition.getMethodArguments(context.methodName);
+    return this.#execute(definition, method, context);
+  }
 
-    // Resolve vault sentinels to raw values for method args and global args.
-    // This ensures extension models receive exact secret values with no escaping.
+  /**
+   * {@link execute}, with the caller's `onArgumentsValidated` called once
+   * the arguments have passed their schema: this is the run's one parse of
+   * them, whose result the method receives (swamp-club#3681).
+   */
+  async #execute(
+    definition: Definition,
+    method: MethodDefinition,
+    context: MethodContext,
+    onArgumentsValidated?: () => Promise<void>,
+  ): Promise<MethodResult> {
+    const {
+      rawMethodArgs,
+      resolvedGlobalArgs,
+      filteredRawGlobalArgs,
+      parsed: argsResult,
+    } = parseMethodArguments(
+      definition,
+      method,
+      context.methodName,
+      context.vaultSecrets,
+    );
+    if (onArgumentsValidated) await onArgumentsValidated();
     const secretBag = context.vaultSecrets;
-    const resolvedMethodArgs = secretBag?.resolvesAny
-      ? secretBag.resolveDeep(rawMethodArgs) as Record<string, unknown>
-      : rawMethodArgs;
-    const resolvedGlobalArgs = secretBag?.resolvesAny
-      ? secretBag.resolveDeep(
-        definition.globalArguments,
-      ) as Record<string, unknown>
-      : definition.globalArguments;
-
-    // Merge global args as fallback under per-method args (per design/primitives/behaviors.md:
-    // "at execution time receives the merged set of global arguments and
-    // per-method arguments"). Per-method arguments take precedence.
-    // Exclude global args with unresolved ${{ ... }} expressions (recursively,
-    // including nested objects/arrays) — those are guarded by a Proxy on
-    // context.globalArgs and should not be injected into per-method arguments
-    // where they could pass schema validation as plain strings. Another
-    // templating system's ${{ ... }} text (${{ github.sha }}) is not swamp's
-    // and is merged as the value it is — see containsSwampExpression.
-    const filteredGlobalArgs: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
-      if (containsSwampExpression(value)) {
-        continue;
-      }
-      filteredGlobalArgs[key] = value;
-    }
-    // Build a separate filter from raw (pre-vault-resolution) global args so
-    // vault sentinel tokens are preserved for unresolvedMethodArgs below.
-    const filteredRawGlobalArgs: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(definition.globalArguments)) {
-      if (containsSwampExpression(value)) {
-        continue;
-      }
-      filteredRawGlobalArgs[key] = value;
-    }
-
-    const mergedArgs = isRecordSchema(method.arguments)
-      ? resolvedMethodArgs
-      : { ...filteredGlobalArgs, ...resolvedMethodArgs };
-    const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
-    const argsResult = method.arguments.safeParse(methodArgs);
-
-    if (!argsResult.success) {
-      throw new Error(
-        `Method arguments validation failed: ${
-          formatZodError(argsResult.error)
-        }`,
-      );
-    }
 
     // Populate context with global args and definition metadata.
     // Wrap globalArgs in a Proxy that throws a clear error when the method
@@ -1346,6 +1410,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
       try {
         if (isRemotePlacement) {
+          // The worker parses the shipped arguments itself. The caller's
+          // record of the evaluation still needs the parse here, before
+          // anything leaves (swamp-club#3681).
+          parseMethodArguments(
+            currentDefinition,
+            method,
+            methodName,
+            context.vaultSecrets,
+          );
+          if (options.onArgumentsValidated) {
+            await options.onArgumentsValidated();
+          }
           // Remote placement: the method body runs on a matching worker; the
           // surrounding pipeline (output records below)
           // stays at the orchestrator. Pre-flight checks are skipped (they
@@ -1388,7 +1464,17 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           // Execute in-process — the single-host path (see
           // design/enablers/remote-execution.md "No execution drivers").
           const inProcessExecutor = new InProcessExecutor(
-            this,
+            {
+              // The run's one parse of the arguments, in #execute, calls
+              // the caller's hook before the method body (swamp-club#3681).
+              execute: (definition, method, context) =>
+                this.#execute(
+                  definition,
+                  method,
+                  context,
+                  options.onArgumentsValidated,
+                ),
+            },
             currentDefinition,
             method,
             modelDef,

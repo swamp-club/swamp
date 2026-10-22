@@ -22,7 +22,9 @@
  * inputs, through the real evaluation and execution services on a
  * throwaway repository (swamp-club#3681). An operator-typed value is the
  * run's data: it reaches the method, and a method that echoes it in its
- * error lands it in neither the error nor the failure record.
+ * error lands it in neither the error nor the failure record. A run whose
+ * arguments the schema refuses leaves the last good evaluated cache as it
+ * was.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -40,6 +42,9 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
+import { VaultService } from "../src/domain/vaults/vault_service.ts";
+import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createModelMethodRunDeps } from "../src/serve/deps.ts";
@@ -54,6 +59,10 @@ import "../src/domain/models/models.ts";
 
 await initializeLogging({});
 
+const VAULT = "secrets";
+const VAULT_VALUE = "VAULT-VALUE-3681-c0ffee";
+const VAULT_REF = `\${{ vault.get('${VAULT}', 'probe') }}`;
+
 const secret = z.string().meta({ sensitive: true });
 
 interface Harness {
@@ -65,8 +74,9 @@ interface Harness {
 }
 
 /**
- * A repository and a type whose methods record the arguments they receive.
- * Each takes a sensitive string and throws something that echoes it: `fail`
+ * A repository with one local vault holding `probe`, and a type whose
+ * methods record the arguments they receive. Each takes a sensitive string:
+ * `execute` returns, and the others throw something that echoes it, `fail`
  * an Error, `failText` the bare string.
  */
 async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
@@ -97,12 +107,21 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
     type,
     version: "2026.10.21.1",
     methods: {
+      execute: method("execute", z.object({ token: secret.optional() })),
       fail: method("fail", z.object({ token: secret })),
       failText: method("failText", z.object({ token: secret })),
     },
   });
   try {
     await initializeTestRepo(dir);
+    await new YamlVaultConfigRepository(dir).save(
+      VaultConfig.create(crypto.randomUUID(), VAULT, "local_encryption", {
+        auto_generate: true,
+        base_dir: dir,
+      }),
+    );
+    const vault = await VaultService.fromRepository(dir);
+    await vault.put(VAULT, "probe", VAULT_VALUE);
     await fn({ dir, type, received, canary });
   } finally {
     modelRegistry.invalidateType(type);
@@ -148,6 +167,7 @@ async function run(
   name: string,
   method: string,
   inputs: Record<string, unknown> = {},
+  options: { lastEvaluated?: boolean } = {},
 ): Promise<ModelMethodRunEvent[]> {
   const repo = createRepositoryContext({ repoDir: h.dir });
   try {
@@ -157,7 +177,7 @@ async function run(
         modelIdOrName: name,
         methodName: method,
         inputs,
-        lastEvaluated: false,
+        lastEvaluated: options.lastEvaluated ?? false,
       }),
     );
   } finally {
@@ -229,6 +249,18 @@ async function filesHolding(root: string, text: string): Promise<string[]> {
     }
   }
   return hits;
+}
+
+async function cacheFile(dir: string, name: string): Promise<string> {
+  for await (
+    const entry of walk(join(dir, ".swamp", "definitions-evaluated"), {
+      includeDirs: false,
+      match: [new RegExp(`${name}\\.yaml$`)],
+    })
+  ) {
+    return entry.path;
+  }
+  throw new Error(`no evaluated cache for ${name}`);
 }
 
 Deno.test("input values: a method that echoes a sensitive argument in its error shows the mask in the error event and the failure record (swamp-club#3681)", async () => {
@@ -328,5 +360,44 @@ Deno.test("input values: a method that throws a string echoing a sensitive argum
       await filesHolding(join(h.dir, ".swamp", "outputs"), h.canary),
       [],
     );
+  });
+});
+
+Deno.test("input values: arguments the schema refuses never replace the last good evaluated cache (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    const definition = await define(h, "seeded", "execute", {
+      token: VAULT_REF,
+    }, undefined);
+    assertEquals(errorsOf(await run(h, "seeded", "execute")), []);
+    const path = await cacheFile(h.dir, "seeded");
+    const good = await Deno.readTextFile(path);
+
+    const repo = createRepositoryContext({ repoDir: h.dir });
+    try {
+      await repo.definitionRepo.save(
+        h.type,
+        Definition.fromData({
+          ...definition.toData(),
+          methods: { execute: { arguments: { token: { invalid: true } } } },
+        }),
+      );
+      const refused = errorsOf(await run(h, "seeded", "execute"));
+      assertEquals(refused.length, 1);
+      assertStringIncludes(
+        refused[0].message,
+        "Method arguments validation failed",
+      );
+      assertEquals(h.received.length, 1);
+      assertEquals(await Deno.readTextFile(path), good);
+
+      await repo.definitionRepo.save(h.type, definition);
+    } finally {
+      repo.catalogStore.close();
+    }
+    const replay = await run(h, "seeded", "execute", {}, {
+      lastEvaluated: true,
+    });
+    assertEquals(errorsOf(replay), []);
+    assertEquals(h.received, [{ token: VAULT_VALUE }, { token: VAULT_VALUE }]);
   });
 });
