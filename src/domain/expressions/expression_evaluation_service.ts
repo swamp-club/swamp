@@ -598,6 +598,22 @@ export class ExpressionEvaluationService {
   }
 
   /**
+   * The context a workflow-level evaluation (`swamp workflow evaluate`)
+   * runs against, from this service's resolver, so the context and a typed
+   * pass's vault check scope answer from one resolver. Loading every model
+   * definition is only needed when the workflow reads the model or file
+   * namespaces.
+   */
+  buildEvaluationContext(
+    needsModelNamespace: boolean,
+    sensitiveValues: RunSensitiveValues,
+  ): Promise<ExpressionContext> {
+    return needsModelNamespace
+      ? this.modelResolver.buildContext(sensitiveValues)
+      : Promise.resolve(this.modelResolver.buildLightContext(sensitiveValues));
+  }
+
+  /**
    * The evaluator for a run: the legacy one, or, when the run's registry is
    * typed (the internal typed-secrets option, which only tests set), the
    * typed one, built once by forwarding the registry's flag. The registry is

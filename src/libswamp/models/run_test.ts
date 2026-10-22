@@ -19,7 +19,12 @@
 
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   messageFor,
   wordedText,
@@ -43,6 +48,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { SecretLoader } from "../../domain/vaults/secret_loader.ts";
@@ -60,7 +66,6 @@ import type { RunTrackerRepository } from "../../domain/models/run_tracker_repos
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import { typedStagers } from "../../infrastructure/persistence/unit_of_work_binding.ts";
-import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 
 await initializeLogging({});
@@ -1860,6 +1865,100 @@ Deno.test("modelMethodRun: --last-evaluated restores cached references into the 
   assertEquals(key.includes(secret), false);
   assertEquals(executedBag?.resolveRaw(key), `echo ${secret}`);
   assertEquals(reported?.key, "echo ***");
+});
+
+Deno.test("modelMethodRun: a typed --last-evaluated replay restores cached references as reference-only sentinels and reads no vault before delivery (typed-secrets 4.4)", async () => {
+  const secret = "Pl41n-s3cret";
+  const cached = Definition.create({
+    name: "test-model",
+    methods: {
+      run: {
+        arguments: { key: "echo ${{ vault.get('prod', 'api-token') }}" },
+      },
+    },
+  });
+  let executed: Definition | undefined;
+  let executedBag: VaultSecretBag | undefined;
+  let vaultServicesAtRuntimePass = -1;
+  let vaultServices = 0;
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.resolveRuntimeExpressionsInDefinition = (
+    def: Definition,
+    _redactor: unknown,
+    _context: unknown,
+    _authored: unknown,
+    options: { secretBag: VaultSecretBag },
+  ) => {
+    executed = def;
+    executedBag = options.secretBag;
+    vaultServicesAtRuntimePass = vaultServices;
+    return Promise.resolve({ definition: def, secretBag: options.secretBag });
+  };
+  const deps = {
+    ...createTestDeps(
+      createTestDefinition("test-model", "run"),
+      createTestModelDef("run"),
+    ),
+    createEvaluationService: () => evaluationService,
+    createSensitiveValues: (redactor: SecretRedactor) =>
+      new RunSensitiveValues(
+        redactor,
+        new SecretBagRegistry({ typedSecrets: true }),
+      ),
+    createVaultService: () => {
+      vaultServices++;
+      return Promise.resolve(
+        { get: () => Promise.resolve(secret) } as unknown as Awaited<
+          ReturnType<ModelMethodRunDeps["createVaultService"]>
+        >,
+      );
+    },
+    loadEvaluatedDefinition: () =>
+      Promise.resolve({
+        definition: cached,
+        authoredExpressions: new Set<string>(),
+        sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+        provenance: ProvenanceMap.authored(),
+        persistedProvenance: ProvenanceMap.authored(),
+        writtenReferences: [{
+          path: ["methods", "run", "arguments", "key"],
+          occurrence: 0,
+          vaultName: "prod",
+          key: "api-token",
+          encoding: "raw" as const,
+          dataOrigin: true,
+        }],
+      }),
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+  };
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      lastEvaluated: true,
+    }),
+  );
+  assertEquals(
+    events.some((e) => e.kind === "error"),
+    false,
+    JSON.stringify(events.find((e) => e.kind === "error")),
+  );
+  // The replay created no vault service: nothing was read to restore.
+  assertEquals(vaultServicesAtRuntimePass, 0);
+  const key = executed?.getMethodArguments("run").key as string;
+  assertEquals(key.includes(secret), false);
+  const [sentinel] = key.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(key, `echo ${sentinel}`);
+  const entry = executedBag?.registry.issuedEntryOf(sentinel);
+  assertEquals(entry?.reference, { vaultName: "prod", key: "api-token" });
+  assertEquals(entry?.dataOrigin, true);
+  assertEquals(entry !== undefined && "value" in entry, false);
+  // Unloaded, the sentinel is never delivered as text.
+  assertThrows(() => executedBag!.resolveRaw(key), Error, "was not loaded");
 });
 
 Deno.test("modelMethodRun keeps an empty-markdown report in the completed run's reports", async () => {

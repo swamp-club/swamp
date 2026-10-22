@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../errors.ts";
+
 /** The vault name and key a secret stands for. */
 export interface SecretReference {
   readonly vaultName: string;
@@ -39,9 +41,44 @@ const SENTINEL_PARTS = /^__SWAMP_VSEC_([0-9a-f]{32})_\d+__$/;
 
 /**
  * How a sentinel's value was written where the sentinel stands: as `raw`
- * text, or as its JSON-escaped form (`json`) inside JSON text.
+ * text, as its JSON-escaped form (`json`) inside JSON text, or as the whole
+ * `number` or `boolean` leaf a coercion produced. A pass issues `raw` entries,
+ * and the legacy data path `raw` or `json` ones; the other encodings are read
+ * back from the written references of an existing file
+ * (design/enablers/typed-secrets.md Section 8.1), and delivery applies them
+ * ({@link jsonEscaped}, {@link restoreScalar}).
  */
-export type SecretEncoding = "raw" | "json";
+export const SECRET_ENCODINGS = ["raw", "json", "number", "boolean"] as const;
+export type SecretEncoding = (typeof SECRET_ENCODINGS)[number];
+
+/** A value's JSON-escaped form: how it sits inside JSON text. */
+export function jsonEscaped(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
+
+/**
+ * The number or boolean a `number` or `boolean` entry delivers for a loaded
+ * value. Throws when the vault now holds something else (a rotated value),
+ * naming the reference and the position it is delivered at, never the value,
+ * rather than delivering NaN or false in its place.
+ */
+export function restoreScalar(
+  encoding: "number" | "boolean",
+  value: string,
+  reference: SecretReference,
+  /** The record and position the entry is delivered at, never a file path. */
+  position: string,
+): number | boolean {
+  if (encoding === "boolean") {
+    if (value === "true" || value === "false") return value === "true";
+  } else if (value.trim() !== "" && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  throw new UserError(
+    `The value in vault '${reference.vaultName}' key '${reference.key}' is no longer a ${encoding}, so it cannot be delivered where one was written (at ${position}). ` +
+      `Restore the vault value, or evaluate again so the value is read afresh.`,
+  );
+}
 
 /** One sentinel of a VaultSecretBag, in the shape a dispatch ships it. */
 export interface SecretBagEntry {
@@ -52,15 +89,20 @@ export interface SecretBagEntry {
 }
 
 /**
- * A vault.get() reference a pass issued. It holds no value: a load reads
- * one at delivery, for that delivery attempt only.
+ * A vault.get() reference a pass issued, or a vault-origin written reference
+ * a rehydration restored from an existing file. It holds no value: a load
+ * reads one at delivery, for that delivery attempt only, and delivery applies
+ * the encoding the file recorded.
  */
 export interface VaultReferenceEntry {
   sentinel: string;
   reference: SecretReference;
-  encoding: "raw";
+  encoding: SecretEncoding;
   dataOrigin: false;
-  /** Where the author wrote the reference, for a load's errors. */
+  /**
+   * Where the author wrote the reference, or the record and position a
+   * rehydration restored it from, for a load's errors.
+   */
   location: string;
 }
 
@@ -77,14 +119,15 @@ export interface DataSecretEntry extends SecretBagEntry {
 
 /**
  * A sensitive-field reference a typed data read brought into an expression
- * (typed-secrets 3.3). It holds no value: a load reads one at delivery, as
- * for a vault.get() reference, and the location names the record and the
- * field the reference was read from.
+ * (typed-secrets 3.3), or a data-origin written reference a rehydration
+ * restored from an existing file. It holds no value: a load reads one at
+ * delivery, as for a vault.get() reference, and the location names the
+ * record and the field the reference was read from.
  */
 export interface DataReferenceEntry {
   sentinel: string;
   reference: SecretReference;
-  encoding: "raw";
+  encoding: SecretEncoding;
   dataOrigin: true;
   /** The record and field the reference was read from, for a load's errors. */
   location: string;

@@ -28,7 +28,10 @@ import {
   WorkflowRun,
 } from "./workflow_run.ts";
 import { Workflow } from "./workflow.ts";
-import { RunSensitiveValues } from "../secrets/mod.ts";
+import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
+import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -3479,4 +3482,65 @@ Deno.test("WorkflowRun.failStepsNamingRefusedData: a step that already failed ke
     [],
   );
   assertEquals(step.error, "the method failed");
+});
+
+Deno.test("WorkflowRun.toPersistedData: a typed run writes its inputs map in the written inputs' coordinates, exact at each reference, and a later process keeps it (typed-secrets 4.4)", () => {
+  const workflow = Workflow.create({
+    name: "typed-inputs",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({ name: "s", task: StepTask.model("m", "run") })],
+    })],
+  });
+  const run = WorkflowRun.create(workflow);
+  const values = new RunSensitiveValues(
+    undefined,
+    new SecretBagRegistry({ typedSecrets: true }),
+  );
+  const bag = new VaultSecretBag(values.sentinels);
+  const a = bag.addSecret({ vaultName: "v", key: "a" }, "inputs.token");
+  const b = bag.addSecret({ vaultName: "v", key: "b" }, "inputs.token");
+  run.attachSensitiveValues(values);
+  const token = `x ${a} y ${b} ${"${{ env.X }}"}`;
+  run.captureInputs({ token, plain: "data" });
+  // The sentinels and the plain input are data; the trailing expression is
+  // not.
+  run.captureInputsProvenance(
+    ProvenanceMap.authored().withRanges("token", [
+      [2, 2 + a.length],
+      [5 + a.length, 5 + a.length + b.length],
+    ]).withWholeData("plain"),
+  );
+  const persisted = run.toPersistedData();
+  const refA = vaultReferenceText({ vaultName: "v", key: "a" });
+  const refB = vaultReferenceText({ vaultName: "v", key: "b" });
+  assertEquals(
+    persisted.inputs?.token,
+    `x ${refA} y ${refB} ${"${{ env.X }}"}`,
+  );
+  const map = ProvenanceMap.fromData(persisted.persistedInputsProvenance!);
+  assertEquals(map.rangesAt("token"), [
+    [2, 2 + refA.length],
+    [5 + refA.length, 5 + refA.length + refB.length],
+  ]);
+  assertEquals(map.isWholeDataAt("plain"), true);
+  const written = persisted.inputs!.token as string;
+  assertEquals(
+    map.overlapsData("token", written.lastIndexOf("${{"), written.length),
+    false,
+  );
+  // The in-memory map is written too, as before.
+  assertEquals(
+    ProvenanceMap.fromData(persisted.inputsProvenance!).rangesAt("token"),
+    [[2, 2 + a.length], [5 + a.length, 5 + a.length + b.length]],
+  );
+  // A later process without a record writes both maps back unchanged.
+  const reloaded = WorkflowRun.fromData(persisted);
+  assertEquals(reloaded.persistedInputsProvenance?.toData(), map.toData());
+  assertEquals(reloaded.toPersistedData(), persisted);
+  // A run without an inputs map writes none.
+  const unmapped = WorkflowRun.create(workflow);
+  unmapped.attachSensitiveValues(values);
+  unmapped.captureInputs({ token });
+  assertEquals(unmapped.toPersistedData().persistedInputsProvenance, undefined);
 });

@@ -32,6 +32,7 @@ import {
 import {
   type DataPath,
   rehydratePersistedForm,
+  rehydrateReferences,
   type RunSensitiveValues,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
@@ -46,12 +47,14 @@ import {
 } from "./deferred_expression.ts";
 import { expressionReferences, freeRoots } from "./cel_grammar.ts";
 import { matchSingleExpression } from "./expression_scanner.ts";
+import { UserError } from "../errors.ts";
 import { extractExpressions } from "./expression_parser.ts";
 import {
   alignProvenance,
   indexPath,
   keyPath,
   ProvenanceMap,
+  sentinelReferenceTextOf,
 } from "./provenance_map.ts";
 
 /**
@@ -669,6 +672,37 @@ function samePath(left: MaskedPath, right: MaskedPath): boolean {
     left.every((part, i) => part === right[i]);
 }
 
+/**
+ * `map` with the range of every written reference in `data` marked as data,
+ * so a persisted-coordinate map is exact at each reference whatever rule
+ * aligned the rest of its string: a reference the value search wrote has no
+ * sentinel to align through, and two in one string would otherwise merge
+ * into one span. A path that is whole data stays so.
+ */
+export function withWrittenReferenceRanges(
+  map: ProvenanceMap,
+  data: unknown,
+  writtenReferences: readonly WrittenReference[],
+): ProvenanceMap {
+  const byPath = new Map<string, WrittenReference[]>();
+  for (const reference of writtenReferences) {
+    const spelled = provenancePath(reference.path);
+    const refs = byPath.get(spelled);
+    if (refs) refs.push(reference);
+    else byPath.set(spelled, [reference]);
+  }
+  let out = map;
+  for (const [spelled, refs] of byPath) {
+    const text = readAt(data, refs[0].path);
+    if (typeof text !== "string" || out.isWholeDataAt(spelled)) continue;
+    out = out.withRanges(spelled, [
+      ...out.rangesAt(spelled),
+      ...referenceRanges(text, refs),
+    ]);
+  }
+  return out;
+}
+
 function referenceRanges(
   text: string,
   references: readonly WrittenReference[],
@@ -847,7 +881,24 @@ export function persistEvaluatedDefinition(
   // never for an authored vault.get, which stays an expression; the guards
   // read these ranges only to tell the text a reference covers from the
   // text it does not.
-  let persistedProvenance = alignProvenance(provenance, data, definitionData);
+  // Sentinels stand in for the reference text they are written as, so the
+  // persisted map is exact wherever a sentinel became a reference; a value
+  // the search replaced falls to the differing-span rule, and every written
+  // reference is marked data either way.
+  let persistedProvenance = withWrittenReferenceRanges(
+    alignProvenance(
+      provenance,
+      data,
+      definitionData,
+      sentinelReferenceTextOf(values.sentinels),
+    ),
+    definitionData,
+    form.writtenReferences,
+  );
+  // A sensitive leaf the search rewrote keeps only its reference ranges: the
+  // differing-span rule marks the authored text between two references data,
+  // and the plaintext check below would then mask a value that came from a
+  // vault.
   for (const site of argumentSites(schemas, definitionData as DefinitionData)) {
     for (const entry of findSensitiveValues(site.schema, site.args, true)) {
       visitLeaves(entry.value, entry.keys, entry.path, (keys, path, value) => {
@@ -999,15 +1050,37 @@ function shownSchemas(
 }
 
 /**
- * Restores a cached evaluated definition for replay: the raw copy for CEL
- * contexts and reports, and the executed copy with data-origin sentinels
- * from the step's bag, exactly as a fresh evaluation would produce.
+ * Restores a cached evaluated definition for replay.
+ *
+ * In a typed run (the bag's registry carries the option) the cache's written
+ * references become sentinels the step's bag issues, reading no vault: the
+ * raw and executed copies are one sentinel copy, since a typed run holds no
+ * value anywhere, and the delivery loads the current value under the
+ * principal's current grants (typed-secrets 4.4, design Section 8.2). The
+ * cache's `persistedProvenance`, in reference-text coordinates, is aligned
+ * onto that copy exactly through the reference text each sentinel stands
+ * for, and returned as `provenance` for both copies. A cache written before
+ * swamp-club#3681 records provenance only in value coordinates, which no copy
+ * in hand can realign, so a typed replay refuses it rather than risk a data
+ * range landing on authored text; one with no provenance at all replays as
+ * authored, as it always did.
+ *
+ * In an untyped run the legacy branch restores the raw copy for CEL contexts
+ * and reports, and the executed copy with data-origin sentinels from the
+ * step's bag, exactly as a fresh untyped evaluation would produce.
  */
 export async function rehydrateEvaluatedDefinition(
   cached: {
     definition: Definition;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
+    /**
+     * See {@link PersistedEvaluatedDefinition.persistedProvenance}. A reader
+     * refuses `"unreadable"` before replaying; here it counts as absent.
+     */
+    persistedProvenance?: ProvenanceMap | "unreadable";
+    /** Where data sits in the raw copy, as the cache stores it. */
+    provenance?: ProvenanceMap | "unreadable";
   },
   read: VaultReader,
   values: RunSensitiveValues,
@@ -1016,7 +1089,18 @@ export async function rehydrateEvaluatedDefinition(
   definition: Definition;
   executedDefinition: Definition;
   deferredExpressions: DeferredExpression[];
+  /** Set in a typed run: the map of both copies, aligned onto them. */
+  provenance?: ProvenanceMap;
 }> {
+  if (bag.registry.typedSecrets) {
+    const readable = (map: ProvenanceMap | "unreadable" | undefined) =>
+      map instanceof ProvenanceMap ? map : undefined;
+    return rehydrateEvaluatedDefinitionReferences({
+      ...cached,
+      persistedProvenance: readable(cached.persistedProvenance),
+      provenance: readable(cached.provenance),
+    }, bag);
+  }
   const file = {
     ...cached.definition.toData(),
     deferredExpressions: [...cached.deferredExpressions],
@@ -1042,6 +1126,84 @@ export async function rehydrateEvaluatedDefinition(
     ),
     deferredExpressions,
   };
+}
+
+/** The typed branch of {@link rehydrateEvaluatedDefinition}. */
+function rehydrateEvaluatedDefinitionReferences(
+  cached: {
+    definition: Definition;
+    deferredExpressions: readonly DeferredExpression[];
+    writtenReferences: readonly WrittenReference[];
+    persistedProvenance?: ProvenanceMap;
+    provenance?: ProvenanceMap;
+  },
+  bag: VaultSecretBag,
+): {
+  definition: Definition;
+  executedDefinition: Definition;
+  deferredExpressions: DeferredExpression[];
+  provenance: ProvenanceMap;
+} {
+  const persisted = cached.definition.toData();
+  const file = {
+    ...persisted,
+    deferredExpressions: [...cached.deferredExpressions],
+  };
+  const restored = rehydrateReferences(
+    file,
+    cached.writtenReferences,
+    bag,
+    cached.definition.name,
+  );
+  const { deferredExpressions, ...restoredDefinition } = restored;
+  const definition = Definition.fromData(restoredDefinition as DefinitionData);
+  return {
+    definition,
+    executedDefinition: definition,
+    deferredExpressions,
+    provenance: replayProvenance(
+      cached,
+      persisted,
+      restoredDefinition,
+      bag,
+      `The evaluated cache for "${cached.definition.name}" was written before it recorded where its references sit, so it is not replayed with references. ` +
+        `Run without --last-evaluated to evaluate it again; that rewrites the cache.`,
+    ),
+  };
+}
+
+/**
+ * The map of a sentinel copy restored from a persisted copy (typed-secrets
+ * 4.4): the persisted-coordinate map aligned exactly, through the reference
+ * text each sentinel stands for. A cache that holds references and a map in
+ * value coordinates only cannot be realigned and is refused with `refusal`;
+ * one with no map replays as authored.
+ */
+export function replayProvenance(
+  cached: {
+    writtenReferences: readonly WrittenReference[];
+    persistedProvenance?: ProvenanceMap;
+    provenance?: ProvenanceMap;
+  },
+  persisted: unknown,
+  restored: unknown,
+  bag: VaultSecretBag,
+  refusal: string,
+): ProvenanceMap {
+  if (cached.persistedProvenance !== undefined) {
+    return alignProvenance(
+      cached.persistedProvenance,
+      persisted,
+      restored,
+      undefined,
+      sentinelReferenceTextOf(bag.registry),
+    );
+  }
+  if (cached.provenance === undefined || cached.provenance.isAuthored) {
+    return ProvenanceMap.authored();
+  }
+  if (cached.writtenReferences.length === 0) return cached.provenance;
+  throw new UserError(refusal);
 }
 
 /**

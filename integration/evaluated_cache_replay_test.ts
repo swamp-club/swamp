@@ -57,6 +57,7 @@ import {
   workflowEvaluate,
 } from "../src/libswamp/workflows/evaluate.ts";
 import { UserError } from "../src/domain/errors.ts";
+import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 
 await initializeLogging({});
 
@@ -465,5 +466,92 @@ Deno.test("workflow --last-evaluated: a run the input check refuses supersedes n
       (await repo.workflowRunRepo.findAllByWorkflowId(workflowId)).length,
       runsBefore,
     );
+  });
+});
+
+Deno.test("workflow evaluate: the untyped pass writes what the raw evaluator wrote: inputs spliced, forEach expanded under self names, a deferred target and a guard left raw, and the persisted map recorded (typed-secrets 4.4)", async () => {
+  await withRepo(async (repo, dir) => {
+    const workflow = Workflow.create({
+      name: "legacy-pass",
+      inputs: {
+        properties: { region: { type: "string" } },
+        required: ["region"],
+      },
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "first",
+            task: StepTask.model("consumer", "run", {
+              value: "${{ inputs.region }}-${{ 1 + 1 }}",
+            }),
+          }),
+          Step.create({
+            name: "deploy-${{ self.env }}",
+            forEach: { item: "env", in: '${{ ["a", "b"] }}' },
+            task: StepTask.model("consumer", "run", {
+              value: "${{ self.env }}",
+            }),
+          }),
+          Step.create({
+            name: "after",
+            task: StepTask.model("${{ steps.first.outputs.name }}", "run", {
+              value: "x",
+            }),
+            dependsOn: [{
+              step: "first",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+          Step.create({
+            name: "guarded",
+            guard: '${{ inputs.region == "eu" }}',
+            task: StepTask.model("consumer", "run", { value: "g" }),
+          }),
+        ],
+      })],
+    });
+    await repo.workflowRepo.save(workflow);
+    const events = await collect(workflowEvaluate(
+      createLibSwampContext(),
+      createWorkflowEvaluateDeps(dir, repo.workflowRepo),
+      { workflowIdOrName: workflow.name, inputs: { region: "eu" } },
+    ));
+    assertEquals(events.at(-1)?.kind, "completed");
+    const cached = await new YamlEvaluatedWorkflowRepository(dir)
+      .findByNameWithProvenance(workflow.name);
+    assertExists(cached);
+    const steps = cached.workflow.jobs[0].steps;
+    const taskOf = (i: number) =>
+      steps[i].task.data as {
+        modelIdOrName?: string;
+        inputs?: Record<string, unknown>;
+      };
+    assertEquals(steps.map((s) => s.name), [
+      "first",
+      "deploy-a",
+      "deploy-b",
+      "after",
+      "guarded",
+    ]);
+    assertEquals(taskOf(0).inputs, { value: "eu-2" });
+    assertEquals(taskOf(1).inputs, { value: "a" });
+    assertEquals(taskOf(2).inputs, { value: "b" });
+    assertEquals(taskOf(3).modelIdOrName, "${{ steps.first.outputs.name }}");
+    assertEquals(steps[4].guard, '${{ inputs.region == "eu" }}');
+    assertEquals(cached.evaluatedInputs, { region: "eu" });
+    // The operator's input is data where it was spliced, in both maps.
+    const path = "jobs[0].steps[0].task.inputs.value";
+    assertEquals(
+      cached.provenance instanceof ProvenanceMap &&
+        cached.provenance.overlapsData(path, 0, 2),
+      true,
+    );
+    assertEquals(
+      cached.persistedProvenance instanceof ProvenanceMap &&
+        cached.persistedProvenance.overlapsData(path, 0, 2),
+      true,
+    );
+    assertEquals(cached.writtenReferences, []);
   });
 });

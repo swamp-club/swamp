@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { InputRecordSchema } from "../inputs/input_record.ts";
+import { vaultReferenceText } from "../secrets/run_sensitive_values.ts";
 import {
   holdsValue,
   type SecretBagRegistry,
@@ -592,6 +593,24 @@ export function sentinelIdentityOf(
     return `${vaultName}\u0000${key}\u0000${entry.encoding}\u0000${
       entry.dataOrigin ? "data" : "vault"
     }`;
+  };
+}
+
+/**
+ * Stands each sentinel `registry` issued in for the reference text the
+ * persisted form writes it as, without reading a value, so a persisted copy
+ * (reference text) and a sentinel copy resolve to one text and their ranges
+ * align exactly whatever the sentinels' lengths (typed-secrets 4.4). Text
+ * that is not a sentinel of the run is left alone.
+ */
+export function sentinelReferenceTextOf(
+  registry: SecretBagRegistry,
+): SentinelResolver {
+  return (sentinel) => {
+    const entry = registry.issuedEntryOf(sentinel);
+    return entry === undefined
+      ? undefined
+      : vaultReferenceText(entry.reference);
   };
 }
 

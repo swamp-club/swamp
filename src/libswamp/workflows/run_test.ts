@@ -40,6 +40,9 @@ import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { StepOutputResolver } from "../../domain/workflows/step_output_resolver.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
@@ -1964,4 +1967,60 @@ Deno.test("workflowRun: a --last-evaluated cache that cannot be read is reported
     false,
   );
   assertEquals(captured.options, undefined);
+});
+
+Deno.test("toRunData: inputs, a step error and assert text are shown through the run's mask, recorded values and a typed run's sentinels alike (typed-secrets 4.4)", () => {
+  const workflow = Workflow.create({
+    name: "masked-view",
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({ name: "s", task: StepTask.model("m", "run") }),
+        Step.create({
+          name: "a",
+          task: StepTask.assert("true", "checked ${{ 1 }}"),
+        }),
+      ],
+    })],
+  });
+  const run = WorkflowRun.create(workflow);
+  const values = new RunSensitiveValues(
+    undefined,
+    new SecretBagRegistry({ typedSecrets: true }),
+  );
+  const sentinel = new VaultSecretBag(values.sentinels).addSecret(
+    { vaultName: "v", key: "k" },
+    "inputs.token",
+  );
+  values.addSecret("Pl41n-s3cret", { vaultName: "v", key: "p" });
+  run.attachSensitiveValues(values);
+  run.captureInputs({ token: `Bearer ${sentinel}`, note: "Pl41n-s3cret" });
+  run.start();
+  const s = run.getJob("main")!.getStep("s")!;
+  s.start();
+  s.fail(`rejected ${sentinel}`);
+  const a = run.getJob("main")!.getStep("a")!;
+  a.start();
+  a.recordAssertResult({
+    passed: false,
+    expr: "true",
+    message: `saw ${sentinel}`,
+    severity: "high",
+  });
+  const view = toRunData(run);
+  assertEquals(view.inputs, { token: "Bearer ***", note: "***" });
+  assertEquals(view.jobs[0].steps[0].error, "rejected ***");
+  assertEquals(view.jobs[0].steps[1].assertResult?.message, "saw ***");
+  // The typed fields of the result are not put through the mask.
+  values.addSecret("false", { vaultName: "v", key: "f" });
+  const again = toRunData(run).jobs[0].steps[1].assertResult!;
+  assertEquals(again.passed, false);
+  assertEquals(again.severity, "high");
+  assertEquals(again.expr, "true");
+  assertEquals(JSON.stringify(view).includes("__SWAMP_VSEC_"), false);
+  assertEquals(JSON.stringify(view).includes("Pl41n-s3cret"), false);
+  // Without a record the view shows the run as it is.
+  const plain = WorkflowRun.create(workflow);
+  plain.captureInputs({ token: "plain" });
+  assertEquals(toRunData(plain).inputs, { token: "plain" });
 });

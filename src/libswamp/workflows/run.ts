@@ -567,8 +567,10 @@ export function toRunData(
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
+  // Value fields are shown through the run's one display view: recorded
+  // values masked and, in a typed run, its sentinels (typed-secrets 4.4).
   const inputs = run.inputs && Object.keys(run.inputs).length > 0
-    ? run.inputs
+    ? run.mask(run.inputs)
     : undefined;
 
   return {
@@ -591,7 +593,7 @@ export function toRunData(
           const stepData: StepRunView = {
             name: step.stepName,
             status: viewStatus(step.status),
-            error: step.error,
+            error: run.mask(step.error),
             ...(step.errorCode !== undefined
               ? { errorCode: step.errorCode }
               : {}),
@@ -624,7 +626,16 @@ export function toRunData(
           }
 
           if (step.assertResult) {
-            stepData.assertResult = { ...step.assertResult };
+            // Only the expression-derived text is masked: passed, expr and
+            // severity are typed fields the mask would coerce.
+            const assertResult = { ...step.assertResult };
+            stepData.assertResult = {
+              ...assertResult,
+              message: run.mask(assertResult.message),
+              ...(assertResult.error !== undefined
+                ? { error: run.mask(assertResult.error) }
+                : {}),
+            };
           }
 
           if (step.skipReason) {

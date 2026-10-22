@@ -19,6 +19,7 @@
 
 import {
   isIssuedEntry,
+  jsonEscaped,
   type RegistryEntry,
   SecretBagRegistry,
   type SecretReference,
@@ -285,7 +286,7 @@ export class RunSensitiveValues implements SecretSink {
       let result = this.withSentinelStandIns(value, () => "***");
       for (const { value: secret } of this.list()) {
         if (result.includes(secret)) result = result.split(secret).join("***");
-        const escaped = JSON.stringify(secret).slice(1, -1);
+        const escaped = jsonEscaped(secret);
         if (escaped !== secret && result.includes(escaped)) {
           result = result.split(escaped).join("***");
         }

@@ -69,12 +69,11 @@ import {
   requiresModelNamespace,
 } from "../../domain/expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
-import { ModelResolver } from "../../domain/expressions/model_resolver.ts";
 import {
-  CelEvaluator,
-  prepareExpressionContext,
-  prepareExpressionsIn,
-} from "../../infrastructure/cel/cel_evaluator.ts";
+  ExpressionEvaluationService,
+  type PassEvaluator,
+  type PassEvaluatorOptions,
+} from "../../domain/expressions/expression_evaluation_service.ts";
 import type {
   HydrateFileHook,
   UnreadableContentLookup,
@@ -178,18 +177,25 @@ export interface WorkflowEvaluateDeps {
     needsModelNamespace: boolean,
     sensitiveValues: RunSensitiveValues,
   ) => Promise<ExpressionContext>;
-  evaluateCel: (
-    expression: string,
-    context: Record<string, unknown>,
-  ) => unknown;
   /**
-   * Async CEL evaluator used by the forEach.in expansion path so
-   * data.* helpers (which return Promises) resolve before iteration.
+   * The evaluator the evaluation's passes run with, selected through the
+   * one seam the run paths use (`ExpressionEvaluationService.passEvaluatorFor`,
+   * typed-secrets 4.4): the legacy evaluator for an untyped registry, or
+   * the typed evaluator bound to a bag of the registry, so a data read
+   * returns a reference and a Secret leaves as a sentinel the cache writes
+   * as its reference, with no load.
    */
-  evaluateCelAsync: (
-    expression: string,
-    context: Record<string, unknown>,
-  ) => Promise<unknown>;
+  passEvaluatorFor: (
+    sensitiveValues: RunSensitiveValues,
+    options: PassEvaluatorOptions,
+  ) => Promise<PassEvaluator>;
+  /**
+   * The evaluation's sensitive values, with the registry that carries the
+   * internal typed-secrets option. Only tests set a typed one
+   * (design/enablers/typed-secrets.md Section 10.3); the CLI and serve pass
+   * nothing, and the evaluation is untyped.
+   */
+  createSensitiveValues?: () => RunSensitiveValues;
   saveEvaluatedWorkflow: (
     workflow: Workflow,
     /** Where data sits in the workflow's raw copy (swamp-club#3205). */
@@ -201,6 +207,8 @@ export interface WorkflowEvaluateDeps {
      * (swamp-club#3583).
      */
     recorded?: RecordedEvaluationInputs,
+    /** Where data sits in the written workflow (typed-secrets 4.4). */
+    persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -250,31 +258,32 @@ export function createWorkflowEvaluateDeps(
     repoDir,
     dsPath(SWAMP_SUBDIRS.workflowsEvaluated),
   );
-  const modelResolver = new ModelResolver(definitionRepo, {
+  // One service, so one resolver answers both the evaluation context and
+  // the typed pass's vault check scope.
+  const evaluationService = new ExpressionEvaluationService(
+    definitionRepo,
     repoDir,
-    dataRepo,
-    dataQueryService,
-  });
-  const celEvaluator = new CelEvaluator();
+    { dataRepo, dataQueryService },
+  );
 
   return {
     findWorkflowById: (id) => workflowRepo.findById(id),
     findWorkflowByName: (name) => workflowRepo.findByName(name),
     findAllWorkflows: () => workflowRepo.findAll(),
     buildExpressionContext: (needsModelNamespace, sensitiveValues) =>
-      needsModelNamespace
-        ? modelResolver.buildContext(sensitiveValues)
-        : Promise.resolve(modelResolver.buildLightContext(sensitiveValues)),
-    evaluateCel: (expression, context) =>
-      celEvaluator.evaluate(expression, context),
-    evaluateCelAsync: (expression, context) =>
-      celEvaluator.evaluateAsync(expression, context),
+      evaluationService.buildEvaluationContext(
+        needsModelNamespace,
+        sensitiveValues,
+      ),
+    passEvaluatorFor: (sensitiveValues, options) =>
+      evaluationService.passEvaluatorFor(sensitiveValues, options),
     saveEvaluatedWorkflow: (
       workflow,
       provenance,
       authoredExpressions,
       writtenReferences,
       recorded,
+      persistedProvenance,
     ) =>
       evaluatedWorkflowRepo.save(
         workflow,
@@ -283,6 +292,7 @@ export function createWorkflowEvaluateDeps(
         undefined,
         writtenReferences,
         recorded,
+        persistedProvenance,
       ),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
@@ -351,11 +361,17 @@ async function evaluateWorkflowInternal(
   }
 
   // Build expression context with inputs
-  const sensitiveValues = new RunSensitiveValues();
+  const sensitiveValues = deps.createSensitiveValues?.() ??
+    new RunSensitiveValues();
   const context = await deps.buildExpressionContext(
     requiresModelNamespace(workflowData),
     sensitiveValues,
   );
+  // The pass every expression of this evaluation runs through: with a typed
+  // registry, sentinels for every secret it reads and no load.
+  const pass = await deps.passEvaluatorFor(sensitiveValues, {
+    location: workflow.name,
+  });
   context.inputs = coercedInputs;
   // Where data sits in the inputs, as on the run path (swamp-club#3205).
   attachInputsProvenance(
@@ -420,8 +436,8 @@ async function evaluateWorkflowInternal(
     try {
       // A synchronous evaluation: make what it reads local first
       // (swamp-club#3179).
-      await prepareExpressionContext(expr.celExpression, context);
-      const value = deps.evaluateCel(expr.celExpression, context);
+      await pass.prepare(expr.raw, context);
+      const value = pass.evaluate(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
       origins.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
     } catch (error) {
@@ -485,14 +501,14 @@ async function evaluateWorkflowInternal(
       if (allowedIn.length !== 1 || allowedIn[0].start !== inSpan.start) {
         throw new UserError("forEach.in must be an authored expression");
       }
-      const items = await deps.evaluateCelAsync(inSpan.inner, context);
+      const items = await pass.evaluateAsync(inSpan.inner, context);
       const itemsProvenance = spliceOrigin(inSpan.inner, context, items).map;
       const itemName = stepData.forEach.item;
       const nameHasExpression = containsExpression(stepData.name);
       // Each item's step is resolved synchronously against a context that
       // shares this one's model map and data namespace, so what they read is
       // made local once, here (swamp-club#3179).
-      await prepareExpressionsIn(
+      await pass.prepare(
         {
           name: stepData.name,
           task: stepData.task,
@@ -532,7 +548,8 @@ async function evaluateWorkflowInternal(
           },
           fieldsMap,
           stepContext,
-          deps.evaluateCel,
+          (expression, evaluationContext) =>
+            pass.evaluate(expression, evaluationContext),
           authoredExpressions,
           isAssertExprPath,
         );
@@ -586,10 +603,19 @@ async function evaluateWorkflowInternal(
             ...context,
             self: { ...context.self, _index: index, [itemName]: item },
           };
+          // The run path's fallback-suffix policy
+          // (ForEachExpansionService): the index for an object item, which
+          // a typed read returns without a prototype, and for the
+          // evaluation-failure path; the raw value for a primitive.
+          const fallbackSuffix = nameHasExpression
+            ? String(index)
+            : (item !== null && typeof item === "object")
+            ? String(index)
+            : String(item);
           expandedSteps.push(
             buildExpandedStep(
               stepContext,
-              String(item),
+              fallbackSuffix,
               index,
               itemsProvenance.subtree(`[${index}]`),
             ),
@@ -656,16 +682,19 @@ async function evaluateWorkflowInternal(
     undefined,
     [],
     sensitiveValues,
+    expandedProvenance,
   );
   await deps.saveEvaluatedWorkflow(
     persisted.workflow,
-    // In raw-copy coordinates, which rehydrate restores exactly.
+    // In raw-copy coordinates, which the untyped rehydrate restores exactly;
+    // the typed replay aligns from the persisted map.
     expandedProvenance,
     authoredExpressions,
     persisted.writtenReferences,
     recordableEvaluatedInputs(coercedInputs, sensitiveValues, {
       provenance: inputsProvenance,
     }),
+    persisted.persistedProvenance,
   );
 
   return {

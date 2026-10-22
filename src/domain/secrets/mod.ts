@@ -30,6 +30,7 @@ export {
   type DataPath,
   type PersistedForm,
   rehydratePersistedForm,
+  rehydrateReferences,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
   type VaultReader,
