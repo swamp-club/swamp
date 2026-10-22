@@ -283,3 +283,21 @@ Deno.test("enumerateBundleFiles: skips install staging next to bundle namespaces
     ]);
   });
 });
+
+Deno.test("enumerateBundleFiles: finds bundles in a repo under an ancestor named like a staging dir", async () => {
+  await withTempDir(async (parent) => {
+    // Only staging dirs below the bundle kind dir are skipped (swamp-club#3780).
+    const dir = join(parent, `.swamp-staging-${crypto.randomUUID()}`, "repo");
+    const kindDir = join(dir, ".swamp", "bundles");
+    await ensureDir(join(kindDir, "abc12345"));
+    await Deno.writeTextFile(join(kindDir, "abc12345", "model.js"), "// live");
+    const staging = join(kindDir, `.swamp-staging-${crypto.randomUUID()}`);
+    await ensureDir(join(staging, "new", "1"));
+    await Deno.writeTextFile(join(staging, "new", "1", "model.js"), "// new");
+
+    const files = await enumerateBundleFiles(dir);
+    assertEquals(files.map((f) => f.repoRelativePath), [
+      ".swamp/bundles/abc12345/model.js",
+    ]);
+  });
+});

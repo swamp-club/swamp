@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { basename, join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -1002,5 +1002,117 @@ Deno.test("resolveSourceExtensionDirs: no behaviors dir once the source's marker
     assertEquals(filtered.resolved[0].behaviorsDir, undefined);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// The pre-scan's helper and skip-dir exclusions apply only below the source
+// root. GitHub ARC runners check out under /actions-runner/_work/, so a
+// check against the absolute path found nothing (swamp-club#3780).
+async function writeModel(dir: string, file = "m.ts"): Promise<void> {
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(
+    join(dir, file),
+    'export const model = { type: "@r/m" };',
+  );
+}
+
+Deno.test("resolveExtensionKindsForSource: a source under an underscore-prefixed ancestor is scanned", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const src = join(
+      tmp,
+      "actions-runner",
+      "_work",
+      "repo",
+      "repo",
+      "extensions",
+      "models",
+    );
+    await writeModel(src);
+    assertEquals(
+      await resolveExtensionKindsForSource({ path: src }, tmp),
+      ["models"],
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("resolveExtensionKindsForSource: a source under an ancestor named like a skipped dir is scanned", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    for (
+      const name of [
+        "node_modules",
+        ".git",
+        ".swamp",
+        "dist",
+        "build",
+        "target",
+      ]
+    ) {
+      const src = join(tmp, name, "sister", "extensions", "models");
+      await writeModel(src);
+      assertEquals(
+        await resolveExtensionKindsForSource({ path: src }, tmp),
+        ["models"],
+        `source under ${name}/`,
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("resolveExtensionKindsForSource: a source whose own folder is named like a skipped or helper dir is scanned", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    for (const name of ["build", "_shared"]) {
+      const src = join(tmp, name);
+      await writeModel(src);
+      assertEquals(
+        await resolveExtensionKindsForSource({ path: src }, tmp),
+        ["models"],
+        `source named ${name}`,
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("resolveExtensionKindsForSource: helper and skipped dirs below the source are still excluded", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const cases: Array<[string, string]> = [
+      ["lib-dir", join("_lib", "m.ts")],
+      ["helper-file", "_m.ts"],
+      ["node-modules", join("node_modules", "pkg", "m.ts")],
+      ["build-dir", join("build", "m.ts")],
+      ["git-dir", join(".git", "m.ts")],
+    ];
+    for (const [name, file] of cases) {
+      const src = join(tmp, "_work", name);
+      await writeModel(join(src, dirname(file)), basename(file));
+      assertEquals(
+        await resolveExtensionKindsForSource({ path: src }, tmp),
+        [],
+        `model only at ${file}`,
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("resolveSourceExtensionDirs: a source under an underscore-prefixed ancestor loads its models", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const src = join(tmp, "_work", "sister", "extensions", "models");
+    await writeModel(src);
+    const { resolved } = await resolveSourceExtensionDirs([{ path: src }]);
+    assertEquals(collectDirsForKind(resolved, "models"), [src]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
   }
 });

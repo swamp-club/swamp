@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, relative, resolve } from "@std/path";
 import { walk } from "@std/fs";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
@@ -263,6 +263,19 @@ const PRE_SCAN_TS_MAX_BYTES = 2 * 1024 * 1024;
 const PRE_SCAN_YAML_MAX_BYTES = 64 * 1024;
 
 /**
+ * True when a file found under `sourceDir` lies in a helper or skipped
+ * directory, or is itself a `_*` helper file. Only the segments below
+ * `sourceDir` count: a source checked out under `/actions-runner/_work/`
+ * or `~/build/` must still be scanned (swamp-club#3780). Splits on both
+ * separators so the check holds on Windows.
+ */
+function isPreScanExcluded(sourceDir: string, path: string): boolean {
+  return relative(sourceDir, path).split(/[\\/]/).some((segment) =>
+    segment.startsWith("_") || PRE_SCAN_SKIP_DIRS.has(segment)
+  );
+}
+
+/**
  * Walks `sourceDir` looking for files that signal extension content.
  * Returns the set of kinds detected.
  *
@@ -275,9 +288,10 @@ const PRE_SCAN_YAML_MAX_BYTES = 64 * 1024;
  * top-level `jobs:` key. Regex shortcuts are unreliable because workflow
  * YAML often puts `jobs:` after `name:` / `description:` headers.
  *
- * Skips `_*` prefixed dirs (helper modules — matches loader convention),
- * node_modules / .git / .swamp / dist / build / target (unrelated
- * detritus), and `_test.ts` files. Bounded by PRE_SCAN_MAX_DEPTH.
+ * Skips `_*` prefixed dirs and files (helper modules — matches loader
+ * convention), node_modules / .git / .swamp / dist / build / target
+ * (unrelated detritus), and `_test.ts` files. Bounded by
+ * PRE_SCAN_MAX_DEPTH.
  */
 async function contentPreScan(
   sourceDir: string,
@@ -288,24 +302,9 @@ async function contentPreScan(
       const entry of walk(sourceDir, {
         maxDepth: PRE_SCAN_MAX_DEPTH,
         includeDirs: false,
-        skip: [
-          /(^|\/)_[^/]+($|\/)/, // _-prefixed paths (helper modules, _test.ts)
-        ],
       })
     ) {
-      // Secondary skip for well-known dirs that the regex-based skip above
-      // can't express cleanly. walk doesn't drop the dir itself; it emits
-      // files underneath. Cheaper to filter on the path.
-      let inSkipDir = false;
-      for (const d of PRE_SCAN_SKIP_DIRS) {
-        if (
-          entry.path.includes(`/${d}/`) || entry.path.endsWith(`/${d}`)
-        ) {
-          inSkipDir = true;
-          break;
-        }
-      }
-      if (inSkipDir) continue;
+      if (isPreScanExcluded(sourceDir, entry.path)) continue;
 
       if (entry.isFile && entry.name.endsWith(".ts")) {
         if (entry.name.endsWith("_test.ts")) continue;
