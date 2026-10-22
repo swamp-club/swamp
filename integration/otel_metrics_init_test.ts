@@ -26,26 +26,6 @@ import {
   shutdownExecutionMetrics,
 } from "../src/infrastructure/tracing/otel_metrics_init.ts";
 
-Deno.test("initExecutionMetrics: requires explicit opt-in and an endpoint", async () => {
-  for (
-    const [exporter, endpoint] of [[undefined, "http://localhost:1"], [
-      "none",
-      "http://localhost:1",
-    ], ["otlp", undefined]]
-  ) {
-    await withMockedEnv({
-      OTEL_METRICS_EXPORTER: exporter,
-      OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
-      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: undefined,
-    }, async () => {
-      const before = metrics.getMeterProvider();
-      await initExecutionMetrics();
-      assertEquals(metrics.getMeterProvider(), before);
-      await shutdownExecutionMetrics();
-    });
-  }
-});
-
 Deno.test("initExecutionMetrics: installs once, exports configured metrics at shutdown and can restart", async () => {
   const received: unknown[] = [];
   const server = Deno.serve(

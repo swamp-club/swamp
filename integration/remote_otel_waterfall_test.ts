@@ -42,6 +42,42 @@ function pair(): [RpcChannel, RpcChannel] {
   return [a, b];
 }
 
+Deno.test("remote waterfall: bridge error submissions retain the bridge parent", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const [runner, child] = pair();
+    const [worker, server] = pair();
+    bridgeCapabilityVerbs({
+      childChannel: child,
+      orchestratorChannel: worker,
+      dispatchId: "dispatch",
+      signal: new AbortController().signal,
+    });
+    server.register(
+      RemoteMethod.queryData,
+      () => Promise.reject(new Error("query failed")),
+    );
+    try {
+      await assertRejects(
+        () => runner.call(RemoteMethod.queryData, {}),
+        RpcError,
+      );
+      const bridge = findSpan(spans, "swamp.rpc.server");
+      assertEquals(
+        spans.filter((span) =>
+          span.name === "swamp.rpc.submit" &&
+          span.attributes["swamp.rpc.frame"] === "rpc.error" &&
+          isChildOf(span, bridge)
+        ).length,
+        1,
+      );
+    } finally {
+      for (const channel of [runner, child, worker, server]) channel.close();
+      uninstallExecutionObserver();
+    }
+  });
+});
+
 Deno.test("remote waterfall: terminal failures retain server parentage and peer cancellation outcome", async () => {
   for (const failure of ["error", "rpc", "cancel"]) {
     await withCapturedSpans(async (spans) => {
@@ -167,6 +203,14 @@ Deno.test("remote waterfall: native RPC parents survive runner bridge request-ID
       });
       const execution = findSpan(spans, "swamp.worker.execute");
       const bridge = findSpan(spans, "swamp.rpc.server");
+      assertEquals(
+        spans.filter((s) =>
+          s.name === "swamp.rpc.submit" &&
+          s.attributes["swamp.rpc.frame"] === "rpc.response" &&
+          isChildOf(s, bridge)
+        ).length,
+        1,
+      );
       const query = findSpan(spans, "swamp.query.execute");
       const clients = spans.filter((s) => s.name === "swamp.rpc.client");
       assertEquals(clients.length, 2);

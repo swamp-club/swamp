@@ -94,14 +94,16 @@ export function bridgeCapabilityVerbs(
           const result = await observeExecutionWork("rpc.server", {
             "swamp.rpc.request_id": ctx.requestId,
             "swamp.dispatch.id": dispatchId,
-          }, () =>
-            orchestratorChannel.call(verb, wrapped, {
+          }, (observation) => {
+            ctx.responseTrace = observation.carrier;
+            return orchestratorChannel.call(verb, wrapped, {
               signal: combinedSignal,
               timeoutMs: BRIDGE_CAPABILITY_TIMEOUT_MS,
               onStream: options.onChildStream
                 ? (event) => options.onChildStream!(event)
                 : undefined,
-            }), ctx.trace);
+            });
+          }, ctx.trace);
           const elapsedMs = Math.round(performance.now() - start);
           logger.debug(
             "Bridge {verb} completed in {elapsedMs}ms [{dispatchId}] (request {requestId})",

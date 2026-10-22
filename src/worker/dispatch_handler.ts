@@ -180,6 +180,7 @@ export function registerDispatchHandler(
             "swamp.lease.id": dispatch.leaseId,
           },
           async (observation) => {
+            ctx.responseTrace = observation.carrier;
             const result = await handleDispatch(rawParams, ctx, options);
             if (result.status === "error") observation.end("error");
             return result;

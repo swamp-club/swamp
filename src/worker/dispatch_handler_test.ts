@@ -80,6 +80,13 @@ Deno.test("registerDispatchHandler: headerless dispatches detach from the connec
         2,
       );
       for (const span of dispatches) {
+        const replies = spans.filter((reply) =>
+          reply.name === "swamp.rpc.submit" &&
+          reply.attributes["swamp.rpc.frame"] === "rpc.error" &&
+          reply.parentSpanId === span.spanContext().spanId &&
+          reply.spanContext().traceId === span.spanContext().traceId
+        );
+        assertEquals(replies.length, 1);
         assertEquals(span.parentSpanId, undefined);
         assertEquals(
           span.spanContext().traceId === connection.spanContext().traceId,
