@@ -50,6 +50,7 @@ import type {
   SourceModuleGraph,
 } from "../domain/extensions/extension_source_graph.ts";
 import { regexModuleGraphReader as graphReader } from "./resolve_extension_files_test_helpers.ts";
+import { DenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 
 const logger = getLogger(["test"]);
 
@@ -954,6 +955,83 @@ Deno.test("resolveExtensionFiles paths.base=manifest resolves transitive imports
       true,
     );
   });
+});
+
+Deno.test({
+  name:
+    "resolveExtensionFiles: a repo dir given through a symlink above a node_modules ancestor plans its local modules in the repo dir's spelling (swamp-club#3794)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const outer = await Deno.realPath(
+      await Deno.makeTempDir({ prefix: "swamp-resolve-ext-link-" }),
+    );
+    try {
+      const real = join(outer, "real", "node_modules", "repo");
+      const modelsDir = join(real, "extensions", "models");
+      await Deno.mkdir(modelsDir, { recursive: true });
+      await Deno.mkdir(join(real, "lib"));
+      await Deno.writeTextFile(
+        join(real, ".swamp.yaml"),
+        stringifyYaml({ swampVersion: "0.1.0" }),
+      );
+      await Deno.writeTextFile(
+        join(modelsDir, "my_model.ts"),
+        'import { x } from "./helper.ts";\n' +
+          'import { t } from "../../lib/two.ts";\n' +
+          "export const value = x + t;\n",
+      );
+      await Deno.writeTextFile(
+        join(modelsDir, "helper.ts"),
+        "export const x = 1;\n",
+      );
+      await Deno.writeTextFile(
+        join(real, "lib", "two.ts"),
+        "export const t = 2;\n",
+      );
+      await Deno.writeTextFile(
+        join(real, "manifest.yaml"),
+        stringifyYaml({
+          manifestVersion: 1,
+          name: "@test/linked",
+          version: "2026.10.23.1",
+          models: ["my_model.ts"],
+        }),
+      );
+      // Like macOS /var: the repo dir is spelled through a link above the
+      // node_modules it sits in, and deno info reports what the entry
+      // point imports by real path.
+      await Deno.symlink(join(outer, "real"), join(outer, "link"), {
+        type: "dir",
+      });
+      const resolveAt = (repoDir: string) =>
+        resolveExtensionFiles({
+          repoDir,
+          manifestPath: join(repoDir, "manifest.yaml"),
+          repoContext: stubRepoContext,
+          logger,
+          moduleGraphReader: new DenoInfoModuleGraphReader(
+            Deno.execPath(),
+            undefined,
+            { readOnlyLock: true },
+          ),
+        });
+      const repoDir = join(outer, "link", "node_modules", "repo");
+      const result = await resolveAt(repoDir);
+      const linkedModels = join(repoDir, "extensions", "models");
+      assertEquals(result.allModelFiles.sort(), [
+        join(linkedModels, "helper.ts"),
+        join(linkedModels, "my_model.ts"),
+        join(repoDir, "lib", "two.ts"),
+      ]);
+      // The archive is the one the repo's real path plans.
+      const archived = (r: typeof result) =>
+        r.sourcePlan.entries.map((e) => e.archivePath).sort();
+      assertEquals(archived(result), archived(await resolveAt(real)));
+      assertEquals(archived(result).length, 3);
+    } finally {
+      await Deno.remove(outer, { recursive: true });
+    }
+  },
 });
 
 Deno.test("resolveExtensionFiles default paths.base preserves swamp-extensions per-extension-subtree shape", async () => {

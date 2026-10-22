@@ -21,10 +21,12 @@ import {
   basename,
   dirname,
   extname,
+  fromFileUrl,
   isAbsolute,
   join,
   resolve,
   SEPARATOR,
+  toFileUrl,
 } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -1855,6 +1857,84 @@ function staleInstallError(
 }
 
 /**
+ * `graph` with each path that reaches the repository or the extensions root
+ * through another spelling put back in theirs. Below a node_modules, deno
+ * info reports modules by real path, so a repo dir given through a symlink
+ * (macOS /var) would see its own modules as outside it (swamp-club#3794).
+ * Only the prefix naming the root is swapped ({@link respellUnderRepoDir}),
+ * and a path already under a root costs nothing.
+ */
+async function respellGraphUnderRoots(
+  graph: SourceModuleGraph,
+  roots: readonly string[],
+): Promise<SourceModuleGraph> {
+  const spelled = new Map<string, Promise<string>>();
+  const respell = (path: string): Promise<string> => {
+    let answer = spelled.get(path);
+    if (answer === undefined) {
+      answer = (async () => {
+        for (const root of roots) {
+          const next = await respellUnderRepoDir(path, root);
+          if (next !== path) return next;
+        }
+        return path;
+      })();
+      spelled.set(path, answer);
+    }
+    return answer;
+  };
+  const respellUrl = async (url: string | undefined) =>
+    url?.startsWith("file:")
+      ? toFileUrl(await respell(fromFileUrl(url))).href
+      : url;
+  const optional = async (path: string | undefined) =>
+    path === undefined ? undefined : await respell(path);
+  return {
+    ...graph,
+    modules: await Promise.all(
+      graph.modules.map(async (m) => ({ ...m, path: await respell(m.path) })),
+    ),
+    edges: await Promise.all(graph.edges.map(async (e) => ({
+      ...e,
+      importer: await respell(e.importer),
+      target: await respell(e.target),
+    }))),
+    missing: await Promise.all(graph.missing.map(async (m) => {
+      const importer = await optional(m.importer);
+      return {
+        ...m,
+        path: await respell(m.path),
+        ...(importer !== undefined ? { importer } : {}),
+      };
+    })),
+    ...(graph.bareImports
+      ? {
+        bareImports: await Promise.all(graph.bareImports.map(async (b) => {
+          const target = await respellUrl(b.target);
+          const installedFile = await optional(b.installedFile);
+          return {
+            ...b,
+            importer: await respell(b.importer),
+            ...(target !== undefined ? { target } : {}),
+            ...(installedFile !== undefined ? { installedFile } : {}),
+          };
+        })),
+      }
+      : {}),
+    ...(graph.staleInstalls
+      ? {
+        staleInstalls: await Promise.all(
+          graph.staleInstalls.map(async (s) => ({
+            ...s,
+            importer: await respell(s.importer),
+          })),
+        ),
+      }
+      : {}),
+  };
+}
+
+/**
  * One entry point's module graph with its symlinks taken out. A symlinked
  * entry point is not read at all; any other symlink is removed before the
  * graph is used, with what it alone reaches and any error recorded for it.
@@ -1866,6 +1946,8 @@ async function readSymlinkFreeGraph(
     symlinkedRoots: ReadonlySet<string>;
     probe: SymlinkProbe;
     project: ModuleGraphProject;
+    repoDir: string;
+    extensionsRoot: string;
     lenient: boolean;
     logger: Logger;
     /** Where a lenient read records the stale lockfiles it goes past. */
@@ -1886,6 +1968,10 @@ async function readSymlinkFreeGraph(
       .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
     graph = { ...empty, modules: [{ path: root, kind: "code" }] };
   }
+  graph = await respellGraphUnderRoots(graph, [
+    options.repoDir,
+    options.extensionsRoot,
+  ]);
   // A module behind a symlinked directory counts as a symlink too: deno info
   // followed it, so its target was read (swamp-club#3421).
   const symlinks = new Set<string>();
