@@ -3236,6 +3236,31 @@ Deno.test("createResourceWriter: redaction works on the JSON structure, so a num
   });
 });
 
+Deno.test("createResourceWriter: a secret made only of JSON punctuation masks a value equal to it and leaves the record's structure intact (swamp-club#3798)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      note: z.string(),
+      empty: z.string(),
+      nested: z.object({}),
+      list: z.array(z.string()),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const { repo } = await writeRedacted(
+    spec,
+    "main",
+    { note: '":"', empty: "", nested: {}, list: ["", '","'] },
+    ['":"', '","'],
+  );
+  assertEquals(JSON.parse(repo.persisted()), {
+    note: "***",
+    empty: "",
+    nested: {},
+    list: ["", "***"],
+  });
+});
+
 Deno.test("createResourceWriter: a secret containing a JSON-escaped character is masked", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({ note: z.string() }),
