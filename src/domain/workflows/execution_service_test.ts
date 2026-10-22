@@ -8218,7 +8218,7 @@ Deno.test({
             throw new DOMException("The operation was aborted.", "AbortError");
           }
         }
-        return originalExecute(step, ctx);
+        return await originalExecute(step, ctx);
       };
 
       const workflow = Workflow.create({
