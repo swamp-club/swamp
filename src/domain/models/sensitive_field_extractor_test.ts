@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   buildSensitiveArgRemediations,
+  extractDeliveredSensitiveValues,
   extractRefusedSensitiveValues,
   extractSensitiveFields,
   extractSensitiveFieldValues,
@@ -246,12 +247,39 @@ Deno.test("extractSensitiveFieldValues: multiple sensitive fields", () => {
   assertEquals(values.sort(), ["key123", "sec456"]);
 });
 
-Deno.test("extractSensitiveFieldValues: array with non-string elements skips them", () => {
+Deno.test("extractSensitiveFieldValues: an array collects each string and each number as its text, skipping null", () => {
   const schema = z.object({
     items: z.array(z.unknown()).meta({ sensitive: true }),
   });
   const data = { items: ["str", 42, null, "other"] };
-  assertEquals(extractSensitiveFieldValues(schema, data), ["str", "other"]);
+  assertEquals(extractSensitiveFieldValues(schema, data), [
+    "str",
+    "42",
+    "other",
+  ]);
+});
+
+Deno.test("extractSensitiveFieldValues: a sensitive number or bigint is collected as it prints, wherever it sits; a boolean or a non-finite number is not (swamp-club#3681)", () => {
+  const schema = z.object({
+    pin: z.number().meta({ sensitive: true }),
+    account: z.bigint().meta({ sensitive: true }),
+    flag: z.boolean().meta({ sensitive: true }),
+    limits: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+    port: z.number(),
+  });
+  const data = {
+    pin: 73816542,
+    account: 9007199254740993n,
+    flag: true,
+    limits: { rate: 1234.5, missing: NaN, open: Infinity, nested: [4242] },
+    port: 8080,
+  };
+  assertEquals(extractSensitiveFieldValues(schema, data).sort(), [
+    "1234.5",
+    "4242",
+    "73816542",
+    "9007199254740993",
+  ]);
 });
 
 Deno.test("extractSensitiveFieldValues: record field collects each string value", () => {
@@ -1590,6 +1618,70 @@ Deno.test("objectKeysOf: every own key of every plain object at any depth, and n
   assertEquals([...objectKeysOf(undefined)], []);
 });
 
+Deno.test("extractSensitiveFieldValues: with includeKey, the keys of objects under a sensitive position that it accepts are collected beside the values; without it, keys are left out (swamp-club#3681)", () => {
+  const schema = z.object({
+    tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+    plain: z.record(z.string(), z.unknown()),
+  });
+  const data = {
+    tokens: { "MADE-KEY": { "INNER-KEY": "v" }, spelled: null },
+    plain: { "PLAIN-KEY": "p" },
+  };
+  assertEquals(extractSensitiveFieldValues(schema, data), ["v"]);
+  assertEquals(
+    extractSensitiveFieldValues(schema, data, {
+      includeKey: (key) => key !== "spelled",
+    }).sort(),
+    ["INNER-KEY", "MADE-KEY", "v"],
+  );
+});
+
+Deno.test("extractSensitiveFieldValues: a Map's keys are collected only as includeKey collects an object's, and an own getter or a toString that throws, or a revoked Proxy, does not fail the walk (swamp-club#3754)", () => {
+  const schema = z.object({
+    tokens: z.map(z.unknown(), z.string()).meta({ sensitive: true }),
+    blob: z.unknown().meta({ sensitive: true }),
+  });
+  class Loud {
+    held = "kept-b";
+    get toString(): () => string {
+      throw new Error("cannot print");
+    }
+  }
+  const loudInstance = new Loud();
+  const { proxy: revoked, revoke } = Proxy.revocable({ gone: "x" }, {});
+  revoke();
+  const data = {
+    tokens: new Map<unknown, string>([
+      ["MADE-KEY", "v-1"],
+      [4242, "v-2"],
+      [{ nested: "OBJECT-KEY" }, "v-3"],
+    ]),
+    blob: [
+      "kept-a",
+      {
+        get boom(): string {
+          throw new Error("unreadable");
+        },
+      },
+      loudInstance,
+      revoked,
+    ],
+  };
+  assertEquals(extractSensitiveFieldValues(schema, data).sort(), [
+    "kept-a",
+    "kept-b",
+    "v-1",
+    "v-2",
+    "v-3",
+  ]);
+  assertEquals(
+    extractSensitiveFieldValues(schema, data, {
+      includeKey: (key) => key !== "4242",
+    }).sort(),
+    ["MADE-KEY", "held", "kept-a", "kept-b", "v-1", "v-2", "v-3"],
+  );
+});
+
 Deno.test("extractRefusedSensitiveValues: the input of an issue at, under or above a sensitive position, as the failing check received it; every issue when the schema transforms values; a key the parse introduced; nothing when the schema marks nothing (swamp-club#3681)", () => {
   const secret = z.string().meta({ sensitive: true });
   const plain = z.object({
@@ -1641,6 +1733,41 @@ Deno.test("extractRefusedSensitiveValues: the input of an issue at, under or abo
     }, [{ path: ["count"], input: "x" }]),
     [],
   );
+});
+
+Deno.test("extractSensitiveFieldValues: a sensitive array or scalar the schema delivers in place of a record, and a record the schema marks whole, are collected (swamp-club#3681)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  const raw = z.object({ raw: z.string() });
+  assertEquals(
+    extractSensitiveFieldValues(
+      raw.transform((x) => [x.raw]).pipe(z.array(secret)),
+      ["MADE-1", "MADE-2"],
+    ),
+    ["MADE-1", "MADE-2"],
+  );
+  assertEquals(
+    extractSensitiveFieldValues(
+      raw.transform((x) => x.raw).pipe(secret),
+      "MADE",
+    ),
+    ["MADE"],
+  );
+  assertEquals(
+    extractSensitiveFieldValues(
+      z.object({ a: z.string(), n: z.number() }).meta({ sensitive: true }),
+      { a: "x-1", n: 7 },
+    ),
+    ["x-1", "7"],
+  );
+  assertEquals(
+    extractSensitiveFieldValues(z.object({ a: z.string() }), "not-a-record"),
+    [],
+  );
+  // A value of the wrong shape for a schema that marks something is
+  // collected whole, as findValuesWithMetadata reports it.
+  assertEquals(extractSensitiveFieldValues(z.object({ a: secret }), "x"), [
+    "x",
+  ]);
 });
 
 Deno.test("maskRefusedIssues: an issue at, under or above a sensitive position is described in Zod's words from its fields, every issue when the schema transforms values or its own code encloses a sensitive position, a described issue is only 'Invalid input' when that code may set an issue's fields, a path segment neither spelled nor declared is masked in any issue, an issue beside a sensitive position keeps its message, only code, path and message survive, and a schema that marks nothing keeps every message (swamp-club#3681)", () => {
@@ -1812,6 +1939,200 @@ Deno.test("extractRefusedSensitiveValues: every issue counts when the schema's o
       { path: ["a"], input: "x-value" },
     ]),
     ["x-value"],
+  );
+});
+
+Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, codec, overwrite or catch enclosing a sensitive field delivered are collected whole, under any key and in any container, and not the keys its own code wrote (swamp-club#3681, swamp-club#3754)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  const inner = z.object({ secret, label: z.string() });
+  const delivered = (schema: z.ZodTypeAny, input: Record<string, unknown>) => {
+    const parsed = schema.parse(input);
+    const spelled = objectKeysOf(input);
+    return extractSensitiveFieldValues(schema, parsed, {
+      includeKey: (key) => !spelled.has(key),
+      delivered: true,
+    }).sort();
+  };
+  const input = { secret: "hunter2", label: "prod" };
+  assertEquals(
+    delivered(
+      inner.transform(({ secret, label }) => ({
+        token: secret.toUpperCase(),
+        label,
+      })),
+      input,
+    ),
+    ["HUNTER2", "prod"],
+  );
+  // A plain value a transform writes under a sensitive field's input name
+  // is not that field: read through the field's path, it is left out as
+  // from the whole.
+  const swap = inner.transform(({ secret, label }) => ({
+    secret: label,
+    label: secret,
+  }));
+  assertEquals(
+    extractDeliveredSensitiveValues(swap, input, swap.parse(input)),
+    ["hunter2"],
+  );
+  assertEquals(
+    delivered(
+      z.object({
+        creds: z.object({ key: secret }).transform((o) => ({
+          k: `${o.key}-x`,
+        })),
+        other: z.string(),
+      }),
+      { creds: { key: "hunter2" }, other: "kept" },
+    ),
+    ["hunter2-x"],
+  );
+  assertEquals(
+    delivered(inner.transform((o) => new Map([["k", o.secret]])), input),
+    ["hunter2"],
+  );
+  assertEquals(
+    delivered(
+      z.object({ secret: secret.transform((s) => new Set([s])) }),
+      input,
+    ),
+    ["hunter2"],
+  );
+  class Box {
+    constructor(readonly held: string) {}
+  }
+  assertEquals(
+    delivered(z.object({ secret: secret.transform((s) => new Box(s)) }), input),
+    ["hunter2"],
+  );
+  assertEquals(
+    delivered(
+      z.object({
+        secret: secret.transform((s) =>
+          new URL(`https://example.test/?t=${s}`)
+        ),
+      }),
+      input,
+    ),
+    ["https://example.test/?t=hunter2"],
+  );
+  assertEquals(
+    delivered(
+      inner.overwrite((v) => ({
+        secret: v.label,
+        label: v.secret.toUpperCase(),
+      })),
+      input,
+    ),
+    ["HUNTER2", "prod"],
+  );
+  assertEquals(
+    delivered(
+      z.object({ secret: secret.min(50) }).catch((ctx) =>
+        ({
+          moved: String((ctx.input as { secret: string }).secret).toUpperCase(),
+        }) as unknown as { secret: string }
+      ),
+      { secret: "hunter2" },
+    ),
+    ["HUNTER2"],
+  );
+  assertEquals(
+    delivered(
+      z.intersection(
+        inner,
+        z.any().transform((v) => ({ ...v, token: v.secret.toUpperCase() })),
+      ),
+      input,
+    ),
+    ["HUNTER2", "hunter2", "prod"],
+  );
+  // A literal key the transform's code writes is an identifier, not a
+  // secret, while the value it holds is taken (swamp-club#3754).
+  assertEquals(
+    delivered(
+      inner.transform(({ secret }) => ({
+        headers: { Authorization: `Bearer ${secret}` },
+      })),
+      input,
+    ),
+    ["Bearer hunter2"],
+  );
+  // A value the input holds at a position the schema leaves plain is left
+  // out of a whole, so a region or a port a transform passes through is not
+  // masked out of every log and resource; a marked number is still taken.
+  assertEquals(
+    extractDeliveredSensitiveValues(
+      z.object({
+        apiKey: secret,
+        pin: z.number().meta({ sensitive: true }),
+        region: z.string(),
+        port: z.number(),
+      }).transform((v) => ({
+        key: v.apiKey.toUpperCase(),
+        code: v.pin,
+        region: v.region,
+        port: v.port,
+      })),
+      { apiKey: "hunter2", pin: 4321, region: "us-east-1", port: 5432 },
+      { key: "HUNTER2", code: 4321, region: "us-east-1", port: 5432 },
+    ).sort(),
+    ["4321", "HUNTER2"],
+  );
+  // A value a schema node marks itself is collected whatever the input holds.
+  assertEquals(
+    extractDeliveredSensitiveValues(
+      z.object({ password: secret, user: z.string() }),
+      { password: "admin", user: "admin" },
+      { password: "admin", user: "admin" },
+    ),
+    ["admin"],
+  );
+  // Under a position the schema itself marks, a key the parse introduced is
+  // taken, since a transform may have derived it from the value; a key the
+  // schema declares is a field name and is left out, as a refusal leaves it
+  // out (swamp-club#3753).
+  const marking = z.object({ raw: z.string(), region: z.string().optional() })
+    .transform((x) => ({
+      tokens: {
+        region: x.raw.toUpperCase(),
+        [`${x.raw}-made`]: "made-v",
+      } as Record<string, string>,
+    }))
+    .pipe(
+      z.object({
+        tokens: z.record(z.string(), z.string()).meta({ sensitive: true }),
+      }),
+    );
+  assertEquals(
+    extractDeliveredSensitiveValues(
+      marking,
+      { raw: "hunter2" },
+      marking.parse({ raw: "hunter2" }),
+    ).sort(),
+    ["HUNTER2", "hunter2-made", "made-v"],
+  );
+  // Read as stored, the renamed shape holds nothing the schema can name,
+  // which is why a parse's output is read with `delivered`.
+  assertEquals(
+    extractSensitiveFieldValues(
+      inner.transform(({ secret, label }) => ({ token: secret, label })),
+      { token: "hunter2", label: "prod" },
+    ),
+    [],
+  );
+  // A transform beside the field, or enclosing nothing sensitive, adds
+  // nothing.
+  assertEquals(
+    delivered(
+      z.object({ secret, other: z.string().transform((s) => `${s}!`) }),
+      { secret: "hunter2", other: "o" },
+    ),
+    ["hunter2"],
+  );
+  assertEquals(
+    delivered(z.object({ a: z.string() }).transform((v) => v), { a: "x" }),
+    [],
   );
 });
 

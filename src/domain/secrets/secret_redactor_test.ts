@@ -176,3 +176,14 @@ Deno.test("SecretRedactor: without an attached registry a sentinel is text", () 
   assertEquals(redactor.hasSecrets, false);
   assertEquals(redactor.redact(`x ${sentinel}`), `x ${sentinel}`);
 });
+
+Deno.test("SecretRedactor.isSecret: answers for a registered value matched whole, never for a substring, a superstring or a value too short to register (swamp-club#3754)", () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("73816542");
+  redactor.addSecret("ab");
+  assertEquals(redactor.isSecret("73816542"), true);
+  assertEquals(redactor.isSecret("7381654"), false);
+  assertEquals(redactor.isSecret("738165421"), false);
+  assertEquals(redactor.isSecret("ab"), false);
+  assertEquals(redactor.isSecret(""), false);
+});

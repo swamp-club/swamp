@@ -61,6 +61,8 @@ interface ZodDef {
   checks?: { _zod?: { def?: ZodCheckDef } }[];
   /** A node-level error map, as `z.object({...}, { error })` sets it. */
   error?: unknown;
+  /** A codec's transform; a plain pipe has none. */
+  transform?: unknown;
 }
 
 /** The definition of a check a schema runs after its own parse. */
@@ -218,6 +220,12 @@ export interface ValueWithMetadata {
   value: unknown;
   /** The metadata that matched */
   meta: FieldMetadata;
+  /**
+   * Set when the value is reported conservatively, as what a reshaping node
+   * delivered whole, rather than as a value a schema node marks itself
+   * (swamp-club#3681).
+   */
+  rawInput?: true;
   /**
    * Whether the value sits inside an array element, tuple item or record
    * value, and so occurs once per element rather than once per schema. Also
@@ -469,6 +477,11 @@ interface ValueWalk {
   matches: (meta: FieldMetadata) => boolean;
   /** Report metadata on the root schema's own chain, for the root value. */
   reportRoot?: boolean;
+  /**
+   * The value is what a parse delivered: what a reshaping node (see
+   * {@link reshapes}) holds is what its code made, under any key.
+   */
+  transformed?: boolean;
   found: ValueWithMetadata[];
   /** Paths already in `found`. */
   foundPaths: Set<string>;
@@ -568,10 +581,17 @@ function visitValue(
   // Union and intersection members and both sides of a pipe revisit one
   // value. A path names one place in the value, so a path seen before is
   // that same value.
-  const report = (meta: FieldMetadata, whole: boolean) => {
+  const report = (meta: FieldMetadata, whole: boolean, rawInput?: true) => {
     if (!walk.foundPaths.has(path)) {
       walk.foundPaths.add(path);
-      walk.found.push({ path, keys, value, meta, perElement: whole });
+      walk.found.push({
+        path,
+        keys,
+        value,
+        meta,
+        perElement: whole,
+        ...(rawInput ? { rawInput } : {}),
+      });
     }
   };
 
@@ -582,6 +602,17 @@ function visitValue(
     if (!reported && meta && walk.matches(meta)) {
       report(meta, perElement);
       reported = true;
+    }
+    if (walk.transformed && reshapes(current)) {
+      // The value is what this node's own code made of what it was given,
+      // which may hold a marked value anywhere, under any key. Nothing
+      // below can be told apart, so the whole value is reported in its
+      // place when the node reaches a marked schema at all.
+      const made = reported ? undefined : matchWithin(walk, current);
+      if (made) {
+        report(made, true, true);
+      }
+      return;
     }
     if (getSchemaType(current) === "pipe") {
       // `a.pipe(b)`: `b` describes the same value once `a` has accepted it,
@@ -628,6 +659,25 @@ function visitValue(
       true,
     );
 
+  if (
+    walk.transformed &&
+    (schemaType === "union" || schemaType === "intersection")
+  ) {
+    // Every member receives the whole value, so a member that reshapes it
+    // may hold what another member marks, under any key.
+    const members = schemaType === "union"
+      ? def.options ?? []
+      : [def.left, def.right];
+    if (
+      members.some((member) => member !== undefined && chainReshapes(member))
+    ) {
+      const made = reported ? undefined : matchWithin(walk, current);
+      if (made) {
+        report(made, true, true);
+      }
+      return;
+    }
+  }
   if (schemaType === "union") {
     for (const option of unionMembers(def, value)) {
       visitValue(walk, option, value, path, keys, perElement, atRoot);
@@ -707,6 +757,43 @@ function visitValue(
 }
 
 /**
+ * Whether a node's own code may deliver a value of any shape: a
+ * `.transform()` or codec makes the output, an `.overwrite()` check replaces
+ * it, and a `.catch()` substitutes it on failure. A `z.preprocess()` is not
+ * one: what it delivers conforms to the schema behind it.
+ */
+function reshapes(node: z.ZodTypeAny): boolean {
+  const def = getSchemaDef(node);
+  const type = getSchemaType(node);
+  if (type === "catch") {
+    return true;
+  }
+  if (type === "pipe") {
+    return typeof def?.transform === "function" ||
+      (def?.out !== undefined && getSchemaType(def.out) === "transform");
+  }
+  return (def?.checks ?? []).some((check) =>
+    check._zod?.def?.check === "overwrite"
+  );
+}
+
+/** Whether any node on a chain of wrappers {@link reshapes} the value. */
+function chainReshapes(node: z.ZodTypeAny): boolean {
+  const seen = new Set<z.ZodTypeAny>();
+  for (
+    let current: z.ZodTypeAny | undefined = node;
+    current !== undefined && !seen.has(current);
+    current = innerSchema(current)
+  ) {
+    seen.add(current);
+    if (reshapes(current)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Finds every value in `value` that sits under a schema node whose metadata
  * satisfies `matches`.
  *
@@ -723,8 +810,13 @@ function visitValue(
  * reported whole when that schema marks anything inside it. Metadata on the
  * root schema itself is not reported, unless `reportRoot` asks for it: the
  * root value is then reported whole when the root schema, or a wrapper or
- * pipe side on its own chain, matches. No transform or validator is
- * executed.
+ * pipe side on its own chain, matches.
+ * With `transformed`, the value is read as a parse delivered it: a
+ * `.transform()`, codec, `.overwrite()` or `.catch()` that reaches matching
+ * metadata reports the whole value it delivered, flagged `rawInput`, since
+ * its code may have moved a marked value under any key, and a union or
+ * intersection with such a member does the same (swamp-club#3681). No
+ * transform or validator is executed in any mode.
  *
  * The walk follows the value, so it visits at most what the value holds and
  * ends on a recursive schema; a value that contains itself is not entered
@@ -741,11 +833,15 @@ export function findValuesWithMetadata(
   schema: z.ZodTypeAny,
   value: unknown,
   matches: (meta: FieldMetadata) => boolean,
-  options: { reportRoot?: boolean } = {},
+  options: {
+    reportRoot?: boolean;
+    transformed?: boolean;
+  } = {},
 ): ValueWithMetadata[] {
   const walk: ValueWalk = {
     matches,
     reportRoot: options.reportRoot,
+    transformed: options.transformed,
     found: [],
     foundPaths: new Set(),
     visited: new Map(),
