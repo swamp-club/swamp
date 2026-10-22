@@ -1636,6 +1636,40 @@ Deno.test("extractSensitiveFieldValues: with includeKey, the keys of objects und
   );
 });
 
+Deno.test("extractSensitiveFieldValues: a Map's keys are collected only as includeKey collects an object's, and an object whose own getter throws does not fail the walk (swamp-club#3754)", () => {
+  const schema = z.object({
+    tokens: z.map(z.unknown(), z.string()).meta({ sensitive: true }),
+    blob: z.unknown().meta({ sensitive: true }),
+  });
+  const data = {
+    tokens: new Map<unknown, string>([
+      ["MADE-KEY", "v-1"],
+      [4242, "v-2"],
+      [{ nested: "OBJECT-KEY" }, "v-3"],
+    ]),
+    blob: [
+      "kept-a",
+      {
+        get boom(): string {
+          throw new Error("unreadable");
+        },
+      },
+    ],
+  };
+  assertEquals(extractSensitiveFieldValues(schema, data).sort(), [
+    "kept-a",
+    "v-1",
+    "v-2",
+    "v-3",
+  ]);
+  assertEquals(
+    extractSensitiveFieldValues(schema, data, {
+      includeKey: (key) => key !== "4242",
+    }).sort(),
+    ["MADE-KEY", "kept-a", "v-1", "v-2", "v-3"],
+  );
+});
+
 Deno.test("extractRefusedSensitiveValues: the input of an issue at, under or above a sensitive position, as the failing check received it; every issue when the schema transforms values; a key the parse introduced; nothing when the schema marks nothing (swamp-club#3681)", () => {
   const secret = z.string().meta({ sensitive: true });
   const plain = z.object({
@@ -1896,7 +1930,7 @@ Deno.test("extractRefusedSensitiveValues: every issue counts when the schema's o
   );
 });
 
-Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec, overwrite or catch enclosing a sensitive field delivered is collected whole, under any key and in any container (swamp-club#3681)", () => {
+Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, codec, overwrite or catch enclosing a sensitive field delivered are collected whole, under any key and in any container, and not the keys its own code wrote (swamp-club#3681, swamp-club#3754)", () => {
   const secret = z.string().meta({ sensitive: true });
   const inner = z.object({ secret, label: z.string() });
   const delivered = (schema: z.ZodTypeAny, input: Record<string, unknown>) => {
@@ -1916,7 +1950,7 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
       })),
       input,
     ),
-    ["HUNTER2", "prod", "token"],
+    ["HUNTER2", "prod"],
   );
   assertEquals(
     delivered(
@@ -1938,11 +1972,11 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
       }),
       { creds: { key: "hunter2" }, other: "kept" },
     ),
-    ["hunter2-x", "k"],
+    ["hunter2-x"],
   );
   assertEquals(
     delivered(inner.transform((o) => new Map([["k", o.secret]])), input),
-    ["hunter2", "k"],
+    ["hunter2"],
   );
   assertEquals(
     delivered(
@@ -1956,7 +1990,7 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
   }
   assertEquals(
     delivered(z.object({ secret: secret.transform((s) => new Box(s)) }), input),
-    ["held", "hunter2"],
+    ["hunter2"],
   );
   assertEquals(
     delivered(
@@ -1988,7 +2022,7 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
       ),
       { secret: "hunter2" },
     ),
-    ["HUNTER2", "moved"],
+    ["HUNTER2"],
   );
   assertEquals(
     delivered(
@@ -1998,7 +2032,18 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
       ),
       input,
     ),
-    ["HUNTER2", "hunter2", "prod", "token"],
+    ["HUNTER2", "hunter2", "prod"],
+  );
+  // A literal key the transform's code writes is an identifier, not a
+  // secret, while the value it holds is taken (swamp-club#3754).
+  assertEquals(
+    delivered(
+      inner.transform(({ secret }) => ({
+        headers: { Authorization: `Bearer ${secret}` },
+      })),
+      input,
+    ),
+    ["Bearer hunter2"],
   );
   // A value the input holds at a position the schema leaves plain is left
   // out of a whole, so a region or a port a transform passes through is not
@@ -2019,7 +2064,7 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
       { apiKey: "hunter2", pin: 4321, region: "us-east-1", port: 5432 },
       { key: "HUNTER2", code: 4321, region: "us-east-1", port: 5432 },
     ).sort(),
-    ["4321", "HUNTER2", "code", "key"],
+    ["4321", "HUNTER2"],
   );
   // A value a schema node marks itself is collected whatever the input holds.
   assertEquals(
@@ -2030,18 +2075,29 @@ Deno.test("extractSensitiveFieldValues: with delivered, what a transform, codec,
     ),
     ["admin"],
   );
-  // A key the schema declares is a field name, not a secret, so it is left
-  // out of a whole as a refusal leaves it out (swamp-club#3754); the value
-  // the transform moved under it is still taken.
+  // Under a position the schema itself marks, a key the parse introduced is
+  // taken, since a transform may have derived it from the value; a key the
+  // schema declares is a field name and is left out, as a refusal leaves it
+  // out (swamp-club#3753).
+  const marking = z.object({ raw: z.string(), region: z.string().optional() })
+    .transform((x) => ({
+      tokens: {
+        region: x.raw.toUpperCase(),
+        [`${x.raw}-made`]: "made-v",
+      } as Record<string, string>,
+    }))
+    .pipe(
+      z.object({
+        tokens: z.record(z.string(), z.string()).meta({ sensitive: true }),
+      }),
+    );
   assertEquals(
     extractDeliveredSensitiveValues(
-      z.object({ apiKey: secret, label: z.string() })
-        .transform((v) => ({ token: v.apiKey.toUpperCase(), label: v.label }))
-        .pipe(z.object({ token: z.string(), label: z.string() })),
-      { apiKey: "hunter2", label: "prod" },
-      { token: "HUNTER2", label: "prod" },
-    ),
-    ["HUNTER2"],
+      marking,
+      { raw: "hunter2" },
+      marking.parse({ raw: "hunter2" }),
+    ).sort(),
+    ["HUNTER2", "hunter2-made", "made-v"],
   );
   // Read as stored, the renamed shape holds nothing the schema can name,
   // which is why a parse's output is read with `delivered`.

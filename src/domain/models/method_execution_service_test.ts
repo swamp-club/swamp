@@ -6943,6 +6943,56 @@ Deno.test("execute: what a transform enclosing a sensitive field delivers is reg
   }
 });
 
+Deno.test("execute: the literal keys a transform enclosing a sensitive field writes are not redactor secrets, while the value it moved under them is (swamp-club#3754)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const redactor = new SecretRedactor();
+  const sensitive = z.string().meta({ sensitive: true });
+  const headers: MethodDefinition = {
+    description: "Builds request headers from a secret",
+    arguments: z.object({ apiKey: sensitive, region: z.string() }).transform(
+      ({ apiKey, region }) => ({
+        headers: { Authorization: `Bearer ${apiKey.toUpperCase()}` },
+        region,
+      }),
+    ),
+    execute: (args) =>
+      Promise.reject(
+        new Error(
+          `headers ${
+            JSON.stringify((args as { headers: unknown }).headers)
+          } for ${(args as { region: string }).region}`,
+        ),
+      ),
+  };
+  const { context } = createTestContext({ redactor, methodName: "send" });
+  const error = await assertRejects(
+    () =>
+      service.execute(
+        Definition.create({
+          name: "headers",
+          methods: {
+            send: {
+              arguments: { apiKey: "hunter2-long", region: "eu-west-1" },
+            },
+          },
+        }),
+        headers,
+        context,
+      ),
+    Error,
+    "headers",
+  );
+  assertEquals(
+    redactor.redact(error.message),
+    'headers {"Authorization":"***"} for eu-west-1',
+  );
+  // The identifiers the transform's code wrote stay readable everywhere else.
+  assertEquals(
+    redactor.redact("request headers: Authorization required"),
+    "request headers: Authorization required",
+  );
+});
+
 Deno.test("executeWorkflow: what a transform enclosing a sensitive global argument delivers is registered with the run's redactor as the method receives it, under any key, and a delivery that is not a record is refused without the value (swamp-club#3681)", async () => {
   const service = new DefaultMethodExecutionService();
   const sensitive = z.string().meta({ sensitive: true });

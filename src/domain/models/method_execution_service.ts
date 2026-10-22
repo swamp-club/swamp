@@ -642,10 +642,11 @@ function refusedParse(
  * is the type's own or one the run registered as a data key. The delivered
  * value is read whatever its shape: a schema may deliver a sensitive array
  * or scalar in place of a record, and the global arguments a method reads
- * from its context are parsed the same way. What a transform enclosing a
- * sensitive position delivered is registered whole, since it may have moved
- * the value under any key, less the values the input holds at positions the
- * schema leaves plain (see {@link extractDeliveredSensitiveValues}).
+ * from its context are parsed the same way. The values a transform
+ * enclosing a sensitive position delivered are registered whole, since it
+ * may have moved the value under any key, less the values the input holds at
+ * positions the schema leaves plain; the keys its own code wrote are not
+ * (see {@link extractDeliveredSensitiveValues}).
  */
 function registerDeliveredSecrets(
   schema: z.ZodTypeAny,

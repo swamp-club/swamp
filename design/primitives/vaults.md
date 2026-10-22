@@ -1025,9 +1025,14 @@ is stored by its own properties. What a transform, codec, `.overwrite()` or
 `.catch()` enclosing a sensitive position delivers is registered whole, since
 its code may have moved the value under any key or into any container (a Map, a
 Set, an instance), less the text the arguments hold only at positions the
-schema leaves plain and the keys the schema declares, which the schema itself
-declares no secret, so a region, a port or a year the transform passes through
-is not masked out of every log and resource; a placed step ships the whole
+schema leaves plain, which the schema itself declares no secret, so a region, a
+port or a year the transform passes through is not masked out of every log and
+resource. Only the values of such a whole are registered, not its keys: its
+code wrote them, and an identifier such as `headers` or `Authorization` would
+be masked in all unrelated output. The accepted residual is that a secret such
+code moves into an object key is not registered, and a constant it writes is; a
+key under a position the schema itself marks is registered when the parse
+introduced it and the schema does not declare it. A placed step ships the whole
 delivered value of its global arguments to its worker. A refinement that
 rewrites the object it validates by reference is not guarded. The keys a
 sensitive record took from data are not registered: they are identifiers,

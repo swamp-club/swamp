@@ -599,14 +599,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * string, and every finite number or bigint as it prints, since a sensitive
  * number (a PIN, an account number) echoed in an error or a log reads as
  * that text (swamp-club#3681). Enters arrays, plain objects (records/maps),
- * Maps (keys and values), Sets, and the own entries of any other object a
- * transform may deliver, which also contributes how it prints when it
- * prints as more than `[object X]` (a URL its href, a Date its time); a
- * binary buffer holds no text. An object's own keys are collected too when
- * `includeKey` accepts them. A boolean is not a secret. A string that is
- * exactly a vault secret sentinel is skipped: it stands for a reference,
- * and the load that delivers its value registers that value. A value that
- * contains itself is entered once.
+ * Maps, Sets, and the own entries of any other object a transform may
+ * deliver, which also contributes how it prints when it prints as more than
+ * `[object X]` (a URL its href, a Date its time); a binary buffer holds no
+ * text, and an object whose own entries cannot be read (a getter that
+ * throws) contributes only how it prints. An object's own keys, and a Map's
+ * string or numeric keys as they print, are collected too when `includeKey`
+ * accepts them, and never without it. A boolean is not a secret. A string
+ * that is exactly a vault secret sentinel is skipped: it stands for a
+ * reference, and the load that delivers its value registers that value. A
+ * value that contains itself is entered once.
  */
 function collectSecretStrings(
   value: unknown,
@@ -637,7 +639,13 @@ function collectSecretStrings(
   }
   if (value instanceof Map) {
     for (const [key, entry] of value) {
-      collectSecretStrings(key, out, includeKey, seen);
+      // A Map key is a key: collected as an object's would be, as it prints.
+      const keyText = typeof key === "string"
+        ? key
+        : typeof key === "bigint" || Number.isFinite(key)
+        ? String(key)
+        : undefined;
+      if (keyText !== undefined && includeKey?.(keyText)) out.push(keyText);
       collectSecretStrings(entry, out, includeKey, seen);
     }
     return;
@@ -661,7 +669,14 @@ function collectSecretStrings(
       }
     }
   }
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+  let entries: [string, unknown][];
+  try {
+    entries = Object.entries(value as Record<string, unknown>);
+  } catch {
+    // An own getter that throws cannot be read, here or by the method.
+    return;
+  }
+  for (const [k, v] of entries) {
     if (includeKey?.(k)) out.push(k);
     collectSecretStrings(v, out, includeKey, seen);
   }
@@ -717,13 +732,20 @@ export interface SensitiveValueOptions {
    * Collects the own keys of every object under a sensitive position that
    * this accepts, as a key a schema transform derived from a value is a
    * secret like the value (swamp-club#3681); without it, keys are left out.
+   * Never applied inside what a reshaping node delivered whole (see
+   * `delivered`).
    */
   includeKey?: (key: string) => boolean;
   /**
    * The data is what a parse delivered, not what it was given: a
    * `.transform()`, codec, `.overwrite()` or `.catch()` that encloses a
-   * sensitive position may have moved its value under any key, so what such
-   * a node delivered is collected whole (swamp-club#3681).
+   * sensitive position may have moved its value under any key, so the
+   * values such a node delivered are collected whole (swamp-club#3681). The
+   * keys in it are not: its own code wrote them, and an identifier such as
+   * `headers` or `Authorization` held by the redactor would mask every
+   * occurrence in unrelated output (swamp-club#3754). A secret that code
+   * moved into a key is therefore not collected; a key under a position the
+   * schema itself marks still is, as `includeKey` accepts it.
    */
   delivered?: boolean;
   /**
@@ -773,7 +795,10 @@ export function extractSensitiveFieldValues(
       collectSecretStrings(
         getNestedValue(data as Record<string, unknown>, field.path),
         secrets,
-        options.includeKey,
+        // In what a parse delivered, a field's path may lead into what a
+        // reshaping node made, whose keys its code wrote. The walk below
+        // collects the keys at every position the schema marks.
+        options.delivered ? undefined : options.includeKey,
       );
     }
   }
@@ -785,11 +810,12 @@ export function extractSensitiveFieldValues(
       { reportRoot: true, transformed: options.delivered },
     )
   ) {
-    if (rawInput && options.exclude) {
+    if (rawInput) {
+      // What a reshaping node delivered whole: its values, not its keys.
       const texts: string[] = [];
-      collectSecretStrings(value, texts, options.includeKey);
+      collectSecretStrings(value, texts);
       for (const text of texts) {
-        if (!options.exclude.has(text)) secrets.push(text);
+        if (!options.exclude?.has(text)) secrets.push(text);
       }
     } else {
       collectSecretStrings(value, secrets, options.includeKey);
@@ -803,15 +829,17 @@ export function extractSensitiveFieldValues(
  * The secret text a parse delivered that the values registered before the
  * parse do not cover (swamp-club#3681): what sits under the sensitive
  * positions of `delivered` as the schema parsed it, a transform's output and
- * a number included, every object key the parse introduced, and the whole of
- * what a transform, codec, overwrite or catch enclosing a sensitive position
- * delivered, since it may have moved the value under any key. As a refusal
- * does (see {@link extractRefusedSensitiveValues}), text `parseInput` holds
- * only at positions the schema leaves plain (see {@link plainTextsOf}) is
- * left out of such a whole, and a key the schema declares is not collected,
- * so a region, a port, a year or a field name a transform passes through is
- * not masked out of every log and resource; a value a schema node marks
- * itself is collected whatever the input holds.
+ * a number included, every object key the parse introduced there, and the
+ * values of what a transform, codec, overwrite or catch enclosing a
+ * sensitive position delivered, since it may have moved the value under any
+ * key. The keys of such a whole are not collected, since its code wrote
+ * them (swamp-club#3754). As a refusal does (see
+ * {@link extractRefusedSensitiveValues}), text `parseInput` holds only at
+ * positions the schema leaves plain (see {@link plainTextsOf}) is left out of
+ * such a whole, and a key the schema declares is not collected, so a region,
+ * a port, a year or a field name a transform passes through is not masked out
+ * of every log and resource; a value a schema node marks itself is collected
+ * whatever the input holds.
  *
  * @param schema - The arguments schema the parse ran
  * @param parseInput - What the parse received
