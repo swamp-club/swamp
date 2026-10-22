@@ -193,6 +193,21 @@ Deno.test("DataPlaneClient: writer protocol routes and bodies", async () => {
   assertEquals(requests[1].body, "a log line");
 });
 
+Deno.test("DataPlaneClient: acknowledged append survives response body cleanup failure", async () => {
+  const { client, requests } = clientWith(() =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error("connection reset"));
+        },
+      }),
+      { status: 200 },
+    )
+  );
+  await client.writeLine("w-1", "committed line");
+  assertEquals(requests.length, 1);
+});
+
 Deno.test("DataPlaneClient: bundle and asset fetch paths are fingerprint-keyed", async () => {
   const { client, requests } = clientWith((req) => {
     if (req.url.endsWith("/files")) {

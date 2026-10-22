@@ -310,7 +310,9 @@ export class DataPlaneClient {
         write: true,
       },
     );
-    await response.body?.cancel();
+    // The successful headers acknowledge the append. Body cleanup cannot
+    // revoke that result; the response observation records transport failure.
+    await response.body?.cancel().catch(() => {});
   }
 
   /** Stream content to the writer and finalize it. No upper time bound. */

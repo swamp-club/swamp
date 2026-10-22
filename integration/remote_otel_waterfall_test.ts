@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { RpcChannel } from "../src/domain/remote/rpc_channel.ts";
+import { RpcChannel, RpcError } from "../src/domain/remote/rpc_channel.ts";
 import { RemoteMethod } from "../src/domain/remote/protocol.ts";
 import { observeExecutionWork } from "../src/domain/remote/observability.ts";
 import { bridgeCapabilityVerbs } from "../src/worker/runner_bridge.ts";
@@ -41,6 +41,63 @@ function pair(): [RpcChannel, RpcChannel] {
   });
   return [a, b];
 }
+
+Deno.test("remote waterfall: terminal failures retain server parentage and peer cancellation outcome", async () => {
+  for (const failure of ["error", "rpc", "cancel"]) {
+    await withCapturedSpans(async (spans) => {
+      installExecutionObserver();
+      const [caller, server] = pair();
+      const controller = new AbortController();
+      const ready = Promise.withResolvers<void>();
+      server.register(
+        "query",
+        (_params, ctx) =>
+          observeExecutionWork("query.execute", {}, async (observation) => {
+            ctx.responseTrace = observation.carrier;
+            ready.resolve();
+            if (failure === "cancel") {
+              await new Promise<void>((_resolve, reject) => {
+                ctx.signal.addEventListener(
+                  "abort",
+                  () => reject(new Error("cancelled")),
+                  { once: true },
+                );
+              });
+            }
+            if (failure === "rpc") {
+              throw new RpcError({ code: "refused", message: "refused" });
+            }
+            throw new Error("failed");
+          }, ctx.trace),
+      );
+      try {
+        const call = caller.call("query", {}, {
+          signal: controller.signal,
+          waitForPeerOnCancel: true,
+        });
+        const rejected = assertRejects(() => call, RpcError);
+        await ready.promise;
+        if (failure === "cancel") controller.abort();
+        await rejected;
+        const query = findSpan(spans, "swamp.query.execute");
+        const reply = spans.find((s) =>
+          s.name === "swamp.rpc.submit" &&
+          s.attributes["swamp.rpc.frame"] === "rpc.error"
+        );
+        assert(reply);
+        assert(isChildOf(reply, query));
+        assertEquals(
+          findSpan(spans, "swamp.rpc.client").attributes["swamp.outcome"],
+          failure === "cancel" ? "cancelled" : "error",
+        );
+      } finally {
+        caller.close();
+        server.close();
+        uninstallExecutionObserver();
+      }
+    });
+  }
+});
 
 Deno.test("remote waterfall: caller cancellation and late peer completion remain separate", async () => {
   await withCapturedSpans(async (spans) => {

@@ -219,7 +219,9 @@ export class RpcChannel {
         resolve(result as T);
       };
       const settleReject = (error: Error) => {
-        const outcome = observationOutcome(error);
+        const outcome = error instanceof RpcError && error.code === "cancelled"
+          ? "cancelled"
+          : observationOutcome(error);
         if (outcome === "timeout" || outcome === "cancelled") {
           const now = performance.now();
           for (const [key, entry] of this.#late) {
@@ -233,7 +235,7 @@ export class RpcChannel {
             carrier: observation.carrier,
           });
         }
-        observation.end(observationOutcome(error));
+        observation.end(outcome);
         cleanup();
         reject(error);
       };
@@ -438,7 +440,7 @@ export class RpcChannel {
             type: "rpc.error",
             id,
             error: { code: "cancelled", message },
-          });
+          }, ctx.responseTrace);
           return;
         }
         if (error instanceof RpcError) {
@@ -450,7 +452,7 @@ export class RpcChannel {
               message: error.message,
               details: error.details,
             },
-          });
+          }, ctx.responseTrace);
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
@@ -458,7 +460,10 @@ export class RpcChannel {
           error instanceof DOMException && error.name === "AbortError"
             ? "cancelled"
             : "handler_failed";
-        this.#sendFrame({ type: "rpc.error", id, error: { code, message } });
+        this.#sendFrame(
+          { type: "rpc.error", id, error: { code, message } },
+          ctx.responseTrace,
+        );
       },
     );
   }
