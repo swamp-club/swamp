@@ -59,6 +59,16 @@ export interface WorkflowRepository {
   findAllListings?(): Promise<WorkflowListing[]>;
 
   /**
+   * A view of this repository for one short-lived reader, such as a serve
+   * request, whose lookups may be answered from what the view already read
+   * instead of reading again (swamp-club#3779). It promises reuse only, not
+   * a consistent point in time: part of it may stay live. Optional: a
+   * caller falls back to the repository itself. Create one per reader and
+   * drop it with the reader, so later readers see later changes.
+   */
+  memoizedView?(): WorkflowRepository;
+
+  /**
    * Saves a workflow.
    */
   save(workflow: Workflow): Promise<void>;

@@ -110,6 +110,15 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
     return workflows.find((w) => w.name === name) ?? null;
   }
 
+  /**
+   * A read-only view that walks the extension workflows on its first lookup
+   * and answers every later lookup from that walk, a failed walk included.
+   * Creating the view reads nothing.
+   */
+  memoizedView(): WorkflowRepository {
+    return new MemoizedExtensionWorkflows(this);
+  }
+
   async findAll(): Promise<Workflow[]> {
     const workflows: Workflow[] = [];
     const seenNames = new Set<string>();
@@ -223,5 +232,51 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
       }
     }
     return null;
+  }
+}
+
+/**
+ * {@link ExtensionWorkflowRepository.memoizedView}: the source's `findAll`,
+ * read at most once, searched the same way the source searches it. Every
+ * lookup returns the same `Workflow` instances, so callers must not mutate
+ * them.
+ */
+class MemoizedExtensionWorkflows implements WorkflowRepository {
+  #all: Promise<Workflow[]> | undefined;
+
+  constructor(private readonly source: ExtensionWorkflowRepository) {}
+
+  // Assigned before any await, so lookups started together share one walk.
+  #read(): Promise<Workflow[]> {
+    this.#all ??= this.source.findAll();
+    return this.#all;
+  }
+
+  async findById(id: WorkflowId): Promise<Workflow | null> {
+    return (await this.#read()).find((w) => w.id === id) ?? null;
+  }
+
+  async findByName(name: string): Promise<Workflow | null> {
+    return (await this.#read()).find((w) => w.name === name) ?? null;
+  }
+
+  async findAll(): Promise<Workflow[]> {
+    return [...await this.#read()];
+  }
+
+  save(workflow: Workflow): Promise<void> {
+    return this.source.save(workflow);
+  }
+
+  delete(id: WorkflowId): Promise<void> {
+    return this.source.delete(id);
+  }
+
+  nextId(): WorkflowId {
+    return this.source.nextId();
+  }
+
+  getPath(id: WorkflowId): string {
+    return this.source.getPath(id);
   }
 }

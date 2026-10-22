@@ -668,7 +668,9 @@ const WORKFLOW_OWNER_TYPE = "workflow";
  * resources that own them now — by id, not by the name recorded when they
  * were written — with every resource field present, so conditional denies
  * decide on them. An owner no longer found is judged on its recorded name,
- * as it is today.
+ * as it is today. Definitions are scanned once per instance, however many
+ * items share them; {@link canonicalResources} reads extension workflows
+ * once per request too.
  */
 export class CanonicalResources {
   readonly #definitionRepo: DefinitionRepository;
@@ -982,8 +984,11 @@ function authorizeAmbiguous<T>(
 
 /** A {@link CanonicalResources} for one request on `ctx`'s repository. */
 export function canonicalResources(ctx: ConnectionContext): CanonicalResources {
+  const { definitionRepo, workflowRepo } = ctx.repoContext;
+  // One read of the extension workflows per request: each lookup through
+  // the repository itself would walk them all again (swamp-club#3779).
   return new CanonicalResources(
-    ctx.repoContext.definitionRepo,
-    ctx.repoContext.workflowRepo,
+    definitionRepo,
+    workflowRepo.memoizedView?.() ?? workflowRepo,
   );
 }

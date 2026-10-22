@@ -22,6 +22,7 @@ import {
   type NamedWorkflow,
   nestedGateRefusalForClient,
   nestedPendingRefusalForClient,
+  nestedRunReadDecider,
   orphanedRefusalForClient,
   readableNestedCascade,
   readableNestedRuns,
@@ -40,6 +41,11 @@ import { OrphanedNestedRunError } from "../../domain/workflows/orphaned_nested_r
 import { orphanedNestedRunError } from "../../libswamp/workflows/nested_runs.ts";
 import type { SerializedEvent } from "../protocol.ts";
 import type { ConnectionContext } from "./shared.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+import { CompositeWorkflowRepository } from "../../infrastructure/persistence/composite_workflow_repository.ts";
+import { ExtensionWorkflowRepository } from "../../infrastructure/persistence/extension_workflow_repository.ts";
 
 const readable = new Set(["readable-id"]);
 const canRead = (w: NamedWorkflow) =>
@@ -594,4 +600,44 @@ Deno.test("redactParentRun: drops parentEnded and parentMissing with a parent th
   };
   await redactParentRun(row, canRead);
   assertEquals(row, {});
+});
+
+Deno.test("nestedRunReadDecider: reads extension workflows afresh for each new workflow, as a run stream outlasts a request", async () => {
+  class CountingExtensionWorkflowRepository
+    extends ExtensionWorkflowRepository {
+    walks = 0;
+    override findAll(): Promise<Workflow[]> {
+      this.walks++;
+      return super.findAll();
+    }
+  }
+  const dir = await Deno.makeTempDir({ prefix: "swamp-nested-decider-" });
+  try {
+    const extension = new CountingExtensionWorkflowRepository(dir);
+    const primary = {
+      findById: () => Promise.resolve(null),
+      findByName: () => Promise.resolve(null),
+    } as unknown as WorkflowRepository;
+    const ctx = {
+      authConfig: { mode: "token", admins: [] },
+      repoContext: {
+        definitionRepo: {} as DefinitionRepository,
+        workflowRepo: new CompositeWorkflowRepository(primary, extension),
+      },
+    } as unknown as ConnectionContext;
+    const decide = nestedRunReadDecider(ctx, {} as WebSocket, null);
+
+    await decide({ workflowId: crypto.randomUUID(), workflowName: "first" });
+    const afterFirst = extension.walks;
+    await decide({ workflowId: crypto.randomUUID(), workflowName: "second" });
+
+    assert(afterFirst > 0);
+    assert(extension.walks > afterFirst);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

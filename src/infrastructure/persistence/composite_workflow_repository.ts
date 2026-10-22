@@ -105,6 +105,19 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
     return [...primary, ...unshadowed];
   }
 
+  /**
+   * The same composite over the live primary and the extension's memoized
+   * view, so the extension workflows are read at most once for the view's
+   * life. The primary's lookups are already cheap and stay live.
+   */
+  memoizedView(): WorkflowRepository {
+    if (!this.extension?.memoizedView) return this;
+    return new CompositeWorkflowRepository(
+      this.primary,
+      this.extension.memoizedView(),
+    );
+  }
+
   async save(workflow: Workflow): Promise<void> {
     await this.primary.save(workflow);
   }
