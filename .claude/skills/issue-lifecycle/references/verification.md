@@ -45,9 +45,12 @@ parallel execution, and result collection. See
 Both workflows run on the host. `SWAMP_WORKFLOWS_DIR=verification` tells swamp
 to look for workflow files in the `verification/` directory.
 
-Reviews need `~/.config/swamp/verify.env` with `ANTHROPIC_API_KEY`, or a
-claude.ai login. Without either, skip reviews — build verification still works
-independently.
+Reviews run `claude -p` on your claude.ai login (or an authenticated Codex CLI
+with `reviewer=codex`). `ANTHROPIC_API_KEY` is for CI only: keep it out of
+`~/.config/swamp/verify.env`, which needs only `TESSL_TOKEN`. A sourced key
+replaces the login and a stale one fails every review — see Authentication in
+`agent-constraints/verification-conventions.md`. Without either login, skip
+reviews — build verification still works independently.
 
 ## 3. Read the Attestation
 
