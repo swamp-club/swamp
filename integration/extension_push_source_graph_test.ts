@@ -203,7 +203,8 @@ async function pushDryRun(
 
 const sources = (files: Map<string, string>) =>
   [...files.keys()].filter((p) =>
-    p !== "manifest.yaml" && !p.includes("bundles/")
+    p !== "manifest.yaml" && p !== "dependency-audit.json" &&
+    !p.includes("bundles/")
   ).sort();
 
 Deno.test("extension push: the source copy holds modules imported from outside the models directory (swamp-club#3376)", async () => {

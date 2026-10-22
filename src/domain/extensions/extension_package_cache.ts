@@ -88,6 +88,13 @@ export interface PackageCacheHashInput {
   denoConfigPath: string | undefined;
   packageJsonPath: string | undefined;
   /**
+   * The lockfile the bundler runs `--frozen` against, when the project has
+   * one. The bundles, and the dependency audit record beside them
+   * (swamp-club#3662), ship the versions it locks, so a lock bump with no
+   * source change must not reuse an archive built against the old lock.
+   */
+  lockPath?: string;
+  /**
    * What Deno resolved each bare import to (swamp-club#3612). The archive's
    * shipped source depends on these, and an `importMap` file or a workspace
    * root can change them without changing `denoConfigPath`.
@@ -244,6 +251,14 @@ export async function computePackageCacheHash(
   if (input.packageJsonPath) {
     parts.push("package-json");
     parts.push(await readFileIfExists(input.packageJsonPath));
+  }
+  // Only when present, so every extension without a lock keeps its hash.
+  const lock = input.lockPath
+    ? await computeFileContentHashIfExists(input.lockPath)
+    : null;
+  if (lock !== null) {
+    parts.push("deno-lock");
+    parts.push(lock);
   }
   // Only the resolutions the config's own top-level imports do not give
   // (an importMap file, a scope, a workspace root), so every extension

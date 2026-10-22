@@ -60,6 +60,11 @@ import {
   uint8ArrayToBase64,
 } from "../src/domain/models/bundle.ts";
 import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
+import { checkDependencyTrust } from "../src/domain/extensions/extension_dependency_trust_checker.ts";
+import {
+  type ExtensionProject,
+  readProjectLockfile,
+} from "../src/infrastructure/runtime/deno_lockfile_reader.ts";
 
 const NAME = "@test/bare-rewrite";
 const VERSION = "2026.10.20.1";
@@ -67,7 +72,30 @@ const VERSION = "2026.10.20.1";
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 const logger = getLogger(["test"]);
 
-function stubDeps(audited: DependencySpecifier[]): ExtensionPushPrepareDeps {
+/** npm, its download counts and OSV, answering for ms 2.x only. */
+function fakeRegistries(url: string | URL): Promise<Response> {
+  const host = new URL(String(url)).host;
+  const healthy = { license: "MIT", maintainers: [{ name: "a" }] };
+  if (host === "registry.npmjs.org") {
+    return Promise.resolve(Response.json({
+      "dist-tags": { latest: "2.1.3" },
+      versions: { "2.0.0": healthy, "2.1.2": healthy, "2.1.3": healthy },
+      time: { "2.1.3": new Date().toISOString() },
+    }));
+  }
+  if (host === "api.npmjs.org") {
+    return Promise.resolve(Response.json({ downloads: 1_000_000 }));
+  }
+  if (host === "api.osv.dev") {
+    return Promise.resolve(Response.json({ vulns: [] }));
+  }
+  throw new Error(`unexpected call to ${host}`);
+}
+
+function stubDeps(
+  audited: DependencySpecifier[],
+  realAudit = false,
+): ExtensionPushPrepareDeps {
   return {
     loadCredentials: () => Promise.resolve(null),
     fetchCollectives: () =>
@@ -87,14 +115,20 @@ function stubDeps(audited: DependencySpecifier[]): ExtensionPushPrepareDeps {
     analyzeExtensionSafety: () => Promise.resolve({ errors: [], warnings: [] }),
     checkExtensionQuality: () => Promise.resolve({ passed: true, issues: [] }),
     extractDependencySpecifiers,
-    checkDependencyTrust: (specifiers) => {
+    checkDependencyTrust: async (specifiers, project: ExtensionProject) => {
       audited.push(...specifiers);
-      return Promise.resolve({
-        errors: [],
-        warnings: [],
-        audited: [],
-        passed: true,
-      });
+      // The real audit reads the lock the bundler honours, so the archive
+      // records what it resolved (swamp-club#3662).
+      if (realAudit) {
+        return await checkDependencyTrust(
+          specifiers,
+          fakeRegistries,
+          undefined,
+          undefined,
+          await readProjectLockfile(project),
+        );
+      }
+      return { errors: [], warnings: [], audited: [], passed: true };
     },
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
@@ -151,6 +185,7 @@ async function pushArchive(
   author: string,
   audited: DependencySpecifier[],
   manifestDir = author,
+  realAudit = false,
 ): Promise<
   { archive: Uint8Array; bareWarnings: number; bareMessages: string[] }
 > {
@@ -168,7 +203,7 @@ async function pushArchive(
   });
   const prepared = await extensionPushPrepare(
     createLibSwampContext(),
-    stubDeps(audited),
+    stubDeps(audited, realAudit),
     {
       manifest: resolved.manifest,
       bareImports: resolved.bareImports,
@@ -581,5 +616,57 @@ Deno.test("extension push: a deno.json beside a package.json with nothing instal
     // Listed only in the package.json, as Deno resolves it.
     assertStringIncludes(took, 'import ms from "npm:ms@2.1.2";');
     assertEquals(auditedNames(audited), ["npm:ms@2.1.2"]);
+  });
+});
+
+Deno.test("extension push: the archive records the locked version of a written and an import-map range (swamp-club#3662)", async () => {
+  await withRepos(async (author) => {
+    await write(
+      join(author, "deno.json"),
+      JSON.stringify({ imports: { "ms": "npm:ms@^2.1.0" } }),
+    );
+    await write(
+      join(author, "extensions", "models", "took.ts"),
+      'import ms from "ms";\nimport ms2 from "npm:ms@~2.1.0";\n' +
+        "export const took = [ms(2000), ms2(1000)];\n",
+    );
+    await write(
+      join(author, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: NAME,
+        version: VERSION,
+        models: ["took.ts"],
+      }),
+    );
+
+    const { archive } = await pushArchive(author, [], author, true);
+    // The module graph read locked both ranges; the record names the
+    // version the lock gives each, keyed by the spec the source ships.
+    const lock = await readProjectLockfile({
+      denoConfigPath: join(author, "deno.json"),
+    });
+    const locked = (spec: string) => lock?.resolvedFor("npm", "ms", spec);
+    assert(locked("^2.1.0") !== undefined);
+    const files = await archiveFiles(archive);
+    assertEquals(JSON.parse(files.get("dependency-audit.json") ?? ""), {
+      recordVersion: 1,
+      dependencies: [
+        {
+          registry: "npm",
+          name: "ms",
+          spec: "^2.1.0",
+          version: locked("^2.1.0"),
+          from: "lockfile",
+        },
+        {
+          registry: "npm",
+          name: "ms",
+          spec: "~2.1.0",
+          version: locked("~2.1.0") ?? locked("^2.1.0"),
+          from: "lockfile",
+        },
+      ],
+    });
   });
 });

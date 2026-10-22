@@ -4047,3 +4047,87 @@ Deno.test("firstSymlinkUnder: finds a symlink anywhere in a staged tree without 
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("extensionPushPrepare: the archive records the version the audit checked for each dependency (swamp-club#3662)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import ms from "npm:ms@^2.0.0";\nimport p from "pkg";\nexport const a = [ms, p];\n',
+  }, async (dir, paths) => {
+    const written: DependencySpecifier = {
+      name: "ms",
+      version: "^2.0.0",
+      registry: "npm",
+      sourceFile: paths["models/a.ts"],
+    };
+    const installed: DependencySpecifier = {
+      name: "pkg",
+      version: "^1.0.0",
+      registry: "npm",
+      sourceFile: paths["models/a.ts"],
+      importedAs: "pkg",
+      installedVersion: "1.4.0",
+    };
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractDependencySpecifiers: () =>
+          Promise.resolve([written, installed]),
+        checkDependencyTrust: () =>
+          Promise.resolve({
+            errors: [],
+            warnings: [],
+            audited: [],
+            passed: true,
+            shipped: [
+              {
+                specifier: written,
+                shipped: { version: "2.1.0", from: "lockfile" },
+              },
+              {
+                specifier: installed,
+                shipped: { version: "1.4.0", from: "installed" },
+              },
+            ],
+          }),
+      }),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(JSON.parse(texts["dependency-audit.json"]), {
+      recordVersion: 1,
+      dependencies: [
+        {
+          registry: "npm",
+          name: "ms",
+          spec: "^2.0.0",
+          version: "2.1.0",
+          from: "lockfile",
+        },
+        {
+          registry: "npm",
+          name: "pkg",
+          spec: "1.4.0",
+          version: "1.4.0",
+          from: "installed",
+        },
+      ],
+    });
+  });
+});
+
+Deno.test("extensionPushPrepare: an extension with no dependencies still records an empty audit (swamp-club#3662)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": "export const a = 1;\n",
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(
+      texts["dependency-audit.json"],
+      '{\n  "recordVersion": 1,\n  "dependencies": []\n}\n',
+    );
+  });
+});

@@ -688,6 +688,12 @@ import {
 } from "../../domain/extensions/extension_quality_sidecar.ts";
 import type { MissingLocalModule } from "../../domain/extensions/extension_source_graph.ts";
 import {
+  buildDependencyAuditRecord,
+  DEPENDENCY_AUDIT_RECORD_FILENAME,
+  type DependencyAuditRecord,
+  serializeDependencyAuditRecord,
+} from "../../domain/extensions/dependency_audit_record.ts";
+import {
   type BareImportResolver,
   bareImportResolverFrom,
   type ResolvedBareImport,
@@ -1495,6 +1501,7 @@ export async function extensionPushPrepare(
       deps,
       denoPath || await deps.ensureDenoPath(),
       ctx,
+      buildDependencyAuditRecord(dependencyTrustResult.shipped ?? []),
     );
     totalBundles = built.totalBundles;
     archiveBytes = built.archiveBytes;
@@ -3052,6 +3059,7 @@ async function bundleAndArchive(
   deps: ExtensionPushPrepareDeps,
   denoPath: string,
   ctx: LibSwampContext,
+  auditRecord: DependencyAuditRecord,
 ): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
   // Under a Deno config the bundler reuses the graph's bare-import
   // resolutions to decide zod externalization rather than reading it again.
@@ -3153,6 +3161,7 @@ async function bundleAndArchive(
     datastoreBundles,
     reportBundles,
     webhookBundles,
+    auditRecord,
     ctx,
   );
 
@@ -3230,6 +3239,7 @@ async function createArchive(
   datastoreBundles: Map<string, string>,
   reportBundles: Map<string, string>,
   webhookBundles: Map<string, string>,
+  auditRecord: DependencyAuditRecord,
   ctx: LibSwampContext,
 ): Promise<Uint8Array> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_ext_" });
@@ -3310,6 +3320,15 @@ async function createArchive(
     if (await fileExists(sidecarPath)) {
       await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
     }
+
+    // The version the audit checked for each dependency, which these
+    // bundles ship, so the registry audits the same one (swamp-club#3662).
+    // Always written, so an empty record tells "nothing to audit" from an
+    // archive that predates it.
+    await Deno.writeTextFile(
+      join(extDir, DEPENDENCY_AUDIT_RECORD_FILENAME),
+      serializeDependencyAuditRecord(auditRecord),
+    );
 
     // Copy every local module the entry points reach to its planned path,
     // rewriting the imports the plan names and, under a Deno config, each

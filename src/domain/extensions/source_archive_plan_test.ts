@@ -173,6 +173,7 @@ Deno.test("isReservedArchiveRootName: names push writes or ignores itself are re
     const name of [
       "manifest.yaml",
       "quality.yaml",
+      "dependency-audit.json",
       "models",
       "bundles",
       "workflows",

@@ -596,3 +596,38 @@ Deno.test("computePackageCacheHash: reinstalling a package.json dependency at an
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("computePackageCacheHash: the lock the bundler honours joins the hash, and no lock leaves it unchanged (swamp-club#3662)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const lockPath = join(tmp, "deno.lock");
+    const without = await computePackageCacheHash(await makeHashInput(tmp));
+    // A lock path that does not exist hashes as no lock at all.
+    assertEquals(
+      await computePackageCacheHash({ ...await makeHashInput(tmp), lockPath }),
+      without,
+    );
+
+    await Deno.writeTextFile(
+      lockPath,
+      JSON.stringify({ version: "5", specifiers: { "npm:ms@2": "2.0.0" } }),
+    );
+    const locked = await computePackageCacheHash({
+      ...await makeHashInput(tmp),
+      lockPath,
+    });
+    assertNotEquals(without, locked);
+
+    await Deno.writeTextFile(
+      lockPath,
+      JSON.stringify({ version: "5", specifiers: { "npm:ms@2": "2.1.3" } }),
+    );
+    const bumped = await computePackageCacheHash({
+      ...await makeHashInput(tmp),
+      lockPath,
+    });
+    assertNotEquals(locked, bumped);
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});

@@ -105,6 +105,7 @@ import {
   buildFindingsReport,
   withAcceptance,
 } from "../../presentation/renderers/extension_findings_report.ts";
+import { readOnlyLockFor } from "../../infrastructure/runtime/deno_lockfile_reader.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir?: string;
@@ -532,6 +533,8 @@ export const extensionPushCommand = new Command()
         includeFilePaths,
         denoConfigPath,
         packageJsonPath: undefined,
+        // The lock the bundle runs --frozen against (swamp-club#3662).
+        ...(await readOnlyLockFor({ denoConfigPath, packageJsonDir })),
         bareImports: resolved.bareImports,
         symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
       };

@@ -841,3 +841,29 @@ Deno.test("createExtensionQualityRenderer: an audited dependency a bare import r
   assertStringIncludes(log, '"✓" "ms"@"2.1.3"');
   assertEquals(log.includes('"ms"@"2.1.3" (as'), false);
 });
+
+Deno.test("createExtensionQualityRenderer: json never prints the shipped versions the archive records (swamp-club#3662)", () => {
+  const specifier = {
+    name: "ms",
+    version: "^2.0.0",
+    registry: "npm" as const,
+    sourceFile: "models/a.ts",
+  };
+  const event = completedEvent(makeScore(), {
+    dependencyTrustResult: {
+      ...emptyTrustResult,
+      shipped: [{ specifier, shipped: { version: "2.1.0", from: "lockfile" } }],
+    },
+  });
+  const doc = JSON.parse(
+    capture(() =>
+      createExtensionQualityRenderer("json").handlers().completed(event)
+    )[0],
+  );
+  assertEquals(Object.keys(doc.dependencyTrust).sort(), [
+    "audited",
+    "errors",
+    "passed",
+    "warnings",
+  ]);
+});

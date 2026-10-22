@@ -39,6 +39,10 @@ import {
   composeScore,
   computeAnalysisFactors,
 } from "./extension_rubric_scorer.ts";
+import {
+  auditRecordEntryUsable,
+  buildDependencyAuditRecord,
+} from "./dependency_audit_record.ts";
 
 // The vectors the registry scorecard (swamp-club#3353) copies, so push and
 // the scorecard resolve and word findings the same way.
@@ -52,12 +56,38 @@ interface ResolutionVector {
   spec: string | null;
   locked?: string[];
   lockedFor?: string;
+  installed?: string;
   published: {
     versions: string[];
     distTags: Record<string, string>;
     yanked?: string[];
   };
   expect: { version: string | null; from?: string; kind: string };
+}
+
+interface RecordVector {
+  name: string;
+  source: "written" | "import-map" | "package-json";
+  registry: DependencyRegistry;
+  package: string;
+  spec: string | null;
+  locked?: string[];
+  lockedFor?: string;
+  installed?: string;
+  published: { versions: string[]; distTags: Record<string, string> };
+  expect: { spec: string | null; version: string; from: string } | null;
+}
+
+interface RecordEntryVector {
+  name: string;
+  entry: {
+    registry: string;
+    name: string;
+    spec: string | null;
+    version: string;
+  };
+  published: string[];
+  expect: "use" | "ignore";
 }
 
 interface FindingVector {
@@ -80,6 +110,8 @@ interface FindingVector {
 
 const vectors = JSON.parse(await Deno.readTextFile(VECTORS_PATH)) as {
   resolution: ResolutionVector[];
+  record: RecordVector[];
+  recordEntries: RecordEntryVector[];
   findings: FindingVector[];
   scoring: {
     name: string;
@@ -106,10 +138,47 @@ for (const v of vectors.resolution) {
       v.spec,
       lockOf(v.locked, v.lockedFor),
       { ...v.published, yanked: new Set(v.published.yanked ?? []) },
+      v.installed,
     );
     assertEquals(shipped?.version ?? null, v.expect.version);
     if (v.expect.from) assertEquals(shipped?.from, v.expect.from);
     assertEquals(specifierKind(v.spec), v.expect.kind);
+  });
+}
+
+for (const v of vectors.record) {
+  Deno.test(`dependency audit vectors: records ${v.name}`, () => {
+    const specifier = {
+      name: v.package,
+      version: v.spec,
+      registry: v.registry,
+      sourceFile: "models/a.ts",
+      ...(v.source === "written" ? {} : { importedAs: v.package }),
+      ...(v.installed !== undefined ? { installedVersion: v.installed } : {}),
+    };
+    const shipped = resolveShippedVersion(
+      v.registry,
+      v.package,
+      v.spec,
+      lockOf(v.locked, v.lockedFor),
+      v.published,
+      v.installed,
+    );
+    const record = buildDependencyAuditRecord(
+      shipped ? [{ specifier, shipped }] : [],
+    );
+    assertEquals(
+      record.dependencies,
+      v.expect ? [{ registry: v.registry, name: v.package, ...v.expect }] : [],
+    );
+  });
+}
+
+for (const v of vectors.recordEntries) {
+  Deno.test(`dependency audit vectors: a record entry whose ${v.name} is ${v.expect}d`, () => {
+    const use = auditRecordEntryUsable(v.entry) &&
+      v.published.includes(v.entry.version);
+    assertEquals(use ? "use" : "ignore", v.expect);
   });
 }
 

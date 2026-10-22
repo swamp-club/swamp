@@ -256,7 +256,11 @@ there is one, is the reason given.
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
 reused archive skips the fmt/lint gate. The version is not part of the hash,
-which also keys the adversarial-review report.
+which also keys the adversarial-review report. The hash covers the lockfile
+the bundler runs `--frozen` against (`readOnlyLockFor`), when the project
+has one (swamp-club#3662): the bundles and the dependency audit record ship
+the versions it locks, so a lock bump with no source change rebuilds the
+archive. An extension without a lock keeps its hash.
 
 The content hash labels files by their path from the extensions root, not
 the swamp repo dir, so it does not depend on where the swamp repo sits. CI
@@ -811,6 +815,7 @@ extension.tar.gz
 └── extension/
     ├── manifest.yaml
     ├── quality.yaml          # Declared acceptances and the generated declaration, when present
+    ├── dependency-audit.json # The version the audit checked for each npm/jsr dependency
     ├── models/              # Source TypeScript behavior files
     │   └── ssh/
     │       ├── connection.ts
@@ -2146,7 +2151,7 @@ The audit summary carries the source text (`specifier`; for a mapped import,
 the specifier the map resolves it to), the bare import as written
 (`importedAs`, mapped imports only; `extension quality`'s log mode prints it
 as `(as "<bare name>")` on the dependency's line), the resolved `version` and
-`resolvedFrom` (`exact`, `lockfile` or `registry`). Every finding for a
+`resolvedFrom` (`exact`, `installed`, `lockfile` or `registry`). Every finding for a
 mapped import ends `(imported as "<bare name>" through the project's Deno
 config)`, and blocks or
 warns exactly as it would written out. npm
@@ -2184,6 +2189,57 @@ the recap an author or agent reads. A `not-audited` remediation depends on why
 the audit could not run (a lookup outage, an invalid name, a specifier no
 published version matches, or an unexpected failure), because a re-run only
 helps the first.
+
+### The dependency audit record
+
+Push writes `dependency-audit.json` at the archive root, beside
+`manifest.yaml` (swamp-club#3662), so the registry's scorecard
+(swamp-club#3778) audits the version that ships rather than re-resolving a
+range against the registry as it stands. The rules live in
+`src/domain/extensions/dependency_audit_record.ts`:
+
+```json
+{
+  "recordVersion": 1,
+  "dependencies": [
+    { "registry": "npm", "name": "ms", "spec": "^2", "version": "2.1.3", "from": "lockfile" }
+  ]
+}
+```
+
+- An entry is keyed by `(registry, name, spec)`, where `spec` is the version
+  the shipped source writes after `@` (`null` when none): the registry reads
+  that triple from the archive's source. An import written as `npm:` or
+  `jsr:` keeps its spec, a bare import resolved through the Deno config
+  ships as its target's (swamp-club#3637, #3612), and a package.json-mode
+  import ships pinned to its installed version (swamp-club#3630), so its
+  entry's spec is that version.
+- `version` is the version the audit checked, which the bundles inline, and
+  `from` where it came from (`exact`, `installed`, `lockfile`, `registry`).
+- Entries are sorted by registry, name and spec (`null` first). A
+  dependency with no resolved version is left out, as is a version npm or
+  JSR says was never published; during an outage an exact, installed or
+  locked version is still recorded, since it ships regardless. An entry is
+  written only when `auditRecordEntryUsable` accepts it: a plain semver
+  version that the spec admits (an exact spec names it, a range contains it,
+  a dist-tag or no spec admits any). The registry ignores an entry that fails
+  that check, or whose version is not published, and resolves the
+  dependency itself; the vectors' `record` and `recordEntries` sections pin
+  both sides.
+- The file is always written, with an empty list when there is nothing to
+  audit, so the registry can tell such an archive from one that predates the
+  record. It is written by the author's machine and trusted as a best
+  effort, as the bundles beside it are.
+- It is built from the prepare's own audit and cached with the archive, so a
+  cache hit reuses the record that describes its bundles. In a project
+  without a lock, that record reflects resolution when the archive was
+  built, which a later push's own audit, resolving afresh, can differ from.
+- `dependency-audit.json` is a reserved archive root name. A swamp older
+  than the record does not reserve it, so its pull installs the file at the
+  extension's install root as a shared source; it is not a resolution
+  config, so nothing refuses or reads it. Conversely, an archive pushed
+  before the record whose root held a mirrored shared module of exactly that
+  name would no longer have it installed.
 
 ### Not audited
 

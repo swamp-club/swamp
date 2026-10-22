@@ -54,6 +54,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { VERSION } from "./version.ts";
 import { loadIdentity } from "../load_identity.ts";
+import { readOnlyLockFor } from "../../infrastructure/runtime/deno_lockfile_reader.ts";
 
 interface ExtensionQualityOptions extends GlobalOptions {
   repoDir?: string;
@@ -222,6 +223,11 @@ export const extensionQualityCommand = new Command()
             includeFilePaths: resolved.includeFilePaths,
             denoConfigPath,
             packageJsonPath: undefined,
+            // The lock the bundle runs --frozen against (swamp-club#3662).
+            ...(await readOnlyLockFor({
+              denoConfigPath,
+              packageJsonDir: resolved.packageJsonDir,
+            })),
             bareImports: resolved.bareImports,
             symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
           },

@@ -32,6 +32,7 @@ import { getLogger } from "@logtape/logtape";
 import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
 import { requireInitializedRepoReadOnly } from "../src/cli/repo_context.ts";
 import { computePackageCacheHash } from "../src/domain/extensions/extension_package_cache.ts";
+import { readOnlyLockFor } from "../src/infrastructure/runtime/deno_lockfile_reader.ts";
 import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -155,6 +156,41 @@ const HASH_FIXTURES: Array<{
   },
 ];
 
+type Resolved = Awaited<ReturnType<typeof resolveExtensionFiles>>;
+
+/** The cache hash as the push and quality commands compute it. */
+async function cliHash(r: Resolved, manifestPath: string): Promise<string> {
+  return await computePackageCacheHash({
+    manifest: r.manifest,
+    rootDir: r.extensionsRoot,
+    manifestDir: dirname(manifestPath),
+    modelFilePaths: [...r.allModelFiles, ...r.dataFilesByKind.models],
+    vaultFilePaths: [...r.allVaultFiles, ...r.dataFilesByKind.vaults],
+    datastoreFilePaths: [
+      ...r.allDatastoreFiles,
+      ...r.dataFilesByKind.datastores,
+    ],
+    reportFilePaths: [...r.allReportFiles, ...r.dataFilesByKind.reports],
+    webhookFilePaths: [
+      ...r.allWebhookFiles,
+      ...r.dataFilesByKind.webhooks,
+    ],
+    workflowFilePaths: r.workflowFiles.map((w) => w.sourcePath),
+    additionalFilePaths: r.additionalFilePaths,
+    binaryFilePaths: r.binaryFilePaths,
+    skillFilePaths: r.allSkillFiles,
+    includeFilePaths: r.includeFilePaths,
+    denoConfigPath: r.denoConfigPath,
+    packageJsonPath: undefined,
+    // The lock the bundle runs --frozen against (swamp-club#3662).
+    ...(await readOnlyLockFor({
+      denoConfigPath: r.denoConfigPath,
+      packageJsonDir: r.packageJsonDir,
+    })),
+    bareImports: r.bareImports,
+  });
+}
+
 for (const fixture of HASH_FIXTURES) {
   Deno.test(`extension push: an already complete extension keeps its content hash — ${fixture.name}`, async () => {
     const repo = await Deno.realPath(
@@ -182,29 +218,7 @@ for (const fixture of HASH_FIXTURES) {
         logger,
         moduleGraphReader: graphReader,
       });
-      const hash = await computePackageCacheHash({
-        manifest: r.manifest,
-        rootDir: r.extensionsRoot,
-        manifestDir: dirname(manifestPath),
-        modelFilePaths: [...r.allModelFiles, ...r.dataFilesByKind.models],
-        vaultFilePaths: [...r.allVaultFiles, ...r.dataFilesByKind.vaults],
-        datastoreFilePaths: [
-          ...r.allDatastoreFiles,
-          ...r.dataFilesByKind.datastores,
-        ],
-        reportFilePaths: [...r.allReportFiles, ...r.dataFilesByKind.reports],
-        webhookFilePaths: [
-          ...r.allWebhookFiles,
-          ...r.dataFilesByKind.webhooks,
-        ],
-        workflowFilePaths: r.workflowFiles.map((w) => w.sourcePath),
-        additionalFilePaths: r.additionalFilePaths,
-        binaryFilePaths: r.binaryFilePaths,
-        skillFilePaths: r.allSkillFiles,
-        includeFilePaths: r.includeFilePaths,
-        denoConfigPath: undefined,
-        packageJsonPath: undefined,
-      });
+      const hash = await cliHash(r, manifestPath);
       assertEquals(hash, fixture.pinned);
     } finally {
       await Deno.remove(repo, { recursive: true }).catch((error) => {
@@ -213,3 +227,53 @@ for (const fixture of HASH_FIXTURES) {
     }
   });
 }
+
+Deno.test("extension push: a deno.lock bump moves the content hash, so push never reuses a bundle built against the old lock (swamp-club#3662)", async () => {
+  const repo = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "swamp-hash-lock-" }),
+  );
+  try {
+    const version = "20260101.120000.0";
+    await collect(
+      repoInit(createLibSwampContext(), createRepoInitDeps(version), {
+        path: repo,
+        force: false,
+        version,
+        tools: [],
+      }),
+    );
+    const manifestPath = await HASH_FIXTURES[0].stage(repo);
+    await write(join(repo, "deno.json"), "{}\n");
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: repo,
+      outputMode: "log",
+    });
+    const r = await resolveExtensionFiles({
+      repoDir: repo,
+      manifestPath,
+      repoContext,
+      logger,
+      moduleGraphReader: graphReader,
+    });
+    const lockPath = join(repo, "deno.lock");
+    await Deno.remove(lockPath).catch(() => {});
+    const unlocked = await cliHash(r, manifestPath);
+
+    await write(
+      lockPath,
+      JSON.stringify({ version: "5", specifiers: { "npm:ms@2": "2.0.0" } }),
+    );
+    const locked = await cliHash(r, manifestPath);
+    await write(
+      lockPath,
+      JSON.stringify({ version: "5", specifiers: { "npm:ms@2": "2.1.3" } }),
+    );
+    const bumped = await cliHash(r, manifestPath);
+
+    assertEquals(new Set([unlocked, locked, bumped]).size, 3);
+  } finally {
+    await Deno.remove(repo, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
