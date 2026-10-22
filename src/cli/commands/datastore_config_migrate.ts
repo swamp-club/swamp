@@ -182,7 +182,7 @@ const SKIP_REASON_TEXT: Record<ConfigAdoptionSkipReason, string> = {
   "unnamed": "it declares no usable name",
   "unreadable": "it could not be read",
   "name-committed":
-    "the datastore already holds this name (another checkout's, or renamed or deleted since)",
+    "the datastore already holds a definition of this name (another checkout's, or one renamed or deleted since)",
   "invalid-path": "its path cannot be stored in the datastore",
   "duplicate-name": "another file declares the same name",
 };

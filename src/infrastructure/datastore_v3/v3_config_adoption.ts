@@ -29,12 +29,16 @@
  * partition of its kind and name) as a `definition.create` expecting its
  * key absent, writing the same bytes into the checkout's config tier.
  *
- * The commit log is the migration record: a name is adopted only while its
- * partition has never had a commit. So a re-run adopts nothing, a name
- * deleted from the tier after it was adopted is never brought back, and a
- * name another checkout already committed is never overwritten. A checkout
- * that commits the same name between this one's catch-up and its commit
- * makes this one's create fail its `absent` precondition.
+ * The commit log is the migration record: a name is adopted only while no
+ * commit of its partition has changed its definition (a create, an edit, a
+ * delete or a rename). The evaluated workflow a run stages shares the
+ * workflow's partition but is not its definition, so a workflow that ran
+ * before the migration is still adopted (swamp-club#3760). So a re-run
+ * adopts nothing, a name deleted from the tier after it was adopted is never
+ * brought back, and a name another checkout already committed is never
+ * overwritten. A checkout that commits the same name between this one's
+ * catch-up and its commit makes this one's create fail its `absent`
+ * precondition.
  *
  * Only regular files are read: a symlink in the repo's trees is skipped, so
  * a repo-controlled link can never pull bytes from outside the repo into the
@@ -53,6 +57,13 @@ import {
   type PartitionKey,
   partitionOf,
 } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  type CommitChange,
+  CommitsCompactedError,
+  type CommitStore,
+} from "../../domain/datastore_v3/commit_store.ts";
+import { changesDefinition } from "../../domain/datastore_v3/intent.ts";
+import { PutOp, TombstoneOp } from "../../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import {
   ConfigChanges,
@@ -100,9 +111,10 @@ export type ConfigAdoptionSkipReason =
   /** The file, or a directory holding it, could not be read. */
   | "unreadable"
   /**
-   * The commit log already holds the name, and this checkout's config tier
-   * has no copy at the file's path: another checkout's definition of it, or
-   * one renamed or deleted since it was adopted.
+   * The commit log already holds a definition of the name, and this
+   * checkout's config tier has no copy at the file's path: another
+   * checkout's definition of it, or one renamed or deleted since it was
+   * adopted.
    */
   | "name-committed"
   /** No record key can name the file's path in the config tier. */
@@ -154,8 +166,18 @@ export interface PlanConfigAdoptionOptions {
   readonly repoDir: string;
   /** The checkout's managed config base, `.swamp[/<namespace>]/config`. */
   readonly configBase: string;
-  /** Whether the commit log holds any commit of `partition`. */
+  /**
+   * Whether the commit log holds any commit of `partition`. Asked of the
+   * lockfile partition, which holds nothing but the lockfile.
+   */
   readonly partitionHasCommits: (partition: PartitionKey) => Promise<boolean>;
+  /**
+   * Whether the commit log holds a change to the definition of a
+   * managed-config `partition`: its create, an edit, a delete or a rename.
+   * The evaluated workflow a run stages into the same partition is not the
+   * definition, so it must not count (swamp-club#3760).
+   */
+  readonly definitionHasCommits: (partition: PartitionKey) => Promise<boolean>;
   /**
    * The repo-local extension lockfile (`upstream_extensions.json` in the
    * repo's extension models directory). Turning managedConfig on moves the
@@ -246,7 +268,7 @@ export async function planConfigAdoption(
         continue;
       }
       seen.add(name);
-      if (await options.partitionHasCommits(changes.partition)) {
+      if (await options.definitionHasCommits(changes.partition)) {
         if (hasTierCopy) {
           alreadyCommitted++;
         } else {
@@ -395,8 +417,57 @@ export async function planV3ConfigAdoption(
     configBase,
     partitionHasCommits: async (partition) =>
       (await handle.commitStore.head(handle.namespace, partition)).seq > 0,
+    definitionHasCommits: (partition) =>
+      definitionHasCommits(handle.commitStore, handle.namespace, partition),
     ...options,
   });
+}
+
+/** How many commits {@link definitionHasCommits} reads at a time. */
+const DEFINITION_SCAN_PAGE = 256;
+
+/**
+ * Whether any commit of a managed-config partition changes its definition.
+ * Reads the partition's commits in seq order and stops at the first that
+ * does, so a definition committed before its runs is found in one page. A
+ * partition whose history was compacted counts as committed: compaction
+ * keeps only live records, so a deleted definition's tombstone may be gone,
+ * and a name that cannot be shown never to have been committed is never
+ * adopted (swamp-club#3760).
+ */
+async function definitionHasCommits(
+  store: CommitStore,
+  namespace: string,
+  partition: PartitionKey,
+): Promise<boolean> {
+  if ((await store.head(namespace, partition)).seq === 0) return false;
+  let from = 1;
+  for (;;) {
+    let page: readonly CommitChange[];
+    try {
+      page = await store.readPartition(
+        namespace,
+        partition,
+        from,
+        DEFINITION_SCAN_PAGE,
+      );
+    } catch (error) {
+      if (error instanceof CommitsCompactedError) return true;
+      throw error;
+    }
+    for (const { commit } of page) {
+      if (
+        commit.ops.some((op) =>
+          (op instanceof PutOp || op instanceof TombstoneOp) &&
+          changesDefinition(op.intent)
+        )
+      ) {
+        return true;
+      }
+    }
+    if (page.length < DEFINITION_SCAN_PAGE) return false;
+    from = page[page.length - 1].commit.seq + 1;
+  }
 }
 
 /**

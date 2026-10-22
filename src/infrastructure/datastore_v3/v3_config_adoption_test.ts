@@ -64,6 +64,7 @@ Deno.test("planConfigAdoption: adopts each named file into the config tier at th
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(
       plan.adoptions.map((a) => [a.kind, a.name, a.id]),
@@ -86,7 +87,7 @@ Deno.test("planConfigAdoption: adopts each named file into the config tier at th
   });
 });
 
-Deno.test("planConfigAdoption: a name whose partition has commits is not adopted", async () => {
+Deno.test("planConfigAdoption: a name whose definition has commits is not adopted", async () => {
   await withTempDir(async (repoDir) => {
     await writeFile(
       join(repoDir, "vaults", "local_encryption", `${ID_1}.yaml`),
@@ -104,7 +105,8 @@ Deno.test("planConfigAdoption: a name whose partition has commits is not adopted
     const plan = await planConfigAdoption({
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
-      partitionHasCommits: (partition) =>
+      partitionHasCommits: () => Promise.resolve(true),
+      definitionHasCommits: (partition) =>
         Promise.resolve(partition.equals(committed)),
     });
     assertEquals(plan.adoptions.map((a) => a.name), ["other"]);
@@ -131,6 +133,7 @@ Deno.test("planConfigAdoption: unnamed files and repeated names are skipped and 
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(plan.adoptions.map((a) => a.sourcePath), [first]);
     assertEquals(
@@ -162,6 +165,7 @@ Deno.test("planConfigAdoption: symlinks are neither read nor followed", async ()
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(plan.adoptions, []);
     assertEquals(plan.skipped, []);
@@ -174,6 +178,7 @@ Deno.test("planConfigAdoption: a repo with no config trees adopts nothing", asyn
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(plan, { adoptions: [], alreadyCommitted: 0, skipped: [] });
   });
@@ -201,6 +206,10 @@ Deno.test("planConfigAdoption: a file the config tier already holds, edited or n
         asked.push(partition.toString());
         return Promise.resolve(false);
       },
+      definitionHasCommits: (partition) => {
+        asked.push(partition.toString());
+        return Promise.resolve(false);
+      },
     });
     assertEquals(plan.adoptions, []);
     assertEquals(plan.alreadyCommitted, 2);
@@ -217,6 +226,7 @@ Deno.test("planConfigAdoption: a path no record key can name is skipped, not thr
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(plan.adoptions, []);
     assertEquals(
@@ -241,6 +251,7 @@ Deno.test("planConfigAdoption: a tree whose root is a symlink is not read", asyn
       repoDir,
       configBase: join(repoDir, ".swamp", "config"),
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(plan.adoptions, []);
   });
@@ -260,6 +271,7 @@ Deno.test("planConfigAdoption: an unreadable file or directory is reported, not 
         repoDir,
         configBase: join(repoDir, ".swamp", "config"),
         partitionHasCommits: () => Promise.resolve(false),
+        definitionHasCommits: () => Promise.resolve(false),
       });
       assertEquals(plan.adoptions, []);
       assertEquals(
@@ -283,12 +295,14 @@ Deno.test("planConfigAdoption: verifyTierCopies adopts a tier copy the commit lo
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(trusted.adoptions, []);
     const verified = await planConfigAdoption({
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
       verifyTierCopies: true,
     });
     assertEquals(verified.adoptions.map((a) => a.name), ["w1"]);
@@ -313,6 +327,7 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
       repoDir,
       configBase,
       partitionHasCommits: () => Promise.resolve(false),
+      definitionHasCommits: () => Promise.resolve(false),
       lockfileSource,
     });
     assertPathEquals(
@@ -330,6 +345,7 @@ Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled ex
         Promise.resolve(
           partition.toString() === "config--lockfile--upstream_extensions",
         ),
+      definitionHasCommits: () => Promise.resolve(false),
       lockfileSource,
     });
     assertEquals(committed.lockfile, undefined);
