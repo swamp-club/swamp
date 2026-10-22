@@ -35,7 +35,8 @@ import { namesSecretValue } from "./extension_review_rules.ts";
  * - `--global-arg` or `--input` setting a secret argument to anything other
  *   than a `${{ ... }}` expression;
  * - `swamp vault put` with the value on the command line, unless the
- *   command talks to a `--server`, where no other form exists;
+ *   command talks to a `--server`, where no other form exists, or the value
+ *   is a shell variable, whose name alone reaches shell history;
  * - full-length credential shapes (GitHub, GitLab, Anthropic, AWS, Slack,
  *   HashiCorp Vault, swamp keys, bearer tokens, `user:pass@` URLs).
  *
@@ -106,6 +107,13 @@ const VAULT_PUT_VALUE_FLAGS = new Set([
   "--token-file",
   "--ca-cert",
 ]);
+
+/**
+ * A value that is a shell variable reference, bare or in double quotes:
+ * `$TOKEN`, `"${TOKEN}"`. Single quotes pass the text literally.
+ */
+const SHELL_VARIABLE =
+  /^(?:\$(?:[A-Za-z_]\w{0,100}|\{[A-Za-z_]\w{0,100}\})|"\$(?:[A-Za-z_]\w{0,100}|\{[A-Za-z_]\w{0,100}\})")$/;
 
 /** Shell tokens that end the command's own arguments. */
 const SHELL_OPERATOR = /^(?:\|\|?|&&?|;|\d?>>?|<<?<?)$/;
@@ -385,9 +393,13 @@ function vaultPutValue(text: string): string[] {
     }
     positionals.push(token);
   }
-  const valueGiven = positionals.length >= 3 ||
-    (positionals.length === 2 && positionals[1].includes("="));
-  return valueGiven
+  const value = positionals.length >= 3
+    ? positionals[2]
+    : positionals.length === 2 && positionals[1].includes("=")
+    ? positionals[1].slice(positionals[1].indexOf("=") + 1)
+    : undefined;
+  // A shell variable, bare or double-quoted, puts only its name in history.
+  return value !== undefined && !SHELL_VARIABLE.test(value)
     ? [
       "passes the secret's value to `swamp vault put` on the command line, " +
       "where shell history keeps it",

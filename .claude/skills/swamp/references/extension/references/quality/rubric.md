@@ -258,7 +258,8 @@ manifest `description`, and the strings passed to `.describe(...)` or set as
   schema, or named like a token, key, secret or password) to anything but a
   `${{ ... }}` expression
 - `swamp vault put <vault> <key> <value>` or `KEY=VALUE` with the value on the
-  command line, unless the command uses `--server`
+  command line, unless the command uses `--server` or the value is a shell
+  variable (`$TOKEN`, `"${TOKEN}"`)
 - full-length credential shapes (GitHub, GitLab, Anthropic, AWS, Slack, Vault,
   swamp keys, bearer tokens, `user:pass@` URLs)
 

@@ -133,6 +133,9 @@ Deno.test("detectSecretDocs: swamp vault put with a value on the command line is
       "swamp vault put <vault> <key> <value>",
       "swamp vault put --repo-dir . my-vault key value",
       "swamp vault write-secret my-vault key value",
+      "swamp vault put my-vault key '$TOKEN'",
+      'swamp vault put my-vault key "$TOKEN-suffix"',
+      'swamp vault put my-vault key "$(cat token.txt)"',
     ]
   ) {
     assertEquals(flaggedLines(fenced(line)), [4], line);
@@ -145,6 +148,9 @@ Deno.test("detectSecretDocs: prompted, piped and remote vault put pass", () => {
       "swamp vault put my-vault api-token",
       "swamp vault put my-vault api-token --yes",
       'echo "$TOKEN" | swamp vault put my-vault api-token',
+      "swamp vault put my-vault api-token $TOKEN",
+      'swamp vault put my-vault api-token "${TOKEN}"',
+      'swamp vault put my-vault API_TOKEN="$TOKEN"',
       "swamp vault put my-vault api-token < token.txt",
       "swamp vault put my-vault api-token 2>&1 | tee log",
       "swamp vault put --server wss://h.example.com my-vault key value",

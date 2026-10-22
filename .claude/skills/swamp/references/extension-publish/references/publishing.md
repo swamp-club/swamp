@@ -796,9 +796,9 @@ One finding per offending line, so each can be accepted on its own.
 describe strings. It flags `vault://`, `<vault:`, `{{ vault ... }}` and
 `swamp vault set`; a `--global-arg` or `--input` secret set to anything but a
 `${{ ... }}` expression; `swamp vault put` with the value on the command line
-(except with `--server`); and credential-shaped literals. Each unaccepted
-finding costs the `secret-safe-docs` rubric point. Fix the docs to use
-`swamp vault put <vault> <key>` (it prompts) and
+(except with `--server`, or a `$VAR` value); and credential-shaped literals.
+Each unaccepted finding costs the `secret-safe-docs` rubric point. Fix the docs
+to use `swamp vault put <vault> <key>` (it prompts) and
 `${{ vault.get(<vault>, <key>) }}`.
 
 The review rules (`credentials-sensitive-field`, `schema-strictness`,
