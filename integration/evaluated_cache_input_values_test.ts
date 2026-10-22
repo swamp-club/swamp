@@ -90,6 +90,9 @@ const PIN = 73816542;
  * transform made of the string, `failMadeKeys` the keys a transform derived
  * from the string; `failUnrelated` takes a record of sensitive strings and
  * throws a fixed text that holds its keys only as fragments of other words.
+ * `storePin` writes its sensitive number into a `pinned` resource as a
+ * number node, beside a larger number that holds its digits and a note that
+ * spells it.
  * The `refuse*` and `throwMade` methods never run: their schemas refuse
  * what the transform made of the string, through an issue that echoes it
  * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
@@ -135,7 +138,33 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   modelRegistry.register({
     type,
     version: "2026.10.21.1",
+    resources: {
+      pinned: {
+        description: "What storePin wrote",
+        schema: z.object({
+          pin: z.number(),
+          rows: z.number(),
+          note: z.string(),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
     methods: {
+      storePin: {
+        description: "storePin",
+        arguments: z.object({ pin: z.number().meta({ sensitive: true }) }),
+        execute: async (args, context) => {
+          received.push(args as Record<string, unknown>);
+          const pin = (args as { pin: number }).pin;
+          const handle = await context.writeResource!("pinned", "main", {
+            pin,
+            rows: pin * 10 + 1,
+            note: `pin ${pin}`,
+          });
+          return { dataHandles: [handle] };
+        },
+      },
       execute: method("execute", z.object({ token: secret.optional() })),
       fail: method("fail", z.object({ token: secret })),
       failText: method("failText", z.object({ token: secret })),
@@ -579,6 +608,26 @@ Deno.test("input values: a method that echoes a sensitive number shows the mask 
     ]);
     assertEquals(errors[0].message, "intentional failure pin ***");
     assertEquals(await swampFilesHolding(h.dir, String(PIN)), []);
+  });
+});
+
+Deno.test("input values: a resource holding a sensitive number as a number node is stored as valid JSON with the mask at that node, while a larger number holding its digits is kept (swamp-club#3754)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "store-pin", "storePin", { pin: "${{ inputs.key }}" });
+    const events = await run(h, "store-pin", "storePin", { key: PIN });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ pin: PIN }]);
+    const rows = PIN * 10 + 1;
+    const stored = await filesHolding(
+      join(h.dir, ".swamp", "data"),
+      `"rows":${rows}`,
+    );
+    assertEquals(stored.length, 1);
+    assertEquals(JSON.parse(await Deno.readTextFile(stored[0])), {
+      pin: "***",
+      rows,
+      note: "pin ***",
+    });
   });
 });
 

@@ -2947,8 +2947,8 @@ async function writeRedacted(
     modelId,
     vaultService,
   );
-  // Text-level redaction can leave invalid JSON (a secret matching a number
-  // or a whole object), so those tests read the raw text instead.
+  // Redaction keeps the payload valid JSON (swamp-club#3754); a payload that
+  // does not parse reads as undefined, which a test then reports.
   let persisted;
   try {
     persisted = JSON.parse(repo.persisted());
@@ -3184,18 +3184,56 @@ Deno.test("createResourceWriter: rejected redaction preserves the existing resou
   }
 });
 
-Deno.test("createResourceWriter: redaction that masks JSON syntax cannot stamp a verified writer tag", async () => {
+Deno.test("createResourceWriter: a number equal to a numeric secret is persisted as the string ***, so the record stays valid JSON and keeps its verified writer tag (swamp-club#3754)", async () => {
   const { repo, persisted } = await writeRedacted(
     hostSpec,
     "main",
     { host: HOST, port: 1234, token: "sensitive-value" },
     ["1234"],
   );
-  assertEquals(persisted, undefined);
+  assertEquals(persisted.port, "***");
+  assertEquals(persisted.host, HOST);
   const record = await repo.findByName(modelType, modelId, "main");
   assertExists(record);
   assertEquals(record.tags[SENSITIVE_FIELDS_TAG], '["token"]');
-  assertEquals(record.tags[SENSITIVE_FIELDS_VERSION_TAG], undefined);
+  assertEquals(
+    record.tags[SENSITIVE_FIELDS_VERSION_TAG],
+    SENSITIVE_FIELDS_VERSION,
+  );
+});
+
+Deno.test("createResourceWriter: redaction works on the JSON structure, so a number node equal to a numeric secret becomes ***, a larger number holding its digits is kept, and a string or a key holding it is masked as text (swamp-club#3754)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      pin: z.number(),
+      rows: z.number(),
+      note: z.string(),
+      samples: z.array(z.number()),
+      labels: z.record(z.string(), z.string()),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const { repo, persisted } = await writeRedacted(
+    spec,
+    "main",
+    {
+      pin: 5432,
+      rows: 154321,
+      note: "port 5432",
+      samples: [5432, 54321, 2.5],
+      labels: { "db-5432": "x" },
+    },
+    ["5432"],
+  );
+  assertEquals(JSON.parse(repo.persisted()), persisted);
+  assertEquals(persisted, {
+    pin: "***",
+    rows: 154321,
+    note: "port ***",
+    samples: ["***", 54321, 2.5],
+    labels: { "db-***": "x" },
+  });
 });
 
 Deno.test("createResourceWriter: a secret containing a JSON-escaped character is masked", async () => {

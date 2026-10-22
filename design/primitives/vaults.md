@@ -1085,6 +1085,11 @@ arguments. For a sensitive argument field, the framework:
    are scrubbed even if the extension behavior writes them there. The vault
    references swamp writes for the resource's own sensitive fields are left as
    written, since their keys can embed such a value through the instance name.
+   Redaction works node by node on the resource's JSON structure, so the stored
+   resource stays valid JSON (swamp-club#3754): a string or a key is masked as
+   text; a number, or an object or array, whose JSON text is itself a secret
+   becomes the string `"***"`; and a number that only contains a secret's
+   digits is kept.
 3. Shows the field as `"***"` in the generated method summary reports (Markdown
    and JSON).
 4. Passes the error a method throws through the run's redactor. A sensitive

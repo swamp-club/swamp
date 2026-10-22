@@ -603,14 +603,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * transform may deliver, which also contributes how it prints when it prints
  * as more than `[object X]`: a URL its href, an Error `Name: message` (its
  * stack is not an enumerable entry), a Date its `toString()` text and not the
- * ISO form JSON writes. A binary buffer holds no text, and an object whose
- * own entries cannot be read (a getter that throws) contributes only how it
- * prints. An object's own keys, and a Map's
- * string or numeric keys as they print, are collected too when `includeKey`
- * accepts them, and never without it. A boolean is not a secret. A string
- * that is exactly a vault secret sentinel is skipped: it stands for a
- * reference, and the load that delivers its value registers that value. A
- * value that contains itself is entered once.
+ * ISO form JSON writes. A binary buffer holds no text, and a value the walk
+ * cannot read (a revoked Proxy, a getter or a `toString` that throws)
+ * contributes what was read before it failed. An object's own keys, and a
+ * Map's string or numeric keys as they print, are collected too when
+ * `includeKey` accepts them, and never without it. A boolean is not a
+ * secret. A string that is exactly a vault secret sentinel is skipped: it
+ * stands for a reference, and the load that delivers its value registers
+ * that value. A value that contains itself is entered once.
  */
 function collectSecretStrings(
   value: unknown,
@@ -633,54 +633,56 @@ function collectSecretStrings(
     return;
   }
   seen.add(value);
-  if (Array.isArray(value)) {
-    for (const element of value) {
-      collectSecretStrings(element, out, includeKey, seen);
+  try {
+    if (Array.isArray(value)) {
+      for (const element of value) {
+        collectSecretStrings(element, out, includeKey, seen);
+      }
+      return;
     }
-    return;
-  }
-  if (value instanceof Map) {
-    for (const [key, entry] of value) {
-      // A Map key is a key: collected as an object's would be, as it prints.
-      const keyText = typeof key === "string"
-        ? key
-        : typeof key === "bigint" || Number.isFinite(key)
-        ? String(key)
-        : undefined;
-      if (keyText !== undefined && includeKey?.(keyText)) out.push(keyText);
-      collectSecretStrings(entry, out, includeKey, seen);
+    if (value instanceof Map) {
+      for (const [key, entry] of value) {
+        // A Map key is a key: collected as an object's would be, as it
+        // prints.
+        const keyText = typeof key === "string"
+          ? key
+          : typeof key === "bigint" || Number.isFinite(key)
+          ? String(key)
+          : undefined;
+        if (keyText !== undefined && includeKey?.(keyText)) out.push(keyText);
+        collectSecretStrings(entry, out, includeKey, seen);
+      }
+      return;
     }
-    return;
-  }
-  if (value instanceof Set) {
-    for (const entry of value) {
-      collectSecretStrings(entry, out, includeKey, seen);
+    if (value instanceof Set) {
+      for (const entry of value) {
+        collectSecretStrings(entry, out, includeKey, seen);
+      }
+      return;
     }
-    return;
-  }
-  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-    return;
-  }
-  if (!isPlainObject(value)) {
-    const prints = (value as { toString?: unknown }).toString;
-    if (typeof prints === "function" && prints !== Object.prototype.toString) {
+    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+      return;
+    }
+    if (!isPlainObject(value)) {
       try {
-        out.push(String(value));
+        const prints = (value as { toString?: unknown }).toString;
+        if (
+          typeof prints === "function" && prints !== Object.prototype.toString
+        ) {
+          out.push(String(value));
+        }
       } catch {
         // A value that cannot print cannot be echoed as text.
       }
     }
-  }
-  let entries: [string, unknown][];
-  try {
-    entries = Object.entries(value as Record<string, unknown>);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (includeKey?.(k)) out.push(k);
+      collectSecretStrings(v, out, includeKey, seen);
+    }
   } catch {
-    // An own getter that throws cannot be read, here or by the method.
-    return;
-  }
-  for (const [k, v] of entries) {
-    if (includeKey?.(k)) out.push(k);
-    collectSecretStrings(v, out, includeKey, seen);
+    // A value the walk cannot read (a revoked Proxy, an own getter that
+    // throws) cannot be read by the method either; what was collected
+    // stays.
   }
 }
 
@@ -794,14 +796,21 @@ export function extractSensitiveFieldValues(
 
   if (typeof data === "object" && data !== null && !Array.isArray(data)) {
     for (const field of extractSensitiveFields(schema)) {
+      const texts: string[] = [];
       collectSecretStrings(
         getNestedValue(data as Record<string, unknown>, field.path),
-        secrets,
+        texts,
         // In what a parse delivered, a field's path may lead into what a
-        // reshaping node made, whose keys its code wrote. The walk below
-        // collects the keys at every position the schema marks.
+        // reshaping node made, whose keys and plain values its code wrote:
+        // they are left out as from that whole. The walk below collects
+        // every position the schema marks, keys included.
         options.delivered ? undefined : options.includeKey,
       );
+      for (const text of texts) {
+        if (!options.delivered || !options.exclude?.has(text)) {
+          secrets.push(text);
+        }
+      }
     }
   }
   for (

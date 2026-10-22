@@ -1636,11 +1636,20 @@ Deno.test("extractSensitiveFieldValues: with includeKey, the keys of objects und
   );
 });
 
-Deno.test("extractSensitiveFieldValues: a Map's keys are collected only as includeKey collects an object's, and an object whose own getter throws does not fail the walk (swamp-club#3754)", () => {
+Deno.test("extractSensitiveFieldValues: a Map's keys are collected only as includeKey collects an object's, and an own getter or a toString that throws, or a revoked Proxy, does not fail the walk (swamp-club#3754)", () => {
   const schema = z.object({
     tokens: z.map(z.unknown(), z.string()).meta({ sensitive: true }),
     blob: z.unknown().meta({ sensitive: true }),
   });
+  class Loud {
+    held = "kept-b";
+    get toString(): () => string {
+      throw new Error("cannot print");
+    }
+  }
+  const loudInstance = new Loud();
+  const { proxy: revoked, revoke } = Proxy.revocable({ gone: "x" }, {});
+  revoke();
   const data = {
     tokens: new Map<unknown, string>([
       ["MADE-KEY", "v-1"],
@@ -1654,10 +1663,13 @@ Deno.test("extractSensitiveFieldValues: a Map's keys are collected only as inclu
           throw new Error("unreadable");
         },
       },
+      loudInstance,
+      revoked,
     ],
   };
   assertEquals(extractSensitiveFieldValues(schema, data).sort(), [
     "kept-a",
+    "kept-b",
     "v-1",
     "v-2",
     "v-3",
@@ -1666,7 +1678,7 @@ Deno.test("extractSensitiveFieldValues: a Map's keys are collected only as inclu
     extractSensitiveFieldValues(schema, data, {
       includeKey: (key) => key !== "4242",
     }).sort(),
-    ["MADE-KEY", "kept-a", "v-1", "v-2", "v-3"],
+    ["MADE-KEY", "held", "kept-a", "kept-b", "v-1", "v-2", "v-3"],
   );
 });
 
@@ -1952,15 +1964,16 @@ Deno.test("extractSensitiveFieldValues: with delivered, the values a transform, 
     ),
     ["HUNTER2", "prod"],
   );
+  // A plain value a transform writes under a sensitive field's input name
+  // is not that field: read through the field's path, it is left out as
+  // from the whole.
+  const swap = inner.transform(({ secret, label }) => ({
+    secret: label,
+    label: secret,
+  }));
   assertEquals(
-    delivered(
-      inner.transform(({ secret, label }) => ({
-        secret: label,
-        label: secret,
-      })),
-      input,
-    ),
-    ["hunter2", "prod"],
+    extractDeliveredSensitiveValues(swap, input, swap.parse(input)),
+    ["hunter2"],
   );
   assertEquals(
     delivered(
