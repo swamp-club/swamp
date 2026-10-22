@@ -42,7 +42,7 @@ so existing extensions need no change.
   older clients must install the extension.
 - `swamp repo init` still creates `extensions/models/`. Create
   `extensions/behaviors/` yourself.
-- Releases of `@swamp-club/swamp-testing` that export `defineBehavior` make it
+- `@swamp-club/swamp-testing` 0.20261013.52 and later export `defineBehavior`,
   the same function as `defineModel`. Code names such as `ModelDefinition`,
   `modelRegistry.extend` and `export const extension` have no behavior spelling.
 

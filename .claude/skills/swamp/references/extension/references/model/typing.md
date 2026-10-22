@@ -133,23 +133,23 @@ untyped — you need `.parse(args)` at the top of each execute body to recover t
 specific shape. The inline annotation pattern (above) is preferred because it
 gives full type safety on both `args` and `context` without additional imports.
 
-### `defineModel` function form
+### `defineBehavior` function form
 
-The testing package also exports `defineModel`, equivalent to `satisfies` with a
-different call-site syntax:
+The testing package also exports `defineBehavior`, equivalent to `satisfies`
+with a different call-site syntax. It needs `@swamp-club/swamp-testing`
+0.20261013.52 or later:
 
 ```typescript
-import { defineModel } from "jsr:@swamp-club/swamp-testing";
+import { defineBehavior } from "jsr:@swamp-club/swamp-testing";
 
-export const behavior = defineModel({
+export const behavior = defineBehavior({
   type: "@myorg/my-behavior",
   // ...
 });
 ```
 
-Releases of `@swamp-club/swamp-testing` that ship with the behavior spelling
-also export `defineBehavior`, the same function under the new name. Use
-`defineModel` until the version you depend on has it.
+`defineModel` is the same function under the model name and keeps working. Use
+it when you depend on a release older than 0.20261013.52.
 
 Same trade-off: `context.globalArgs` narrows, `args` remains `any`.
 
