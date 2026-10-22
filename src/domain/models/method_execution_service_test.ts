@@ -4706,6 +4706,71 @@ Deno.test("executeWorkflow - a method's marked paths survive the in-process reth
   assertEquals(errorPaths(error), [path]);
 });
 
+function throwingModel(name: string, thrown: Error): ModelDefinition {
+  return {
+    type: ModelType.create(`test/${name}`),
+    version: "1",
+    methods: {
+      create: {
+        description: "Throws the given error",
+        arguments: z.object({}),
+        execute: () => {
+          throw thrown;
+        },
+      },
+    },
+  };
+}
+
+Deno.test("executeWorkflow - a coded UserError a method throws comes back as a UserError with its code, paths and data handles (swamp-club#3773)", async () => {
+  const path = "/srv/Acme Corp/token";
+  const service = new DefaultMethodExecutionService();
+  const model = throwingModel(
+    "coded-user-error",
+    markErrorPaths(
+      new UserError(`cannot authenticate with ${path}`, "auth_failed"),
+      [path],
+    ),
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  const error = await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "cannot authenticate",
+  );
+  assertEquals(error.code, "auth_failed");
+  assertEquals(errorPaths(error), [path]);
+  assertEquals(
+    Array.isArray((error as unknown as Record<string, unknown>).dataHandles),
+    true,
+  );
+});
+
+Deno.test("executeWorkflow - an uncoded UserError a method throws comes back as a plain Error, as before", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = throwingModel(
+    "uncoded-user-error",
+    new UserError("intentional failure"),
+  );
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  const error = await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    Error,
+    "intentional failure",
+  );
+  assertEquals(error instanceof UserError, false);
+});
+
 async function captureRemoteRequest(
   secretBag: VaultSecretBag | undefined,
   methodArgs: Record<string, unknown>,

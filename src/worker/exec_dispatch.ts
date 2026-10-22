@@ -32,6 +32,7 @@ import type { DataHandle } from "../domain/models/model.ts";
 import { withConsoleGuard } from "../domain/models/console_guard.ts";
 import { wordedError, wordedText } from "../domain/behavior_wording.ts";
 import {
+  dispatchErrorCode,
   dispatchErrorPaths,
   type DispatchExecution,
   type DispatchOutput,
@@ -249,6 +250,7 @@ export async function runDispatchRunner(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const code = dispatchErrorCode(error);
     logger.warn("Runner dispatch failed: {error}", { error: message });
     const durationMs = performance.now() - start;
 
@@ -256,6 +258,7 @@ export async function runDispatchRunner(
       status: "error",
       error: redactor.redact(message),
       errorPaths: dispatchErrorPaths(error),
+      errorCode: code === undefined ? undefined : redactor.redact(code),
       outputs: toOutputs(getHandles()),
       logs: logs.map((line) => redactor.redact(line)),
       durationMs,

@@ -36,7 +36,7 @@ import {
   MAX_LOCK_NONCE_LENGTH,
   MAX_REMOTE_LOCK_IDS,
 } from "../datastore/lock_holder_marker.ts";
-import { errorPaths } from "../errors.ts";
+import { errorPaths, userErrorCode } from "../errors.ts";
 import { z } from "zod";
 import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
 
@@ -398,6 +398,21 @@ export function dispatchErrorPaths(error: unknown): string[] | undefined {
   return paths.length > 0 ? paths : undefined;
 }
 
+/** Longest error code a dispatch result may carry. */
+export const MAX_ERROR_CODE_LENGTH = 128;
+
+/**
+ * The code of the `UserError` a dispatch failed with (see `userErrorCode`),
+ * or `undefined` when it has none or the code is longer than a dispatch
+ * result may carry.
+ */
+export function dispatchErrorCode(error: unknown): string | undefined {
+  const code = userErrorCode(error);
+  return code !== undefined && code.length <= MAX_ERROR_CODE_LENGTH
+    ? code
+    : undefined;
+}
+
 export const DispatchResultSchema = z.object({
   status: z.enum(["success", "error"]),
   error: z.string().optional(),
@@ -410,6 +425,15 @@ export const DispatchResultSchema = z.object({
    */
   errorPaths: z.array(z.string().max(MAX_ERROR_PATH_LENGTH))
     .max(MAX_ERROR_PATHS)
+    .optional()
+    .catch(undefined),
+  /**
+   * The code of the `UserError` the runner's method threw, so the
+   * orchestrator rethrows a `UserError` with it and the failed step records
+   * it (swamp-club#3773). Bounded because a worker supplies it, and dropped
+   * when out of bounds, as `errorPaths` is.
+   */
+  errorCode: z.string().min(1).max(MAX_ERROR_CODE_LENGTH)
     .optional()
     .catch(undefined),
   outputs: z.array(DispatchOutputSchema),
