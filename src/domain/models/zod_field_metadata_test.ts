@@ -61,6 +61,39 @@ Deno.test("findValuesWithMetadata: raw inputs to marked pipe outputs are reporte
   }
 });
 
+Deno.test("findValuesWithMetadata: with rawInputs, a pipe whose input side holds no code reports what its output marks exactly, while a preprocess nested on the input side still reports the raw input (swamp-club#3751)", () => {
+  const marked = z.string().meta({ marked: true });
+  const reported = (
+    schema: z.ZodTypeAny,
+    value: unknown,
+  ) =>
+    findValuesWithMetadata(schema, value, isMarked, { rawInputs: true })
+      .map(({ keys, value, rawInput }) => ({ keys, value, rawInput }));
+  assertEquals(
+    reported(z.object({ key: z.string().pipe(marked) }), { key: "secret" }),
+    [{ keys: ["key"], value: "secret", rawInput: undefined }],
+  );
+  assertEquals(
+    reported(z.object({ token: marked }).pipe(z.object({ token: marked })), {
+      token: "secret",
+    }),
+    [{ keys: ["token"], value: "secret", rawInput: undefined }],
+  );
+  const raw = { alias: "secret" };
+  assertEquals(
+    reported(
+      z.preprocess(() => {
+        throw new Error("must not execute");
+      }, z.object({ token: z.string() })).pipe(z.object({ token: marked })),
+      raw,
+    ),
+    [
+      { keys: [], value: raw, rawInput: true },
+      { keys: ["alias"], value: "secret", rawInput: true },
+    ],
+  );
+});
+
 Deno.test("findFieldMetadata: returns metadata set directly on the field", () => {
   const meta = findFieldMetadata(
     z.string().meta({ marked: true, note: "x" }),

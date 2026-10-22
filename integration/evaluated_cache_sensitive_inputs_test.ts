@@ -424,8 +424,9 @@ for (
           type: type.normalized,
           methods: {
             execute: {
-              // The preprocessor reads the first key, so its definition
-              // spells none of its own.
+              // Both sensitive preprocessors read only what the step
+              // supplies (its `alias`, or its first key), so their
+              // definitions spell no arguments of their own.
               arguments: opaque || name === "preprocess-keys"
                 ? {}
                 : { kind: "one", target: "old" },

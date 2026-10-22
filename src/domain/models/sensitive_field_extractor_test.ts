@@ -28,6 +28,7 @@ import {
   findLiteralSensitiveGlobalArgs,
   findLiteralSensitiveValues,
   getNestedValue,
+  hasSensitiveFields,
   holdsRuntimeExpression,
   literalSensitiveGlobalArgsMessage,
   maskLiteralSensitiveValues,
@@ -2244,5 +2245,27 @@ Deno.test("schemaThrew: Zod's own error for an async check, which names no input
   assertEquals(
     schemaThrew(unmarked, z.object({ token: z.string() }), "Method arguments"),
     unmarked,
+  );
+});
+
+Deno.test("hasSensitiveFields: finds a field marked inside a pipe's output or under an optional wrapper, and answers false for a schema that marks nothing (swamp-club#3751)", () => {
+  const secret = z.string().meta({ sensitive: true });
+  assertEquals(
+    hasSensitiveFields(
+      z.preprocess(() => {
+        throw new Error("must not execute");
+      }, z.object({ token: secret })),
+    ),
+    true,
+  );
+  assertEquals(
+    hasSensitiveFields(z.object({ token: secret.optional() })),
+    true,
+  );
+  assertEquals(
+    hasSensitiveFields(
+      z.object({ region: z.string(), count: z.string().transform(Number) }),
+    ),
+    false,
   );
 });

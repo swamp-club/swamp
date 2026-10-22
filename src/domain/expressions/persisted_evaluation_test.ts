@@ -138,6 +138,37 @@ Deno.test("persistEvaluatedDefinition: a raw input of a preprocessor into a sens
   );
 });
 
+Deno.test("persistEvaluatedDefinition: an authored literal under a pipe with no transform into a sensitive field is still the mask, since both sides of such a pipe describe one value (swamp-club#3751)", () => {
+  const schemas = {
+    methods: {
+      run: {
+        arguments: z.object({
+          key: z.string().pipe(z.string().meta({ sensitive: true })),
+        }),
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "piped",
+    methods: { run: { arguments: { key: SECRET } } },
+  });
+  const persisted = persistEvaluatedDefinition(
+    definition,
+    [],
+    definition,
+    new RunSensitiveValues(),
+    schemas,
+  );
+  assertEquals(persisted.definition.getMethodArguments("run"), {
+    key: "***",
+  });
+  assertEquals(persisted.maskedPaths, [["methods", "run", "arguments", "key"]]);
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, definition.toData(), []),
+    ["methods.run.arguments.key"],
+  );
+});
+
 Deno.test("persistEvaluatedDefinition: resolved sensitive text beside a pending expression or written reference is masked", () => {
   const schemas = {
     globalArguments: z.object({ token: z.string().meta({ sensitive: true }) }),

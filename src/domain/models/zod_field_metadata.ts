@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { schemaTransformsValues } from "./zod_type_coercion.ts";
 
 /**
  * Metadata a model type attaches to a schema field with `.meta({...})`, read
@@ -621,7 +622,10 @@ function visitValue(
       // `a.pipe(b)`: `b` describes the same value once `a` has accepted it,
       // so what `b` marks is marked here too.
       const pipe = getSchemaDef(current);
-      if (walk.rawInputs && pipe.out) {
+      // Only code on the input side can carry an input into a marked output
+      // under another key. A pipe without any describes one value on both
+      // sides, so the branch below reads what its output marks exactly.
+      if (walk.rawInputs && pipe.out && pipeMayReshape(current, pipe.in)) {
         const outputMeta = matchWithin(walk, pipe.out);
         if (outputMeta) {
           // No transform runs here. Any input may contribute to a marked
@@ -804,6 +808,22 @@ function reshapes(node: z.ZodTypeAny): boolean {
   );
 }
 
+/**
+ * Whether a pipe may hand its output a value of another shape than its
+ * input: a `z.preprocess()` or `.transform()` anywhere on its input side, a
+ * codec's own transform, or a node on the input side's chain that
+ * {@link reshapes} the value. Without one, both sides describe the same
+ * value, so what the output marks sits at the same position in the input.
+ * An input side it cannot read is answered as one that may reshape.
+ */
+function pipeMayReshape(
+  pipe: z.ZodTypeAny,
+  input: z.ZodTypeAny | undefined,
+): boolean {
+  return input === undefined || reshapes(pipe) ||
+    schemaTransformsValues(input) || chainReshapes(input);
+}
+
 /** Whether any node on a chain of wrappers {@link reshapes} the value. */
 function chainReshapes(node: z.ZodTypeAny): boolean {
   const seen = new Set<z.ZodTypeAny>();
@@ -838,9 +858,11 @@ function chainReshapes(node: z.ZodTypeAny): boolean {
  * root schema itself is not reported, unless `reportRoot` asks for it: the
  * root value is then reported whole when the root schema, or a wrapper or
  * pipe side on its own chain, matches.
- * With `rawInputs`, a pipeline with matching output metadata reports its
- * input conservatively instead: its preprocessor or transform may rename
- * fields. At the root each input key is reported so a caller can replace it.
+ * With `rawInputs`, a pipeline with matching output metadata whose input
+ * side holds code that may reshape the value reports its input
+ * conservatively instead: its preprocessor or transform may rename fields.
+ * At the root each input key is reported so a caller can replace it. A pipe
+ * with no such code is read exactly, as without `rawInputs`.
  * With `transformed`, the value is read as a parse delivered it: a
  * `.transform()`, codec, `.overwrite()` or `.catch()` that reaches matching
  * metadata reports the whole value it delivered, flagged `rawInput`, since
