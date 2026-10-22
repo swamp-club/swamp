@@ -68,6 +68,7 @@ import {
   UNSAFE_PATH_SEGMENTS,
 } from "../../domain/models/data_writer.ts";
 import type { SecretReference } from "../../domain/vaults/secret_bag_registry.ts";
+import { analyzeExpression } from "../../domain/expressions/expression_references.ts";
 import { isPlainMap } from "./secret_boundary.ts";
 import {
   recordSecretRead,
@@ -488,4 +489,82 @@ export function modelMapView(
     const value = model[key];
     return isPlainMap(value) ? modelDataView(value) : value;
   });
+}
+
+/**
+ * The stored references a record's sensitive-fields tag names, read as
+ * {@link adaptDataRecord} would read them and without recording or
+ * refusing anything: the leaves under a star tag, and the values at each
+ * tagged path, including the leaves of a container the writer left at a
+ * tagged prefix. A tag or a field the adapter would refuse yields nothing
+ * here and is refused when the record is adapted.
+ */
+function storedReferencesOf(record: RecordLike): SecretReference[] {
+  let tag: SensitiveFieldsTag;
+  try {
+    tag = readSensitiveFieldsTag(record.tags);
+  } catch (error) {
+    if (error instanceof SensitiveFieldsTagInvalidError) return [];
+    throw error;
+  }
+  const references: SecretReference[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") {
+      const reference = parseStoredVaultReference(value);
+      if (reference !== undefined) references.push(reference);
+      return;
+    }
+    if (!isContainer(value)) return;
+    for (const key of Object.keys(value)) collect(value[key]);
+  };
+  if (tag.kind === "all") {
+    collect(record.attributes);
+  } else if (tag.kind === "paths") {
+    for (const path of tag.paths) collect(valueAt(record.attributes, path));
+  }
+  return references;
+}
+
+/**
+ * The sensitive-field references a synchronous evaluation of `celExpression`
+ * can read through the model map: those of every `model.<name>.resource`
+ * record of the models the expression names, as the same analysis the data
+ * namespace's `prepare` runs lists them (`syncDataReads`), restricted to the
+ * records {@link modelMapView} adapts (own-namespace, or every record when
+ * `ownNamespace` is undefined). Reading a model's `resource` map fires the
+ * context's own lazy loader, which the caller has made local first. The
+ * authorization step of the synchronous passes authorizes each
+ * (design/enablers/typed-secrets.md Section 3.4, typed-secrets 4.1); an
+ * expression that reads the model map by a computed key names no model and
+ * yields nothing, so such a read still fails closed at evaluation.
+ */
+export function synchronousSensitiveReferences(
+  celExpression: string,
+  model: unknown,
+  ownNamespace: string | undefined,
+): SecretReference[] {
+  if (!isPlainMap(model)) return [];
+  const references: SecretReference[] = [];
+  for (const [ref, read] of analyzeExpression(celExpression).syncDataReads) {
+    if (!read.resource) continue;
+    const modelData = model[ref];
+    if (!isPlainMap(modelData)) continue;
+    const specs = modelData["resource"];
+    if (!isPlainMap(specs)) continue;
+    for (const spec of Object.keys(specs)) {
+      const instances = specs[spec];
+      if (!isPlainMap(instances)) continue;
+      for (const instance of Object.keys(instances)) {
+        const record = instances[instance];
+        if (!isRecordLike(record)) continue;
+        if (ownNamespace !== undefined && record.namespace !== ownNamespace) {
+          continue;
+        }
+        for (const reference of storedReferencesOf(record)) {
+          references.push(reference);
+        }
+      }
+    }
+  }
+  return references;
 }

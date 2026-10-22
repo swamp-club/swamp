@@ -30,7 +30,7 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
-import { isTextContentType } from "./content_type.ts";
+import { isJsonMediaType, isTextContentType } from "./content_type.ts";
 import {
   garbageCollectionFromColumn,
   lifecycleFromColumn,
@@ -90,7 +90,7 @@ function parseContent(
   if (loadContent && isTextContentType(contentType)) {
     textContent = decoded;
   }
-  if (loadAttributes && contentType === "application/json") {
+  if (loadAttributes && isJsonMediaType(contentType)) {
     try {
       attributes = JSON.parse(decoded) as Record<string, unknown>;
       textContent = attributes;
@@ -189,7 +189,7 @@ export function fromRow(
   onMissingContent?: () => void,
 ): DataRecord {
   const needsBytes = !isForeignNamespace(row.namespace, dataRepo) &&
-    ((loadAttributes && row.content_type === "application/json") ||
+    ((loadAttributes && isJsonMediaType(row.content_type)) ||
       (loadContent && isTextContentType(row.content_type)));
 
   let rawBytes: Uint8Array | null = null;
@@ -371,7 +371,7 @@ export async function fromResourceHandle(
   vaultService?: VaultService,
 ): Promise<DataRecord> {
   let attributes: Record<string, unknown> = {};
-  if (handle.metadata.contentType === "application/json") {
+  if (isJsonMediaType(handle.metadata.contentType)) {
     try {
       const content = await dataRepo.getContent(
         modelType,
@@ -428,9 +428,7 @@ export async function fromResourceHandle(
     ownerType: handle.metadata.ownerDefinition.ownerType,
     streaming: handle.metadata.streaming,
     size: handle.size,
-    content: handle.metadata.contentType === "application/json"
-      ? attributes
-      : "",
+    content: isJsonMediaType(handle.metadata.contentType) ? attributes : "",
     path: "",
     ownerRef: handle.metadata.ownerDefinition.ownerRef,
     workflowRunId: handle.metadata.ownerDefinition.workflowRunId ?? "",

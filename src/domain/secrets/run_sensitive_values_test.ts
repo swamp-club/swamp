@@ -265,3 +265,23 @@ Deno.test("RunSensitiveValues.probeRedactor: answers the run's redactor, or unde
   assertEquals(new RunSensitiveValues(redactor).probeRedactor, redactor);
   assertEquals(new RunSensitiveValues().probeRedactor, undefined);
 });
+
+Deno.test("RunSensitiveValues.withForEachStandIns: replaces every sentinel the run issued with the iteration index, and nothing in an untyped run (typed-secrets 4.1)", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const values = new RunSensitiveValues(undefined, registry);
+  const bag = new VaultSecretBag(registry);
+  const vault = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
+  const data = bag.addDataReference({ vaultName: "prod", key: "B" }, "db");
+  const other = `__SWAMP_VSEC_${"ab".repeat(16)}_0__`;
+  assertEquals(
+    values.withForEachStandIns(`n-${vault}-${data}-${other}-plain`, 7),
+    `n-sensitive-7-sensitive-7-${other}-plain`,
+  );
+  assertEquals(values.withForEachStandIns("n-plain", 7), "n-plain");
+  const untyped = new RunSensitiveValues(undefined, new SecretBagRegistry());
+  const text = new VaultSecretBag(untyped.sentinels).addSecret(
+    { vaultName: "prod", key: "A" },
+    "in",
+  );
+  assertEquals(untyped.withForEachStandIns(`n-${text}`, 1), `n-${text}`);
+});

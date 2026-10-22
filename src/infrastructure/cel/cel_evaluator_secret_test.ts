@@ -771,3 +771,82 @@ Deno.test("CelEvaluator.isTyped: answers the option the evaluator was built with
   assertEquals(new CelEvaluator({ typedSecrets: true }).isTyped, true);
   assertEquals(evaluator.isTyped, true);
 });
+
+Deno.test("CelEvaluator typed secrets: the predicate destination refuses a result that holds a secret anywhere, issues nothing, and keeps null comparisons and plain results (typed-secrets 4.1)", async () => {
+  const f = fixture();
+  const refusing: EvaluationScope = {
+    secretBag: f.bag,
+    secretResult: "refuse",
+  };
+  const operation = "a guard or assert predicate result that holds a secret";
+  for (
+    const expression of [
+      "inputs.s",
+      "inputs.rec",
+      "[inputs.plain, inputs.t]",
+      "{'k': inputs.d}",
+      "inputs.nested",
+      "inputs.?s",
+    ]
+  ) {
+    const error = assertThrows(
+      () => evaluator.evaluate(expression, f.context, refusing),
+      SecretRefusedError,
+      undefined,
+      expression,
+    );
+    assertEquals(error.code, SECRET_DESTINATION_REFUSED, expression);
+    assertEquals(error.operation, operation, expression);
+    const asyncError = await assertRejects(
+      () => evaluator.evaluateAsync(expression, f.context, refusing),
+      SecretRefusedError,
+      undefined,
+      expression,
+    );
+    assertEquals(asyncError.code, SECRET_DESTINATION_REFUSED, expression);
+  }
+  // The bindings still read as Secrets: null comparisons decide, and a
+  // refusal of an operation keeps its own code.
+  assertEquals(
+    evaluator.evaluate("inputs.s != null", f.context, refusing),
+    true,
+  );
+  assertEquals(
+    evaluator.evaluate("inputs.s == null", f.context, refusing),
+    false,
+  );
+  assertEquals(
+    await evaluator.evaluateAsync(
+      "inputs.rec.other == 'o'",
+      f.context,
+      refusing,
+    ),
+    true,
+  );
+  assertEquals(
+    assertThrows(
+      () => evaluator.evaluate("inputs.s == 'x'", f.context, refusing),
+      SecretRefusedError,
+    ).code,
+    SECRET_OPERATION_UNSUPPORTED,
+  );
+  // A plain result passes as a plain copy, and the sentinel text of another
+  // run stays text.
+  assertEquals(evaluator.evaluate("inputs.plain", f.context, refusing), "x");
+  assertEquals(
+    evaluator.evaluate("{'a': [inputs.plain]}", f.context, refusing),
+    { a: ["x"] },
+  );
+  // Nothing is issued into the bag by a refused or a passing predicate: a
+  // fresh bag over an empty registry stays empty.
+  const empty = new VaultSecretBag(new SecretBagRegistry());
+  const s = f.bag.addSecret({ vaultName: "prod", key: "Z" }, "inputs.z");
+  const scoped: EvaluationScope = { secretBag: empty, secretResult: "refuse" };
+  assertEquals(evaluator.evaluate("z", { z: s }, scoped), s);
+  assertEquals(empty.registry.isEmpty, true);
+  // The default scope releases as before.
+  assertEquals(
+    evaluator.evaluate("inputs.s", f.context, { secretBag: f.bag }),
+    f.s,
+  );
+});

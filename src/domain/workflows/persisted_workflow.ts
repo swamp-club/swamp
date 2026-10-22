@@ -150,16 +150,18 @@ function dotted(path: DataPath): string {
 }
 
 /**
- * A forEach step name with every recorded sensitive value replaced by
- * `sensitive-<index>`, the item's position in the iteration: stable across
- * resume, which expands from source again, and never the secret.
+ * A forEach step name with every recorded sensitive value, and in a typed
+ * run every sentinel the run issued, replaced by `sensitive-<index>`, the
+ * item's position in the iteration: stable across resume, which expands from
+ * source again, and never the secret. The sentinel is replaced first, so a
+ * recorded value that is a fragment of one cannot break it apart.
  */
 export function forEachNameWithoutSecrets(
   name: string,
   index: number,
   values: RunSensitiveValues,
 ): string {
-  let result = name;
+  let result = values.withForEachStandIns(name, index);
   for (const { value } of values.list()) {
     if (result.includes(value)) {
       result = result.split(value).join(`sensitive-${index}`);

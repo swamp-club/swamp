@@ -338,12 +338,30 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   `evaluateAsync`, because the check is asynchronous: it reads the whole
   result as release would first, so a record the expression returned without
   selecting into it is adapted too, even behind a sentinel bound from the
-  context, and the refusal comes before release issues any sentinel. Phase 4
-  gives the synchronous passes (`forEach` expansion, step names) an
-  authorization step of their own, for example in `prepare`, before it
-  enables them. With the option off the accessors still read tagged fields,
-  and that read authorizes each reference under the run's `RunVaultAccess`
-  and re-throws a denial.
+  context, and the refusal comes before release issues any sentinel. Phase
+  4.1 gives the synchronous passes (`forEach` step names, the step and child
+  task passes of `resolveAvailableExpressions`, and the vault selectors a
+  child binding captures) an authorization step of their own:
+  `CelEvaluator.prepareSynchronousReads`, run from the pass evaluator's
+  `prepare` before the pass evaluates. It prepares the context as
+  `prepareExpressionsIn` does, takes the `model.<name>.resource` records the
+  expressions read synchronously from the same analysis the data namespace's
+  `prepare` uses (`analyzeExpression(...).syncDataReads`, the read set),
+  parses their sensitive-fields tags without reading a value, authorizes each
+  reference through `VaultService.authorizeRead`, and returns a scope whose
+  `authorizedReferences` the synchronous `evaluate` accepts; any other
+  recorded reference still fails closed. Authorization is by vault and key,
+  so a record another model holds under an authorized reference reads too,
+  and a reference the content never names does not. The read set names
+  models, not records, so a check that fails (a denial, an unavailable vault,
+  no vault scope) is kept for its reference (`deniedReferences`) and fails
+  the synchronous evaluate that reads the record holding it, with the access
+  error and before release issues a sentinel; a denied record the expression
+  never reads costs nothing. A record whose tag does not parse is left for
+  the evaluation to refuse. Each pass evaluator carries its own authorized
+  and denied sets, so one pass never authorizes for another. With the
+  option off the accessors still read tagged fields, and that read authorizes
+  each reference under the run's `RunVaultAccess` and re-throws a denial.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
   under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
   fails the next check. It then asks the provider:
@@ -716,15 +734,42 @@ splices the results into text, and leaves the rest for a later pass. `vault` and
   expression that reads `inputs.x` or `self.item` sees a `Secret`, not sentinel
   text.
 - A guard or assert predicate whose result holds a secret is refused. A secret
-  in an assert message is masked.
+  in an assert message is masked. Phase 4.1 implements both: the predicate is
+  evaluated under the predicate destination (`EvaluationScope.secretResult:
+  "refuse"`), which refuses a `Secret` anywhere in the result with
+  `secret_destination_refused` before anything reads it and issues nothing,
+  while the bindings still read sentinels as Secrets so a comparison to null
+  decides as before; the message's expressions evaluate through the typed
+  evaluator, so a secret leaves as a sentinel, and the message is masked
+  through `RunSensitiveValues.masked` before the redactor's pass. A refused
+  guard fails its step, as any guard failure does.
 - A `forEach` collection may hold secrets. Each item binds as a `Secret`. A
-  secret in a step identity becomes `sensitive-<index>`, as today.
+  secret in a step identity becomes `sensitive-<index>`, as today. Phase 4.1:
+  the expansion evaluates `forEach.in` typed, so an item that holds a `Secret`
+  leaves as a sentinel the step's passes bind back; a name template runs the
+  authorization step and then the synchronous evaluate, and
+  `forEachNameWithoutSecrets` replaces every sentinel the run issued with the
+  index stand-in (`RunSensitiveValues.withForEachStandIns`) beside today's
+  value search. A secret refusal in a name template fails the expansion,
+  naming the expression; every other failure keeps the suffixed fallback. A
+  step name the run-start pass resolves, one that reads a secret but no
+  `self`, keeps the `sensitive-<vault>.<key>` stand-in of an identifier
+  (`stepNameSanitizer` in `expression_evaluators.ts`), so a plain step's
+  name and the template an iteration is recorded under (`forEachTemplate`)
+  never hold a sentinel.
 - Child workflows keep today's deferred parent bindings. A value that crosses
   into another run carries its references, and that run issues its own
-  sentinels.
+  sentinels. Phase 4.1: the child shares the parent's registry through the
+  run's `RunSensitiveValues`, so a sentinel the parent issued binds as a
+  `Secret` in the child's passes, and the child's bags issue under their own
+  prefixes.
 - Every CEL entry point converts at the boundary. These are the run-start, step
   and runtime passes, `forEach` expansion and step names, guards, asserts,
-  `swamp behavior evaluate`, `swamp workflow evaluate` and validation.
+  `swamp behavior evaluate`, `swamp workflow evaluate` and validation. From
+  Phase 4.1 the workflow passes select their evaluator through one seam,
+  `ExpressionEvaluationService.passEvaluatorFor`: the legacy evaluator for an
+  untyped registry, or the typed evaluator bound to the pass's issuing bag,
+  the vault check scope and, for a predicate, the predicate destination.
 - The runtime pass of a delivery (`resolveRuntimeExpressionsInDefinition` with
   its `methodName`: a behavior run, a workflow step, `context.runModel` and the
   pre-flight delivery of `swamp behavior validate`) resolves the runtime
@@ -1385,6 +1430,42 @@ load. Non-secret behavior is unchanged.
   task selectors and child workflow references refuse secrets, and assert
   messages mask them. Their Phase 2 loads go.
 
+Phase 4.1 (swamp-club#3730) lands the workflow passes behind the internal
+option. `ExpressionEvaluationService.passEvaluatorFor` is the one seam the
+passes select their evaluator through (the former private `withScope` shape
+with a `typed` flag and `prepare`), and the run-start pass
+(`WorkflowExpressionEvaluator`), the step definition pass
+(`DefinitionExpressionEvaluator` over the step's bag), the data passes
+(`evaluateData`, `evaluateDataTracked`, `evaluateDataPair`, which resolve step
+and child inputs), the synchronous task passes, deferred record expressions
+(`resolveRecordExpression`), `forEach` expansion, guards and asserts all take it
+in place of the untyped evaluator each constructed. `CelEvaluator` gains the
+predicate destination (`EvaluationScope.secretResult`) and the synchronous
+authorization step (`prepareSynchronousReads`, Section 3.4); the vault
+selectors a child binding captures evaluate under the predicate destination
+too, since a selector is a routing value. `TriggerInputResolver` keeps its
+default empty scope and documents the contract: no bag and no vault, so a
+typed evaluator refuses a `vault.get` before any work and a `Secret` result as
+a destination; serve constructs the legacy evaluator until the release flip.
+The `model.method` consumer path of Section 4.5 becomes reachable, looks the
+resource up by the handle's data name rather than its spec name, and
+`isJsonMediaType` (`src/domain/data/content_type.ts`) matches the media type
+with parameters and case aside, in `model_method_result.ts` and in the record
+mapper's own attribute parsing. Stated as out of this slice: the resume seam
+builds its sensitive values over an untyped registry until the
+`rehydratePersistedForm` slice, so a resumed run keeps the untyped path (its
+run-start pass is routed through the seam and receives the legacy evaluator);
+`swamp workflow evaluate` builds an untyped registry until the evaluate-cache
+slice, so its `forEach` names keep the value search; `resolveScalarExpression`
+(task targets), placement and the task selectors keep today's evaluation, their
+refusals being the next slice with child workflow references; step outputs
+(`steps.*.outputs`, `fromResourceHandle`) still read tagged fields eagerly for
+a method that wrote them, which the outputs slice adapts; and the query view,
+masking in run records and the index, and the release flip follow.
+`integration/typed_workflow_passes_test.ts` runs the scenarios through a real
+`WorkflowExecutionService` with a vault that answers `has` and counts loads,
+with the option on and off.
+
 Then turn the path on for every entry point and remove the internal option.
 Delete the regular-expression rewrite, the value search, and the
 expression-facing plaintext resolution of tagged fields.
@@ -1462,8 +1543,8 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Pinned cel-js behavior (Section 4.2)          | `src/infrastructure/cel/cel_js_pins/`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                                                                                                        |
 | The `Secret` value (Section 3.1)              | `src/infrastructure/cel/secret_value.ts`, `secret_fault_context.ts` (the fault context)                                                                                                                                                                                                                                                                               |
 | Refusals and the container rule (Section 4.3) | `src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`, `secret_registrations.ts`, `container_comparison.ts`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                            |
-| Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
-| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`evaluatorFor`, `scopeFor`: the registry selects the typed evaluator), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
+| Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope` with `secretResult` and `authorizedReferences`, `prepareSynchronousReads`), `sensitive_record_adapter.ts` (`synchronousSensitiveReferences`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
+| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`passEvaluatorFor`: the registry selects the typed evaluator, bound to the pass's bag, scope and destination; `PassEvaluator.prepare`), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
 | Static misuse diagnostics (Section 10.2)      | `src/infrastructure/cel/secret_diagnostics.ts` (`diagnoseSecretMisuse`), `cel_evaluator.ts` (`createSecretCheckEnvironment`), `src/domain/models/validation_service.ts` (`diagnoseSecretMisuse`, `deliverCheckArguments`), `src/libswamp/models/validate.ts` |
 | Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
@@ -1477,8 +1558,8 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
 | Queries                                       | `src/domain/data/data_query_service.ts`                                                                                                                                                                                                                                                                                                                               |
 | Method boundary and checks | `src/domain/models/method_execution_service.ts` (`deliverStepSecrets`, `unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
-| Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` |
-| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts`, `model_method_result.ts` (the stored record `model.method` returns in a typed run), `for_each_expansion_service.ts`, `src/libswamp/workflows/evaluate.ts` |
+| Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` (no bag, no vault: a typed evaluator refuses a `Secret` result) |
+| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts`, `integration/typed_workflow_passes_test.ts` |
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |

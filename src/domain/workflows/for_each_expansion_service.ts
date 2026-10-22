@@ -38,6 +38,11 @@ import type { Step } from "./step.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 import { UserError } from "../errors.ts";
+import {
+  InvalidExpressionError,
+  SecretRefusedError,
+} from "../expressions/errors.ts";
+import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { keySegment, ProvenanceMap } from "../expressions/provenance_map.ts";
 import { spliceOrigin } from "../expressions/splice_origin.ts";
 
@@ -108,7 +113,18 @@ export function resolveForEachStepName(
       }
       try {
         return String(celEvaluator.evaluate(span.inner, stepContext));
-      } catch {
+      } catch (error) {
+        // A secret refusal is loud and names the expression
+        // (design/enablers/typed-secrets.md Section 4.3): it fails the
+        // expansion rather than falling back to a suffixed raw name, and so
+        // does a read the run's vault access denies, which the typed
+        // evaluate raises for the record a name reads. Every other failure
+        // keeps the fallback this function exists for.
+        if (error instanceof SecretRefusedError) throw error;
+        if (
+          error instanceof InvalidExpressionError &&
+          error.cause instanceof VaultAccessDeniedError
+        ) throw error;
         hadEvalFailure = true;
         return span.raw;
       }
@@ -141,6 +157,16 @@ function nameWithoutSecrets(
 }
 
 /**
+ * The evaluator the expansion runs with. A pass evaluator in a typed run
+ * carries `prepare`, the authorization step the synchronous step-name
+ * evaluation needs (design/enablers/typed-secrets.md Section 3.4); a plain
+ * evaluator has none and the names evaluate as they always did.
+ */
+export type ForEachEvaluator = CelExpressionEvaluator & {
+  prepare?(content: unknown, context: Record<string, unknown>): Promise<void>;
+};
+
+/**
  * Expands forEach steps in a job into multiple concrete steps.
  *
  * For steps with `forEach`, evaluates the `in` expression and creates
@@ -149,7 +175,7 @@ function nameWithoutSecrets(
  * emission, no orchestration concerns.
  */
 export class ForEachExpansionService {
-  constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
+  constructor(private readonly celEvaluator: ForEachEvaluator) {}
 
   async expand(
     job: Job,
@@ -206,7 +232,7 @@ export class ForEachExpansionService {
       if (Array.isArray(items)) {
         for (let index = 0; index < items.length; index++) {
           expandedSteps.push(
-            this.expandArrayItem(
+            await this.expandArrayItem(
               step,
               context,
               itemName,
@@ -222,7 +248,7 @@ export class ForEachExpansionService {
       } else if (items && typeof items === "object") {
         for (const [index, [key, value]] of Object.entries(items).entries()) {
           expandedSteps.push(
-            this.expandObjectItem(
+            await this.expandObjectItem(
               step,
               context,
               itemName,
@@ -255,7 +281,23 @@ export class ForEachExpansionService {
     return result;
   }
 
-  private expandArrayItem(
+  /**
+   * The authorization step before a name template is evaluated
+   * synchronously: in a typed run it authorizes the sensitive-field
+   * references the template can read, and a denied record a name reads
+   * fails the expansion when that name is evaluated. Nothing to do for a
+   * name without expressions or an evaluator without the step.
+   */
+  private async prepareName(
+    step: Step,
+    nameHasExpression: boolean,
+    stepContext: Record<string, unknown>,
+  ): Promise<void> {
+    if (!nameHasExpression || this.celEvaluator.prepare === undefined) return;
+    await this.celEvaluator.prepare(step.name, stepContext);
+  }
+
+  private async expandArrayItem(
     step: Step,
     context: ExpressionContext,
     itemName: string,
@@ -265,11 +307,12 @@ export class ForEachExpansionService {
     authored: AuthoredExpressions,
     provenance: ProvenanceMap,
     nameProvenance: ProvenanceMap,
-  ): ExpandedStep {
+  ): Promise<ExpandedStep> {
     const stepContext = {
       ...context,
       self: { ...context.self, _index: index, [itemName]: item },
     };
+    await this.prepareName(step, nameHasExpression, stepContext);
 
     // Fallback-suffix policy: index for objects (for uniqueness when
     // multiple objects share field values) and for the eval-failure
@@ -313,7 +356,7 @@ export class ForEachExpansionService {
     };
   }
 
-  private expandObjectItem(
+  private async expandObjectItem(
     step: Step,
     context: ExpressionContext,
     itemName: string,
@@ -324,12 +367,13 @@ export class ForEachExpansionService {
     authored: AuthoredExpressions,
     provenance: ProvenanceMap,
     nameProvenance: ProvenanceMap,
-  ): ExpandedStep {
+  ): Promise<ExpandedStep> {
     const objItem = { key, value };
     const stepContext = {
       ...context,
       self: { ...context.self, _index: index, [itemName]: objItem },
     };
+    await this.prepareName(step, nameHasExpression, stepContext);
 
     const { name: expandedName, hadEvalFailure } = resolveForEachStepName(
       step.name,

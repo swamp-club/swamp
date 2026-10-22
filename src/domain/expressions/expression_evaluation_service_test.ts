@@ -23,7 +23,12 @@ import { SplicePair } from "./splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultService } from "../vaults/vault_service.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -43,7 +48,11 @@ import {
   runWithRejectionReport,
 } from "./expression_rejection_report.ts";
 import { ProvenanceMap } from "./provenance_map.ts";
-import { InvalidExpressionError } from "./errors.ts";
+import {
+  InvalidExpressionError,
+  SECRET_DESTINATION_REFUSED,
+  SecretRefusedError,
+} from "./errors.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -146,6 +155,53 @@ Deno.test("deferChildInputs: binding one vault selector preserves comments in th
       "default",
     );
     assertEquals(evaluator.evaluate(call[6], {}), "late-key");
+    return Promise.resolve();
+  });
+});
+
+Deno.test("deferChildInputs: a typed run refuses a vault selector that holds a Secret instead of writing its sentinel into the child's expression", async () => {
+  await withTempDir((dir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(dir),
+      dir,
+    );
+    const expression = "${{ vault.get(inputs.vault, 'late-key') }}";
+    const defer = (values: RunSensitiveValues) => {
+      const sentinel = new VaultSecretBag(values.sentinels).addSecret(
+        REF,
+        "inputs.vault",
+      );
+      return service.deferChildInputs(
+        { token: expression },
+        attachSensitiveValues(
+          { model: {}, env: {}, inputs: { vault: sentinel } },
+          values,
+        ),
+        new Set([expression]),
+        ["inputs.vault"],
+      );
+    };
+    const error = assertThrows(
+      () =>
+        defer(
+          new RunSensitiveValues(
+            undefined,
+            new SecretBagRegistry({ typedSecrets: true }),
+          ),
+        ),
+      SecretRefusedError,
+    );
+    assertEquals(error.code, SECRET_DESTINATION_REFUSED);
+    assertStringIncludes(error.message, "inputs.vault");
+    // An untyped run keeps the sentinel text the selector evaluated to.
+    const untyped = defer(new RunSensitiveValues());
+    const [call] = findVaultGetCalls(
+      untyped.deferredExpressions[0].expression,
+    );
+    assertStringIncludes(
+      new CelEvaluator().evaluate(call[3], {}) as string,
+      "__SWAMP_",
+    );
     return Promise.resolve();
   });
 });

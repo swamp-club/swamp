@@ -280,8 +280,9 @@ import {
 import {
   CelEvaluator,
   createExtensionCelEnvironment,
-  prepareExpressionsIn,
 } from "../../infrastructure/cel/cel_evaluator.ts";
+import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
+import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
 import {
   collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
@@ -550,6 +551,12 @@ async function resolveRecordExpression(
   value: Record<string, unknown> | string | undefined,
   fieldName: string,
   expressionContext: Record<string, unknown> | undefined,
+  /**
+   * The step's pass evaluator, defined whenever the context is: in a typed
+   * run a record that holds a Secret issues into the step's bag
+   * (design/enablers/typed-secrets.md Section 3.3, typed-secrets 4.1).
+   */
+  evaluator: CelExpressionEvaluator | undefined,
   authored: AuthoredExpressions,
   /** Where data sits in `value`. */
   provenance: ProvenanceMap,
@@ -571,7 +578,7 @@ async function resolveRecordExpression(
       `${fieldName} must be a record, got a string`,
     );
   }
-  if (!expressionContext) {
+  if (!expressionContext || !evaluator) {
     throw new UserError(
       `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
     );
@@ -582,8 +589,7 @@ async function resolveRecordExpression(
   ) {
     throw new UserError(`${fieldName} must be an authored record expression`);
   }
-  const celEvaluator = new CelEvaluator();
-  const resolved = await celEvaluator.evaluateAsync(cel, expressionContext);
+  const resolved = await evaluator.evaluateAsync(cel, expressionContext);
   if (
     resolved === null || resolved === undefined ||
     typeof resolved !== "object" || Array.isArray(resolved)
@@ -1800,14 +1806,24 @@ export class DefaultStepExecutor implements StepExecutor {
     // variable by runStep(). resolveAvailableExpressions defers vault/env and
     // step-output kinds to their dedicated stages — see
     // available_expression_resolver.ts.
-    if (ctx.expressionContext) {
-      const celEvaluator = new CelEvaluator();
+    // The step's pass evaluator: typed when the run's registry is, issuing
+    // into the step's bag, so a sentinel in the step's fields binds as a
+    // Secret and a Secret result leaves as a sentinel the delivery loads
+    // (typed-secrets 4.1). Untyped, it is the legacy evaluator.
+    const stepPass = ctx.expressionContext
+      ? await expressionEvaluator.passEvaluatorFor(ctx.sensitiveValues, {
+        secretBag: stepSecretBag,
+        location: ctx.stepName,
+      })
+      : undefined;
+    if (ctx.expressionContext && stepPass) {
       const evaluate = (expr: string, context: Record<string, unknown>) =>
-        celEvaluator.evaluate(expr, context);
+        stepPass.evaluate(expr, context);
       // The pass below evaluates synchronously, so the content its
       // expressions read through the model map must be local first
-      // (swamp-club#3179).
-      await prepareExpressionsIn(
+      // (swamp-club#3179), and in a typed run the sensitive-field
+      // references it can read must be authorized first (Section 3.4).
+      await stepPass.prepare(
         [task, taskArgs.raw, resolvedPlacement],
         ctx.expressionContext,
       );
@@ -1909,6 +1925,7 @@ export class DefaultStepExecutor implements StepExecutor {
       task.inputs,
       "task.inputs",
       ctx.expressionContext,
+      stepPass,
       ctx.authoredExpressions,
       taskProvenance.subtree("inputs"),
     );
@@ -1916,6 +1933,7 @@ export class DefaultStepExecutor implements StepExecutor {
       task.globalArgs,
       "task.globalArgs",
       ctx.expressionContext,
+      stepPass,
       ctx.authoredExpressions,
       taskProvenance.subtree("globalArgs"),
     );
@@ -2353,7 +2371,13 @@ export class DefaultStepExecutor implements StepExecutor {
         failedExpressions,
         provenance: definitionProvenance,
       } = await new DefinitionExpressionEvaluator(
-        new CelEvaluator(),
+        // The step's definition pass issues into the step's bag, so a
+        // forEach item or an input that is a sentinel binds as a Secret
+        // (typed-secrets 4.1).
+        await expressionEvaluator.passEvaluatorFor(ctx.sensitiveValues, {
+          secretBag: stepSecretBag,
+          location: originalDefinition.name,
+        }),
       ).evaluate(
         originalDefinition,
         ctx.expressionContext,
@@ -4891,8 +4915,14 @@ export class WorkflowExecutionService {
         }
       }
 
+      // Routed through the pass seam for uniformity: a resumed run builds
+      // its sensitive values over an untyped registry until the
+      // rehydratePersistedForm slice, so this is the legacy evaluator.
       const evaluator = new WorkflowExpressionEvaluator(
-        new CelEvaluator(),
+        await this.expressionEvaluator.passEvaluatorFor(
+          sensitiveValuesOf(expressionContext),
+          { location: workflow.name },
+        ),
       );
       // Collected before evaluation, for the same reason as the fresh-run
       // seam: afterwards, spliced data content is indistinguishable from
@@ -5306,7 +5336,17 @@ export class WorkflowExecutionService {
       // is a structural transformation, not expression evaluation.
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
       if (expressionContext) {
-        expandedStepsMap = await new ForEachExpansionService(new CelEvaluator())
+        // In a typed run the expansion's evaluator issues into a bag over
+        // the run's registry: an item that holds a Secret leaves forEach.in
+        // as a sentinel the step's passes bind back as a Secret, and a
+        // secret in a name leaves as a sentinel the stand-in replaces
+        // (typed-secrets 4.1).
+        expandedStepsMap = await new ForEachExpansionService(
+          await this.expressionEvaluator.passEvaluatorFor(
+            options.sensitiveValues,
+            { location: `${job.name}.forEach` },
+          ),
+        )
           .expand(
             job,
             expressionContext,
@@ -5886,7 +5926,14 @@ export class WorkflowExecutionService {
         statusBeforeGuard === "pending" && !abortedBeforeGuard &&
         (options.signal?.aborted ?? false);
       try {
-        const celEvaluator = new CelEvaluator();
+        // A guard is a predicate destination: in a typed run its evaluator
+        // binds the run's sentinels as Secrets and refuses a result that
+        // holds one, before any load (design/enablers/typed-secrets.md
+        // Section 7.1, typed-secrets 4.1).
+        const celEvaluator = await this.expressionEvaluator.passEvaluatorFor(
+          options.sensitiveValues,
+          { location: `${stepName}.guard`, secretResult: "refuse" },
+        );
         const guardContext: Record<string, unknown> = {
           ...(stepExprContext ?? {}),
         };
@@ -5898,7 +5945,7 @@ export class WorkflowExecutionService {
           "__guard_",
           stepExprContext,
           options,
-          celEvaluator.isTyped,
+          celEvaluator.typed,
         );
         if (
           partitionAuthoredAt(
@@ -6316,7 +6363,11 @@ export class WorkflowExecutionService {
 
       // Handle assert tasks — evaluate CEL predicate, record pass/fail
       if (task.type === "assert") {
-        const celEvaluator = new CelEvaluator();
+        // The predicate destination, as for a guard (typed-secrets 4.1).
+        const celEvaluator = await this.expressionEvaluator.passEvaluatorFor(
+          options.sensitiveValues,
+          { location: `${stepName}.task.expr`, secretResult: "refuse" },
+        );
         const assertContext: Record<string, unknown> = {
           ...(stepExprContext ?? {}),
         };
@@ -6328,7 +6379,7 @@ export class WorkflowExecutionService {
           "__assert_",
           stepExprContext,
           options,
-          celEvaluator.isTyped,
+          celEvaluator.typed,
         );
         try {
           if (!options.authoredExpressions.has(task.expr)) {
@@ -6352,6 +6403,18 @@ export class WorkflowExecutionService {
             StepProvenanceOverlay.authored()).forStep(step).raw.subtree(
               "task.message",
             );
+          // In a typed run the message is a masked destination: its
+          // expressions evaluate through the typed evaluator, so a secret
+          // leaves as a sentinel the run masks, and nothing is loaded
+          // (Section 7.1, typed-secrets 4.1). Untyped, the inline resolution
+          // loads as before and the value is redacted below.
+          const messageEvaluator = celEvaluator.typed
+            ? await this.expressionEvaluator.passEvaluatorFor(
+              options.sensitiveValues,
+              { location: `${stepName}.task.message` },
+            )
+            : undefined;
+          const messageContext = { model: {}, env: {}, ...assertContext };
           const messageValues = new Map<string, unknown>();
           for (
             const expr of partitionAuthoredAt(
@@ -6362,13 +6425,18 @@ export class WorkflowExecutionService {
           ) {
             if (messageValues.has(expr.raw)) continue;
             try {
-              const value = await this.expressionEvaluator
-                .resolveAllExpressionsInData(
-                  expr.raw,
-                  { model: {}, env: {}, ...assertContext },
-                  options.secretRedactor,
-                  options.authoredExpressions,
-                );
+              const value = messageEvaluator
+                ? await messageEvaluator.evaluateAsync(
+                  expr.celExpression,
+                  messageContext,
+                )
+                : await this.expressionEvaluator
+                  .resolveAllExpressionsInData(
+                    expr.raw,
+                    messageContext,
+                    options.secretRedactor,
+                    options.authoredExpressions,
+                  );
               messageValues.set(expr.raw, String(value ?? ""));
             } catch {
               // Leave the expression as-is if evaluation fails.
@@ -6383,9 +6451,16 @@ export class WorkflowExecutionService {
                 messageProvenance.overlapsData("", span.start, span.end)
                 ? span.raw
                 : messageValues.get(span.raw) as string);
-          // Redact once, before the message reaches the step error, the
-          // events, or the span; a vault.get() in the message resolves to
-          // plaintext above.
+          // Mask once, before the message reaches the step error, the
+          // events, or the span. In a typed run the sentinels the run
+          // issued are masked through the run's own record, whatever
+          // redactor the caller attached; the redactor's pass follows for
+          // the values an untyped resolution loaded above.
+          if (messageEvaluator) {
+            resolvedMessage = String(
+              options.sensitiveValues.masked(resolvedMessage),
+            );
+          }
           resolvedMessage = options.secretRedactor?.redact(resolvedMessage) ??
             resolvedMessage;
 
@@ -7028,16 +7103,26 @@ export class WorkflowExecutionService {
     // operate on the resolved workflowIdOrName rather than a literal `${{ }}`.
     // Vault/env and step-output kinds are deferred to their dedicated stages;
     // the inputs evaluateData pass below still resolves the rest.
-    if (expressionContext) {
-      const celEvaluator = new CelEvaluator();
-      // Synchronous pass: make what it reads local first (swamp-club#3179).
-      await prepareExpressionsIn(task, expressionContext);
+    // The invocation's pass evaluator, issuing into a bag over the run's
+    // registry: a child input record that holds a Secret issues into it,
+    // and the child binds the sentinel back as a Secret through the shared
+    // registry (typed-secrets 4.1).
+    const childPass = expressionContext
+      ? await this.expressionEvaluator.passEvaluatorFor(
+        options.sensitiveValues,
+        { location: `${stepName}.task` },
+      )
+      : undefined;
+    if (expressionContext && childPass) {
+      // Synchronous pass: make what it reads local first (swamp-club#3179),
+      // and authorize the sensitive-field references it can read.
+      await childPass.prepare(task, expressionContext);
       const resolved = inStepReport(() =>
         resolveAvailableExpressionsTracked(
           task,
           taskProvenance,
           expressionContext,
-          (expr, context) => celEvaluator.evaluate(expr, context),
+          (expr, context) => childPass.evaluate(expr, context),
           options.authoredExpressions,
         )
       );
@@ -7064,6 +7149,7 @@ export class WorkflowExecutionService {
           task.inputs,
           "task.inputs",
           expressionContext,
+          childPass,
           options.authoredExpressions,
           taskProvenance.subtree("inputs"),
         )
@@ -7512,6 +7598,7 @@ export class WorkflowExecutionService {
         }, options);
         const methodResult = result as {
           dataHandles?: Array<{
+            name: string;
             specName: string;
             kind: string;
           }>;
@@ -7532,11 +7619,14 @@ export class WorkflowExecutionService {
               // consuming evaluator, not the run's registry: until Phase 4
               // the guard and assert evaluators are untyped and keep the
               // parsed content, whatever the registry carries.
+              // Looked up by the handle's name, the record's data name: a
+              // method names its instance, and only by convention after
+              // its spec (typed-secrets 4.1).
               const resource = await modelMethodResourceResult(
                 this.dataRepo,
                 def.type,
                 def.definition.id,
-                resourceHandle.specName,
+                resourceHandle.name,
                 modelName,
                 typedConsumer,
               );
@@ -8300,8 +8390,15 @@ export class WorkflowExecutionService {
     });
 
     try {
+      // The run-start pass of a typed run issues into a bag over the run's
+      // registry: a data read that returns a Secret leaves as a sentinel
+      // and loads nothing for a step a guard may later skip
+      // (design/enablers/typed-secrets.md Section 5, typed-secrets 4.1).
       const result = await new WorkflowExpressionEvaluator(
-        new CelEvaluator(),
+        await this.expressionEvaluator.passEvaluatorFor(
+          sensitiveValuesOf(context),
+          { location: workflow.name },
+        ),
       ).evaluate(workflow, context, authored);
       evalSpan.setAttribute(
         "workflow.expressions_evaluated",

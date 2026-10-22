@@ -613,3 +613,237 @@ Deno.test("CelEvaluator: with typed secrets off, the same reads return the store
   );
   assertEquals(f.bag.registry.isEmpty, true);
 });
+
+Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged references of the model-map records an expression reads, so the synchronous evaluate accepts them, and fails closed on anything it did not authorize (typed-secrets 4.1)", async () => {
+  const f = fixture();
+  const name = "${{ model.web.resource.creds.main.attributes.user }}-x";
+  const prepared = await f.evaluator.prepareSynchronousReads(
+    name,
+    f.context,
+    f.scope,
+  );
+  assertEquals(prepared.authorizedReferences?.size, 2);
+  assert(prepared.authorizedReferences?.has("prod\u0000A"));
+  assert(prepared.authorizedReferences?.has("prod\u0000B"));
+  // The original scope is untouched, and still fails closed.
+  assertEquals(f.scope.authorizedReferences, undefined);
+  assertThrows(
+    () =>
+      f.evaluator.evaluate(
+        "model.web.resource.creds.main.attributes.user",
+        f.context,
+        f.scope,
+      ),
+    InvalidExpressionError,
+    "requires evaluateAsync",
+  );
+  // Under the prepared scope the read is accepted: a plain field reads, a
+  // tagged field leaves as a sentinel issued into the bag, and a record the
+  // expression returns whole is adapted and released.
+  assertEquals(
+    f.evaluator.evaluate(
+      "model.web.resource.creds.main.attributes.user",
+      f.context,
+      prepared,
+    ),
+    "u",
+  );
+  const password = f.evaluator.evaluate(
+    "model.web.resource.creds.main.attributes.password",
+    f.context,
+    prepared,
+  ) as string;
+  assert(f.bag.registry.issuedEntryOf(password));
+  // Expressions reading the same model by id share the authorization; a
+  // second prepare adds nothing and answers the same scope.
+  const again = await f.evaluator.prepareSynchronousReads(
+    "${{ model['uuid-1'].resource.creds.main.attributes.user }}",
+    f.context,
+    prepared,
+  );
+  assertEquals(again, prepared);
+  // A reference of a model the content never names is not authorized:
+  // the synchronous read of it still fails closed under the prepared scope.
+  // Authorization is by vault and key, so only a reference the named model
+  // does not hold tells the two apart.
+  const other = {
+    ...f.context,
+    model: {
+      ...(f.context.model as object),
+      db: {
+        resource: {
+          creds: {
+            main: record(
+              "db-main",
+              { password: "${{ vault.get('prod', 'C') }}", user: "u" },
+              pathsTag("password"),
+            ),
+          },
+        },
+      },
+    },
+  };
+  assertThrows(
+    () =>
+      f.evaluator.evaluate(
+        "model.db.resource.creds.main.attributes.user",
+        other,
+        prepared,
+      ),
+    InvalidExpressionError,
+    "requires evaluateAsync",
+  );
+  const both = await f.evaluator.prepareSynchronousReads(
+    "${{ model.db.resource.creds.main.attributes.user }}",
+    other,
+    prepared,
+  );
+  assertEquals(both.authorizedReferences?.size, 3);
+  assertEquals(
+    f.evaluator.evaluate(
+      "model.db.resource.creds.main.attributes.user",
+      other,
+      both,
+    ),
+    "u",
+  );
+  // An expression that names no model, or typed secrets off, changes nothing.
+  assertEquals(
+    await f.evaluator.prepareSynchronousReads(
+      "${{ inputs.item }}",
+      f.context,
+      f.scope,
+    ),
+    f.scope,
+  );
+  assertEquals(
+    await new CelEvaluator().prepareSynchronousReads(name, f.context, f.scope),
+    f.scope,
+  );
+});
+
+Deno.test("CelEvaluator.prepareSynchronousReads: a denied reference is kept and fails the synchronous evaluate that reads its record with the access error before any sentinel is issued, as does a missing vault scope", async () => {
+  const f = fixture();
+  const name = "${{ model.web.resource.creds.main.attributes.user }}";
+  const denying = RunVaultAccess.create({ allowedVaults: ["other"] });
+  await runWithVaultAccess(denying, async () => {
+    const prepared = await f.evaluator.prepareSynchronousReads(
+      name,
+      f.context,
+      f.scope,
+    );
+    assertEquals(prepared.authorizedReferences?.size, 0);
+    assertEquals(
+      [...prepared.deniedReferences?.keys() ?? []].sort(),
+      ["prod\u0000A", "prod\u0000B"],
+    );
+    const denied = assertThrows(
+      () =>
+        f.evaluator.evaluate(
+          "model.web.resource.creds.main.attributes.user",
+          f.context,
+          prepared,
+        ),
+      InvalidExpressionError,
+    );
+    assertInstanceOf(denied.cause, VaultAccessDeniedError);
+    assertStringIncludes(denied.message, "Reading vault 'prod' is refused");
+    // An expression of the same content that reads no record evaluates.
+    assertEquals(f.evaluator.evaluate("inputs.item", f.context, prepared), "x");
+  });
+  assertEquals(f.bag.registry.isEmpty, true);
+  const unscoped = await f.evaluator.prepareSynchronousReads(name, f.context, {
+    secretBag: f.bag,
+  });
+  assertEquals(unscoped.deniedReferences?.size, 2);
+  assertThrows(
+    () =>
+      f.evaluator.evaluate(
+        "model.web.resource.creds.main.attributes.user",
+        f.context,
+        unscoped,
+      ),
+    InvalidExpressionError,
+    "requires the run's vault check scope",
+  );
+  // A record whose tag does not parse yields nothing to authorize (the
+  // model's valid records still do) and is left for the evaluation to
+  // refuse with its own code.
+  const prepared = await f.evaluator.prepareSynchronousReads(
+    "${{ model.web.resource.broken.bad.attributes.password }}",
+    f.context,
+    f.scope,
+  );
+  assertEquals(prepared.authorizedReferences?.size, 2);
+  const refused = assertThrows(
+    () =>
+      f.evaluator.evaluate(
+        "model.web.resource.broken.bad.attributes.password",
+        f.context,
+        prepared,
+      ),
+    SecretRefusedError,
+  );
+  assertEquals(refused.code, SECRET_REFERENCE_INVALID);
+});
+
+Deno.test("CelEvaluator.prepareSynchronousReads: a denied record of a named model that the expression never reads does not fail a read of another of its records", async () => {
+  const f = fixture();
+  const web = f.context.model as Record<string, Record<string, unknown>>;
+  const context = {
+    ...f.context,
+    model: {
+      ...web,
+      web: {
+        ...web.web,
+        resource: {
+          ...(web.web.resource as object),
+          legacy: {
+            old: record(
+              "old",
+              { password: "${{ vault.get('restricted', 'X') }}", user: "o" },
+              pathsTag("password"),
+            ),
+          },
+        },
+      },
+    },
+  };
+  const access = RunVaultAccess.create({ allowedVaults: ["prod"] });
+  await runWithVaultAccess(access, async () => {
+    const prepared = await f.evaluator.prepareSynchronousReads(
+      "${{ model.web.resource.creds.main.attributes.user }}",
+      context,
+      f.scope,
+    );
+    assertEquals(
+      [...prepared.authorizedReferences ?? []].sort(),
+      ["prod\u0000A", "prod\u0000B"],
+    );
+    assertEquals([...prepared.deniedReferences?.keys() ?? []], [
+      "restricted\u0000X",
+    ]);
+    assertEquals(
+      f.evaluator.evaluate(
+        "model.web.resource.creds.main.attributes.user",
+        context,
+        prepared,
+      ),
+      "u",
+    );
+    // The denied record fails only the read that touches it, with the
+    // access error, and nothing is issued for it.
+    const denied = assertThrows(
+      () =>
+        f.evaluator.evaluate(
+          "model.web.resource.legacy.old.attributes.user",
+          context,
+          prepared,
+        ),
+      InvalidExpressionError,
+      "Reading vault 'restricted' is refused",
+    );
+    assertInstanceOf(denied.cause, VaultAccessDeniedError);
+    assertEquals(f.bag.registry.isEmpty, true);
+  });
+});

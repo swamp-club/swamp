@@ -326,6 +326,86 @@ Deno.test("WorkflowExpressionEvaluator: preserves raw assert CEL even when its l
   });
 });
 
+/** A workflow whose step names and one input read `inputs.secret`. */
+function secretNamedWorkflow(): Workflow {
+  return Workflow.create({
+    name: "secret-names",
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({
+          name: "p-${{ inputs.secret }}-${{ inputs.region }}",
+          task: StepTask.model("writer", "consume", {
+            password: "${{ inputs.secret }}",
+          }),
+          forEach: { item: "c", in: "${{ inputs.items }}" },
+        }),
+        Step.create({
+          name: "${{ inputs.secret }}",
+          task: StepTask.model("writer", "consume", {}),
+        }),
+      ],
+    })],
+  });
+}
+
+const stepNamesOf = (workflow: Workflow) =>
+  workflow.jobs[0].steps.map((s) => s.name);
+const passwordOf = (workflow: Workflow) =>
+  (workflow.jobs[0].steps[0].task.data as unknown as {
+    inputs: { password: string };
+  }).inputs.password;
+
+Deno.test("WorkflowExpressionEvaluator: a recorded sensitive value spliced into a step name becomes the sensitive-<vault>.<key> stand-in, while the same expression in a task input keeps the value", async () => {
+  const secret = `hunter-${crypto.randomUUID()}`;
+  const values = new RunSensitiveValues();
+  values.addSecret(secret, REF);
+  const context = attachSensitiveValues(
+    { ...emptyContext(), inputs: { secret, region: "eu", items: [1] } },
+    values,
+  );
+  const result = await new WorkflowExpressionEvaluator(new CelEvaluator())
+    .evaluate(secretNamedWorkflow(), context, "unrestricted");
+  assertEquals(stepNamesOf(result.workflow), [
+    "p-sensitive-v.k-eu",
+    "sensitive-v.k",
+  ]);
+  assertEquals(passwordOf(result.workflow), secret);
+});
+
+Deno.test("WorkflowExpressionEvaluator: in a typed run a sentinel spliced into a step name becomes the stand-in of its reference, taken from the sentinel", async () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const sentinel = new VaultSecretBag(registry).addSecret(REF, "inputs");
+  const context = attachSensitiveValues(
+    {
+      ...emptyContext(),
+      inputs: { secret: sentinel, region: "eu", items: [1] },
+    },
+    new RunSensitiveValues(undefined, registry),
+  );
+  const result = await new WorkflowExpressionEvaluator(new CelEvaluator())
+    .evaluate(secretNamedWorkflow(), context, "unrestricted");
+  assertEquals(stepNamesOf(result.workflow), [
+    "p-sensitive-v.k-eu",
+    "sensitive-v.k",
+  ]);
+  // The input still carries the sentinel the step's passes bind back.
+  assertEquals(passwordOf(result.workflow), sentinel);
+});
+
+Deno.test("WorkflowExpressionEvaluator: a step name holding no secret is spliced as it always was", async () => {
+  const context = attachSensitiveValues(
+    {
+      ...emptyContext(),
+      inputs: { secret: "plain", region: "eu", items: [1] },
+    },
+    new RunSensitiveValues(),
+  );
+  const result = await new WorkflowExpressionEvaluator(new CelEvaluator())
+    .evaluate(secretNamedWorkflow(), context, "unrestricted");
+  assertEquals(stepNamesOf(result.workflow), ["p-plain-eu", "plain"]);
+});
+
 Deno.test("WorkflowExpressionEvaluator: does not evaluate interpolation inside raw assert CEL", async () => {
   const predicate = 'size("${{ missing.value }}") > 0';
   const workflow = Workflow.create({

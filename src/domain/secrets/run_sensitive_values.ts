@@ -243,6 +243,16 @@ export class RunSensitiveValues implements SecretSink {
     return value;
   }
 
+  /**
+   * Replaces every sentinel the run issued in a forEach step name with the
+   * iteration's stand-in, `sensitive-<index>`, derived from the sentinel
+   * without reading a value (typed-secrets 4.1): the item's position is the
+   * identity, stable across resume, whatever the secret was.
+   */
+  withForEachStandIns(text: string, index: number): string {
+    return this.withSentinelStandIns(text, () => `sensitive-${index}`);
+  }
+
   /** Replaces recorded values in every tag or label value with placeholders. */
   tagsWithPlaceholders(
     tags: Record<string, string>,

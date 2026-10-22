@@ -310,3 +310,27 @@ Deno.test("replayInputs: a cache that withheld its inputs for a secret is never 
     "Run the workflow once without --last-evaluated",
   );
 });
+
+Deno.test("forEachNameWithoutSecrets: in a typed run every sentinel the run issued becomes the item index, taken from the sentinel and never a value (typed-secrets 4.1)", () => {
+  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const values = new RunSensitiveValues(undefined, registry);
+  const bag = new VaultSecretBag(registry);
+  const vault = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
+  const data = bag.addDataReference({ vaultName: "prod", key: "B" }, "db");
+  const other = `__SWAMP_VSEC_${"ab".repeat(16)}_0__`;
+  assertEquals(
+    forEachNameWithoutSecrets(`deploy-${vault}-${data}-${other}`, 2, values),
+    `deploy-sensitive-2-sensitive-2-${other}`,
+  );
+  // Recorded values are still replaced beside the sentinels.
+  values.addSecret(SECRET, SOURCE);
+  assertEquals(
+    forEachNameWithoutSecrets(`${vault}:${SECRET}`, 0, values),
+    "sensitive-0:sensitive-0",
+  );
+  // An untyped run keeps a sentinel as text.
+  assertEquals(
+    forEachNameWithoutSecrets(`deploy-${vault}`, 2, recorded()),
+    `deploy-${vault}`,
+  );
+});

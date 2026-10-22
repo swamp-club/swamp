@@ -24,6 +24,7 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import {
   CelEvaluator,
   type EvaluationScope,
+  prepareExpressionsIn,
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   CelExpressionEvaluator,
@@ -542,6 +543,37 @@ export interface EvaluatedDefinition {
  */
 export type ForeignTextRule = "fail" | "passThrough";
 
+/** What {@link ExpressionEvaluationService.passEvaluatorFor} binds a pass to. */
+export interface PassEvaluatorOptions {
+  /** The pass's issuing bag; a bag over the run's registry when absent. */
+  readonly secretBag?: VaultSecretBag;
+  /** The authored location a vault check names. */
+  readonly location: string;
+  /**
+   * The predicate destination of a guard or assert: a result that holds a
+   * secret is refused instead of leaving as a sentinel.
+   */
+  readonly secretResult?: "refuse";
+}
+
+/**
+ * The evaluator a pass runs with: the shape the passes take, whether the
+ * run is typed, and the pass's authorization step for the content it
+ * evaluates synchronously (design/enablers/typed-secrets.md Section 3.4).
+ */
+export interface PassEvaluator
+  extends CelExpressionEvaluator, CelExpressionValidator {
+  /** Whether the pass runs with typed secrets. */
+  readonly typed: boolean;
+  /**
+   * Prepares the context for every expression in `content` and, in a typed
+   * run, authorizes the sensitive-field references a synchronous evaluation
+   * of them can read. Call it before `evaluate`; `evaluateAsync` prepares
+   * and authorizes for itself.
+   */
+  prepare(content: unknown, context: Record<string, unknown>): Promise<void>;
+}
+
 export class ExpressionEvaluationService {
   private readonly celEvaluator: CelEvaluator;
   /** The typed evaluator, built on first use for a typed run. */
@@ -596,19 +628,64 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * A typed evaluator bound to one scope, in the shape the definition pass
-   * takes, so the pass itself is unchanged.
+   * The evaluator a pass runs with (design/enablers/typed-secrets.md
+   * Section 5, typed-secrets 4.1): the one seam every workflow and
+   * definition pass selects its evaluator through. With an untyped
+   * registry, the legacy evaluator in the pass shape, so the pass is what
+   * it always was. With a typed registry, the typed evaluator bound to one
+   * scope: the issuing bag (`secretBag`, or a bag over the run's registry),
+   * the vault check scope the resolver's vault service answers, and the
+   * predicate destination when the pass is a guard or assert. `prepare` is
+   * the pass's authorization step for what it evaluates synchronously; it
+   * carries the authorized references forward on this pass evaluator alone,
+   * so a pass authorizes for itself and never for another.
    */
-  private static withScope(
-    evaluator: CelEvaluator,
-    scope: EvaluationScope,
-  ): CelExpressionEvaluator & CelExpressionValidator {
+  async passEvaluatorFor(
+    sensitiveValues: RunSensitiveValues | undefined,
+    options: PassEvaluatorOptions,
+  ): Promise<PassEvaluator> {
+    const registry = options.secretBag?.registry ?? sensitiveValues?.sentinels;
+    if (registry?.typedSecrets !== true) {
+      return ExpressionEvaluationService.legacyPass(this.celEvaluator);
+    }
+    const evaluator = this.evaluatorFor(registry);
+    let scope: EvaluationScope = {
+      ...await this.scopeFor(
+        options.secretBag ?? new VaultSecretBag(registry),
+        options.location,
+        sensitiveValues?.probeRedactor,
+      ),
+      ...(options.secretResult === undefined
+        ? {}
+        : { secretResult: options.secretResult }),
+    };
     return {
+      typed: true,
       evaluate: (expression, context) =>
         evaluator.evaluate(expression, context, scope),
       evaluateAsync: (expression, context) =>
         evaluator.evaluateAsync(expression, context, scope),
       validate: (expression) => evaluator.validate(expression),
+      prepare: async (content, context) => {
+        scope = await evaluator.prepareSynchronousReads(
+          content,
+          context,
+          scope,
+        );
+      },
+    };
+  }
+
+  /** The legacy evaluator in the pass shape: no scope, and prepare as today. */
+  private static legacyPass(evaluator: CelEvaluator): PassEvaluator {
+    return {
+      typed: false,
+      evaluate: (expression, context) =>
+        evaluator.evaluate(expression, context),
+      evaluateAsync: (expression, context) =>
+        evaluator.evaluateAsync(expression, context),
+      validate: (expression) => evaluator.validate(expression),
+      prepare: (content, context) => prepareExpressionsIn(content, context),
     };
   }
 
@@ -728,6 +805,14 @@ export class ExpressionEvaluationService {
       return new Map();
     }
 
+    // In a typed run the pass binds the run's sentinels as Secrets and a
+    // Secret result leaves as a sentinel issued into a bag over the run's
+    // registry (typed-secrets 4.1); untyped, it is the legacy evaluator.
+    const passEvaluator = await this.passEvaluatorFor(
+      sensitiveValuesOf(context),
+      { location: expressions[0].path },
+    );
+
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
@@ -738,13 +823,16 @@ export class ExpressionEvaluationService {
       // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
       // inside a prose string (e.g. a plan body that documents expression
       // syntax). Leaving the raw text in place preserves prose round-trip.
+      // The legacy evaluator's syntax check decides, on both paths: the
+      // typed one would also refuse a vault alias, which is the typed
+      // evaluation's own refusal, not prose.
       if (!this.celEvaluator.validate(expr.celExpression).valid) {
         continue;
       }
 
       let value: unknown;
       try {
-        value = await this.celEvaluator.evaluateAsync(
+        value = await passEvaluator.evaluateAsync(
           expr.celExpression,
           context,
         );
@@ -879,19 +967,10 @@ export class ExpressionEvaluationService {
     // runtime root here, so the scope's vault service answers only the
     // authorization of sensitive-field references
     // (design/enablers/typed-secrets.md Section 5).
-    const evaluator = this.evaluatorFor(
-      secretBag?.registry ?? sensitiveValues.sentinels,
-    );
-    const passEvaluator = evaluator === this.celEvaluator
-      ? this.celEvaluator
-      : ExpressionEvaluationService.withScope(
-        evaluator,
-        await this.scopeFor(
-          secretBag ?? new VaultSecretBag(sensitiveValues.sentinels),
-          definition.name,
-          sensitiveValues.probeRedactor,
-        ),
-      );
+    const passEvaluator = await this.passEvaluatorFor(sensitiveValues, {
+      secretBag,
+      location: definition.name,
+    });
 
     // Evaluate CEL-only expressions; runtime expressions (vault, env, and
     // mixed) are left raw — they are resolved at runtime only, never persisted.
@@ -1025,7 +1104,17 @@ export class ExpressionEvaluationService {
         ) {
           return bare;
         }
-        const value = this.celEvaluator.evaluate(bare, context);
+        // A vault selector is a routing value: in a typed run a Secret in
+        // it is refused rather than written into the child's expression as
+        // sentinel text (typed-secrets 4.1).
+        const registry = sensitiveValuesOf(context)?.sentinels;
+        const evaluator = this.evaluatorFor(registry);
+        const value = evaluator === this.celEvaluator || registry === undefined
+          ? evaluator.evaluate(bare, context)
+          : evaluator.evaluate(bare, context, {
+            secretBag: new VaultSecretBag(registry),
+            secretResult: "refuse",
+          });
         if (typeof value !== "string") {
           throw new Error(`vault.get() ${label} must resolve to a string`);
         }

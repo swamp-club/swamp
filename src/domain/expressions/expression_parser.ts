@@ -638,6 +638,17 @@ export function isGuardPath(path: string): boolean {
 }
 
 /**
+ * Checks if an expression path is a step's `name`.
+ *
+ * A step name is an identifier: a secret spliced into one at run start keeps
+ * the `sensitive-<vault>.<key>` stand-in, never the value or its sentinel
+ * (design/enablers/typed-secrets.md, Identifiers).
+ */
+export function isStepNamePath(path: string): boolean {
+  return /^jobs\[\d+\]\.steps\[\d+\]\.name$/.test(path);
+}
+
+/**
  * Pattern to match `inputs.fieldName` (dot notation) in CEL expressions.
  * Uses negative lookbehind to exclude cross-model references like `model.foo.input.bar`.
  */
