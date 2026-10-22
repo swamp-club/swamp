@@ -32,10 +32,17 @@ import type { Source } from "../../domain/extensions/source.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { BUNDLE_STAGING_PREFIX } from "../../domain/extensions/install_journal.ts";
 
-/** Matches a path inside a bundle kind dir's install staging sibling. */
-const STAGING_PATH_PATTERN = new RegExp(
-  `[\\\\/]${BUNDLE_STAGING_PREFIX.replaceAll(".", "\\.")}[^\\\\/]*([\\\\/]|$)`,
-);
+/**
+ * True when a path found under a bundle kind dir lies inside an install
+ * staging sibling. Only the segments below `kindDir` count, so a repo
+ * whose own ancestors match the staging prefix still has its bundles
+ * enumerated (swamp-club#3780).
+ */
+function isInStagingDir(kindDir: string, path: string): boolean {
+  return relative(kindDir, path).split(/[\\/]/).some((segment) =>
+    segment.startsWith(BUNDLE_STAGING_PREFIX)
+  );
+}
 
 /** Per-extension aggregate summary. */
 export interface DoctorAggregateSummary {
@@ -145,9 +152,9 @@ export async function enumerateBundleFiles(
         const entry of walk(absoluteDir, {
           includeDirs: false,
           includeSymlinks: false,
-          skip: [STAGING_PATH_PATTERN],
         })
       ) {
+        if (isInStagingDir(absoluteDir, entry.path)) continue;
         if (entry.name.endsWith(".js")) {
           files.push({
             absolutePath: entry.path,

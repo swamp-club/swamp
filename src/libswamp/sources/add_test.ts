@@ -382,6 +382,21 @@ Deno.test("sourceAdd e2e: reporter's case — extensions/models/ as source path"
   });
 });
 
+Deno.test("sourceAdd e2e: a source under an underscore-prefixed ancestor is added (swamp-club#3780)", async () => {
+  await withTempRepo(async (repo) => {
+    // GitHub ARC runners check out under /actions-runner/_work/.
+    const src = join(repo, "_work", "sister", "extensions", "models");
+    await Deno.mkdir(src, { recursive: true });
+    await Deno.writeTextFile(
+      join(src, "m.ts"),
+      'export const model = { type: "@r/m" };',
+    );
+    const deps = await createSourceAddDeps(repo);
+    const events = await collectEvents(sourceAdd(ctx, deps, src, ["models"]));
+    assertEquals(findCompleted(events)?.kind, "completed");
+  });
+});
+
 Deno.test("sourceAdd e2e: empty directory is rejected", async () => {
   await withTempRepo(async (repo) => {
     const src = join(repo, "empty");
