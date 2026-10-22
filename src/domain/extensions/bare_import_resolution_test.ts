@@ -310,6 +310,7 @@ Deno.test("installedPackageImports: an installed package package.json does not d
     specifier: "debug",
     target: "npm:debug@4.3.4",
     installedFile: path("node_modules", "debug", "index.js"),
+    installedVersion: "4.3.4",
   }]);
 });
 
@@ -416,19 +417,32 @@ Deno.test("installedPackageImports: a dist-tag declaration accepts the installed
   assertEquals(resolutions[0].declared, "npm:ms@latest");
 });
 
-Deno.test("bareImportResolverFrom: answers the declared specifier only for a resolved import (swamp-club#3630)", () => {
+Deno.test("bareImportResolverFrom: answers the installed package only for a resolved installed import (swamp-club#3630)", () => {
   const resolver = bareImportResolverFrom([
     {
       importer: A,
       specifier: "ms",
       target: "npm:ms@2.1.3",
+      installedVersion: "2.1.3",
       declared: "npm:ms@^2.1.0",
     },
-    { importer: A, specifier: "x", declared: "npm:x@1" },
+    {
+      importer: A,
+      specifier: "debug",
+      target: "npm:debug@4.3.4",
+      installedVersion: "4.3.4",
+    },
+    { importer: A, specifier: "config", target: "npm:config@1.0.0" },
+    { importer: A, specifier: "x", installedVersion: "1.0.0" },
   ]);
-  assertEquals(resolver.declared?.(A, "ms"), "npm:ms@^2.1.0");
-  assertEquals(resolver.declared?.(A, "x"), undefined);
-  assertEquals(resolver.declared?.(A, "other"), undefined);
+  assertEquals(resolver.installed?.(A, "ms"), {
+    version: "2.1.3",
+    declared: "npm:ms@^2.1.0",
+  });
+  assertEquals(resolver.installed?.(A, "debug"), { version: "4.3.4" });
+  assertEquals(resolver.installed?.(A, "config"), undefined);
+  assertEquals(resolver.installed?.(A, "x"), undefined);
+  assertEquals(resolver.installed?.(A, "other"), undefined);
 });
 
 Deno.test("installedPackageImports: an alias package.json declares over a package installed under the old name is stale, never shipped as one and audited as the other", async () => {

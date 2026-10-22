@@ -48,8 +48,14 @@ export interface ResolvedBareImport {
    */
   installedFile?: string;
   /**
+   * The version installed in a package.json project's node_modules, when
+   * `target` names that installed package (swamp-club#3630).
+   */
+  installedVersion?: string;
+  /**
    * The `npm:` specifier the project's package.json declares for the
-   * package (`npm:ms@^2.1.0`), when `target` names the installed version.
+   * package (`npm:ms@^2.1.0`), when `target` names the installed version
+   * and package.json declares it.
    */
   declared?: string;
 }
@@ -63,11 +69,14 @@ export interface ResolvedBareImport {
 export interface BareImportResolver {
   resolve(importer: string, specifier: string): string | undefined;
   /**
-   * The `npm:` specifier package.json declares for a bare import `resolve`
-   * answers with the installed package (swamp-club#3630); undefined
-   * otherwise.
+   * The installed package a bare import `resolve` answers with in a
+   * package.json project, and the `npm:` specifier package.json declares
+   * for it when it does (swamp-club#3630); undefined otherwise.
    */
-  declared?(importer: string, specifier: string): string | undefined;
+  installed?(
+    importer: string,
+    specifier: string,
+  ): { version: string; declared?: string } | undefined;
 }
 
 /** A resolver that resolves nothing: every bare import ships as written. */
@@ -94,9 +103,14 @@ export function bareImportResolverFrom(
   return {
     resolve: (importer, specifier) =>
       first.get(resolutionKey(importer, specifier))?.target,
-    declared: (importer, specifier) => {
+    installed: (importer, specifier) => {
       const r = first.get(resolutionKey(importer, specifier));
-      return r?.target === undefined ? undefined : r.declared;
+      if (r?.target === undefined || r.installedVersion === undefined) {
+        return undefined;
+      }
+      return r.declared === undefined
+        ? { version: r.installedVersion }
+        : { version: r.installedVersion, declared: r.declared };
     },
   };
 }
@@ -406,6 +420,7 @@ export async function installedPackageImports(
       specifier: r.specifier,
       target: `npm:${installedName}@${version}${subpath}`,
       installedFile: r.installedFile,
+      installedVersion: version,
       ...(declared
         ? { declared: `npm:${declared.name}@${declared.range}` }
         : {}),

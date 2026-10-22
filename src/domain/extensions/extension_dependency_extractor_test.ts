@@ -509,19 +509,27 @@ Deno.test("extractSpecifiersFromSource: an installed package.json dependency car
         importer: file,
         specifier: "ms",
         target: "npm:ms@2.1.3",
+        installedVersion: "2.1.3",
         declared: "npm:ms@^2.1.0",
       },
       {
         importer: file,
         specifier: "lodash/fp",
         target: "npm:lodash@4.17.21/fp",
+        installedVersion: "4.17.21",
         declared: "npm:lodash@4.17.21",
       },
-      { importer: file, specifier: "debug", target: "npm:debug@4.3.4" },
+      {
+        importer: file,
+        specifier: "debug",
+        target: "npm:debug@4.3.4",
+        installedVersion: "4.3.4",
+      },
       {
         importer: file,
         specifier: "zod",
         target: "npm:zod@4.3.6",
+        installedVersion: "4.3.6",
         declared: "npm:zod@^4",
       },
     ]),
@@ -547,6 +555,7 @@ Deno.test("extractSpecifiersFromSource: an installed package.json dependency car
       name: "debug",
       version: "4.3.4",
       registry: "npm",
+      installedVersion: "4.3.4",
       sourceFile: file,
       importedAs: "debug",
     },
@@ -562,6 +571,7 @@ Deno.test("extractSpecifiersFromSource: a declaration naming another package nev
       importer: file,
       specifier: "pad",
       target: "npm:pad@1.3.0",
+      installedVersion: "1.3.0",
       declared: "npm:left-pad@^1.3.0",
     }]),
   );
@@ -569,7 +579,29 @@ Deno.test("extractSpecifiersFromSource: a declaration naming another package nev
     name: "pad",
     version: "1.3.0",
     registry: "npm",
+    installedVersion: "1.3.0",
     sourceFile: file,
     importedAs: "pad",
+  }]);
+});
+
+Deno.test("extractSpecifiersFromSource: a Deno config resolution is never taken for an installed package.json dependency", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import ms from "ms";\n',
+    file,
+    bareImportResolverFrom([{
+      importer: file,
+      specifier: "ms",
+      target: "npm:ms@^2",
+      installedFile: "/ext/node_modules/ms/index.js",
+    }]),
+  );
+  assertEquals(specs, [{
+    name: "ms",
+    version: "^2",
+    registry: "npm",
+    sourceFile: file,
+    importedAs: "ms",
   }]);
 });

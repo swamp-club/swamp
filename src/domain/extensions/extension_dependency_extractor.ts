@@ -301,15 +301,18 @@ export function extractSpecifiersFromSource(
     // resolve it; the package is the same.
     const resolved = parseSpecifier(target.replace(/^(npm|jsr):\//, "$1:"));
     if (!resolved) continue;
-    // An installed package.json dependency: audit the range package.json
-    // declares, shipping the installed version. A declaration naming
-    // another package never replaces the one that ships.
-    const declared = resolver.declared?.(sourceFile, bare);
-    const declaredSpec = declared ? parseSpecifier(declared) : null;
-    const parsed = declaredSpec && resolved.version !== null &&
-        declaredSpec.name === resolved.name
-      ? { ...declaredSpec, installedVersion: resolved.version }
-      : resolved;
+    // An installed package.json dependency ships its installed version and
+    // is audited at the range package.json declares, if it declares one. A
+    // declaration naming another package never replaces the one that ships.
+    const installed = resolver.installed?.(sourceFile, bare);
+    const declaredSpec = installed?.declared
+      ? parseSpecifier(installed.declared)
+      : null;
+    const parsed = !installed
+      ? resolved
+      : declaredSpec && declaredSpec.name === resolved.name
+      ? { ...declaredSpec, installedVersion: installed.version }
+      : { ...resolved, installedVersion: installed.version };
 
     const key = specifierKey(parsed);
     if (seen.has(key)) continue;

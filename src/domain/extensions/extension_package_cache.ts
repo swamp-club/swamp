@@ -259,6 +259,15 @@ export async function computePackageCacheHash(
     parts.push("bare-imports");
     for (const line of unexplained) parts.push(line);
   }
+  // In a package.json project the shipped source names each installed
+  // package's version (swamp-club#3630), which reinstalling changes without
+  // changing any file hashed above. Only when present, so every other
+  // extension keeps its hash.
+  const installed = installedBareImports(input.bareImports ?? [], rootDir);
+  if (installed.length > 0) {
+    parts.push("installed-imports");
+    for (const line of installed) parts.push(line);
+  }
   // Only when present, like deno-config and package-json above, so every
   // extension without a sidecar keeps its hash across this change.
   const sidecar = await computeFileContentHashIfExists(
@@ -330,6 +339,21 @@ async function appendFileGroup(
  * Each resolution in `bareImports` that the config's top-level `imports`
  * would not give, as a sorted line with paths relative to `rootDir`.
  */
+/** Each bare import resolved to an installed package, as a stable line. */
+function installedBareImports(
+  bareImports: readonly ResolvedBareImport[],
+  rootDir: string,
+): string[] {
+  return bareImports
+    .filter((b) => b.installedVersion !== undefined && b.target !== undefined)
+    .map((b) =>
+      `import=${
+        normalizeToForwardSlash(relative(rootDir, b.importer))
+      }\0${b.specifier}\0${b.target}\0${b.declared ?? ""}`
+    )
+    .sort();
+}
+
 async function unexplainedBareImports(
   denoConfigPath: string,
   bareImports: readonly ResolvedBareImport[],

@@ -3188,8 +3188,8 @@ async function createArchive(
     // bare import Deno resolves from that module to an npm:, jsr:, node: or
     // URL specifier (swamp-club#3637, #3612), or in a package.json project
     // to the installed package's npm:<name>@<version> (swamp-club#3630), so
-    // the archive's source resolves without the project config. Data modules and files with
-    // nothing to rewrite are byte for byte.
+    // the archive's source resolves without the project config. Data
+    // modules and files with nothing to rewrite are byte for byte.
     const resolver = bareImportResolverFor(input);
     const codeModules = new Set([
       ...input.allModelFiles,

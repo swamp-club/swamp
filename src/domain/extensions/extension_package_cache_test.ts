@@ -572,3 +572,27 @@ Deno.test("computePackageCacheHash: an empty symlinked set hashes as before the 
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("computePackageCacheHash: reinstalling a package.json dependency at another version changes the hash (swamp-club#3630)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const importer = join(tmp, "model.ts");
+    const base = await makeHashInput(tmp, {});
+    const installed = (version: string) => ({
+      ...base,
+      bareImports: [{
+        importer,
+        specifier: "ms",
+        target: `npm:ms@${version}`,
+        installedVersion: version,
+        declared: "npm:ms@^2.1.0",
+      }],
+    });
+    const h1 = await computePackageCacheHash(installed("2.1.2"));
+    assertNotEquals(h1, await computePackageCacheHash(base));
+    assertNotEquals(h1, await computePackageCacheHash(installed("2.1.3")));
+    assertEquals(h1, await computePackageCacheHash(installed("2.1.2")));
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
