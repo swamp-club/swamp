@@ -22,6 +22,7 @@ import {
   createNamespace,
   formatNamespacedModelName,
   isEmptyNamespace,
+  isForeignToReader,
   isReservedNamespaceName,
   namespaceCollidesWithLayout,
   parseNamespacedModelName,
@@ -357,4 +358,43 @@ Deno.test("namespaceCollidesWithLayout: a name reserved for swamp's own .swamp/ 
     assertEquals(namespaceCollidesWithLayout(name, []), false, name);
   }
   assertEquals(namespaceCollidesWithLayout("data", []), true);
+});
+
+// --- isForeignToReader ---
+
+Deno.test("isForeignToReader: a row of the reader's namespace is its own", () => {
+  for (const readsSoloNamespace of [false, true]) {
+    assertEquals(
+      isForeignToReader("eng", { namespace: "eng", readsSoloNamespace }),
+      false,
+    );
+    assertEquals(
+      isForeignToReader("", { namespace: "", readsSoloNamespace }),
+      false,
+    );
+  }
+});
+
+Deno.test("isForeignToReader: a row of another named namespace is foreign", () => {
+  for (const readsSoloNamespace of [false, true]) {
+    assertEquals(
+      isForeignToReader("security", { namespace: "eng", readsSoloNamespace }),
+      true,
+    );
+    assertEquals(
+      isForeignToReader("security", { namespace: "", readsSoloNamespace }),
+      true,
+    );
+  }
+});
+
+Deno.test("isForeignToReader: a solo row is a namespaced reader's own unless it reads the solo namespace (swamp-club#3785)", () => {
+  assertEquals(
+    isForeignToReader("", { namespace: "eng", readsSoloNamespace: false }),
+    false,
+  );
+  assertEquals(
+    isForeignToReader("", { namespace: "eng", readsSoloNamespace: true }),
+    true,
+  );
 });

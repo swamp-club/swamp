@@ -41,7 +41,11 @@ import { z } from "zod";
 import { Data } from "../src/domain/data/data.ts";
 import type { DataRecord } from "../src/domain/data/data_record.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
-import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
+import {
+  type Namespace,
+  restoreNamespace,
+  SOLO_NAMESPACE,
+} from "../src/domain/data/namespace.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   InvalidExpressionError,
@@ -151,6 +155,12 @@ interface Fixture {
     name: string,
     data: Record<string, unknown>,
   ) => Promise<void>;
+  /**
+   * Writes `db`'s `creds` record `name` as the writer does, through a
+   * repository of the solo namespace over the same files and catalog: a row
+   * written before the repository set a namespace.
+   */
+  writeLegacy: (name: string, data: Record<string, unknown>) => Promise<void>;
   /** Writes a record below the writer, as stored, with the given tags. */
   store: (
     name: string,
@@ -162,7 +172,17 @@ interface Fixture {
   sync: () => Promise<void>;
 }
 
-async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
+interface FixtureOptions {
+  /** The repository's namespace; the solo namespace when absent. */
+  namespace?: Namespace;
+  /** Marks the foreign content fetcher as reading the solo namespace (v3). */
+  readsSoloNamespace?: boolean;
+}
+
+async function withFixture(
+  fn: (f: Fixture) => Promise<void>,
+  options: FixtureOptions = {},
+): Promise<void> {
   const counting = registerCountingVault({});
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-3626-" });
   const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
@@ -181,17 +201,29 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     const foreignContent = new TextEncoder().encode(
       JSON.stringify({ password: FOREIGN_REFERENCE, user: "them" }),
     );
+    // The solo namespace's content, for a fetcher that reads it (v3).
+    let soloContent: Uint8Array | null = null;
+    const fetchForeignContent = Object.assign(
+      (namespace: string) =>
+        Promise.resolve(
+          namespace === "security"
+            ? foreignContent
+            : namespace === ""
+            ? soloContent
+            : null,
+        ),
+      { readsSoloNamespace: options.readsSoloNamespace === true },
+    );
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
       catalog,
       undefined,
       undefined,
-      SOLO_NAMESPACE,
+      options.namespace ?? SOLO_NAMESPACE,
       undefined,
       undefined,
-      (namespace) =>
-        Promise.resolve(namespace === "security" ? foreignContent : null),
+      fetchForeignContent,
     );
     const dqs = new DataQueryService(catalog, dataRepo);
 
@@ -199,15 +231,16 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     await defRepo.save(TYPE, db);
     const orphanId = crypto.randomUUID();
 
-    const write: Fixture["write"] = async (
-      modelId,
-      definitionName,
-      spec,
-      name,
-      data,
+    const writeThrough = async (
+      repo: FileSystemUnifiedDataRepository,
+      modelId: string,
+      definitionName: string,
+      spec: string,
+      name: string,
+      data: Record<string, unknown>,
     ) => {
       const writer = createResourceWriter(
-        dataRepo,
+        repo,
         TYPE,
         modelId,
         resources,
@@ -220,6 +253,22 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         METHOD,
       );
       await writer.writeResource(spec, name, data);
+    };
+    const write: Fixture["write"] = (
+      modelId,
+      definitionName,
+      spec,
+      name,
+      data,
+    ) => writeThrough(dataRepo, modelId, definitionName, spec, name, data);
+    const soloRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const writeLegacy: Fixture["writeLegacy"] = async (name, data) => {
+      await writeThrough(soloRepo, db.id, "db", "creds", name, data);
+      soloContent = await soloRepo.getContent(TYPE, db.id, name);
     };
     const store: Fixture["store"] = async (
       name,
@@ -318,6 +367,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
           s,
         ),
       write,
+      writeLegacy,
       store,
       sync,
     };
@@ -925,4 +975,92 @@ Deno.test("typed data secrets: readResource keeps resolving plaintext with its s
     assertEquals(f.counting.readsOf(passwordKey), 4);
     assertEquals(f.bag.registry.isEmpty, true);
   });
+});
+
+Deno.test("typed data secrets: a row written before the repository set a namespace is the reader's own, its tagged fields read as data-origin references and delivered exactly once (swamp-club#3785)", async () => {
+  await withFixture(async (f) => {
+    const password = `legacy-${crypto.randomUUID()}`;
+    await f.writeLegacy("legacy", {
+      password,
+      user: "l",
+      nested: { token: "t", plain: "p" },
+    });
+    const record = await f.evaluate(
+      "data.latest('*:db', 'legacy')",
+    ) as DataRecord;
+    assertEquals(record.namespace, "");
+    const read = sentinelOf(
+      f,
+      await f.evaluate("data.latest('*:db', 'legacy').attributes.password"),
+    );
+    assertEquals(
+      await f.evaluate("data.latest('*:db', 'legacy').attributes.user"),
+      "l",
+    );
+    // data.query reads it as the same reference (typed-secrets 4.3), as a
+    // record and as a projection.
+    const queried = sentinelOf(
+      f,
+      await f.evaluate(
+        `data.query('name == "legacy"')[0].attributes.password`,
+      ),
+    );
+    const projected = sentinelOf(
+      f,
+      await f.evaluate(
+        `data.query('name == "legacy"', 'attributes.password')[0]`,
+      ),
+    );
+    assertEquals(f.counting.reads, []);
+    assertEquals(f.bag.rawValues, []);
+
+    const loaded = await f.loader.load(f.bag, { read, queried, projected });
+    assertEquals(loaded.resolveDeep({ read, queried, projected }), {
+      read: password,
+      queried: password,
+      projected: password,
+    });
+    assertEquals(
+      f.counting.reads.map((r) => r.key),
+      [keyOf(f.modelId, "creds", "legacy", "password")],
+    );
+    assertEquals(f.redacted, [password]);
+
+    // Another namespace's record is still returned as stored.
+    assertEquals(
+      await f.evaluate(
+        "data.latest('security:db', 'theirs').attributes.password",
+        { secretBag: f.bag },
+      ),
+      FOREIGN_REFERENCE,
+    );
+  }, { namespace: restoreNamespace("eng") });
+});
+
+Deno.test("typed data secrets: a solo row stays as stored for a repository that reads the solo namespace as another namespace (swamp-club#3785)", async () => {
+  await withFixture(async (f) => {
+    await f.writeLegacy("legacy", {
+      password: `legacy-${crypto.randomUUID()}`,
+      user: "l",
+      nested: { token: "t", plain: "p" },
+    });
+    const reference = `\${{ vault.get('${VAULT}', '${
+      keyOf(f.modelId, "creds", "legacy", "password")
+    }') }}`;
+    assertEquals(
+      await f.evaluate(
+        "data.latest('*:db', 'legacy').attributes.password",
+        { secretBag: f.bag },
+      ),
+      reference,
+    );
+    assertEquals(
+      await f.evaluate(
+        `data.query('name == "legacy"')[0].attributes.password`,
+        { secretBag: f.bag },
+      ),
+      reference,
+    );
+    assertEquals(f.counting.reads, []);
+  }, { namespace: restoreNamespace("eng"), readsSoloNamespace: true });
 });
