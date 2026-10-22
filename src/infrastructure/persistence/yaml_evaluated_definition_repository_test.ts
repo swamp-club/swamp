@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import {
   assertEquals,
   assertNotEquals,
@@ -26,6 +27,8 @@ import {
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { z } from "zod";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import {
   Definition,
@@ -385,7 +388,7 @@ Deno.test("YamlEvaluatedDefinitionRepository: records the sensitive format and w
     };
     await repo.save(type, definition, undefined, new Set(), [], [reference]);
     const cached = await repo.findByNameWithProvenance(type, "ref-definition");
-    assertEquals(cached?.sensitiveFormat, 1);
+    assertEquals(cached?.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
     assertEquals(cached?.writtenReferences, [reference]);
     assertEquals(
       cached?.definition.globalArguments.tok,
@@ -490,5 +493,111 @@ Deno.test("YamlEvaluatedDefinitionRepository: findByNameGlobal of a name the loo
     assertEquals(warnings.length, 2, warnings.join("\n"));
     assertStringIncludes(warnings[0], listedLost);
     assertStringIncludes(warnings[1], lost);
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: save refuses a plaintext literal under a sensitive argument of a registered type and leaves no file; the mask and a vault reference are written (swamp-club#3681)", async () => {
+  await withTempDir(async (dir) => {
+    const type = ModelType.create(
+      `test/evaluated-sensitive-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }).optional(),
+      }),
+      methods: {
+        run: {
+          description: "runs",
+          arguments: z.object({
+            token: z.string().meta({ sensitive: true }).optional(),
+          }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+    try {
+      const repo = new YamlEvaluatedDefinitionRepository(dir);
+      const value = "REPRO-SECRET-7c1e";
+      const leaky = Definition.create({
+        name: "leaky",
+        globalArguments: { apiKey: value },
+        methods: { run: { arguments: { token: value } } },
+      });
+      const error = await assertRejects(
+        () => repo.save(type, leaky, undefined),
+        UserError,
+      );
+      assertEquals(error.code, "plaintext_sensitive_evaluated_arg");
+      assertStringIncludes(
+        error.message,
+        `"leaky" holds a plaintext value for the sensitive arguments 'globalArguments.apiKey', 'methods.run.arguments.token'`,
+      );
+      assertEquals(error.message.includes(value), false);
+      assertEquals(await repo.findByName(type, "leaky"), null);
+
+      const ref = "${{ vault.get('prod', 'api-key') }}";
+      const safe = Definition.create({
+        name: "safe",
+        globalArguments: { apiKey: "***" },
+        methods: { run: { arguments: { token: ref } } },
+      });
+      await repo.save(type, safe, undefined, undefined, undefined, [], [[
+        "globalArguments",
+        "apiKey",
+      ]]);
+      const read = await repo.findByNameWithProvenance(type, "safe");
+      assertEquals(read?.definition.globalArguments, { apiKey: "***" });
+      assertEquals(read?.definition.getMethodArguments("run"), { token: ref });
+      // The masked position is recorded with the file and read back.
+      assertEquals(read?.maskedPaths, [["globalArguments", "apiKey"]]);
+
+      // An author-written expression joined to text is not a value yet, so
+      // the guard lets it through with no written reference.
+      const pending = Definition.create({
+        name: "pending",
+        methods: { run: { arguments: { token: `Bearer ${ref}` } } },
+      });
+      await repo.save(type, pending, undefined);
+      assertEquals(
+        (await repo.findByName(type, "pending"))?.getMethodArguments("run"),
+        { token: `Bearer ${ref}` },
+      );
+
+      // A written reference vouches for the text joined to it.
+      const joined = Definition.create({
+        name: "joined",
+        globalArguments: { apiKey: `Bearer ${ref}` },
+      });
+      await repo.save(type, joined, undefined, undefined, undefined, [{
+        path: ["globalArguments", "apiKey"],
+        occurrence: 0,
+        vaultName: "prod",
+        key: "api-key",
+        encoding: "raw",
+        dataOrigin: false,
+      }]);
+      assertEquals((await repo.findByName(type, "joined"))?.globalArguments, {
+        apiKey: `Bearer ${ref}`,
+      });
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository: save of an unregistered type has no schemas to check against and writes (swamp-club#3681)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "unknown-type",
+      globalArguments: { apiKey: "any-value" },
+    });
+    await repo.save(testType, definition, undefined);
+    const read = await repo.findByNameWithProvenance(testType, "unknown-type");
+    assertEquals(read?.definition.globalArguments, { apiKey: "any-value" });
+    // A cache written with no masked positions reads back with none.
+    assertEquals(read?.maskedPaths, []);
   });
 });

@@ -240,6 +240,9 @@ The "code" field is a stable, machine-readable identifier. Callers should match 
     evaluated_cache_may_hold_secrets
                              Cached evaluation from an older swamp may hold secrets;
                              re-run without --last-evaluated
+    evaluated_cache_holds_sensitive_arguments
+                             Cached evaluation holds a sensitive argument that did not
+                             come from a vault; --last-evaluated cannot replay it
     missing_deps             Required extension dependencies are not installed
     method_execution_failed  The method returned an error
     not_authenticated        Not signed in (run 'swamp auth login')
@@ -471,6 +474,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               provenance,
               authoredExpressions,
               writtenReferences,
+              maskedPaths,
             ) =>
               repoContext.evaluatedDefinitionRepo.save(
                 type,
@@ -479,6 +483,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 authoredExpressions,
                 undefined,
                 writtenReferences,
+                maskedPaths,
               ),
             createExecutionService: () => new DefaultMethodExecutionService(),
             createVaultService: () =>

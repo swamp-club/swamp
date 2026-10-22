@@ -80,6 +80,7 @@ export async function createServerTokenRunDeps(
       provenance,
       authoredExpressions,
       writtenReferences,
+      maskedPaths,
     ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
@@ -88,6 +89,7 @@ export async function createServerTokenRunDeps(
         authoredExpressions,
         undefined,
         writtenReferences,
+        maskedPaths,
       ),
     createExecutionService: () => new DefaultMethodExecutionService(),
     createVaultService: () =>

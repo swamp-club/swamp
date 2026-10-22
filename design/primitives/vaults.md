@@ -939,12 +939,34 @@ Everything written to disk holds the vault reference in place of the value:
 evaluated definition and workflow caches, the per-run evaluated workflow, run
 records and their index, deferred binding snapshots, and auto-created
 definitions. Each file lists every reference it wrote in `writtenReferences`
-(path, occurrence, vault, key, encoding) and carries `sensitiveFormat`. Only
+(path, occurrence, vault, key, encoding) and carries `sensitiveFormat`: 2 since
+the masks below (swamp-club#3681). A reader refuses a format newer than its
+own under `--last-evaluated` and on resume, since such a file may hold a
+sensitive value in a form the reader does not recognise, as the mask is to a
+version-1 reader, which would run it as the value. Only
 listed entries are ever restored, so reference-shaped text that arrives as data
-stays inert. `--last-evaluated` restores them into the same two copies a fresh
+stays inert. An evaluated definition also lists in `maskedPaths` the sensitive
+arguments it wrote as `***` (swamp-club#3681), so a behavior replay refuses them even
+under a later version of the type that no longer marks the field. `--last-evaluated` restores them into the same two copies a fresh
 run builds, and a resume restores a stored run before merging caller-supplied
 inputs, never the reserved `_token-secrets` vault. A cache written before this
 format is refused under `--last-evaluated` when it read data or step outputs.
+So is a cache whose sensitive argument holds a resolved value with no reference,
+one that came from the run's inputs or a data field not marked sensitive:
+this format writes it as `***` (swamp-club#3681), an older cache may hold it in
+plaintext, and neither replays; the error code is
+`evaluated_cache_holds_sensitive_arguments` on the behavior method path.
+Workflow `--last-evaluated` replays the workflow cache and its pinned inputs,
+then evaluates each step's definition again; it does not replay the evaluated
+definition cache (swamp-club#3583). Its definition writes still mask sensitive
+arguments. The behavior replay check covers the global arguments and the
+replayed method's arguments; one that an `--input` override replaces after
+replay is not counted. A plain re-run writes the mask again, so the message
+points at what makes the run replayable: a vault reference. Inside a sensitive
+container, only the leaves a reference covers are left; a string that joins
+text to a reference or a pending runtime expression is written as it is, text
+included. `${{ env.X }}` remains an expression in the cache and resolves at
+runtime on each run, including replay; its value is never cached.
 
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in

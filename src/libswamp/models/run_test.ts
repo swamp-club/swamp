@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
@@ -1642,6 +1643,38 @@ Deno.test("modelMethodRun: --last-evaluated refuses a cache written before sensi
   }
 });
 
+Deno.test("modelMethodRun: --last-evaluated refuses a cache written in a newer sensitive-value format before anything runs, since its values may be in a form this swamp does not recognise (swamp-club#3681)", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const deps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    loadEvaluatedDefinition: () =>
+      Promise.resolve({
+        definition,
+        authoredExpressions: new Set<string>(),
+        sensitiveFormat: SENSITIVE_FORMAT_VERSION + 1,
+      }),
+  };
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      lastEvaluated: true,
+    }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "evaluated_cache_format_newer");
+    assertStringIncludes(last.error.message, "newer swamp");
+    assertStringIncludes(last.error.message, "without --last-evaluated");
+  }
+  assertEquals(
+    events.some((event) =>
+      event.kind === "completed" || event.kind === "executing"
+    ),
+    false,
+  );
+});
+
 Deno.test("modelMethodRun: --last-evaluated restores cached references into the executed copy as sentinels (swamp-club#2171)", async () => {
   const secret = "Pl41n-s3cret";
   const cached = Definition.create({
@@ -1683,7 +1716,7 @@ Deno.test("modelMethodRun: --last-evaluated restores cached references into the 
       Promise.resolve({
         definition: cached,
         authoredExpressions: new Set<string>(),
-        sensitiveFormat: 1,
+        sensitiveFormat: SENSITIVE_FORMAT_VERSION,
         writtenReferences: [{
           path: ["methods", "run", "arguments", "key"],
           occurrence: 0,
@@ -1974,17 +2007,29 @@ Deno.test("methodExecutionFailed: keeps a worded cause's model spelling (swamp-c
   assertEquals(messageFor(error, "model"), 'Model "x" stores sensitive output');
 });
 
-/** A type whose method takes a sensitive argument (swamp-club#3681). */
+/** A type with sensitive global and method arguments (swamp-club#3681). */
 function createSensitiveModelDef(): ModelDefinition {
   return {
     type: TEST_MODEL_TYPE,
     version: "1.0.0",
+    globalArguments: z.object({
+      gtoken: z.string().meta({ sensitive: true }).optional(),
+      vtoken: z.string().meta({ sensitive: true }).optional(),
+      region: z.string().optional(),
+    }),
     methods: {
       run: {
         description: "Takes a sensitive argument",
         arguments: z.object({
           secret: z.string().meta({ sensitive: true }).optional(),
           name: z.string().optional(),
+        }),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+      deploy: {
+        description: "Another method with a sensitive argument",
+        arguments: z.object({
+          password: z.string().meta({ sensitive: true }).optional(),
         }),
         execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
       },
@@ -2133,4 +2178,259 @@ Deno.test("modelMethodRun: the run's sensitive values come from createSensitiveV
   for (const registry of seen) assertEquals(registry, typedRegistry);
   assertEquals(delivered, typedRegistry);
   assertEquals(typedRegistry.typedSecrets, true);
+});
+
+Deno.test("modelMethodRun: the saved evaluated definition holds the mask for a sensitive argument fed from an input, beside a vault reference (swamp-club#3681)", async () => {
+  const vaultRef = "${{ vault.get('rv', 'K') }}";
+  const definition = Definition.create({
+    name: "input-svc",
+    globalArguments: {
+      gtoken: "${{ inputs.tok }}",
+      vtoken: vaultRef,
+      region: "us-east-1",
+    },
+    methods: {
+      run: { arguments: { secret: "${{ inputs.tok }}", name: "visible" } },
+    },
+  });
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  // The expression pass resolves the inputs references to plaintext and
+  // leaves the vault reference for the runtime pass.
+  evaluationService.evaluateDefinition = (def: Definition) => {
+    const data = def.toData();
+    const evaluated = Definition.fromData({
+      ...data,
+      globalArguments: { ...data.globalArguments, gtoken: "GLOBAL-CANARY" },
+      methods: {
+        run: { arguments: { secret: "METHOD-CANARY", name: "visible" } },
+      },
+    });
+    return Promise.resolve({
+      definition: evaluated,
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  };
+  const saved: Definition[] = [];
+  const recorded: (readonly (string | number)[])[][] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createSensitiveModelDef()),
+    createEvaluationService: () => evaluationService,
+    saveEvaluatedDefinition: (_type, evaluated, _p, _a, _r, maskedPaths) => {
+      saved.push(evaluated);
+      recorded.push([...(maskedPaths ?? [])]);
+      return Promise.resolve();
+    },
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+  };
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("input-svc", "run"),
+    ),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].globalArguments, {
+    gtoken: "***",
+    vtoken: vaultRef,
+    region: "us-east-1",
+  });
+  assertEquals(saved[0].getMethodArguments("run"), {
+    secret: "***",
+    name: "visible",
+  });
+  assertEquals(JSON.stringify(saved[0].toData()).includes("CANARY"), false);
+  // The masked positions go to the cache beside the definition.
+  assertEquals(recorded[0], [
+    ["globalArguments", "gtoken"],
+    ["methods", "run", "arguments", "secret"],
+  ]);
+});
+
+Deno.test("modelMethodRun: --last-evaluated refuses a recorded masked argument even when the type no longer marks the field sensitive (swamp-club#3681)", async () => {
+  // Version 2 of the type dropped the marker on gtoken.
+  const drifted: ModelDefinition = {
+    ...createTestModelDef("run"),
+    globalArguments: z.object({ gtoken: z.string().optional() }),
+  };
+  const cached = Definition.create({
+    name: "test-model",
+    globalArguments: { gtoken: "***" },
+    methods: { run: { arguments: {} } },
+  });
+  const replay = async (maskedPaths: (string | number)[][]) => {
+    const deps: ModelMethodRunDeps = {
+      ...createTestDeps(createTestDefinition("test-model", "run"), drifted),
+      loadEvaluatedDefinition: () =>
+        Promise.resolve({
+          definition: cached,
+          authoredExpressions: new Set<string>(),
+          sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+          writtenReferences: [],
+          maskedPaths,
+        }),
+      createRunLog: () =>
+        Promise.resolve({
+          logFilePath: "/tmp/test.log",
+          redactor: new SecretRedactor(),
+          cleanup: () => {},
+        }),
+    };
+    return await collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        ...createTestInput("test-model", "run"),
+        lastEvaluated: true,
+      }),
+    );
+  };
+
+  const refused = (await replay([["globalArguments", "gtoken"]])).at(-1);
+  assertEquals(refused?.kind, "error");
+  if (refused?.kind === "error") {
+    assertEquals(
+      refused.error.code,
+      "evaluated_cache_holds_sensitive_arguments",
+    );
+    assertStringIncludes(refused.error.message, "'globalArguments.gtoken'");
+  }
+  // With nothing recorded, the drifted schema alone lets the mask through.
+  const events = await replay([]);
+  assertEquals(
+    events.some((e) =>
+      e.kind === "error" &&
+      e.error.code === "evaluated_cache_holds_sensitive_arguments"
+    ),
+    false,
+  );
+});
+
+Deno.test("modelMethodRun: --last-evaluated refuses a cache whose sensitive argument holds the mask or plaintext, naming the path and never the value; a vault reference replays (swamp-club#3681)", async () => {
+  const replay = async (held: string) => {
+    const cached = Definition.create({
+      name: "test-model",
+      globalArguments: { gtoken: held },
+      methods: { run: { arguments: {} } },
+    });
+    const deps: ModelMethodRunDeps = {
+      ...createTestDeps(
+        createTestDefinition("test-model", "run"),
+        createSensitiveModelDef(),
+      ),
+      loadEvaluatedDefinition: () =>
+        Promise.resolve({
+          definition: cached,
+          authoredExpressions: new Set<string>(),
+          sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+          writtenReferences: [],
+        }),
+      createRunLog: () =>
+        Promise.resolve({
+          logFilePath: "/tmp/test.log",
+          redactor: new SecretRedactor(),
+          cleanup: () => {},
+        }),
+    };
+    return await collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        ...createTestInput("test-model", "run"),
+        lastEvaluated: true,
+      }),
+    );
+  };
+
+  for (const held of ["***", "GLOBAL-CANARY"]) {
+    const last = (await replay(held)).at(-1);
+    assertEquals(last?.kind, "error");
+    if (last?.kind === "error") {
+      assertEquals(
+        last.error.code,
+        "evaluated_cache_holds_sensitive_arguments",
+      );
+      assertStringIncludes(last.error.message, "'globalArguments.gtoken'");
+      assertStringIncludes(last.error.message, "without --last-evaluated");
+      assertEquals(last.error.message.includes("GLOBAL-CANARY"), false);
+    }
+  }
+
+  const events = await replay("${{ vault.get('prod', 'api-token') }}");
+  assertEquals(
+    events.some((e) =>
+      e.kind === "error" &&
+      e.error.code === "evaluated_cache_holds_sensitive_arguments"
+    ),
+    false,
+  );
+});
+
+Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument an --input override replaces, and refuses it without the override (swamp-club#3681)", async () => {
+  // Another method's masked argument never counts: deploy is not what runs.
+  const cached = Definition.create({
+    name: "test-model",
+    globalArguments: { region: "eu" },
+    methods: {
+      run: { arguments: { secret: "***", name: "x" } },
+      deploy: { arguments: { password: "***" } },
+    },
+  });
+  const replay = async (inputs: Record<string, unknown> = {}) => {
+    const deps: ModelMethodRunDeps = {
+      ...createTestDeps(
+        createTestDefinition("test-model", "run"),
+        createSensitiveModelDef(),
+      ),
+      loadEvaluatedDefinition: () =>
+        Promise.resolve({
+          definition: cached,
+          authoredExpressions: new Set<string>(),
+          sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+          writtenReferences: [],
+        }),
+      createRunLog: () =>
+        Promise.resolve({
+          logFilePath: "/tmp/test.log",
+          redactor: new SecretRedactor(),
+          cleanup: () => {},
+        }),
+    };
+    return await collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        ...createTestInput("test-model", "run"),
+        lastEvaluated: true,
+        inputs,
+      }),
+    );
+  };
+
+  const refused = (await replay()).at(-1);
+  assertEquals(refused?.kind, "error");
+  if (refused?.kind === "error") {
+    assertEquals(
+      refused.error.code,
+      "evaluated_cache_holds_sensitive_arguments",
+    );
+    assertStringIncludes(
+      refused.error.message,
+      "the sensitive argument 'methods.run.arguments.secret'",
+    );
+    assertEquals(refused.error.message.includes("deploy"), false);
+  }
+
+  const events = await replay({ secret: "OVERRIDE-CANARY" });
+  assertEquals(
+    events.some((e) =>
+      e.kind === "error" &&
+      e.error.code === "evaluated_cache_holds_sensitive_arguments"
+    ),
+    false,
+  );
 });

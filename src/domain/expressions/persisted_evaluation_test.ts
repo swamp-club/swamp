@@ -17,19 +17,32 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { z } from "zod";
 import { Definition } from "../definitions/definition.ts";
-import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
+import {
+  RunSensitiveValues,
+  vaultReferenceText,
+  type WrittenReference,
+} from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
+  type ArgumentSchemas,
+  evaluatedCacheHoldsSensitiveArgumentsMessage,
+  findPlaintextSensitiveArguments,
+  isNewerSensitiveFormat,
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
+  plaintextSensitiveArgumentsMessage,
   rehydrateEvaluatedDefinition,
 } from "./persisted_evaluation.ts";
+import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
 
 const SECRET = "Pl41n-s3cret";
 const SOURCE = { vaultName: "prod", key: "api-token" };
 const REF = vaultReferenceText(SOURCE);
+/** A type that marks nothing sensitive. */
+const NO_SCHEMAS: ArgumentSchemas = { methods: {} };
 
 function recorded(): RunSensitiveValues {
   const values = new RunSensitiveValues();
@@ -56,6 +69,7 @@ Deno.test("persistEvaluatedDefinition: sentinels become references and tags plac
     [],
     Definition.create({ name: "consumer" }),
     values,
+    NO_SCHEMAS,
   );
   assertEquals(persisted.definition.globalArguments, {
     token: `Bearer ${REF}`,
@@ -84,6 +98,7 @@ Deno.test("persistEvaluatedDefinition: deferred binding values are written as re
     }],
     Definition.create({ name: "consumer" }),
     recorded(),
+    NO_SCHEMAS,
   );
   assertEquals(persisted.deferredExpressions[0].bindings, {
     inputs: { token: REF },
@@ -102,6 +117,7 @@ Deno.test("rehydrateEvaluatedDefinition: restores the raw and executed copies of
     [],
     Definition.create({ name: "consumer" }),
     recordedValues,
+    NO_SCHEMAS,
   );
   const values = new RunSensitiveValues();
   const stepBag = new VaultSecretBag(values.sentinels);
@@ -133,4 +149,490 @@ Deno.test("mayHoldPlaintextSensitiveValues: only unmarked caches that read data 
   assertEquals(check(undefined, ["${{ inputs.region }}"]), false);
   assertEquals(check(undefined, []), false);
   assertEquals(check(1, ["${{ data.latest('a', 'b') }}"]), false);
+});
+
+Deno.test("isNewerSensitiveFormat: only a marked cache whose format is newer than this swamp's (swamp-club#3681)", () => {
+  assertEquals(isNewerSensitiveFormat({ sensitiveFormat: undefined }), false);
+  assertEquals(isNewerSensitiveFormat({ sensitiveFormat: 1 }), false);
+  assertEquals(
+    isNewerSensitiveFormat({ sensitiveFormat: SENSITIVE_FORMAT_VERSION }),
+    false,
+  );
+  assertEquals(
+    isNewerSensitiveFormat({ sensitiveFormat: SENSITIVE_FORMAT_VERSION + 1 }),
+    true,
+  );
+  // The masks this swamp writes are version 2, so a version-1 reader would
+  // run one as the value: the version is at least 2.
+  assertEquals(SENSITIVE_FORMAT_VERSION >= 2, true);
+});
+
+/** A type with sensitive global and method arguments. */
+const SCHEMAS: ArgumentSchemas = {
+  globalArguments: z.object({
+    apiKey: z.string().meta({ sensitive: true }).optional(),
+    token: z.string().meta({ sensitive: true }).optional(),
+    region: z.string().optional(),
+  }),
+  methods: {
+    run: {
+      arguments: z.object({
+        secret: z.string().meta({ sensitive: true }).optional(),
+        attempts: z.number().meta({ sensitive: true }).optional(),
+        name: z.string().optional(),
+      }),
+    },
+  },
+};
+/** What a caller typed on --input: no vault source, so never recorded. */
+const INPUT_VALUE = "REPRO-SECRET-7c1e";
+
+function referenceAt(path: (string | number)[]): WrittenReference {
+  return {
+    path,
+    occurrence: 0,
+    vaultName: SOURCE.vaultName,
+    key: SOURCE.key,
+    encoding: "raw",
+    dataOrigin: false,
+  };
+}
+
+Deno.test("persistEvaluatedDefinition: a literal under a sensitive argument becomes the mask; a vault reference and other values stay (swamp-club#3681)", () => {
+  const values = recorded();
+  const bag = new VaultSecretBag(values.sentinels);
+  const sentinel = bag.addDataSecret(SECRET, SOURCE);
+  const executed = Definition.create({
+    name: "input-svc",
+    globalArguments: {
+      apiKey: INPUT_VALUE,
+      token: sentinel,
+      region: "eu-west-1",
+    },
+    methods: {
+      run: { arguments: { secret: INPUT_VALUE, attempts: 3, name: "visible" } },
+    },
+  });
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    Definition.create({ name: "input-svc" }),
+    values,
+    SCHEMAS,
+  );
+  assertEquals(persisted.definition.globalArguments, {
+    apiKey: "***",
+    token: REF,
+    region: "eu-west-1",
+  });
+  assertEquals(persisted.definition.getMethodArguments("run"), {
+    secret: "***",
+    attempts: "***",
+    name: "visible",
+  });
+  assertEquals([...persisted.maskedArguments].sort(), [
+    "globalArguments.apiKey",
+    "methods.run.arguments.attempts",
+    "methods.run.arguments.secret",
+  ]);
+  assertEquals(
+    [...persisted.maskedPaths].sort((a, b) =>
+      a.join(".").localeCompare(b.join("."))
+    ),
+    [
+      ["globalArguments", "apiKey"],
+      ["methods", "run", "arguments", "attempts"],
+      ["methods", "run", "arguments", "secret"],
+    ],
+  );
+  assertEquals(
+    JSON.stringify(persisted.definition.toData()).includes(INPUT_VALUE),
+    false,
+  );
+  assertEquals(persisted.writtenReferences.map((r) => r.path), [[
+    "globalArguments",
+    "token",
+  ]]);
+  // The copy that executes keeps its values.
+  assertEquals(executed.globalArguments.apiKey, INPUT_VALUE);
+  assertEquals(executed.getMethodArguments("run").secret, INPUT_VALUE);
+});
+
+Deno.test("persistEvaluatedDefinition: a sensitive string holding a written reference is left whole, and schemas that mark nothing mask nothing (swamp-club#3681)", () => {
+  const values = recorded();
+  const bag = new VaultSecretBag(values.sentinels);
+  const sentinel = bag.addDataSecret(SECRET, SOURCE);
+  const persisted = persistEvaluatedDefinition(
+    Definition.create({
+      name: "mixed",
+      globalArguments: { apiKey: `${INPUT_VALUE}-${sentinel}` },
+    }),
+    [],
+    Definition.create({ name: "mixed" }),
+    values,
+    SCHEMAS,
+  );
+  // The documented limit: text joined to a reference stays as written.
+  assertEquals(persisted.definition.globalArguments, {
+    apiKey: `${INPUT_VALUE}-${REF}`,
+  });
+  assertEquals(persisted.maskedArguments, []);
+
+  const plain = persistEvaluatedDefinition(
+    Definition.create({
+      name: "plain",
+      globalArguments: { apiKey: INPUT_VALUE },
+    }),
+    [],
+    Definition.create({ name: "plain" }),
+    new RunSensitiveValues(),
+    NO_SCHEMAS,
+  );
+  assertEquals(plain.definition.globalArguments, { apiKey: INPUT_VALUE });
+  assertEquals(plain.maskedArguments, []);
+});
+
+Deno.test("persistEvaluatedDefinition: an author-written expression joined to text in a sensitive argument is kept as written, and the replay check passes it (swamp-club#3681)", () => {
+  // The cache is built before the runtime pass: vault and env expressions,
+  // and a data read a workflow deferred, are still expressions here.
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }).optional(),
+    }),
+    methods: {
+      call: {
+        arguments: z.object({
+          authorization: z.string().meta({ sensitive: true }).optional(),
+          cookie: z.string().meta({ sensitive: true }).optional(),
+          session: z.string().meta({ sensitive: true }).optional(),
+        }),
+      },
+    },
+  };
+  const authored = Definition.create({
+    name: "api",
+    globalArguments: { apiKey: "${{ vault.get('github', 'token') }}" },
+    methods: {
+      call: {
+        arguments: {
+          authorization: "Bearer ${{ vault.get('github', 'token') }}",
+          cookie: "token=${{ env.TOKEN }}",
+          session: "s-${{ data.latest('sessions', 'current').attributes.id }}",
+        },
+      },
+    },
+  });
+  const persisted = persistEvaluatedDefinition(
+    authored,
+    [],
+    authored,
+    new RunSensitiveValues(),
+    schemas,
+  );
+  assertEquals(persisted.definition.toData(), authored.toData());
+  assertEquals(persisted.maskedArguments, []);
+  assertEquals(
+    findPlaintextSensitiveArguments(
+      schemas,
+      persisted.definition.toData(),
+      [],
+      {
+        method: { name: "call" },
+      },
+    ),
+    [],
+  );
+  // Once an input or a data read has produced the text, nothing is pending.
+  const resolved = Definition.fromData({
+    ...authored.toData(),
+    methods: { call: { arguments: { authorization: "Bearer REPRO-7c1e" } } },
+  });
+  assertEquals(
+    persistEvaluatedDefinition(
+      resolved,
+      [],
+      authored,
+      new RunSensitiveValues(),
+      schemas,
+    )
+      .maskedArguments,
+    ["methods.call.arguments.authorization"],
+  );
+});
+
+Deno.test("findPlaintextSensitiveArguments: reports the mask and plaintext but not a reference; allowMask leaves the mask out (swamp-club#3681)", () => {
+  const data = Definition.create({
+    name: "cached",
+    globalArguments: { apiKey: "***", token: REF, region: "eu" },
+    methods: { run: { arguments: { secret: "plain-value", name: "x" } } },
+  }).toData();
+  const references = [referenceAt(["globalArguments", "token"])];
+  assertEquals(findPlaintextSensitiveArguments(SCHEMAS, data, references), [
+    "globalArguments.apiKey",
+    "methods.run.arguments.secret",
+  ]);
+  assertEquals(
+    findPlaintextSensitiveArguments(SCHEMAS, data, references, {
+      allowMask: true,
+    }),
+    ["methods.run.arguments.secret"],
+  );
+  // A reference is an expression; it passes with no written entry.
+  assertEquals(
+    findPlaintextSensitiveArguments(SCHEMAS, data, []).includes(
+      "globalArguments.token",
+    ),
+    false,
+  );
+  // A string that still holds a vault expression is not a value yet, with or
+  // without a written reference covering it.
+  const mixed = Definition.create({
+    name: "mixed",
+    globalArguments: { apiKey: `pre-${REF}` },
+  }).toData();
+  assertEquals(findPlaintextSensitiveArguments(SCHEMAS, mixed, []), []);
+  assertEquals(
+    findPlaintextSensitiveArguments(SCHEMAS, mixed, [
+      referenceAt(["globalArguments", "apiKey"]),
+    ]),
+    [],
+  );
+  // Text an expression produced, with nothing pending, is plaintext.
+  const produced = Definition.create({
+    name: "produced",
+    globalArguments: { apiKey: "pre-REPRO" },
+  }).toData();
+  assertEquals(findPlaintextSensitiveArguments(SCHEMAS, produced, []), [
+    "globalArguments.apiKey",
+  ]);
+  // A method the schemas do not declare, and schemas that mark nothing.
+  const unknownMethod = Definition.create({
+    name: "u",
+    methods: { other: { arguments: { secret: "plain" } } },
+  }).toData();
+  assertEquals(findPlaintextSensitiveArguments(SCHEMAS, unknownMethod, []), []);
+  assertEquals(findPlaintextSensitiveArguments(NO_SCHEMAS, data, []), []);
+});
+
+Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: inside a sensitive container a reference sits in, only the leaves the reference covers are left (swamp-club#3681)", () => {
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({
+      headers: z.record(z.string(), z.string()).meta({ sensitive: true }),
+    }),
+    methods: {},
+  };
+  const values = recorded();
+  const bag = new VaultSecretBag(values.sentinels);
+  const sentinel = bag.addDataSecret(SECRET, SOURCE);
+  const persisted = persistEvaluatedDefinition(
+    Definition.create({
+      name: "headers",
+      globalArguments: {
+        headers: { auth: `Bearer ${sentinel}`, key: INPUT_VALUE, empty: "" },
+      },
+    }),
+    [],
+    Definition.create({ name: "headers" }),
+    values,
+    schemas,
+  );
+  assertEquals(persisted.definition.globalArguments, {
+    headers: { auth: `Bearer ${REF}`, key: "***", empty: "" },
+  });
+  assertEquals(persisted.maskedArguments, ["globalArguments.headers.key"]);
+  assertEquals(persisted.maskedPaths, [[
+    "globalArguments",
+    "headers",
+    "key",
+  ]]);
+  const cached = persisted.definition.toData();
+  assertEquals(
+    findPlaintextSensitiveArguments(
+      schemas,
+      cached,
+      persisted.writtenReferences,
+    ),
+    ["globalArguments.headers.key"],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(
+      schemas,
+      cached,
+      persisted.writtenReferences,
+      { allowMask: true },
+    ),
+    [],
+  );
+
+  // A container is always walked leaf by leaf: a pending expression in one
+  // leaf is kept, the plaintext leaf beside it is masked.
+  const leaves = persistEvaluatedDefinition(
+    Definition.create({
+      name: "leaves",
+      globalArguments: {
+        headers: { key: INPUT_VALUE, auth: `Bearer ${REF}`, empty: "" },
+      },
+    }),
+    [],
+    Definition.create({ name: "leaves" }),
+    new RunSensitiveValues(),
+    schemas,
+  );
+  assertEquals(leaves.definition.globalArguments, {
+    headers: { key: "***", auth: `Bearer ${REF}`, empty: "" },
+  });
+  assertEquals(leaves.maskedArguments, ["globalArguments.headers.key"]);
+});
+
+Deno.test("findPlaintextSensitiveArguments: for a replay, checks the global arguments and the replayed method only, less the arguments the caller replaces (swamp-club#3681)", () => {
+  const schemas: ArgumentSchemas = {
+    ...SCHEMAS,
+    methods: {
+      ...SCHEMAS.methods,
+      deploy: {
+        arguments: z.object({
+          password: z.string().meta({ sensitive: true }).optional(),
+        }),
+      },
+    },
+  };
+  const data = Definition.create({
+    name: "cached",
+    globalArguments: { apiKey: "***" },
+    methods: {
+      run: { arguments: { secret: "***", name: "x" } },
+      deploy: { arguments: { password: "***" } },
+    },
+  }).toData();
+  assertEquals(findPlaintextSensitiveArguments(schemas, data, []), [
+    "globalArguments.apiKey",
+    "methods.run.arguments.secret",
+    "methods.deploy.arguments.password",
+  ]);
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, data, [], {
+      method: { name: "run" },
+    }),
+    ["globalArguments.apiKey", "methods.run.arguments.secret"],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, data, [], {
+      method: { name: "run", replaced: ["secret"] },
+    }),
+    ["globalArguments.apiKey"],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, data, [], {
+      method: { name: "status" },
+    }),
+    ["globalArguments.apiKey"],
+  );
+});
+
+Deno.test("findPlaintextSensitiveArguments: a recorded masked position is reported whatever the schemas mark now, within the replayed scope, once (swamp-club#3681)", () => {
+  // The type no longer marks anything sensitive: the recorded positions
+  // alone keep the mask from running.
+  const data = Definition.create({
+    name: "drifted",
+    globalArguments: { apiKey: "***", region: "eu" },
+    methods: {
+      run: { arguments: { secret: "***", name: "x" } },
+      deploy: { arguments: { password: "***" } },
+    },
+  }).toData();
+  const recorded = [
+    ["globalArguments", "apiKey"],
+    ["methods", "run", "arguments", "secret"],
+    ["methods", "deploy", "arguments", "password"],
+    ["tags", "owner"],
+  ];
+  assertEquals(
+    findPlaintextSensitiveArguments(NO_SCHEMAS, data, [], {
+      recordedMasks: recorded,
+    }),
+    [
+      "globalArguments.apiKey",
+      "methods.run.arguments.secret",
+      "methods.deploy.arguments.password",
+    ],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(NO_SCHEMAS, data, [], {
+      recordedMasks: recorded,
+      method: { name: "run" },
+    }),
+    ["globalArguments.apiKey", "methods.run.arguments.secret"],
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(NO_SCHEMAS, data, [], {
+      recordedMasks: recorded,
+      method: { name: "run", replaced: ["secret"] },
+    }),
+    ["globalArguments.apiKey"],
+  );
+  // Found by the schema and recorded: reported once, spelled the same way.
+  assertEquals(
+    findPlaintextSensitiveArguments(SCHEMAS, data, [], {
+      recordedMasks: [["globalArguments", "apiKey"], [
+        "methods",
+        "run",
+        "arguments",
+        "secret",
+      ]],
+      method: { name: "run" },
+    }),
+    ["globalArguments.apiKey", "methods.run.arguments.secret"],
+  );
+  // A recorded position inside a container is spelled like a found one.
+  assertEquals(
+    findPlaintextSensitiveArguments(NO_SCHEMAS, data, [], {
+      recordedMasks: [["globalArguments", "headers", "x-key"], [
+        "globalArguments",
+        "tokens",
+        0,
+      ]],
+    }),
+    ["globalArguments.headers.x-key", "globalArguments.tokens[0]"],
+  );
+});
+
+Deno.test("evaluatedCacheHoldsSensitiveArgumentsMessage: says the run cannot be replayed and what makes it replayable, per command (swamp-club#3681)", () => {
+  const method = evaluatedCacheHoldsSensitiveArgumentsMessage(
+    "svc",
+    ["globalArguments.apiKey"],
+    "method",
+  );
+  assertStringIncludes(
+    method,
+    `cached for "svc" holds a value for the sensitive argument 'globalArguments.apiKey'`,
+  );
+  assertStringIncludes(method, "--last-evaluated cannot replay it");
+  assertStringIncludes(method, "Run the method without --last-evaluated.");
+  assertStringIncludes(method, "store the value in a vault");
+  assertStringIncludes(
+    method,
+    "or, for a method argument, pass it with --input, which replaces the cached one",
+  );
+  const workflow = evaluatedCacheHoldsSensitiveArgumentsMessage(
+    "svc",
+    ["a.b", "c.d"],
+    "workflow",
+  );
+  assertStringIncludes(workflow, "the sensitive arguments 'a.b', 'c.d'");
+  assertStringIncludes(workflow, "Run the workflow without --last-evaluated.");
+  assertStringIncludes(
+    workflow,
+    "or set it as a step input, which replaces the cached method argument",
+  );
+});
+
+Deno.test("plaintextSensitiveArgumentsMessage: names the paths, singular and plural, and no value", () => {
+  assertStringIncludes(
+    plaintextSensitiveArgumentsMessage("svc", ["globalArguments.apiKey"]),
+    `"svc" holds a plaintext value for the sensitive argument 'globalArguments.apiKey'`,
+  );
+  assertStringIncludes(
+    plaintextSensitiveArgumentsMessage("svc", ["a.b", "c.d"]),
+    "the sensitive arguments 'a.b', 'c.d'",
+  );
 });

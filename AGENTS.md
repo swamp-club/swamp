@@ -68,6 +68,10 @@ individual workflow; `integration/toolchain_pins_rules_test.ts` fails on drift.
 `deno` must resolve on a plain, non-login shell's `PATH` or the verification
 workflows exit 127.
 
+`deno run compile` stamps the git SHA into `src/cli/commands/version.ts` and
+restores it when the build succeeds. After a failed build, `git diff` that file
+and restore only the stamp before reporting a clean tree or retrying.
+
 During development, use these commands for quick feedback:
 
 1. `deno check` - Type checking

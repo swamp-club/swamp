@@ -471,6 +471,18 @@ reference, "Trust Boundary: Which Inputs Are Evaluated".
 swamp behavior run github-pr update-body --literal-inputs --input-file body.json
 ```
 
+**`--last-evaluated` and sensitive arguments.** An argument the type marks
+`sensitive` whose resolved value did not come from a vault — an input or a data
+field not marked sensitive — is written to the evaluated cache as `***`, so that
+run cannot be replayed: `--last-evaluated` reports
+`evaluated_cache_holds_sensitive_arguments`. Only the global arguments and the
+replayed method's arguments are checked, and a method argument an `--input`
+override replaces is not counted, since the override is what runs. A plain
+re-run masks the value again; to make the run replayable, store the value in a
+vault and reference it with `vault.get`. Otherwise run without the flag.
+`${{ env.X }}` stays an expression in the cache and resolves at runtime on each
+run, including replay; its value is never cached.
+
 **Data versioning:** Running a method multiple times creates new data versions
 (v1, v2, ...), never overwrites. Each run's artifacts are preserved. Use
 `swamp data query 'modelName == "<model>" && name == "<data>" && version == <N>' --select content`

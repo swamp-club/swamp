@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
 import type { ModelDefinition } from "../models/model.ts";
 import {
   ModelLockLostError,
@@ -22265,4 +22266,318 @@ Deno.test("mergeDataOutputOverrides: a step override merges over the definition'
     ])?.map((o) => [o.specName, o.vaultName]),
     [["creds", "def-vault"], ["logs", "step-vault"]],
   );
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: the evaluated cache holds the mask for a sensitive global fed from a step input (swamp-club#3681)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { YamlEvaluatedDefinitionRepository } = await import(
+      "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+    );
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+
+    const received: Record<string, unknown>[] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-3681/input-fed-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({
+          token: z.string().meta({ sensitive: true }).optional(),
+          region: z.string().optional(),
+        }),
+        resources: {},
+        methods: {
+          execute: {
+            description: "records its global arguments",
+            arguments: z.object({}),
+            execute: (
+              _args: Record<string, never>,
+              context: { globalArgs: Record<string, unknown> },
+            ) => {
+              received.push({ ...context.globalArgs });
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const definition = Definition.create({
+          name: "input-svc",
+          type: modelType.normalized,
+          globalArguments: { token: "${{ inputs.key }}", region: "eu-west-1" },
+        });
+        await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+        const step = Step.create({
+          name: "step",
+          task: StepTask.model(definition.name, "execute"),
+        });
+        const context = (): StepExecutionContext => ({
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set(["${{ inputs.key }}"]),
+          expressionContext: {
+            model: {},
+            env: {},
+            inputs: { key: "GLOBAL-CANARY" },
+          },
+        });
+
+        await new DefaultStepExecutor().execute(step, context());
+        assertEquals(received, [{
+          token: "GLOBAL-CANARY",
+          region: "eu-west-1",
+        }]);
+
+        const evaluatedRepo = new YamlEvaluatedDefinitionRepository(tempDir);
+        const cached = await evaluatedRepo.findByNameWithProvenance(
+          modelType,
+          "input-svc",
+        );
+        assertEquals(cached?.definition.globalArguments, {
+          token: "***",
+          region: "eu-west-1",
+        });
+        const text = await Deno.readTextFile(
+          evaluatedRepo.getPath(modelType, definition.id),
+        );
+        assertEquals(text.includes("GLOBAL-CANARY"), false);
+
+        assertEquals(cached?.maskedPaths, [["globalArguments", "token"]]);
+        // Workflow steps evaluate their definition using the pinned workflow
+        // inputs, rather than reading the masked definition cache.
+        await new DefaultStepExecutor().execute(step, context());
+        assertEquals(received.length, 2);
+        assertEquals(received[1], received[0]);
+      } finally {
+        catalogStore.close();
+        modelRegistry.invalidateType(modelType);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "DefaultStepExecutor: a repeated step execution uses its inputs despite a masked definition cache (swamp-club#3681)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { YamlEvaluatedDefinitionRepository } = await import(
+      "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+    );
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+
+    const received: Record<string, unknown>[] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-3681/step-fed-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({ region: z.string().optional() }),
+        resources: {},
+        methods: {
+          execute: {
+            description: "records its arguments",
+            arguments: z.object({
+              secret: z.string().meta({ sensitive: true }).optional(),
+            }),
+            execute: (args: { secret?: string }) => {
+              received.push({ ...args });
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const definition = Definition.create({
+          name: "step-fed",
+          type: modelType.normalized,
+          globalArguments: { region: "eu-west-1" },
+        });
+        await new YamlDefinitionRepository(tempDir).save(modelType, definition);
+        const step = Step.create({
+          name: "step",
+          task: StepTask.model(definition.name, "execute", {
+            secret: "STEP-CANARY",
+          }),
+        });
+        const context = (): StepExecutionContext => ({
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set(),
+          expressionContext: { model: {}, env: {}, inputs: {} },
+        });
+
+        await new DefaultStepExecutor().execute(step, context());
+        const cached = await new YamlEvaluatedDefinitionRepository(tempDir)
+          .findByNameWithProvenance(modelType, "step-fed");
+        assertEquals(cached?.definition.getMethodArguments("execute"), {
+          secret: "***",
+        });
+
+        await new DefaultStepExecutor().execute(step, context());
+        assertEquals(received, [
+          { secret: "STEP-CANARY" },
+          { secret: "STEP-CANARY" },
+        ]);
+      } finally {
+        catalogStore.close();
+        modelRegistry.invalidateType(modelType);
+      }
+    });
+  },
+});
+
+Deno.test("execute: --last-evaluated refuses an evaluated workflow cache written in a newer sensitive-value format before any step runs, since its values may be in a form this swamp does not recognise (swamp-club#3681)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new TaskInputsRecorder();
+    const workflow = Workflow.create({
+      name: "newer-format",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "call",
+              task: StepTask.model("svc", "execute", {}),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { inputs: {} },
+    );
+    // Marked as a newer swamp would mark it.
+    let rewritten = 0;
+    for await (
+      const entry of walk(join(tempDir, ".swamp", "workflows-evaluated"), {
+        includeDirs: false,
+        exts: [".yaml"],
+      })
+    ) {
+      if (entry.path.includes(join("runs"))) continue;
+      const text = await Deno.readTextFile(entry.path);
+      assertStringIncludes(
+        text,
+        `sensitiveFormat: ${SENSITIVE_FORMAT_VERSION}`,
+      );
+      await Deno.writeTextFile(
+        entry.path,
+        text.replace(
+          /^sensitiveFormat: .*$/m,
+          `sensitiveFormat: ${SENSITIVE_FORMAT_VERSION + 1}`,
+        ),
+      );
+      rewritten++;
+    }
+    assertEquals(rewritten, 1);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const error = await assertRejects(
+      () => service.execute(workflow.name, { lastEvaluated: true }),
+      UserError,
+    );
+    assertStringIncludes(error.message, "newer swamp");
+    assertStringIncludes(error.message, "without --last-evaluated");
+    assertEquals(executor.ran, []);
+  });
+});
+
+Deno.test("resume: refuses a run record written in a newer sensitive-value format before any step runs, since its values may be in a form this swamp does not recognise (swamp-club#3681)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = approvalGateWorkflow("newer-format-resume", false);
+    await workflowRepo.save(workflow);
+    const executor = new MockStepExecutor();
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(service.run(workflow.name));
+    assertEquals(suspended?.stepId, "approve-prod");
+
+    // Marked as a newer swamp would mark it.
+    const stored = await runRepo.findById(workflow.id, suspended!.run.id);
+    await runRepo.save(
+      workflow.id,
+      WorkflowRun.fromData({
+        ...stored!.toData(),
+        sensitiveFormat: SENSITIVE_FORMAT_VERSION + 1,
+      }),
+    );
+    const executedBefore = executor.executedSteps.length;
+
+    const error = await assertRejects(
+      async () => {
+        for await (
+          const _ of service.resume(workflow.name, suspended!.run.id)
+        ) {
+          // drain
+        }
+      },
+      UserError,
+    );
+    assertStringIncludes(error.message, "newer swamp");
+    assertStringIncludes(error.message, "not resumed");
+    assertEquals(executor.executedSteps.length, executedBefore);
+  });
 });

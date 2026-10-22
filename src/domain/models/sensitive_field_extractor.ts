@@ -112,6 +112,22 @@ function isRuntimeExpressionOnly(value: string): boolean {
 }
 
 /**
+ * Whether a string still holds an expression that reads something at
+ * runtime — `vault.get`, `env.X`, a data read a workflow deferred — or one
+ * that does not parse and so never becomes a value. Such text is not a value
+ * yet, so it carries no secret whatever text surrounds it, and the evaluated
+ * cache keeps the string as written (swamp-club#3681). Unlike
+ * {@link isLiteralSecret}, which refuses a mixed string at save time because
+ * the text around the expression would be stored, this asks only whether the
+ * expression part is still to come.
+ */
+export function holdsRuntimeExpression(value: string): boolean {
+  return scanExpressions(value).some((span) =>
+    freeRoots(span.inner)?.size !== 0
+  );
+}
+
+/**
  * Reports whether a value supplied for a sensitive field is a literal secret
  * that would be persisted in cleartext.
  *
@@ -127,7 +143,7 @@ function isRuntimeExpressionOnly(value: string): boolean {
  *   treated as a literal secret. Bare non-string scalars cannot be expression
  *   references, so they fail closed.
  */
-function isLiteralSecret(value: unknown): boolean {
+export function isLiteralSecret(value: unknown): boolean {
   if (value === undefined || value === null) {
     return false;
   }
@@ -183,12 +199,34 @@ export function findLiteralSensitiveGlobalArgs(
   schema: z.ZodTypeAny | undefined,
   args: Record<string, unknown> | undefined,
 ): string[] {
+  return findLiteralSensitiveValues(schema, args).map(({ path }) => path);
+}
+
+/** A sensitive value that is a literal secret, and where it sits in `args`. */
+export interface LiteralSensitiveValue {
+  /** The path as {@link findLiteralSensitiveGlobalArgs} spells it. */
+  path: string;
+  /** The keys that lead to the value from the root of the arguments. */
+  keys: (string | number)[];
+  value: unknown;
+}
+
+/**
+ * The values {@link findLiteralSensitiveGlobalArgs} reports, each with the
+ * keys that lead to it, for a caller that acts on the value's position
+ * rather than its spelling — the evaluated cache, which masks some of them
+ * (swamp-club#3681). Same walk, same rule.
+ */
+export function findLiteralSensitiveValues(
+  schema: z.ZodTypeAny | undefined,
+  args: Record<string, unknown> | undefined,
+): LiteralSensitiveValue[] {
   if (!schema || !args) {
     return [];
   }
   return findValuesWithMetadata(schema, args, isSensitive)
     .filter(({ value }) => isLiteralSecret(value))
-    .map(({ path }) => path);
+    .map(({ path, keys, value }) => ({ path, keys, value }));
 }
 
 /**

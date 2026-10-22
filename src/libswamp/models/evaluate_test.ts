@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { z } from "zod";
 import { Definition } from "../../domain/definitions/definition.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -117,6 +119,7 @@ function makeDeps(
         hadExpressions: true,
         authoredExpressions: new Set<string>(),
       }]),
+    lookupModelDefinition: () => Promise.resolve(undefined),
     saveEvaluatedDefinition: () => Promise.resolve(),
     getEvaluatedPath: (type, id) =>
       `/tmp/.swamp/definitions-evaluated/${type.normalized}/${id}.yaml`,
@@ -433,6 +436,7 @@ Deno.test("modelEvaluate: the evaluation's sensitive values come from createSens
         authoredExpressions: new Set<string>(),
       }]);
     },
+    lookupModelDefinition: () => Promise.resolve(undefined),
     saveEvaluatedDefinition: () => Promise.resolve(),
     getEvaluatedPath: () => "/tmp/evaluated.yaml",
     createSensitiveValues: () => new RunSensitiveValues(undefined, registry),
@@ -465,4 +469,110 @@ Deno.test("modelEvaluate: the evaluation's sensitive values come from createSens
   );
   assertEquals(plain.length, 1);
   assertEquals(plain[0].typedSecrets, false);
+});
+
+Deno.test("modelEvaluate: masks a literal under a sensitive argument with the type's schemas and keeps an unresolved inputs expression; an unknown type masks nothing (swamp-club#3681)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const evaluated = Definition.create({
+    id: "00000000-0000-4000-8000-000000000004",
+    name: "input-fed",
+    version: 1,
+    globalArguments: {
+      apiKey: "REPRO-SECRET-7c1e",
+      token: "${{ inputs.key }}",
+      region: "eu",
+    },
+  });
+  const schemas = {
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      token: z.string().meta({ sensitive: true }),
+      region: z.string(),
+    }),
+    methods: {},
+  };
+  const saved: Definition[] = [];
+  const recorded: (readonly (string | number)[])[][] = [];
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: evaluated, type: modelType }),
+    evaluateDefinition: (_definition, type) =>
+      Promise.resolve({
+        definition: evaluated,
+        type,
+        hadExpressions: true,
+        authoredExpressions: new Set<string>(),
+      }),
+    lookupModelDefinition: () => Promise.resolve(schemas),
+    saveEvaluatedDefinition: (_type, definition, _p, _a, _r, maskedPaths) => {
+      saved.push(definition);
+      recorded.push([...(maskedPaths ?? [])]);
+      return Promise.resolve();
+    },
+  });
+  await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {
+      modelIdOrName: "input-fed",
+    }),
+  );
+  assertEquals(saved[0].globalArguments, {
+    apiKey: "***",
+    token: "${{ inputs.key }}",
+    region: "eu",
+  });
+  assertEquals(recorded[0], [["globalArguments", "apiKey"]]);
+
+  await collect<ModelEvaluateEvent>(
+    modelEvaluate(
+      createLibSwampContext(),
+      { ...deps, lookupModelDefinition: () => Promise.resolve(undefined) },
+      { modelIdOrName: "input-fed" },
+    ),
+  );
+  assertEquals(saved[1].globalArguments.apiKey, "REPRO-SECRET-7c1e");
+});
+
+Deno.test("createModelEvaluateDeps: lookupModelDefinition loads extensions to find a type the index does not know yet, and answers undefined for a type no extension registers (swamp-club#3681)", async () => {
+  await withTempDir(async (dir) => {
+    const type = ModelType.create(
+      `@user/evaluate-ext-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    const schema = z.object({
+      password: z.string().meta({ sensitive: true }),
+    });
+    // The type reaches the registry only through the extension loader, as
+    // an extension type does on a command that never built the index.
+    modelRegistry.resetLoadedFlag();
+    modelRegistry.setLoader(() => {
+      modelRegistry.register({
+        type,
+        version: "2026.01.01.1",
+        globalArguments: schema,
+        methods: {},
+      });
+      return Promise.resolve();
+    });
+    try {
+      const deps = createModelEvaluateDeps(
+        dir,
+        undefined,
+        undefined,
+        new CatalogStore(":memory:"),
+      );
+      assertEquals(modelRegistry.has(type), false);
+      assertEquals(
+        (await deps.lookupModelDefinition(type))?.globalArguments,
+        schema,
+      );
+      assertEquals(
+        await deps.lookupModelDefinition(
+          ModelType.create("@user/never-registered"),
+        ),
+        undefined,
+      );
+    } finally {
+      modelRegistry.invalidateType(type);
+      modelRegistry.clearLoadersForTesting();
+    }
+  });
 });

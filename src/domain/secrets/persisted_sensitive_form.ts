@@ -62,9 +62,15 @@ export const WrittenReferenceSchema = z.object({
 
 /**
  * Version of the persisted sensitive-value format. A cache or run record
- * without it was written before sensitive values were kept off disk.
+ * without it was written before sensitive values were kept off disk. Version
+ * 1 wrote every sensitive value as its vault reference. Version 2 also writes
+ * the mask where a sensitive argument held a value that came from no vault,
+ * and records those positions in the evaluated definition's `maskedPaths`
+ * (swamp-club#3681). A reader at version 1 would run the mask as the value,
+ * so a reader refuses a format newer than its own; see
+ * `isNewerSensitiveFormat`.
  */
-export const SENSITIVE_FORMAT_VERSION = 1;
+export const SENSITIVE_FORMAT_VERSION = 2;
 
 /** Data ready to persist, and where it holds references. */
 export interface PersistedForm<T> {

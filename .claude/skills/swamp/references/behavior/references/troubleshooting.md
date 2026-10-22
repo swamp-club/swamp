@@ -242,7 +242,18 @@ behavior create, method run, direct execution, `behavior validate`,
 and after an upgrade moves a literal into a sensitive field;
 `swamp doctor secrets` finds stored ones. Empty strings and null are allowed.
 Method run output shows a literal value under a sensitive argument as `***`; a
-`vault.get` reference is shown as written.
+`vault.get` reference is shown as written. The evaluated cache under
+`.swamp/definitions-evaluated/` holds `***` for it too, so a sensitive argument
+whose resolved value did not come from a vault — an input or a data field not
+marked sensitive — does not sit on disk in clear (text joined to a vault
+reference or an expression still awaiting runtime resolution stays as written);
+`--last-evaluated` cannot replay that cache and reports
+`evaluated_cache_holds_sensitive_arguments`; it checks the global arguments and
+the replayed method's arguments, less any method argument an `--input` override
+replaces. A plain re-run masks the value again, so to make the run replayable
+store the value in a vault and reference it; otherwise run without the flag.
+`${{ env.X }}` stays an expression in the cache and resolves at runtime on each
+run, including replay; its value is never cached.
 
 **Solution**: Store the secret in a vault and reference it:
 `${{ vault.get('my-vault', 'api-key') }}`.

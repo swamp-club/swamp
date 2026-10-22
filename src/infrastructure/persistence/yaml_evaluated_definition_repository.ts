@@ -63,6 +63,14 @@ import {
   type WrittenReference,
   WrittenReferenceSchema,
 } from "../../domain/secrets/mod.ts";
+import {
+  findPlaintextSensitiveArguments,
+  type MaskedPath,
+  PLAINTEXT_SENSITIVE_EVALUATED_ARG_CODE,
+  plaintextSensitiveArgumentsMessage,
+} from "../../domain/expressions/persisted_evaluation.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { UserError } from "../../domain/errors.ts";
 
 export interface EvaluatedDefinitionCache {
   definition: Definition;
@@ -78,6 +86,12 @@ export interface EvaluatedDefinitionCache {
   /** Where the file holds vault references in place of sensitive values. */
   writtenReferences: readonly WrittenReference[];
   /**
+   * Where the file holds the mask in place of a sensitive argument that did
+   * not come from a vault (swamp-club#3681); a replay refuses these whatever
+   * the type's schema marks at the time. Empty in caches written before.
+   */
+  maskedPaths: readonly MaskedPath[];
+  /**
    * Set when the file was written with sensitive values kept as references;
    * absent in caches written before that, which may hold plaintext.
    */
@@ -89,6 +103,9 @@ const CacheMetadataSchema = z.object({
   authoredExpressions: z.array(z.string()).optional(),
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
+  maskedPaths: z.array(
+    z.array(z.union([z.string(), z.number().int().nonnegative()])),
+  ).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
 });
@@ -126,6 +143,7 @@ function parseCache(content: string): EvaluatedDefinitionCache | null {
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
     writtenReferences: metadata.writtenReferences ?? [],
+    maskedPaths: metadata.maskedPaths ?? [],
     sensitiveFormat: metadata.sensitiveFormat,
   };
 }
@@ -436,6 +454,34 @@ export class YamlEvaluatedDefinitionRepository {
   }
 
   /**
+   * Throws when a sensitive argument of `definition` holds a literal other
+   * than the mask with no written reference. As in
+   * `YamlDefinitionRepository.save`, the type's schemas come from the
+   * registry, loading extensions if it takes that, and a type no extension
+   * registers has nothing to check against and is let through.
+   */
+  private async refusePlaintextSensitiveArguments(
+    type: ModelType,
+    definition: Definition,
+    writtenReferences: readonly WrittenReference[],
+  ): Promise<void> {
+    const modelDef = await modelRegistry.getOrLoad(type);
+    if (!modelDef) return;
+    const paths = findPlaintextSensitiveArguments(
+      modelDef,
+      definition.toData(),
+      writtenReferences,
+      { allowMask: true },
+    );
+    if (paths.length > 0) {
+      throw new UserError(
+        plaintextSensitiveArgumentsMessage(definition.name, paths),
+        PLAINTEXT_SENSITIVE_EVALUATED_ARG_CODE,
+      );
+    }
+  }
+
+  /**
    * Saves an evaluated definition.
    *
    * @param type - The model type
@@ -453,7 +499,19 @@ export class YamlEvaluatedDefinitionRepository {
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
+    /** The positions `definition` holds the mask at (swamp-club#3681). */
+    maskedPaths: readonly MaskedPath[] = [],
   ): Promise<void> {
+    // Fail closed before anything is staged or written: a sensitive argument
+    // reaches the cache only as a vault reference or the mask.
+    // persistEvaluatedDefinition builds that form, so this never fires for a
+    // writer that goes through it; one that bypasses it fails here instead
+    // of leaking (swamp-club#3681).
+    await this.refusePlaintextSensitiveArguments(
+      type,
+      definition,
+      writtenReferences,
+    );
     const targetPath = this.resolveWritePath(type, definition);
     await signalChange(this.markDirty, { kind: "write", path: targetPath }, {
       typed: true,
@@ -474,6 +532,7 @@ export class YamlEvaluatedDefinitionRepository {
       writtenReferences: writtenReferences.length
         ? writtenReferences
         : undefined,
+      maskedPaths: maskedPaths.length ? maskedPaths : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
       provenance: provenance?.toData(),
     };
