@@ -78,7 +78,7 @@ import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts"
  */
 
 /** Schema version. Matches swamp-club's RUBRIC_VERSION. */
-export const RUBRIC_VERSION = 3;
+export const RUBRIC_VERSION = 4;
 
 /**
  * Slow-type diagnostic codes emitted by `deno doc --lint`. When any of
@@ -226,6 +226,11 @@ export interface AnalysisFactors {
   dependencyNotAuditedFixes: readonly NotAuditedFix[];
   /** Dependencies with a loose specifier: they cost one of the two points. */
   dependencyLooseCount: number;
+  /**
+   * No secret-unsafe-docs finding is left unaccepted: the docs keep secrets
+   * in a vault (swamp-club#3757).
+   */
+  secretSafeDocs: boolean;
 }
 
 /**
@@ -244,6 +249,8 @@ export function computeAnalysisFactors(input: {
   dependencyNotAuditedCount?: number;
   dependencyNotAuditedFixes?: readonly NotAuditedFix[];
   dependencyLooseCount?: number;
+  /** No secret-unsafe-docs finding is left unaccepted; unchecked when absent. */
+  secretSafeDocs?: boolean;
   /** `deno doc` could not analyse the source, so `doc` is empty. */
   docFailed?: boolean;
 }): AnalysisFactors {
@@ -296,6 +303,7 @@ export function computeAnalysisFactors(input: {
     dependencyNotAuditedCount: input.dependencyNotAuditedCount ?? 0,
     dependencyNotAuditedFixes: input.dependencyNotAuditedFixes ?? [],
     dependencyLooseCount: input.dependencyLooseCount ?? 0,
+    secretSafeDocs: input.secretSafeDocs ?? false,
   };
 }
 
@@ -486,6 +494,19 @@ export function composeScore(
       factors.dependencyNotAuditedCount,
       factors.dependencyNotAuditedFixes,
       factors.dependencyLooseCount,
+    ),
+    boolRow(
+      "secret-safe-docs",
+      "Docs keep secrets in a vault",
+      1,
+      factors.secretSafeDocs,
+      {
+        remediation: "Fix or accept each secret-unsafe-docs warning: the " +
+          "README, the manifest description and describe strings should " +
+          "store secrets with `swamp vault put <vault> <key>` (it prompts " +
+          "for the value) and pass them as " +
+          "`${{ vault.get(<vault>, <key>) }}`.",
+      },
     ),
   ];
 
@@ -807,6 +828,8 @@ export async function scoreExtensionTarball(
     dependencyNotAuditedCount?: number;
     dependencyNotAuditedFixes?: readonly NotAuditedFix[];
     dependencyLooseCount?: number;
+    /** No secret-unsafe-docs finding is left unaccepted. */
+    secretSafeDocs?: boolean;
     privateSource?: PrivateSourceStanding;
     /**
      * Specifiers npm publishes no version for, from the dependency audit:
@@ -894,6 +917,7 @@ export async function scoreExtensionTarball(
       dependencyNotAuditedCount: options?.dependencyNotAuditedCount,
       dependencyNotAuditedFixes: options?.dependencyNotAuditedFixes,
       dependencyLooseCount: options?.dependencyLooseCount,
+      secretSafeDocs: options?.secretSafeDocs,
       docFailed: docAnalysisError !== null,
     });
 

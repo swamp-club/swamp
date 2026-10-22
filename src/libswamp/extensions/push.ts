@@ -221,6 +221,11 @@ export interface ExtensionPushPrepareInput {
    * acceptances, the generated declaration) is discovered beside it.
    */
   manifestDir: string;
+  /**
+   * The manifest file, whose description is checked for secret-unsafe
+   * docs. Defaults to `manifest.yaml` in {@link manifestDir}.
+   */
+  manifestPath?: string;
   modelsDir: string;
   /**
    * The behaviors directory the model entry points resolved from when the
@@ -661,6 +666,13 @@ import {
   extractContentMetadata,
 } from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import {
+  type ArgumentSchemas,
+  argumentSchemas,
+  detectSecretDocs,
+  manifestDescriptionLines,
+  type SecretDocsForm,
+} from "../../domain/extensions/extension_secret_docs_detector.ts";
 import { declaresExport } from "../../domain/extensions/export_declaration.ts";
 import {
   type ModelCatalogGap,
@@ -1426,6 +1438,9 @@ export async function extensionPushPrepare(
     sidecar,
     safetyWarnings: safetyResult.warnings,
     files: allFiles.filter(notRejected),
+    ...(contentMetadata
+      ? { argumentSchemas: argumentSchemas(contentMetadata) }
+      : {}),
   });
   const reviewRulesResult = findings.reviewRulesResult;
   if (reviewRulesResult.errors.length > 0) {
@@ -1815,6 +1830,8 @@ export interface QualityFindingsInput {
   safetyWarnings: SafetyIssue[];
   /** Every file the extension packages; directives are read from those with a comment form. */
   files: string[];
+  /** The extension's declared and sensitive argument names, for the secret-unsafe-docs check. */
+  argumentSchemas?: ArgumentSchemas;
 }
 
 /**
@@ -1931,6 +1948,96 @@ async function behaviorSpellingUses(
 }
 
 /**
+ * The secret-unsafe-docs findings: the packaged Markdown files, the
+ * manifest's description on the author's own lines (push re-emits the
+ * manifest into the archive, so its lines differ there), and the describe
+ * and description strings of the extension's sources. Symlinks are never
+ * read, and test files are not documentation.
+ */
+async function secretUnsafeDocs(
+  input: ExtensionPushPrepareInput,
+  files: string[],
+  schemas: ArgumentSchemas | undefined,
+): Promise<ReviewFinding[]> {
+  const sources = [
+    ...input.allModelFiles,
+    ...input.allVaultFiles,
+    ...input.allDatastoreFiles,
+    ...input.allReportFiles,
+    ...input.allWebhookFiles,
+  ].filter((f) => extname(f) === ".ts" && !f.endsWith("_test.ts"));
+  // Include, data and binary files are packaged but, as for every other
+  // quality check, not the extension's own docs.
+  const notDocs = new Set([
+    ...input.includeFilePaths,
+    ...Object.values(input.dataFilesByKind ?? {}).flat(),
+    ...input.binaryFilePaths,
+  ]);
+  const targets: Array<{ file: string; form: SecretDocsForm }> = [
+    ...files.filter((f) =>
+      extname(f).toLowerCase() === ".md" && !notDocs.has(f)
+    ).map((file) => ({
+      file,
+      form: "markdown" as const,
+    })),
+    ...[...new Set(sources)].map((file) => ({
+      file,
+      form: "source" as const,
+    })),
+  ];
+
+  const findings: ReviewFinding[] = [];
+  const report = (file: string, line: number, message: string) =>
+    findings.push({
+      ruleId: "secret-unsafe-docs",
+      dimension: "Credentials & Secrets",
+      severity: "medium",
+      file,
+      line,
+      message,
+      remediation: remediationFor("secret-unsafe-docs"),
+    });
+
+  for (const { file, form } of targets) {
+    const content = await readUnlessSymlink(file);
+    if (content === undefined) continue;
+    for (const f of detectSecretDocs(content, form, schemas)) {
+      report(file, f.line, f.message);
+    }
+  }
+
+  const manifestPath = input.manifestPath ??
+    join(input.manifestDir, "manifest.yaml");
+  const manifestText = await readUnlessSymlink(manifestPath);
+  const description = manifestText === undefined
+    ? undefined
+    : manifestDescriptionLines(manifestText);
+  if (description) {
+    for (
+      const f of detectSecretDocs(description.text, "plain", schemas)
+    ) {
+      const line = description.line + f.line - 1;
+      report(
+        manifestPath,
+        line,
+        f.message.replace(/^Line \d+/, `Line ${line} (description)`),
+      );
+    }
+  }
+  return findings;
+}
+
+/** A file's text, or undefined when it is a symlink or cannot be read. */
+async function readUnlessSymlink(file: string): Promise<string | undefined> {
+  try {
+    if ((await Deno.lstat(file)).isSymlink) return undefined;
+    return await Deno.readTextFile(file);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Runs the review rules, the bare-specifier check, the uncatalogued-model
  * check and the declared acceptances over an extension. Push calls it from
  * prepare; quality calls it on every run, including a cache hit, so both
@@ -1939,7 +2046,8 @@ async function behaviorSpellingUses(
 export async function runQualityFindings(
   ctx: LibSwampContext,
   deps: Pick<ExtensionPushPrepareDeps, "checkReviewRules">,
-  { input, sidecar, safetyWarnings, files }: QualityFindingsInput,
+  { input, sidecar, safetyWarnings, files, argumentSchemas: schemas }:
+    QualityFindingsInput,
 ): Promise<QualityFindings> {
   // Static review rules, plus the adversarial-review report when the caller
   // computed a content hash. Report findings are warnings: a missing or
@@ -2047,6 +2155,18 @@ export async function runQualityFindings(
     });
   }
 
+  // Docs that put a secret in plaintext or reference a vault with syntax
+  // swamp does not support (swamp-club#3757).
+  for (
+    const finding of await secretUnsafeDocs(
+      input,
+      files,
+      schemas,
+    )
+  ) {
+    reviewRulesResult.warnings.push(finding);
+  }
+
   // Declared acceptances: inline directives from every packaged file with a
   // comment form, and the sidecar's entries.
   const directives: AcceptanceDirective[] = [];
@@ -2069,7 +2189,15 @@ export async function runQualityFindings(
     }
     const warnedLines = warned.get(file);
     if (warnedLines) {
-      commentSitesByFile[file] = commentSites(content, file, warnedLines);
+      const sites = commentSites(content, file, warnedLines);
+      // A Markdown line no comment can go above (inside a fenced code block)
+      // is accepted by a quality.yaml entry naming its line. A comment
+      // inserted elsewhere in the same file would move that line, so the
+      // whole file then takes line entries and is never edited
+      // (swamp-club#3757).
+      const barrier = commentFormFor(file) === "html" &&
+        warnedLines.some((line) => sites[line] === undefined);
+      commentSitesByFile[file] = barrier ? {} : sites;
     }
     const parsed = parseAcceptanceDirectives(content, file);
     for (const d of parsed.directives) directives.push(d);

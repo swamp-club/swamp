@@ -1001,6 +1001,39 @@ Deno.test("extensionPushRenderer: log prints a multi-line description as plain l
   assertStringIncludes(logs.join("\n"), 'Release Notes: "Fixed a thing"');
 });
 
+Deno.test("extensionPushRenderer: log marks sensitive arguments, required or optional", async () => {
+  const renderer = createExtensionPushRenderer("log", PATHS);
+  const data = populated();
+  data.models[0].globalArguments = [
+    { name: "url", type: "string", required: true, description: "" },
+    {
+      name: "token",
+      type: "string",
+      required: true,
+      description: "",
+      sensitive: true,
+    },
+    {
+      name: "backup",
+      type: "string",
+      required: false,
+      description: "",
+      sensitive: true,
+    },
+  ];
+  const lines = (await capture(() => renderer.renderResolved(data)))
+    .map((line) => line.trimEnd());
+  assertEquals(lines.some((l) => l.endsWith('"url": "string"')), true);
+  assertEquals(
+    lines.some((l) => l.endsWith('"token": "string" (sensitive)')),
+    true,
+  );
+  assertEquals(
+    lines.some((l) => l.endsWith('"backup": "string" (optional, sensitive)')),
+    true,
+  );
+});
+
 Deno.test("extensionPushRenderer: log prints quality output one plain line per line", async () => {
   const renderer = createExtensionPushRenderer("log", PATHS);
   const logs = await capture(() =>

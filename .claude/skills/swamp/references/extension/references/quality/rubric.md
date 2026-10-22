@@ -240,6 +240,37 @@ existence and yanking only.
 If the dependency audit does not run (e.g. cached push without re-audit), the
 factor defaults to `missing` — no free points.
 
+### `secret-safe-docs` (1 pt, rubric v4)
+
+Earned when no `secret-unsafe-docs` warning is left unaccepted.
+`swamp extension
+quality` scores it from rubric v4; the registry scorecard
+adopts it in a later swamp-club release, and until then shows one point fewer
+possible than `quality` does.
+
+The check reads the packaged Markdown files (not `include` or data files), the
+manifest `description`, and the strings passed to `.describe(...)` or set as
+`description:` in source. It flags:
+
+- vault reference syntax swamp does not support: `vault://`, `<vault:`,
+  `{{ vault ... }}` without the `$`, `swamp vault set`
+- `--global-arg` or `--input` setting a secret argument (sensitive in the
+  schema, or named like a token, key, secret or password) to anything but a
+  `${{ ... }}` expression
+- `swamp vault put <vault> <key> <value>` or `KEY=VALUE` with the value on the
+  command line, unless the command uses `--server` or the value is a shell
+  variable (`$TOKEN`, `"${TOKEN}"`)
+- full-length credential shapes (GitHub, GitLab, Anthropic, AWS, Slack, Vault,
+  swamp keys, bearer tokens, `user:pass@` URLs)
+
+In Markdown every pattern but credential shapes counts only inside fenced code
+blocks. Fix the docs to store secrets with `swamp vault put <vault> <key>` (it
+prompts) and pass them as `${{ vault.get(<vault>, <key>) }}`. To keep a line
+that shows the wrong form on purpose, accept it: an HTML comment on the line
+above, or, for a line inside a code block, a `quality.yaml` entry with `file`
+and `line` (needs this swamp release or later). Manifest findings take a
+`quality.yaml` entry naming `manifest.yaml`.
+
 ### `verified-by-swamp` (1 pt)
 
 Earned in one of two ways:

@@ -347,6 +347,11 @@ export async function* extensionQuality(
           dependencyLooseCount: looseSpecifierCount(
             prepared.dependencyTrustResult,
           ),
+          // Acceptances are already applied: the warnings left are the
+          // findings no comment or quality.yaml entry covers.
+          secretSafeDocs: !prepared.reviewRulesResult.warnings.some((w) =>
+            w.ruleId === "secret-unsafe-docs"
+          ),
           privateSource,
           unpublishedSpecifiers: unpublishedSpecifiers(
             prepared.dependencyTrustResult,

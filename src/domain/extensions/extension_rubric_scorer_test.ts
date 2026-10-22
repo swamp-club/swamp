@@ -71,8 +71,8 @@ function makeManifest(
 
 // ── Pure helper tests (mirror server analysis-factors_test.ts) ─────────
 
-Deno.test("RUBRIC_VERSION is 3 (matches swamp-club)", () => {
-  assertEquals(RUBRIC_VERSION, 3);
+Deno.test("RUBRIC_VERSION is 4 (swamp-club follows with the secret-safe-docs factor)", () => {
+  assertEquals(RUBRIC_VERSION, 4);
 });
 
 Deno.test("SLOW_TYPE_CODES contains expected codes", () => {
@@ -393,17 +393,50 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
     dependencyNotAuditedCount: 0,
     dependencyNotAuditedFixes: [],
     dependencyLooseCount: 0,
+    secretSafeDocs: true,
   };
 }
 
-Deno.test("composeScore: perfect extension earns 13/13 client-confirmed (100%)", () => {
+Deno.test("composeScore: perfect extension earns 14/14 client-confirmed (100%)", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  assertEquals(score.earnedPoints, 13);
-  assertEquals(score.maxEarnablePoints, 15);
-  assertEquals(score.maxClientEarnablePoints, 13);
+  assertEquals(score.earnedPoints, 14);
+  assertEquals(score.maxEarnablePoints, 16);
+  assertEquals(score.maxClientEarnablePoints, 14);
   assertEquals(score.provisionalPoints, 2);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
+});
+
+Deno.test("composeScore: secret-safe-docs is worth 1 point, earned only when the docs are clean", () => {
+  const clean = composeScore(factorsAllEarned(), makeManifest());
+  const earned = clean.factors.find((f) => f.id === "secret-safe-docs")!;
+  assertEquals([earned.maxPoints, earned.earnedPoints], [1, 1]);
+  assertEquals(earned.status, "earned");
+
+  const leaky = composeScore(
+    { ...factorsAllEarned(), secretSafeDocs: false },
+    makeManifest(),
+  );
+  const missing = leaky.factors.find((f) => f.id === "secret-safe-docs")!;
+  assertEquals([missing.earnedPoints, missing.status], [0, "missing"]);
+  assertStringIncludes(missing.remediation ?? "", "vault.get");
+  assertEquals(leaky.percentage, Math.floor((13 * 100) / 14));
+  assertEquals(leaky.allPassed, false);
+});
+
+Deno.test("computeAnalysisFactors: secretSafeDocs is unearned unless the caller checked it", () => {
+  const base = {
+    entrypointUrls: [],
+    readme: null,
+    hasLicenseFile: false,
+    doc: { version: 1, nodes: {} },
+    rawLintOutput: "",
+  };
+  assertEquals(computeAnalysisFactors(base).secretSafeDocs, false);
+  assertEquals(
+    computeAnalysisFactors({ ...base, secretSafeDocs: true }).secretSafeDocs,
+    true,
+  );
 });
 
 Deno.test("composeScore: has-readme is worth 2 points", () => {
@@ -701,16 +734,17 @@ Deno.test("composeScore: factor IDs and order match server", () => {
     "license-file",
     "repository-verified",
     "dependency-trust",
+    "secret-safe-docs",
   ]);
 });
 
 Deno.test("composeScore: percentage floors (not rounds)", () => {
-  // 12/13 client-earnable = 92.3 → floor = 92
+  // 13/14 client-earnable = 92.9 → floor = 92
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 12);
+  assertEquals(score.earnedPoints, 13);
   assertEquals(score.percentage, 92);
 });
 
@@ -879,6 +913,7 @@ Deno.test(
       dependencyNotAuditedCount: 0,
       dependencyNotAuditedFixes: [],
       dependencyLooseCount: 0,
+      secretSafeDocs: false,
     });
   },
 );
@@ -1014,6 +1049,7 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       dependencyNotAuditedCount: 0,
       dependencyNotAuditedFixes: [],
       dependencyLooseCount: 0,
+      secretSafeDocs: false,
     },
     makeManifest({
       description: "",
@@ -1024,9 +1060,9 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
   );
   // Universal platforms earns 2 + fast-check always earns 1 (deprecated).
   assertEquals(score.earnedPoints, 3);
-  assertEquals(score.percentage, Math.floor((3 * 100) / 15));
-  assertEquals(score.rubricVersion, 3);
-  assertEquals(score.factors.length, 11);
+  assertEquals(score.percentage, Math.floor((3 * 100) / 16));
+  assertEquals(score.rubricVersion, 4);
+  assertEquals(score.factors.length, 12);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
   assertEquals(byId.get("platforms")?.status, "earned");
   assertEquals(byId.get("platforms")?.earnedPoints, 2);
@@ -1039,20 +1075,20 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
 
 Deno.test("[parity] composeScore: perfect score hits 100% with repository-verified provisional", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  // 13/13 client-earnable (repo-verified is provisional, excluded from total)
-  assertEquals(score.earnedPoints, 13);
-  assertEquals(score.maxClientEarnablePoints, 13);
+  // 14/14 client-earnable (repo-verified is provisional, excluded from total)
+  assertEquals(score.earnedPoints, 14);
+  assertEquals(score.maxClientEarnablePoints, 14);
   assertEquals(score.provisionalPoints, 2);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
 });
 
-Deno.test("[parity] composeScore: percentage floors (12/13 → 92)", () => {
+Deno.test("[parity] composeScore: percentage floors (13/14 → 92)", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 12);
+  assertEquals(score.earnedPoints, 13);
   assertEquals(score.percentage, 92);
 });
 

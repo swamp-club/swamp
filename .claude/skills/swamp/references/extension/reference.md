@@ -240,7 +240,10 @@ third-party score: **15/16 = 93% (Grade A)**.
 Key factors: README in `additionalFiles:`, an SPDX `license:` and a LICENSE file
 (optional; one point each), JSDoc coverage ≥80%, explicit return types, manifest
 `description:`, `repository:` URL on allowlisted host, dependency trust (no
-deprecated or vulnerable npm deps).
+deprecated or vulnerable npm deps). From rubric v4, `swamp extension quality`
+also scores `secret-safe-docs`: README, manifest description and describe
+strings keep secrets in a vault (`${{ vault.get(<vault>, <key>) }}`), which the
+registry adopts in a later release.
 
 Run `swamp extension quality manifest.yaml --json` for a local self-check.
 Dependency trust is evaluated automatically — npm dependencies are audited

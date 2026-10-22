@@ -305,7 +305,9 @@ async function withFindingsExtension(
     await Deno.writeTextFile(
       readme,
       // The fenced address cannot take an HTML comment: inside the fence it
-      // is code, not a directive.
+      // is code, not a directive. It takes a quality.yaml entry naming the
+      // line instead, and so do the README's other findings, so no comment
+      // moves that line (swamp-club#3757).
       "# Thing\n\nGateway: 10.0.0.1\nRouter: 10.0.0.2\n\n```sh\ncurl http://10.0.0.9\n```\n",
     );
     const hosts = join(root, "docs", "hosts.txt");
@@ -372,9 +374,9 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
       "deno-command:3:line-above",
       "ipv4-address-literals:1:sidecar",
       "ipv4-address-literals:1:sidecar",
-      "ipv4-address-literals:3:line-above",
-      "ipv4-address-literals:4:line-above",
-      "ipv4-address-literals:7:none",
+      "ipv4-address-literals:3:sidecar",
+      "ipv4-address-literals:4:sidecar",
+      "ipv4-address-literals:7:sidecar",
       "testing-completeness:undefined:file-header",
     ]);
     // Every comment acceptance names its file, line and position.
@@ -403,16 +405,24 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
       deps,
       input,
     );
-    // The two sidecar entries merged into one valid quality.yaml.
-    assertEquals(second.sidecar?.value.accept, [
-      { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
-      { rule: "ipv4-address-literals", file: "docs/lab.txt" },
-    ]);
-    // Only the two findings offered no acceptance remain; the template
-    // literal and the fence are unchanged.
+    // The five sidecar entries merged into one valid quality.yaml.
     assertEquals(
-      second.safetyWarnings.map((w) => w.ruleId).sort(),
-      ["base64-run", "ipv4-address-literals"],
+      second.sidecar?.value.accept.toSorted((a, b) =>
+        (a.file ?? "").localeCompare(b.file ?? "")
+      ),
+      [
+        { rule: "ipv4-address-literals", file: "docs/hosts.txt" },
+        { rule: "ipv4-address-literals", file: "docs/lab.txt" },
+        { rule: "ipv4-address-literals", file: "README.md", line: 3 },
+        { rule: "ipv4-address-literals", file: "README.md", line: 4 },
+        { rule: "ipv4-address-literals", file: "README.md", line: 7 },
+      ],
+    );
+    // Only the finding offered no acceptance remains; the template literal
+    // and the fence are unchanged.
+    assertEquals(
+      second.safetyWarnings.map((w) => w.ruleId),
+      ["base64-run"],
     );
     assertStringIncludes(
       await Deno.readTextFile(join(root, "model.ts")),
@@ -420,7 +430,7 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
     );
     assertEquals(second.reviewRulesResult.errors, []);
     assertEquals(second.reviewRulesResult.warnings, []);
-    assertEquals(second.acceptances.accepted.length, 7);
+    assertEquals(second.acceptances.accepted.length, 8);
     for (const a of second.acceptances.accepted) {
       assertEquals("reason" in a, false);
     }

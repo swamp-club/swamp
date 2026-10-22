@@ -311,10 +311,10 @@ Deno.test("extensionQuality: fresh run yields packaging → scoring → complete
     // repository URL is structurally verifiable (provisional factor).
     const score = data.score;
     assertEquals(score.rubricVersion, RUBRIC_VERSION);
-    assertEquals(score.factors.length, 11);
-    assertEquals(score.earnedPoints, 13);
-    assertEquals(score.maxEarnablePoints, 15);
-    assertEquals(score.maxClientEarnablePoints, 13);
+    assertEquals(score.factors.length, 12);
+    assertEquals(score.earnedPoints, 14);
+    assertEquals(score.maxEarnablePoints, 16);
+    assertEquals(score.maxClientEarnablePoints, 14);
     assertEquals(score.provisionalPoints, 2);
     assertEquals(score.percentage, 100);
     assertEquals(score.allPassed, true);
@@ -684,7 +684,7 @@ Deno.test("extensionQuality: cache hit re-audits dependency trust and folds the 
     assertEquals(trustFactor.status, "missing");
     assertEquals(trustFactor.earnedPoints, 0);
     assertEquals(data.score.allPassed, false);
-    assertEquals(data.score.earnedPoints, 10);
+    assertEquals(data.score.earnedPoints, 11);
   });
 });
 
@@ -1592,4 +1592,162 @@ Deno.test("ExtensionApiClient.getExtension: the caller's signal reaches fetch", 
   } finally {
     await Deno.remove(cacheRoot, { recursive: true });
   }
+});
+
+// ── secret-unsafe-docs (swamp-club#3757) ──────────────────────────────
+
+const LEAKY_README = [
+  "# Test Extension", // 1
+  "", // 2
+  "```bash", // 3
+  'swamp vault put my-vault api-token "abc123"', // 4
+  "swamp model create @testuser/test-ext e \\", // 5
+  "  --global-arg 'apiToken=vault://my-vault/api-token'", // 6
+  "```", // 7
+  "",
+].join("\n");
+
+function secretDocsFactor(data: ReturnType<typeof completedData>) {
+  return data.score.factors.find((f) => f.id === "secret-safe-docs");
+}
+
+function secretDocsWarnings(data: ReturnType<typeof completedData>) {
+  return data.findings.reviewRulesResult.warnings.filter((w) =>
+    w.ruleId === "secret-unsafe-docs"
+  );
+}
+
+Deno.test("extensionQuality: clean docs earn secret-safe-docs", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const readme = join(repoDir, "README.md");
+    await Deno.writeTextFile(readme, RICH_README);
+    const manifest = makeManifest({ additionalFiles: ["README.md"] });
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { additionalFilePaths: [readme] },
+      hashInput: { additionalFilePaths: [readme] },
+    });
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    assertEquals(secretDocsWarnings(data), []);
+    assertEquals(secretDocsFactor(data)?.status, "earned");
+  });
+});
+
+Deno.test("extensionQuality: a README that puts a secret in plaintext warns per command and loses secret-safe-docs", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const readme = join(repoDir, "README.md");
+    await Deno.writeTextFile(readme, LEAKY_README);
+    const manifest = makeManifest({ additionalFiles: ["README.md"] });
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { additionalFilePaths: [readme] },
+      hashInput: { additionalFilePaths: [readme] },
+    });
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    const warnings = secretDocsWarnings(data);
+    assertEquals(warnings.map((w) => [w.file, w.line]), [
+      [readme, 4],
+      [readme, 5],
+    ]);
+    assertStringIncludes(warnings[1].message, "`vault://`");
+    assertEquals(secretDocsFactor(data)?.status, "missing");
+    assertEquals(data.gateFailures, []);
+  });
+});
+
+Deno.test("extensionQuality: a quality.yaml line entry accepts a code-block finding and restores secret-safe-docs", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const readme = join(repoDir, "README.md");
+    await Deno.writeTextFile(readme, LEAKY_README);
+    await Deno.writeTextFile(
+      join(repoDir, "quality.yaml"),
+      [
+        "version: 1",
+        "accept:",
+        "  - rule: secret-unsafe-docs",
+        "    file: README.md",
+        "    line: 4",
+        "  - rule: secret-unsafe-docs",
+        "    file: README.md",
+        "    line: 5",
+        "    reason: shows the forms to avoid",
+        "",
+      ].join("\n"),
+    );
+    const manifest = makeManifest({ additionalFiles: ["README.md"] });
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { additionalFilePaths: [readme] },
+      hashInput: { additionalFilePaths: [readme] },
+    });
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    assertEquals(secretDocsWarnings(data), []);
+    assertEquals(
+      data.findings.acceptances.accepted.map((a) => [a.ruleId, a.line]),
+      [["secret-unsafe-docs", 4], ["secret-unsafe-docs", 5]],
+    );
+    assertEquals(secretDocsFactor(data)?.status, "earned");
+  });
+});
+
+Deno.test("extensionQuality: the manifest description is checked on the author's own lines", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifestPath = join(repoDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      [
+        "manifestVersion: 1", // 1
+        'name: "@testuser/test-ext"', // 2
+        "description: |", // 3
+        "  Echoes input.", // 4
+        "", // 5
+        "      --global-arg 'apiToken=vault://v/k'", // 6
+        "models:", // 7
+        "  - echo.ts", // 8
+        "",
+      ].join("\n"),
+    );
+    const input = makeQualityInput(repoDir, makeManifest(), {
+      prepareInput: { manifestPath },
+    });
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    const warnings = secretDocsWarnings(data);
+    assertEquals(warnings.map((w) => [w.file, w.line]), [[manifestPath, 6]]);
+    assertStringIncludes(warnings[0].message, "Line 6 (description)");
+  });
+});
+
+Deno.test("extensionQuality: describe strings are checked, test files and include files are not", async () => {
+  const source = [
+    "export const S = {",
+    '  token: z.string().describe("vault:// reference to the token"),',
+    "};",
+    "",
+  ].join("\n");
+  await withQualityFixture(source, async (repoDir, cacheRoot) => {
+    const model = join(repoDir, "models", "echo.ts");
+    const testFile = join(repoDir, "models", "echo_test.ts");
+    await Deno.writeTextFile(testFile, source);
+    await Deno.mkdir(join(repoDir, "vendor"));
+    const included = join(repoDir, "vendor", "NOTES.md");
+    await Deno.writeTextFile(included, LEAKY_README);
+    const input = makeQualityInput(repoDir, makeManifest(), {
+      prepareInput: {
+        allModelFiles: [model, testFile],
+        includeFilePaths: [included],
+      },
+    });
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    assertEquals(
+      secretDocsWarnings(data).map((w) => [w.file, w.line]),
+      [[model, 2]],
+    );
+  });
 });
