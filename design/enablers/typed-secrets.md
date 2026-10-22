@@ -929,13 +929,20 @@ is the service's base (`createQueryEnvironment`) with the `Secret` type, the
 allowed set and every refusal the inventory yields, `latestRun`, `model` and
 `behavior` included, built once per base; every parse in the service uses it,
 the history-opening program and the `latestRun` and `model()` clones among
-them. Each row of the reader's own is viewed on first read, so the predicate's
-`attributes` and its JSON `content` (by media type, parameters included) are
-one view; a projection's context views the record the same way, after
-hydration rebuilt it. Another namespace's record is never adapted and keeps
-today's content and projected content, null where its bytes are not on this
-host. A predicate runs in a row-local fault scope: its refusals propagate to the
-calling evaluation, absorbed or not, and the container rule is applied to the
+them. A row is viewed on first read, so the predicate's `attributes` and its
+JSON `content` are one view; a projection's context views the record the same
+way, after hydration rebuilt it. The view's answer is the one identity that
+routes content: `QueryView.record` answers a new object when it adapted the
+record and the record itself when it leaves it as stored, and a row's JSON
+content (by media type, parameters included, or by the aliased object) reads
+the viewed attributes only when the view adapted the record. A record the view
+answers as stored (another namespace's, a legacy row stamped with the empty
+namespace in a namespaced repository, or one whose tag names no sensitive
+field) keeps today's content and projected content, null where its bytes are
+not on this host; an adapted record whose JSON body did not parse keeps the
+empty attributes the view holds (swamp-club#3790). A predicate runs in a
+row-local fault scope: its refusals propagate to the calling evaluation,
+absorbed or not, and the container rule is applied to the
 predicate itself, whether the program answered or threw an unrelated error,
 while the row's secret reads and sensitive references stay
 with the row, because the predicate's Secrets never enter the calling
