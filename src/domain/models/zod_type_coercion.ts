@@ -347,7 +347,8 @@ function objectRefinementIssues(
  * Every issue carries the `input` the failing check received, which under a
  * transform is what the transform made of the value, so a caller can
  * register what a sensitive field's refusal may echo before it reports it
- * (swamp-club#3681).
+ * (swamp-club#3681). A parse that delivers a scalar, null or an array is
+ * refused with a value-free issue: global arguments are a record.
  */
 export function parseGlobalArgumentsLeniently(
   schema: z.ZodTypeAny,
@@ -404,9 +405,36 @@ export function parseGlobalArgumentsLeniently(
   if (!result.success) {
     return { success: false, issues: result.error.issues };
   }
+  if (
+    typeof result.data !== "object" || result.data === null ||
+    Array.isArray(result.data)
+  ) {
+    // Global arguments are a record. A schema delivering a scalar, null or
+    // an array cannot be stored as them, and spreading a string would store
+    // it one character per key (swamp-club#3681). The refusal names the
+    // shape, never the value. An instance is stored by its own properties.
+    return {
+      success: false,
+      issues: [{
+        code: "custom",
+        path: [],
+        message: `the global-arguments schema delivered ${
+          describeShape(result.data)
+        }, not an object`,
+        input: undefined,
+      } as z.ZodIssue],
+    };
+  }
   const data = { ...(result.data as Record<string, unknown>) };
   for (const key of skipKeys) delete data[key];
   return { success: true, data };
+}
+
+/** Names a value's kind, never its content. */
+function describeShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  return `a ${typeof value}`;
 }
 
 /**

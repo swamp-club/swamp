@@ -31,6 +31,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
+import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { UserError } from "../src/domain/errors.ts";
 import {
@@ -75,12 +76,20 @@ interface Harness {
   canary: string;
 }
 
+/** The number a sensitive numeric argument takes in these runs. */
+const PIN = 73816542;
+
 /**
  * A repository with one local vault holding `probe`, and a type whose
  * methods record the arguments they receive. Each takes a sensitive string:
  * `execute` returns, and the others throw something that echoes it, `fail`
  * an Error, `failText` the bare string, `failCoded` a UserError whose code
  * holds it.
+ * `failKeys` throws an error that echoes the keys of a sensitive record,
+ * `failNumber` a sensitive number, `failTransformed` what the schema's
+ * transform made of the string, `failMadeKeys` the keys a transform derived
+ * from the string; `failUnrelated` takes a record of sensitive strings and
+ * throws a fixed text that holds its keys only as fragments of other words.
  * The `refuse*` and `throwMade` methods never run: their schemas refuse
  * what the transform made of the string, through an issue that echoes it
  * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
@@ -93,6 +102,17 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const canary = `CANARY-3681-${crypto.randomUUID().replaceAll("-", "")}`;
   const failures: Record<string, (args: Record<string, unknown>) => string> = {
     fail: (args) => `intentional failure ${args.token}`,
+    failKeys: (args) =>
+      `intentional failure keys ${
+        Object.keys(args.tokens as Record<string, unknown>).join(",")
+      }`,
+    failNumber: (args) => `intentional failure pin ${args.pin}`,
+    failUnrelated: () => "intentional failure production dummy-db",
+    failTransformed: (args) => `intentional failure ${args.token}`,
+    failMadeKeys: (args) =>
+      `intentional failure keys ${
+        Object.keys(args.tokens as Record<string, unknown>).join(",")
+      }`,
   };
   const thrown: Record<string, (args: Record<string, unknown>) => unknown> = {
     failText: (args) => `intentional failure ${args.token}`,
@@ -120,6 +140,36 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       fail: method("fail", z.object({ token: secret })),
       failText: method("failText", z.object({ token: secret })),
       failCoded: method("failCoded", z.object({ token: secret })),
+      failKeys: method(
+        "failKeys",
+        z.object({
+          tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+        }),
+      ),
+      failNumber: method(
+        "failNumber",
+        z.object({ pin: z.number().meta({ sensitive: true }) }),
+      ),
+      failUnrelated: method(
+        "failUnrelated",
+        z.object({ tokens: z.record(z.string(), secret) }),
+      ),
+      failTransformed: method(
+        "failTransformed",
+        z.object({
+          token: secret.transform((text) => text.split("").reverse().join("")),
+        }),
+      ),
+      failMadeKeys: method(
+        "failMadeKeys",
+        z.object({ raw: z.string() }).transform((x) => ({
+          tokens: { [x.raw.toUpperCase()]: null } as Record<string, unknown>,
+        })).pipe(
+          z.object({
+            tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+          }),
+        ),
+      ),
       refuseMade: method(
         "refuseMade",
         z.object({
@@ -313,6 +363,18 @@ async function cacheFile(dir: string, name: string): Promise<string> {
   throw new Error(`no evaluated cache for ${name}`);
 }
 
+async function cacheOf(
+  dir: string,
+  name: string,
+): Promise<Record<string, unknown>> {
+  return parseYaml(
+    await Deno.readTextFile(await cacheFile(dir, name)),
+  ) as Record<
+    string,
+    unknown
+  >;
+}
+
 Deno.test("input values: a method that echoes a sensitive argument in its error shows the mask in the error event and the failure record (swamp-club#3681)", async () => {
   await withHarness(async (h) => {
     await define(h, "echo", "fail", { token: "${{ inputs.key }}" });
@@ -464,6 +526,135 @@ Deno.test("input values: a workflow step whose method throws a UserError with a 
   });
 });
 
+Deno.test("input values: the keys of a sensitive record an input supplied are not redactor secrets, so a method that echoes them shows them as written and unrelated output that holds a key as a fragment is stored intact (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    // Keys are identifiers, often short common words. Registered with the
+    // redactor they would corrupt every stored text that contains them:
+    // `production` would read `***uction`.
+    await define(h, "unrelated", "failUnrelated", {
+      tokens: "${{ inputs.key }}",
+    });
+    const events = await run(h, "unrelated", "failUnrelated", {
+      key: { prod: h.canary, dummy: h.canary },
+    });
+    assertEquals(h.received, [{ tokens: { prod: h.canary, dummy: h.canary } }]);
+    const errors = errorsOf(events);
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(errors[0].message, "intentional failure production dummy-db");
+    assertEquals(
+      (await filesHolding(
+        join(h.dir, ".swamp", "outputs"),
+        "intentional failure production dummy-db",
+      )).length > 0,
+      true,
+    );
+    assertEquals(await swampFilesHolding(h.dir, "***uction"), []);
+    // The values are secrets and stay out of every file.
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+
+    // A method that echoes the keys of a sensitive record shows them as it
+    // wrote them.
+    await define(h, "echo-keys", "failKeys", { tokens: "${{ inputs.key }}" });
+    const echoed = errorsOf(
+      await run(h, "echo-keys", "failKeys", { key: { [h.canary]: null } }),
+    );
+    assertEquals(h.received.at(-1), { tokens: { [h.canary]: null } });
+    assertEquals(echoed.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(echoed[0].message, `intentional failure keys ${h.canary}`);
+  });
+});
+
+Deno.test("input values: a method that echoes a sensitive number shows the mask in the error event and the failure record (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "echo-pin", "failNumber", { pin: "${{ inputs.key }}" });
+    const events = await run(h, "echo-pin", "failNumber", { key: PIN });
+    assertEquals(h.received, [{ pin: PIN }]);
+    const errors = errorsOf(events);
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(errors[0].message, "intentional failure pin ***");
+    assertEquals(await swampFilesHolding(h.dir, String(PIN)), []);
+  });
+});
+
+Deno.test("input values: a method that echoes what its schema's transform made of a sensitive argument shows the mask in the error event and the failure record (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "echo-made", "failTransformed", {
+      token: "${{ inputs.key }}",
+    });
+    const made = h.canary.split("").reverse().join("");
+    const events = await run(h, "echo-made", "failTransformed", {
+      key: h.canary,
+    });
+    assertEquals(h.received, [{ token: made }]);
+    const errors = errorsOf(events);
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(errors[0].message, "intentional failure ***");
+    assertEquals(await swampFilesHolding(h.dir, made), []);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+  });
+});
+
+Deno.test("input values: a workflow step whose method echoes the keys of a sensitive record the workflow's input supplied shows them as written in the step's error, while the evaluated definition masks the record whole (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "wf-keys", "failKeys", { tokens: "${{ inputs.key }}" });
+    const repo = createRepositoryContext({ repoDir: h.dir });
+    try {
+      const workflow = Workflow.create({
+        name: "keys-flow",
+        inputs: KEY_INPUT,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "probe",
+                task: StepTask.model("wf-keys", "failKeys", {
+                  key: "${{ inputs.key }}",
+                }),
+              }),
+            ],
+          }),
+        ],
+      });
+      await repo.workflowRepo.save(workflow);
+      const service = new WorkflowExecutionService(
+        repo.workflowRepo,
+        repo.workflowRunRepo,
+        h.dir,
+        undefined,
+        undefined,
+        repo.catalogStore,
+      );
+      const run = await service.execute(workflow.name, {
+        inputs: { key: { [h.canary]: null } },
+      });
+      assertEquals(run.status, "failed");
+      assertEquals(h.received, [{ tokens: { [h.canary]: null } }]);
+      const error = run.getJob("main")?.getStep("probe")?.error ?? "";
+      assertStringIncludes(error, `intentional failure keys ${h.canary}`);
+      // The run record keeps the workflow input it was given, as the replay
+      // pins it, and the step's error as the method wrote it. The evaluated
+      // definition holds the sensitive record only as the mask.
+      const cache = await cacheOf(h.dir, "wf-keys");
+      assertEquals(
+        (cache.methods as Record<string, { arguments: { tokens: unknown } }>)
+          .failKeys.arguments.tokens,
+        "***",
+      );
+    } finally {
+      repo.catalogStore.close();
+    }
+  });
+});
+
 Deno.test("input values: a parse the schema refuses under a transform is described in Zod's words and shows nothing of what the transform made of a sensitive argument, in the error event, the failure record and a workflow step's error (swamp-club#3681)", async () => {
   await withHarness(async (h) => {
     const made = h.canary.toUpperCase();
@@ -513,5 +704,35 @@ Deno.test("input values: a schema transform that throws for a sensitive argument
     assertEquals(h.received, []);
     assertEquals(await swampFilesHolding(h.dir, made), []);
     assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+  });
+});
+
+Deno.test("input values: a method that echoes a key its schema's transform derived from an argument shows the mask in the error event, the failure record and a workflow step's error (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    const made = h.canary.toUpperCase();
+    await define(h, "echo-made-keys", "failMadeKeys", {
+      raw: "${{ inputs.key }}",
+    });
+    const errors = errorsOf(
+      await run(h, "echo-made-keys", "failMadeKeys", { key: h.canary }),
+    );
+    assertEquals(h.received, [{ tokens: { [made]: null } }]);
+    assertEquals(errors.map((error) => error.code), [
+      "method_execution_failed",
+    ]);
+    assertEquals(errors[0].message, "intentional failure keys ***");
+    assertEquals(await swampFilesHolding(h.dir, made), []);
+
+    const step = await runStep(h, "echo-made-keys", "failMadeKeys", h.canary);
+    assertEquals(step.status, "failed");
+    assertStringIncludes(step.error, "intentional failure keys ***");
+    assertEquals(step.error.includes(made), false);
+    assertEquals(step.record.includes(made), false);
+    assertEquals(
+      (await swampFilesHolding(h.dir, made)).filter((path) =>
+        !path.includes("workflow-runs") && !path.includes("workflows-evaluated")
+      ),
+      [],
+    );
   });
 });

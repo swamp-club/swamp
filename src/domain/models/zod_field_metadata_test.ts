@@ -957,6 +957,72 @@ Deno.test("findValuesWithMetadata: with reportRoot, a match on the root schema's
   );
 });
 
+Deno.test("findValuesWithMetadata: with transformed, what a transform, codec, overwrite or catch enclosing a marked field delivered is reported whole, as is what a union or intersection with such a member delivered, while a preprocess and a transform beside the field are walked precisely (swamp-club#3681)", () => {
+  const marked = z.string().meta({ marked: true });
+  const inner = z.object({ secret: marked, label: z.string() });
+  const delivered = { token: "SECRET", label: "x" };
+  const whole = (schema: z.ZodTypeAny, value: unknown) =>
+    findValuesWithMetadata(schema, value, isMarked, {
+      reportRoot: true,
+      transformed: true,
+    }).map(({ keys, value, rawInput }) => ({ keys, value, rawInput }));
+  for (
+    const schema of [
+      inner.transform((v) => ({ token: v.secret, label: v.label })),
+      z.codec(inner, z.object({ token: z.string(), label: z.string() }), {
+        decode: (v) => ({ token: v.secret, label: v.label }),
+        encode: (v) => ({ secret: v.token, label: v.label }),
+      }),
+      inner.overwrite((v) => ({ secret: v.secret, label: v.label })),
+      inner.catch({ secret: "", label: "" }),
+      z.intersection(inner, z.any().transform((v) => v)),
+      z.union([z.string(), inner.transform((v) => v)]),
+    ]
+  ) {
+    assertEquals(whole(schema, delivered), [{
+      keys: [],
+      value: delivered,
+      rawInput: true,
+    }]);
+  }
+  assertEquals(
+    whole(
+      z.object({
+        creds: inner.transform((v) => ({ k: v.secret })),
+        other: z.string(),
+      }),
+      { creds: { k: "SECRET" }, other: "x" },
+    ),
+    [{ keys: ["creds"], value: { k: "SECRET" }, rawInput: true }],
+  );
+  // Read as stored, the delivered shape is walked against the input shape
+  // and holds nothing the schema can name.
+  assertEquals(
+    findValuesWithMetadata(inner.transform((v) => v), delivered, isMarked, {
+      reportRoot: true,
+    }),
+    [],
+  );
+  // What a preprocess delivers conforms to the schema behind it.
+  assertEquals(
+    whole(z.preprocess((v) => v, inner), { secret: "s", label: "x" }),
+    [{ keys: ["secret"], value: "s", rawInput: undefined }],
+  );
+  // A transform beside the field cannot reach it.
+  assertEquals(
+    whole(
+      z.object({ secret: marked, other: z.string().transform((s) => s) }),
+      { secret: "s", other: "o" },
+    ),
+    [{ keys: ["secret"], value: "s", rawInput: undefined }],
+  );
+  // A transform enclosing nothing marked delivers nothing marked.
+  assertEquals(
+    whole(z.object({ a: z.string() }).transform((v) => v), { a: "x" }),
+    [],
+  );
+});
+
 Deno.test("codeAroundMetadata: a refinement, a node-level error map or a pipe on a node enclosing a marked field, or on a union or intersection member beside one, writes messages; only a superRefine, a check or a pipe at or above the field adds issues; built-in checks, and code on the field itself or beside it, write nothing above (swamp-club#3681)", () => {
   const marked = z.string().meta({ marked: true });
   const code = (schema: z.ZodTypeAny) => codeAroundMetadata(schema, isMarked);

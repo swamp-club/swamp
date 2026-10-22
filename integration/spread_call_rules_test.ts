@@ -272,7 +272,7 @@ const PINNED: ReadonlyArray<
     reason: "secrets resolved for one method call",
     calls: [
       "secretValues.push(...extractSensitiveFieldValues(methodArgSchema, methodArgs))",
-      "secretValues.push(...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs))",
+      "secretValues.push(...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs, { delivered: …",
     ],
   },
   {

@@ -6369,6 +6369,46 @@ Deno.test("executeWorkflow: a placed step calls onArgumentsValidated once its ar
   }
 });
 
+Deno.test("execute: what a schema transform produces for a sensitive argument, and a sensitive number, are registered with the context's redactor as the method receives them (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const redactor = new SecretRedactor();
+  const transforming: ModelDefinition = {
+    type: ModelType.create("test/delivered-secrets"),
+    version: "2026.10.21.1",
+    globalArguments: z.object({}),
+    methods: {
+      write: {
+        description: "Receives a transformed secret and a numeric one",
+        arguments: z.object({
+          token: z.string().meta({ sensitive: true }).transform((text) =>
+            text.toUpperCase()
+          ),
+          pin: z.number().meta({ sensitive: true }),
+          label: z.string().transform((text) => text.toUpperCase()),
+        }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const { context } = createTestContext({ redactor });
+  await service.execute(
+    Definition.create({
+      name: "delivered",
+      methods: {
+        write: {
+          arguments: { token: "hunter2-long", pin: 73816542, label: "shown" },
+        },
+      },
+    }),
+    transforming.methods.write,
+    context,
+  );
+  assertEquals(
+    redactor.redact("got HUNTER2-LONG, 73816542 and SHOWN"),
+    "got ***, *** and SHOWN",
+  );
+});
+
 Deno.test("execute: a parse the schema refuses under a transform registers what the transform made of a sensitive argument, and the refusal, described in Zod's words, shows nothing of it (swamp-club#3681)", async () => {
   const service = new DefaultMethodExecutionService();
   const sensitive = z.string().meta({ sensitive: true });
@@ -6469,6 +6509,53 @@ Deno.test("execute: a schema that throws while parsing a sensitive argument has 
   assertEquals(shown.message, "normalized credential rejected: HUNTER2-LONG");
 });
 
+Deno.test("execute: a key a schema transform derives from an argument is registered as the method receives it, while a key the arguments spelled is not (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const redactor = new SecretRedactor();
+  const keyed: MethodDefinition = {
+    description: "Makes a record keyed by what it was given",
+    arguments: z.object({
+      raw: z.string(),
+      spelled: z.record(z.string(), z.unknown()),
+    }).transform((x) => ({
+      tokens: { [x.raw.toUpperCase()]: null, ...x.spelled },
+    })).pipe(
+      z.object({
+        tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+      }),
+    ),
+    execute: (args) =>
+      Promise.reject(
+        new Error(
+          `keys ${Object.keys((args as { tokens: object }).tokens).join(",")}`,
+        ),
+      ),
+  };
+  const { context } = createTestContext({ redactor });
+  const error = await assertRejects(
+    () =>
+      service.execute(
+        Definition.create({
+          name: "keyed",
+          methods: {
+            write: {
+              arguments: {
+                raw: "hunter2-long",
+                spelled: { Authorization: null },
+              },
+            },
+          },
+        }),
+        keyed,
+        context,
+      ),
+    Error,
+  );
+  // The method's own error is the run's to redact: the redactor now holds
+  // the made key and not the spelled one.
+  assertEquals(redactor.redact(error.message), "keys ***,Authorization");
+});
+
 Deno.test("executeWorkflow: a global argument the schema refuses under a transform registers what the transform made of it, and the refusal, described in Zod's words, shows nothing of it; a schema that throws while parsing a sensitive global has its message withheld (swamp-club#3681)", async () => {
   const service = new DefaultMethodExecutionService();
   const sensitive = z.string().meta({ sensitive: true });
@@ -6534,6 +6621,90 @@ Deno.test("executeWorkflow: a global argument the schema refuses under a transfo
     withheld.message,
     "Global arguments validation failed: the schema threw TypeError while parsing them, and its message is withheld",
   );
+});
+
+Deno.test("executeWorkflow: what a schema transform produces for a sensitive global argument is registered with the run's redactor as the method receives it (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const transforming: ModelDefinition = {
+    type: ModelType.create("test/global-delivered-secrets"),
+    version: "1",
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }).transform((text) =>
+        text.toUpperCase()
+      ).optional(),
+    }),
+    methods: {
+      run: {
+        description: "Echoes the global it reads into its error",
+        arguments: z.object({}),
+        execute: (_args, context) =>
+          Promise.reject(
+            new Error(`global echoed ${context.globalArgs.apiKey}`),
+          ),
+      },
+    },
+  };
+  const redactor = new SecretRedactor();
+  const { context } = createTestContext({
+    modelType: transforming.type,
+    redactor,
+  });
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({
+          name: "delivered-global",
+          globalArguments: { apiKey: "hunter2-long" },
+        }),
+        transforming,
+        "run",
+        context,
+      ),
+    Error,
+    "global echoed",
+  );
+  assertEquals(redactor.redact(error.message), "global echoed ***");
+  assertEquals(redactor.redact("made HUNTER2-LONG"), "made ***");
+});
+
+Deno.test("execute: a sensitive array or scalar a schema delivers in place of a record is registered with the context's redactor as the method receives it (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const delivering: Record<string, MethodDefinition> = {
+    array: {
+      description: "Delivers an array of secrets",
+      arguments: z.object({ raw: z.string() }).transform((x) => [
+        x.raw.toUpperCase(),
+      ]).pipe(z.array(sensitive)),
+      execute: (args) =>
+        Promise.reject(new Error(`array value ${(args as string[])[0]}`)),
+    },
+    scalar: {
+      description: "Delivers one secret",
+      arguments: z.object({ raw: z.string() }).transform((x) =>
+        x.raw.toUpperCase()
+      ).pipe(sensitive),
+      execute: (args) => Promise.reject(new Error(`scalar value ${args}`)),
+    },
+  };
+  for (const method of ["array", "scalar"] as const) {
+    const redactor = new SecretRedactor();
+    const { context } = createTestContext({ redactor, methodName: method });
+    const error = await assertRejects(
+      () =>
+        service.execute(
+          Definition.create({
+            name: "delivered",
+            methods: { [method]: { arguments: { raw: "hunter2-long" } } },
+          }),
+          delivering[method],
+          context,
+        ),
+      Error,
+      `${method} value`,
+    );
+    assertEquals(redactor.redact(error.message), `${method} value ***`);
+  }
 });
 
 Deno.test("execute: a refusal the schema's own code writes at a sensitive position is described in Zod's words with a path segment it introduced masked, a throw's name is reported only when standard, an issue beside the position keeps its message, and an issue above it, or one an enclosing refinement writes beside it, is described too (swamp-club#3681)", async () => {
@@ -6703,6 +6874,193 @@ Deno.test("executeWorkflow: a refusal the schema's own code writes at a sensitiv
     error.message,
     'Global arguments validation failed: Invalid input at "apiKey"',
   );
+});
+
+Deno.test("execute: what a transform enclosing a sensitive field delivers is registered with the context's redactor whole, under any key and in any container (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const delivering: Record<string, MethodDefinition> = {
+    renamed: {
+      description: "Delivers the secret under another key",
+      arguments: z.object({ secret: sensitive, label: z.string() }).transform(
+        ({ secret, label }) => ({ token: secret.toUpperCase(), label }),
+      ),
+      execute: (args) =>
+        Promise.reject(
+          new Error(`renamed value ${(args as { token: string }).token}`),
+        ),
+    },
+    nested: {
+      description: "Delivers the secret under another key of a nested field",
+      arguments: z.object({
+        creds: z.object({ secret: sensitive }).transform((o) => ({
+          k: `${o.secret.toUpperCase()}-x`,
+        })),
+        label: z.string(),
+      }),
+      execute: (args) =>
+        Promise.reject(
+          new Error(
+            `nested value ${(args as { creds: { k: string } }).creds.k}`,
+          ),
+        ),
+    },
+    mapped: {
+      description: "Delivers the secret in a Map",
+      arguments: z.object({ secret: sensitive, label: z.string() }).transform(
+        ({ secret }) => new Map([["k", secret.toUpperCase()]]),
+      ),
+      execute: (args) =>
+        Promise.reject(
+          new Error(`mapped value ${(args as Map<string, string>).get("k")}`),
+        ),
+    },
+  };
+  const argumentsFor: Record<string, Record<string, unknown>> = {
+    renamed: { secret: "hunter2-long", label: "prod" },
+    nested: { creds: { secret: "hunter2-long" }, label: "prod" },
+    mapped: { secret: "hunter2-long", label: "prod" },
+  };
+  for (const method of Object.keys(delivering)) {
+    const redactor = new SecretRedactor();
+    const { context } = createTestContext({ redactor, methodName: method });
+    const error = await assertRejects(
+      () =>
+        service.execute(
+          Definition.create({
+            name: "delivered-under",
+            methods: { [method]: { arguments: argumentsFor[method] } },
+          }),
+          delivering[method],
+          context,
+        ),
+      Error,
+      `${method} value`,
+    );
+    assertEquals(redactor.redact(error.message), `${method} value ***`, method);
+    // The label the input holds at a plain position is not a secret.
+    assertEquals(redactor.redact("label prod"), "label prod", method);
+  }
+});
+
+Deno.test("executeWorkflow: what a transform enclosing a sensitive global argument delivers is registered with the run's redactor as the method receives it, under any key, and a delivery that is not a record is refused without the value (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const sensitive = z.string().meta({ sensitive: true });
+  const renaming: ModelDefinition = {
+    type: ModelType.create("test/global-delivered-under"),
+    version: "1",
+    globalArguments: z.object({ apiKey: sensitive, region: z.string() })
+      .transform(({ apiKey, region }) => ({
+        key: apiKey.toUpperCase(),
+        region,
+      })),
+    methods: {
+      run: {
+        description: "Echoes the global it reads into its error",
+        arguments: z.object({}),
+        execute: (_args, context) =>
+          Promise.reject(new Error(`global echoed ${context.globalArgs.key}`)),
+      },
+    },
+  };
+  const redactor = new SecretRedactor();
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({
+          name: "delivered-global-under",
+          globalArguments: { apiKey: "hunter2-long", region: "eu-west-1" },
+        }),
+        renaming,
+        "run",
+        createTestContext({ modelType: renaming.type, redactor }).context,
+      ),
+    Error,
+    "global echoed",
+  );
+  assertEquals(redactor.redact(error.message), "global echoed ***");
+
+  const scalar: ModelDefinition = {
+    ...renaming,
+    type: ModelType.create("test/global-delivered-scalar"),
+    globalArguments: z.object({ apiKey: sensitive }).transform(({ apiKey }) =>
+      apiKey
+    ),
+  };
+  const refused = await assertRejects(
+    () =>
+      service.executeWorkflow(
+        Definition.create({
+          name: "delivered-global-scalar",
+          globalArguments: { apiKey: "hunter2-long" },
+        }),
+        scalar,
+        "run",
+        createTestContext({
+          modelType: scalar.type,
+          redactor: new SecretRedactor(),
+        }).context,
+      ),
+    Error,
+    "Global arguments validation failed",
+  );
+  assertEquals(refused.message.includes("hunter2-long"), false);
+  assertEquals(refused.message.includes("HUNTER2-LONG"), false);
+});
+
+Deno.test("executeWorkflow: a placed step ships what a transform enclosing a sensitive global argument delivered among its secret values (swamp-club#3681)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/remote-delivered-global"),
+    version: "1",
+    globalArguments: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      region: z.string(),
+    }).transform(({ apiKey, region }) => ({
+      key: apiKey.toUpperCase(),
+      region,
+    })),
+    methods: {
+      start: {
+        description: "Runs remotely",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const captured: RemoteStepRequest[] = [];
+  setRemoteStepDispatcher({
+    executeRemote: (request) => {
+      captured.push(request);
+      return Promise.resolve({
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+        workerName: "w1",
+      });
+    },
+    releaseAffinity: () => {},
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { labels: { tier: "remote" } },
+    });
+    await service.executeWorkflow(
+      Definition.create({
+        name: "remote-delivered",
+        globalArguments: { apiKey: "hunter2-long", region: "eu-west-1" },
+      }),
+      model,
+      "start",
+      context,
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+  assertEquals(captured.length, 1);
+  assertEquals(captured[0].secretValues?.includes("HUNTER2-LONG"), true);
+  assertEquals(captured[0].secretValues?.includes("hunter2-long"), true);
 });
 
 Deno.test("execute: a refused parse registers the sensitive value with the run's redactor and leaves the plain values beside it out, for method and global arguments alike (swamp-club#3753)", async () => {

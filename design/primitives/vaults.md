@@ -1012,6 +1012,31 @@ outside a run: `model validate` and the workflow step pre-check report them as
 failed validations, and `model create` and direct execution as their
 validation error.
 
+The redactor holds what the method can echo: each sensitive value, a sensitive
+number or bigint as it prints, and what the method receives once its schema has
+parsed the arguments, a transform's output and any object key the parse
+introduced included (swamp-club#3754). A parse that delivers a sensitive array
+or scalar in place of a record, or a value under a schema marked at its root,
+registers it too. Global arguments are parsed the same way, and what their
+parse delivers to the method's context, a transform's output included, is
+registered as a method argument's parse is; a delivery that is a scalar, null
+or an array is refused, naming its shape and never its value, and an instance
+is stored by its own properties. What a transform, codec, `.overwrite()` or
+`.catch()` enclosing a sensitive position delivers is registered whole, since
+its code may have moved the value under any key or into any container (a Map, a
+Set, an instance), less the text the arguments hold only at positions the
+schema leaves plain and the keys the schema declares, which the schema itself
+declares no secret, so a region, a port or a year the transform passes through
+is not masked out of every log and resource; a placed step ships the whole
+delivered value of its global arguments to its worker. A refinement that
+rewrites the object it validates by reference is not guarded. The keys a
+sensitive record took from data are not registered: they are identifiers,
+often short and common words, and the redactor replaces every occurrence of
+what it holds, so registering them would corrupt unrelated output (a stored
+`production` would read `***uction`) and can make a data write refuse over
+colliding property names. Such a record is masked whole in the cache and the
+reports instead, and a method that echoes its keys shows them as written.
+
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in
 them becomes `sensitive-<vault>.<key>` (forEach names: `sensitive-<index>`).

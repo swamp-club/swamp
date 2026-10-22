@@ -90,6 +90,7 @@ import {
 } from "../behavior_wording.ts";
 import { createDataId } from "../data/data_id.ts";
 import {
+  extractDeliveredSensitiveValues,
   extractRefusedSensitiveValues,
   extractSensitiveFieldValues,
   maskRefusedIssues,
@@ -506,7 +507,7 @@ function preRunRefusalHint(
  * with what the refusal may echo registered with `redactor` first and the
  * message passed through it (swamp-club#3681). The raw method arguments
  * and the filtered raw globals keep their sentinels, for the shell's
- * env-var delivery.
+ * env-var delivery; `parseInput` is what the schema received.
  */
 function parseMethodArguments(
   definition: Definition,
@@ -518,6 +519,7 @@ function parseMethodArguments(
   rawMethodArgs: Record<string, unknown>;
   resolvedGlobalArgs: Record<string, unknown>;
   filteredRawGlobalArgs: Record<string, unknown>;
+  parseInput: Record<string, unknown>;
   parsed: { data: unknown };
 } {
   // Get raw method arguments (may contain vault sentinel tokens)
@@ -586,6 +588,7 @@ function parseMethodArguments(
     rawMethodArgs,
     resolvedGlobalArgs,
     filteredRawGlobalArgs,
+    parseInput: methodArgs,
     parsed: argsResult,
   };
 }
@@ -627,6 +630,39 @@ function refusedParse(
   return new Error(
     redacted(`${subject} validation failed: ${described}`, redactor),
   );
+}
+
+/**
+ * Registers with the run's redactor what the method is about to receive
+ * under the sensitive positions of `schema`, as the schema parsed them: the
+ * value a transform produced, a number, and an object key the parse
+ * introduced, which a transform derived from a value; the method's error or
+ * output can echo any of them and the values registered before the parse
+ * do not cover them (swamp-club#3681). A key `parseInput` already spelled
+ * is the type's own or one the run registered as a data key. The delivered
+ * value is read whatever its shape: a schema may deliver a sensitive array
+ * or scalar in place of a record, and the global arguments a method reads
+ * from its context are parsed the same way. What a transform enclosing a
+ * sensitive position delivered is registered whole, since it may have moved
+ * the value under any key, less the values the input holds at positions the
+ * schema leaves plain (see {@link extractDeliveredSensitiveValues}).
+ */
+function registerDeliveredSecrets(
+  schema: z.ZodTypeAny,
+  parseInput: unknown,
+  delivered: unknown,
+  redactor: SecretRedactor | undefined,
+): void {
+  if (!redactor) return;
+  for (
+    const secret of extractDeliveredSensitiveValues(
+      schema,
+      parseInput,
+      delivered,
+    )
+  ) {
+    redactor.addSecret(secret);
+  }
 }
 
 /**
@@ -673,12 +709,19 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       rawMethodArgs,
       resolvedGlobalArgs,
       filteredRawGlobalArgs,
+      parseInput,
       parsed: argsResult,
     } = parseMethodArguments(
       definition,
       method,
       context.methodName,
       context.vaultSecrets,
+      context.redactor,
+    );
+    registerDeliveredSecrets(
+      method.arguments,
+      parseInput,
+      argsResult.data,
       context.redactor,
     );
     if (onArgumentsValidated) await onArgumentsValidated();
@@ -859,8 +902,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       }
       : {};
     if (modelDef.globalArguments) {
+      // The definition holds the global arguments as their parse delivered
+      // them, a transform's output included, beside what it was given, so
+      // what a transform enclosing a sensitive position delivered travels
+      // whole (swamp-club#3681).
       secretValues.push(
-        ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs),
+        ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs, {
+          delivered: true,
+        }),
       );
     }
     const methodArgSchema = modelDef.methods[methodName]?.arguments;
@@ -1168,6 +1217,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             context.redactor,
           );
         }
+        // What the method reads from its context is what this parse made,
+        // a transform's output included, so it is registered as a method
+        // argument's parse is (swamp-club#3681).
+        registerDeliveredSecrets(
+          globalArgsSchema,
+          coercedGlobalArgs,
+          globalArgsResult.data,
+          context.redactor,
+        );
         // Update definition with parsed values so methods receive correct types
         for (const [key, value] of Object.entries(globalArgsResult.data)) {
           currentDefinition.setGlobalArgument(key, value);
@@ -1483,11 +1541,17 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           // The worker parses the shipped arguments itself. The caller's
           // record of the evaluation and the redactor still need the parse
           // here, before anything leaves (swamp-club#3681).
-          parseMethodArguments(
+          const { parseInput, parsed } = parseMethodArguments(
             currentDefinition,
             method,
             methodName,
             context.vaultSecrets,
+            context.redactor,
+          );
+          registerDeliveredSecrets(
+            method.arguments,
+            parseInput,
+            parsed.data,
             context.redactor,
           );
           if (options.onArgumentsValidated) {
