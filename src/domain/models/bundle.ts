@@ -30,6 +30,7 @@ import {
 } from "../extensions/deno_config.ts";
 import {
   bareImportsFromDenoInfo,
+  denoInfoRootDir,
   hasUnresolvedBareImports,
   type ResolvedBareImport,
   withPackageSpecifiers,
@@ -1039,11 +1040,17 @@ async function readBareImports(
       signal: options.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
       ...(options.env ? { env: options.env } : {}),
     }).output();
-    return output.success
-      ? bareImportsFromDenoInfo(
-        JSON.parse(new TextDecoder().decode(output.stdout)),
-      )
-      : undefined;
+    if (!output.success) return undefined;
+    const json = JSON.parse(new TextDecoder().decode(output.stdout));
+    // Below a node_modules, deno info reports modules by real path; the
+    // root's resolved spelling keeps them local (swamp-club#3794).
+    const rootDir = denoInfoRootDir(json);
+    return bareImportsFromDenoInfo(
+      json,
+      rootDir === undefined
+        ? undefined
+        : await Deno.realPath(rootDir).catch(() => undefined),
+    );
   };
   try {
     const first = await read([]);

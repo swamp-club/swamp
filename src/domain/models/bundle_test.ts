@@ -2018,6 +2018,55 @@ Deno.test("bundleExtension: under a config, reads the graph and externalizes a b
   });
 });
 
+Deno.test({
+  name:
+    "bundleExtension: an importer deno info reports under the real path of a symlinked root still counts, so its zod 3 keeps the bare zod bundled (swamp-club#3794)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const outer = await Deno.realPath(
+      await Deno.makeTempDir({ prefix: "bundle-link-" }),
+    );
+    try {
+      const real = join(outer, "real", "node_modules", "repo");
+      await Deno.mkdir(real, { recursive: true });
+      await Deno.symlink(join(outer, "real"), join(outer, "link"), {
+        type: "dir",
+      });
+      const entry = join(outer, "link", "node_modules", "repo", "m.ts");
+      await Deno.writeTextFile(entry, 'import { z } from "zod";\n');
+      // deno info names the root as given and, below a node_modules, what
+      // it imports by real path.
+      const { calls, handler } = fakeDenoWithInfo({
+        roots: [toFileUrl(entry).href],
+        modules: [{
+          specifier: toFileUrl(entry).href,
+          dependencies: [{
+            specifier: "zod",
+            code: { specifier: "npm:zod@4.3.6" },
+          }],
+        }, {
+          specifier: toFileUrl(join(real, "lib.ts")).href,
+          dependencies: [{
+            specifier: "zod",
+            code: { specifier: "npm:zod@3.23.8" },
+          }],
+        }],
+      });
+      await withMockedCommand(handler, () =>
+        bundleExtension(entry, DENO_PATH, {
+          denoConfigPath: join(real, "deno.json"),
+          readOnlyLock: {},
+          env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+        }));
+      assertEquals(calls.length, 2);
+      assertEquals(calls[1][0], "bundle");
+      assertEquals(calls[1].includes("zod"), false);
+    } finally {
+      await Deno.remove(outer, { recursive: true });
+    }
+  },
+});
+
 Deno.test("bundleExtension: a scope sending zod to zod 3 in one module keeps the bare zod bundled", async () => {
   await withTempFile('import { z } from "zod";\n', async (path) => {
     const { calls, handler } = fakeDenoWithInfo({});
