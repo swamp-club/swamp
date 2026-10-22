@@ -96,6 +96,7 @@ export type DataAccessor =
   | "data.version"
   | "data.findBySpec"
   | "data.findByTag"
+  | "data.query"
   | "model.<name>.resource"
   | "model.method"
   | `steps.${string}.outputs`;
@@ -148,6 +149,18 @@ function defineLazy(target: object, key: string, read: () => unknown): void {
       return value;
     },
   });
+}
+
+/**
+ * Every view this module built: the attribute views and the record views of
+ * {@link adaptDataRecord}. The query view keeps one by identity when a
+ * projection returns it (design/enablers/typed-secrets.md Section 6.2).
+ */
+const views = new WeakSet<object>();
+
+/** Whether `value` is a view this module built. */
+export function isAdaptedView(value: unknown): boolean {
+  return typeof value === "object" && value !== null && views.has(value);
 }
 
 /** Identifies a record without its data name or any value. */
@@ -353,11 +366,13 @@ function viewOf(original: object, node: PathNode): object {
       if (index in original) define(view, String(index), original[index]);
     }
     view.length = original.length;
+    views.add(view);
     return view;
   }
   const view: object = Object.create(Object.getPrototypeOf(original));
   const source = original as Record<string, unknown>;
   for (const key of Object.keys(source)) define(view, key, source[key]);
+  views.add(view);
   return view;
 }
 
@@ -406,6 +421,7 @@ export function adaptDataRecord(
       (key === "content" && record.content === record.attributes);
     defineValue(view, key, aliased ? attributes : record[key]);
   }
+  views.add(view);
   return view;
 }
 

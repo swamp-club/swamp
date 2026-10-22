@@ -19,7 +19,7 @@
 
 import { assertEquals, assertExists } from "@std/assert";
 import { CompositeDataQueryService } from "./composite_data_query_service.ts";
-import { DataQueryService } from "./data_query_service.ts";
+import { DataQueryService, type QueryView } from "./data_query_service.ts";
 import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { Data } from "./data.ts";
@@ -293,4 +293,47 @@ Deno.test("CompositeDataQueryService: latestDataNamesForSpec lists ephemeral nam
 
   assertEquals(names.slice(0, 2).sort(), ["new-run", "shared"]);
   assertEquals(names.slice(2), ["old-run"]);
+});
+
+Deno.test("CompositeDataQueryService: query and querySync forward the view to both services, which view their own rows for the predicate and the projection", async () => {
+  const { composite, persistentRepo, ephemeralRepo } =
+    createCompositeQueryService();
+  await ephemeralRepo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "eph-data", ownerRef: "eph" }),
+    new TextEncoder().encode('{"source": "ephemeral"}'),
+  );
+  await persistentRepo.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData({ name: "pers-data", ownerRef: "pers" }),
+    new TextEncoder().encode('{"source": "persistent"}'),
+  );
+  const seen = { environments: 0, viewed: [] as string[] };
+  const view: QueryView = {
+    environment(base) {
+      seen.environments++;
+      return base.clone();
+    },
+    record(record) {
+      seen.viewed.push(record.name);
+      return { ...record, attributes: { ...record.attributes, viewed: true } };
+    },
+    predicate: (_expression, program, ctx) => program(ctx),
+    projection: (_expression, program, ctx) => ({ projected: program(ctx) }),
+  };
+  const matched = await composite.query("attributes.viewed == true", {
+    view,
+  }) as DataRecord[];
+  assertEquals(matched.map((r) => r.name).sort(), ["eph-data", "pers-data"]);
+  assertEquals(matched.every((r) => r.attributes.viewed === undefined), true);
+  assertEquals(seen.environments, 2);
+  assertEquals(seen.viewed.sort(), ["eph-data", "pers-data"]);
+
+  assertEquals(
+    composite.querySync('name != ""', { view, select: "attributes.source" }),
+    [{ projected: "ephemeral" }, { projected: "persistent" }],
+  );
+  assertEquals(seen.environments, 4);
 });

@@ -54,6 +54,7 @@ const SECRET_MODULES: ReadonlySet<string> = new Set([
   "src/infrastructure/cel/secret_fault_context.ts",
   "src/infrastructure/cel/secret_boundary.ts",
   "src/infrastructure/cel/sensitive_record_adapter.ts",
+  "src/infrastructure/cel/query_view.ts",
 ]);
 
 Deno.test("no production code outside the CEL adapter imports a Secret module", async () => {
@@ -67,6 +68,7 @@ Deno.test("no production code outside the CEL adapter imports a Secret module", 
     const edge of [
       "src/infrastructure/cel/cel_evaluator.ts -> src/infrastructure/cel/secret_boundary.ts",
       "src/infrastructure/cel/cel_evaluator.ts -> src/infrastructure/cel/sensitive_record_adapter.ts",
+      "src/infrastructure/cel/cel_evaluator.ts -> src/infrastructure/cel/query_view.ts",
     ]
   ) {
     assert(edges.includes(edge), edges.join("\n"));

@@ -39,6 +39,7 @@ import {
   prepareCheckedVaultCalls,
   type VaultEvaluationScope,
 } from "./cel_vault_namespace.ts";
+import { coerceBigInts } from "./cel_coercion.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
 import {
   SECRET_DESTINATION_REFUSED,
@@ -46,6 +47,7 @@ import {
   SecretRefusedError,
 } from "../../domain/expressions/errors.ts";
 import type { DataReadOptions } from "../../domain/expressions/model_resolver.ts";
+import type { QueryView } from "../../domain/data/query_view.ts";
 import type { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import {
   INTERNAL_FUNCTION_SIGNATURES,
@@ -69,6 +71,7 @@ import {
   SecretRefusal,
   sensitiveReferenceKey,
 } from "./secret_fault_context.ts";
+import { expressionQueryView } from "./query_view.ts";
 import {
   registerAllowedSet,
   registerSecretRefusals,
@@ -130,133 +133,6 @@ const DATA_RECORD_FIELDS = new Set([
 function unwrapOptional(value: unknown): unknown {
   if (value instanceof Optional) {
     return value.hasValue() ? value.value() : null;
-  }
-  return value;
-}
-
-/** The shape of cel-js's `uint` value. */
-interface CelUnsignedInt {
-  readonly value: bigint;
-}
-
-/** The shape of cel-js's `google.protobuf.Duration` value. */
-interface CelDuration {
-  readonly seconds: bigint;
-  readonly nanos: number;
-}
-
-// cel-js does not export its uint and duration classes, so take their
-// constructors from a value of each.
-const celTypeProbe = new Environment();
-const UnsignedIntType = (celTypeProbe.evaluate("1u") as object).constructor;
-const DurationType = (celTypeProbe.evaluate("duration('0s')") as object)
-  .constructor;
-
-const NANOS_PER_SECOND = 1_000_000_000n;
-
-type DurationConstructor = new (seconds: bigint, nanos: number) => CelDuration;
-
-function durationNanos(duration: CelDuration): bigint {
-  return duration.seconds * NANOS_PER_SECOND + BigInt(duration.nanos);
-}
-
-/**
- * Builds a duration from its total in nanoseconds, with `seconds` and `nanos`
- * sharing the sign of the total — the form cel-js gives a parsed duration.
- */
-function durationFromNanos(total: bigint): CelDuration {
-  return new (DurationType as DurationConstructor)(
-    total / NANOS_PER_SECOND,
-    Number(total % NANOS_PER_SECOND),
-  );
-}
-
-// cel-js 7.6.1 (and 8.0.0) adds and subtracts durations assuming `nanos` is
-// never negative, but a negative duration it parses keeps a negative `nanos`,
-// so `duration('-1.5s') + duration('-0.6s')` came out as -3.1s. Its `==`
-// compares the stored fields, so it also needs every duration in one form.
-// Replace both methods on the shared prototype with versions that work from
-// the total; this file is loaded before any CEL is evaluated, so every
-// Environment in the process gets them (swamp-club#3714). Remove once cel-js
-// ships a fix; cel_js_duration_pin_test.ts pins what this relies on.
-if (
-  typeof DurationType.prototype.addDuration === "function" &&
-  typeof DurationType.prototype.subtractDuration === "function"
-) {
-  Object.assign(DurationType.prototype, {
-    addDuration(this: CelDuration, other: CelDuration): CelDuration {
-      return durationFromNanos(durationNanos(this) + durationNanos(other));
-    },
-    subtractDuration(this: CelDuration, other: CelDuration): CelDuration {
-      return durationFromNanos(durationNanos(this) - durationNanos(other));
-    },
-  });
-}
-
-/**
- * Formats a duration in CEL's string form (`90s`, `1.5s`, `-1.5s`). cel-js's
- * own `toString()` misprints negative durations, so this works from the total.
- */
-function formatDuration(duration: CelDuration): string {
-  const total = durationNanos(duration);
-  const sign = total < 0n ? "-" : "";
-  const magnitude = total < 0n ? -total : total;
-  const seconds = magnitude / NANOS_PER_SECOND;
-  const nanos = magnitude % NANOS_PER_SECOND;
-  if (nanos === 0n) return `${sign}${seconds}s`;
-  const fraction = nanos.toString().padStart(9, "0").replace(/0+$/, "");
-  return `${sign}${seconds}.${fraction}s`;
-}
-
-function coerceInt(value: bigint): number | bigint {
-  if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
-    return Number(value);
-  }
-  return value;
-}
-
-/**
- * Recursively converts CEL result values to the plain values the rest of
- * the codebase expects, following CEL's JSON mapping:
- * - int and uint become numbers; values outside Number.MAX_SAFE_INTEGER are
- *   left as bigint to avoid silent precision loss
- * - timestamp becomes its ISO 8601 string, duration its CEL string (`90s`)
- *   and bytes a base64 string
- * - optionals unwrap to their value, or null when empty
- */
-export function coerceBigInts(value: unknown): unknown {
-  if (typeof value === "bigint") {
-    return coerceInt(value);
-  }
-  if (value instanceof Optional) {
-    return coerceBigInts(value.hasValue() ? value.value() : null);
-  }
-  if (Array.isArray(value)) {
-    return value.map(coerceBigInts);
-  }
-  if (value instanceof Date) {
-    return value.toJSON();
-  }
-  if (value instanceof DurationType) {
-    return formatDuration(value as CelDuration);
-  }
-  if (value instanceof UnsignedIntType) {
-    return coerceInt((value as CelUnsignedInt).value);
-  }
-  if (value instanceof Uint8Array) {
-    return value.toBase64();
-  }
-  if (value !== null && typeof value === "object") {
-    const result: Record<string, unknown> = Object.create(null);
-    for (const [k, v] of Object.entries(value)) {
-      Object.defineProperty(result, k, {
-        value: coerceBigInts(v),
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-    return result;
   }
   return value;
 }
@@ -563,12 +439,18 @@ export class CelDataNamespace {
     return [];
   }
 
-  query(predicate: string, select?: string): unknown {
+  /**
+   * `view` is the expression-facing query view of a typed environment
+   * (typed-secrets Section 6.2), which the delegate hands to the query
+   * service; the untyped environment passes none.
+   */
+  query(predicate: string, select?: string, view?: QueryView): unknown {
     const fn = this.delegate["query"];
     if (typeof fn === "function") {
-      return (fn as (pred: string, sel?: string) => unknown)(
+      return (fn as (pred: string, sel?: string, view?: QueryView) => unknown)(
         predicate,
         select,
+        view,
       );
     }
     return [];
@@ -665,6 +547,8 @@ function registerArithmeticOverloads(env: Environment): void {
 }
 
 export { registerArithmeticOverloads };
+// The coercion lives in cel_coercion.ts; re-exported for its importers.
+export { coerceBigInts };
 
 export function createExtensionCelEnvironment(): Environment {
   const env = new Environment({
@@ -827,6 +711,13 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
   const readOptions: DataReadOptions | undefined = typed
     ? { sensitiveFields: "stored" }
     : undefined;
+  // The query view a typed data.query hands the service (typed-secrets
+  // Section 6.2), bound per call to the receiver's own namespace: the one
+  // identity that decides the own-namespace check for the rows a predicate
+  // reads and for the records fromAccessor adapts afterwards.
+  const queryView: (receiver: CelDataNamespace) => QueryView | undefined = typed
+    ? (receiver) => expressionQueryView(receiver.namespace)
+    : () => undefined;
 
   // Register namespace types so cel-js recognizes them via constructor
   // matching instead of trying to infer them as maps.
@@ -956,16 +847,30 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
       ),
   );
 
+  // Records data.query answers are adapted like every other accessor's; the
+  // view adapted what the predicate read. A projection is answered as the
+  // view post-processed it, and a select the service treats as none (the
+  // empty string) answers records, adapted the same way.
   env.registerFunction(
     "CelDataNamespace.query(string): dyn",
     (receiver: CelDataNamespace, predicate: string) =>
-      receiver.query(predicate),
+      fromAccessor(
+        receiver,
+        receiver.query(predicate, undefined, queryView(receiver)),
+        "data.query",
+      ),
   );
 
   env.registerFunction(
     "CelDataNamespace.query(string, string): dyn",
     (receiver: CelDataNamespace, predicate: string, select: string) =>
-      receiver.query(predicate, select),
+      select
+        ? receiver.query(predicate, select, queryView(receiver))
+        : fromAccessor(
+          receiver,
+          receiver.query(predicate, select, queryView(receiver)),
+          "data.query",
+        ),
   );
 
   // Register receiver methods for workers namespace
@@ -1522,7 +1427,9 @@ export class CelEvaluator {
    * (design/enablers/typed-secrets.md Section 3.4). A policy decision only:
    * no existence check, probe or load. A denial fails the evaluation as the
    * read-time denial does with typed secrets off, and a missing scope fails
-   * closed.
+   * closed. The rows a `data.query` predicate reads record theirs in a
+   * row-local scope (Section 6.2), so the records here are the ones the
+   * expression received: answered whole, or read by a projection.
    */
   private async authorizeSensitiveReferences(
     faults: FaultScope,

@@ -30,7 +30,10 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
-import type { DataQueryService } from "../data/data_query_service.ts";
+import type {
+  DataQueryService,
+  QueryView,
+} from "../data/data_query_service.ts";
 import {
   mergeModelData,
   modelIdentityPredicate,
@@ -358,10 +361,13 @@ export interface DataNamespace {
 
   /**
    * Query data artifacts using a CEL predicate, with optional projection.
+   * `view` is the expression-facing query view of a typed evaluation
+   * (typed-secrets Section 6.2), handed to the query service as it is.
    */
   query(
     predicate: string,
     select?: string,
+    view?: QueryView,
   ): Promise<DataRecord[] | unknown[]>;
 
   /**
@@ -1615,12 +1621,14 @@ export class ModelResolver {
       query: async (
         predicate: string,
         select?: string,
+        view?: QueryView,
       ): Promise<DataRecord[] | unknown[]> => {
         if (!this.dataQueryService) return [];
         const results = await this.dataQueryService.query(predicate, {
           select,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
+          view,
         });
         // Projections are opaque values, so a projected path is not
         // existence-checked; record results are.

@@ -57,13 +57,21 @@ import {
   type SpecNameFallback,
   validateFieldReferences,
 } from "./query_predicate.ts";
-import { isTextContentType } from "./content_type.ts";
+import { isJsonMediaType, isTextContentType } from "./content_type.ts";
+import {
+  type QueryProgram,
+  type QueryView,
+  QueryViewRefusal,
+} from "./query_view.ts";
 import { type ContentEncoding, encodeContent } from "./content_encoding.ts";
 import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
 import { garbageCollectionToColumn } from "./data_metadata.ts";
+
+// The query view port, re-exported beside the service that takes it.
+export { type QueryProgram, type QueryView, QueryViewRefusal };
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
@@ -265,6 +273,15 @@ export interface DataQueryOptions {
    * query that calls model fails (swamp-club#2960).
    */
   modelResolver?: ModelReferenceResolver;
+  /**
+   * The expression-facing query view (design/enablers/typed-secrets.md
+   * Section 6.2): the typed `data.query` accessor passes one, so its
+   * predicate and projection read tagged sensitive fields as Secrets and a
+   * refusal propagates as a {@link QueryViewRefusal}. Absent on every other
+   * path, which reads records as stored. A composite service forwards it to
+   * each of its services.
+   */
+  view?: QueryView;
 }
 
 /** Options for {@link DataQueryService.getLatestRecord}. */
@@ -344,6 +361,18 @@ export interface DataQueryServiceOptions {
   backfill?: boolean;
 }
 
+/**
+ * The environment the query service parses and evaluates in. Exported so
+ * the refusal coverage fitness test builds the query view from the same
+ * base the service uses.
+ */
+export function createQueryEnvironment(): Environment {
+  return new Environment({
+    unlistedVariablesAreDyn: true,
+    homogeneousAggregateLiterals: false,
+  });
+}
+
 export class DataQueryService {
   private readonly queryEnv: Environment;
   private readonly foreignContentCache = new Map<string, Uint8Array>();
@@ -358,10 +387,7 @@ export class DataQueryService {
   ) {
     this.filterStaleRows = options?.filterStaleRows ?? false;
     this.backfill = options?.backfill ?? true;
-    this.queryEnv = new Environment({
-      unlistedVariablesAreDyn: true,
-      homogeneousAggregateLiterals: false,
-    });
+    this.queryEnv = createQueryEnvironment();
   }
 
   /**
@@ -813,7 +839,11 @@ export class DataQueryService {
    * Triggers backfill if the catalog is not yet populated.
    * Attributes are returned as stored: vault references in sensitive fields
    * are never resolved here. Callers that need the secret resolve it
-   * themselves, recording it in the run's RunSensitiveValues.
+   * themselves, recording it in the run's RunSensitiveValues. Under a
+   * {@link QueryView} the predicate and the projection read tagged fields
+   * through the view instead (typed-secrets Section 6.2), and records
+   * answered without a select are still returned as stored for the caller
+   * to adapt.
    */
   async query(
     predicate: string,
@@ -898,6 +928,7 @@ export class DataQueryService {
           accepted,
           matched.selectParsed,
           await this.projectedContents(accepted, matched.selectReadsContent),
+          options,
         );
         break;
       }
@@ -937,6 +968,7 @@ export class DataQueryService {
       matched.selectReadsContent
         ? new Map(matched.records.map((r) => [r, this.projectedContent(r)]))
         : undefined,
+      options,
     );
   }
 
@@ -982,13 +1014,14 @@ export class DataQueryService {
   private latestRunEnv(
     workflows: string[],
     latestRuns: LatestRuns,
+    base: Environment = this.queryEnv,
   ): Environment {
     // Every call must have been resolved: an unregistered call would fail
     // on each row, and per-row failures are skipped, not reported.
     if (workflows.some((workflow) => !latestRuns.has(workflow))) {
       throw latestRunUnavailable();
     }
-    return this.queryEnv.clone().registerFunction(
+    return base.clone().registerFunction(
       `${LATEST_RUN_FUNCTION}(string): dyn`,
       (workflow: string) => latestRuns.get(workflow) ?? null,
     );
@@ -1194,21 +1227,28 @@ export class DataQueryService {
         ? () => missingContent.set(catalogRowKey(row), row)
         : undefined;
 
+    // An expression-facing query evaluates in its view's environment, where
+    // a tagged field is a Secret with its refusals (typed-secrets Section
+    // 6.2). Every parse below uses that base, so the program evaluated when
+    // the predicate opens history, which is this first parse, has them too.
+    const view = options?.view;
+    const base = view ? view.environment(this.queryEnv) : this.queryEnv;
+
     // Parse and validate the caller's predicate first. Parsing on the raw
     // input means parse errors point at what the caller actually wrote.
-    let userParsed = this.queryEnv.parse(predicate);
+    let userParsed = base.parse(predicate);
     const userAst = userParsed.ast as ASTNode;
     const rootIds = collectRootIdentifiers(userAst);
     validateFieldReferences(rootIds);
 
     // A query calling latestRun parses in an environment that has it.
-    let env = this.queryEnv;
+    let env = base;
     const latestRunWorkflows = this.latestRunWorkflows(
       userAst,
       options?.select,
     );
     if (latestRunWorkflows.length > 0) {
-      env = this.latestRunEnv(latestRunWorkflows, latestRuns);
+      env = this.latestRunEnv(latestRunWorkflows, latestRuns, base);
       userParsed = env.parse(predicate);
     }
 
@@ -1218,7 +1258,7 @@ export class DataQueryService {
     let currentRow: CatalogRow | null = null;
     const modelReferences = collectModelReferences(userAst);
     if (options?.select) {
-      const selectAst = this.queryEnv.parse(options.select).ast as ASTNode;
+      const selectAst = base.parse(options.select).ast as ASTNode;
       if (collectModelReferencesLenient(selectAst)) {
         throw new UserError(
           `${modelFunctionAsTyped(selectAst)}() can only be used in the ` +
@@ -1240,7 +1280,7 @@ export class DataQueryService {
       };
       // model() and its behavior spelling behavior() (swamp-club#3410) are
       // one function under two names.
-      env = env === this.queryEnv ? env.clone() : env;
+      env = env === base ? env.clone() : env;
       for (const fn of MODEL_FUNCTIONS) {
         env = env.registerFunction(`${fn}(string): bool`, matchesModel);
       }
@@ -1455,8 +1495,17 @@ export class DataQueryService {
         ctx["name"] = nameLiteral;
       }
       currentRow = row;
+      // Under a view the record is viewed once per row, on first read, so
+      // the predicate's attributes and JSON content are one view.
+      let viewed: DataRecord | undefined;
+      const loadViewed = (): DataRecord => {
+        if (!viewed) viewed = view!.record(load());
+        return viewed;
+      };
       Object.defineProperties(ctx, {
-        attributes: { get: () => load().attributes },
+        attributes: {
+          get: () => view ? loadViewed().attributes : load().attributes,
+        },
         content: {
           get: () => {
             if (!isTextContentType(record.contentType)) {
@@ -1464,6 +1513,16 @@ export class DataQueryService {
               throw new Error("content of a non-text item");
             }
             const loaded = load();
+            if (view && !isForeignNamespace(record.namespace, this.dataRepo)) {
+              // The reader's own JSON, as fromRow decides it (parameters
+              // included) or by the aliased object it leaves at content,
+              // reads the view; another namespace's record is never adapted
+              // and keeps today's content.
+              return isJsonMediaType(loaded.contentType) ||
+                  loaded.content === loaded.attributes
+                ? loadViewed().attributes
+                : loaded.content;
+            }
             return loaded.contentType === "application/json"
               ? loaded.attributes
               : loaded.content;
@@ -1471,7 +1530,9 @@ export class DataQueryService {
         },
       });
       try {
-        const match = parsed(ctx);
+        const match = view
+          ? view.predicate(predicate, parsed as unknown as QueryProgram, ctx)
+          : parsed(ctx);
         // Also when CEL absorbed the read, as in `content == "x" || true`.
         if (readBinaryContent) {
           violations.push({ record, matchesBefore: results.length });
@@ -1488,6 +1549,9 @@ export class DataQueryService {
           }
         }
       } catch (error) {
+        // A refusal or a malformed reference the view raised fails the
+        // query: never a skipped row, and never a violation in its place.
+        if (error instanceof QueryViewRefusal) throw error;
         // Required body reads must fail the query, not skip the row.
         if (loadFailed) throw loadError;
         if (readBinaryContent) {
@@ -1570,12 +1634,15 @@ export class DataQueryService {
     results: DataRecord[],
     selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined,
     contents: Map<DataRecord, ProjectedContent> | undefined,
+    options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
     // Apply projection if select expression provided.
     // Per-record errors (e.g. missing attribute keys) produce null instead of
     // failing the entire query, so partial results are still useful.
     // The ns alias must be available in select expressions too.
     if (selectParsed) {
+      const view = options?.view;
+      const select = options?.select ?? "";
       return results.map((r) => {
         try {
           const selectCtx = Object.create(
@@ -1584,6 +1651,57 @@ export class DataQueryService {
           selectCtx["ns"] = r.namespace;
           selectCtx["behaviorName"] = r.modelName;
           const projected = contents?.get(r);
+          if (view) {
+            // Every row's projection runs through the view; what its
+            // context reads depends on the record. The reader's own record
+            // is viewed on first read, after hydration rebuilt it, and its
+            // JSON content, by media type (parameters included) or by the
+            // aliased object, reads the viewed attributes. Another
+            // namespace's record is never adapted, so it reads as the raw
+            // branches below read it, its projected content null where its
+            // bytes are not on this host.
+            const foreign = isForeignNamespace(r.namespace, this.dataRepo);
+            let viewed: DataRecord | undefined;
+            const loadViewed = (): DataRecord => {
+              if (!viewed) viewed = view.record(r);
+              return viewed;
+            };
+            const rawContent = (): unknown =>
+              projected
+                ? projected.content
+                : r.contentType === "application/json"
+                ? r.attributes
+                : r.content;
+            Object.defineProperties(selectCtx, {
+              attributes: {
+                get: () => foreign ? r.attributes : loadViewed().attributes,
+                enumerable: true,
+                configurable: true,
+              },
+              content: {
+                get: () => {
+                  if (foreign) return rawContent();
+                  const aliased = projected
+                    ? projected.content === r.attributes
+                    : r.content === r.attributes;
+                  if (isJsonMediaType(r.contentType) || aliased) {
+                    return loadViewed().attributes;
+                  }
+                  return projected ? projected.content : r.content;
+                },
+                enumerable: true,
+                configurable: true,
+              },
+            });
+            if (projected) {
+              selectCtx["contentEncoding"] = projected.contentEncoding;
+            }
+            return view.projection(
+              select,
+              selectParsed as unknown as QueryProgram,
+              selectCtx,
+            );
+          }
           if (projected) {
             selectCtx["content"] = projected.content;
             selectCtx["contentEncoding"] = projected.contentEncoding;
@@ -1591,7 +1709,9 @@ export class DataQueryService {
             selectCtx["content"] = r.attributes;
           }
           return coerceBigInts(selectParsed(selectCtx));
-        } catch {
+        } catch (error) {
+          // A refusal the view raised fails the query, never a null.
+          if (error instanceof QueryViewRefusal) throw error;
           return null;
         }
       });

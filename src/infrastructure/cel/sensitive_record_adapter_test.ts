@@ -42,6 +42,7 @@ import {
   adaptDataRecord,
   adaptDataResult,
   adaptModelMethodResult,
+  isAdaptedView,
   modelMapView,
   stepsView,
   synchronousSensitiveReferences,
@@ -916,4 +917,28 @@ Deno.test("stepsView: a later group at the same path replaces the earlier one, a
     assertEquals(Object.hasOwn(Object.prototype, "isAdmin"), false);
     assertEquals(Object.hasOwn(Object.prototype, "password"), false);
   });
+});
+
+Deno.test("isAdaptedView: answers true for the record view and every attribute view the adapter built, and false for the original, a plain map, a Secret and a non-object", () => {
+  const original = record(
+    { password: REF_A, nested: { token: REF_B, plain: "p" }, user: "u" },
+    pathsTag("password", "nested.token"),
+  );
+  const { view } = adapt(original);
+  assertEquals(isAdaptedView(view), true);
+  assertEquals(isAdaptedView(attributesOf(view)), true);
+  assertEquals(isAdaptedView(attributesOf(view).nested), true);
+  assertEquals(isAdaptedView(original), false);
+  assertEquals(isAdaptedView(original.attributes), false);
+  assertEquals(isAdaptedView(attributesOf(view).password), false);
+  assertEquals(isAdaptedView({ password: REF_A }), false);
+  assertEquals(isAdaptedView(null), false);
+  assertEquals(isAdaptedView("text"), false);
+  // A record the adapter returns as it is was not built by it.
+  const foreign = record({ password: REF_A }, pathsTag("password"), {
+    namespace: "security",
+  });
+  assertEquals(isAdaptedView(adapt(foreign).view), false);
+  const untagged = record({ password: REF_A });
+  assertEquals(isAdaptedView(adapt(untagged).view), false);
 });

@@ -488,7 +488,10 @@ that evaluate synchronously (step names, the `self.*` resolution above) run
 the pass evaluator's `prepare` first, the authorization step for the
 sensitive-field references they can read; a secret refusal in a name fails the
 expansion rather than falling back to a suffixed raw name. See
-[typed-secrets](./typed-secrets.md) Sections 3.4 and 5.
+[typed-secrets](./typed-secrets.md) Sections 3.4 and 5. `data.query()`
+predicates and projections read tagged fields as Secrets too (typed-secrets
+4.3, Section 6.2): a predicate cannot operate on one, a projection may return
+one, and a refusal fails the query rather than dropping the row.
 
 ```yaml
 # Fan out across region-specific behavior instances:

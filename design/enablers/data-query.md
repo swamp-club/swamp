@@ -465,7 +465,10 @@ the write removes its own version and pending row.
 **Vault resolution:** the query service never resolves vault references.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
 CEL, `context.queryData()` in extension methods, and `swamp data query` return
-schema-marked sensitive fields as the stored `vault.get(...)` reference. The
+schema-marked sensitive fields as the stored `vault.get(...)` reference. On the
+typed path (typed-secrets Section 6.2, behind the internal option) the
+expression-facing `data.query()` reads them as `Secret` values instead, while
+the command and `context.queryData()` keep the stored reference. The
 reads that resolve those fields are `data.latest()` with an exact behavior name,
 `steps.<name>.outputs` and `model.<name>.resource` in CEL, which record each
 value in the run's `RunSensitiveValues`, and `readResource()` and

@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
-import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStrictEquals,
+} from "@std/assert";
 import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -38,7 +44,11 @@ import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { DataQueryService } from "../data/data_query_service.ts";
+import {
+  type DataQueryOptions,
+  DataQueryService,
+  type QueryView,
+} from "../data/data_query_service.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import { type Namespace, restoreNamespace } from "../data/namespace.ts";
 import {
@@ -4015,5 +4025,49 @@ Deno.test("ModelResolver.vaultEvaluationScope: answers the resolver's vault serv
     // A probe's value goes nowhere without a redactor.
     silent.redactor.addSecret("dropped");
     assertEquals(redactor.redact("dropped"), "dropped");
+  });
+});
+
+Deno.test("ModelResolver data namespace: query forwards the view it is handed into the query service's options beside select (typed-secrets 4.3)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    const seen: Array<DataQueryOptions | undefined> = [];
+    const original = dqs.query.bind(dqs);
+    dqs.query = (predicate, options) => {
+      seen.push(options);
+      return original(predicate, options);
+    };
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertExists(ctx.data);
+    const view: QueryView = {
+      environment: (base) => base,
+      record: (record) => record,
+      predicate: (_expression, program, rowCtx) => program(rowCtx),
+      projection: (_expression, program, rowCtx) => program(rowCtx),
+    };
+    await ctx.data.query('name == "none"', undefined, view);
+    await ctx.data.query('name == "none"', "name", view);
+    await ctx.data.query('name == "none"');
+    assertEquals(seen.length, 3);
+    assertStrictEquals(seen[0]?.view, view);
+    assertEquals(seen[0]?.select, undefined);
+    assertStrictEquals(seen[1]?.view, view);
+    assertEquals(seen[1]?.select, "name");
+    assertEquals(seen[2]?.view, undefined);
+    catalog.close();
   });
 });
