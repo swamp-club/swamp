@@ -164,27 +164,54 @@ export function denoInfoRootDir(json: unknown): string | undefined {
 }
 
 /**
+ * Each spelling of the entry point's directory: deno info's root as it was
+ * given, and `realRootDir`, the same directory with symlinks resolved. deno
+ * info reports the modules the root imports under their resolved paths, so
+ * read against the given spelling alone, a symlinked root (macOS `/var`)
+ * puts the whole real path, and any node_modules above the repository, in
+ * every relative path (swamp-club#3794).
+ */
+export function denoInfoRootDirs(
+  json: unknown,
+  realRootDir?: string,
+): string[] {
+  const given = denoInfoRootDir(json);
+  if (given === undefined) return [];
+  return realRootDir === undefined || realRootDir === given
+    ? [given]
+    : [given, realRootDir];
+}
+
+/**
  * A `file:` module that is not an npm package installed in a node_modules
- * directory: the extension's own source. Only the path from `rootDir`, the
- * entry point's directory, is read, so a repository checked out under a
- * directory named node_modules still has local modules.
+ * directory: the extension's own source. Only the path from the entry
+ * point's directory is read, under any of its spellings in `rootDirs`, so a
+ * repository checked out under a directory named node_modules still has
+ * local modules. A file installed in the repository's own node_modules has
+ * that directory in its path from every spelling.
  */
 export function isLocalModuleSpecifier(
   specifier: unknown,
-  rootDir?: string,
+  rootDirs: readonly string[] = [],
 ): specifier is string {
   if (typeof specifier !== "string" || !specifier.startsWith("file:")) {
     return false;
   }
   const path = fromFileUrl(specifier);
-  return !(rootDir === undefined ? path : relative(rootDir, path))
-    .split(SEPARATOR_PATTERN).includes("node_modules");
+  const outsideNodeModules = (p: string) =>
+    !p.split(SEPARATOR_PATTERN).includes("node_modules");
+  return rootDirs.length === 0
+    ? outsideNodeModules(path)
+    : rootDirs.some((root) => outsideNodeModules(relative(root, path)));
 }
 
-/** A `file:` URL inside a node_modules directory below `rootDir`. */
-function isInstalledPackageFile(specifier: string, rootDir?: string): boolean {
+/** A `file:` URL inside a node_modules directory below the entry point's. */
+function isInstalledPackageFile(
+  specifier: string,
+  rootDirs: readonly string[],
+): boolean {
   return specifier.startsWith("file:") &&
-    !isLocalModuleSpecifier(specifier, rootDir);
+    !isLocalModuleSpecifier(specifier, rootDirs);
 }
 
 /**
@@ -194,14 +221,19 @@ function isInstalledPackageFile(specifier: string, rootDir?: string): boolean {
  * and so is one Deno resolves into a node_modules directory (a manual
  * `nodeModulesDir`): the graph names a file there, not a specifier push
  * can ship. {@link withPackageSpecifiers} fills these from a second read.
+ * `realRootDir` is the entry point's directory with symlinks resolved
+ * ({@link denoInfoRootDirs}).
  */
-export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
+export function bareImportsFromDenoInfo(
+  json: unknown,
+  realRootDir?: string,
+): ResolvedBareImport[] {
   const modules = (json as { modules?: unknown })?.modules;
   if (!Array.isArray(modules)) return [];
-  const rootDir = denoInfoRootDir(json);
+  const rootDirs = denoInfoRootDirs(json, realRootDir);
   const found: ResolvedBareImport[] = [];
   for (const m of modules as DenoInfoModuleEntry[]) {
-    if (!isLocalModuleSpecifier(m?.specifier, rootDir)) continue;
+    if (!isLocalModuleSpecifier(m?.specifier, rootDirs)) continue;
     if (!Array.isArray(m.dependencies)) continue;
     const importer = fromFileUrl(m.specifier);
     for (const dep of m.dependencies as DenoInfoDependencyEntry[]) {
@@ -213,7 +245,7 @@ export function bareImportsFromDenoInfo(json: unknown): ResolvedBareImport[] {
       found.push(
         typeof resolved !== "string"
           ? { importer, specifier }
-          : isInstalledPackageFile(resolved, rootDir)
+          : isInstalledPackageFile(resolved, rootDirs)
           ? { importer, specifier, installedFile: fromFileUrl(resolved) }
           : { importer, specifier, target: resolved },
       );

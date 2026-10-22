@@ -29,6 +29,7 @@ import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
 import {
   bareImportsFromDenoInfo,
   denoInfoRootDir,
+  denoInfoRootDirs,
   hasUnresolvedBareImports,
   installedPackageImports,
   isLocalModuleSpecifier,
@@ -105,6 +106,24 @@ function textAt(
 export interface DenoInfoGraphFiles {
   exists: (path: string) => Promise<boolean>;
   readText: (path: string) => Promise<string | undefined>;
+  /** The path with symlinks resolved, or undefined when it cannot be. */
+  realPath?: (path: string) => Promise<string | undefined>;
+}
+
+/** `path` with symlinks resolved, or undefined when it cannot be. */
+function realPathOrUndefined(path: string): Promise<string | undefined> {
+  return Deno.realPath(path).catch(() => undefined);
+}
+
+/** The entry point's directory in `json`, with symlinks resolved. */
+async function realRootDirOf(
+  json: unknown,
+  realPath: DenoInfoGraphFiles["realPath"],
+): Promise<string | undefined> {
+  const rootDir = denoInfoRootDir(json);
+  return rootDir !== undefined && realPath
+    ? await realPath(rootDir)
+    : undefined;
 }
 
 /**
@@ -128,10 +147,11 @@ export async function parseDenoInfoGraph(
   const missingReasons = new Map<string, string>();
   // Paths are read from the entry point's directory, so a repository under
   // a directory named node_modules is not taken for an installed package.
-  const rootDir = denoInfoRootDir(json);
+  const realRootDir = await realRootDirOf(json, files.realPath);
+  const rootDirs = denoInfoRootDirs(json, realRootDir);
 
   for (const m of raw) {
-    if (!isLocalModuleSpecifier(m.specifier, rootDir)) continue;
+    if (!isLocalModuleSpecifier(m.specifier, rootDirs)) continue;
     const path = fromFileUrl(m.specifier);
     if (m.error) {
       missingReasons.set(path, m.error);
@@ -150,7 +170,7 @@ export async function parseDenoInfoGraph(
     for (const dep of m.dependencies ?? []) {
       for (const target of [dep.code, dep.type]) {
         if (
-          !target || !isLocalModuleSpecifier(target.specifier, rootDir) ||
+          !target || !isLocalModuleSpecifier(target.specifier, rootDirs) ||
           !target.span
         ) continue;
         if (!linesRead) {
@@ -186,7 +206,7 @@ export async function parseDenoInfoGraph(
     modules,
     edges: uniqueEdges,
     missing,
-    bareImports: bareImportsFromDenoInfo(json),
+    bareImports: bareImportsFromDenoInfo(json, realRootDir),
   };
 }
 
@@ -298,6 +318,7 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     const graph = await parseDenoInfoGraph(json, {
       exists: fileExists,
       readText: (path) => Deno.readTextFile(path).catch(() => undefined),
+      realPath: realPathOrUndefined,
     });
     // The entry point is always a local file, so a graph without one means
     // deno info resolved something else; pushing on would publish an archive
@@ -364,8 +385,10 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         ...(this.env ? { env: this.env } : {}),
       }).output();
       if (!output.success) return [];
+      const json = JSON.parse(new TextDecoder().decode(output.stdout));
       return bareImportsFromDenoInfo(
-        JSON.parse(new TextDecoder().decode(output.stdout)),
+        json,
+        await realRootDirOf(json, realPathOrUndefined),
       );
     } catch {
       return [];
