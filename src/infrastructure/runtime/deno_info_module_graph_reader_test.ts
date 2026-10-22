@@ -309,6 +309,71 @@ Deno.test("DenoInfoModuleGraphReader: an npm package in a manual node_modules di
   }
 });
 
+/** Every path under `dir` with its bytes and mtime, to show nothing changed. */
+async function treeSnapshot(dir: string): Promise<string[]> {
+  const entries: string[] = [];
+  const visit = async (path: string) => {
+    for await (const entry of Deno.readDir(path)) {
+      const child = join(path, entry.name);
+      const stat = await Deno.lstat(child);
+      entries.push(
+        `${relative(dir, child)} ${stat.mtime?.getTime()} ${
+          entry.isFile ? await Deno.readTextFile(child) : ""
+        }`,
+      );
+      if (entry.isDirectory) await visit(child);
+    }
+  };
+  await visit(dir);
+  return entries.sort();
+}
+
+Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare imports to the installed packages and leaves node_modules unchanged (swamp-club#3630)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-pkg-" });
+  try {
+    const pkg = join(dir, "node_modules", "foo");
+    await Deno.mkdir(pkg, { recursive: true });
+    await Deno.writeTextFile(
+      join(pkg, "package.json"),
+      '{"name":"foo","version":"1.2.0","main":"index.js","type":"module"}\n',
+    );
+    await Deno.writeTextFile(join(pkg, "index.js"), "export const g = 2;\n");
+    await Deno.writeTextFile(
+      join(dir, "package.json"),
+      '{"dependencies":{"foo":"^1.0.0","bar":"^2.0.0"}}\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "m.ts"),
+      'import { g } from "foo";\nimport b from "bar";\nexport { b, g };\n',
+    );
+    const before = await treeSnapshot(join(dir, "node_modules"));
+    const graph = await new DenoInfoModuleGraphReader(
+      Deno.execPath(),
+      undefined,
+      { readOnlyLock: true },
+    ).read(join(dir, "m.ts"), { packageJsonDir: dir });
+    assertEquals(await treeSnapshot(join(dir, "node_modules")), before);
+    assertEquals(
+      graph.bareImports?.map((b) => [b.specifier, b.target, b.declared]),
+      [["foo", "npm:foo@1.2.0", "npm:foo@^1.0.0"], [
+        "bar",
+        undefined,
+        undefined,
+      ]],
+    );
+    assertEquals(graph.staleInstalls, [{
+      importer: join(dir, "m.ts"),
+      specifier: "bar",
+      packageName: "bar",
+      declaredRange: "^2.0.0",
+    }]);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
 const STALE_LOCK_STDERR = "error: Prepare module load error\n\nCaused by:\n" +
   "    The lockfile is out of date. Run `deno install --frozen=false`, or " +
   "rerun with `--frozen=false` to update it.\n    changes:\n" +

@@ -53,8 +53,15 @@ export interface LockedDependencyVersions {
 /** How a specifier pins its package. */
 export type SpecifierKind = "exact" | "range" | "dist-tag" | "unpinned";
 
-/** Where the shipped version came from. */
-export type ShippedVersionSource = "exact" | "lockfile" | "registry";
+/**
+ * Where the shipped version came from; `installed` is the package a
+ * package.json project holds in node_modules, which the bundle inlines.
+ */
+export type ShippedVersionSource =
+  | "exact"
+  | "installed"
+  | "lockfile"
+  | "registry";
 
 export interface ShippedVersion {
   version: string;
@@ -140,6 +147,8 @@ function resolveJsrVersion(
 
 /**
  * The version push ships for a specifier: an exact pin; else the version
+ * installed in a package.json project's node_modules (swamp-club#3630),
+ * which the bundle inlines whatever the lockfile says; else the version
  * the lockfile resolves that specifier to; else, when the lockfile does not
  * record the specifier, the highest version it records for the package that
  * satisfies it (Deno reuses a locked version that does); else what the
@@ -153,9 +162,11 @@ export function resolveShippedVersion(
   specVersion: string | null,
   lock: LockedDependencyVersions | undefined,
   published: PublishedPackage | null,
+  installed?: string,
 ): ShippedVersion | null {
   const exact = exactVersion(specVersion);
   if (exact !== null) return { version: exact, from: "exact" };
+  if (installed !== undefined) return { version: installed, from: "installed" };
 
   const kind = specifierKind(specVersion);
   if (lock && kind !== "dist-tag") {

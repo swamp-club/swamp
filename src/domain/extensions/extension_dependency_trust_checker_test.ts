@@ -958,6 +958,36 @@ Deno.test("checkDependencyTrust: a range warns naming the version it resolves", 
   assertEquals(result.audited[0].resolvedFrom, "registry");
 });
 
+Deno.test("checkDependencyTrust: a package.json range audits the installed version, ahead of the lock (swamp-club#3630)", async () => {
+  const lock: LockedDependencyVersions = {
+    source: "deno.lock",
+    resolvedFor: () => "4.21.1",
+    versionsFor: () => ["4.21.1"],
+  };
+  const result = await checkDependencyTrust(
+    [{
+      ...npmSpec("express", "^4.18.0"),
+      importedAs: "express",
+      installedVersion: "4.18.2",
+    }],
+    routedFetcher(healthyRoutes(RANGE_NPM_BODY)),
+    undefined,
+    undefined,
+    lock,
+  );
+
+  assertEquals(result.warnings, [{
+    dependency: "express",
+    message:
+      'npm:express@^4.18.0 is a range; audited 4.18.2, the version this push resolves (installed in node_modules) (imported as "express" through package.json)',
+    cause: "loose-specifier",
+    remediation:
+      "Pin the exact installed version (4.18.2) in package.json to ensure that the audited version is the one that ships.",
+  }]);
+  assertEquals(result.audited[0].version, "4.18.2");
+  assertEquals(result.audited[0].resolvedFrom, "installed");
+});
+
 Deno.test("checkDependencyTrust: a tilde range, unpinned and a dist-tag each warn", async () => {
   const body = {
     ...RANGE_NPM_BODY,

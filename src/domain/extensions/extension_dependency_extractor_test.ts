@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { bareImportResolverFrom } from "./bare_import_resolution.ts";
 import {
   extractDependencySpecifiers,
   extractSpecifiersFromSource,
@@ -496,4 +497,58 @@ Deno.test("findImportSpecifiers: ignores import text in comments, strings and te
 
 Deno.test("findImportSpecifiers: leaves out an unterminated specifier", () => {
   assertEquals(findImportSpecifiers('import a from "a\nconst x = 1;'), []);
+});
+
+Deno.test("extractSpecifiersFromSource: an installed package.json dependency carries its declared range and installed version (swamp-club#3630)", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import ms from "ms";\nimport fp from "lodash/fp";\nimport d from "debug";\nimport { z } from "zod";\n',
+    file,
+    bareImportResolverFrom([
+      {
+        importer: file,
+        specifier: "ms",
+        target: "npm:ms@2.1.3",
+        declared: "npm:ms@^2.1.0",
+      },
+      {
+        importer: file,
+        specifier: "lodash/fp",
+        target: "npm:lodash@4.17.21/fp",
+        declared: "npm:lodash@4.17.21",
+      },
+      { importer: file, specifier: "debug", target: "npm:debug@4.3.4" },
+      {
+        importer: file,
+        specifier: "zod",
+        target: "npm:zod@4.3.6",
+        declared: "npm:zod@^4",
+      },
+    ]),
+  );
+  assertEquals(specs, [
+    {
+      name: "ms",
+      version: "^2.1.0",
+      registry: "npm",
+      installedVersion: "2.1.3",
+      sourceFile: file,
+      importedAs: "ms",
+    },
+    {
+      name: "lodash",
+      version: "4.17.21",
+      registry: "npm",
+      installedVersion: "4.17.21",
+      sourceFile: file,
+      importedAs: "lodash/fp",
+    },
+    {
+      name: "debug",
+      version: "4.3.4",
+      registry: "npm",
+      sourceFile: file,
+      importedAs: "debug",
+    },
+  ]);
 });

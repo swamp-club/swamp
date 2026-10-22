@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { fromFileUrl, toFileUrl } from "@std/path";
+import { fromFileUrl, join, toFileUrl } from "@std/path";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
@@ -29,6 +29,7 @@ import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
 import {
   bareImportsFromDenoInfo,
   hasUnresolvedBareImports,
+  installedPackageImports,
   isLocalModuleSpecifier,
   type ResolvedBareImport,
   withPackageSpecifiers,
@@ -184,6 +185,15 @@ export async function parseDenoInfoGraph(
   };
 }
 
+/** A JSON file's value; undefined when it cannot be read or parsed. */
+async function readJson(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await Deno.readTextFile(path));
+  } catch {
+    return undefined;
+  }
+}
+
 async function fileExists(path: string): Promise<boolean> {
   try {
     return (await Deno.stat(path)).isFile;
@@ -276,6 +286,18 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         ),
         [entryPoint],
       );
+    }
+    if (!project.denoConfigPath && project.packageJsonDir) {
+      // Read as installed (--node-modules-dir=manual), a bare import names a
+      // file in node_modules; name the package installed there instead
+      // (swamp-club#3630).
+      const installed = await installedPackageImports(
+        graph.bareImports ?? [],
+        await readJson(join(project.packageJsonDir, "package.json")),
+        (dir) => readJson(join(dir, "package.json")),
+      );
+      graph.bareImports = installed.resolutions;
+      if (installed.stale.length > 0) graph.staleInstalls = installed.stale;
     }
     if (
       project.denoConfigPath &&

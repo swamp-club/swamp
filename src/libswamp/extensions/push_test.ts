@@ -2392,8 +2392,10 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare
         'documentation factors 0: "lodash". Push rewrites a bare import only when the ' +
         "project's Deno config (deno.json or deno.jsonc imports, an " +
         "importMap file, a scope covering the module, or a workspace root's " +
-        "imports) resolves it to an npm:, jsr:, node: or URL specifier; add " +
-        "such an entry for each, or write the specifier in its place.",
+        "imports) resolves it to an npm:, jsr:, node: or URL specifier, or, " +
+        "with no Deno config, when package.json declares it as an npm " +
+        "registry dependency installed in node_modules; add such an entry " +
+        "for each, or write the specifier in its place.",
     );
   });
 });
@@ -2594,6 +2596,67 @@ Deno.test("extensionPushPrepare: each module ships and audits the target Deno re
       ),
       [],
     );
+  });
+});
+
+Deno.test("extensionPushPrepare: a package.json project ships, audits and scores each installed dependency at its installed version (swamp-club#3630)", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'import ms from "ms";\nimport lp from "left-pad";\nimport u from "unlisted";\nexport const a = [ms, lp, u];\n',
+    "package.json": JSON.stringify({
+      dependencies: { "ms": "^2.1.0" },
+      devDependencies: { "left-pad": "1.3.0" },
+    }),
+  }, async (dir, paths) => {
+    const audited: DependencySpecifier[][] = [];
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps({
+        extractDependencySpecifiers,
+        checkDependencyTrust: (specifiers) => {
+          audited.push(specifiers);
+          return Promise.resolve({
+            errors: [],
+            warnings: [],
+            audited: [],
+            passed: true,
+          });
+        },
+      }),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        packageJsonDir: dir,
+        bareImports: [
+          {
+            importer: paths["models/a.ts"],
+            specifier: "ms",
+            target: "npm:ms@2.1.3",
+            declared: "npm:ms@^2.1.0",
+          },
+          {
+            importer: paths["models/a.ts"],
+            specifier: "left-pad",
+            target: "npm:left-pad@1.3.0",
+            declared: "npm:left-pad@1.3.0",
+          },
+          { importer: paths["models/a.ts"], specifier: "unlisted" },
+        ],
+      },
+    );
+    const texts = await archiveTexts(result.archiveBytes);
+    assertEquals(
+      texts["models/a.ts"],
+      'import ms from "npm:ms@2.1.3";\nimport lp from "npm:left-pad@1.3.0";\nimport u from "unlisted";\nexport const a = [ms, lp, u];\n',
+    );
+    assertEquals(
+      audited[0].map((s) => [s.name, s.version, s.installedVersion]).sort(),
+      [["left-pad", "1.3.0", "1.3.0"], ["ms", "^2.1.0", "2.1.3"]],
+    );
+    const bare = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "bare-specifiers"
+    );
+    assertEquals(bare.length, 1);
+    assertStringIncludes(bare[0].message, ': "unlisted".');
   });
 });
 

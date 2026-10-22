@@ -66,7 +66,10 @@ import {
   StaleLockfileError,
 } from "../domain/models/bundle.ts";
 import { DENO_CONFIG_FILE_NAMES } from "../domain/extensions/deno_config.ts";
-import type { ResolvedBareImport } from "../domain/extensions/bare_import_resolution.ts";
+import type {
+  ResolvedBareImport,
+  StaleInstalledImport,
+} from "../domain/extensions/bare_import_resolution.ts";
 import { DenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { resolveWorkflowDependencies } from "../domain/extensions/extension_dependency_resolver.ts";
@@ -1790,6 +1793,12 @@ async function resolveSourceModules(options: {
       staleLockfiles: groupStaleLockfiles(staleLocks),
     };
   }
+  const staleInstalls = (graph.staleInstalls ?? []).filter((s) =>
+    !outside.has(s.importer)
+  );
+  if (staleInstalls.length > 0 && options.project.packageJsonDir) {
+    throw staleInstallError(options.project.packageJsonDir, staleInstalls);
+  }
   const plan = planSourceArchive({
     kinds: planKinds,
     graph,
@@ -1805,6 +1814,40 @@ async function resolveSourceModules(options: {
     plan,
     staleLockfiles: [],
   };
+}
+
+/**
+ * The error for a package.json project whose node_modules does not hold a
+ * dependency it declares, or holds it outside the declared range: push and
+ * quality read node_modules as installed and never install into it
+ * (swamp-club#3630).
+ */
+function staleInstallError(
+  projectDir: string,
+  stale: readonly StaleInstalledImport[],
+): UserError {
+  const packages = new Map<string, string>();
+  for (const s of stale) {
+    if (packages.has(s.packageName)) continue;
+    packages.set(
+      s.packageName,
+      s.installedVersion === undefined
+        ? `${s.packageName} (${s.declaredRange}) is not installed`
+        : `${s.packageName} ${s.installedVersion} is installed, outside ` +
+          `the declared ${s.declaredRange}`,
+    );
+  }
+  const nodeModules = join(projectDir, "node_modules");
+  return markErrorPaths(
+    new UserError(
+      `${nodeModules} is out of date with package.json, and push and ` +
+        `quality never install into it: ${
+          [...packages.values()].join("; ")
+        }. ` +
+        `Run 'npm install' or 'deno install' in ${projectDir} and try again.`,
+    ),
+    [nodeModules, projectDir],
+  );
 }
 
 /**

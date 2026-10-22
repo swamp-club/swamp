@@ -124,9 +124,11 @@ Prefer `import { z } from "npm:zod@4";` in source files. A bare import such as
 `jsr:`, `node:` or URL specifier: push then writes the target Deno resolves in
 its place in the shipped source. The swamp-club scorer runs `deno doc --lint` in
 a hermetic sandbox that strips the repo's `deno.json` and writes its own with no
-imports map, so a bare import the config does not resolve, or any bare import in
-a `package.json` project, fails at score time and raises the `bare-specifiers`
-warning.
+imports map, so a bare import the config does not resolve fails at score time
+and raises the `bare-specifiers` warning. In a `package.json` project (no Deno
+config), push writes `npm:<name>@<installed version>` for each bare import of a
+registry dependency installed in `node_modules/`; any other bare import raises
+the warning.
 
 Bundled deno lives at `~/.swamp/deno/deno` (not on `PATH`) — invoke it by full
 path for type-checking, testing, and linting extension code. To discover the

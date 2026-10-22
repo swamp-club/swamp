@@ -3256,6 +3256,90 @@ Deno.test("resolveExtensionFiles: strict resolution (push, quality) fails on a s
   });
 });
 
+/** A package.json project whose graph reports `stale` for its one model. */
+async function withStaleInstallProject(
+  fn: (dir: string, model: string, reader: ModuleGraphReader) => Promise<void>,
+): Promise<void> {
+  await withTempRepo(async (dir) => {
+    const model = join(dir, "extensions", "models", "m.ts");
+    await Deno.writeTextFile(
+      model,
+      'import a from "is-odd";\nimport ms from "ms";\nexport const m = [a, ms];\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "package.json"),
+      '{"dependencies":{"is-odd":"^3.0.1","ms":"^3.0.0"}}\n',
+    );
+    await Deno.mkdir(join(dir, "node_modules"));
+    const { reader } = scriptedReader({
+      [model]: {
+        modules: [{ path: model, kind: "code" }],
+        edges: [],
+        missing: [],
+        bareImports: [
+          { importer: model, specifier: "is-odd" },
+          { importer: model, specifier: "ms" },
+        ],
+        staleInstalls: [
+          {
+            importer: model,
+            specifier: "is-odd",
+            packageName: "is-odd",
+            declaredRange: "^3.0.1",
+          },
+          {
+            importer: model,
+            specifier: "ms",
+            packageName: "ms",
+            declaredRange: "^3.0.0",
+            installedVersion: "2.1.3",
+          },
+        ],
+      },
+    });
+    await fn(dir, model, reader);
+  });
+}
+
+Deno.test("resolveExtensionFiles: strict resolution (push, quality) fails when node_modules is out of date with package.json (swamp-club#3630)", async () => {
+  await withStaleInstallProject(async (dir, _model, reader) => {
+    const manifestPath = await writeModelManifest(dir, ["m.ts"]);
+    const error = await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+          moduleGraphReader: reader,
+        }),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      `${join(dir, "node_modules")} is out of date with package.json, and ` +
+        "push and quality never install into it: is-odd (^3.0.1) is not " +
+        "installed; ms 2.1.3 is installed, outside the declared ^3.0.0. " +
+        `Run 'npm install' or 'deno install' in ${dir} and try again.`,
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: lenient resolution (fmt) reads past an out-of-date node_modules (swamp-club#3630)", async () => {
+  await withStaleInstallProject(async (dir, model, reader) => {
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath: await writeModelManifest(dir, ["m.ts"]),
+      repoContext: stubRepoContext,
+      logger,
+      moduleGraphReader: reader,
+      lenientSources: true,
+    });
+    assertEquals(result.allModelFiles, [model]);
+    assertEquals(result.packageJsonDir, dir);
+  });
+});
+
 Deno.test("resolveExtensionFiles: the package.json bare-specifier scan does not read a symlinked entry point", async () => {
   await withTempRepo(async (dir) => {
     const outside = await Deno.makeTempDir({ prefix: "swamp-3420-dir-" });

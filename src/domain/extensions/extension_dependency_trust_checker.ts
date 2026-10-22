@@ -705,7 +705,9 @@ function lockRefreshNote(
   shipped: ShippedVersion,
   lock: LockedDependencyVersions | undefined,
 ): string {
-  return shipped.from === "lockfile" && lock
+  return shipped.from === "installed"
+    ? " Then run `npm install` or `deno install` so node_modules holds the new version."
+    : shipped.from === "lockfile" && lock
     ? ` Then refresh ${lock.source} so it records the new version.`
     : "";
 }
@@ -728,6 +730,8 @@ function looseSpecifierFinding(
     : "a dist-tag";
   const from = shipped.from === "lockfile" && lock
     ? ` (from ${lock.source})`
+    : shipped.from === "installed"
+    ? " (installed in node_modules)"
     : "";
   return {
     dependency: spec.name,
@@ -735,8 +739,9 @@ function looseSpecifierFinding(
       specifierText(spec)
     } is ${phrase}; audited ${shipped.version}, the version this push resolves${from}`,
     cause: "loose-specifier",
-    remediation:
-      `Pin the exact version this push resolved (${shipped.version}) to ensure that the audited version is the one that ships.`,
+    remediation: shipped.from === "installed"
+      ? `Pin the exact installed version (${shipped.version}) in package.json to ensure that the audited version is the one that ships.`
+      : `Pin the exact version this push resolved (${shipped.version}) to ensure that the audited version is the one that ships.`,
   };
 }
 
@@ -744,12 +749,17 @@ function looseSpecifierFinding(
  * Names the bare imports a finding came from, so the pusher can find the
  * line. Deno resolved them under the project's config — its imports, an
  * importMap file, a scope or a workspace root (swamp-club#3612) — and the
- * module graph does not say which, so the config is not named further.
+ * module graph does not say which, so the config is not named further. In
+ * a package.json project they resolved to an installed dependency
+ * (swamp-club#3630).
  */
-function importedAsSuffix(names: readonly string[]): string {
-  return ` (imported as ${
-    names.map((n) => `"${n}"`).join(", ")
-  } through the project's Deno config)`;
+function importedAsSuffix(
+  names: readonly string[],
+  throughPackageJson = false,
+): string {
+  return ` (imported as ${names.map((n) => `"${n}"`).join(", ")} through ${
+    throughPackageJson ? "package.json" : "the project's Deno config"
+  })`;
 }
 
 /** A specifier's audit, its findings naming the bare import it came from. */
@@ -758,7 +768,10 @@ function attributeToImport(
   audit: SpecifierAudit,
 ): SpecifierAudit {
   if (spec.importedAs === undefined) return audit;
-  const suffix = importedAsSuffix([spec.importedAs]);
+  const suffix = importedAsSuffix(
+    [spec.importedAs],
+    spec.installedVersion !== undefined,
+  );
   const attribute = (issue: DependencyTrustIssue): DependencyTrustIssue => ({
     ...issue,
     message: issue.message + suffix,
@@ -858,6 +871,7 @@ async function auditNpmPackage(
       spec.version,
       lock,
       published,
+      spec.installedVersion,
     );
     const version = shipped?.version ?? null;
     let osvLookup: Promise<Lookup<OsvVuln[]>> | null = null;
@@ -1091,7 +1105,14 @@ export async function checkDependencyTrust(
           dependency: specs[0].name,
           message: `not audited: audit check failed (${
             describeFailure(result.reason)
-          })${bare.length > 0 ? importedAsSuffix(bare) : ""}`,
+          })${
+            bare.length > 0
+              ? importedAsSuffix(
+                bare,
+                specs.some((spec) => spec.installedVersion !== undefined),
+              )
+              : ""
+          }`,
           cause: "not-audited",
           remediation: NOT_AUDITED_FIX.unexpected,
           notAuditedFix: "unexpected",
