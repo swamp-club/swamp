@@ -33,6 +33,7 @@ import {
   evaluatedCacheHoldsSensitiveArgumentsMessage,
   findPlaintextSensitiveArguments,
   isNewerSensitiveFormat,
+  maskSensitiveArgumentsForDisplay,
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
   plaintextSensitiveArgumentsMessage,
@@ -1367,7 +1368,254 @@ Deno.test("findPlaintextSensitiveArguments: with no persistedProvenance a sensit
   );
 });
 
-Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: a transform anywhere in the type — an unrelated method's, a non-sensitive global's, the replayed method's own pipeline — leaves a vault-only definition's references and authored literals in the cache, so it replays; only data at such a position is masked (swamp-club#3681)", () => {
+Deno.test("maskSensitiveArgumentsForDisplay: masks what the cache masks — data beside a pending expression, a data container's keys, a pipeline's raw inputs — and keeps a reference and authored mixed text (swamp-club#3681)", () => {
+  const sensitive = z.string().meta({ sensitive: true });
+  const schemas: ArgumentSchemas = {
+    globalArguments: z.object({
+      apiKey: sensitive.optional(),
+      region: z.string().optional(),
+    }),
+    methods: {
+      run: {
+        arguments: z.object({
+          mixed: sensitive.optional(),
+          authored: sensitive.optional(),
+          reference: sensitive.optional(),
+          tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true })
+            .optional(),
+          records: z.record(z.string(), sensitive).optional(),
+          plain: z.string().optional(),
+        }),
+      },
+      piped: {
+        arguments: z.object({ raw: z.string() }).transform((x) => ({
+          token: x.raw,
+        })).pipe(z.object({ token: sensitive })),
+      },
+    },
+  };
+  const data = Definition.create({
+    name: "shown",
+    globalArguments: { apiKey: "${{ vault.get('v', 'k') }}", region: "eu" },
+    methods: {
+      run: {
+        arguments: {
+          mixed: `${INPUT_VALUE}-\${{ vault.get('v', 'k') }}`,
+          authored: "Bearer ${{ vault.get('v', 'k') }}",
+          reference: "${{ vault.get('v', 'k') }}",
+          tokens: { [INPUT_VALUE]: null },
+          records: { [INPUT_VALUE]: "***" },
+          plain: INPUT_VALUE,
+        },
+      },
+      piped: { arguments: { raw: INPUT_VALUE } },
+    },
+  }).toData();
+  const provenance = ProvenanceMap.authored()
+    .withRanges("methods.run.arguments.mixed", [[0, INPUT_VALUE.length]])
+    .withWholeData("methods.run.arguments.tokens")
+    .withWholeData("methods.run.arguments.records")
+    .withWholeData("methods.run.arguments.plain")
+    .withWholeData("methods.piped.arguments.raw");
+  const shown = maskSensitiveArgumentsForDisplay(
+    schemas,
+    data,
+    "run",
+    provenance,
+  );
+  assertEquals(shown.globalArguments, {
+    apiKey: "${{ vault.get('v', 'k') }}",
+    region: "eu",
+  });
+  assertEquals(shown.methods?.run.arguments, {
+    mixed: "***",
+    authored: "Bearer ${{ vault.get('v', 'k') }}",
+    reference: "${{ vault.get('v', 'k') }}",
+    tokens: "***",
+    records: "***",
+    plain: INPUT_VALUE,
+  });
+  // A run of the pipeline masks the raw input that holds data, and keeps
+  // the reference and the authored literal among the global arguments its
+  // transform may consume; another method's run is not read.
+  const piped = maskSensitiveArgumentsForDisplay(
+    schemas,
+    data,
+    "piped",
+    provenance,
+  );
+  assertEquals(piped.globalArguments, {
+    apiKey: "${{ vault.get('v', 'k') }}",
+    region: "eu",
+  });
+  assertEquals(piped.methods?.piped.arguments, { raw: "***" });
+  assertEquals(piped.methods?.run.arguments, data.methods?.run.arguments);
+  // The input is left as it was.
+  assertEquals(
+    JSON.stringify(data.methods?.run.arguments).includes(INPUT_VALUE),
+    true,
+  );
+  // Without provenance the same rules as the cache's: authored text joined
+  // to a pending expression stays, a literal under a sensitive field is
+  // masked, and a sensitive container's keys are kept as authored.
+  const literal = maskSensitiveArgumentsForDisplay(schemas, data, "run")
+    .methods?.run.arguments ?? {};
+  assertEquals(literal.plain, INPUT_VALUE);
+  assertEquals(literal.mixed, `${INPUT_VALUE}-\${{ vault.get('v', 'k') }}`);
+  assertEquals(literal.tokens, { [INPUT_VALUE]: null });
+  assertEquals(literal.records, { [INPUT_VALUE]: "***" });
+});
+
+Deno.test("persistEvaluatedDefinition, findPlaintextSensitiveArguments and maskSensitiveArgumentsForDisplay: a sensitive record whose keys came from an input beside an expression the operator typed into it is masked at the record, and nothing of it reaches the file, the metadata or the refusal (swamp-club#3681)", () => {
+  const sensitive = z.string().meta({ sensitive: true });
+  const schemas: ArgumentSchemas = {
+    methods: {
+      container: {
+        arguments: z.object({
+          tokens: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+        }),
+      },
+      record: {
+        arguments: z.object({ tokens: z.record(z.string(), sensitive) }),
+      },
+    },
+  };
+  const executed = Definition.create({
+    name: "mixed",
+    methods: {
+      // A vault reference typed beside the key, pending for the runtime pass.
+      container: { arguments: { tokens: { [INPUT_VALUE]: null, expr: REF } } },
+      // A constant typed beside it, already resolved and authored.
+      record: {
+        arguments: { tokens: { [INPUT_VALUE]: "ordinary", expr: "public" } },
+      },
+    },
+  });
+  const provenance = ProvenanceMap.fromEntries(
+    [
+      keyPath("methods.container.arguments.tokens", INPUT_VALUE),
+      keyPath("methods.record.arguments.tokens", INPUT_VALUE),
+    ],
+    [],
+    ["methods.container.arguments.tokens", "methods.record.arguments.tokens"],
+  );
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    Definition.create({ name: "mixed" }),
+    new RunSensitiveValues(),
+    schemas,
+    provenance,
+  );
+  assertEquals(persisted.definition.getMethodArguments("container"), {
+    tokens: "***",
+  });
+  assertEquals(persisted.definition.getMethodArguments("record"), {
+    tokens: "***",
+  });
+  assertEquals(persisted.maskedPaths, [
+    ["methods", "container", "arguments", "tokens"],
+    ["methods", "record", "arguments", "tokens"],
+  ]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
+  assertEquals(
+    findPlaintextSensitiveArguments(schemas, executed.toData(), [], {
+      provenance,
+    }),
+    ["methods.container.arguments.tokens", "methods.record.arguments.tokens"],
+  );
+  for (const method of ["container", "record"]) {
+    const shown = maskSensitiveArgumentsForDisplay(
+      schemas,
+      executed.toData(),
+      method,
+      provenance,
+    ).methods as Record<string, { arguments: unknown }>;
+    assertEquals(shown[method].arguments, { tokens: "***" });
+  }
+  // The same record authored in the definition keeps its reference and its
+  // keys: they are the type's own.
+  const authored = persistEvaluatedDefinition(
+    executed,
+    [],
+    executed,
+    new RunSensitiveValues(),
+    schemas,
+    ProvenanceMap.authored(),
+  );
+  assertEquals(authored.definition.getMethodArguments("container"), {
+    tokens: { [INPUT_VALUE]: null, expr: REF },
+  });
+});
+
+Deno.test("persistEvaluatedDefinition and maskSensitiveArgumentsForDisplay: a record of sensitive values whose keys came from an input is masked at the record even when every value is a vault reference the operator typed, so the keys reach neither the file nor the completed event (swamp-club#3681)", () => {
+  const schemas: ArgumentSchemas = {
+    methods: {
+      record: {
+        arguments: z.object({
+          tokens: z.record(z.string(), z.string().meta({ sensitive: true })),
+        }),
+      },
+    },
+  };
+  const executed = Definition.create({
+    name: "refs",
+    methods: { record: { arguments: { tokens: { [INPUT_VALUE]: REF } } } },
+  });
+  const provenance = ProvenanceMap.fromEntries([], [], [
+    "methods.record.arguments.tokens",
+  ]);
+  const persisted = persistEvaluatedDefinition(
+    executed,
+    [],
+    Definition.create({ name: "refs" }),
+    new RunSensitiveValues(),
+    schemas,
+    provenance,
+  );
+  assertEquals(persisted.definition.getMethodArguments("record"), {
+    tokens: "***",
+  });
+  assertEquals(persisted.maskedPaths, [
+    ["methods", "record", "arguments", "tokens"],
+  ]);
+  assertEquals(
+    JSON.stringify([
+      persisted.definition.toData(),
+      persisted.maskedPaths,
+      persisted.persistedProvenance.toData(),
+    ]).includes(INPUT_VALUE),
+    false,
+  );
+  const shown = maskSensitiveArgumentsForDisplay(
+    schemas,
+    executed.toData(),
+    "record",
+    provenance,
+  ).methods as Record<string, { arguments: unknown }>;
+  assertEquals(shown.record.arguments, { tokens: "***" });
+  // The same record authored in the definition keeps its references.
+  const authored = persistEvaluatedDefinition(
+    executed,
+    [],
+    executed,
+    new RunSensitiveValues(),
+    schemas,
+    ProvenanceMap.authored(),
+  );
+  assertEquals(authored.definition.getMethodArguments("record"), {
+    tokens: { [INPUT_VALUE]: REF },
+  });
+});
+
+Deno.test("persistEvaluatedDefinition, findPlaintextSensitiveArguments and maskSensitiveArgumentsForDisplay: a transform anywhere in the type — an unrelated method's, a non-sensitive global's, the replayed method's own pipeline — leaves a vault-only definition's references and authored literals in the cache, so it replays; only data at such a position is masked (swamp-club#3681)", () => {
   const sensitive = z.string().meta({ sensitive: true });
   const globals = { apiKey: REF, region: "eu" };
   const vaultOnly = Definition.create({
@@ -1442,6 +1690,12 @@ Deno.test("persistEvaluatedDefinition and findPlaintextSensitiveArguments: a tra
         { method: { name: "run" }, recordedMasks: persisted.maskedPaths },
       ),
       [],
+      label,
+    );
+    assertEquals(
+      maskSensitiveArgumentsForDisplay(schemas, definition.toData(), "run")
+        .globalArguments,
+      globals,
       label,
     );
   }

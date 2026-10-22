@@ -1021,6 +1021,8 @@ names may feed the sensitive output. Ordinary masked method fields can still be
 replaced by fresh step inputs. Masking repeats until the repository guard agrees
 with the masked snapshot, including when a masked discriminator changes which
 union members are checked.
+The completed event and the method-summary report mask the same positions the
+cache masks, with a pipeline's raw inputs masked where they hold data.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 A parse the schema refuses registers what each issue at a sensitive position

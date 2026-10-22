@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { z } from "zod";
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import {
   type SwampError,
@@ -95,6 +94,7 @@ import {
   findPlaintextSensitiveArguments,
   isNewerSensitiveFormat,
   type MaskedPath,
+  maskSensitiveArgumentsForDisplay,
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
   rehydrateEvaluatedDefinition,
@@ -133,7 +133,6 @@ import {
 import {
   extractSensitiveFieldValues,
   literalSensitiveGlobalArgsMessage,
-  maskLiteralSensitiveValues,
 } from "../../domain/models/sensitive_field_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
 import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
@@ -986,6 +985,10 @@ export async function* modelMethodRun(
               pendingProvenance = rawProvenance;
             }
 
+            // Where data sits in the raw copy as reports and the completed
+            // event show it: the evaluation's map, plus each override below.
+            let shownProvenance = rawProvenance;
+
             // Merge override inputs into method arguments.
             // Override inputs are --input flags whose keys are not model inputs
             // schema keys (i.e. not used for CEL expression evaluation). They map
@@ -1034,6 +1037,10 @@ export async function* modelMethodRun(
                 // included. Operator-typed inputs are authored, literal ones
                 // data.
                 executedProvenance = executedProvenance.graft(
+                  methodArgumentPath(input.methodName, key),
+                  inputsProvenance.subtree(keySegment(key)),
+                );
+                shownProvenance = shownProvenance.graft(
                   methodArgumentPath(input.methodName, key),
                   inputsProvenance.subtree(keySegment(key)),
                 );
@@ -1093,29 +1100,23 @@ export async function* modelMethodRun(
 
             // Capture pre-vault args for report context (so vault secrets stay as expressions)
             // Reports and the completed event show arguments to the user and are
-            // persisted with report output, so sensitive values are masked there:
-            // values read from a vault or data wherever they sit, then literal
-            // values under a field the schema marks sensitive.
-            const maskArgs = (
-              schema: z.ZodTypeAny | undefined,
-              args: Record<string, unknown>,
-            ): Record<string, unknown> => {
-              const masked = sensitiveValues.masked(args) as Record<
-                string,
-                unknown
-              >;
-              return schema
-                ? maskLiteralSensitiveValues(schema, masked)
-                : masked;
-            };
-            const reportGlobalArgs = maskArgs(
-              modelDef.globalArguments,
-              evaluatedDefinition.globalArguments,
+            // persisted with report output, so sensitive values are masked there,
+            // by the walk the evaluated cache uses: a sensitive argument that
+            // holds data (an input's value, a data read), a literal, or keys
+            // that came with data, is the mask; then values read from a vault
+            // wherever they sit (swamp-club#3681).
+            const shownArguments = maskSensitiveArgumentsForDisplay(
+              modelDef,
+              evaluatedDefinition.toData(),
+              input.methodName,
+              shownProvenance,
             );
-            const reportMethodArgs = maskArgs(
-              modelDef.methods[input.methodName]?.arguments,
-              evaluatedDefinition.getMethodArguments(input.methodName),
-            );
+            const reportGlobalArgs = sensitiveValues.masked(
+              shownArguments.globalArguments ?? {},
+            ) as Record<string, unknown>;
+            const reportMethodArgs = sensitiveValues.masked(
+              shownArguments.methods?.[input.methodName]?.arguments ?? {},
+            ) as Record<string, unknown>;
 
             // Resolve runtime expressions (vault and env).
             // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
