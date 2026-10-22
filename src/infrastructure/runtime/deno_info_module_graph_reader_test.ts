@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join, relative, toFileUrl } from "@std/path";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { UserError } from "../../domain/errors.ts";
@@ -367,6 +367,44 @@ Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare impor
       packageName: "bar",
       declaredRange: "^2.0.0",
     }]);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
+Deno.test("DenoInfoModuleGraphReader: a package.json project whose package.json does not parse fails the read, rather than checking nothing it declares (swamp-club#3630)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-pkg-bad-" });
+  try {
+    await Deno.mkdir(join(dir, "node_modules"));
+    await Deno.writeTextFile(join(dir, "package.json"), "{ not json");
+    await Deno.writeTextFile(join(dir, "m.ts"), "export const m = 1;\n");
+    await withMockedCommand(
+      () => ({
+        stdout: JSON.stringify({
+          modules: [{
+            kind: "esm",
+            mediaType: "TypeScript",
+            specifier: toFileUrl(join(dir, "m.ts")).href,
+          }],
+        }),
+        code: 0,
+      }),
+      async () => {
+        const error = await assertRejects(
+          () =>
+            new DenoInfoModuleGraphReader("deno").read(join(dir, "m.ts"), {
+              packageJsonDir: dir,
+            }),
+          UserError,
+        );
+        assertStringIncludes(
+          error.message,
+          `Could not read ${join(dir, "package.json")}`,
+        );
+      },
+    );
   } finally {
     await Deno.remove(dir, { recursive: true }).catch((error) => {
       if (Deno.build.os !== "windows") throw error;

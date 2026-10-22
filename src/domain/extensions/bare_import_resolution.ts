@@ -403,6 +403,8 @@ export async function installedPackageImports(
       out.push(unresolved);
       continue;
     }
+    // A dist-tag (`latest`) is no range: node_modules cannot show which
+    // version it named when installed, so the installed one stands.
     const range = declared ? tryParseRange(declared.range) : undefined;
     if (declared && range && !satisfies(parsed, range)) {
       stale.push({

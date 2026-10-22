@@ -1851,7 +1851,7 @@ export function bareSpecifiersMessage(names: string[]): string {
     "or a workspace root's imports) resolves it to an npm:, jsr:, node: or " +
     "URL specifier, or, with no Deno config, when package.json declares it " +
     "as an npm registry dependency installed in node_modules; add such an " +
-    "entry for each, or write the specifier in its place.";
+    "entry or dependency for each, or write the specifier in its place.";
 }
 
 /**

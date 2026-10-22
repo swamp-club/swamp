@@ -3330,8 +3330,8 @@ Deno.test("resolveExtensionFiles: strict resolution (push, quality) fails when n
       `${join(dir, "node_modules")} is out of date with package.json, and ` +
         "push and quality never install into it: is-odd (^3.0.1) is not " +
         "installed; ms 2.1.3 is installed, outside the declared ^3.0.0; " +
-        "pad is installed as pad 1.3.0, but package.json declares " +
-        "left-pad. " +
+        "pad is installed as pad 1.3.0, but package.json declares it as " +
+        "npm:left-pad@^1.3.0. " +
         `Run 'npm install' or 'deno install' in ${dir} and try again.`,
     );
   });

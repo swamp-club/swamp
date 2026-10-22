@@ -185,6 +185,26 @@ export async function parseDenoInfoGraph(
   };
 }
 
+/**
+ * The project's package.json. One that cannot be read or parsed fails the
+ * read: read as empty, it would declare nothing, and no dependency would be
+ * checked against the range it declares.
+ */
+async function readProjectPackageJson(projectDir: string): Promise<unknown> {
+  const path = join(projectDir, "package.json");
+  try {
+    return JSON.parse(await Deno.readTextFile(path));
+  } catch (error) {
+    throw markErrorPaths(
+      new UserError(
+        `Could not read ${path}, so push cannot tell which dependencies it ` +
+          `declares: ${error instanceof Error ? error.message : error}`,
+      ),
+      [path],
+    );
+  }
+}
+
 /** A JSON file's value; undefined when it cannot be read or parsed. */
 async function readJson(path: string): Promise<unknown> {
   try {
@@ -293,7 +313,7 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
       // (swamp-club#3630).
       const installed = await installedPackageImports(
         graph.bareImports ?? [],
-        await readJson(join(project.packageJsonDir, "package.json")),
+        await readProjectPackageJson(project.packageJsonDir),
         (dir) => readJson(join(dir, "package.json")),
       );
       graph.bareImports = installed.resolutions;

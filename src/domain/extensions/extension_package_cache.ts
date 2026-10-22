@@ -335,10 +335,6 @@ async function appendFileGroup(
   }
 }
 
-/**
- * Each resolution in `bareImports` that the config's top-level `imports`
- * would not give, as a sorted line with paths relative to `rootDir`.
- */
 /** Each bare import resolved to an installed package, as a stable line. */
 function installedBareImports(
   bareImports: readonly ResolvedBareImport[],
@@ -354,6 +350,10 @@ function installedBareImports(
     .sort();
 }
 
+/**
+ * Each resolution in `bareImports` that the config's top-level `imports`
+ * would not give, as a sorted line with paths relative to `rootDir`.
+ */
 async function unexplainedBareImports(
   denoConfigPath: string,
   bareImports: readonly ResolvedBareImport[],

@@ -1835,7 +1835,8 @@ function staleInstallError(
         ? `${s.packageName} (${s.declaredRange}) is not installed`
         : s.installedName !== undefined
         ? `${s.packageName} is installed as ${s.installedName} ` +
-          `${s.installedVersion}, but package.json declares ${s.declaredName}`
+          `${s.installedVersion}, but package.json declares it as ` +
+          `npm:${s.declaredName}@${s.declaredRange}`
         : `${s.packageName} ${s.installedVersion} is installed, outside ` +
           `the declared ${s.declaredRange}`,
     );

@@ -1248,10 +1248,10 @@ specifier push ships and the one the audit checks are always the same
 package. Anything else, or a non-registry declaration (`file:`, `link:`,
 `workspace:`, git, a URL), ships as written and raises the `bare-specifiers`
 finding; a declared package installed under another name (an alias changed
-without reinstalling) is a stale tree. The
-resolution also records the range package.json declares for the package
-(`dependencies`, then `devDependencies`), which the dependency audit reads.
-Both `npm install` and `deno install` layouts resolve the same way.
+without reinstalling) is a stale tree. The resolution also records the range
+package.json declares for the package (`dependencies`, then
+`devDependencies`), which the dependency audit reads. Both `npm install` and
+`deno install` layouts resolve the same way.
 
 The registry's dependency scan then audits these imports as `npm:`/`jsr:`
 specifiers, `deno doc` resolves them so the extension is scored, and a pulled
@@ -2066,23 +2066,21 @@ from `@bixu/wheelshop`:
 ### The version that ships
 
 Each `npm:` and `jsr:` specifier is audited at the version the push ships
-(swamp-club#3352), whether the source writes it out or writes a bare import
-the project `deno.json` import map resolves to it (swamp-club#3611), or, in
+(swamp-club#3352), whether the source writes it out or writes a bare import the
+project `deno.json` import map resolves to it (swamp-club#3611), or, in
 package.json mode, one that resolves to an installed dependency
-(swamp-club#3630). The
-extractor resolves bare imports as the bundler does: an exact key, else the
-longest `key/` prefix, where a key mapped to an `npm:` or `jsr:` package also
-covers its subpaths (`"@std/path"` resolves `@std/path/posix`) unless the
-map has its own `key/` entry. It reads the map as JSON, resolves only the
-bare imports the source uses, and takes only a string literal in import
-position (after `from`, a side-effect `import` or `import(`), with comments
-and template literals blanked, so import text inside a string, comment or
-template literal is never audited. These are the same imports push rewrites
-to their targets in the shipped source (swamp-club#3637), and the audit reads
-every code module the graph reports, JavaScript included, so nothing ships as
-an `npm:`/`jsr:` specifier unaudited. A package
-both written out and mapped at the same specifier is audited once, as the
-written form. The rules live in
+(swamp-club#3630). The extractor resolves bare imports as the bundler does: an
+exact key, else the longest `key/` prefix, where a key mapped to an `npm:` or
+`jsr:` package also covers its subpaths (`"@std/path"` resolves
+`@std/path/posix`) unless the map has its own `key/` entry. It reads the map as
+JSON, resolves only the bare imports the source uses, and takes only a string
+literal in import position (after `from`, a side-effect `import` or `import(`),
+with comments and template literals blanked, so import text inside a string,
+comment or template literal is never audited. These are the same imports push
+rewrites to their targets in the shipped source (swamp-club#3637), and the audit
+reads every code module the graph reports, JavaScript included, so nothing ships
+as an `npm:`/`jsr:` specifier unaudited. A package both written out and mapped
+at the same specifier is audited once, as the written form. The rules live in
 `src/domain/extensions/dependency_version_resolution.ts` and run no Deno
 tooling, so they outlive the runtime:
 
