@@ -14111,6 +14111,20 @@ Deno.test("abort cleanup: a step queued behind job concurrency is cancelled, so 
       ],
     });
     const executor = new AbortingStepExecutor("a");
+    const execute = executor.execute.bind(executor);
+    let observedCleanup = false;
+    executor.execute = async (step, context) => {
+      if (step.name === "on-completed") {
+        observedCleanup = true;
+        assertEquals(
+          runProgressSnapshots().filter((entry) =>
+            entry.workflow === workflow.name && entry.step === "b"
+          ),
+          [],
+        );
+      }
+      return await execute(step, context);
+    };
     const { service } = await setupRetry(
       tempDir,
       workflow,
@@ -14128,6 +14142,7 @@ Deno.test("abort cleanup: a step queued behind job concurrency is cancelled, so 
     assertCancelledBeforeStart(run, "main", ["b"]);
     assertEquals(executor.count("main/b"), 0);
     assertEquals(executor.count("main/on-completed"), 1);
+    assertEquals(observedCleanup, true);
     assertEquals(executor.count("main/on-failed"), 1);
     assertEquals(executor.count("main/on-succeeded"), 0);
     assertDependencySkipped(run, ["on-succeeded"]);

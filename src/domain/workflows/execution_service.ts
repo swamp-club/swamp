@@ -5651,6 +5651,13 @@ export class WorkflowExecutionService {
             const stepRun = jobRun.getStep(stepName);
             if (stepRun?.status !== "pending") continue;
             settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
+            // This level will not start the step, even when its guard leaves
+            // the persisted outcome undecided for a future resume.
+            stepWaits.get(stepName)?.end("cancelled");
+            stepWaits.delete(stepName);
+            const entry = progress.get(stepName);
+            if (entry) removeRunProgress(entry);
+            progress.delete(stepName);
           }
         }
 
