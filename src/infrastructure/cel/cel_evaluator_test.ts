@@ -23,6 +23,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import { Environment } from "cel-js";
 import {
   CelDataNamespace,
   CelEvaluator,
@@ -1526,6 +1527,68 @@ Deno.test("CelEvaluator.evaluate: a negative duration keeps its sign whichever w
   assertEquals(
     evaluator.evaluate("duration('1s') - duration('2.5s')", {}),
     "-1.5s",
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: adding and subtracting negative durations gives the right total", () => {
+  const evaluator = new CelEvaluator();
+  assertEquals(
+    evaluator.evaluate("duration('-1.5s') + duration('-0.6s')", {}),
+    "-2.1s",
+  );
+  assertEquals(
+    evaluator.evaluate(
+      "duration('-1213479513ns') - duration('554786520488ns')",
+      {},
+    ),
+    "-556.000000001s",
+  );
+  assertEquals(
+    evaluator.evaluate("duration('-0.5s') + duration('1s')", {}),
+    "0.5s",
+  );
+  assertEquals(
+    evaluator.evaluate("duration('0.4s') - duration('1.5s')", {}),
+    "-1.1s",
+  );
+  assertEquals(
+    evaluator.evaluate("duration('-1.5s') - duration('-1.5s')", {}),
+    "0s",
+  );
+  assertEquals(
+    evaluator.evaluate("duration('-0.5s') - duration('0.5s')", {}),
+    "-1s",
+  );
+  assertEquals(
+    evaluator.evaluate("duration('1.5s') + duration('0.6s')", {}),
+    "2.1s",
+  );
+});
+
+Deno.test("CelEvaluator.evaluate: equal durations compare equal however they were built", () => {
+  const evaluator = new CelEvaluator();
+  for (
+    const expression of [
+      "duration('-1.5s') + duration('-0.6s') == duration('-2.1s')",
+      "duration('0ns') - duration('1ns') == duration('-1ns')",
+      "duration('-0.5s') + duration('1s') == duration('0.5s')",
+      "timestamp('2026-01-01T00:00:01.5Z') - timestamp('2026-01-01T00:00:00Z') + duration('-0.6s') == duration('0.9s')",
+      "timestamp('2026-01-01T00:00:00Z') - timestamp('2026-01-01T00:00:01.5Z') == duration('0.4s') - duration('1.9s')",
+    ]
+  ) {
+    assertStrictEquals(evaluator.evaluate(expression, {}), true, expression);
+  }
+});
+
+Deno.test("CelEvaluator: duration arithmetic is right in any cel-js Environment once loaded", () => {
+  const env = new Environment();
+  assertStrictEquals(
+    env.evaluate("duration('-1.5s') + duration('-0.6s') == duration('-2.1s')"),
+    true,
+  );
+  assertStrictEquals(
+    env.evaluate("duration('0ns') - duration('1ns') == duration('-1ns')"),
+    true,
   );
 });
 

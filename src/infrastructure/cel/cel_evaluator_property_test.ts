@@ -427,13 +427,46 @@ function durationNanos(duration: unknown): bigint {
   return seconds * 1_000_000_000n + BigInt(nanos);
 }
 
+Deno.test("CelEvaluator.evaluate: duration addition and subtraction match the nanosecond totals", () => {
+  const evaluator = new CelEvaluator();
+  // Sub-second, multi-second and far-out totals, either sign.
+  const arbNanos = fc.oneof(
+    fc.bigInt({ min: -999_999_999n, max: 999_999_999n }),
+    fc.bigInt({ min: -1_000_000_000_000n, max: 1_000_000_000_000n }),
+    fc.bigInt({
+      min: -1_000_000_000_000_000_000n,
+      max: 1_000_000_000_000_000_000n,
+    }),
+  );
+  fc.assert(
+    fc.property(arbNanos, arbNanos, (a, b) => {
+      for (
+        const [operator, total] of [["+", a + b], ["-", a - b]] as const
+      ) {
+        const sum = `duration('${a}ns') ${operator} duration('${b}ns')`;
+        assertEquals(
+          evaluator.evaluate(`${sum} == duration('${total}ns')`, {}),
+          true,
+          sum,
+        );
+        assertEquals(
+          evaluator.evaluate(sum, {}),
+          evaluator.evaluate(`duration('${total}ns')`, {}),
+          sum,
+        );
+      }
+    }),
+    { numRuns: 300 },
+  );
+});
+
 Deno.test("coerceBigInts: a duration's string parses back to the duration it was made from", () => {
   const env = new Environment();
   const arbNanos = fc.integer({ min: -1e12, max: 1e12 });
   fc.assert(
     fc.property(arbNanos, arbNanos, (a, b) => {
-      // A parsed duration and a difference of two durations store the sign
-      // of their nanos differently; each must format to the value it holds.
+      // A parsed duration and a difference of two durations are built by
+      // different cel-js paths; each must format to the value it holds.
       for (
         const expression of [
           `duration('${a}ns')`,

@@ -153,13 +153,51 @@ const DurationType = (celTypeProbe.evaluate("duration('0s')") as object)
 
 const NANOS_PER_SECOND = 1_000_000_000n;
 
+type DurationConstructor = new (seconds: bigint, nanos: number) => CelDuration;
+
+function durationNanos(duration: CelDuration): bigint {
+  return duration.seconds * NANOS_PER_SECOND + BigInt(duration.nanos);
+}
+
+/**
+ * Builds a duration from its total in nanoseconds, with `seconds` and `nanos`
+ * sharing the sign of the total — the form cel-js gives a parsed duration.
+ */
+function durationFromNanos(total: bigint): CelDuration {
+  return new (DurationType as DurationConstructor)(
+    total / NANOS_PER_SECOND,
+    Number(total % NANOS_PER_SECOND),
+  );
+}
+
+// cel-js 7.6.1 (and 8.0.0) adds and subtracts durations assuming `nanos` is
+// never negative, but a negative duration it parses keeps a negative `nanos`,
+// so `duration('-1.5s') + duration('-0.6s')` came out as -3.1s. Its `==`
+// compares the stored fields, so it also needs every duration in one form.
+// Replace both methods on the shared prototype with versions that work from
+// the total; this file is loaded before any CEL is evaluated, so every
+// Environment in the process gets them (swamp-club#3714). Remove once cel-js
+// ships a fix; cel_js_duration_pin_test.ts pins what this relies on.
+if (
+  typeof DurationType.prototype.addDuration === "function" &&
+  typeof DurationType.prototype.subtractDuration === "function"
+) {
+  Object.assign(DurationType.prototype, {
+    addDuration(this: CelDuration, other: CelDuration): CelDuration {
+      return durationFromNanos(durationNanos(this) + durationNanos(other));
+    },
+    subtractDuration(this: CelDuration, other: CelDuration): CelDuration {
+      return durationFromNanos(durationNanos(this) - durationNanos(other));
+    },
+  });
+}
+
 /**
  * Formats a duration in CEL's string form (`90s`, `1.5s`, `-1.5s`). cel-js's
- * own `toString()` misprints negative durations, and its two construction
- * paths keep the sign of `nanos` differently, so this works from the total.
+ * own `toString()` misprints negative durations, so this works from the total.
  */
 function formatDuration(duration: CelDuration): string {
-  const total = duration.seconds * NANOS_PER_SECOND + BigInt(duration.nanos);
+  const total = durationNanos(duration);
   const sign = total < 0n ? "-" : "";
   const magnitude = total < 0n ? -total : total;
   const seconds = magnitude / NANOS_PER_SECOND;
