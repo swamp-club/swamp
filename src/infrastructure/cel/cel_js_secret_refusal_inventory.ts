@@ -217,8 +217,9 @@ export const TYPED_VAULT_NAMESPACE_TYPES: readonly string[] = [
 ];
 
 /**
- * swamp's own registrations in the query view (data_query_service.ts). Its
- * refusals arrive with the query view (design Section 6.2, Phase 4).
+ * swamp's own registrations in the query view (data_query_service.ts). The
+ * view's environment (query_view.ts) registers their refusals (design
+ * Section 6.2, typed-secrets 4.3).
  */
 export const QUERY_VIEW_FUNCTION_SIGNATURES: readonly string[] = [
   "latestRun(string): dyn",

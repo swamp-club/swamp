@@ -48,6 +48,8 @@ import {
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import type { QueryView } from "../../domain/data/data_query_service.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
 import { CelEvaluator, type EvaluationScope } from "./cel_evaluator.ts";
 
 const REF_A = "${{ vault.get('prod', 'A') }}";
@@ -146,6 +148,22 @@ function fixture() {
     findBySpec: () => Promise.resolve([records.main, records.first]),
     findByTag: (_key: string, value: string) =>
       Promise.resolve(records[value] === undefined ? [] : [records[value]]),
+    // Answers as the query service does under its view: records as stored
+    // for no select or an empty one, and otherwise the projection the view
+    // post-processed, here each named record's attributes viewed through
+    // the view it received, or the record's name.
+    query: (predicate: string, select?: string, view?: QueryView) => {
+      calls.push({ accessor: "query", args: [predicate, select, view] });
+      const named = predicate.split(",").map((name) => records[name]);
+      if (!select) return Promise.resolve(named);
+      return Promise.resolve(named.map((r) => {
+        if (select === "name") return (r as { name: string }).name;
+        const viewed = view ? view.record(r as DataRecord) : (r as DataRecord);
+        return select === "attributes"
+          ? viewed.attributes
+          : viewed.attributes.password;
+      }));
+    },
   };
   const modelData = {
     input: { id: "uuid-1", name: "web" },
@@ -947,6 +965,104 @@ Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources w
       context,
       {},
     ),
+    REF_A,
+  );
+});
+
+Deno.test("CelEvaluator data secrets: data.query passes the typed environment's view to its delegate, adapts the records it answers for no select or an empty one, and leaves a projection as the view answered it (typed-secrets 4.3)", async () => {
+  const f = fixture();
+  const whole = await f.evaluate("data.query('main,foreign')") as DataRecord[];
+  const call = f.calls.find((c) => c.accessor === "query");
+  assert(call !== undefined);
+  assertEquals(call.args[1], undefined);
+  const view = call.args[2] as QueryView;
+  assertEquals(typeof view.predicate, "function");
+  // Records answered are adapted like findBySpec results: the own record's
+  // tagged field leaves as a data-origin sentinel, the foreign one as stored.
+  const sentinel = whole[0].attributes.password as string;
+  const entry = f.bag.registry.issuedEntryOf(sentinel);
+  assert(entry !== undefined);
+  assertEquals(entry.dataOrigin, true);
+  assertEquals(whole[0].attributes.user, "u");
+  assertEquals(whole[1].attributes.password, REF_A);
+  assertEquals(whole[1].namespace, "security");
+
+  const empty = await f.evaluate("data.query('main', '')") as DataRecord[];
+  assertEquals(f.calls.at(-1)?.args[1], "");
+  assert(f.bag.registry.issuedEntryOf(empty[0].attributes.password as string));
+
+  // A projection holding a Secret leaves as a sentinel, one holding a
+  // container of them with a sentinel at each tagged field, and a plain one
+  // plain.
+  const projected = await f.evaluate(
+    "data.query('main', 'attributes.password')",
+  ) as string[];
+  assertEquals(f.bag.registry.issuedEntryOf(projected[0])?.dataOrigin, true);
+  const container = await f.evaluate(
+    "data.query('main', 'attributes')",
+  ) as Record<string, unknown>[];
+  assert(f.bag.registry.issuedEntryOf(container[0].password as string));
+  assertEquals(container[0].user, "u");
+  assertEquals(
+    await f.evaluate("data.query('main', 'name')"),
+    ["main-vary-s3cret"],
+  );
+  assertEquals(
+    await f.evaluate(
+      "data.query('main', 'attributes.password')[0] + '-x' == null",
+    ),
+    false,
+  );
+  assertEquals(f.redacted, []);
+  assertEquals(f.bag.rawValues, []);
+});
+
+Deno.test("CelEvaluator data secrets: the view data.query hands its delegate is bound to the receiver's own namespace, and with typed secrets off no view is passed", async () => {
+  const f = fixture();
+  const seen: Array<QueryView | undefined> = [];
+  const foreign = f.records.foreign as DataRecord;
+  const probe = (namespace: string) => ({
+    data: {
+      namespace,
+      query: (_predicate: string, _select?: string, view?: QueryView) => {
+        seen.push(view);
+        return Promise.resolve([
+          view === undefined
+            ? foreign.attributes.password
+            : (view.record(foreign).attributes.password as unknown) ===
+              foreign.attributes.password,
+        ]);
+      },
+    },
+  });
+  // Bound to "security": the record of that namespace is adapted (its
+  // field is no longer the stored text); bound to "": left as stored.
+  assertEquals(
+    await f.evaluator.evaluateAsync(
+      "data.query('x', 'y')",
+      probe("security"),
+      f.scope,
+    ),
+    [false],
+  );
+  assertEquals(
+    await f.evaluator.evaluateAsync("data.query('x', 'y')", probe(""), f.scope),
+    [true],
+  );
+  assertEquals(seen.length, 2);
+  assert(seen.every((view) => view !== undefined));
+
+  const off = new CelEvaluator();
+  assertEquals(
+    await off.evaluateAsync("data.query('x', 'y')", probe("security")),
+    [REF_A],
+  );
+  assertEquals(seen.at(-1), undefined);
+  assertEquals(
+    (await off.evaluateAsync(
+      "data.query('main')",
+      f.context,
+    ) as DataRecord[])[0].attributes.password,
     REF_A,
   );
 });

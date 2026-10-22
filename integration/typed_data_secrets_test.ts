@@ -45,6 +45,7 @@ import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   InvalidExpressionError,
+  SECRET_OPERATION_UNSUPPORTED,
   SECRET_REFERENCE_INVALID,
   SecretRefusedError,
 } from "../src/domain/expressions/errors.ts";
@@ -125,6 +126,8 @@ interface Fixture {
   orphanId: string;
   dataRepo: FileSystemUnifiedDataRepository;
   catalog: CatalogStore;
+  /** The raw query service, as the command and the extension API use it. */
+  dqs: DataQueryService;
   vaultService: VaultService;
   counting: CountingVault;
   secrets: {
@@ -298,6 +301,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       orphanId,
       dataRepo,
       catalog,
+      dqs,
       vaultService,
       counting,
       secrets,
@@ -430,7 +434,46 @@ Deno.test("typed data secrets: own-namespace reads on every accessor return data
         f,
         await f.evaluate("data.latest('orphan', 'main').attributes.password"),
       ),
+      // data.query in both forms (typed-secrets 4.3): records answered
+      // whole, an empty select, and projections of a field, a container
+      // and JSON content.
+      query: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"')[0].attributes.password`,
+        ),
+      ),
+      queryEmptySelect: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', '')[0].attributes.password`,
+        ),
+      ),
+      queryProjected: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', 'attributes.password')[0]`,
+        ),
+      ),
+      queryContainer: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', 'attributes')[0].nested.token`,
+        ),
+      ),
+      queryContent: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', 'content')[0].password`,
+        ),
+      ),
     };
+    assertEquals(
+      await f.evaluate(
+        `data.query('modelName == "db" && name == "main"', 'attributes.user')`,
+      ),
+      ["u"],
+    );
     // Non-secret structure is unchanged, and a whole record leaves plain.
     assertEquals(
       await f.evaluate("data.latest('db', 'main').attributes.user"),
@@ -469,6 +512,11 @@ Deno.test("typed data secrets: own-namespace reads on every accessor return data
       model: f.secrets.password,
       star: f.secrets.a,
       orphan: f.secrets.orphan,
+      query: f.secrets.password,
+      queryEmptySelect: f.secrets.password,
+      queryProjected: f.secrets.password,
+      queryContainer: f.secrets.token,
+      queryContent: f.secrets.password,
     });
     // One read per distinct reference, not per sentinel.
     assertEquals(
@@ -539,6 +587,31 @@ Deno.test("typed data secrets: denied and revoked access fail before the result 
         () => f.evaluate("size(data.findBySpec('db', 'creds'))"),
         InvalidExpressionError,
       );
+      // A query fails on a record it answers or a projection reads, and not
+      // on a row its predicate read but did not match: that row's references
+      // stay with the row (typed-secrets 4.3).
+      await assertRejects(
+        () =>
+          f.evaluate(
+            `data.query('modelName == "db" && name == "main"')[0].attributes.user`,
+          ),
+        InvalidExpressionError,
+        "Reading vault 'prod' is refused",
+      );
+      await assertRejects(
+        () =>
+          f.evaluate(
+            `data.query('modelName == "db" && name == "main"', 'attributes.user')`,
+          ),
+        InvalidExpressionError,
+        "Reading vault 'prod' is refused",
+      );
+      assertEquals(
+        await f.evaluate(
+          `size(data.query('modelName == "db" && attributes.password != null && name == "nope"'))`,
+        ),
+        0,
+      );
     });
     assertEquals(f.counting.reads, []);
 
@@ -605,6 +678,135 @@ Deno.test("typed data secrets: denied and revoked access fail before the result 
       ),
       FOREIGN_REFERENCE,
     );
+    assertEquals(
+      await f.evaluate(
+        `data.query('ns == "security"', 'attributes.password')`,
+        { secretBag: f.bag },
+      ),
+      [FOREIGN_REFERENCE],
+    );
+  });
+});
+
+Deno.test("typed data secrets: data.query predicates and projections refuse on a tagged field, absorbed or not, under a history term, by membership and by list equality, a null comparison matches, and the raw query keeps the stored reference text", async () => {
+  await withFixture(async (f) => {
+    const passwordKey = keyOf(f.modelId, "creds", "main", "password");
+    const reference = `\${{ vault.get('prod', '${passwordKey}') }}`;
+    // A record stored as JSON with a media type parameter: content aliases
+    // its viewed attributes under the view, and stays text on the raw path.
+    await f.store(
+      "charset",
+      { [SENSITIVE_FIELDS_TAG]: JSON.stringify(["password"]) },
+      JSON.stringify({ password: reference, user: "c" }),
+      "application/json; charset=utf-8",
+    );
+    await f.sync();
+    const charset = sentinelOf(
+      f,
+      await f.evaluate(
+        `data.query('modelName == "db" && name == "charset"', 'content')[0].password`,
+      ),
+    );
+    assertEquals(
+      (await f.loader.load(f.bag, { charset })).resolveDeep({ charset }),
+      { charset: f.secrets.password },
+    );
+
+    const refused = async (expression: string, operation: string) => {
+      const error = await assertRejects(
+        () => f.evaluate(expression),
+        SecretRefusedError,
+        undefined,
+        expression,
+      );
+      assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED, expression);
+      assertStringIncludes(error.operation, operation, expression);
+    };
+    const container =
+      "a container comparison (in, or == or != with no scalar literal or " +
+      "null operand) in a query ";
+    for (
+      const predicate of [
+        `attributes.password == "x"`,
+        `attributes.password == "x" || true`,
+        `version >= 1 && attributes.password == "x"`,
+        `attributes.nested.token == "x" || name == "main"`,
+      ]
+    ) {
+      await refused(
+        `data.query('modelName == "db" && ${predicate}')`,
+        "Secret == string",
+      );
+    }
+    for (
+      const predicate of [
+        `attributes.password in ["", "changeme"]`,
+        `[attributes.password] == ["x"]`,
+        `{"k": attributes.password} != {"k": "x"}`,
+        // The rule decides before an unrelated error in the same row.
+        `attributes.password in ["changeme"] || attributes.missing.k == "x"`,
+      ]
+    ) {
+      await refused(
+        `data.query('modelName == "db" && ${predicate}')`,
+        container + "predicate that reads a secret",
+      );
+    }
+    await refused(
+      `data.query('modelName == "db" && name == "main"', 'attributes.password == "x"')`,
+      "Secret == string",
+    );
+    await refused(
+      `data.query('modelName == "db" && name == "main"', 'attributes.password in ["x"]')`,
+      container + "projection that reads a secret",
+    );
+    await refused(
+      `data.query('modelName == "db" && name == "main"', 'attributes.password in ["x"] ? 1 : attributes.missing.k')`,
+      container + "projection that reads a secret",
+    );
+
+    // The allowed set holds in a predicate, and the calling expression's own
+    // container comparison beside it is not refused by the predicate's reads.
+    assertEquals(
+      await f.evaluate(
+        `data.query('modelName == "db" && name == "main" && attributes.password != null').map(r, r.name) == ["main"]`,
+      ),
+      true,
+    );
+    assertEquals(
+      await f.evaluate(
+        `size(data.query('modelName == "db" && name == "main" && attributes.password == null'))`,
+      ),
+      0,
+    );
+    // The one vault read is the load above; evaluation made none.
+    assertEquals(f.counting.reads.map((read) => read.key), [passwordKey]);
+    assertEquals(f.bag.rawValues, []);
+    assertEquals(f.redacted, [f.secrets.password]);
+
+    // The raw query service answers the stored reference text everywhere.
+    const [raw] = await f.dqs.query(
+      'modelName == "db" && name == "main"',
+    ) as DataRecord[];
+    assertEquals(raw.attributes.password, reference);
+    assertEquals(
+      await f.dqs.query('modelName == "db" && name == "main"', {
+        select: "attributes.password",
+      }),
+      [reference],
+    );
+    assertEquals(
+      (await f.dqs.query('modelName == "db" && name == "main"', {
+        select: "content",
+      }) as Record<string, unknown>[])[0].password,
+      reference,
+    );
+    assertEquals(
+      await f.dqs.query('modelName == "db" && name == "charset"', {
+        select: "content",
+      }),
+      [JSON.stringify({ password: reference, user: "c" })],
+    );
   });
 });
 
@@ -634,6 +836,11 @@ Deno.test("typed data secrets: a record the writer could not have stored refuses
           `data.latest('db', '${name}').attributes`,
           `dyn(data.latest('db', '${name}')) == null || true`,
           `model.db.resource.creds['${name}'].attributes`,
+          // A record the query answers, and a row its predicate reads.
+          `data.query('modelName == "db" && name == "${name}"')`,
+          `data.query('modelName == "db" && name == "${name}" && attributes.x != null')`,
+          `data.query('modelName == "db" && name == "${name}" && (attributes.x != null || true)')`,
+          `data.query('modelName == "db" && name == "${name}"', 'attributes.x')`,
         ]
       ) {
         const error = await assertRejects(
@@ -647,6 +854,9 @@ Deno.test("typed data secrets: a record the writer could not have stored refuses
         assertStringIncludes(error.operation, reason);
         assertEquals(error.operation.includes(name), false, expression);
         assertEquals(error.message.includes("plain-s3cret"), false);
+        if (expression.startsWith("data.query")) {
+          assertStringIncludes(error.operation, "(data.query)");
+        }
       }
     }
     assertEquals(
