@@ -21,9 +21,14 @@ import type { z } from "zod";
 import { Definition, type DefinitionData } from "../definitions/definition.ts";
 import {
   findSensitiveValues,
+  hasSensitiveFields,
   holdsRuntimeExpression,
   isLiteralSecret,
 } from "../models/sensitive_field_extractor.ts";
+import {
+  isRecordSchema,
+  schemaTransformsValues,
+} from "../models/zod_type_coercion.ts";
 import {
   type DataPath,
   rehydratePersistedForm,
@@ -87,6 +92,8 @@ interface ArgumentSite {
   prefix: readonly (string | number)[];
   schema: z.ZodTypeAny;
   args: Record<string, unknown>;
+  /** Raw global inputs have no known correspondence to sensitive outputs. */
+  opaque?: boolean;
 }
 
 function argumentSites(
@@ -100,6 +107,22 @@ function argumentSites(
       schema: schemas.globalArguments,
       args: data.globalArguments,
     });
+  }
+  for (const method of Object.values(schemas.methods)) {
+    const schema = method.arguments;
+    if (
+      schema && !isRecordSchema(schema) && hasSensitiveFields(schema) &&
+      (schemaTransformsValues(schema) ||
+        (schemas.globalArguments &&
+          schemaTransformsValues(schemas.globalArguments)))
+    ) {
+      sites.push({
+        prefix: ["globalArguments"],
+        schema,
+        args: data.globalArguments ?? {},
+        opaque: true,
+      });
+    }
   }
   for (const [name, method] of Object.entries(data.methods ?? {})) {
     const schema = Object.hasOwn(schemas.methods, name)
@@ -210,7 +233,11 @@ function plaintextValues(
   plaintextDataAt?: (path: MaskedPath) => boolean,
 ): PlaintextValue[] {
   const found = new Map<string, PlaintextValue>();
-  const isPlaintext = (value: unknown, path: MaskedPath): boolean => {
+  const isPlaintext = (
+    value: unknown,
+    path: MaskedPath,
+    conservative: boolean,
+  ): boolean => {
     if (value === undefined || value === null) return false;
     if (typeof value === "string" && value.trim() === "") return false;
     if (options.allowMask === true && value === SENSITIVE_ARGUMENT_MASK) {
@@ -221,6 +248,10 @@ function plaintextValues(
         provenancePath(path),
       )
     ) return true;
+    // At a position that is only potentially sensitive, a literal is the
+    // type's own text, already on disk in the source; only data is masked
+    // there (swamp-club#3681).
+    if (conservative) return false;
     return isLiteralSecret(value) &&
       !(typeof value === "string" && holdsRuntimeExpression(value));
   };
@@ -234,7 +265,17 @@ function plaintextValues(
     const replaced = options.method && ofMethod
       ? new Set<string | number>(options.method.replaced ?? [])
       : undefined;
-    for (const entry of findSensitiveValues(site.schema, site.args)) {
+    const entries = site.opaque
+      ? [{ keys: [], path: "", value: site.args, rawInput: true as const }]
+      : findSensitiveValues(site.schema, site.args, true);
+    for (const entry of entries) {
+      // A position that is only potentially sensitive — the raw inputs of a
+      // pipeline into a sensitive output, the globals a transforming schema
+      // may consume — holds the type's own text as well as data. Only data
+      // is masked there: an authored literal is already the definition's
+      // text on disk, and a reference names where the secret lives, so
+      // masking either would only cost the replay (swamp-club#3681).
+      const conservative = site.opaque || entry.rawInput === true;
       const wholeMap = options.provenance ?? persistedMap;
       // A sensitive value inside an object whose keys came from data (a
       // record of objects an input supplied) is reported at that object, as
@@ -255,10 +296,14 @@ function plaintextValues(
       // properties is recorded only as a data leaf under it), so a leaf mask
       // could leave a data key in the file, the metadata and the refusal
       // message. This fails closed: an authored object holding a
-      // data-origin vault reference is masked too and does not replay.
+      // data-origin vault reference is masked too and does not replay. A
+      // container at a conservative position is masked whole only when its
+      // own keys came from data.
       if (
         hasObjectKeys(entry.value) &&
-        wholeMap?.hasDataAtOrBelow(provenancePath(wholePath))
+        (conservative
+          ? wholeMap?.hasDataKeysAt(provenancePath(wholePath))
+          : wholeMap?.hasDataAtOrBelow(provenancePath(wholePath)))
       ) {
         if (!replaced?.has(entry.keys[0])) {
           found.set(JSON.stringify(wholePath), whole);
@@ -309,7 +354,7 @@ function plaintextValues(
           });
         if (
           plaintextDataAt?.(at) || unreferencedData ||
-          (!referenced(at) && isPlaintext(value, at))
+          (!referenced(at) && isPlaintext(value, at, conservative))
         ) {
           found.set(JSON.stringify(at), entry);
         }
@@ -659,7 +704,7 @@ export function persistEvaluatedDefinition(
   // text it does not.
   let persistedProvenance = alignProvenance(provenance, data, definitionData);
   for (const site of argumentSites(schemas, definitionData as DefinitionData)) {
-    for (const entry of findSensitiveValues(site.schema, site.args)) {
+    for (const entry of findSensitiveValues(site.schema, site.args, true)) {
       visitLeaves(entry.value, entry.keys, entry.path, (keys, path, value) => {
         const at = position({ site, keys, path });
         if (typeof value !== "string" || plaintextDataAt(at)) return;

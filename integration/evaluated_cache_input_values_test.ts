@@ -95,8 +95,9 @@ const PIN = 73816542;
  * throws a fixed text that holds its keys only as fragments of other words.
  * `storePin` writes its sensitive number into a `pinned` resource as a
  * number node, beside a larger number that holds its digits and a note that
- * spells it. `record` takes a record of sensitive strings and `container` a
- * sensitive record; both return.
+ * spells it. `record` takes a record of sensitive strings, `container` a
+ * sensitive record and `pipeline` a transform into a sensitive output; all
+ * three return.
  * The `refuse*` and `throwMade` methods never run: their schemas refuse
  * what the transform made of the string, through an issue that echoes it
  * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
@@ -202,6 +203,12 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
         z.object({
           token: secret.transform((text) => text.split("").reverse().join("")),
         }),
+      ),
+      pipeline: method(
+        "pipeline",
+        z.object({ raw: z.string() }).transform((x) => ({ token: x.raw })).pipe(
+          z.object({ token: secret }),
+        ),
       ),
       failMadeKeys: method(
         "failMadeKeys",
@@ -563,6 +570,22 @@ Deno.test("input values: under --literal-inputs a record of sensitive values is 
     );
     assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
     assertEquals(h.received.length, 1);
+  });
+});
+
+Deno.test("input values: the raw input of a pipeline into a sensitive output is masked in the cache, at the leaf that holds the data (swamp-club#3681)", async () => {
+  await withHarness(async (h) => {
+    await define(h, "piped", "pipeline", { raw: "${{ inputs.key }}" });
+    const events = await run(h, "piped", "pipeline", { key: h.canary });
+    assertEquals(errorsOf(events), []);
+    assertEquals(h.received, [{ token: h.canary }]);
+    const cache = await cacheOf(h.dir, "piped");
+    assertEquals(
+      (cache.methods as Record<string, { arguments: unknown }>).pipeline
+        .arguments,
+      { raw: "***" },
+    );
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
   });
 });
 
@@ -1011,6 +1034,7 @@ Deno.test("input values: a method that echoes a key its schema's transform deriv
     ]);
     assertEquals(errors[0].message, "intentional failure keys ***");
     assertEquals(await swampFilesHolding(h.dir, made), []);
+    assertEquals(await swampFilesHolding(h.dir, h.canary), []);
 
     const step = await runStep(h, "echo-made-keys", "failMadeKeys", h.canary);
     assertEquals(step.status, "failed");

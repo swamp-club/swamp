@@ -31,6 +31,36 @@ import {
 
 const isMarked = (meta: FieldMetadata) => meta.marked === true;
 
+Deno.test("findValuesWithMetadata: raw inputs to marked pipe outputs are reported without running transforms", () => {
+  const output = z.object({ token: z.string().meta({ marked: true }) });
+  const transform = (): { token: string } => {
+    throw new Error("must not execute");
+  };
+  for (
+    const schema of [
+      z.preprocess(transform, output),
+      z.object({ alias: z.string() }).transform(transform).pipe(output),
+    ]
+  ) {
+    const raw = { alias: "secret" };
+    assertEquals(
+      findValuesWithMetadata(schema, raw, isMarked, { rawInputs: true })
+        .map(({ keys, value }) => ({ keys, value })),
+      [{ keys: [], value: raw }, { keys: ["alias"], value: "secret" }],
+    );
+    assertEquals(
+      findValuesWithMetadata(
+        z.object({ credentials: schema }),
+        { credentials: raw },
+        isMarked,
+        { rawInputs: true },
+      )
+        .map(({ keys, value }) => ({ keys, value })),
+      [{ keys: ["credentials"], value: raw }],
+    );
+  }
+});
+
 Deno.test("findFieldMetadata: returns metadata set directly on the field", () => {
   const meta = findFieldMetadata(
     z.string().meta({ marked: true, note: "x" }),

@@ -221,7 +221,8 @@ export interface ValueWithMetadata {
   /** The metadata that matched */
   meta: FieldMetadata;
   /**
-   * Set when the value is reported conservatively, as what a reshaping node
+   * Set when the value is reported conservatively, as an input a pipeline's
+   * transform may carry into a marked output, or as what a reshaping node
    * delivered whole, rather than as a value a schema node marks itself
    * (swamp-club#3681).
    */
@@ -475,6 +476,8 @@ function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
 /** State carried through one {@link findValuesWithMetadata} walk. */
 interface ValueWalk {
   matches: (meta: FieldMetadata) => boolean;
+  /** Cache inputs precede transforms, whose output keys may differ completely. */
+  rawInputs?: boolean;
   /** Report metadata on the root schema's own chain, for the root value. */
   reportRoot?: boolean;
   /**
@@ -618,6 +621,30 @@ function visitValue(
       // `a.pipe(b)`: `b` describes the same value once `a` has accepted it,
       // so what `b` marks is marked here too.
       const pipe = getSchemaDef(current);
+      if (walk.rawInputs && pipe.out) {
+        const outputMeta = matchWithin(walk, pipe.out);
+        if (outputMeta) {
+          // No transform runs here. Any input may contribute to a marked
+          // output, so preserve only references or masks for those inputs.
+          report(outputMeta, true, true);
+          if (atRoot && isPlainObject(value)) {
+            for (const [key, input] of Object.entries(value)) {
+              const inputPath = appendKey(path, key);
+              if (walk.foundPaths.has(inputPath)) continue;
+              walk.foundPaths.add(inputPath);
+              walk.found.push({
+                path: inputPath,
+                keys: [...keys, key],
+                value: input,
+                meta: outputMeta,
+                perElement: true,
+                rawInput: true,
+              });
+            }
+          }
+          return;
+        }
+      }
       if (pipe.in && pipe.out && getSchemaType(pipe.in) !== "transform") {
         visitValue(walk, pipe.out, value, path, keys, perElement, reported);
       }
@@ -811,6 +838,9 @@ function chainReshapes(node: z.ZodTypeAny): boolean {
  * root schema itself is not reported, unless `reportRoot` asks for it: the
  * root value is then reported whole when the root schema, or a wrapper or
  * pipe side on its own chain, matches.
+ * With `rawInputs`, a pipeline with matching output metadata reports its
+ * input conservatively instead: its preprocessor or transform may rename
+ * fields. At the root each input key is reported so a caller can replace it.
  * With `transformed`, the value is read as a parse delivered it: a
  * `.transform()`, codec, `.overwrite()` or `.catch()` that reaches matching
  * metadata reports the whole value it delivered, flagged `rawInput`, since
@@ -834,12 +864,14 @@ export function findValuesWithMetadata(
   value: unknown,
   matches: (meta: FieldMetadata) => boolean,
   options: {
+    rawInputs?: boolean;
     reportRoot?: boolean;
     transformed?: boolean;
   } = {},
 ): ValueWithMetadata[] {
   const walk: ValueWalk = {
     matches,
+    rawInputs: options.rawInputs,
     reportRoot: options.reportRoot,
     transformed: options.transformed,
     found: [],

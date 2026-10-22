@@ -34,6 +34,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { walk } from "@std/fs";
+import { join } from "@std/path";
 import { z } from "zod";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -54,6 +55,20 @@ import {
   ProvenanceMap,
 } from "../src/domain/expressions/provenance_map.ts";
 import { YamlEvaluatedDefinitionRepository } from "../src/infrastructure/persistence/yaml_evaluated_definition_repository.ts";
+import { WorkflowExecutionService } from "../src/domain/workflows/execution_service.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { Job } from "../src/domain/workflows/job.ts";
+import { Step } from "../src/domain/workflows/step.ts";
+import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
+import { createModelMethodRunDeps } from "../src/serve/deps.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import "../src/domain/models/models.ts";
+
+await initializeLogging({});
 
 const INPUT_VALUE = "REPRO-SECRET-7c1e";
 const VAULT_VALUE = "VAULT-CTRL-9a9a";
@@ -351,3 +366,156 @@ Deno.test("evaluated cache: sensitive input keys do not survive in values, prove
     }
   });
 });
+
+for (
+  const [name, schema] of [
+    [
+      "sensitive-preprocess",
+      z.preprocess((value) => {
+        const input = value as Record<string, unknown>;
+        return { target: input.alias };
+      }, z.object({ target: z.string().meta({ sensitive: true }).optional() })),
+    ],
+    [
+      "preprocess-keys",
+      z.preprocess(
+        (value) => ({ target: Object.keys(value as object)[0] }),
+        z.object({ target: z.string().meta({ sensitive: true }).optional() }),
+      ),
+    ],
+    [
+      "preprocess",
+      z.preprocess((value) => {
+        if (typeof value !== "object" || value === null) return value;
+        const input = value as Record<string, unknown>;
+        return { ...input, target: input.alias ?? input.target };
+      }, z.object({ kind: z.literal("one"), target: z.string() })),
+    ],
+  ] as const
+) {
+  Deno.test(`evaluated cache: ${name} method overrides preserve safe replay behavior`, async () => {
+    // A step input the workflow spells is the author's own text, so a
+    // preprocessor that reads its keys caches and replays them
+    // (swamp-club#3681); only data at such a position is masked.
+    const opaque = name === "sensitive-preprocess";
+    await withTempDir(async (dir) => {
+      const repo = createRepositoryContext({ repoDir: dir });
+      const type = ModelType.create(
+        `@test/cache-schema-${crypto.randomUUID()}`,
+      );
+      const received: unknown[] = [];
+      modelRegistry.register({
+        type,
+        version: "2026.01.01.1",
+        methods: {
+          execute: {
+            description: "Captures arguments",
+            arguments: schema,
+            execute: (args) => {
+              received.push(args);
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+      try {
+        const definition = Definition.create({
+          name: "consumer",
+          type: type.normalized,
+          methods: {
+            execute: {
+              // The preprocessor reads the first key, so its definition
+              // spells none of its own.
+              arguments: opaque || name === "preprocess-keys"
+                ? {}
+                : { kind: "one", target: "old" },
+            },
+          },
+        });
+        await repo.definitionRepo.save(type, definition);
+        const workflow = Workflow.create({
+          name: "override",
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "call",
+                  task: StepTask.model(
+                    definition.name,
+                    "execute",
+                    {
+                      [name === "preprocess-keys" ? INPUT_VALUE : "alias"]:
+                        name === "preprocess-keys"
+                          ? null
+                          : "${{ inputs.value }}",
+                    },
+                  ),
+                }),
+              ],
+            }),
+          ],
+        });
+        await repo.workflowRepo.save(workflow);
+        const service = new WorkflowExecutionService(
+          repo.workflowRepo,
+          repo.workflowRunRepo,
+          dir,
+          undefined,
+          undefined,
+          repo.catalogStore,
+        );
+        const run = await service.execute(workflow.name, {
+          inputs: {
+            value: opaque ? INPUT_VALUE : "new",
+          },
+        });
+        assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+        const deps = await createModelMethodRunDeps(dir, repo);
+        const events = await collect(
+          modelMethodRun(createLibSwampContext(), deps, {
+            modelIdOrName: definition.name,
+            methodName: "execute",
+            inputs: {},
+            lastEvaluated: true,
+          }),
+        );
+        if (opaque) {
+          assertEquals(
+            events.filter((event) => event.kind === "error").map((event) =>
+              event.error.code
+            ),
+            ["evaluated_cache_holds_sensitive_arguments"],
+          );
+          assertEquals(
+            await filesHolding(
+              join(dir, ".swamp", "definitions-evaluated"),
+              INPUT_VALUE,
+            ),
+            [],
+          );
+          const expected = { target: INPUT_VALUE };
+          assertEquals(received, [expected]);
+          const replay = await service.execute(workflow.name, {
+            lastEvaluated: true,
+          });
+          assertEquals(
+            replay.status,
+            "succeeded",
+            JSON.stringify(replay.toData()),
+          );
+          assertEquals(received, [expected, expected]);
+        } else {
+          assertEquals(events.filter((event) => event.kind === "error"), []);
+          const expected = name === "preprocess-keys"
+            ? { target: INPUT_VALUE }
+            : { kind: "one", target: "new" };
+          assertEquals(received, [expected, expected]);
+        }
+      } finally {
+        repo.catalogStore.close();
+        modelRegistry.invalidateType(type);
+      }
+    });
+  });
+}
