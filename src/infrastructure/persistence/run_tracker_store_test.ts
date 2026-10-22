@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -465,6 +465,34 @@ Deno.test("RunTrackerStore: v6 migration preserves legacy pending deliveries and
     assertEquals(store.findAllPendingRuns().length, 2);
   } finally {
     store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: migration owns the writer lock before reading the version", () => {
+  const path = makeTempDbPath();
+  const contender = new DatabaseSync(path);
+  contender.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=0");
+  const prepare = DatabaseSync.prototype.prepare;
+  let versionReads = 0;
+  DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+    if (
+      this !== contender && sql.includes("SELECT value FROM run_tracker_meta")
+    ) {
+      versionReads++;
+      assertThrows(() => contender.exec("BEGIN IMMEDIATE"), Error, "locked");
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    const first = new RunTrackerStore(path);
+    first.close();
+    const second = new RunTrackerStore(path);
+    second.close();
+    assertEquals(versionReads, 2);
+    contender.exec("BEGIN IMMEDIATE; ROLLBACK");
+  } finally {
+    DatabaseSync.prototype.prepare = prepare;
+    contender.close();
   }
 });
 

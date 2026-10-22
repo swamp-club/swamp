@@ -38,6 +38,7 @@ import {
   traceCarrier,
 } from "../domain/remote/observability.ts";
 import { injectTraceContext } from "../infrastructure/tracing/propagation.ts";
+import { runDetached } from "../infrastructure/tracing/tracer.ts";
 import {
   type RemoteLockHolder,
   withRemoteLockHolder,
@@ -171,19 +172,21 @@ export function registerDispatchHandler(
         );
       }
       const dispatch = DispatchParamsSchema.parse(rawParams);
-      return await observeExecutionWork(
-        "worker.dispatch",
-        {
-          "swamp.dispatch.id": dispatch.dispatchId,
-          "swamp.lease.id": dispatch.leaseId,
-        },
-        async (observation) => {
-          const result = await handleDispatch(rawParams, ctx, options);
-          if (result.status === "error") observation.end("error");
-          return result;
-        },
-        traceCarrier(dispatch.execution.traceHeaders),
-        options.lifecycleTrace ? [options.lifecycleTrace] : undefined,
+      return await runDetached(() =>
+        observeExecutionWork(
+          "worker.dispatch",
+          {
+            "swamp.dispatch.id": dispatch.dispatchId,
+            "swamp.lease.id": dispatch.leaseId,
+          },
+          async (observation) => {
+            const result = await handleDispatch(rawParams, ctx, options);
+            if (result.status === "error") observation.end("error");
+            return result;
+          },
+          traceCarrier(dispatch.execution.traceHeaders),
+          options.lifecycleTrace ? [options.lifecycleTrace] : undefined,
+        )
       );
     } finally {
       activeRunners--;

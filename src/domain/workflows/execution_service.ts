@@ -5492,7 +5492,10 @@ export class WorkflowExecutionService {
       // even though their generators have not been created yet.
       for (const node of effectiveNodes) {
         const status = jobRun.getStep(node.name)?.status;
-        if (status !== undefined && status !== "pending") continue;
+        if (
+          status === "succeeded" || status === "failed" ||
+          status === "skipped" || status === "unknown"
+        ) continue;
         progress.set(
           node.name,
           registerRunProgress({

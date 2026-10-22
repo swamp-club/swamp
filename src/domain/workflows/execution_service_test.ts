@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
+import { runProgressSnapshots } from "../remote/run_progress.ts";
 import {
   type ObservationOutcome,
   setExecutionObserver,
@@ -18933,6 +18934,33 @@ Deno.test("resume(): refuses a parent whose nested run has not finished, changin
     );
     const after = await runRepo.findById(parent.id, parentRun.id);
     assertEquals(after!.toData(), before);
+  });
+});
+
+Deno.test("resume: reentered nested waits retain step diagnostics", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name));
+    const childRun = await decideChildGate(runRepo, child, true);
+    await drain(service.resume(child.name, childRun.id));
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    let observed = false;
+    for await (const event of service.resume(parent.name, parentRun.id)) {
+      if (event.kind === "step_started" && event.stepId === "call-child") {
+        const step = runProgressSnapshots(parentRun.id).find((p) =>
+          p.step === "call-child"
+        );
+        assertEquals(step?.phase, "executing");
+        assertEquals(step?.job, "main");
+        observed = true;
+      }
+    }
+    assertEquals(observed, true);
+    assertEquals(runProgressSnapshots(parentRun.id), []);
   });
 });
 

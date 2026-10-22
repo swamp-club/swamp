@@ -144,8 +144,17 @@ export class RunTrackerStore implements RunTrackerRepository {
             value TEXT NOT NULL
           );
         `);
-        this.migrateIfNeeded();
-        this.createSchema();
+        // Lock before reading the version: concurrent openers must not both
+        // decide to add the same column from an obsolete schema snapshot.
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          this.migrateIfNeeded();
+          this.createSchema();
+          this.db.exec("COMMIT");
+        } catch (error) {
+          this.db.exec("ROLLBACK");
+          throw error;
+        }
         this.purgeOldRuns();
         return;
       } catch (error: unknown) {
