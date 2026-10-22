@@ -22,6 +22,7 @@ import { assertPathStringIncludes } from "../../infrastructure/persistence/path_
 import { SEPARATOR } from "@std/path";
 import {
   GLOBAL_SKILL_DIRS,
+  recordedSkillsDirs,
   resolveGlobalSkillsDir,
   resolveUniqueGlobalSkillsDirs,
   resolveUniqueLocalSkillsDirs,
@@ -138,4 +139,49 @@ Deno.test("resolveUniqueLocalSkillsDirs: unknown tool uses fallback path", () =>
   const dirs = resolveUniqueLocalSkillsDirs("/repo", ["unknown-tool"]);
   assertEquals(dirs.length, 1);
   assertPathStringIncludes(dirs[0], "pulled-extensions");
+});
+
+Deno.test("recordedSkillsDirs: returns the tool dir a skill root is recorded under", () => {
+  assertEquals(
+    recordedSkillsDirs([
+      ".swamp/pulled-extensions/@x/y/models/a.ts",
+      ".claude/skills/foo",
+    ]),
+    [".claude/skills"],
+  );
+});
+
+Deno.test("recordedSkillsDirs: files merged into a shared dir name that dir", () => {
+  assertEquals(
+    recordedSkillsDirs([".swamp/pulled-extensions/skills/foo/other.md"]),
+    [".swamp/pulled-extensions/skills"],
+  );
+});
+
+Deno.test("recordedSkillsDirs: returns every tool dir once", () => {
+  assertEquals(
+    recordedSkillsDirs([
+      ".claude/skills/foo",
+      ".agents/skills/foo",
+      ".agents/skills/bar",
+    ]).sort(),
+    [".agents/skills", ".claude/skills"],
+  );
+});
+
+Deno.test("recordedSkillsDirs: reads backslash-separated lockfile paths", () => {
+  assertEquals(recordedSkillsDirs([".kiro\\skills\\foo"]), [".kiro/skills"]);
+});
+
+Deno.test("recordedSkillsDirs: ignores source files and unknown roots", () => {
+  assertEquals(
+    recordedSkillsDirs([
+      "extensions/models/foo.ts",
+      ".swamp/pulled-extensions/@x/y/models/a.ts",
+      "../outside/skills/foo",
+      ".claude/skillsx/foo",
+      ".claude/skills",
+    ]),
+    [],
+  );
 });

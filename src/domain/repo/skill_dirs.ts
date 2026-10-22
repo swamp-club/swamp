@@ -143,3 +143,29 @@ export function resolveUniqueGlobalSkillsDirs(
   }
   return result;
 }
+
+/**
+ * Returns the repo-relative project-local skill directories (the
+ * `SKILL_DIRS` values and the `.swamp/pulled-extensions/skills/`
+ * fallback) that a lockfile entry's `files` record a skill under, in
+ * forward-slash form and deduplicated. A skill is recorded as its root
+ * (`.claude/skills/foo`) or, when merged into a dir the extension does
+ * not own, as the files it wrote there; both name the same dir.
+ *
+ * Only members of that fixed set are returned, never a path taken from
+ * `files`, so a hand-edited lockfile cannot point an install elsewhere.
+ */
+export function recordedSkillsDirs(files: readonly string[]): string[] {
+  const known = new Set([
+    ...Object.values(SKILL_DIRS),
+    `.swamp/${SWAMP_SUBDIRS.pulledSkills}`,
+  ]);
+  const result: string[] = [];
+  for (const dir of known) {
+    const recorded = files.some((file) =>
+      file.replaceAll("\\", "/").startsWith(`${dir}/`)
+    );
+    if (recorded) result.push(dir);
+  }
+  return result;
+}

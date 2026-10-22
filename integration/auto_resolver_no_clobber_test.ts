@@ -26,6 +26,7 @@ import {
 } from "../src/cli/auto_resolver_adapters.ts";
 import { ExtensionAutoResolver } from "../src/domain/extensions/extension_auto_resolver.ts";
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
+import { createTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 
 // Regression guard for swamp-club issue 121: an auto-resolver attempt on
 // a type whose extension is already installed on disk must NEVER overwrite
@@ -155,13 +156,13 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
   }
 });
 
-Deno.test("integration: auto-resolver preserves legacy skill directories", async () => {
+Deno.test("integration: auto-resolver preserves legacy source files", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_issue_2183_" });
   try {
     const extensionName = "@test/legacy";
-    const legacyDir = join(tmpDir, ".claude", "skills", "legacy");
-    const legacyFile = join(legacyDir, "SKILL.md");
-    const legacyContents = "# Legacy skill\n";
+    const legacyDir = join(tmpDir, "extensions", "models");
+    const legacyFile = join(legacyDir, "legacy.ts");
+    const legacyContents = "// Legacy source\n";
     await ensureDir(legacyDir);
     await Deno.writeTextFile(legacyFile, legacyContents);
 
@@ -177,7 +178,7 @@ Deno.test("integration: auto-resolver preserves legacy skill directories", async
         [extensionName]: {
           version: "2026.01.01.1",
           pulledAt: "2026-01-01T00:00:00Z",
-          files: [join(".claude", "skills", "legacy")],
+          files: ["extensions/models/legacy.ts", ".claude/skills/legacy"],
         },
       },
       null,
@@ -229,6 +230,114 @@ Deno.test("integration: auto-resolver preserves legacy skill directories", async
     assertEquals(downloadArchiveCalled, false);
     assertEquals(await Deno.readTextFile(legacyFile), legacyContents);
     assertEquals(await Deno.readTextFile(lockfilePath), originalLockfile);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// swamp-club#3727: a pinned extension whose recorded skill dir survives
+// an empty pulled cache is reinstalled, not refused as legacy. The skill
+// goes back where the lockfile records it, so the entry keeps its skill
+// path and the dir is not pruned.
+Deno.test("integration: auto-resolver reinstalls a pinned extension over its surviving skill dir", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_issue_3727_" });
+  try {
+    const extensionName = "@test/skilled";
+    const version = "2026.01.01.1";
+    const skillDir = join(tmpDir, ".claude", "skills", "skilled");
+    await ensureDir(skillDir);
+    await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# old\n");
+
+    const lockfilePath = join(
+      tmpDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    await ensureDir(join(tmpDir, "extensions", "models"));
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        [extensionName]: {
+          version,
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [
+            `.swamp/pulled-extensions/${extensionName}/manifest.yaml`,
+            ".claude/skills/skilled",
+          ],
+        },
+      }),
+    );
+
+    const archiveDir = await Deno.makeTempDir({ prefix: "swamp_arc_" });
+    let archive: Uint8Array;
+    try {
+      const extDir = join(archiveDir, "extension");
+      await ensureDir(join(extDir, "skills", "skilled"));
+      await Deno.writeTextFile(
+        join(extDir, "manifest.yaml"),
+        `manifestVersion: 1\nname: "${extensionName}"\nversion: "${version}"\nskills:\n  - skilled\n`,
+      );
+      await Deno.writeTextFile(
+        join(extDir, "skills", "skilled", "SKILL.md"),
+        "# new\n",
+      );
+      await createTarGz(extDir, join(archiveDir, "a.tar.gz"));
+      archive = await Deno.readFile(join(archiveDir, "a.tar.gz"));
+    } finally {
+      await Deno.remove(archiveDir, { recursive: true });
+    }
+
+    const lookup = (name: string) =>
+      name === extensionName
+        ? Promise.resolve({
+          name,
+          description: "Skilled fixture",
+          latestVersion: version,
+        })
+        : Promise.resolve(null);
+    let downloads = 0;
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: lookup,
+      downloadArchive: () => {
+        downloads++;
+        return Promise.resolve(archive);
+      },
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    const resolver = new ExtensionAutoResolver({
+      allowedCollectives: ["test"],
+      extensionLookup: {
+        getExtension: lookup,
+        searchExtensions: () => Promise.resolve({ extensions: [] }),
+      },
+      extensionInstaller: adapter,
+      output: createAutoResolveOutputAdapter("json"),
+    });
+
+    // The fixture ships no type, so resolve reports false after the
+    // install; what matters is that the install ran.
+    await resolver.resolve(`${extensionName}/some-type`);
+
+    assertEquals(downloads, 1);
+    assertEquals(
+      await Deno.readTextFile(join(skillDir, "SKILL.md")),
+      "# new\n",
+    );
+    const lockfile = JSON.parse(await Deno.readTextFile(lockfilePath));
+    assertEquals(
+      lockfile[extensionName].files.includes(".claude/skills/skilled"),
+      true,
+    );
+    assertEquals(
+      lockfile[extensionName].files.some((f: string) =>
+        f.startsWith(".swamp/pulled-extensions/skills/")
+      ),
+      false,
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

@@ -492,9 +492,9 @@ Two more optional fields appear whether or not enrichment ran
 - `removeToReinstall` accompanies `autoResolved`: the repo-relative paths to
   delete for that reinstall, namely the extension's directory and any pulled
   skill dirs it tracks. A skill dir another extension also claims is shared,
-  so only this extension's own files in it are listed. A surviving skill would
-  make the auto-resolver report the extension as a legacy install instead of
-  reinstalling it. The log-mode
+  so only this extension's own files in it are listed. A skill dir left in
+  place does not block the reinstall: the auto-resolver writes the skill back
+  into it. The log-mode
   remedy line names these paths.
 
 ### `swamp extension outdated`
@@ -1807,7 +1807,12 @@ auto-resolve does:
 - **Legacy**: the per-extension directory is absent, but source files the
   lockfile declares remain at older locations. Auto-resolution reports this and
   leaves the files alone. Run `swamp extension pull <name>` to accept the
-  migration.
+  migration. A skill dir the entry records never counts: skill dirs are
+  current-layout wherever they are (see below). With only a skill dir left, the
+  state is missing and the install proceeds. It writes the skill back into the
+  dirs the entry records, so the entry keeps its skill paths and none are
+  pruned. An install with no recorded skill dir puts skills in
+  `.swamp/pulled-extensions/skills/` (swamp-club#3727).
 
 "Intact-but-fails" and "truncated" share one recovery,
 `swamp extension pull <name> --force`, the only way auto-installation state can
@@ -2509,8 +2514,9 @@ root or as files under it) is a ConflictError for the top-level extension.
 output (`skillDirs`) list them apart from overwritten files, since the install
 writes into them rather than replacing them. With
 `--force`, and for dependencies, the install merges into the dir and logs a
-warning naming it. The auto-resolver retries conflicts on pulled skill dirs with
-force, as it does for stale bundle output.
+warning naming it. The auto-resolver retries conflicts on pulled skill dirs, and
+on skill dirs the pinned entry records, with force, as it does for stale bundle
+output.
 
 macOS resource fork files (`._*`) cannot get into archives. The Deno-native
 archiver in `src/infrastructure/archive/tar_archive.ts` walks an explicit file
