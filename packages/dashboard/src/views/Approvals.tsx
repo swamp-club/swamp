@@ -49,6 +49,19 @@ import {
 } from "../client/approvals.ts";
 import { SignalWaitsPanel } from "../components/SignalWaitsPanel.tsx";
 import {
+  type DecidedGate,
+  decidedGate,
+  decidedLabel,
+  type Decision,
+  decisionOutcome,
+  decisionReason,
+  gateKey,
+  MAX_DECISION_REASON_LENGTH,
+  refusalMessage,
+} from "../components/decision_confirm.ts";
+import { useDecidedGates } from "../client/useDecidedGates.ts";
+import { RequestError } from "../client/stream.ts";
+import {
   PendingSignalsPanel,
   useHeldSignalClock,
 } from "../components/PendingSignalsPanel.tsx";
@@ -99,11 +112,6 @@ const HISTORY_SLOTS = 12;
 /** A wait longer than this reads as overdue. */
 const LONG_WAIT_MS = 60 * 60 * 1000;
 
-type Decision = "approve" | "reject";
-
-const gateKey = (g: { runId: string; stepName: string }) =>
-  `${g.runId}\u0000${g.stepName}`;
-
 export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const { request } = useSwamp();
   const catalog = useWorkflowCatalog(health ?? null);
@@ -111,6 +119,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
 
   const approvalsRequest = useRequest("workflow.approvals");
   const { data, refetch } = approvalsRequest;
+  const { decided, hold } = useDecidedGates(data);
   // Every suspended run, page by page: a single capped page would drop
   // runs awaiting resume once there are more than the cap.
   const {
@@ -179,55 +188,52 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
     [refresh],
   );
 
-  const handleApprove = useCallback(
-    async (a: ApprovalInfo) => {
+  // A decision that lands holds its gate settled until a listing drops it;
+  // one serve refuses is checked against a fresh listing, so a gate decided
+  // elsewhere reads as decided rather than as a failure (swamp-club#3697).
+  const handleDecision = useCallback(
+    async (a: ApprovalInfo, decision: Decision, reasonText: string) => {
       setError(null);
       setNotice(null);
-      markDeciding(a, "approve");
+      markDeciding(a, decision);
+      const reason = decisionReason(reasonText);
       try {
-        const result = await request<{ data?: { autoResumed?: boolean } }>(
-          "workflow.approve",
-          {
-            workflowIdOrName: a.workflowName,
-            stepName: a.stepName,
-            runId: a.runId,
-          },
-        );
-        if (result.data?.autoResumed) {
-          setResumingRuns((prev) => new Set(prev).add(a.runId));
-          setNotice(`${a.workflowName}: approved — serve is resuming the run`);
-        }
-      } catch (err) {
-        setError(
-          `Approve failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      markDeciding(a, null);
-      refresh();
-    },
-    [request, refresh, markDeciding],
-  );
-
-  const handleReject = useCallback(
-    async (a: ApprovalInfo) => {
-      setError(null);
-      setNotice(null);
-      markDeciding(a, "reject");
-      try {
-        await request("workflow.reject", {
+        const reply = await request<
+          { data?: { autoResumed?: boolean } }
+        >(decision === "approve" ? "workflow.approve" : "workflow.reject", {
           workflowIdOrName: a.workflowName,
           stepName: a.stepName,
           runId: a.runId,
+          ...(reason !== undefined ? { reason } : {}),
         });
-      } catch (err) {
-        setError(
-          `Reject failed: ${err instanceof Error ? err.message : String(err)}`,
+        const settled = decidedGate(decision, reply, new Date().toISOString());
+        hold(a, settled);
+        if (reply.data?.autoResumed) {
+          setResumingRuns((prev) => new Set(prev).add(a.runId));
+        }
+        setNotice(
+          `${a.workflowName} / ${a.stepName}: ${decidedLabel(settled)} at ${
+            formatAbsoluteTime(settled.decidedAt)
+          } — ${decisionOutcome(decision, reply)}`,
         );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Only a refusal from serve can mean the gate was already decided;
+        // a lost connection leaves the gate as it was.
+        const stillListed = err instanceof RequestError
+          ? await request("workflow.approvals").then(
+            (fresh) =>
+              pendingApprovals(fresh).some((g) => gateKey(g) === gateKey(a)),
+            () => true,
+          )
+          : true;
+        if (stillListed) setError(refusalMessage(decision, message, true));
+        else setNotice(refusalMessage(decision, message, false));
       }
       markDeciding(a, null);
       refresh();
     },
-    [request, refresh, markDeciding],
+    [request, refresh, markDeciding, hold],
   );
 
   // Longest wait first in every list: the oldest gate is the most urgent.
@@ -455,11 +461,11 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
                       ? `Nested run of ${a.parentRun.workflowName}: resume the parent after this run finishes`
                       : `Nested run of ${a.parentRun.workflowName}: the parent no longer waits on it`)}
                   actions={
-                    <DecisionButtons
+                    <DecisionControl
                       gate={a}
                       deciding={deciding.get(gateKey(a)) ?? null}
-                      onApprove={handleApprove}
-                      onReject={handleReject}
+                      decided={decided.get(gateKey(a)) ?? null}
+                      onDecide={handleDecision}
                     />
                   }
                 />
@@ -642,35 +648,140 @@ function WaitTime({ label, since }: { label: string; since: string }) {
   );
 }
 
-function DecisionButtons(
-  { gate, deciding, onApprove, onReject }: {
+/**
+ * Approve and Reject, each confirmed with an optional reason. A gate this
+ * viewer cannot decide shows why instead; one decided from this page shows
+ * who decided it until the listing drops it.
+ */
+function DecisionControl(
+  { gate, deciding, decided, onDecide }: {
     gate: ApprovalInfo;
     deciding: Decision | null;
-    onApprove: (gate: ApprovalInfo) => Promise<void>;
-    onReject: (gate: ApprovalInfo) => Promise<void>;
+    decided: DecidedGate | null;
+    onDecide: (
+      gate: ApprovalInfo,
+      decision: Decision,
+      reason: string,
+    ) => Promise<void>;
   },
 ) {
+  const [confirming, setConfirming] = useState<Decision | null>(null);
+  const [reason, setReason] = useState("");
+  const reasonId = useId();
+  if (decided) {
+    return (
+      <div className="approval-decided" role="status">
+        <span title={formatAbsoluteTime(decided.decidedAt)}>
+          {decidedLabel(decided)}
+        </span>
+      </div>
+    );
+  }
   const busy = deciding !== null;
   const what = `${gate.stepName} on ${gate.workflowName}`;
+  if (gate.canDecide === false) {
+    return (
+      <div className="approval-actions approval-cannot-decide">
+        <button
+          type="button"
+          className="btn-sm btn-approve"
+          disabled
+          aria-describedby={reasonId}
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          className="btn-sm btn-reject"
+          disabled
+          aria-describedby={reasonId}
+        >
+          Reject
+        </button>
+        <span id={reasonId} className="approval-cannot-decide-note">
+          You don't hold approve on this workflow
+        </span>
+      </div>
+    );
+  }
+  if (confirming || busy) {
+    const decision = confirming ?? deciding!;
+    const verb = decision === "approve" ? "approve" : "reject";
+    return (
+      <form
+        className="approval-confirm"
+        aria-busy={busy}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (busy) return;
+          // onDecide reports its own failures; this only resets the form.
+          onDecide(gate, decision, reason)
+            .finally(() => {
+              setConfirming(null);
+              setReason("");
+            })
+            .catch(() => {});
+        }}
+      >
+        <label htmlFor={reasonId} className="approval-confirm-label">
+          Reason (optional)
+        </label>
+        <textarea
+          id={reasonId}
+          className="approval-reason"
+          rows={2}
+          maxLength={MAX_DECISION_REASON_LENGTH}
+          value={reason}
+          disabled={busy}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <div className="approval-actions">
+          <button
+            type="submit"
+            className={`btn-sm ${
+              decision === "approve" ? "btn-approve" : "btn-reject"
+            }`}
+            disabled={busy}
+            aria-label={`Confirm ${verb} ${what}`}
+          >
+            {busy
+              ? decision === "approve" ? "Approving…" : "Rejecting…"
+              : decision === "approve"
+              ? "Confirm approve"
+              : "Confirm reject"}
+          </button>
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={busy}
+            onClick={() => {
+              setConfirming(null);
+              setReason("");
+            }}
+          >
+            Back
+          </button>
+        </div>
+      </form>
+    );
+  }
   return (
-    <div className="approval-actions" aria-busy={busy}>
+    <div className="approval-actions">
       <button
         type="button"
         className="btn-sm btn-approve"
-        disabled={busy}
         aria-label={`Approve ${what}`}
-        onClick={() => onApprove(gate)}
+        onClick={() => setConfirming("approve")}
       >
-        {deciding === "approve" ? "Approving…" : "Approve"}
+        Approve
       </button>
       <button
         type="button"
         className="btn-sm btn-reject"
-        disabled={busy}
         aria-label={`Reject ${what}`}
-        onClick={() => onReject(gate)}
+        onClick={() => setConfirming("reject")}
       >
-        {deciding === "reject" ? "Rejecting…" : "Reject"}
+        Reject
       </button>
     </div>
   );
@@ -682,6 +793,8 @@ interface GateRowProps {
     runId: string;
     stepName: string;
     prompt?: string;
+    initiatedBy?: string;
+    inputs?: Readonly<Record<string, unknown>>;
   };
   waitingSince?: string;
   waitingLabel: string;
@@ -711,7 +824,9 @@ function GateRow(
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const toggleFromRow = (e: MouseEvent<HTMLDivElement>) => {
-    if ((e.target as Element).closest("a, button, code, input, textarea")) {
+    if (
+      (e.target as Element).closest("a, button, code, input, textarea, form")
+    ) {
       return;
     }
     if (globalThis.getSelection?.()?.toString()) return;
@@ -752,6 +867,11 @@ function GateRow(
           </div>
           <div className="approval-meta">
             <RunLink workflowName={gate.workflowName} runId={gate.runId} />
+            {gate.initiatedBy && (
+              <span className="approval-by mono" title="Started the run">
+                by {gate.initiatedBy}
+              </span>
+            )}
             {waitingSince && (
               <WaitTime label={waitingLabel} since={waitingSince} />
             )}
@@ -778,6 +898,8 @@ function GateRow(
             runId={gate.runId}
             stepName={gate.stepName}
             prompt={gate.prompt}
+            initiatedBy={gate.initiatedBy}
+            inputs={gate.inputs}
           />
         )}
       </div>
@@ -787,11 +909,13 @@ function GateRow(
 
 /** Reads the gated workflow's jobs only once a row is expanded. */
 function GateContextLoader(
-  { workflowName, runId, stepName, prompt }: {
+  { workflowName, runId, stepName, prompt, initiatedBy, inputs }: {
     workflowName: string;
     runId: string;
     stepName: string;
     prompt?: string;
+    initiatedBy?: string;
+    inputs?: Readonly<Record<string, unknown>>;
   },
 ) {
   const { data, error } = useRequest("workflow.get", {
@@ -803,6 +927,8 @@ function GateContextLoader(
       workflowName={workflowName}
       stepName={stepName}
       prompt={prompt}
+      initiatedBy={initiatedBy}
+      inputs={inputs}
       runLink={<RunLink workflowName={workflowName} runId={runId} />}
       jobs={workflow ? workflow.jobs ?? [] : null}
       error={error}

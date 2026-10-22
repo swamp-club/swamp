@@ -19,7 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import { GateDetails } from "./GateDetails.tsx";
 
@@ -65,4 +65,33 @@ Deno.test("GateDetails: a skeleton while jobs load, an error when they fail", ()
   );
   assertStringIncludes(failed, "Couldn&#x27;t load the workflow&#x27;s jobs");
   assertStringIncludes(failed, 'role="alert"');
+});
+
+Deno.test("GateDetails: names who started the run and lists its inputs as text", () => {
+  const html = renderToStaticMarkup(
+    <GateDetails
+      {...base}
+      jobs={jobs}
+      initiatedBy="user:alice"
+      inputs={{
+        ticket: "<b>OPS-1</b>",
+        dryRun: false,
+        hosts: ["a", "b"],
+      }}
+    />,
+  );
+  assertStringIncludes(html, "Started by");
+  assertStringIncludes(html, "user:alice");
+  assertStringIncludes(html, "3 inputs");
+  assertStringIncludes(html, "&lt;b&gt;OPS-1&lt;/b&gt;");
+  assertStringIncludes(html, "false");
+  assertStringIncludes(html, "[&quot;a&quot;,&quot;b&quot;]");
+});
+
+Deno.test("GateDetails: leaves out the initiator and inputs when the run has none", () => {
+  const html = renderToStaticMarkup(
+    <GateDetails {...base} jobs={jobs} inputs={{}} />,
+  );
+  assertEquals(html.includes("Started by"), false);
+  assertEquals(html.includes("gate-inputs"), false);
 });

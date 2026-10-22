@@ -834,6 +834,12 @@ interface ApprovalsRow {
   workflowName: string;
   parentRun?: NamedWorkflow;
   parentWaiting?: boolean;
+  /**
+   * On a pending gate: whether this caller holds `approve` on its workflow
+   * (swamp-club#3697). It answers for the caller only and never says who
+   * else may decide; approve and reject authorize the decision themselves.
+   */
+  canDecide?: boolean;
 }
 
 export async function handleWorkflowApprovals(
@@ -922,10 +928,23 @@ export async function handleWorkflowApprovals(
       }
       return kept;
     };
-    const data = await withSpan("swamp.serve.authorize", {}, async () => ({
-      approvals: await readable(listed.approvals),
-      expired: await readable(listed.expired),
-    }));
+    // Set only on gates the caller may read, by the same owners the read
+    // filter uses, and unaudited like it: a refetch adds no audit events.
+    const mayDecide = resourceReadability(
+      (item: ApprovalsRow) =>
+        canonical.workflowOwners(item.workflowId, item.workflowName),
+      socket,
+      principal,
+      "approve",
+      ctx,
+    );
+    const data = await withSpan("swamp.serve.authorize", {}, async () => {
+      const approvals = await readable(listed.approvals);
+      for (const item of approvals) {
+        item.canDecide = await mayDecide(item);
+      }
+      return { approvals, expired: await readable(listed.expired) };
+    });
 
     await sendTraced(socket, {
       type: "workflow.approvals",
