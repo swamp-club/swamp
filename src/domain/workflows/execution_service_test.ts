@@ -8207,11 +8207,12 @@ Deno.test({
       const runRepo = new InMemoryWorkflowRunRepository();
       const executor = new MockStepExecutor();
 
-      // Make the first step slow so the signal fires while it's running
+      const controller = new AbortController();
+      // Cancel only once the first step is executing.
       const originalExecute = executor.execute.bind(executor);
       executor.execute = async (step: Step, ctx: StepExecutionContext) => {
         if (step.name === "slow") {
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          controller.abort();
           // Check if signal was aborted
           if (ctx.signal?.aborted) {
             throw new DOMException("The operation was aborted.", "AbortError");
@@ -8253,9 +8254,6 @@ Deno.test({
         undefined,
         catalogStore,
       );
-
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 100);
 
       const events = [];
       for await (

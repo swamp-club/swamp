@@ -116,6 +116,7 @@ export type ExecutionOperation =
   | "data.response"
   | "enrollment.connect"
   | "enrollment.request"
+  | "enrollment.accepted"
   | "enrollment.retry"
   | "transition.wait"
   | "webhook.receipt"

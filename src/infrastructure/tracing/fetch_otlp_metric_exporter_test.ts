@@ -35,14 +35,17 @@ Deno.test("FetchOtlpMetricExporter: malformed replies fail and shutdown refuses 
         (result) => resolve(result.code),
       );
     });
-  const { calls } = await withMockedFetch([new Response("not JSON")], async () => {
-    try {
-      assertEquals(await send(), ExportResultCode.FAILED);
-      await exporter.shutdown();
-      assertEquals(await send(), ExportResultCode.FAILED);
-    } finally {
-      await exporter.shutdown();
-    }
-  });
+  const { calls } = await withMockedFetch(
+    [new Response("not JSON")],
+    async () => {
+      try {
+        assertEquals(await send(), ExportResultCode.FAILED);
+        await exporter.shutdown();
+        assertEquals(await send(), ExportResultCode.FAILED);
+      } finally {
+        await exporter.shutdown();
+      }
+    },
+  );
   assertEquals(calls.length, 1);
 });
