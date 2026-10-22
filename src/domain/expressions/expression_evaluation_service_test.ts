@@ -19,6 +19,10 @@
 
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { attachSensitiveValues } from "./sensitive_context.ts";
+import {
+  attachStepOutputSources,
+  stepOutputSourcesOf,
+} from "./step_output_sources.ts";
 import { SplicePair } from "./splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -2688,5 +2692,87 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run keeps the legacy b
     assertEquals(loaded.resolveRaw(args.dash as string), "s3cret-dash");
     assertEquals(args.prose, "${{ not cel at all {{ }}");
     assertEquals(reads.sort(), ["a@b", "k-1"]);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's output sources across the deferred-binding paths, so a parent's tagged output is a Secret in the context's own steps and in a record's persisted steps (typed-secrets 4.2)", async () => {
+  await withTempDir(async (repoDir) => {
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "s3cret-token",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const reference = "${{ vault.get('v', 'token') }}";
+    // A mutable literal: the record schema's form and the context's both
+    // take it.
+    const sources = [{
+      path: [] as string[],
+      records: [{
+        id: "r1",
+        name: "main",
+        version: 1,
+        namespace: "",
+        modelName: "writer",
+        tags: { "_swamp.sensitiveFields": JSON.stringify(["password"]) },
+        attributes: { password: reference, user: "u" },
+      }],
+    }];
+    const seed = attachStepOutputSources(
+      { status: "succeeded", outputs: { password: reference, user: "u" } },
+      sources,
+    );
+    // A parent record whose expression reads the parent's tagged output;
+    // its captured steps carry the sources in their persisted form.
+    const record = {
+      id: crypto.randomUUID(),
+      expression: "${{ env.HOME + ':' + steps.seed.outputs.password }}",
+      bindings: {
+        steps: {
+          seed: {
+            status: "succeeded",
+            outputs: { password: reference, user: "u" },
+            sources,
+          },
+        },
+      },
+    };
+    const context = attachSensitiveValues(
+      makeContext({
+        inputs: { fromParent: deferredExpressionReference(record.id) },
+        steps: { seed },
+        deferredExpressions: [record],
+      }),
+      new RunSensitiveValues(undefined, registry),
+    );
+    const own = "${{ env.HOME + ':' + steps.seed.outputs.password }}";
+    const viaRecord = "${{ env.HOME + ':' + inputs.fromParent }}";
+    const plain = "${{ env.HOME + ':' + steps.seed.outputs.user }}";
+    const authored = new Set([own, viaRecord, plain]);
+    await withMockedEnv({ HOME: "runtime-home" }, async () => {
+      const resolved = await service.resolveRuntimeExpressionsInData(
+        { own, viaRecord, plain },
+        undefined,
+        context,
+        authored,
+      ) as Record<string, string>;
+      // The plain field reads through the bindings as before.
+      assertEquals(resolved.plain, "runtime-home:u");
+      // This pass is a delivery: the sentinel each path issued is loaded at
+      // its end, once per reference, so the loaded value shows the tagged
+      // field was a Secret on both paths, where reference text would have
+      // stayed text: the context's own steps kept their sources, and the
+      // record's came back from the persisted form. A data-origin reference
+      // is authorized, never probed.
+      assertEquals(resolved.own, "runtime-home:s3cret-token");
+      assertEquals(
+        resolved.viaRecord,
+        "runtime-home:runtime-home:s3cret-token",
+      );
+      assertEquals(registry.isEmpty, false);
+      assertEquals(reads, ["token"]);
+      assertEquals(checks, []);
+    });
+    // The context's step context is untouched and still carries its sources.
+    assertEquals(stepOutputSourcesOf(context.steps!.seed), sources);
+    assertEquals(context.steps!.seed.outputs!.password, reference);
   });
 });

@@ -33,6 +33,7 @@ import type { WaitRegistration } from "./signal_wait_records.ts";
 import { WAIT_KEY_HELD_STEP_ERROR } from "./signal_wait.ts";
 import { type WaitKeyRecord, waitKeyRecordKey } from "./wait_key_claim.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
+import { stepOutputSourcesOf } from "../expressions/step_output_sources.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { currentVaultAccess } from "../vaults/run_vault_access.ts";
@@ -8672,6 +8673,21 @@ Deno.test("steps context: downstream step sees upstream step outputs", async () 
     assertExists(createStep.outputs);
     assertEquals(createStep.outputs!.audienceId, "aud_123");
     assertEquals(createStep.outputs!.status, "Building");
+    // The context also carries the record the outputs came from, so a
+    // typed evaluator can view them through the adapter (typed-secrets 4.2).
+    assertEquals(stepOutputSourcesOf(createStep), [{
+      path: [],
+      records: [{
+        id: "data-audience",
+        name: "audience",
+        version: 1,
+        namespace: "",
+        modelName: "test-model",
+        tags: {},
+        attributes: { audienceId: "aud_123", status: "Building" },
+      }],
+    }]);
+    assertEquals(Object.keys(createStep), ["status", "outputs"]);
   });
 });
 
@@ -8819,8 +8835,15 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
     toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
     await runRepo.save(workflow.id, toApprove!);
 
+    // A resume takes the record it runs with, as run does; tests hand it a
+    // typed registry this way (typed-secrets 4.2).
+    const injected = new RunSensitiveValues();
     let resumedRun: WorkflowRun | undefined;
-    for await (const event of service.resume(workflow.name, suspended.id)) {
+    for await (
+      const event of service.resume(workflow.name, suspended.id, {
+        sensitiveValues: injected,
+      })
+    ) {
       if (event.kind === "completed") resumedRun = event.run;
     }
 
@@ -8828,11 +8851,26 @@ Deno.test("steps context: pre-populated from completed jobs on resume", async ()
 
     const pushCtx = capturedContexts.get("push");
     assertExists(pushCtx?.expressionContext?.steps);
+    assertStrictEquals(pushCtx!.sensitiveValues, injected);
     const compileStep = pushCtx!.expressionContext!.steps!["compile"];
     assertExists(compileStep);
     assertEquals(compileStep.status, "succeeded");
     assertExists(compileStep.outputs);
     assertEquals(compileStep.outputs!.artifactId, "art_abc");
+    // Reconstructed from the run record's resource reference, with the
+    // reader's namespace standing in for one the record never carried.
+    assertEquals(stepOutputSourcesOf(compileStep), [{
+      path: [],
+      records: [{
+        id: "data-artifact",
+        name: "artifact",
+        version: 1,
+        namespace: "",
+        modelName: "build-model",
+        tags: {},
+        attributes: { artifactId: "art_abc" },
+      }],
+    }]);
   });
 });
 

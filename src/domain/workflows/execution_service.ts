@@ -284,6 +284,7 @@ import {
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
+import { attachStepOutputSources } from "../expressions/step_output_sources.ts";
 import {
   collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
@@ -344,6 +345,7 @@ import { VaultService } from "../vaults/vault_service.ts";
 import {
   createDataRepositoryAttributeReader,
   liveStepOutputs,
+  type ResolvedStepOutputs,
   StepOutputResolver,
 } from "./step_output_resolver.ts";
 import { mergeWithConcurrency } from "../../infrastructure/stream/merge.ts";
@@ -3013,6 +3015,10 @@ export class DefaultStepExecutor implements StepExecutor {
           if (!resources[handle.specName]) {
             resources[handle.specName] = {};
           }
+          // In a typed run the record keeps its stored references and its
+          // tag, and no vault is read: the typed evaluator adapts it, in the
+          // model map and in the step's outputs, so a tagged field is a
+          // Secret loaded at delivery (typed-secrets 4.2).
           resources[handle.specName][handle.name] = await fromResourceHandle(
             handle,
             modelType,
@@ -3020,7 +3026,9 @@ export class DefaultStepExecutor implements StepExecutor {
             evaluatedDefinition.name,
             unifiedDataRepo,
             ctx.sensitiveValues,
-            vaultService,
+            ctx.sensitiveValues.sentinels.typedSecrets
+              ? undefined
+              : vaultService,
           );
         } else if (handle.kind === "file") {
           const fileRecord = await fromFileHandle(
@@ -4748,6 +4756,15 @@ export class WorkflowExecutionService {
        * {@link STEP_STOP_GRACE_MS}.
        */
       stepStopGraceMs?: number;
+      /**
+       * The redactor and sensitive-value record the resume runs with, as
+       * {@link run} takes them; tests hand a resume a typed registry this
+       * way (typed-secrets 4.2) until the `rehydratePersistedForm` slice
+       * makes a resume typed itself, when the seam goes. Production callers
+       * pass nothing.
+       */
+      secretRedactor?: SecretRedactor;
+      sensitiveValues?: RunSensitiveValues;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -4803,8 +4820,9 @@ export class WorkflowExecutionService {
     // Created before anything is resolved, so every sensitive value this
     // resume reads, from the stored run or afterwards, is recorded and
     // redacted from its logs.
-    const secretRedactor = new SecretRedactor();
-    const sensitiveValues = new RunSensitiveValues(secretRedactor);
+    const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
+    const sensitiveValues = options?.sensitiveValues ??
+      new RunSensitiveValues(secretRedactor);
     // Taken over under the run's claim, which is released before anything
     // executes: a cancel either lands first and is seen here, or finds the
     // run running under this process (swamp-club#2919).
@@ -4921,10 +4939,11 @@ export class WorkflowExecutionService {
             step.status === "succeeded" || step.status === "failed" ||
             step.status === "skipped" || step.status === "unknown"
           ) {
-            expressionContext.steps[step.stepName] = {
-              status: step.status,
-              outputs: (await stepOutputResolver.resolve(step)).outputs,
-            };
+            const resolved = await stepOutputResolver.resolve(step);
+            expressionContext.steps[step.stepName] = attachStepOutputSources(
+              { status: step.status, outputs: resolved.outputs },
+              resolved.sources,
+            );
           }
         }
       }
@@ -5811,11 +5830,13 @@ export class WorkflowExecutionService {
         expressionContext?.steps &&
         expressionContext.steps[stepName]?.status !== stepRun.status
       ) {
-        expressionContext.steps[stepName] = {
-          status: stepRun.status,
-          outputs: (await this.createStepOutputResolver(options.sensitiveValues)
-            .resolve(stepRun)).outputs,
-        };
+        const resolved = await this.createStepOutputResolver(
+          options.sensitiveValues,
+        ).resolve(stepRun);
+        expressionContext.steps[stepName] = attachStepOutputSources(
+          { status: stepRun.status, outputs: resolved.outputs },
+          resolved.sources,
+        );
       }
       stepSpan.end();
       return;
@@ -6029,7 +6050,9 @@ export class WorkflowExecutionService {
     // This step's `steps.<name>.outputs`, taken from the full output before
     // it is stripped for the run record. Declared here so the finally below
     // sees it for both model_method and workflow steps.
-    let liveOutputs: Record<string, unknown> | undefined;
+    let liveOutputs:
+      | Pick<ResolvedStepOutputs, "outputs" | "sources">
+      | undefined;
     try {
       // Yielded inside the try so a consumer that stops here still ends the
       // step span in the finally below.
@@ -6321,8 +6344,10 @@ export class WorkflowExecutionService {
             // What a resume restores for a signalled step, so the steps
             // that follow in this run read the same outputs.
             liveOutputs = {
-              payload: taken.record.payload,
-              signal: receiptForCaller(taken.record.receipt),
+              outputs: {
+                payload: taken.record.payload,
+                signal: receiptForCaller(taken.record.receipt),
+              },
             };
             stepSpan.setStatus({ code: SpanStatusCode.OK });
             yield {
@@ -6752,7 +6777,7 @@ export class WorkflowExecutionService {
 
       // Strip heavy payload from the run record (see stripResourceContent).
       // Outputs are taken first: the stripped record keeps no attributes.
-      liveOutputs = liveStepOutputs(output);
+      liveOutputs = liveStepOutputs(output, this.dataRepo.namespace);
       const lightOutput = step.task.isModelMethod() && output &&
           typeof output === "object"
         ? stripResourceContent(output as Record<string, unknown>)
@@ -6851,10 +6876,10 @@ export class WorkflowExecutionService {
         (stepRun.status === "succeeded" || stepRun.status === "failed" ||
           stepRun.status === "skipped" || stepRun.status === "unknown")
       ) {
-        stepExprContext.steps[stepName] = {
-          status: stepRun.status,
-          outputs: liveOutputs,
-        };
+        stepExprContext.steps[stepName] = attachStepOutputSources(
+          { status: stepRun.status, outputs: liveOutputs?.outputs },
+          liveOutputs?.sources,
+        );
       }
       stepSpan.end();
     }
@@ -6948,7 +6973,7 @@ export class WorkflowExecutionService {
     allowFailure: boolean,
   ): AsyncGenerator<
     WorkflowExecutionEvent,
-    Record<string, unknown> | undefined
+    Pick<ResolvedStepOutputs, "outputs" | "sources"> | undefined
   > {
     const link = stepRun.nestedRun;
     // The errors below name the nested run; a malformed link's do not.
@@ -7100,7 +7125,7 @@ export class WorkflowExecutionService {
     step: Step,
   ): AsyncGenerator<
     WorkflowExecutionEvent,
-    Record<string, unknown> | undefined
+    Pick<ResolvedStepOutputs, "outputs" | "sources"> | undefined
   > {
     // Where data sits in the step's task (swamp-club#3205).
     let taskProvenance = (options.stepProvenance ??
@@ -7630,9 +7655,9 @@ export class WorkflowExecutionService {
               // A typed evaluator is handed the stored record to adapt, so a
               // tagged field is a Secret and never comparable text
               // (typed-secrets 3.5, design Section 4.5 item 4). Keyed on the
-              // consuming evaluator, not the run's registry: until Phase 4
-              // the guard and assert evaluators are untyped and keep the
-              // parsed content, whatever the registry carries.
+              // consuming evaluator, not the run's registry, so an untyped
+              // consumer keeps the parsed content whatever the registry
+              // carries.
               // Looked up by the handle's name, the record's data name: a
               // method names its instance, and only by convention after
               // its spec (typed-secrets 4.1).
@@ -7697,25 +7722,31 @@ export class WorkflowExecutionService {
    * Builds the resolver that reads step outputs back from the datastore for
    * steps whose full output is no longer in memory (resume, replay, child
    * runs). Sensitive fields are vault-resolved so these values match what a
-   * live run exposes.
+   * live run exposes. In a typed run they are read as stored and no vault
+   * is read: the typed evaluator views the outputs through their sources,
+   * so a tagged field is a Secret loaded at delivery (typed-secrets 4.2).
    */
   private createStepOutputResolver(
     sensitiveValues: RunSensitiveValues,
   ): StepOutputResolver {
     let vaultService: Promise<VaultService> | undefined;
-    return new StepOutputResolver({
-      readAttributes: createDataRepositoryAttributeReader(this.dataRepo, {
+    const readAttributes = sensitiveValues.sentinels.typedSecrets
+      ? createDataRepositoryAttributeReader(this.dataRepo)
+      : createDataRepositoryAttributeReader(this.dataRepo, {
         getVaultService: () =>
           vaultService ??= VaultService.fromRepository(this.repoDir, {
             vaultsDir: this.vaultsDir,
           }),
         sensitiveValues,
-      }),
+      });
+    return new StepOutputResolver({
+      readAttributes,
       findChildRun: (workflowId, runId) =>
         this.runRepo.findById(
           createWorkflowId(workflowId),
           createWorkflowRunId(runId),
         ),
+      namespace: this.dataRepo.namespace,
     });
   }
 

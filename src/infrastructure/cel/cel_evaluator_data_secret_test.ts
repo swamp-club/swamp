@@ -37,6 +37,7 @@ import {
   SECRET_REFERENCE_INVALID,
   SecretRefusedError,
 } from "../../domain/expressions/errors.ts";
+import { attachStepOutputSources } from "../../domain/expressions/step_output_sources.ts";
 import { SENSITIVE_FIELDS_TAG } from "../../domain/models/data_writer.ts";
 import {
   RunVaultAccess,
@@ -846,4 +847,106 @@ Deno.test("CelEvaluator.prepareSynchronousReads: a denied record of a named mode
     assertInstanceOf(denied.cause, VaultAccessDeniedError);
     assertEquals(f.bag.registry.isEmpty, true);
   });
+});
+
+Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources with typed secrets on, a tagged field leaving as a data-origin sentinel, prepareSynchronousReads authorizes them for the synchronous evaluate, and the option-off path reads the stored text (typed-secrets 4.2)", async () => {
+  const f = fixture();
+  const seed = attachStepOutputSources(
+    { status: "succeeded", outputs: { password: REF_A, user: "u" } },
+    [{
+      path: [],
+      records: [{
+        id: "r-seed",
+        name: "seed-vary-s3cret",
+        version: 1,
+        namespace: "",
+        modelName: "writer",
+        tags: pathsTag("password"),
+        attributes: { password: REF_A, user: "u" },
+      }],
+    }],
+  );
+  const wait = { status: "succeeded", outputs: { payload: { ok: true } } };
+  const context = { ...f.context, steps: { seed, wait } };
+  // A plain field reads; a tagged field leaves as a sentinel issued into
+  // the bag as a data-origin reference; a context with no sources is read
+  // as it is.
+  assertEquals(
+    await f.evaluator.evaluateAsync(
+      "steps.seed.outputs.user",
+      context,
+      f.scope,
+    ),
+    "u",
+  );
+  const password = await f.evaluator.evaluateAsync(
+    "steps.seed.outputs.password",
+    context,
+    f.scope,
+  ) as string;
+  const entry = f.bag.registry.issuedEntryOf(password);
+  assert(entry);
+  assertEquals(entry.reference.vaultName, "prod");
+  assertEquals(entry.reference.key, "A");
+  assertEquals(entry.dataOrigin, true);
+  assertEquals(
+    await f.evaluator.evaluateAsync(
+      "steps.wait.outputs.payload.ok",
+      context,
+      f.scope,
+    ),
+    true,
+  );
+  // An operation on the tagged field is refused, and the caller's context
+  // keeps its flat outputs as stored.
+  await assertRejects(
+    () =>
+      f.evaluator.evaluateAsync(
+        "steps.seed.outputs.password == 'x'",
+        context,
+        f.scope,
+      ),
+    SecretRefusedError,
+  );
+  assertEquals(seed.outputs.password, REF_A);
+  // The synchronous evaluate fails closed until the authorization step has
+  // seen the step; a computed key authorizes nothing.
+  assertThrows(
+    () => f.evaluator.evaluate("steps.seed.outputs.user", context, f.scope),
+    InvalidExpressionError,
+    "requires evaluateAsync",
+  );
+  const prepared = await f.evaluator.prepareSynchronousReads(
+    "${{ steps.seed.outputs.user }}",
+    context,
+    f.scope,
+  );
+  assert(prepared.authorizedReferences?.has("prod\u0000A"));
+  assertEquals(
+    f.evaluator.evaluate("steps.seed.outputs.user", context, prepared),
+    "u",
+  );
+  const sentinel = f.evaluator.evaluate(
+    "steps.seed.outputs.password",
+    context,
+    prepared,
+  ) as string;
+  assert(f.bag.registry.issuedEntryOf(sentinel));
+  assertEquals(
+    await f.evaluator.prepareSynchronousReads(
+      "${{ steps[inputs.item].outputs.user }}",
+      context,
+      f.scope,
+    ),
+    f.scope,
+  );
+  // Typed secrets off: the stored reference text, as today.
+  assertEquals(
+    await new CelEvaluator().evaluateAsync(
+      "steps.seed.outputs.password",
+      context,
+      {},
+    ),
+    REF_A,
+  );
 });

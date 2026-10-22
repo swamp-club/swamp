@@ -451,6 +451,12 @@ export interface RunContext {
   inputs?: Record<string, unknown>;
 }
 
+/**
+ * A completed step as `steps.<name>` reads it. A context may also carry the
+ * sources its outputs were merged from under a symbol key
+ * (`step_output_sources.ts`), which CEL cannot read: the typed evaluator
+ * views the outputs through them (typed-secrets 4.2).
+ */
 export interface StepContext {
   status: string;
   outputs?: Record<string, unknown>;
@@ -911,9 +917,10 @@ export class ModelResolver {
             );
           }
           // Only the changed items are replaced: records a step merged in
-          // after the getter fired (execution_service, with resolved
-          // sensitive values) were written locally, so they are never
-          // changed by prepare and are kept.
+          // after the getter fired (execution_service: with resolved
+          // sensitive values on the untyped path, as stored references on
+          // the typed one, which the model map view adapts) were written
+          // locally, so they are never changed by prepare and are kept.
           for (
             const [spec, instances] of Object.entries(fresh.resource ?? {})
           ) {

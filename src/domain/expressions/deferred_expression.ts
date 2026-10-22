@@ -21,6 +21,11 @@ import { z } from "zod";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { matchSingleExpression } from "./expression_scanner.ts";
 import { ProvenanceMapDataSchema } from "./provenance_map.ts";
+import { sensitiveValuesOf } from "./sensitive_context.ts";
+import {
+  StepOutputSourcesSchema,
+  toPersistedStepContexts,
+} from "./step_output_sources.ts";
 
 /**
  * Zod v4 z.record() explicitly skips __proto__ keys, silently dropping
@@ -93,6 +98,12 @@ export const DeferredExpressionSchema = z.object({
       z.object({
         status: z.string(),
         outputs: record.optional(),
+        /**
+         * The records the outputs were merged from, as stored, captured in
+         * a typed run so the record's evaluator views them through the
+         * accessor adapter (typed-secrets 4.2). Absent otherwise.
+         */
+        sources: StepOutputSourcesSchema.optional(),
       }),
     ).optional(),
   }),
@@ -125,7 +136,14 @@ export function captureDeferredBindings(
   context: ExpressionContext,
   omit: readonly string[] = [],
 ): DeferredExpression["bindings"] {
-  const { inputs, self, run, workflowRunId, steps } = context;
+  const { inputs, self, run, workflowRunId } = context;
+  // In a typed run each step context's output sources travel with the copy
+  // as plain data, so the record's evaluator can view a parent's outputs
+  // through the adapter (typed-secrets 4.2); the untyped copy is what it
+  // always was.
+  const steps = sensitiveValuesOf(context)?.sentinels.typedSecrets
+    ? toPersistedStepContexts(context.steps)
+    : context.steps;
   // Copy at the call boundary: later step results must not change this scope.
   const bindings = JSON.parse(
     JSON.stringify({ inputs, self, run, workflowRunId, steps }),

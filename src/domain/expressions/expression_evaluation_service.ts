@@ -42,6 +42,7 @@ import {
   type TrackedSplice,
 } from "./expression_parser.ts";
 import { sensitiveValuesOf } from "./sensitive_context.ts";
+import { fromPersistedStepContexts } from "./step_output_sources.ts";
 import {
   isDefinitionArgumentPath,
   isDeliveredWithMethod,
@@ -1650,11 +1651,15 @@ export class ExpressionEvaluationService {
       cel: string,
       location: string,
     ): Promise<ExpressionContext> => {
-      const { inputs, self, run, steps } = ctx;
+      const { inputs, self, run } = ctx;
+      // The steps subtree is whole data (bindingTreeProvenance), so nothing
+      // in it is ever spliced: the context's own steps stay, which keeps
+      // the sources a step context carries under its symbol key
+      // (typed-secrets 4.2); a rebuilt copy would drop them.
       return {
         ...ctx,
         ...await resolveBindings(
-          { inputs, self, run, steps },
+          { inputs, self, run },
           cel,
           bindingTreeProvenance(ctx),
           location,
@@ -1720,7 +1725,10 @@ export class ExpressionEvaluationService {
             self: bindings.self,
             run: bindings.run,
             workflowRunId: bindings.workflowRunId,
-            steps: bindings.steps,
+            // A typed capture carries each step's output sources as plain
+            // data; they come back under the symbol key, and the plain key
+            // never reaches CEL (typed-secrets 4.2).
+            steps: fromPersistedStepContexts(bindings.steps),
           }, {
             inputs: recordProvenance.subtree("inputs"),
             self: recordProvenance.subtree("self"),
