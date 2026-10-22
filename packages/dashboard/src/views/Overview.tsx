@@ -453,7 +453,11 @@ export function Overview(
                       <button
                         type="button"
                         className="btn-sm btn-approve"
-                        disabled={deciding.has(gateKey(a))}
+                        disabled={deciding.has(gateKey(a)) ||
+                          a.canDecide === false}
+                        title={a.canDecide === false
+                          ? "You don't hold approve on this workflow"
+                          : undefined}
                         onClick={() => handleApprove(a)}
                       >
                         Approve
@@ -461,7 +465,11 @@ export function Overview(
                       <button
                         type="button"
                         className="btn-sm btn-reject"
-                        disabled={deciding.has(gateKey(a))}
+                        disabled={deciding.has(gateKey(a)) ||
+                          a.canDecide === false}
+                        title={a.canDecide === false
+                          ? "You don't hold approve on this workflow"
+                          : undefined}
                         onClick={() =>
                           handleReject(a)}
                       >

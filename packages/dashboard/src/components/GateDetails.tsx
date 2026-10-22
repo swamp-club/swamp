@@ -54,8 +54,9 @@ function inputText(value: unknown): string {
 
 /**
  * What a gate holds back, shown inline under an approval: the run, who
- * started it, the gated step, its prompt, the run's inputs, what runs next, and the workflow's jobs with the
- * gate's job and everything downstream of it highlighted.
+ * started it, the gated step, its prompt, the run's inputs, what runs next,
+ * and the workflow's jobs with the gate's job and everything downstream of
+ * it highlighted.
  */
 export function GateDetails(
   {

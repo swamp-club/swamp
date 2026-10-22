@@ -192,7 +192,12 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   // one serve refuses is checked against a fresh listing, so a gate decided
   // elsewhere reads as decided rather than as a failure (swamp-club#3697).
   const handleDecision = useCallback(
-    async (a: ApprovalInfo, decision: Decision, reasonText: string) => {
+    async (
+      a: ApprovalInfo,
+      decision: Decision,
+      reasonText: string,
+    ): Promise<boolean> => {
+      let landed = false;
       setError(null);
       setNotice(null);
       markDeciding(a, decision);
@@ -208,6 +213,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
         });
         const settled = decidedGate(decision, reply, new Date().toISOString());
         hold(a, settled);
+        landed = true;
         if (reply.data?.autoResumed) {
           setResumingRuns((prev) => new Set(prev).add(a.runId));
         }
@@ -232,6 +238,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
       }
       markDeciding(a, null);
       refresh();
+      return landed;
     },
     [request, refresh, markDeciding, hold],
   );
@@ -662,7 +669,7 @@ function DecisionControl(
       gate: ApprovalInfo,
       decision: Decision,
       reason: string,
-    ) => Promise<void>;
+    ) => Promise<boolean>;
   },
 ) {
   const [confirming, setConfirming] = useState<Decision | null>(null);
@@ -714,9 +721,11 @@ function DecisionControl(
         onSubmit={(e) => {
           e.preventDefault();
           if (busy) return;
-          // onDecide reports its own failures; this only resets the form.
+          // onDecide reports its own failures. A refused or lost decision
+          // keeps the form and its reason for another try.
           onDecide(gate, decision, reason)
-            .finally(() => {
+            .then((landed) => {
+              if (!landed) return;
               setConfirming(null);
               setReason("");
             })
