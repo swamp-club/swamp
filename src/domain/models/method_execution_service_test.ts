@@ -7111,6 +7111,9 @@ Deno.test("executeWorkflow: a placed step ships what a transform enclosing a sen
   assertEquals(captured.length, 1);
   assertEquals(captured[0].secretValues?.includes("HUNTER2-LONG"), true);
   assertEquals(captured[0].secretValues?.includes("hunter2-long"), true);
+  // The plain region the transform passed through is not a worker secret,
+  // as it is not a local one (swamp-club#3754).
+  assertEquals(captured[0].secretValues?.includes("eu-west-1"), false);
 });
 
 Deno.test("execute: a refused parse registers the sensitive value with the run's redactor and leaves the plain values beside it out, for method and global arguments alike (swamp-club#3753)", async () => {

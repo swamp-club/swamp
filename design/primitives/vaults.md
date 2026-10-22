@@ -1032,15 +1032,16 @@ code wrote them, and an identifier such as `headers` or `Authorization` would
 be masked in all unrelated output. The accepted residual is that a secret such
 code moves into an object key is not registered, and a constant it writes is; a
 key under a position the schema itself marks is registered when the parse
-introduced it and the schema does not declare it. A placed step ships the whole
-delivered value of its global arguments to its worker. A refinement that
-rewrites the object it validates by reference is not guarded. The keys a
-sensitive record took from data are not registered: they are identifiers,
-often short and common words, and the redactor replaces every occurrence of
-what it holds, so registering them would corrupt unrelated output (a stored
-`production` would read `***uction`) and can make a data write refuse over
-colliding property names. Such a record is masked whole in the cache and the
-reports instead, and a method that echoes its keys shows them as written.
+introduced it and the schema does not declare it. A placed step ships its
+worker the secrets a local run registers for its global arguments, read against
+what their parse received, so a plain value is not masked there either. A
+refinement that rewrites the object it validates by reference is not guarded.
+The keys a sensitive record took from data are not registered: they are
+identifiers, often short and common words, and the redactor replaces every
+occurrence of what it holds, so registering them would corrupt unrelated output
+(a stored `production` would read `***uction`) and can make a data write refuse
+over colliding property names. Such a record is masked whole in the cache and
+the reports instead, and a method that echoes its keys shows them as written.
 
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in

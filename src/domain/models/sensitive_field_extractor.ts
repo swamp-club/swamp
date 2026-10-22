@@ -599,11 +599,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * string, and every finite number or bigint as it prints, since a sensitive
  * number (a PIN, an account number) echoed in an error or a log reads as
  * that text (swamp-club#3681). Enters arrays, plain objects (records/maps),
- * Maps, Sets, and the own entries of any other object a transform may
- * deliver, which also contributes how it prints when it prints as more than
- * `[object X]` (a URL its href, a Date its time); a binary buffer holds no
- * text, and an object whose own entries cannot be read (a getter that
- * throws) contributes only how it prints. An object's own keys, and a Map's
+ * Maps, Sets, and the enumerable own entries of any other object a
+ * transform may deliver, which also contributes how it prints when it prints
+ * as more than `[object X]`: a URL its href, an Error `Name: message` (its
+ * stack is not an enumerable entry), a Date its `toString()` text and not the
+ * ISO form JSON writes. A binary buffer holds no text, and an object whose
+ * own entries cannot be read (a getter that throws) contributes only how it
+ * prints. An object's own keys, and a Map's
  * string or numeric keys as they print, are collected too when `includeKey`
  * accepts them, and never without it. A boolean is not a secret. A string
  * that is exactly a vault secret sentinel is skipped: it stands for a

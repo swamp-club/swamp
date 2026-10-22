@@ -728,11 +728,6 @@ Deno.test("input values: a method that echoes a key its schema's transform deriv
     assertStringIncludes(step.error, "intentional failure keys ***");
     assertEquals(step.error.includes(made), false);
     assertEquals(step.record.includes(made), false);
-    assertEquals(
-      (await swampFilesHolding(h.dir, made)).filter((path) =>
-        !path.includes("workflow-runs") && !path.includes("workflows-evaluated")
-      ),
-      [],
-    );
+    assertEquals(await swampFilesHolding(h.dir, made), []);
   });
 });

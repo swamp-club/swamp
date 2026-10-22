@@ -853,6 +853,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
    * dispatcher port. Vault sentinels are resolved into the shipped args —
    * the same resolve-before-dispatch pattern out-of-process execution has
    * always used; secrets travel only for the step that needs them.
+   * `globalArgsParseInput` is what the global-arguments parse received,
+   * before its delivery was merged into the definition.
    */
   async #executeRemotely(
     context: MethodContext,
@@ -861,6 +863,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     currentDefinition: Definition,
     methodName: string,
     secretReferences: readonly SecretReference[],
+    globalArgsParseInput: Record<string, unknown>,
   ): Promise<RemoteStepResult> {
     const dispatcher = getRemoteStepDispatcher();
     if (dispatcher === null) {
@@ -904,13 +907,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       : {};
     if (modelDef.globalArguments) {
       // The definition holds the global arguments as their parse delivered
-      // them, a transform's output included, beside what it was given, so
-      // what a transform enclosing a sensitive position delivered travels
-      // whole (swamp-club#3681).
+      // them, a transform's output included, beside what it was given. The
+      // worker's redactor gets what a local run registers: the delivered
+      // secrets less the text the parse input held only at plain positions
+      // and the keys the schema declares, read against that input as
+      // resolved, so a region or a port is not masked on the worker
+      // (swamp-club#3754).
+      const parseInput = secretBag?.resolvesAny
+        ? secretBag.resolveDeep(globalArgsParseInput) as Record<string, unknown>
+        : globalArgsParseInput;
       secretValues.push(
-        ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs, {
-          delivered: true,
-        }),
+        ...extractDeliveredSensitiveValues(
+          modelDef.globalArguments,
+          parseInput,
+          globalArgs,
+        ),
       );
     }
     const methodArgSchema = modelDef.methods[methodName]?.arguments;
@@ -1155,6 +1166,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // create-time inputs). Strip unresolved fields before Zod validation so
       // methods that don't need them can proceed. A Proxy on context.globalArgs
       // will throw a clear error if the method actually accesses an unresolved field.
+      // What the global-arguments parse received, for a placed step's
+      // secret values (swamp-club#3754).
+      let globalArgsParseInput: Record<string, unknown> = {};
       if (modelDef.globalArguments) {
         const rawGlobalArgs = currentDefinition.globalArguments;
 
@@ -1227,6 +1241,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           globalArgsResult.data,
           context.redactor,
         );
+        // The unresolved fields the parse skipped travel too, as written.
+        globalArgsParseInput = { ...rawGlobalArgs, ...coercedGlobalArgs };
         // Update definition with parsed values so methods receive correct types
         for (const [key, value] of Object.entries(globalArgsResult.data)) {
           currentDefinition.setGlobalArgument(key, value);
@@ -1569,6 +1585,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             currentDefinition,
             methodName,
             secretReferences,
+            globalArgsParseInput,
           );
           // Rebuild full handles from the durable records the data plane
           // persisted — downstream consumers (data-record mapping, workflow
