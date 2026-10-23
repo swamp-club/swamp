@@ -175,18 +175,9 @@ Deno.test("SecretBagRegistry: a data-origin reference entry is issued, holds no 
   assertEquals("value" in entry, false);
 });
 
-Deno.test("SecretBagRegistry.typedSecrets: off unless asked for, the internal option only tests set (typed-secrets 3.4)", () => {
-  assertEquals(new SecretBagRegistry().typedSecrets, false);
-  assertEquals(new SecretBagRegistry({}).typedSecrets, false);
-  assertEquals(
-    new SecretBagRegistry({ typedSecrets: true }).typedSecrets,
-    true,
-  );
-});
-
-Deno.test("SecretBagRegistry.independent: a new registry carries the option and nothing else", async () => {
-  for (const typed of [true, false]) {
-    const registry = new SecretBagRegistry({ typedSecrets: typed });
+Deno.test("SecretBagRegistry.independent: a new registry has no entries, prefixes or existence answers", async () => {
+  {
+    const registry = new SecretBagRegistry();
     registry.register({
       sentinel: sentinel(0),
       reference: REF,
@@ -201,7 +192,6 @@ Deno.test("SecretBagRegistry.independent: a new registry carries the option and 
     };
     await registry.confirmExists(REF, ask);
     const nested = registry.independent();
-    assertEquals(nested.typedSecrets, typed);
     assertEquals(nested.isEmpty, true);
     assertEquals(nested.entryOf(sentinel(0)), undefined);
     assertEquals(nested.drewPrefixOf(sentinel(0)), false);

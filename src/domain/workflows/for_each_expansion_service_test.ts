@@ -431,10 +431,10 @@ Deno.test("ForEachExpansionService.expand: a control character in an item value 
 });
 
 Deno.test("resolveForEachStepName: a secret refusal in a name fails loudly instead of falling back, a composition leaves as a sentinel, and other failures keep the fallback (typed-secrets 4.1)", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const bag = new VaultSecretBag(registry);
   const sentinel = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
-  const typed = new CelEvaluator({ typedSecrets: true });
+  const typed = new CelEvaluator();
   const scoped = {
     evaluate: (expression: string, context: Record<string, unknown>) =>
       typed.evaluate(expression, context, { secretBag: bag }),
@@ -513,10 +513,10 @@ Deno.test("resolveForEachStepName: a secret refusal in a name fails loudly inste
 });
 
 Deno.test("ForEachExpansionService.expand: in a typed run an item that holds a secret leaves forEach.in as a sentinel, the name takes sensitive-<index> from it, and prepare runs before each name (typed-secrets 4.1)", async () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const bag = new VaultSecretBag(registry);
   const sentinel = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
-  const typed = new CelEvaluator({ typedSecrets: true });
+  const typed = new CelEvaluator();
   const prepared: unknown[] = [];
   const pass = {
     evaluate: (expression: string, context: Record<string, unknown>) =>

@@ -101,7 +101,6 @@ export interface Fixture {
   checks: string[];
   run: (
     workflow: Workflow,
-    typed: boolean,
     extra?: Workflow[],
     inputs?: Record<string, unknown>,
   ) => Promise<Run>;
@@ -109,13 +108,12 @@ export interface Fixture {
   resume: (
     workflowName: string,
     runId: string,
-    typed: boolean,
   ) => Promise<Run>;
   /**
    * Replays a workflow's evaluated cache (`--last-evaluated`), over a typed
    * registry when `typed`.
    */
-  replay: (workflowName: string, typed: boolean) => Promise<Run>;
+  replay: (workflowName: string) => Promise<Run>;
   /** Rotates the value the vault holds under `key`, as an operator would. */
   rotate: (key: string, value: string) => void;
   /** Approves the run's waiting manual approval in its record. */
@@ -304,16 +302,14 @@ export async function withFixture(
     const workflowRepo = new YamlWorkflowRepository(repoDir);
     const runRepo = new YamlWorkflowRunRepository(repoDir);
     /** What a run or a resume is handed: a typed registry when `typed`. */
-    const sensitiveValuesFor = (typed: boolean) => {
+    const sensitiveValuesFor = () => {
       const redactor = new SecretRedactor();
       return {
         secretRedactor: redactor,
-        sensitiveValues: typed
-          ? new RunSensitiveValues(
-            redactor,
-            new SecretBagRegistry({ typedSecrets: true }),
-          )
-          : undefined,
+        sensitiveValues: new RunSensitiveValues(
+          redactor,
+          new SecretBagRegistry(),
+        ),
       };
     };
     const drive = async (
@@ -372,7 +368,6 @@ export async function withFixture(
     };
     const run = async (
       workflow: Workflow,
-      typed: boolean,
       extra: Workflow[] = [],
       inputs?: Record<string, unknown>,
     ): Promise<Run> => {
@@ -380,23 +375,22 @@ export async function withFixture(
       return await drive((service) =>
         service.run(workflow.name, {
           ...(inputs ? { inputs } : {}),
-          ...sensitiveValuesFor(typed),
+          ...sensitiveValuesFor(),
         })
       );
     };
     const resume = (
       workflowName: string,
       runId: string,
-      typed: boolean,
     ): Promise<Run> =>
       drive((service) =>
-        service.resume(workflowName, runId, sensitiveValuesFor(typed))
+        service.resume(workflowName, runId, sensitiveValuesFor())
       );
-    const replay = (workflowName: string, typed: boolean): Promise<Run> =>
+    const replay = (workflowName: string): Promise<Run> =>
       drive((service) =>
         service.run(workflowName, {
           lastEvaluated: true,
-          ...sensitiveValuesFor(typed),
+          ...sensitiveValuesFor(),
         })
       );
     const rotate = (key: string, value: string): void => {
@@ -452,7 +446,6 @@ export async function withFixture(
           name: `seed-${crypto.randomUUID().slice(0, 8)}`,
           jobs: [Job.create({ name: "main", steps: [seedStep()] })],
         }),
-        false,
       );
       assertEquals(seeded.status, "succeeded", [...seeded.errors].join("\n"));
       loads.length = 0;

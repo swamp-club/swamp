@@ -227,18 +227,12 @@ each step's full output before stripping. A resumed run, a parent reading a
 child run, and `swamp workflow history get --json` / `swamp workflow history
 outputs` load them from the datastore through the run's resource references.
 These reads are best-effort: ephemeral-lifetime data, garbage-collected versions
-and an uncached remote datastore yield no outputs. A run and its resume resolve
-sensitive fields from their vault references, as `data.latest` does; history
-shows them as stored. A resolved sensitive value is plaintext inside expressions
-but reaches a step's executing arguments as a sentinel and is written to disk as
-its vault reference; see [Values Read Through
-Expressions](../primitives/vaults.md#values-read-through-expressions). Behind
-the typed-secrets internal option (Phase 4.2), a tagged output field is a
-`Secret` instead, as `data.latest` returns it: the outputs are read as stored
-and viewed through the accessor adapter, so no value is loaded before delivery,
-a field the run's vault access refuses fails the evaluation before its result is
-used, and a malformed tag or stored reference refuses with
-`secret_reference_invalid`; see [typed-secrets](./typed-secrets.md) Section 6.1.
+and an uncached remote datastore yield no outputs. The readers keep stored
+references and source metadata. The CEL adapter presents an own-namespace tagged
+field as a `Secret`, including live, reconstructed and child outputs. No value is
+loaded before delivery. Authorization failure stops evaluation before its result
+is used; malformed tags or references fail with `secret_reference_invalid`.
+History shows stored references. See [typed secrets](./typed-secrets.md) Section 6.1.
 Over `swamp serve`, history includes only outputs of behaviors the caller may
 read as data.
 
@@ -478,7 +472,7 @@ During forEach expansion, `self.*` resolves in any task field: the step
 targets (`workflowIdOrName`), `inputs`, and shell `args`. So a forEach step can
 pick a different target per iteration:
 
-**In a typed run** (typed-secrets Phase 4.1, behind the internal option), every
+Every
 workflow pass takes its evaluator from one seam,
 `ExpressionEvaluationService.passEvaluatorFor`, so a sentinel bound into a pass
 reads as a `Secret` and a `Secret` result leaves as a sentinel issued into the
@@ -575,7 +569,7 @@ time, after upstream steps have written their data. So step 1 can produce
 ephemeral data that step 2 reads via `data.findBySpec()` or `data.query()`, and
 assert steps can put prior-step data in their failure messages.
 
-In a typed run a guard or assert predicate is a predicate destination: a result
+A guard or assert predicate is a predicate destination: a result
 that holds a secret is refused with `secret_destination_refused` before any
 load, while a comparison to `null` decides as before. An assert message's
 expressions evaluate through the typed evaluator, so a secret leaves as a
@@ -640,7 +634,8 @@ deferred references are left for the runtime pass.
 that could not be evaluated, or that is a runtime reference, keeps its raw
 text there. A copied runtime reference is still resolved by the runtime pass,
 since its text is author-written. A global argument that reads another global
-argument sees the raw values.
+argument sees the earlier expression text or the evaluated value; a secret
+remains a `Secret` when rebound into CEL.
 
 **Evaluation is lenient across the definition, strict for the method being
 run.** The pass covers every method's arguments, but a method must not fail
@@ -687,9 +682,8 @@ not swamp's in a definition that declares no `version` input, but a declared
 input with no value is. Both kinds keep passing through to the method as
 literal text.
 
-A `vault.get` argument is read the way the resolver reads it, not the way CEL
-would. The resolver rewrites `vault.get(vaultName, secretKey)` before CEL sees
-it, so no argument reaches a method as text. An unquoted argument with no `.` is
+`vault.get(vaultName, secretKey)` is a CEL function returning a reference-only
+`Secret`. Its source is normalized with AST-based call analysis before evaluation. An unquoted argument with no `.` is
 used verbatim as a literal name: `t` and `KEY` in `${{ vault.get(t, KEY) }}` are
 names, not free identifiers, and the expression is swamp's. An unquoted argument
 holding a `.` is evaluated as CEL. `inputs.vaultName` keeps its roots and is
@@ -697,7 +691,7 @@ judged like any other reference. One that reads nothing swamp provides, such as
 `db.password` or `github.repo`, fails that evaluation rather than passing
 through, so it does not make the expression another system's: `swamp behavior
 validate` reports it as an `Expression paths` error that says to quote the name
-(`unresolvableVaultArguments`). The resolver, the classifier and the vault
+(`unresolvableVaultArguments`). The normalizer, the classifier and the vault
 reference extractor all decide literal versus evaluated through
 `isDynamicVaultArgument`
 (`src/domain/expressions/vault_reference_extractor.ts`).

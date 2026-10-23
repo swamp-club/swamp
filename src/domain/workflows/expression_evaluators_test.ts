@@ -374,7 +374,7 @@ Deno.test("WorkflowExpressionEvaluator: a recorded sensitive value spliced into 
 });
 
 Deno.test("WorkflowExpressionEvaluator: in a typed run a sentinel spliced into a step name becomes the stand-in of its reference, taken from the sentinel", async () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const sentinel = new VaultSecretBag(registry).addSecret(REF, "inputs");
   const context = attachSensitiveValues(
     {
@@ -1405,7 +1405,7 @@ function sensitiveContext(): ExpressionContext {
   );
 }
 
-Deno.test("WorkflowExpressionEvaluator: keeps real values and returns a sanitized overlay for task arguments", async () => {
+Deno.test("WorkflowExpressionEvaluator: plain data equal to a recorded secret creates no sentinel overlay", async () => {
   const workflow = Workflow.create({
     name: "overlay",
     jobs: [Job.create({
@@ -1432,15 +1432,7 @@ Deno.test("WorkflowExpressionEvaluator: keeps real values and returns a sanitize
   assertEquals(task.inputs.run, `echo ${SECRET}`);
   assertEquals(task.globalArgs.tok, SECRET);
 
-  const stepBag = new VaultSecretBag(new SecretBagRegistry());
-  const fields = result.sanitizedTasks!.forStep(step, stepBag)!;
-  const inputs = fields.inputs as Record<string, string>;
-  const globals = fields.globalArgs as Record<string, string>;
-  assertEquals(inputs.run.includes(SECRET), false);
-  assertEquals(globals.region, "eu");
-  // The overlay's sentinels are the step's own.
-  assertEquals(stepBag.resolveRaw(inputs.run), `echo ${SECRET}`);
-  assertEquals(stepBag.resolveRaw(globals.tok), SECRET);
+  assertEquals(result.sanitizedTasks, undefined);
 });
 
 Deno.test("WorkflowExpressionEvaluator: no overlay when nothing sensitive was spliced", async () => {
@@ -1459,7 +1451,7 @@ Deno.test("WorkflowExpressionEvaluator: no overlay when nothing sensitive was sp
   assertEquals(result.sanitizedTasks, undefined);
 });
 
-Deno.test("DefinitionExpressionEvaluator: sanitizes argument splices and binds real global arguments", async () => {
+Deno.test("DefinitionExpressionEvaluator: plain data equal to a recorded secret stays plain", async () => {
   const definition = Definition.create({
     name: "d",
     globalArguments: { tok: "${{ inputs.tok }}" },
@@ -1490,7 +1482,7 @@ Deno.test("DefinitionExpressionEvaluator: sanitizes argument splices and binds r
   });
   const executed = result.sanitizedDefinition;
   const run = executed.getMethodArguments("run").run as string;
-  assertEquals(run.includes(SECRET), false);
+  assertEquals(run.includes(SECRET), true);
   assertEquals(bag.resolveRaw(run), `echo ${SECRET}`);
   assertEquals(executed.getMethodArguments("run").len, SECRET.length);
   assertEquals(

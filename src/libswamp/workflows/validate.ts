@@ -55,6 +55,8 @@ import {
 } from "../../domain/workflows/workflow_lookup.ts";
 import { isUuid } from "../../domain/models/model_lookup.ts";
 
+import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
+
 /** Checks if a string looks like a UUID. */
 export { isUuid };
 
@@ -64,6 +66,8 @@ export interface ValidationItemData {
   passed: boolean;
   warning?: boolean;
   error?: string;
+  code?: string;
+  location?: string;
 }
 
 /** Validation result for a single workflow. */
@@ -332,6 +336,11 @@ export function createWorkflowValidateDeps(
         };
       }
       : undefined,
+    (expression, location, workflow) =>
+      diagnoseSecretMisuse(
+        expression,
+        `${workflowRepo.getPath(workflow.id)} ${location}`,
+      ),
   );
   return {
     findWorkflowById: (id) => workflowRepo.findById(createWorkflowId(id)),
@@ -370,6 +379,7 @@ function toValidationItemData(
     passed: r.passed,
     ...(r.warning ? { warning: true } : {}),
     error: r.error,
+    ...(r.code === undefined ? {} : { code: r.code, location: r.location }),
   }));
 }
 

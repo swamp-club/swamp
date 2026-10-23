@@ -27,7 +27,7 @@ import {
   type UnifiedDataRepository,
 } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
-import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isJsonMediaType, isTextContentType } from "./content_type.ts";
 import {
@@ -360,8 +360,6 @@ export async function fromResourceHandle(
   modelId: string,
   fallbackModelName: string,
   dataRepo: UnifiedDataRepository,
-  sensitiveValues: SecretSink,
-  vaultService?: VaultService,
 ): Promise<DataRecord> {
   let attributes: Record<string, unknown> = {};
   if (isJsonMediaType(handle.metadata.contentType)) {
@@ -378,20 +376,6 @@ export async function fromResourceHandle(
       }
     } catch {
       // Not valid JSON, skip attributes
-    }
-  }
-  if (vaultService && Object.keys(attributes).length > 0) {
-    const sensitiveFields = parseSensitiveFieldsTag(handle.tags);
-    if (sensitiveFields) {
-      // A reference whose vault cannot be read stays as stored and is
-      // recorded through the sink; a refusal by the run's vault access is
-      // rethrown (swamp-club#2676, swamp-club#3806).
-      await resolveSensitiveVaultRefsLeavingUnread(
-        attributes,
-        sensitiveFields,
-        vaultService,
-        sensitiveValues,
-      );
     }
   }
 

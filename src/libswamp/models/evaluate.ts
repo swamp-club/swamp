@@ -128,14 +128,6 @@ export interface ModelEvaluateDeps {
     sensitiveValues: RunSensitiveValues,
   ) => Promise<EvaluatedDefinition[]>;
   /**
-   * The evaluation's sensitive values, with the registry that carries the
-   * internal typed-secrets option. Only tests set a typed one
-   * (design/enablers/typed-secrets.md Section 10.3): the passes then issue
-   * sentinels for every secret they read and the cache is written from them
-   * through the persisted form. The CLI and serve pass nothing.
-   */
-  createSensitiveValues?: () => RunSensitiveValues;
-  /**
    * The argument schemas of a model type, so a literal under a sensitive
    * argument is masked in the cache (swamp-club#3681). It must find every
    * type the evaluated repository's guard can find, or the guard refuses
@@ -178,8 +170,6 @@ export function createModelEvaluateDeps(
    * repository built here; an injected repository carries its own.
    */
   unreadableContent?: UnreadableContentLookup,
-  /** See {@link ModelEvaluateDeps.createSensitiveValues}; tests only. */
-  createSensitiveValues?: () => RunSensitiveValues,
 ): ModelEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -248,7 +238,6 @@ export function createModelEvaluateDeps(
         persistedProvenance,
       ),
     getEvaluatedPath: (type, id) => evaluatedDefRepo.getPath(type, id),
-    createSensitiveValues,
   };
 }
 
@@ -290,8 +279,7 @@ async function* evaluateAll(
   include: (entry: { definition: Definition; type: ModelType }) => boolean =
     () => true,
 ): AsyncIterable<ModelEvaluateEvent> {
-  const sensitiveValues = deps.createSensitiveValues?.() ??
-    new RunSensitiveValues();
+  const sensitiveValues = new RunSensitiveValues();
   const results = (await deps.evaluateAllDefinitions(sensitiveValues)).filter(
     include,
   );
@@ -339,8 +327,7 @@ async function* evaluateSingle(
   }
 
   const { definition, type } = lookupResult;
-  const sensitiveValues = deps.createSensitiveValues?.() ??
-    new RunSensitiveValues();
+  const sensitiveValues = new RunSensitiveValues();
   const result = await deps.evaluateDefinition(
     definition,
     type,

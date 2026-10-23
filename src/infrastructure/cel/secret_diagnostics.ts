@@ -53,6 +53,7 @@ import {
 } from "../../domain/expressions/errors.ts";
 import {
   analyzeVaultCalls,
+  indirectVaultUse,
   type VaultCallAnalysis,
 } from "../../domain/expressions/vault_call_syntax.ts";
 import { createSecretCheckEnvironment } from "./cel_evaluator.ts";
@@ -65,7 +66,7 @@ export interface SecretDiagnostic {
   /** The authored path, with the line and column of the first vault.get call. */
   readonly location: string;
   /** The code the run refuses the same misuse with. */
-  readonly code: SecretRefusalCode;
+  readonly code: SecretRefusalCode | "invalid_expression";
   /** What was refused: the type error's own text, or the container rule. */
   readonly reason: string;
 }
@@ -120,9 +121,17 @@ export function diagnoseSecretMisuse(
   } catch {
     return [];
   }
-  if (analysis.calls.length === 0 || analysis.invalidUses.length > 0) {
-    return [];
+  const indirect = indirectVaultUse(analysis);
+  if (indirect !== undefined) {
+    const offset = analysis.calls[0]?.start ??
+      analysis.source.originalOffset(analysis.invalidUses[0]?.pos ?? 0);
+    return [{
+      code: "invalid_expression",
+      location: callLocation(expression, offset, location),
+      reason: indirect,
+    }];
   }
+  if (analysis.calls.length === 0) return [];
   const at = callLocation(
     expression,
     minOf(analysis.calls.map((call) => call.start)) ?? 0,

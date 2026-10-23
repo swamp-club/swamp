@@ -73,9 +73,8 @@ export async function modelMethodResourceResult(
   modelId: string,
   dataName: string,
   modelName: string,
-  typedConsumer: boolean,
 ): Promise<unknown> {
-  if (typedConsumer) {
+  {
     const stored = await storedResourceRecord(
       dataRepo,
       type,

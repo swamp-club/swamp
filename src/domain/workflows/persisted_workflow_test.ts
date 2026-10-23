@@ -20,8 +20,8 @@
 import {
   assert,
   assertEquals,
-  assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { UserError } from "../errors.ts";
 import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
@@ -105,12 +105,16 @@ Deno.test("isIdentifierMapPath: matches only the workflow's identifier maps", ()
 });
 
 Deno.test("persistEvaluatedWorkflow: task inputs named labels or tags are written as references", () => {
+  const writer = recorded();
+  const sentinel = new VaultSecretBag(writer.sentinels).addDataReference(
+    SOURCE,
+    "inputs",
+  );
   const persisted = persistEvaluatedWorkflow(
-    workflowHolding(SECRET),
-    workflowHolding(SECRET),
+    workflowHolding(sentinel),
     undefined,
     [],
-    recorded(),
+    writer,
   );
   const inputs = persisted.workflow.jobs[0].steps[0].task.data as {
     inputs: Record<string, unknown>;
@@ -125,12 +129,16 @@ Deno.test("persistEvaluatedWorkflow: task inputs named labels or tags are writte
 });
 
 Deno.test("persistEvaluatedWorkflow: identifier maps carry placeholders, not references", () => {
+  const writer = recorded();
+  const sentinel = new VaultSecretBag(writer.sentinels).addDataReference(
+    SOURCE,
+    "inputs",
+  );
   const persisted = persistEvaluatedWorkflow(
-    workflowHolding(SECRET),
-    workflowHolding(SECRET),
+    workflowHolding(sentinel),
     undefined,
     [],
-    recorded(),
+    writer,
   );
   const placeholder = "sensitive-prod.api-token";
   const data = persisted.workflow.toData();
@@ -145,32 +153,33 @@ Deno.test("persistEvaluatedWorkflow: identifier maps carry placeholders, not ref
 });
 
 Deno.test("rehydrateEvaluatedWorkflow: a replay restores task inputs, including ones named tags", async () => {
+  const writer = recorded();
+  const sentinel = new VaultSecretBag(writer.sentinels).addDataReference(
+    SOURCE,
+    "inputs",
+  );
   const persisted = persistEvaluatedWorkflow(
-    workflowHolding(SECRET),
-    workflowHolding(SECRET),
+    workflowHolding(sentinel),
     undefined,
     [],
-    recorded(),
+    writer,
   );
   const values = new RunSensitiveValues();
-  const restored = await rehydrateEvaluatedWorkflow(
-    {
-      workflow: persisted.workflow,
-      deferredExpressions: persisted.deferredExpressions,
-      writtenReferences: persisted.writtenReferences,
-    },
-    () => Promise.resolve(SECRET),
-    values,
-  );
+  const restored = await rehydrateEvaluatedWorkflow({
+    workflow: persisted.workflow,
+    deferredExpressions: persisted.deferredExpressions,
+    writtenReferences: persisted.writtenReferences,
+  }, values);
   const task = restored.workflow.jobs[0].steps[0].task.data as {
     inputs: Record<string, unknown>;
   };
-  assertEquals(task.inputs, {
-    labels: SECRET,
-    tags: { nested: SECRET },
-    plain: `Bearer ${SECRET}`,
-  });
-  assertEquals(values.list().map((e) => e.value), [SECRET]);
+  assertEquals(JSON.stringify(task.inputs).includes(SECRET), false);
+  assertEquals(values.list(), []);
+  assertEquals(
+    persistEvaluatedWorkflow(restored.workflow, undefined, [], values).workflow
+      .toData().jobs,
+    persisted.workflow.toData().jobs,
+  );
   // The overlay hands the step sentinels, not the value.
   const overlay = restored.sanitizedTasks!.forStep(
     restored.workflow.jobs[0].steps[0],
@@ -181,11 +190,11 @@ Deno.test("rehydrateEvaluatedWorkflow: a replay restores task inputs, including 
 
 Deno.test("rehydrateEvaluatedWorkflow: a cache without references is used as stored", async () => {
   const workflow = workflowHolding("plain");
-  const restored = await rehydrateEvaluatedWorkflow(
-    { workflow, deferredExpressions: [], writtenReferences: [] },
-    () => Promise.reject(new Error("not read")),
-    new RunSensitiveValues(),
-  );
+  const restored = await rehydrateEvaluatedWorkflow({
+    workflow,
+    deferredExpressions: [],
+    writtenReferences: [],
+  }, new RunSensitiveValues());
   assertEquals(restored.workflow, workflow);
   assertEquals(restored.sanitizedTasks, undefined);
 });
@@ -320,7 +329,7 @@ Deno.test("replayInputs: a cache that withheld its inputs for a secret is never 
 });
 
 Deno.test("forEachNameWithoutSecrets: in a typed run every sentinel the run issued becomes the item index, taken from the sentinel and never a value (typed-secrets 4.1)", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const values = new RunSensitiveValues(undefined, registry);
   const bag = new VaultSecretBag(registry);
   const vault = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
@@ -349,7 +358,7 @@ Deno.test("forEachNameWithoutSecrets: in a typed run every sentinel the run issu
 function typedValues(): RunSensitiveValues {
   return new RunSensitiveValues(
     undefined,
-    new SecretBagRegistry({ typedSecrets: true }),
+    new SecretBagRegistry(),
   );
 }
 
@@ -394,7 +403,6 @@ Deno.test("persistEvaluatedWorkflow: a typed run's cache carries an exact persis
   );
   const persisted = persistEvaluatedWorkflow(
     workflow,
-    workflow,
     undefined,
     [],
     writer,
@@ -413,20 +421,13 @@ Deno.test("persistEvaluatedWorkflow: a typed run's cache carries an exact persis
   ]);
 
   const reader = typedValues();
-  let reads = 0;
-  const restored = await rehydrateEvaluatedWorkflow(
-    {
-      workflow: persisted.workflow,
-      deferredExpressions: persisted.deferredExpressions,
-      writtenReferences: persisted.writtenReferences,
-      persistedProvenance: persisted.persistedProvenance,
-    },
-    () => {
-      reads++;
-      return Promise.resolve(SECRET);
-    },
-    reader,
-  );
+  const reads = 0;
+  const restored = await rehydrateEvaluatedWorkflow({
+    workflow: persisted.workflow,
+    deferredExpressions: persisted.deferredExpressions,
+    writtenReferences: persisted.writtenReferences,
+    persistedProvenance: persisted.persistedProvenance,
+  }, reader);
   assertEquals(reads, 0);
   assertEquals(reader.isEmpty, true);
   const step = restored.workflow.jobs[0].steps[0];
@@ -473,32 +474,27 @@ Deno.test("rehydrateEvaluatedWorkflow: a typed replay refuses a cache with refer
   );
   const persisted = persistEvaluatedWorkflow(
     workflow,
-    workflow,
     undefined,
     [],
     writer,
   );
   assertEquals(persisted.persistedProvenance, undefined);
-  await assertRejects(
+  assertThrows(
     () =>
-      rehydrateEvaluatedWorkflow(
-        { ...persisted, provenance },
-        () => Promise.resolve(SECRET),
-        typedValues(),
-      ),
+      rehydrateEvaluatedWorkflow({ ...persisted, provenance }, typedValues()),
     UserError,
     "not replayed with references",
   );
-  const unmapped = await rehydrateEvaluatedWorkflow(
-    persisted,
-    () => Promise.resolve(SECRET),
-    typedValues(),
-  );
+  const unmapped = await rehydrateEvaluatedWorkflow(persisted, typedValues());
   assertEquals(unmapped.provenance?.isAuthored, true);
 });
 
 Deno.test("persistEvaluatedWorkflow: an untyped write marks every written reference's range in the persisted map, two in one string included", () => {
   const values = recorded();
+  const sentinel = new VaultSecretBag(values.sentinels).addDataReference(
+    SOURCE,
+    "inputs",
+  );
   const workflow = Workflow.create({
     name: "untyped",
     jobs: [Job.create({
@@ -506,20 +502,19 @@ Deno.test("persistEvaluatedWorkflow: an untyped write marks every written refere
       steps: [Step.create({
         name: "s",
         task: StepTask.model("m", "run", {
-          auth: `a ${SECRET} b ${SECRET} ${"${{ env.X }}"}`,
+          auth: `a ${sentinel} b ${sentinel} ${"${{ env.X }}"}`,
         }),
       })],
     })],
   });
   const path = "jobs[0].steps[0].task.inputs.auth";
-  const raw = `a ${SECRET} b ${SECRET} ${"${{ env.X }}"}`;
+  const raw = `a ${sentinel} b ${sentinel} ${"${{ env.X }}"}`;
   const provenance = ProvenanceMap.authored().withRanges(path, [
-    [2, 2 + SECRET.length],
-    [5 + SECRET.length, 5 + 2 * SECRET.length],
+    [2, 2 + sentinel.length],
+    [5 + sentinel.length, 5 + 2 * sentinel.length],
   ]);
-  assertEquals(raw.slice(2, 2 + SECRET.length), SECRET);
+  assertEquals(raw.slice(2, 2 + sentinel.length), sentinel);
   const persisted = persistEvaluatedWorkflow(
-    workflow,
     workflow,
     undefined,
     [],

@@ -17,19 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// Architectural fitness test: the typed-secrets `Secret` stays inside the CEL
-// adapter, and only tests turn it on (design/enablers/typed-secrets.md
-// Sections 3.2, 10.3 and 12.1).
-//
-// - No code outside src/infrastructure/cel/ imports the modules that make,
-//   register, record or convert a `Secret`: everything else sees sentinels.
-// - Until Phase 4 turns typed secrets on for every entry point, no production
-//   code sets the internal option: no `new CelEvaluator(` passes an argument,
-//   no `new SecretBagRegistry(` passes an argument (the registry flag that
-//   turns on the destination policies of typed-secrets 3.4), and no file but
-//   cel_evaluator.ts builds the internal environment. The scan reads those
-//   call shapes only; a factory or wrapper that forwards options to any of
-//   them would pass it, so give such a wrapper its own check.
+// Architectural fitness test: Secret stays inside the CEL adapter and every
+// internal evaluator uses it. Separate extension/query/grant environments retain
+// their own contracts (design/enablers/typed-secrets.md Sections 3.2 and 10.3).
 
 import { assert } from "@std/assert";
 import {
@@ -86,20 +76,7 @@ Deno.test("no production code outside the CEL adapter imports a Secret module", 
   );
 });
 
-/**
- * The two places production code constructs with options, each forwarding
- * an existing registry's flag and never a literal (typed-secrets 3.5): the
- * evaluation service builds the typed evaluator from the run's registry,
- * and a registry builds an independent sibling for a nested invocation.
- * Pinned by file and argument shape, so a third site, or a changed shape,
- * needs a decision here.
- */
-const FORWARDING_SITES: readonly string[] = [
-  "src/domain/expressions/expression_evaluation_service.ts new CelEvaluator({ typedSecrets: registry.typedSecrets })",
-  "src/domain/vaults/secret_bag_registry.ts new SecretBagRegistry({ typedSecrets: this.typedSecrets })",
-];
-
-Deno.test("no production code sets the typed-secrets option", async () => {
+Deno.test("internal evaluators have no rollout switch", async () => {
   const constructed: string[] = [];
   const literals: string[] = [];
   const built: string[] = [];
@@ -121,7 +98,7 @@ Deno.test("no production code sets the typed-secrets option", async () => {
       if (isCommentLine(line)) return;
       // An enabling literal anywhere is a production switch, whatever
       // wrapper carries it: the backstop behind the pinned forwarding sites.
-      if (/\btypedSecrets\s*[:=]\s*true\b/.test(line)) {
+      if (/\btypedSecrets\b/.test(line)) {
         literals.push(`${rel}:${index + 1}`);
       }
       if (rel === `${CEL_ADAPTER}/cel_evaluator.ts`) return;
@@ -130,20 +107,18 @@ Deno.test("no production code sets the typed-secrets option", async () => {
       }
     });
   }
-  const policy = "Typed secrets stay behind the internal option, set only by " +
-    "tests, until typed-secrets Phase 4 turns the path on for every entry " +
-    "point (design Section 10.3). Production code may forward an existing " +
-    "registry's flag at the pinned sites, never set it.";
+  const policy = "Every internal expression entry point uses typed secrets. " +
+    "Do not reintroduce a rollout switch or an untyped internal environment.";
   assertPinnedSet(
     constructed,
-    FORWARDING_SITES,
+    [],
     "new CelEvaluator( or new SecretBagRegistry( with options in production code",
     policy,
   );
   assertPinnedSet(
     literals,
     [],
-    "typedSecrets set to true in production code",
+    "typedSecrets in production code",
     policy,
   );
   assertPinnedSet(

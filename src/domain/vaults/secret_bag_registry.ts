@@ -43,7 +43,7 @@ const SENTINEL_PARTS = /^__SWAMP_VSEC_([0-9a-f]{32})_\d+__$/;
  * How a sentinel's value was written where the sentinel stands: as `raw`
  * text, as its JSON-escaped form (`json`) inside JSON text, or as the whole
  * `number` or `boolean` leaf a coercion produced. A pass issues `raw` entries,
- * and the legacy data path `raw` or `json` ones; the other encodings are read
+ * and existing files may contain any of these encodings. They are read
  * back from the written references of an existing file
  * (design/enablers/typed-secrets.md Section 8.1), and delivery applies them
  * ({@link jsonEscaped}, {@link restoreScalar}).
@@ -107,9 +107,8 @@ export interface VaultReferenceEntry {
 }
 
 /**
- * A secret that reached a step through a data read on the legacy path. It
- * keeps the value the read brought into the expression, until typed-secrets
- * Phase 4 makes every data read return references.
+ * A value-bearing data entry used by trusted delivery helpers. Expression
+ * reads issue DataReferenceEntry instead and never carry the value.
  */
 export interface DataSecretEntry extends SecretBagEntry {
   reference: SecretReference;
@@ -165,20 +164,6 @@ export function holdsValue(
   return "value" in entry;
 }
 
-/** How a run's registry is built. Internal: only tests set anything here. */
-export interface SecretBagRegistryOptions {
-  /**
-   * Whether the run's secrets are typed: its expressions evaluate with the
-   * internal option (`CelEvaluatorOptions.typedSecrets`), and its
-   * destinations apply the policies of design/enablers/typed-secrets.md
-   * Section 7, read from this flag by the method boundary, the shell
-   * behavior, `RunSensitiveValues` and `SecretRedactor`. Set only by tests
-   * until Phase 4 turns the path on for every entry point (Section 10.3); a
-   * fitness test keeps production code from passing it.
-   */
-  readonly typedSecrets?: boolean;
-}
-
 /**
  * The sentinels one run issued, keyed by sentinel, with the prefixes its
  * bags drew. Every pass of a run issues into one registry, and each
@@ -189,8 +174,6 @@ export interface SecretBagRegistryOptions {
  * vault.get() entry holds a value; each delivery loads its own.
  */
 export class SecretBagRegistry {
-  /** Whether the run's secrets are typed ({@link SecretBagRegistryOptions}). */
-  readonly typedSecrets: boolean;
   private readonly entries = new Map<string, RegistryEntry>();
   /** Each sentinel's position in issue order. */
   private readonly sequence = new Map<string, number>();
@@ -198,20 +181,12 @@ export class SecretBagRegistry {
   /** Each reference's existence answer: in flight, or confirmed. */
   private readonly existence = new Map<string, Promise<void>>();
 
-  constructor(options: SecretBagRegistryOptions = {}) {
-    this.typedSecrets = options.typedSecrets === true;
-  }
-
   /**
-   * A new, empty registry carrying this one's option and nothing else: no
-   * entry, no prefix and no existence answer. A nested invocation issues into
-   * one, so it checks every reference anew while keeping the run's
-   * typed-secrets option (design/enablers/typed-secrets.md Sections 3.2 and
-   * 3.4). Production code reaches a typed registry only by forwarding an
-   * existing one's option this way, never by setting it.
+   * A new, empty registry with no entries, prefixes or existence answers.
+   * A nested invocation uses one to check every reference anew.
    */
   independent(): SecretBagRegistry {
-    return new SecretBagRegistry({ typedSecrets: this.typedSecrets });
+    return new SecretBagRegistry();
   }
 
   /** Records a prefix a bag of this registry drew. */

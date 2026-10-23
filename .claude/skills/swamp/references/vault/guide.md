@@ -64,6 +64,28 @@ For detailed walkthroughs of each operation, see [reference.md](reference.md).
   locally too; include the vault sensitive outputs land in. See
   [../workflow/reference.md](../workflow/reference.md#vaults-allow-list).
 
+## Secrets in expressions
+
+Use `vault.get(vault, KEY)` or a tagged sensitive data field as a reference:
+pass it to a method, concatenate it with text, or compare it to `null`. `type()`
+reveals only the Secret type. Do not use equality to another value, `size`,
+conversions, string operations, map keys or container-to-text interpolation on a
+secret: these fail with `secret_operation_unsupported`. Pass containers as
+structured arguments. Call `vault.get` directly; aliases are unsupported.
+
+Keep secrets out of routing fields, placement, paths, `workingDir`, environment
+keys and guard/assert results; those destinations fail with
+`secret_destination_refused`. Use shell environment values for secret delivery.
+A tagged data secret in a quoted-delimiter heredoc or PowerShell single quotes
+also refuses before loading. Validate behaviors and workflows for static misuse;
+dynamic misuse is checked during execution.
+
+Expect plaintext only at trusted delivery, loaded once per reference per
+attempt. Resume/replay load the current value under current access permissions.
+Caches and run records contain references or masks. A provider without `has()`
+still makes one existence probe at evaluation. Remote wire transport remains
+unchanged until the separate remote-reference release.
+
 ## Version control
 
 Vault definition files, by default `vaults/<type>/<id>.yaml` in the repo, are

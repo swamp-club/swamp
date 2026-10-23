@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   replaceExpressions,
@@ -79,34 +78,21 @@ function isUnder(path: string, root: string): boolean {
     path.startsWith(root + "[");
 }
 
-/**
- * Builds the sanitizer that replaces recorded sensitive values inside spliced
- * results with data-origin sentinels from the step's bag, at the paths
- * `applies` accepts. Authored text around a splice is never examined.
- */
+/** Keeps reference sentinels intact and supplies their provenance stand-ins. */
 export function sensitiveSpliceSanitizer(
-  sensitiveValues: RunSensitiveValues,
   bag: VaultSecretBag,
-  applies: (path: string) => boolean = () => true,
 ): SpliceSanitizer {
   return {
-    whole: (value, path) =>
-      applies(path)
-        ? bag.sentinelizeValues(value, sensitiveValues.list())
-        : value,
-    embedded: (text, path) =>
-      applies(path) ? bag.sentinelizeText(text, sensitiveValues.list()) : text,
+    whole: (value) => value,
+    embedded: (text) => text,
     resolve: sentinelStandInOf(bag.registry),
   };
 }
 
 /**
- * The same data kept twice: `raw`, which CEL contexts, caches, reports and
- * coercion read, and `sanitized`, which executes and carries sentinels where
- * sensitive values were spliced. Every pass evaluates each expression once
- * and splices the result into both. Sanitizing only changes spliced results,
- * never the expressions left in place, so both copies always hold the same
- * unevaluated expressions and each is spliced by its own text lookup.
+ * A pass's two coordinate views and their provenance. Typed evaluation puts
+ * reference sentinels in both; identifier substitutions and pre-existing bases
+ * can still differ. Each expression is evaluated once and spliced into both.
  */
 export class SplicePair<T = unknown> {
   constructor(

@@ -1986,7 +1986,7 @@ Deno.test("toRunData: inputs, a step error and assert text are shown through the
   const run = WorkflowRun.create(workflow);
   const values = new RunSensitiveValues(
     undefined,
-    new SecretBagRegistry({ typedSecrets: true }),
+    new SecretBagRegistry(),
   );
   const sentinel = new VaultSecretBag(values.sentinels).addSecret(
     { vaultName: "v", key: "k" },

@@ -191,22 +191,13 @@ Deno.test("deferChildInputs: a typed run refuses a vault selector that holds a S
         defer(
           new RunSensitiveValues(
             undefined,
-            new SecretBagRegistry({ typedSecrets: true }),
+            new SecretBagRegistry(),
           ),
         ),
       SecretRefusedError,
     );
     assertEquals(error.code, SECRET_DESTINATION_REFUSED);
     assertStringIncludes(error.message, "inputs.vault");
-    // An untyped run keeps the sentinel text the selector evaluated to.
-    const untyped = defer(new RunSensitiveValues());
-    const [call] = findVaultGetCalls(
-      untyped.deferredExpressions[0].expression,
-    );
-    assertStringIncludes(
-      new CelEvaluator().evaluate(call[3], {}) as string,
-      "__SWAMP_",
-    );
     return Promise.resolve();
   });
 });
@@ -2075,7 +2066,7 @@ Deno.test("evaluateDataPair: reads data once and splices raw and sanitized copie
     );
     assertEquals(reads.count, plainReads.count);
     assertEquals(pair.raw, { run: `echo ${SENSITIVE}`, whole: SENSITIVE });
-    assertEquals(JSON.stringify(pair.sanitized).includes(SENSITIVE), false);
+    assertEquals(pair.sanitized, pair.raw);
     assertEquals(bag.resolveDeep(pair.sanitized), pair.raw);
   });
 });
@@ -2116,7 +2107,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
     assertEquals(result.secretBag, bag);
     const args = result.definition.getMethodArguments("run");
     const run = args.run as string;
-    assertEquals(run.includes(SENSITIVE), false);
+    assertEquals(run.includes(SENSITIVE), true);
     assertEquals(bag.resolveRaw(run), `/tmp/test-home-mixed:${SENSITIVE}`);
     // self.globalArguments is bound to the real value, not the sentinel.
     assertEquals(args.len, `/tmp/test-home-mixed:${SENSITIVE.length}`);
@@ -2482,7 +2473,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: checks each vault.get referenc
     }
     assertEquals(
       entries.map((entry) => "location" in entry && entry.location),
-      ["globalArguments.token", "methods.run.arguments.cmd"],
+      ["globalArguments.token:1:1", "methods.run.arguments.cmd:1:1"],
     );
     // Delivery loads them, once per reference.
     const loaded = await service.secretLoader(undefined).load(
@@ -2515,7 +2506,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a missing key fails at evaluat
           "unrestricted",
         ),
       Error,
-      "(at methods.run.arguments.cmd): Secret 'missing' not found in vault 'v'",
+      "(at methods.run.arguments.cmd:1:1): Secret 'missing' not found in vault 'v'",
     );
     assertEquals(
       (error as { code?: string }).code,
@@ -2556,7 +2547,7 @@ Deno.test("resolveAllExpressionsInData: a typed routing destination refuses befo
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "never-loaded",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const context = attachSensitiveValues(
       makeContext(),
       new RunSensitiveValues(
@@ -2600,7 +2591,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run evaluates vault.ge
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-runtime-def",
       globalArguments: { token: "${{ vault.get('v', 'token') }}" },
@@ -2654,7 +2645,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run refuses a vault al
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-alias-def",
       methods: {
@@ -2682,7 +2673,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run refuses a vault al
 Deno.test("resolveRuntimeExpressionsInDefinition: a typed run fails a missing key at evaluation with secret_reference_unavailable", async () => {
   await withTempDir(async (repoDir) => {
     const { service, reads } = countingEvaluator(repoDir, {});
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-missing-def",
       methods: {
@@ -2714,7 +2705,7 @@ Deno.test("evaluateDefinition: a typed run evaluates plain expressions as before
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const values = new RunSensitiveValues(undefined, registry);
     const definition = Definition.create({
       name: "typed-pass-def",
@@ -2751,7 +2742,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run keeps the legacy b
       "a@b": "s3cret-at",
       "k-1": "s3cret-dash",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-legacy-forms",
       methods: {
@@ -2791,7 +2782,7 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret-token",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const reference = "${{ vault.get('v', 'token') }}";
     // A mutable literal: the record schema's form and the context's both
     // take it.

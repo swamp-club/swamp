@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   createDataRepositoryAttributeReader,
@@ -34,13 +34,6 @@ import { StepTask } from "./step_task.ts";
 import { type StepRun, WorkflowRun } from "./workflow_run.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import type { VaultService } from "../vaults/vault_service.ts";
-import {
-  currentVaultAccess,
-  RunVaultAccess,
-  runWithVaultAccess,
-  VaultAccessDeniedError,
-} from "../vaults/run_vault_access.ts";
 
 const REF = "${{ vault.get('prod', 'A') }}";
 const PASSWORD_TAG = { "_swamp.sensitiveFields": JSON.stringify(["password"]) };
@@ -502,7 +495,7 @@ Deno.test("StepOutputResolver.resolveChildOutputs: returns undefined when no chi
   assertEquals(resolved.sources, undefined);
 });
 
-Deno.test("createDataRepositoryAttributeReader: records the sensitive values it resolves (swamp-club#2171)", async () => {
+Deno.test("createDataRepositoryAttributeReader: keeps stored references for the evaluator to adapt (swamp-club#2171)", async () => {
   const stored = {
     token: "${{ vault.get('prod-vault', 'api-token') }}",
     plain: "${{ vault.get('prod-vault', 'api-token') }}",
@@ -511,10 +504,6 @@ Deno.test("createDataRepositoryAttributeReader: records the sensitive values it 
     getContent: () =>
       Promise.resolve(new TextEncoder().encode(JSON.stringify(stored))),
   } as unknown as UnifiedDataRepository;
-  const vaultService = {
-    get: (vaultName: string, key: string) =>
-      Promise.resolve(`${vaultName}/${key}-value`),
-  } as unknown as VaultService;
   const ref: StepResourceRef = {
     dataId: "data-1",
     modelType: "command/shell",
@@ -528,111 +517,14 @@ Deno.test("createDataRepositoryAttributeReader: records the sensitive values it 
   };
 
   const sensitiveValues = new RunSensitiveValues();
-  const resolved = await createDataRepositoryAttributeReader(dataRepo, {
-    getVaultService: () => Promise.resolve(vaultService),
-    sensitiveValues,
-  })(ref);
-  assertEquals(resolved?.token, "prod-vault/api-token-value");
+  const resolved = await createDataRepositoryAttributeReader(dataRepo)(ref);
+  assertEquals(resolved?.token, stored.token);
   assertEquals(resolved?.plain, stored.plain);
-  assertEquals(sensitiveValues.list(), [{
-    value: "prod-vault/api-token-value",
-    source: { vaultName: "prod-vault", key: "api-token" },
-  }]);
+  assertEquals(sensitiveValues.list(), []);
 
   // Without a vault service (display paths) references stay as stored.
   const raw = await createDataRepositoryAttributeReader(dataRepo)(ref);
   assertEquals(raw?.token, stored.token);
-});
-
-Deno.test("createDataRepositoryAttributeReader: a read the run's vault access refuses fails the read, never leaving the reference (swamp-club#2676)", async () => {
-  const stored = { token: "${{ vault.get('prod-vault', 'api-token') }}" };
-  const dataRepo = {
-    getContent: () =>
-      Promise.resolve(new TextEncoder().encode(JSON.stringify(stored))),
-  } as unknown as UnifiedDataRepository;
-  // As VaultService does, the read is decided under the ambient scope.
-  const vaultService = {
-    get: async (vaultName: string) => {
-      await currentVaultAccess()?.check(vaultName, "read");
-      return "secret";
-    },
-  } as unknown as VaultService;
-  const ref: StepResourceRef = {
-    dataId: "data-1",
-    modelType: "command/shell",
-    modelId: "model-1",
-    modelName: "writer",
-    specName: "creds",
-    contentType: "application/json",
-    name: "creds",
-    version: 1,
-    tags: { "_swamp.sensitiveFields": JSON.stringify(["token"]) },
-  };
-  const reader = createDataRepositoryAttributeReader(dataRepo, {
-    getVaultService: () => Promise.resolve(vaultService),
-    sensitiveValues: new RunSensitiveValues(),
-  });
-  const refusing = RunVaultAccess.create({ allowedVaults: [] });
-  await assertRejects(
-    () => runWithVaultAccess(refusing, () => reader(ref)),
-    VaultAccessDeniedError,
-  );
-  // A vault that is merely unavailable still leaves the reference.
-  const unavailable = createDataRepositoryAttributeReader(dataRepo, {
-    getVaultService: () =>
-      Promise.resolve(
-        {
-          get: () => Promise.reject(new Error("vault down")),
-        } as unknown as VaultService,
-      ),
-    sensitiveValues: new RunSensitiveValues(),
-  });
-  assertEquals((await unavailable(ref))?.token, stored.token);
-});
-
-Deno.test("createDataRepositoryAttributeReader: a failed vault read, or a vault service that cannot be built, is recorded as unread (swamp-club#3806)", async () => {
-  const stored = { token: "${{ vault.get('prod-vault', 'api-token') }}" };
-  const dataRepo = {
-    getContent: () =>
-      Promise.resolve(new TextEncoder().encode(JSON.stringify(stored))),
-  } as unknown as UnifiedDataRepository;
-  const ref: StepResourceRef = {
-    dataId: "data-1",
-    modelType: "command/shell",
-    modelId: "model-1",
-    modelName: "writer",
-    specName: "creds",
-    contentType: "application/json",
-    name: "creds",
-    version: 1,
-    tags: { "_swamp.sensitiveFields": JSON.stringify(["token"]) },
-  };
-  const cases: [string, () => Promise<VaultService>][] = [
-    [
-      "vault down",
-      () =>
-        Promise.resolve(
-          {
-            get: () => Promise.reject(new Error("vault down")),
-          } as unknown as VaultService,
-        ),
-    ],
-    ["vault config unreadable", () => {
-      throw new Error("vault config unreadable");
-    }],
-  ];
-  for (const [reason, getVaultService] of cases) {
-    const sensitiveValues = new RunSensitiveValues();
-    const resolved = await createDataRepositoryAttributeReader(dataRepo, {
-      getVaultService,
-      sensitiveValues,
-    })(ref);
-    assertEquals(resolved?.token, stored.token, reason);
-    assertEquals(
-      sensitiveValues.unreadReferenceFor(stored.token)?.reason,
-      reason,
-    );
-  }
 });
 
 Deno.test("StepOutputResolver.resolve: a wait_for_signal step's outputs are its payload and receipt, with no datastore read", async () => {

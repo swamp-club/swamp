@@ -337,11 +337,7 @@ import {
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
-import {
-  rehydratePersistedForm,
-  RunSensitiveValues,
-  SecretRedactor,
-} from "../secrets/mod.ts";
+import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import {
   createDataRepositoryAttributeReader,
@@ -464,8 +460,6 @@ function stepInputPair(
 function sanitizedDirectExecution(
   result: DirectTypeResolveResult,
   taskArgs: SplicePair<TaskArgs>,
-  bag: VaultSecretBag,
-  sensitiveValues: RunSensitiveValues,
 ): { definition: Definition; methodInputs: Record<string, unknown> } {
   const asRecord = (value: TaskArgs["inputs"]) =>
     (typeof value === "object" && value !== null ? value : {}) as Record<
@@ -489,14 +483,13 @@ function sanitizedDirectExecution(
     explicit ? taskArgs.sanitized.globalArgs : taskArgs.sanitized.inputs,
   );
   const globals = result.definition.globalArguments as Record<string, unknown>;
-  const secrets = sensitiveValues.list();
   for (const key of Object.keys(rawSource)) {
     if (!explicit && Object.hasOwn(result.routedMethodInputs, key)) continue;
     if (!Object.hasOwn(globals, key)) continue;
     const coerced = globals[key];
     const sanitized = JSON.stringify(rawSource[key]) === JSON.stringify(coerced)
       ? sanitizedSource[key]
-      : bag.sentinelizeValues(coerced, secrets);
+      : coerced;
     if (JSON.stringify(sanitized) !== JSON.stringify(coerced)) {
       definition.setGlobalArgument(key, sanitized);
     }
@@ -1779,7 +1772,6 @@ export class DefaultStepExecutor implements StepExecutor {
     // step's secrets, while any sentinel the run issued resolves through it.
     const stepSecretBag = new VaultSecretBag(ctx.sensitiveValues.sentinels);
     const argumentSanitizer = sensitiveSpliceSanitizer(
-      ctx.sensitiveValues,
       stepSecretBag,
     );
     // The step's task inputs and global arguments twice: raw for CEL
@@ -1826,10 +1818,8 @@ export class DefaultStepExecutor implements StepExecutor {
     // variable by runStep(). resolveAvailableExpressions defers vault/env and
     // step-output kinds to their dedicated stages — see
     // available_expression_resolver.ts.
-    // The step's pass evaluator: typed when the run's registry is, issuing
-    // into the step's bag, so a sentinel in the step's fields binds as a
-    // Secret and a Secret result leaves as a sentinel the delivery loads
-    // (typed-secrets 4.1). Untyped, it is the legacy evaluator.
+    // The pass issues into the step's bag: existing sentinels bind as
+    // Secrets and Secret results leave as sentinels delivery loads.
     const stepPass = ctx.expressionContext
       ? await expressionEvaluator.passEvaluatorFor(ctx.sensitiveValues, {
         secretBag: stepSecretBag,
@@ -1948,14 +1938,9 @@ export class DefaultStepExecutor implements StepExecutor {
       ...task,
       modelIdOrName: await resolveSelector("modelIdOrName"),
       modelName: await resolveSelector("modelName"),
-      // The typed path covers every selector, including a type or method
-      // deferred until step outputs exist. Keep the legacy passes unchanged.
-      modelType: stepSecretBag.registry.typedSecrets
-        ? await resolveSelector("modelType")
-        : task.modelType,
-      methodName: stepSecretBag.registry.typedSecrets
-        ? (await resolveSelector("methodName"))!
-        : task.methodName,
+      // Include type and method selectors deferred until step outputs exist.
+      modelType: await resolveSelector("modelType"),
+      methodName: (await resolveSelector("methodName"))!,
     };
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
@@ -2121,8 +2106,6 @@ export class DefaultStepExecutor implements StepExecutor {
       const executedDirect = sanitizedDirectExecution(
         result,
         taskArgs,
-        stepSecretBag,
-        ctx.sensitiveValues,
       );
       executedBase = executedDirect.definition;
       sanitizedStepInputs = executedDirect.methodInputs;
@@ -3049,7 +3032,6 @@ export class DefaultStepExecutor implements StepExecutor {
       outputRepo,
       unifiedDataRepo,
       definitionRepo,
-      vaultService,
       modelType,
       modelDef,
       originalDefinition,
@@ -3102,10 +3084,6 @@ export class DefaultStepExecutor implements StepExecutor {
             evaluatedDefinition.id,
             evaluatedDefinition.name,
             unifiedDataRepo,
-            ctx.sensitiveValues,
-            ctx.sensitiveValues.sentinels.typedSecrets
-              ? undefined
-              : vaultService,
           );
         } else if (handle.kind === "file") {
           const fileRecord = await fromFileHandle(
@@ -3883,28 +3861,15 @@ export class WorkflowExecutionService {
           runInputs = replay.inputs;
           inheritedExpressions = lastEvaluated.inheritedExpressions ??
             new Set();
-          // Sensitive values are cached as vault references. A typed run
-          // restores them as references the deliveries load, reading no
-          // vault here (typed-secrets 4.4); an untyped run restores real
-          // values into the workflow and sentinels into the step overlay.
-          const vaultService = !sensitiveValues.sentinels.typedSecrets &&
-              lastEvaluated.writtenReferences.length > 0
-            ? await VaultService.fromRepository(this.repoDir, {
-              vaultsDir: this.vaultsDir,
-            })
-            : undefined;
-          const restored = await rehydrateEvaluatedWorkflow(
-            {
-              workflow: lastEvaluated.workflow,
-              deferredExpressions: lastEvaluated.deferredExpressions,
-              writtenReferences: lastEvaluated.writtenReferences,
-              persistedProvenance: lastEvaluated.persistedProvenance,
-              provenance: lastEvaluated.provenance,
-            },
-            (vaultName, key) =>
-              vaultService!.get(vaultName, key, "evaluated-cache:replay"),
-            sensitiveValues,
-          );
+          // Restore cached references without reading the vault. Each delivery
+          // loads their current values under the current grants.
+          const restored = await rehydrateEvaluatedWorkflow({
+            workflow: lastEvaluated.workflow,
+            deferredExpressions: lastEvaluated.deferredExpressions,
+            writtenReferences: lastEvaluated.writtenReferences,
+            persistedProvenance: lastEvaluated.persistedProvenance,
+            provenance: lastEvaluated.provenance,
+          }, sensitiveValues);
           // Use the fully evaluated workflow (forEach expanded, expressions resolved)
           workflow = restored.workflow;
           // The cached steps run, not the source's, so their reserved tags
@@ -4014,7 +3979,6 @@ export class WorkflowExecutionService {
           // nothing that could be used to guess a secret.
           persistedWorkflow = persistEvaluatedWorkflow(
             workflow,
-            found,
             sanitizedTasks,
             deferredExpressions,
             sensitiveValues,
@@ -4022,8 +3986,7 @@ export class WorkflowExecutionService {
           );
           await this.evaluatedWorkflowRepo.save(
             persistedWorkflow.workflow,
-            // In raw-copy coordinates, which the untyped rehydrate restores
-            // exactly; the typed replay aligns from the persisted map.
+            // Retain raw-copy coordinates; replay aligns from the persisted map.
             evaluation.provenance,
             authoredExpressions,
             persistedWorkflow.deferredExpressions,
@@ -5039,9 +5002,7 @@ export class WorkflowExecutionService {
         inputs: existingRun.inputs,
       };
       expressionContext.steps = {};
-      const stepOutputResolver = this.createStepOutputResolver(
-        sensitiveValues,
-      );
+      const stepOutputResolver = this.createStepOutputResolver();
       for (const job of existingRun.jobs) {
         for (const step of job.steps) {
           if (
@@ -5057,10 +5018,7 @@ export class WorkflowExecutionService {
         }
       }
 
-      // Routed through the pass seam: with a typed registry (the test seam
-      // above, until typed-secrets 4.6) the restored references bind as
-      // Secrets; a production resume builds an untyped registry and gets the
-      // legacy evaluator.
+      // The shared pass binds restored references as Secrets.
       const evaluator = new WorkflowExpressionEvaluator(
         await this.expressionEvaluator.passEvaluatorFor(
           sensitiveValuesOf(expressionContext),
@@ -6015,9 +5973,7 @@ export class WorkflowExecutionService {
         expressionContext?.steps &&
         expressionContext.steps[stepName]?.status !== stepRun.status
       ) {
-        const resolved = await this.createStepOutputResolver(
-          options.sensitiveValues,
-        ).resolve(stepRun);
+        const resolved = await this.createStepOutputResolver().resolve(stepRun);
         expressionContext.steps[stepName] = attachStepOutputSources(
           { status: stepRun.status, outputs: resolved.outputs },
           resolved.sources,
@@ -6165,7 +6121,6 @@ export class WorkflowExecutionService {
           "__guard_",
           stepExprContext,
           options,
-          celEvaluator.typed,
         );
         if (
           partitionAuthoredAt(
@@ -6265,7 +6220,6 @@ export class WorkflowExecutionService {
           stepRun,
           stepName,
           stepExprContext,
-          options,
           !!step.allowFailure,
         );
         return;
@@ -6612,7 +6566,6 @@ export class WorkflowExecutionService {
           "__assert_",
           stepExprContext,
           options,
-          celEvaluator.typed,
         );
         try {
           if (!options.authoredExpressions.has(task.expr)) {
@@ -6636,17 +6589,13 @@ export class WorkflowExecutionService {
             StepProvenanceOverlay.authored()).forStep(step).raw.subtree(
               "task.message",
             );
-          // In a typed run the message is a masked destination: its
-          // expressions evaluate through the typed evaluator, so a secret
-          // leaves as a sentinel the run masks, and nothing is loaded
-          // (Section 7.1, typed-secrets 4.1). Untyped, the inline resolution
-          // loads as before and the value is redacted below.
-          const messageEvaluator = celEvaluator.typed
-            ? await this.expressionEvaluator.passEvaluatorFor(
+          // Assert messages are masked destinations: Secret results leave
+          // as sentinels the run masks, without loading their values.
+          const messageEvaluator = await this.expressionEvaluator
+            .passEvaluatorFor(
               options.sensitiveValues,
               { location: `${stepName}.task.message` },
-            )
-            : undefined;
+            );
           const messageContext = { model: {}, env: {}, ...assertContext };
           const messageValues = new Map<string, unknown>();
           for (
@@ -6658,18 +6607,10 @@ export class WorkflowExecutionService {
           ) {
             if (messageValues.has(expr.raw)) continue;
             try {
-              const value = messageEvaluator
-                ? await messageEvaluator.evaluateAsync(
-                  expr.celExpression,
-                  messageContext,
-                )
-                : await this.expressionEvaluator
-                  .resolveAllExpressionsInData(
-                    expr.raw,
-                    messageContext,
-                    options.secretRedactor,
-                    options.authoredExpressions,
-                  );
+              const value = await messageEvaluator.evaluateAsync(
+                expr.celExpression,
+                messageContext,
+              );
               messageValues.set(expr.raw, String(value ?? ""));
             } catch {
               // Leave the expression as-is if evaluation fails.
@@ -6685,15 +6626,11 @@ export class WorkflowExecutionService {
                 ? span.raw
                 : messageValues.get(span.raw) as string);
           // Mask once, before the message reaches the step error, the
-          // events, or the span. In a typed run the sentinels the run
-          // issued are masked through the run's own record, whatever
-          // redactor the caller attached; the redactor's pass follows for
-          // the values an untyped resolution loaded above.
-          if (messageEvaluator) {
-            resolvedMessage = String(
-              options.sensitiveValues.masked(resolvedMessage),
-            );
-          }
+          // events, or the span. Mask issued sentinels through the run's
+          // record, then redact any literal sensitive arguments.
+          resolvedMessage = String(
+            options.sensitiveValues.masked(resolvedMessage),
+          );
           resolvedMessage = options.secretRedactor?.redact(resolvedMessage) ??
             resolvedMessage;
 
@@ -7165,7 +7102,6 @@ export class WorkflowExecutionService {
     stepRun: StepRun,
     stepName: string,
     expressionContext: ExpressionContext | undefined,
-    options: StepOptions,
     allowFailure: boolean,
   ): AsyncGenerator<
     WorkflowExecutionEvent,
@@ -7236,9 +7172,9 @@ export class WorkflowExecutionService {
     }
 
     if (child.status === "succeeded") {
-      const outputs = await this.createStepOutputResolver(
-        options.sensitiveValues,
-      ).resolveChildOutputs(child);
+      const outputs = await this.createStepOutputResolver().resolveChildOutputs(
+        child,
+      );
       // Provenance: who could change the child after the parent suspended is
       // governed by the child workflow's own authorization, so record what
       // its resume was given (key names only, never values).
@@ -7749,9 +7685,8 @@ export class WorkflowExecutionService {
 
     // The child's outputs go to the live context only. The run record keeps
     // the child's ids so they can be resolved again later, never the values.
-    const childOutputs = await this.createStepOutputResolver(
-      options.sensitiveValues,
-    ).resolveChildOutputs(childRun);
+    const childOutputs = await this.createStepOutputResolver()
+      .resolveChildOutputs(childRun);
     // After an abort the job may already have failed this step as abandoned;
     // a child that finished anyway must not flip it back to succeeded.
     if (options.signal?.aborted && stepRun.status !== "running") {
@@ -7799,12 +7734,6 @@ export class WorkflowExecutionService {
     prefix: string,
     stepExprContext: ExpressionContext | undefined,
     options: StepOptions,
-    /**
-     * Whether the evaluator that reads the result runs with typed secrets,
-     * so a stored record it is handed is adapted (typed-secrets 3.5). An
-     * untyped evaluator keeps receiving the parsed content.
-     */
-    typedConsumer = false,
   ): Record<string, unknown> {
     return {
       method: async (
@@ -7858,12 +7787,8 @@ export class WorkflowExecutionService {
               modelName,
             );
             if (def) {
-              // A typed evaluator is handed the stored record to adapt, so a
-              // tagged field is a Secret and never comparable text
-              // (typed-secrets 3.5, design Section 4.5 item 4). Keyed on the
-              // consuming evaluator, not the run's registry, so an untyped
-              // consumer keeps the parsed content whatever the registry
-              // carries.
+              // Hand the evaluator the stored record so tagged fields adapt
+              // as Secrets without loading values.
               // Looked up by the handle's name, the record's data name: a
               // method names its instance, and only by convention after
               // its spec (typed-secrets 4.1).
@@ -7873,7 +7798,6 @@ export class WorkflowExecutionService {
                 def.definition.id,
                 resourceHandle.name,
                 modelName,
-                typedConsumer,
               );
               if (resource !== undefined) return resource;
             }
@@ -7886,17 +7810,15 @@ export class WorkflowExecutionService {
 
   /**
    * Restores a stored run's written references and attaches the run's
-   * record, so the run is written back with references. In a typed run the
-   * references become sentinels the deliveries load, and no vault is read
-   * here (typed-secrets 4.4, `rehydrateRunReferences`); in an untyped run
-   * the legacy branch restores the real values into memory. A run with no
+   * record, so the run is written back with references. References become
+   * unloaded sentinels; each delivery loads them. A run with no
    * references (or one written before sensitive values were kept off disk)
    * is used as stored.
    */
-  private async rehydrateRun(
+  private rehydrateRun(
     run: WorkflowRun,
     sensitiveValues: RunSensitiveValues,
-  ): Promise<WorkflowRun> {
+  ): WorkflowRun {
     // A newer swamp may have written a sensitive value in a form this one
     // does not recognise, so the record is not resumed (swamp-club#3681).
     if (isNewerSensitiveFormat(run)) {
@@ -7908,26 +7830,7 @@ export class WorkflowExecutionService {
       run.attachSensitiveValues(sensitiveValues);
       return run;
     }
-    if (sensitiveValues.sentinels.typedSecrets) {
-      return rehydrateRunReferences(run, sensitiveValues);
-    }
-    const vaultService = await VaultService.fromRepository(this.repoDir, {
-      vaultsDir: this.vaultsDir,
-    });
-    const {
-      writtenReferences,
-      sensitiveFormat: _format,
-      ...stored
-    } = run.toData();
-    const { raw } = await rehydratePersistedForm(
-      stored,
-      writtenReferences ?? [],
-      (vaultName, key) => vaultService.get(vaultName, key, "workflow-resume"),
-      sensitiveValues,
-    );
-    const rehydrated = WorkflowRun.fromData(raw);
-    rehydrated.attachSensitiveValues(sensitiveValues);
-    return rehydrated;
+    return rehydrateRunReferences(run, sensitiveValues);
   }
 
   /**
@@ -7938,19 +7841,8 @@ export class WorkflowExecutionService {
    * is read: the typed evaluator views the outputs through their sources,
    * so a tagged field is a Secret loaded at delivery (typed-secrets 4.2).
    */
-  private createStepOutputResolver(
-    sensitiveValues: RunSensitiveValues,
-  ): StepOutputResolver {
-    let vaultService: Promise<VaultService> | undefined;
-    const readAttributes = sensitiveValues.sentinels.typedSecrets
-      ? createDataRepositoryAttributeReader(this.dataRepo)
-      : createDataRepositoryAttributeReader(this.dataRepo, {
-        getVaultService: () =>
-          vaultService ??= VaultService.fromRepository(this.repoDir, {
-            vaultsDir: this.vaultsDir,
-          }),
-        sensitiveValues,
-      });
+  private createStepOutputResolver(): StepOutputResolver {
+    const readAttributes = createDataRepositoryAttributeReader(this.dataRepo);
     return new StepOutputResolver({
       readAttributes,
       findChildRun: (workflowId, runId) =>

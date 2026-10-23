@@ -1438,11 +1438,10 @@ Deno.test("coerceBigInts: preserves __proto__ key in objects", () => {
 /** Evaluates a model.method call and returns the inputs its delegate got. */
 function modelMethodInputs(
   expression: string,
-  typedSecrets: boolean,
   context: Record<string, unknown> = {},
 ): Record<string, unknown> {
   let received: unknown;
-  new CelEvaluator({ typedSecrets }).evaluate(expression, {
+  new CelEvaluator().evaluate(expression, {
     ...context,
     modelMethod: {
       method: (_model: string, _method: string, inputs: unknown) => {
@@ -1454,13 +1453,12 @@ function modelMethodInputs(
   return received as Record<string, unknown>;
 }
 
-for (const typedSecrets of [false, true]) {
-  Deno.test(`CelEvaluator model.method: ints in the inputs reach the delegate as numbers (typedSecrets ${typedSecrets})`, () => {
+{
+  Deno.test(`CelEvaluator model.method: ints in the inputs reach the delegate as numbers`, () => {
     // swamp-club#3708: a bigint here failed to serialize once the synthetic
     // step ran.
     const inputs = modelMethodInputs(
       "model.method('m', 'run', {'n': 1, 'l': [1, 2], 'm': {'k': {'j': 3}}})",
-      typedSecrets,
     );
     assertEquals(inputs, { n: 1, l: [1, 2], m: { k: { j: 3 } } });
     assertEquals(
@@ -1469,11 +1467,10 @@ for (const typedSecrets of [false, true]) {
     );
   });
 
-  Deno.test(`CelEvaluator model.method: other input values reach the delegate unchanged (typedSecrets ${typedSecrets})`, () => {
+  Deno.test(`CelEvaluator model.method: other input values reach the delegate unchanged`, () => {
     const inputs = modelMethodInputs(
       "model.method('m', 'run', {'s': 'one', 'd': 2.5, 'b': true, " +
         "'t': timestamp('2026-01-01T00:00:00Z')})",
-      typedSecrets,
     );
     assertEquals(inputs.s, "one");
     assertEquals(inputs.d, 2.5);
@@ -1485,7 +1482,7 @@ for (const typedSecrets of [false, true]) {
     );
   });
 
-  Deno.test(`CelEvaluator model.method: a __proto__ key in the inputs stays an own key (typedSecrets ${typedSecrets})`, () => {
+  Deno.test(`CelEvaluator model.method: a __proto__ key in the inputs stays an own key`, () => {
     // A CEL map literal never yields an own __proto__ key, so the inputs
     // come from the context, as a parsed workflow input would.
     const payload = Object.create(null) as Record<string, unknown>;
@@ -1497,7 +1494,6 @@ for (const typedSecrets of [false, true]) {
     });
     const inputs = modelMethodInputs(
       "model.method('m', 'run', payload)",
-      typedSecrets,
       { payload },
     );
     assertStrictEquals(Object.hasOwn(inputs, "__proto__"), true);
@@ -1632,7 +1628,7 @@ Deno.test("CelEvaluator.evaluateAsync: a timestamp result is its ISO 8601 string
 });
 
 Deno.test("CelEvaluator.evaluate: with typed secrets, a timestamp result is its ISO 8601 string", () => {
-  const evaluator = new CelEvaluator({ typedSecrets: true });
+  const evaluator = new CelEvaluator();
   assertEquals(
     evaluator.evaluate("{'t': timestamp('2026-01-01T00:00:00Z')}", {}),
     { t: "2026-01-01T00:00:00.000Z" },
@@ -2107,6 +2103,14 @@ Deno.test("CelEvaluator.evaluate: every top-level ExpressionContext key resolves
   };
   const evaluator = new CelEvaluator();
   for (const key of Object.keys(keys)) {
+    if (key === "vault") {
+      assertThrows(
+        () => evaluator.evaluate(key, { [key]: "inert" }),
+        InvalidExpressionError,
+        "directly",
+      );
+      continue;
+    }
     const sentinel = `sentinel-${key}`;
     assertEquals(
       evaluator.evaluate(key, { [key]: sentinel }),

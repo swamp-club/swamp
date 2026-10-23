@@ -40,8 +40,6 @@ import {
   defineModel,
   type ModelDefinition,
 } from "../../domain/models/model.ts";
-import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
-import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -648,7 +646,7 @@ Deno.test("modelValidate all with include that accepts nothing reports no models
 });
 
 Deno.test(
-  "createModelValidateDeps: a typed registry reports Secret usage with the definition file and location, and an untyped one does not",
+  "createModelValidateDeps: reports Secret usage with the definition file and location by default",
   async () => {
     await withTempDir(async (dir) => {
       const type = ModelType.create("test/typed-validate");
@@ -673,13 +671,7 @@ Deno.test(
       try {
         const typed = createModelValidateDeps(
           dir,
-          {
-            createSensitiveValues: () =>
-              new RunSensitiveValues(
-                undefined,
-                new SecretBagRegistry({ typedSecrets: true }),
-              ),
-          },
+          {},
           undefined,
           new FileSystemUnifiedDataRepository(dir, undefined, store),
           store,
@@ -701,19 +693,6 @@ Deno.test(
           `${join(dir, "models")}`,
         );
         assertStringIncludes(usage?.error ?? "", "globalArguments.token:1:1");
-
-        const untyped = createModelValidateDeps(
-          dir,
-          undefined,
-          undefined,
-          new FileSystemUnifiedDataRepository(dir, undefined, store),
-          store,
-        );
-        const plain = await untyped.validateModel(definition, modelDef, type);
-        assertEquals(
-          plain.results.some((r) => r.name === "Secret usage"),
-          false,
-        );
       } finally {
         store.close();
       }

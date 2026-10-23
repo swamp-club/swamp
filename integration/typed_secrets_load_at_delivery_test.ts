@@ -676,7 +676,7 @@ Deno.test("load at delivery: a child workflow's step loads through the registry 
   );
 });
 
-Deno.test("load at delivery: a task selector and a child workflow reference written as vault.get receive their values, as they did from the eager read", async () => {
+Deno.test("load at delivery: task selectors and child workflow references refuse vault.get before any delivery", async () => {
   await withFixture(
     {
       withExistence: true,
@@ -694,7 +694,7 @@ Deno.test("load at delivery: a task selector and a child workflow reference writ
           })],
         });
         await vault.vault.put("child", child.name);
-        const parent = workflowOf([
+        const refusingSteps = [
           Step.create({
             name: "selected",
             task: StepTask.directExecution(
@@ -708,15 +708,19 @@ Deno.test("load at delivery: a task selector and a child workflow reference writ
             name: "call-child",
             task: StepTask.workflow(ref("child")),
           }),
-        ]);
-        const { status, errors } = await runWorkflow(repoDir, parent, [child]);
-        assertEquals(status, "succeeded", errors.join("\n"));
-        assertEquals(
-          deliveries.map((d) => d.args.note).sort(),
-          ["selected", "uses s3cret-value"],
-        );
-        const { loads } = await auditedReads(repoDir);
-        assertEquals(loads, ["child", "model", "token"]);
+        ];
+        for (const step of refusingSteps) {
+          const { status, errors } = await runWorkflow(
+            repoDir,
+            workflowOf([step]),
+            [child],
+          );
+          assertEquals(status, "failed", errors.join("\n"));
+          assertStringIncludes(errors.join("\n"), "secret_destination_refused");
+          assertEquals(deliveries, []);
+          const { loads } = await auditedReads(repoDir);
+          assertEquals(loads, []);
+        }
       } finally {
         modelRegistry.invalidateType(type);
       }
