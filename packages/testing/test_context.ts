@@ -64,7 +64,7 @@ export interface CapturedLog {
  * including interfaces, and is usually inferred from the `globalArgs` option.
  */
 export interface ModelTestContextOptions<
-  TGlobalArgs = Record<string, unknown>,
+  TGlobalArgs extends object = Record<string, unknown>,
 > {
   /** Global arguments passed to the execute function (default: {}). */
   globalArgs?: TGlobalArgs;
@@ -95,7 +95,9 @@ export interface ModelTestContextOptions<
 }
 
 /** The return value from createModelTestContext. */
-export interface ModelTestContextResult<TGlobalArgs = Record<string, unknown>> {
+export interface ModelTestContextResult<
+  TGlobalArgs extends object = Record<string, unknown>,
+> {
   /** The MethodContext to pass to your execute function. */
   context: MethodContext<TGlobalArgs>;
   /** Returns all resources written via writeResource during execution. */
@@ -138,7 +140,9 @@ export interface ModelTestContextResult<TGlobalArgs = Record<string, unknown>> {
  * interface-typed value comes back as that interface. A type argument given
  * without a `globalArgs` value still yields an empty object at runtime.
  */
-export function createModelTestContext<TGlobalArgs = Record<string, unknown>>(
+export function createModelTestContext<
+  TGlobalArgs extends object = Record<string, unknown>,
+>(
   options?: ModelTestContextOptions<TGlobalArgs>,
 ): ModelTestContextResult<TGlobalArgs> {
   const writtenResources: WrittenResource[] = [];

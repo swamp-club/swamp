@@ -464,6 +464,12 @@ Deno.test("createModelTestContext: accepts interface-typed globalArgs and return
   assertEquals(typed, { appId: 480, apiKey: "k" });
 });
 
+Deno.test("createModelTestContext: refuses non-object globalArgs", () => {
+  // @ts-expect-error: globalArgs must be an object, as before the type parameter.
+  const { context } = createModelTestContext({ globalArgs: 42 });
+  assertEquals<unknown>(context.globalArgs, 42);
+});
+
 Deno.test("createModelTestContext: globalArgs stays Record<string, unknown> when omitted", () => {
   const { context } = createModelTestContext();
 
