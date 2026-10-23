@@ -388,6 +388,7 @@ export interface ModelValidationOptions {
   diagnoseSecretMisuse?: (
     expression: string,
     location: string,
+    embedded?: boolean,
   ) => readonly SecretMisuseFinding[];
   /**
    * Validate as a run of this method: Method arguments, Expression paths,
@@ -827,8 +828,10 @@ export class DefaultModelValidationService implements ModelValidationService {
       globalArguments: definition.globalArguments,
       methods: methodData,
     };
-    for (const { celExpression, raw, path } of extractExpressions(data)) {
-      for (const finding of diagnose(celExpression, path)) {
+    for (
+      const { celExpression, raw, path, embedded } of extractExpressions(data)
+    ) {
+      for (const finding of diagnose(celExpression, path, embedded)) {
         errors.push({
           expression: raw,
           code: finding.code,

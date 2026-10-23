@@ -137,11 +137,14 @@ export async function evaluateDefinitionExpressions(
    * occurrence overlapping data is neither evaluated nor substituted.
    */
   provenance: DefinitionPassProvenance = AUTHORED_DEFINITION,
+  /** Subtrees outside this delivery are neither evaluated nor substituted. */
+  skipPath?: (path: string) => boolean,
 ): Promise<DefinitionExpressionPassResult> {
   expressions = expressions.filter((expr) =>
-    expr.start === undefined || expr.end === undefined
+    !skipPath?.(expr.path) &&
+    (expr.start === undefined || expr.end === undefined
       ? !provenance.raw.hasDataAtOrBelow(expr.path)
-      : !provenance.raw.overlapsData(expr.path, expr.start, expr.end)
+      : !provenance.raw.overlapsData(expr.path, expr.start, expr.end))
   );
   const failedExpressions = new Map<string, Error>();
   const recordFailure = (raw: string, error: unknown) => {
@@ -243,6 +246,8 @@ export async function evaluateDefinitionExpressions(
       restOrigins,
     );
   const restOriginOf = originLookup(restOrigins);
+  const skipRest = (path: string) =>
+    isGlobalArgumentPath(path) || (skipPath?.(path) ?? false);
 
   // The same raw text can resolve differently in the two phases
   // (`self.globalArguments.*` does), so each section takes its own values.
@@ -251,7 +256,7 @@ export async function evaluateDefinitionExpressions(
     restValues,
     provenance.raw,
     restOriginOf,
-    isGlobalArgumentPath,
+    skipRest,
     rawSanitizer,
     recordFailure,
   );
@@ -281,7 +286,7 @@ export async function evaluateDefinitionExpressions(
     restValues,
     provenance.sanitized,
     restOriginOf,
-    isGlobalArgumentPath,
+    skipRest,
     sanitizer,
     recordFailure,
   );

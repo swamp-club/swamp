@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SecretRefusedError } from "../../domain/expressions/errors.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -2942,4 +2943,21 @@ Deno.test("modelMethodRun: the evaluation is saved through the execution service
   assertEquals(order, ["saved", "method"]);
   assertEquals(saved.length, 1);
   assertEquals(saved[0].getMethodArguments("run"), { key: "resolved" });
+});
+
+Deno.test("methodExecutionFailed: preserves secret refusal codes through redaction", () => {
+  for (
+    const code of [
+      "secret_operation_unsupported",
+      "secret_destination_refused",
+      "secret_reference_invalid",
+    ] as const
+  ) {
+    const cause = new SecretRefusedError(code, "operation", "expression");
+    assertEquals(methodExecutionFailed(cause, new SecretRedactor()).code, code);
+    assertEquals(
+      methodExecutionFailed(new Error("wrapper", { cause })).code,
+      code,
+    );
+  }
 });

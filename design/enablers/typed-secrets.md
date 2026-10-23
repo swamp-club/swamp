@@ -1055,9 +1055,9 @@ Placement uses the existing quote-context scanner: `resolveForShell`,
 
 ### 8.1 Persisted form
 
-The persisted form is unchanged by this design: `sensitiveFormat` (version 2
-since the masks of swamp-club#3681; a reader refuses a format newer than its
-own) and its `writtenReferences` list. Each entry names a path, an occurrence, a vault and
+The persisted form carries `sensitiveFormat` (version 3 since reliable reference
+origins in swamp-club#3735; a reader refuses a format newer than its own) and its
+`writtenReferences` list. Each entry names a path, an occurrence, a vault and
 key, an encoding and a data-origin flag
 (`src/domain/secrets/persisted_sensitive_form.ts`).
 
@@ -1075,6 +1075,12 @@ bag of the run's registry for each entry, with the entry's encoding and origin
 (`VaultSecretBag.addWrittenReference`), and reads no vault; reference text that
 no entry names stays inert data, and a path through a prototype touches
 nothing. Restoring a cache or run never loads a value.
+
+Versions 1 and 2 could mark data-derived plaintext as `dataOrigin: false`.
+Their default reader restored every written reference as data, regardless of
+that flag. Replay and resume preserve that historical origin for these files,
+including files without a format marker. Version 3 trusts the recorded flag.
+The next write records the corrected origins in version 3.
 
 New writes produce `raw` entries. Entries in existing files keep their encoding
 through rehoming and persist back as they were read, and delivery applies it:
@@ -1098,9 +1104,9 @@ resume of such a run record marks each input string holding a reference whole
 data and continues. Deferred bindings holding a reference are whole data in
 their own map on a typed resume.
 
-Current binaries write and read this format. No reader guard has to ship first,
-and the format version does not change: the provenance fields are optional, and
-an older reader ignores them.
+The provenance fields remain optional. The version 3 marker distinguishes
+reliable origins from the older flags; older binaries refuse new files through
+the existing newer-format guard.
 
 ### 8.2 Durable state and current values
 
@@ -1192,8 +1198,10 @@ the loaded bag.
 ### 10.2 Diagnostics
 
 `swamp behavior validate` and `swamp workflow validate` report static misuse.
-That covers a type error on a `vault.get` result, and a container comparison in
-an expression that calls `vault.get`. Findings name the file, the expression
+That covers a type error on a `vault.get` result, a container comparison in
+an expression that calls `vault.get`, and interpolation of a literal container
+holding a secret into surrounding text. Whole-field containers remain allowed.
+Findings name the file, the expression
 location and the code, never a value. Dynamic misuse fails at run time with the
 same codes. No new doctor command is needed. Phase 3.5 reports them from
 `swamp behavior validate` as the `Secret usage` validation, each finding naming
@@ -1216,6 +1224,12 @@ container interpolation keeps its authored expression, so `evaluate --all`
 continues through the repository. A run refuses when its selected method uses
 that expression. Passing the same container as a structured argument remains
 allowed, including when another method interpolates it into text.
+
+A behavior replay rechecks authored CEL expressions still present in its cache,
+using the cached global arguments and recorded provenance. It checks globals
+and the selected method only. Already evaluated values stay frozen, and text
+from data or an authored `literal()` stays literal. A pending refusal fails
+before delivery unless an explicit method-argument override replaces it.
 
 Validation reports indirect vault use even without pre-flight checks. A check
 receives global arguments after delivery, method arguments as sentinels and the

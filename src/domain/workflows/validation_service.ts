@@ -199,6 +199,7 @@ export class DefaultWorkflowValidationService
       expression: string,
       location: string,
       workflow: Workflow,
+      embedded?: boolean,
     ) => readonly SecretMisuseFinding[],
   ) {}
 
@@ -286,8 +287,11 @@ export class DefaultWorkflowValidationService
 
   private validateSecretUsage(workflow: Workflow): WorkflowValidationResult[] {
     if (!this.diagnoseSecrets) return [];
-    const expressions: { celExpression: string; path: string }[] =
-      extractExpressions(workflow.toData());
+    const expressions: {
+      celExpression: string;
+      path: string;
+      embedded?: boolean;
+    }[] = extractExpressions(workflow.toData());
     for (const [jobIndex, job] of workflow.jobs.entries()) {
       for (const [stepIndex, step] of job.steps.entries()) {
         const path = `jobs[${jobIndex}].steps[${stepIndex}]`;
@@ -306,8 +310,8 @@ export class DefaultWorkflowValidationService
         }
       }
     }
-    return expressions.flatMap(({ celExpression, path }) =>
-      this.diagnoseSecrets!(celExpression, path, workflow).map((
+    return expressions.flatMap(({ celExpression, path, embedded }) =>
+      this.diagnoseSecrets!(celExpression, path, workflow, embedded).map((
         finding,
       ) =>
         WorkflowValidationResult.fail(

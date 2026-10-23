@@ -45,6 +45,7 @@ import {
   type ModelDefinition,
 } from "../src/domain/models/model.ts";
 import { ModelInvocationService } from "../src/domain/models/model_invocation_service.ts";
+import { shellModel } from "../src/domain/models/command/shell/shell_model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../src/domain/secrets/persisted_sensitive_form.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
@@ -1136,4 +1137,94 @@ Deno.test("default validation: tagged data reaches check delivery and only missi
       assertValueFree(f, JSON.stringify(invalidResult), "invalid validation");
     }
   });
+});
+
+Deno.test({
+  name:
+    "typed local behavior: legacy evaluate then replay caches retain data origin and refuse a quoted heredoc",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixture(async (f) => {
+      const reference = f.stored.reference;
+      const command = `cat <<'EOF'\n${reference}\nEOF`;
+      const definition = Definition.create({
+        name: "legacy-heredoc",
+        methods: { execute: { arguments: { run: command } } },
+      });
+      const path = "methods.execute.arguments.run";
+      const start = command.indexOf(reference);
+      const provenance = ProvenanceMap.authored().withRanges(path, [[
+        start,
+        start + f.stored.password.length,
+      ]]);
+      const persistedProvenance = ProvenanceMap.authored().withRanges(path, [[
+        start,
+        start + reference.length,
+      ]]);
+      await f.definitionRepo.save(shellModel.type, definition);
+      await f.evaluatedDefRepo.save(
+        shellModel.type,
+        definition,
+        provenance,
+        new Set(["${{ data.latest('db', 'main').attributes.password }}"]),
+        [],
+        [{
+          path: ["methods", "execute", "arguments", "run"],
+          occurrence: 0,
+          vaultName: VAULT,
+          key: f.stored.key,
+          encoding: "raw",
+          dataOrigin: false,
+        }],
+        [],
+        persistedProvenance,
+      );
+      const cachePath = f.evaluatedDefRepo.getPath(
+        shellModel.type,
+        definition.id,
+      );
+      const text = await Deno.readTextFile(cachePath);
+      await Deno.writeTextFile(
+        cachePath,
+        text.replace(
+          `sensitiveFormat: ${SENSITIVE_FORMAT_VERSION}`,
+          "sensitiveFormat: 2",
+        ),
+      );
+      const deps: ModelMethodRunDeps = {
+        ...f.runDeps(),
+        lookupDefinition: () =>
+          Promise.resolve({ definition, type: shellModel.type }),
+        getModelDef: () => ({
+          ...shellModel,
+          methods: {
+            execute: {
+              ...shellModel.methods.execute,
+              execute: () => {
+                throw new Error("A refused command must never execute");
+              },
+            },
+          },
+        }),
+      };
+      const events = await f.access(() =>
+        collect(modelMethodRun(createLibSwampContext(), deps, {
+          modelIdOrName: definition.name,
+          methodName: "execute",
+          inputs: {},
+          lastEvaluated: true,
+        }))
+      );
+      const errors = events.filter((event) => event.kind === "error");
+      assertEquals(errors.length, 1);
+      assertEquals(errors[0].error.code, "secret_destination_refused");
+      assertStringIncludes(
+        errors[0].error.message,
+        "here-document with a quoted delimiter",
+      );
+      assertEquals(events.some((event) => event.kind === "completed"), false);
+      assertEquals(f.counting.reads, []);
+      await assertNoPlaintextOnDisk(f);
+    });
+  },
 });

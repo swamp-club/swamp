@@ -811,7 +811,19 @@ Deno.test("load at delivery: evaluate keeps secret refusals pending for single a
       modelRegistry.register({
         type,
         version: "2026.10.23.1",
-        methods: { text: method, size: method, whole: method, plain: method },
+        globalArguments: z.object({ rec: z.unknown() }),
+        methods: {
+          text: method,
+          size: method,
+          self: {
+            ...method,
+            arguments: z.object({
+              value: z.string().meta({ sensitive: true }),
+            }),
+          },
+          whole: method,
+          plain: method,
+        },
       });
       const { repoContext } = await requireInitializedRepoUnlocked({
         repoDir,
@@ -848,7 +860,11 @@ Deno.test("load at delivery: evaluate keeps secret refusals pending for single a
         const size = `\${{ size(${attributes}.token) }}`;
         const refusing = Definition.create({
           name: "refusing",
+          globalArguments: { rec: whole },
           methods: {
+            self: {
+              arguments: { value: "prefix-${{ self.globalArguments.rec }}" },
+            },
             text: { arguments: { value: text } },
             size: { arguments: { value: size } },
             whole: { arguments: { value: whole } },
@@ -906,17 +922,26 @@ Deno.test("load at delivery: evaluate keeps secret refusals pending for single a
         const runDeps = await createModelMethodRunDeps(repoDir, repoContext, {
           defaultVault: VAULT,
         });
-        const run = (methodName: string) =>
+        const run = (
+          methodName: string,
+          lastEvaluated = false,
+          inputs: Record<string, unknown> = {},
+        ) =>
           collect(modelMethodRun(createLibSwampContext(), runDeps, {
             modelIdOrName: refusing.name,
             methodName,
-            inputs: {},
-            lastEvaluated: false,
+            inputs,
+            lastEvaluated,
           }));
-        for (const methodName of ["text", "size"]) {
-          const events = await run(methodName);
+        for (
+          const [methodName, replay] of ["text", "size", "self"].flatMap((
+            name,
+          ) => [[name, false], [name, true]] as const)
+        ) {
+          const events = await run(methodName, replay);
           const errors = events.filter((event) => event.kind === "error");
           assertEquals(errors.length, 1);
+          assertEquals(errors[0].error.code, "secret_operation_unsupported");
           assertStringIncludes(
             errors[0].error.message,
             "secret_operation_unsupported",
@@ -927,13 +952,32 @@ Deno.test("load at delivery: evaluate keeps secret refusals pending for single a
           vault.getOperations().filter((op) => op.method === "get"),
           [],
         );
-        for (const methodName of ["plain", "whole"]) {
-          const events = await run(methodName);
+        for (
+          const [methodName, replay] of ["plain", "whole"].flatMap((name) =>
+            [[name, true], [name, false]] as const
+          )
+        ) {
+          const events = await run(methodName, replay);
           assertEquals(events.filter((event) => event.kind === "error"), []);
         }
+        // A successful sibling method also writes a partial cache. It must
+        // retain the same refusal when another method subsequently replays.
+        for (const methodName of ["text", "size", "self"]) {
+          const errors = (await run(methodName, true)).filter((event) =>
+            event.kind === "error"
+          );
+          assertEquals(errors.length, 1);
+          assertEquals(errors[0].error.code, "secret_operation_unsupported");
+          assertEquals(deliveries.length, 4);
+        }
+        const overridden = await run("self", true, { value: "override wins" });
+        assertEquals(overridden.filter((event) => event.kind === "error"), []);
         assertEquals(deliveries, [
           { value: "still works" },
+          { value: "still works" },
           { value: { token: "s3cret-value", label: "public" } },
+          { value: { token: "s3cret-value", label: "public" } },
+          { value: "override wins" },
         ]);
       } finally {
         modelRegistry.invalidateType(type);

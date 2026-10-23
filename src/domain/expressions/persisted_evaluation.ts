@@ -78,6 +78,7 @@ export const MaskedPathSchema = z.array(
 
 /** An evaluated definition as it is written to the evaluated cache. */
 export interface PersistedEvaluatedDefinition {
+  sensitiveFormat: number;
   definition: Definition;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
@@ -962,6 +963,7 @@ export function persistEvaluatedDefinition(
   );
   return {
     definition: Definition.fromData(masked.data),
+    sensitiveFormat: SENSITIVE_FORMAT_VERSION,
     deferredExpressions: persistedDeferred,
     writtenReferences: form.writtenReferences.filter((reference) =>
       !outerMasks.some((path) =>
@@ -1035,6 +1037,7 @@ function shownSchemas(
  */
 export function rehydrateEvaluatedDefinition(
   cached: {
+    sensitiveFormat?: number;
     definition: Definition;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
@@ -1068,6 +1071,7 @@ export function rehydrateEvaluatedDefinition(
 /** The typed branch of {@link rehydrateEvaluatedDefinition}. */
 function rehydrateEvaluatedDefinitionReferences(
   cached: {
+    sensitiveFormat?: number;
     definition: Definition;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
@@ -1091,6 +1095,7 @@ function rehydrateEvaluatedDefinitionReferences(
     cached.writtenReferences,
     bag,
     cached.definition.name,
+    cached.sensitiveFormat ?? 0,
   );
   const { deferredExpressions, ...restoredDefinition } = restored;
   const definition = Definition.fromData(restoredDefinition as DefinitionData);

@@ -42,6 +42,7 @@ import {
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { UserError } from "../../domain/errors.ts";
+import { secretRefusalCode } from "../../domain/expressions/errors.ts";
 import {
   createLibSwampContext,
   type LibSwampContext,
@@ -2395,7 +2396,8 @@ export async function confirmRunReplicated(
  * commit could not reach the datastore's storage keeps that code, or the
  * run-partly-committed one when a checkpoint had committed it
  * (swamp-club#3802), as the CLI reports it, worded for a run whose steps
- * ran; any other failure is `fallbackCode`.
+ * ran. Secret refusals retain their stable code through wrappers; any other
+ * failure is `fallbackCode`.
  */
 export function runFailureForClient(
   error: unknown,
@@ -2415,7 +2417,10 @@ export function runFailureForClient(
       message: sanitizeErrorForClient(error.afterStepsRan()),
     };
   }
-  return { code: fallbackCode, message: sanitizeErrorForClient(error) };
+  return {
+    code: secretRefusalCode(error) ?? fallbackCode,
+    message: sanitizeErrorForClient(error),
+  };
 }
 
 /**

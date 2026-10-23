@@ -434,7 +434,7 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
             dataOrigin: true,
           },
         ];
-        data.sensitiveFormat = SENSITIVE_FORMAT_VERSION;
+        data.sensitiveFormat = 2;
         delete data.persistedInputsProvenance;
       });
       await f.approve(NAME, run.runId);
@@ -453,12 +453,13 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
       const encodings = (data.writtenReferences ?? [])
         .filter((w) => w.path[0] === "inputs")
         .map((w) => [w.path[1], w.encoding, w.dataOrigin]).sort();
-      // A typed resume writes each entry back as it was read; the untyped
-      // value search records the plaintext it found with no origin.
+      // Legacy references retain the old reader's data origin, even where
+      // the value search recorded false. The next write upgrades the format.
+      assertEquals(data.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
       assertEquals(encodings, [
-        ["body", "json", false],
+        ["body", "json", true],
         ["on", "boolean", true],
-        ["port", "number", false],
+        ["port", "number", true],
       ]);
       for (const value of [port, 'p"w']) {
         assertEquals(await f.filesHolding(value), [], `files hold ${value}`);

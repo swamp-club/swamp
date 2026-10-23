@@ -219,3 +219,38 @@ Deno.test("diagnoseSecretMisuse: indirect vault use is a static error without a 
     assertStringIncludes(findings[0].reason, "directly");
   }
 });
+
+Deno.test("diagnoseSecretMisuse: embedded secret containers are refused but whole fields and scalar results are allowed", () => {
+  for (
+    const expression of [
+      "{'token': vault.get('v', 'k')}",
+      "[vault.get('v', 'k')]",
+      "{'nested': [vault.get('v', 'k')], 'count': 1}",
+      "[vault.get('v', 'k'), 1] + ['public']",
+      "dyn({'token': vault.get('v', 'k')})",
+      "inputs.flag ? {'token': vault.get('v', 'k')} : {}",
+    ]
+  ) {
+    assertEquals(diagnoseSecretMisuse(expression, AT), [], expression);
+    const findings = diagnoseSecretMisuse(expression, AT, true);
+    assertEquals(findings.length, 1, expression);
+    assertEquals(findings[0].code, SECRET_OPERATION_UNSUPPORTED);
+    assertEquals(
+      findings[0].reason,
+      "interpolating a container holding a secret into text",
+    );
+  }
+  for (
+    const expression of [
+      "vault.get('v', 'k')",
+      "'prefix-' + vault.get('v', 'k')",
+      "size([vault.get('v', 'k')])",
+      "{'count': size([vault.get('v', 'k')])}",
+      "{'isNull': vault.get('v', 'k') == null}",
+      "{'token': vault.get('v', 'k')}.token",
+      "false ? {'token': vault.get('v', 'k')} : {}",
+    ]
+  ) {
+    assertEquals(diagnoseSecretMisuse(expression, AT, true), [], expression);
+  }
+});

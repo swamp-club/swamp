@@ -655,6 +655,12 @@ Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path
           name: "aliased",
           task: StepTask.manualApproval("${{ dyn(vault).get('prod', 'key') }}"),
         }),
+        Step.create({
+          name: "interpolated",
+          task: StepTask.model("consumer", "run", {
+            env: { TOKEN: "prefix:${{ {'token': vault.get('prod', 'key')} }}" },
+          }),
+        }),
       ],
     })],
   });
@@ -679,7 +685,12 @@ Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path
   const findings = (await deps.validate(workflow)).filter((r) =>
     r.name === "Secret usage"
   );
-  assertEquals(findings.length, 3);
+  assertEquals(findings.length, 4);
+  assertStringIncludes(text, "jobs[0].steps[3].task.inputs.env.TOKEN:");
+  assertStringIncludes(
+    text,
+    "interpolating a container holding a secret into text",
+  );
   assertEquals(
     findings.every((r) => r.code !== undefined && r.location !== undefined),
     true,

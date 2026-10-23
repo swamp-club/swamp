@@ -24,8 +24,8 @@
  * without evaluating it, calling a function or asking a provider.
  *
  * Only an expression with a direct `vault.get` call is examined, since only
- * there is a `Secret` statically known: a record-origin secret is `dyn`. Two
- * checks run on the normalized source. A type check in the check
+ * there is a `Secret` statically known: a record-origin secret is `dyn`. A
+ * type check runs on normalized source in the check
  * environment, whose error is the secret's when it names the `Secret` type
  * (cel-js names the operand or argument types it found no overload for, so
  * `Secret == string` is the secret's and `string + int` is not), so a type
@@ -34,7 +34,9 @@
  * with no scalar-literal or `null` operand, in an expression that reads a
  * secret. Both answer `secret_operation_unsupported`, the code the run
  * refuses with, and each finding names the authored location and the
- * reason, never a value.
+ * reason, never a value. When the result is embedded in surrounding text,
+ * literal containers carrying a secret are diagnosed too; a whole-field
+ * container remains a structured argument.
  *
  * The pinned cel-js limits hold here as they do at run time: a dyn operand
  * (an unlisted variable, or `dyn(...)`) and a map literal keyed by the
@@ -114,6 +116,7 @@ function isTernaryUnification(error: unknown): boolean {
 export function diagnoseSecretMisuse(
   expression: string,
   location: string,
+  embedded = false,
 ): SecretDiagnostic[] {
   let analysis: VaultCallAnalysis;
   try {
@@ -139,6 +142,13 @@ export function diagnoseSecretMisuse(
   );
   const findings: SecretDiagnostic[] = [];
   const checked = checkEnvironment().check(analysis.source.text);
+  if (embedded && secretResultKind(analysis.ast) === "container") {
+    findings.push({
+      location: at,
+      code: SECRET_OPERATION_UNSUPPORTED,
+      reason: "interpolating a container holding a secret into text",
+    });
+  }
   if (!checked.valid && !isTernaryUnification(checked.error)) {
     const reason = firstLine(checked.error);
     if (NAMES_SECRET.test(reason)) {
@@ -157,4 +167,49 @@ export function diagnoseSecretMisuse(
     });
   }
   return findings;
+}
+
+/**
+ * Tracks secrets in literal containers and concatenations without running CEL.
+ * Mixed element types become dyn in the type checker, so its result type alone
+ * cannot find these. Reductions such as size/type do not carry their operands;
+ * unknown calls and selections remain the runtime check's responsibility.
+ */
+function secretResultKind(value: unknown): "secret" | "container" | undefined {
+  if (typeof value !== "object" || value === null || !("op" in value)) {
+    return undefined;
+  }
+  const { op, args: children } = value as { op: unknown; args: unknown };
+  if (!Array.isArray(children)) return undefined;
+  const args: unknown[] = children;
+  if (op === "rcall" && args[0] === "get") {
+    const receiver = args[1] as { op?: unknown; args?: unknown } | undefined;
+    if (receiver?.op === "id" && receiver.args === "vault") return "secret";
+  }
+  if (op === "call" && args[0] === "dyn" && Array.isArray(args[1])) {
+    return secretResultKind(args[1][0]);
+  }
+  if (op === "?:") {
+    const condition = args[0] as { op?: unknown; args?: unknown } | undefined;
+    if (condition?.op === "value" && typeof condition.args === "boolean") {
+      return secretResultKind(args[condition.args ? 1 : 2]);
+    }
+    const branches = args.slice(1).map(secretResultKind);
+    return branches.includes("container")
+      ? "container"
+      : branches.find(Boolean);
+  }
+  if (op === "list" || op === "map") {
+    const items: unknown[] = op === "map" ? args.flat() : args;
+    return items.some((item) => secretResultKind(item) !== undefined)
+      ? "container"
+      : undefined;
+  }
+  if (op === "+") {
+    const operands = args.map(secretResultKind);
+    return operands.includes("container")
+      ? "container"
+      : operands.find(Boolean);
+  }
+  return undefined;
 }

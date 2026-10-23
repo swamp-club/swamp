@@ -68,7 +68,10 @@ import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { collectAuthoredExpressions } from "../../domain/expressions/expression_evaluation_service.ts";
-import { UnresolvedExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  secretRefusalCode,
+  UnresolvedExpressionError,
+} from "../../domain/expressions/errors.ts";
 import {
   assertMethodArgumentsEvaluated,
   type FailedExpressions,
@@ -916,6 +919,7 @@ export async function* modelMethodRun(
                 // Restore cached references without reading the vault. Delivery
                 // loads their current values under the current grants.
                 const restored = await rehydrateEvaluatedDefinition({
+                  sensitiveFormat: lastEval.sensitiveFormat,
                   definition: lastEval.definition,
                   deferredExpressions: lastEval.deferredExpressions ?? [],
                   writtenReferences: lastEval.writtenReferences ?? [],
@@ -949,6 +953,41 @@ export async function* modelMethodRun(
                 }
                 for (const expression of lastEval.authoredExpressions) {
                   authoredExpressions.add(expression);
+                }
+                // A partial evaluation leaves failed CEL as authored text.
+                // Recheck only what this method still needs, using the cache's
+                // globals and provenance. Resolved values stay frozen; data
+                // text and other methods never enter this replay pass.
+                if (
+                  evaluationService.hasDefinitionExpressions(
+                    evaluatedDefinition,
+                  )
+                ) {
+                  const replay = await evaluationService.evaluateDefinition(
+                    evaluatedDefinition,
+                    modelType,
+                    sensitiveValues,
+                    inputs,
+                    undefined,
+                    stepSecretBag,
+                    {
+                      inputs: inputsProvenance,
+                      definition: {
+                        raw: rawProvenance,
+                        sanitized: executedProvenance,
+                      },
+                      authoredExpressions,
+                      methodName: input.methodName,
+                    },
+                  );
+                  evaluatedDefinition = replay.definition;
+                  executedDefinition = replay.sanitizedDefinition ??
+                    replay.definition;
+                  rawProvenance = replay.provenance ?? rawProvenance;
+                  executedProvenance = replay.sanitizedProvenance ??
+                    rawProvenance;
+                  failedExpressions = replay.failedExpressions ??
+                    failedExpressions;
                 }
               } else {
                 if (evaluationService.hasDefinitionExpressions(definition)) {
@@ -1077,18 +1116,23 @@ export async function* modelMethodRun(
                   failedExpressions,
                 );
               } catch (error) {
-                if (!(error instanceof UnresolvedExpressionError)) throw error;
+                if (
+                  !(error instanceof UnresolvedExpressionError) &&
+                  secretRefusalCode(error) === undefined
+                ) throw error;
                 exprSpan.end();
                 setupSpan.end();
                 yield {
                   kind: "error",
-                  error: carryModelWording(
-                    error,
-                    validationFailed(error.message, {
-                      path: error.path,
-                      expression: error.expression,
-                    }),
-                  ),
+                  error: error instanceof UnresolvedExpressionError
+                    ? carryModelWording(
+                      error,
+                      validationFailed(error.message, {
+                        path: error.path,
+                        expression: error.expression,
+                      }),
+                    )
+                    : methodExecutionFailed(error, redactor),
                 };
                 return;
               }
@@ -2019,7 +2063,7 @@ export function methodExecutionFailed(
   const shown = redactedError(cause, redactor);
   // Keeps the cause's model spelling for `swamp model …` (swamp-club#3437).
   return carryModelWording(shown, {
-    code: "method_execution_failed",
+    code: secretRefusalCode(cause) ?? "method_execution_failed",
     message: executionErrorFrom(cause, redactor).message,
     cause: shown instanceof Error ? shown : undefined,
   });

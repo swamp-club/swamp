@@ -336,10 +336,11 @@ export function createWorkflowValidateDeps(
         };
       }
       : undefined,
-    (expression, location, workflow) =>
+    (expression, location, workflow, embedded) =>
       diagnoseSecretMisuse(
         expression,
         `${workflowRepo.getPath(workflow.id)} ${location}`,
+        embedded,
       ),
   );
   return {

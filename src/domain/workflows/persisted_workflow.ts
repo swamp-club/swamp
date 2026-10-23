@@ -41,6 +41,7 @@ import {
   definedEntry,
   rehydrateReferences,
   type RunSensitiveValues,
+  SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
   type WrittenReference,
 } from "../secrets/mod.ts";
@@ -149,6 +150,7 @@ export function replayInputs(
 
 /** An evaluated workflow as it is written to the evaluated cache. */
 export interface PersistedEvaluatedWorkflow {
+  sensitiveFormat: number;
   workflow: Workflow;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
@@ -253,6 +255,7 @@ export function persistEvaluatedWorkflow(
   const { deferredExpressions: deferred, ...workflowData } = form.data;
   return {
     workflow: Workflow.fromData(workflowData as WorkflowInput),
+    sensitiveFormat: SENSITIVE_FORMAT_VERSION,
     deferredExpressions: deferred,
     writtenReferences: form.writtenReferences,
     ...(provenance
@@ -291,6 +294,7 @@ export function persistEvaluatedWorkflow(
  */
 export function rehydrateEvaluatedWorkflow(
   cached: {
+    sensitiveFormat?: number;
     workflow: Workflow;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
@@ -321,6 +325,7 @@ export function rehydrateEvaluatedWorkflow(
       cached.writtenReferences,
       bag,
       cached.workflow.name,
+      cached.sensitiveFormat ?? 0,
     );
     const { deferredExpressions, ...restoredData } = restored;
     const workflow = Workflow.fromData(restoredData as WorkflowInput);
@@ -384,6 +389,7 @@ export function rehydrateRunReferences(
     writtenReferences,
     bag,
     `run ${run.id}`,
+    stored.sensitiveFormat ?? 0,
   );
   const deferredExpressions = (restored.deferredExpressions ?? []).map(
     (entry, index) => {
