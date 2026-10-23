@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# shellcheck shell=sh disable=SC3043
+# shellcheck shell=sh disable=SC3043,SC3013
 set -eu
 ARTIFACT_ORIGIN="${SWAMP_ARTIFACTS_URL:-https://artifacts.swamp-club.com}"
 case "$ARTIFACT_ORIGIN" in
