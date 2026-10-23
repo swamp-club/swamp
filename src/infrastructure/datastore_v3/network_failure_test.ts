@@ -74,6 +74,19 @@ Deno.test("isNetworkFailure: GCS's fetch failure, by fetch's TypeError and its c
   assertEquals(isNetworkFailure(wrapped), true);
 });
 
+Deno.test("isNetworkFailure: a connection lost while reading a response body, as GCS's catch-up met it (swamp-club#3802)", () => {
+  const lost = new TypeError("error reading a body from connection");
+  assertEquals(isNetworkFailure(lost), true);
+  assertEquals(
+    isNetworkFailure(
+      new Error("Cannot apply commit 22 of partition p to the read model", {
+        cause: lost,
+      }),
+    ),
+    true,
+  );
+});
+
 Deno.test("isNetworkFailure: Deno's own connection errors", () => {
   assertEquals(
     isNetworkFailure(new Deno.errors.ConnectionRefused("refused")),

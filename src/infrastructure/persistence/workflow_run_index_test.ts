@@ -27,6 +27,8 @@ import {
   INDEX_SCHEMA_VERSION,
   isIndexStale,
   readRunIndex,
+  removeRunIndexes,
+  removeStaleRunIndexes,
   RUNS_INDEX_FILENAME,
   statRecord,
   withIndexQueue,
@@ -296,4 +298,39 @@ Deno.test("fingerprintMatches: only an object with every field equal matches", (
     fingerprintMatches({ mtimeMs: 10, size: 20 }, { mtimeMs: 10, size: 20 }),
     true,
   );
+});
+
+Deno.test("removeRunIndexes: removes each workflow's run index and nothing else, and a missing root or index is no failure (swamp-club#3802)", async () => {
+  await withTempDir(async (dir) => {
+    await removeRunIndexes(join(dir, "missing"));
+    const root = join(dir, "workflow-runs");
+    await Deno.mkdir(join(root, "wf-a"), { recursive: true });
+    await writeRunIndex(join(root, "wf-a"), SAMPLE_INDEX);
+    await Deno.mkdir(join(root, "wf-b"), { recursive: true });
+    await Deno.writeTextFile(join(root, "wf-a", "workflow-run-1.yaml"), "x");
+    await Deno.writeTextFile(join(root, "stray-file"), "x");
+    await removeRunIndexes(root);
+    assertEquals(await readRunIndex(join(root, "wf-a")), null);
+    assertEquals(
+      await Deno.readTextFile(join(root, "wf-a", "workflow-run-1.yaml")),
+      "x",
+    );
+    assertEquals(await Deno.readTextFile(join(root, "stray-file")), "x");
+  });
+});
+
+Deno.test("removeStaleRunIndexes: removes the checkout's run indexes, and a removal that fails is warned about, never thrown (swamp-club#3802)", async () => {
+  await withTempDir(async (repo) => {
+    const runs = join(repo, ".swamp", "workflow-runs");
+    await Deno.mkdir(join(runs, "wf-a"), { recursive: true });
+    await writeRunIndex(join(runs, "wf-a"), SAMPLE_INDEX);
+    await removeStaleRunIndexes(repo);
+    assertEquals(await readRunIndex(join(runs, "wf-a")), null);
+  });
+  await withTempDir(async (repo) => {
+    // A file where the runs directory should be: listing it fails.
+    await Deno.mkdir(join(repo, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(join(repo, ".swamp", "workflow-runs"), "x");
+    await removeStaleRunIndexes(repo);
+  });
 });

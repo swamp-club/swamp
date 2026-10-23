@@ -215,9 +215,22 @@ export class MayLandLaterError extends UnrecordedEndError {
 /** Error code for {@link CommitUnreachableError}. */
 export const COMMIT_UNREACHABLE_CODE = "datastore_v3_commit_unreachable";
 
+/**
+ * Error code for a {@link CommitUnreachableError} of a unit an earlier commit
+ * of which had landed (swamp-club#3802): part of the change is committed, so
+ * unlike {@link COMMIT_UNREACHABLE_CODE} it is not a temporary failure.
+ */
+export const COMMIT_PARTLY_COMMITTED_CODE =
+  "datastore_v3_commit_partly_committed";
+
 /** How a {@link CommitUnreachableError} is worded. */
 interface CommitUnreachableWording {
   readonly stepsRan?: boolean;
+  /**
+   * Whether an earlier commit of the unit (a checkpoint's) had landed
+   * (swamp-club#3802): then part of what the command changed was committed.
+   */
+  readonly partly?: boolean;
   /** The error the operation itself failed with, if it failed. */
   readonly failure?: unknown;
 }
@@ -229,6 +242,13 @@ interface CommitUnreachableWording {
  * again once the datastore is reachable is safe for the datastore. `cause` is
  * the storage failure. A run's steps ran before its commit, so
  * {@link afterStepsRan} says what they did outside swamp may have happened.
+ * When an earlier commit of the unit had landed, but no workflow run record
+ * left running, part of the change is committed (swamp-club#3802): a
+ * checkpoint had published it (a token's definition, migrated config, a
+ * lockfile), or an earlier partition or split of the same flush landed. It
+ * then has {@link COMMIT_PARTLY_COMMITTED_CODE}, and says to check what the
+ * command changed rather than run it again: a re-run can meet what landed
+ * (a token of the same name) instead of redoing it.
  */
 export class CommitUnreachableError extends UserError {
   readonly #wording: CommitUnreachableWording;
@@ -240,14 +260,29 @@ export class CommitUnreachableError extends UserError {
     const failed = options.failure === undefined
       ? ""
       : `The command had also failed: ${messageOf(options.failure)}. `;
-    const recheck = options.stepsRan === true
+    const steps = options.stepsRan === true
       ? "Its steps had already run, so check anything they changed outside " +
-        "swamp before running it again once the datastore is reachable."
-      : "Run it again once the datastore is reachable.";
+        "swamp"
+      : "";
+    const recheck = options.partly === true
+      ? `${
+        steps === "" ? "Check" : `${steps}, and check`
+      } what it changed in the datastore once it is reachable before ` +
+        "running it again."
+      : steps === ""
+      ? "Run it again once the datastore is reachable."
+      : `${steps} before running it again once the datastore is reachable.`;
+    const outcome = options.partly === true
+      ? "so the rest of this command's changes were not committed; part of " +
+        "what this command changed was committed before that and stays " +
+        "committed"
+      : "so nothing this command changed was committed";
     super(
       `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
-        `so nothing this command changed was committed. ${failed}${recheck}`,
-      COMMIT_UNREACHABLE_CODE,
+        `${outcome}. ${failed}${recheck}`,
+      options.partly === true
+        ? COMMIT_PARTLY_COMMITTED_CODE
+        : COMMIT_UNREACHABLE_CODE,
     );
     this.name = "CommitUnreachableError";
     this.cause = cause;
@@ -269,6 +304,90 @@ export class CommitUnreachableError extends UserError {
    */
   during(failure: unknown): CommitUnreachableError {
     return new CommitUnreachableError(this.cause, {
+      ...this.#wording,
+      failure,
+    });
+  }
+}
+
+/** Error code for {@link RunPartlyCommittedError}. */
+export const RUN_PARTLY_COMMITTED_CODE = "datastore_v3_run_partly_committed";
+
+/** A workflow run a {@link RunPartlyCommittedError} names. */
+export interface PartlyCommittedRun {
+  readonly workflowId: string;
+  readonly runId: string;
+}
+
+/** How a {@link RunPartlyCommittedError} is worded. */
+interface RunPartlyCommittedWording {
+  readonly stepsRan?: boolean;
+  /** The error the operation itself failed with, if it failed. */
+  readonly failure?: unknown;
+}
+
+/**
+ * A v3 unit's end could not reach the datastore's storage after a checkpoint
+ * of the unit had committed workflow run records (swamp-club#3802). The unit
+ * gave its end up, so nothing more can land, but each run's record as of its
+ * last checkpoint is committed in this checkout's commit log, so the run is
+ * left `running`. That commit may not have replicated yet; the next write in
+ * this checkout carries it to the datastore, and `swamp workflow recover`
+ * there is that write. Running the command again would start another run, so
+ * this is not a temporary failure. `cause` is the storage failure.
+ */
+export class RunPartlyCommittedError extends UserError {
+  readonly #wording: RunPartlyCommittedWording;
+
+  constructor(
+    cause: unknown,
+    readonly runs: readonly PartlyCommittedRun[],
+    options: RunPartlyCommittedWording = {},
+  ) {
+    if (runs.length === 0) {
+      throw new Error("RunPartlyCommittedError needs at least one run");
+    }
+    const failed = options.failure === undefined
+      ? ""
+      : `The command had also failed: ${messageOf(options.failure)}. `;
+    const one = runs.length === 1;
+    const steps = options.stepsRan === true
+      ? `${one ? "Its" : "Their"} steps had already run; check what they ` +
+        "changed outside swamp. "
+      : "";
+    const recover = runs.map((run) =>
+      `swamp workflow recover ${run.workflowId} --run ${run.runId}`
+    ).join("; ");
+    super(
+      `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
+        `so this command's end was not committed; ${
+          one ? "a workflow run" : `${runs.length} workflow runs`
+        } committed up to ${one ? "its" : "their"} last checkpoint in this ` +
+        `checkout and ${one ? "is" : "are"} left running. ${failed}${steps}` +
+        `With the datastore reachable, run ${recover} in this checkout to ` +
+        `settle ${one ? "it" : "them"} and send that progress to the ` +
+        `datastore.`,
+      RUN_PARTLY_COMMITTED_CODE,
+    );
+    this.name = "RunPartlyCommittedError";
+    this.cause = cause;
+    this.#wording = options;
+  }
+
+  /** This error, for a workflow run whose steps ran. */
+  afterStepsRan(): RunPartlyCommittedError {
+    return new RunPartlyCommittedError(this.cause, this.runs, {
+      ...this.#wording,
+      stepsRan: true,
+    });
+  }
+
+  /**
+   * This error, for an operation that had failed with `failure` before its
+   * end could not reach the storage.
+   */
+  during(failure: unknown): RunPartlyCommittedError {
+    return new RunPartlyCommittedError(this.cause, this.runs, {
       ...this.#wording,
       failure,
     });

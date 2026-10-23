@@ -143,6 +143,7 @@ import {
   type PartitionRefusal,
   PartitionsRefusedError,
   type PendingPut,
+  RunPartlyCommittedError,
   type TypedChange,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { CommitStore } from "../../domain/datastore_v3/commit_store.ts";
@@ -495,6 +496,11 @@ export function createCommitLogUnitOfWork(
   let staged: TypedChange[][] = [];
   /** Groups formed but not yet confirmed by the sink, in commit order. */
   let pending: Group[] = [];
+  /**
+   * The partitions whose commits landed over the unit's life, checkpoints'
+   * included, so a failed end can say what was committed (swamp-club#3802).
+   */
+  const landed: PartitionKey[] = [];
   /** The group whose commit is being built or appended, if any. */
   let inFlight: Group | undefined;
   /** Each pending put's op once its content is stored, for retries. */
@@ -702,6 +708,9 @@ export function createCommitLogUnitOfWork(
           inFlight = undefined;
         }
         pending = pending.filter((other) => other !== group);
+        if (!landed.some((other) => other.equals(group.partition))) {
+          landed.push(group.partition);
+        }
       }
       // Every flush throws until the refusals are acknowledged, so none is
       // ever cleared unseen.
@@ -814,9 +823,16 @@ export function createCommitLogUnitOfWork(
       streamPuts.clear();
       return;
     }
+    // The partitions with changes the end did not commit: its failed groups
+    // and, when it failed before forming them, its staged changes.
+    let unlanded: readonly PartitionKey[] = [];
     try {
       await flush();
     } catch (error) {
+      unlanded = [
+        ...pending.map((group) => group.partition),
+        ...staged.flat().map((change) => change.partition),
+      ];
       // The unit ends with these commits failed, and the caller is told so:
       // a later recovery must not land them. When that cannot be recorded,
       // the caller is told they may land (swamp-club#3586).
@@ -827,9 +843,22 @@ export function createCommitLogUnitOfWork(
         throw new MayLandLaterError(error, lost.reason);
       }
       // Given up, so nothing of it can land: a commit that never reached
-      // the storage says so, and a retry is safe (swamp-club#3759).
+      // the storage says so, and a retry is safe (swamp-club#3759). A run
+      // whose checkpoint landed is left running instead (swamp-club#3802).
       if (lost === undefined && failedReachingStorage(error)) {
-        throw new CommitUnreachableError(error);
+        // A run whose record landed earlier and whose latest save did not
+        // is left running; one whose saves all landed is not.
+        const runs = landed.flatMap((partition) => {
+          const identity = partition.identity;
+          return identity.kind === "run" &&
+              unlanded.some((other) => other.equals(partition))
+            ? [{ workflowId: identity.workflowId, runId: identity.runId }]
+            : [];
+        });
+        if (runs.length > 0) throw new RunPartlyCommittedError(error, runs);
+        throw new CommitUnreachableError(error, {
+          partly: landed.length > 0,
+        });
       }
       throw error;
     }
@@ -1392,7 +1421,7 @@ function storagePhase(error: unknown): unknown {
  * Whether a commit failed because it could not reach the storage before its
  * append: a storage call that met a network failure.
  */
-function failedReachingStorage(error: unknown): boolean {
+export function failedReachingStorage(error: unknown): boolean {
   return typeof error === "object" && error !== null &&
     storagePhaseErrors.has(error) && isNetworkFailure(error);
 }

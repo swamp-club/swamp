@@ -39,6 +39,12 @@ import { ensureDirSync } from "@std/fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "@std/path";
 import {
+  CheckoutCopyAtRiskError,
+  ReadModelApplyError,
+  ReadModelCatchUpUnreachableError,
+} from "../../domain/datastore_v3/read_model.ts";
+import { isNetworkFailure } from "./network_failure.ts";
+import {
   restoreNamespace,
   SOLO_NAMESPACE,
 } from "../../domain/data/namespace.ts";
@@ -905,7 +911,20 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     namespace,
     writer,
     async catchUp(signal) {
-      await readModel.catchUp(signal ?? lifetime.signal);
+      try {
+        await readModel.catchUp(signal ?? lifetime.signal);
+      } catch (error) {
+        // Cut off from the storage, the catch-up changed nothing past what
+        // it applied, and the next one finishes it (swamp-club#3802).
+        if (
+          error instanceof ReadModelApplyError &&
+          !(error instanceof CheckoutCopyAtRiskError) &&
+          isNetworkFailure(error)
+        ) {
+          throw new ReadModelCatchUpUnreachableError(error);
+        }
+        throw error;
+      }
     },
     async raiseWriterFence(fence) {
       // Noted first: a writer killed, or failing, before the record leaves

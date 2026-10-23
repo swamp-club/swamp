@@ -38,6 +38,8 @@ import {
   type CommitLogUnitOfWork,
   CommitUnreachableError,
   PartitionsRefusedError,
+  RUN_PARTLY_COMMITTED_CODE,
+  RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { initializeLogging } from "../logging/logger.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
@@ -488,6 +490,56 @@ Deno.test("runInCommitLogRoot: a refusal behind a transient checkpoint failure i
   );
 });
 
+Deno.test("runInCommitLogRoot: a settling checkpoint cut off from the storage is not retried before the commit (swamp-club#3802)", async () => {
+  const down = { on: false };
+  let calls = 0;
+  const storage = new Proxy(memory(), {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      if (
+        !["has", "put", "get", "touch", "statChunks"].includes(String(property))
+      ) {
+        return value.bind(target);
+      }
+      return (...args: unknown[]) => {
+        if (!down.on) return value.apply(target, args);
+        calls++;
+        return Promise.reject(
+          new Error("S3 headObject failed", {
+            cause: Object.assign(new Error("connect ECONNREFUSED"), {
+              code: "ECONNREFUSED",
+            }),
+          }),
+        );
+      };
+    },
+  });
+  await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        {
+          ...unitOptions(new MemorySink(), storage),
+          onRefused: () => Promise.resolve(),
+        },
+        async (root) => {
+          await root.stageOp({
+            partition: MODEL,
+            put: {
+              intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+              key: dataKey("a", 1),
+              content: new Uint8Array(100 * 1024).fill(7),
+            },
+          });
+          down.on = true;
+        },
+      ),
+    CommitUnreachableError,
+  );
+  assertEquals(calls, 2, "one settling checkpoint, then the commit");
+});
+
 /** Runs a root that stages one op, and returns what `onEnded` was told. */
 async function endedWith(
   sink: MemorySink,
@@ -599,6 +651,72 @@ Deno.test("runInCommitLogRoot: an operation that failed and whose commit then ca
     CommitUnreachableError,
   );
   assertEquals(error.code, COMMIT_UNREACHABLE_CODE);
+  assertStringIncludes(
+    error.message,
+    "The command had also failed: the step failed",
+  );
+});
+
+Deno.test("runInCommitLogRoot: an operation that failed after a checkpoint committed its run, and whose end then cannot reach the storage, reports both with the run-partly-committed code (swamp-club#3802)", async () => {
+  const down = { on: false };
+  const base = memory();
+  const storage = new Proxy(base, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      if (
+        !["has", "put", "get", "touch", "statChunks"].includes(String(property))
+      ) {
+        return value.bind(target);
+      }
+      return (...args: unknown[]) =>
+        down.on
+          ? Promise.reject(
+            new Error("S3 headObject failed", {
+              cause: Object.assign(new Error("connect ECONNREFUSED"), {
+                code: "ECONNREFUSED",
+              }),
+            }),
+          )
+          : value.apply(target, args);
+    },
+  });
+  const failure = new Error("the step failed");
+  const error = await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        {
+          ...unitOptions(new MemorySink(), storage),
+          disposition: () => "commit",
+        },
+        async (root) => {
+          await root.stageOp({
+            partition: runPartition(),
+            op: await runPut("running"),
+          });
+          await root.checkpoint();
+          await root.stageOp({
+            partition: MODEL,
+            put: {
+              intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+              key: dataKey("a", 1),
+              content: new Uint8Array(100 * 1024).fill(7),
+            },
+          });
+          // The run's final record, which the end cannot commit.
+          await root.stageOp({
+            partition: runPartition(),
+            op: await runPut("failed"),
+          });
+          down.on = true;
+          throw failure;
+        },
+      ),
+    RunPartlyCommittedError,
+  );
+  assertEquals(error.code, RUN_PARTLY_COMMITTED_CODE);
+  assertEquals(error.runs.length, 1);
   assertStringIncludes(
     error.message,
     "The command had also failed: the step failed",

@@ -141,8 +141,10 @@ const GUARDED_PINNED = [
   // swamp-club#3359: holdV3Writer also opens the handle, to record its
   // writer lease's fence in commits.db. swamp-club#3482: while replicating
   // it opens it once the copy is current, raises the fence there, and
-  // opens it for the sidecar's path.
-  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer (x5)",
+  // opens it for the sidecar's path. swamp-club#3802: the body moved into
+  // takeV3WriterHold, which only holdV3Writer calls, so a storage failure
+  // gets its code.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:takeV3WriterHold (x5)",
   // swamp-club#3482: making the copy current reads the handle of the
   // datastore holdV3Writer or v3RepositoryFactoryConfig passes it, after
   // the same check; serve's upkeep does the same for the config serve's

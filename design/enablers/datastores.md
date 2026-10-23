@@ -5390,10 +5390,56 @@ reports a `local` deployment mode on a v3 bucket datastore.
   command fails with `datastore_v3_commit_unreachable` and exits 75: nothing
   was committed, so running it again is safe for the datastore. A model
   method run or workflow run says its steps had already run, since what they
-  did outside swamp may have happened. Its closing sync then gets serve's
-  10 s request deadline instead of 60 s: the storage was just found
-  unreachable. When the give-up cannot be recorded, `MayLandLaterError`
-  (`datastore_v3_commit_may_land`, exit 1) still applies.
+  did outside swamp may have happened. When the give-up cannot be recorded,
+  `MayLandLaterError` (`datastore_v3_commit_may_land`, exit 1) still applies.
+- A root records which partitions its commits landed over its life, its
+  checkpoints' included (swamp-club#3802), so a failed end says what was
+  committed. A workflow run whose checkpoint (decision 6) had committed its
+  record and whose end then cannot reach the storage fails with
+  `datastore_v3_run_partly_committed` and exits 1, not 75: its record as of its
+  last checkpoint is committed in the checkout's commit log and left `running`,
+  so a retry would start another run. The message names each run and `swamp
+  workflow recover <workflow> --run <id>`, to run in that checkout once the
+  storage is reachable; that write also carries the checkpoint to the datastore
+  if it had not replicated. `--json` adds `runs` (`workflowId`, `runId`). A root
+  part of whose change landed but no run record left running fails with
+  `datastore_v3_commit_partly_committed` and exits 1, since 75 means nothing
+  landed: a checkpoint had published part of it (`access token mint`, `worker
+  token create`/`revoke`, `datastore config migrate`, the extension lockfile
+  publish, serve's refusal settling), or an earlier partition or split of the
+  same flush landed before a later one's upload failed. A re-run can meet what
+  landed (a token of the same name) rather than redo it, so the message says to
+  check what the command changed before running it again. The failed run's
+  dropped final save had already written its entry in the checkout-local run
+  index, so the command removes the run indexes, as every recovery does once it
+  has run: its replay puts back the committed run records, and an index only
+  repairs itself when its count of runs differs.
+- A command cut off from the storage before it changed anything fails with a
+  stable code and exits 75 (swamp-club#3802), when the failure passes the same
+  `isNetworkFailure` test (which also counts a connection lost while a response
+  body was read): `datastore_v3_storage_unreachable` while it takes the writer
+  lease and readies its checkout (`holdV3Writer`), and
+  `datastore_v3_catch_up_unreachable` while a reader brings its checkout up to
+  date (its copy's lineage read, or the read model's catch-up, which keeps the
+  commits it applied); the next command finishes it. An interrupted writer's
+  recovery that meets a network failure while the writer lease is taken gets the
+  first code, not the message that offers deleting its marker. A lease release
+  that fails after such a failure is logged and never replaces it. Other
+  failures keep their own errors.
+- A root's refusal-settling checkpoint before its commit is not retried once it
+  fails reaching the storage (swamp-club#3802): it can meet no refusal then, and
+  each retry waited out the same upload retries, about 2 s apiece.
+- Once the storage is known unreachable, the teardown waits on nothing that
+  cannot succeed (swamp-club#3802): `closeV3Datastores` is told so by a command
+  that failed reaching it, or finds it so when a closing sync has run 2 s and a
+  probe of the storage (a `has` of one chunk) meets a network failure, which
+  gives the sync up as a definite failure, as a sidecar's error answer is. Then
+  compaction and the recovery of dropped work are left to the next command, the
+  closing sync gets 1 s, and each lease release 1 s before the lease is left to
+  expire by its TTL. It holds for that one teardown. A cut of only the replica's
+  traffic on S3 still waits the closing sync's 60 s: Litestream retries inside
+  the sync whatever its AWS SDK retry settings, and the storage probe still
+  answers.
 - Serve's control plane (heartbeats, pending runs, continuation claims)
   stays in its checkout, so a v3 bucket datastore's serve is not durable
   across instance replacement and reports `local`. That is solo mode's

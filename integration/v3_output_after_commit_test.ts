@@ -30,8 +30,23 @@ import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { UserError } from "../src/domain/errors.ts";
-import { COMMIT_UNREACHABLE_CODE } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  COMMIT_UNREACHABLE_CODE,
+  RUN_PARTLY_COMMITTED_CODE,
+  RunPartlyCommittedError,
+} from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import { exitCodeForError } from "../src/presentation/output/error_output.ts";
+import { closeV3DatastoresAfterFailure } from "../src/cli/v3_teardown.ts";
+import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import { writerMarkerPath } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
+import {
+  V3_STORAGE_UNREACHABLE_CODE,
+  V3StorageUnreachableError,
+} from "../src/domain/datastore_v3/writer_lease.ts";
+import {
+  CATCH_UP_UNREACHABLE_CODE,
+  ReadModelCatchUpUnreachableError,
+} from "../src/domain/datastore_v3/read_model.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
@@ -66,6 +81,40 @@ function assertUnreachableRun(
   assertStringIncludes(result.error.message, "nothing this command changed");
   assertStringIncludes(result.error.message, "steps had already run");
   assertEquals(exitCodeForError(result.error), 75);
+  if (mode === "log") {
+    assert(result.stdout.length > 0, "log mode printed no progress");
+  } else {
+    assertEquals(result.stdout, [], "--json printed before the commit");
+  }
+}
+
+/**
+ * The workflow run failed with the run-partly-committed error (swamp-club#3802):
+ * its start checkpoint had committed its record, so it names the run, the
+ * recover command, and that its steps ran, and exits 1, not 75. Nothing on
+ * stdout says it succeeded.
+ */
+function assertPartlyCommittedRun(
+  result: CapturedCli,
+  mode: "json" | "log",
+  workflowId: string,
+): void {
+  assertFailedWithoutSuccess(result);
+  assert(result.error instanceof RunPartlyCommittedError, String(result.error));
+  assertEquals(result.error.code, RUN_PARTLY_COMMITTED_CODE);
+  assertEquals(result.error.runs.length, 1);
+  const [run] = result.error.runs;
+  assertEquals(run.workflowId, workflowId);
+  assertStringIncludes(
+    result.error.message,
+    `swamp workflow recover ${workflowId} --run ${run.runId}`,
+  );
+  assertStringIncludes(result.error.message, "steps had already run");
+  assert(
+    !result.error.message.includes("nothing this command changed"),
+    result.error.message,
+  );
+  assertEquals(exitCodeForError(result.error), 1);
   if (mode === "log") {
     assert(result.stdout.length > 0, "log mode printed no progress");
   } else {
@@ -156,7 +205,7 @@ for (const mode of ["json", "log"] as const) {
 
   Deno.test({
     name:
-      `v3 output after commit: a workflow run whose commit cannot reach the storage prints no success (${mode}) and keeps nothing (swamp-club#3759)`,
+      `v3 output after commit: a workflow run whose end cannot reach the storage after its start checkpoint committed prints no success (${mode}), says the run is partly committed, and keeps none of its data (swamp-club#3759, swamp-club#3802)`,
     ignore: Deno.build.os === "windows",
     async fn() {
       await withFaults(async (repos) => {
@@ -175,7 +224,7 @@ for (const mode of ["json", "log"] as const) {
               ...flags,
             ],
           });
-          assertUnreachableRun(result, mode);
+          assertPartlyCommittedRun(result, mode, workflow.id);
           assertEquals(await payloadCommitted(repos, type), false);
         } finally {
           modelRegistry.invalidateType(type);
@@ -184,6 +233,189 @@ for (const mode of ["json", "log"] as const) {
     },
   });
 }
+
+Deno.test({
+  name:
+    "v3 output after commit: after a workflow run whose end could not reach the storage, history search and history get agree on the run's status (swamp-club#3802)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withFaults(async (repos) => {
+      const type = registerBigWriter();
+      try {
+        const name = `big-${crypto.randomUUID().slice(0, 8)}`;
+        await seedModel(repos, type, name);
+        const workflow = await seedWorkflow(repos, name);
+        const run = await runCliCapturing({
+          args: ["workflow", "run", workflow.name, "--repo-dir", repos.repoA],
+        });
+        assert(run.error instanceof RunPartlyCommittedError, String(run.error));
+        const runId = run.error.runs[0].runId;
+        // The CLI's teardown after a failed command, still cut off.
+        await closeV3DatastoresAfterFailure(run.error);
+        faults.storageDown = false;
+        const search = await runCliCapturing({
+          args: [
+            "workflow",
+            "history",
+            "search",
+            "--repo-dir",
+            repos.repoA,
+            "--json",
+          ],
+        });
+        assertEquals(search.error, undefined, String(search.error));
+        const get = await runCliCapturing({
+          args: [
+            "workflow",
+            "history",
+            "get",
+            runId,
+            "--repo-dir",
+            repos.repoA,
+            "--json",
+          ],
+        });
+        assertEquals(get.error, undefined, String(get.error));
+        const got = JSON.parse(get.stdout.join("\n")) as { status: string };
+        const found = (JSON.parse(search.stdout.join("\n")) as {
+          results: { id?: string; runId?: string; status: string }[];
+        }).results.find((result) => (result.id ?? result.runId) === runId);
+        assert(found !== undefined, search.stdout.join("\n"));
+        assertEquals(got.status, "running", "history get");
+        assertEquals(found.status, got.status, "history search");
+      } finally {
+        modelRegistry.invalidateType(type);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 output after commit: a checkout whose catch-up cannot reach the storage fails with the catch-up code and exit 75, and the next command finishes it (swamp-club#3802)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withFaults(async (repos) => {
+      const type = registerBigWriter(false);
+      try {
+        const name = `big-${crypto.randomUUID().slice(0, 8)}`;
+        await seedModel(repos, type, name);
+        const written = await runCliCapturing({
+          args: [
+            "model",
+            "method",
+            "run",
+            name,
+            "write",
+            "--repo-dir",
+            repos.repoA,
+            "--json",
+          ],
+        });
+        assertEquals(written.error, undefined, String(written.error));
+        // B has not applied A's commit, whose content is in chunks.
+        faults.storageDown = true;
+        const cutOff = await runCliCapturing({
+          args: [
+            "workflow",
+            "history",
+            "search",
+            "--repo-dir",
+            repos.repoB,
+            "--json",
+          ],
+        });
+        assert(
+          cutOff.error instanceof ReadModelCatchUpUnreachableError,
+          String(cutOff.error),
+        );
+        assertEquals(cutOff.error.code, CATCH_UP_UNREACHABLE_CODE);
+        assertStringIncludes(cutOff.error.message, "nothing was changed");
+        assertStringIncludes(cutOff.error.message, "next command finishes");
+        assertEquals(exitCodeForError(cutOff.error), 75);
+        faults.storageDown = false;
+        const next = await runCliCapturing({
+          args: [
+            "workflow",
+            "history",
+            "search",
+            "--repo-dir",
+            repos.repoB,
+            "--json",
+          ],
+        });
+        assertEquals(next.error, undefined, String(next.error));
+        assertEquals(next.exitCode, 0);
+      } finally {
+        modelRegistry.invalidateType(type);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 output after commit: an interrupted writer's recovery cut off from the storage while the lease is taken fails with the storage-unreachable code, not the marker advice (swamp-club#3802)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withFaults(async (repos) => {
+      const type = registerBigWriter(false);
+      try {
+        const name = `big-${crypto.randomUUID().slice(0, 8)}`;
+        await seedModel(repos, type, name);
+        const written = await runCliCapturing({
+          args: [
+            "model",
+            "method",
+            "run",
+            name,
+            "write",
+            "--repo-dir",
+            repos.repoA,
+            "--json",
+          ],
+        });
+        assertEquals(written.error, undefined, String(written.error));
+        await closeV3Datastores();
+        // A writer that ended without tearing down, which this process cannot
+        // judge: the next writer replays every commit, chunked ones included.
+        await Deno.writeTextFile(
+          writerMarkerPath(repos.repoA),
+          JSON.stringify({
+            hostname: Deno.hostname(),
+            pid: 2147483646,
+            since: 0,
+          }),
+        );
+        faults.storageDown = true;
+        const cutOff = await runCliCapturing({
+          args: [
+            "model",
+            "method",
+            "run",
+            name,
+            "write",
+            "--repo-dir",
+            repos.repoA,
+            "--json",
+          ],
+        });
+        assert(
+          cutOff.error instanceof V3StorageUnreachableError,
+          String(cutOff.error),
+        );
+        assertEquals(cutOff.error.code, V3_STORAGE_UNREACHABLE_CODE);
+        assert(
+          !cutOff.error.message.includes("delete"),
+          cutOff.error.message,
+        );
+        assertEquals(exitCodeForError(cutOff.error), 75);
+      } finally {
+        modelRegistry.invalidateType(type);
+      }
+    });
+  },
+});
 
 Deno.test({
   name:

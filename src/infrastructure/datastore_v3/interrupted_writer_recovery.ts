@@ -60,6 +60,7 @@
 
 import { join } from "@std/path";
 import { getSwampLogger } from "../logging/logger.ts";
+import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import {
   type DurableWriteBatchOptions,
   writeFileDurably,
@@ -388,7 +389,13 @@ async function recover(
   const writer = file.kind === "marker"
     ? `swamp process ${file.marker.pid}`
     : "a swamp process";
-  const removed = await handle.recoverInterruptedWriter(since, signal);
+  let removed: string[];
+  try {
+    removed = await handle.recoverInterruptedWriter(since, signal);
+  } finally {
+    // The replay may have rewritten run records before any failure.
+    await removeStaleRunIndexes(repoDir);
+  }
   if (removed.length > 0) {
     const files = removed.length === 1 ? "file" : "files";
     logger

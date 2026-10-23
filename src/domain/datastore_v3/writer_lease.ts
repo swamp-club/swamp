@@ -79,6 +79,30 @@ export const WRITER_FENCED_CODE = "datastore_v3_writer_fenced";
  */
 export const V3_WRITER_BUSY_CODE = "datastore_v3_writer_busy";
 
+/** Error code for {@link V3StorageUnreachableError}. */
+export const V3_STORAGE_UNREACHABLE_CODE = "datastore_v3_storage_unreachable";
+
+/**
+ * A command could not reach a v3 datastore's storage while it took the
+ * datastore's writer lease and readied its checkout, before it changed
+ * anything (swamp-club#3802): a temporary failure, so it exits 75 and can be
+ * run again once the storage is reachable. `cause` is the storage failure.
+ */
+export class V3StorageUnreachableError extends UserError {
+  constructor(datastorePath: string, cause: unknown) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Swamp could not reach the storage of the v3 datastore at ` +
+        `${datastorePath} (${reason}) while getting ready to write, so ` +
+        `nothing was changed. Run the command again once the datastore is ` +
+        `reachable.`,
+      V3_STORAGE_UNREACHABLE_CODE,
+    );
+    this.name = "V3StorageUnreachableError";
+    this.cause = cause;
+  }
+}
+
 /** The store the lease's records live in: create-only puts are required. */
 export type WriterLeaseStore =
   & Pick<ControlPlaneStore, "put" | "get" | "delete" | "list">

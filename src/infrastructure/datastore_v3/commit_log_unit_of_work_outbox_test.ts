@@ -24,13 +24,20 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { OUTBOX_RETRY_BOUND_MS } from "../../domain/datastore_v3/commit_outbox.ts";
 import {
+  COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
   CommitUnreachableError,
   MayLandLaterError,
   PartitionsRefusedError,
+  RUN_PARTLY_COMMITTED_CODE,
+  RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { createIntent } from "../../domain/datastore_v3/intent.ts";
+import { putOp } from "../../domain/datastore_v3/op.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import {
   dataKey,
@@ -47,9 +54,11 @@ import {
   AT,
   contextHook,
   OutboxMemorySink,
+  RUN_ID,
   runPartition,
   runPut,
   unitOptions,
+  WORKFLOW_ID,
 } from "./commit_log_test_helpers.ts";
 
 const MODEL = modelPartition();
@@ -128,6 +137,107 @@ Deno.test("commit-log unit with an outbox: a commit that cannot reach the storag
   assert(error.message.includes("S3 headObject failed"), error.message);
   assertEquals(sink.entries.size, 0, "nothing can land later");
   assertEquals(sink.landed.length, 0, "nothing was appended");
+});
+
+Deno.test("commit-log unit with an outbox: a run whose checkpoint landed and whose end cannot reach the storage says its run is partly committed (swamp-club#3802)", async () => {
+  const sink = new OutboxMemorySink();
+  const down = { on: false };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, failingWhen(memory(), down, refused)),
+  );
+  await uow.stageOp({ partition: runPartition(), op: await runPut("running") });
+  await uow.checkpoint();
+  down.on = true;
+  await uow.stageOp(blobChange("a"));
+  await uow.stageOp({
+    partition: runPartition(),
+    op: await runPut("succeeded"),
+  });
+  const error = await assertRejects(
+    () => uow.commit(),
+    RunPartlyCommittedError,
+  );
+  assertEquals(error.code, RUN_PARTLY_COMMITTED_CODE);
+  assertEquals(error.runs, [{ workflowId: WORKFLOW_ID, runId: RUN_ID }]);
+  assert(error.cause instanceof Error, String(error.cause));
+  assert(
+    error.message.includes(
+      `swamp workflow recover ${WORKFLOW_ID} --run ${RUN_ID}`,
+    ),
+    error.message,
+  );
+  assert(!error.message.includes("nothing this command"), error.message);
+  assertEquals(sink.entries.size, 0, "nothing can land later");
+});
+
+const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
+
+/** A put on another run of the fixture workflow, whose saves all land. */
+function otherRunChange(text: string) {
+  return putOp({
+    intent: createIntent({
+      kind: "run.update",
+      run: { workflowId: WORKFLOW_ID, runId: OTHER_RUN_ID },
+    }),
+    key: RecordKey.create(
+      `workflow-runs/${WORKFLOW_ID}/${OTHER_RUN_ID}.yaml`,
+    ),
+    inline: btoa(text),
+  }).then((op) => ({
+    partition: partitionOf({
+      kind: "run",
+      workflowId: WORKFLOW_ID,
+      runId: OTHER_RUN_ID,
+    }),
+    op,
+  }));
+}
+
+Deno.test("commit-log unit with an outbox: a run whose saves all landed is not named as left running (swamp-club#3802)", async () => {
+  const sink = new OutboxMemorySink();
+  const down = { on: false };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, failingWhen(memory(), down, refused)),
+  );
+  await uow.stageOp(await otherRunChange("suspended"));
+  await uow.stageOp({ partition: runPartition(), op: await runPut("running") });
+  await uow.checkpoint();
+  down.on = true;
+  await uow.stageOp(blobChange("a"));
+  await uow.stageOp({ partition: runPartition(), op: await runPut("done") });
+  const error = await assertRejects(
+    () => uow.commit(),
+    RunPartlyCommittedError,
+  );
+  assertEquals(error.runs, [{ workflowId: WORKFLOW_ID, runId: RUN_ID }]);
+});
+
+Deno.test("commit-log unit with an outbox: a unit whose data landed but no run record says part of its changes were committed, with its own code (swamp-club#3802)", async () => {
+  const sink = new OutboxMemorySink();
+  const down = { on: false };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, failingWhen(memory(), down, refused)),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("early", 1) });
+  await uow.checkpoint();
+  down.on = true;
+  await uow.stageOp(blobChange("a"));
+  await uow.stageOp({ partition: runPartition(), op: await runPut("done") });
+  const error = await assertRejects(
+    () => uow.commit(),
+    CommitUnreachableError,
+  );
+  assert(!(error instanceof RunPartlyCommittedError));
+  assertEquals(error.code, COMMIT_PARTLY_COMMITTED_CODE);
+  assert(!error.message.includes("Run it again"), error.message);
+  assert(
+    error.message.includes("part of what this command changed was committed"),
+    error.message,
+  );
+  assert(!error.message.includes("nothing this command"), error.message);
 });
 
 Deno.test("commit-log unit with an outbox: a storage failure that is not a network failure keeps its own error (swamp-club#3759)", async () => {

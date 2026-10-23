@@ -19,6 +19,8 @@
 
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { getSwampLogger } from "../logging/logger.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 
 export const RUNS_INDEX_FILENAME = ".runs-index.json";
 
@@ -75,6 +77,48 @@ export function getIndexPath(workflowRunsDir: string): string {
 export interface ReadIndexResult {
   entries: WorkflowRunIndex;
   version: number;
+}
+
+/**
+ * Removes the run index of every workflow under `workflowRunsRoot`, the
+ * checkout's `workflow-runs` directory, so the next read rebuilds each from
+ * its run records (swamp-club#3802). A v3 recovery that puts back the
+ * committed version of a run record leaves the index entry the dropped save
+ * wrote, and the index only repairs itself when its count of runs differs,
+ * so without this a search would keep reporting the dropped status.
+ */
+export async function removeRunIndexes(
+  workflowRunsRoot: string,
+): Promise<void> {
+  let entries: Deno.DirEntry[];
+  try {
+    entries = await Array.fromAsync(Deno.readDir(workflowRunsRoot));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      await deleteRunIndex(join(workflowRunsRoot, entry.name));
+    }
+  }
+}
+
+/**
+ * Removes the run indexes of the checkout at `repoDir` (swamp-club#3802)
+ * when its run records no longer match what an index says: a v3 recovery
+ * ran, finished or not, whose replay puts back the committed version of each
+ * run record, or a workflow run's final save was dropped after its index
+ * entry was written. Each index is rebuilt from the records on its next read;
+ * one that cannot be removed is warned about, never failing the caller.
+ */
+export async function removeStaleRunIndexes(repoDir: string): Promise<void> {
+  try {
+    await removeRunIndexes(swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns));
+  } catch (error) {
+    getSwampLogger(["workflow-runs", "index"])
+      .warn`Removing the workflow run indexes of ${repoDir} failed; history search may show a run's dropped status until its index is rebuilt: ${error}`;
+  }
 }
 
 export async function readRunIndex(

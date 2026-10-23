@@ -29,8 +29,15 @@ import type { CommandSurface } from "../command_surface.ts";
 import { messageFor } from "../../domain/behavior_wording.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
-import { V3_WRITER_BUSY_CODE } from "../../domain/datastore_v3/writer_lease.ts";
-import { COMMIT_UNREACHABLE_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  V3_STORAGE_UNREACHABLE_CODE,
+  V3_WRITER_BUSY_CODE,
+} from "../../domain/datastore_v3/writer_lease.ts";
+import { CATCH_UP_UNREACHABLE_CODE } from "../../domain/datastore_v3/read_model.ts";
+import {
+  COMMIT_UNREACHABLE_CODE,
+  RunPartlyCommittedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 
 const logger = getSwampLogger(["error"]);
 
@@ -54,6 +61,8 @@ const logger = getSwampLogger(["error"]);
  * - {@link SignalRefusedUserError} adds `refusal` and, for a key no open
  *   wait holds, `lastWait`: the wait that last held the key, how it was
  *   settled and when.
+ * - {@link RunPartlyCommittedError} adds `runs`, each `{workflowId, runId}`:
+ *   the workflow runs left running, to pass to `swamp workflow recover`.
  */
 export function buildErrorJson(
   err: Error,
@@ -89,6 +98,9 @@ export function buildErrorJson(
     data.refusal = err.refusal;
     if (err.lastWait) data.lastWait = { ...err.lastWait };
     if (err.pending) data.pending = { ...err.pending };
+  }
+  if (err instanceof RunPartlyCommittedError) {
+    data.runs = err.runs.map((run) => ({ ...run }));
   }
   if (err instanceof DuplicateTypeUserError) {
     data.duplicateType = {
@@ -134,6 +146,16 @@ export function buildErrorJson(
  * - `75` for `datastore_v3_commit_unreachable`: a commit that could not
  *   reach the datastore's storage was given up, so nothing was committed
  *   and a retry is safe for the datastore (swamp-club#3759).
+ *   `datastore_v3_run_partly_committed` stays `1` (swamp-club#3802): a
+ *   checkpoint committed its workflow runs, which are left running, so a
+ *   retry would start another run instead of settling them. So does
+ *   `datastore_v3_commit_partly_committed`: part of the change had landed
+ *   (a checkpoint's, or an earlier partition of the same commit), and a
+ *   re-run can meet it, as a token of the same name, instead of redoing it.
+ * - `75` for `datastore_v3_storage_unreachable` and
+ *   `datastore_v3_catch_up_unreachable` (swamp-club#3802): the storage could
+ *   not be reached while the command got ready to write, or while it
+ *   brought the checkout up to date, so nothing was changed.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -152,6 +174,10 @@ export function exitCodeForError(error: unknown): number {
   if (code === V3_WRITER_BUSY_CODE) return 75;
   // A commit given up because the storage was unreachable: nothing landed.
   if (code === COMMIT_UNREACHABLE_CODE) return 75;
+  // Cut off from the storage before writing, or while catching up: nothing
+  // changed (swamp-club#3802).
+  if (code === V3_STORAGE_UNREACHABLE_CODE) return 75;
+  if (code === CATCH_UP_UNREACHABLE_CODE) return 75;
   return 1;
 }
 

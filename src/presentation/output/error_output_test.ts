@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { CommitUnreachableError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  COMMIT_PARTLY_COMMITTED_CODE,
+  CommitUnreachableError,
+  RUN_PARTLY_COMMITTED_CODE,
+  RunPartlyCommittedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
@@ -51,7 +56,14 @@ import {
   InvalidDatastoreFormatMarkerError,
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
-import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  V3StorageUnreachableError,
+  WriterFencedError,
+} from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  ReadModelApplyError,
+  ReadModelCatchUpUnreachableError,
+} from "../../domain/datastore_v3/read_model.ts";
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import {
   flushAuthGateWarning,
@@ -1113,4 +1125,53 @@ Deno.test("exitCodeForError: returns 75 for a commit that could not reach the st
     ),
     75,
   );
+});
+
+Deno.test("exitCodeForError: returns 1 for a run a checkpoint partly committed, since a retry would start another run (swamp-club#3802)", () => {
+  const error = new RunPartlyCommittedError(new Error("refused"), [
+    { workflowId: "wf-1", runId: "run-1" },
+  ]);
+  assertEquals(exitCodeForError(error), 1);
+  assertEquals(exitCodeForError(error.afterStepsRan()), 1);
+});
+
+Deno.test("buildErrorJson: a run a checkpoint partly committed carries its code and the runs to recover (swamp-club#3802)", () => {
+  const json = buildErrorJson(
+    new RunPartlyCommittedError(new Error("refused"), [
+      { workflowId: "wf-1", runId: "run-1" },
+    ]).afterStepsRan(),
+  );
+  assertEquals(json.code, RUN_PARTLY_COMMITTED_CODE);
+  assertEquals(json.runs, [{ workflowId: "wf-1", runId: "run-1" }]);
+  assertStringIncludes(
+    String(json.error),
+    "swamp workflow recover wf-1 --run run-1",
+  );
+  assertEquals(json.stack, undefined);
+});
+
+Deno.test("exitCodeForError: returns 75 for a datastore cut off while getting ready to write or while catching up, since nothing changed (swamp-club#3802)", () => {
+  assertEquals(
+    exitCodeForError(
+      new V3StorageUnreachableError("/ds", new Error("ECONNRESET")),
+    ),
+    75,
+  );
+  assertEquals(
+    exitCodeForError(
+      new ReadModelCatchUpUnreachableError(
+        new ReadModelApplyError("", "p", 3, "error reading a body"),
+      ),
+    ),
+    75,
+  );
+});
+
+Deno.test("exitCodeForError: returns 1 for a commit part of which had landed before the storage became unreachable (swamp-club#3802)", () => {
+  const error = new CommitUnreachableError(new Error("refused"), {
+    partly: true,
+  });
+  assertEquals(error.code, COMMIT_PARTLY_COMMITTED_CODE);
+  assertEquals(exitCodeForError(error), 1);
+  assertEquals(exitCodeForError(error.afterStepsRan()), 1);
 });

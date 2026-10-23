@@ -155,6 +155,12 @@ export interface ReplicationRequest {
 /** What {@link ReplicationHandle.sync} runs between the sync and the lease check. */
 export interface SyncOptions {
   beforeLeaseCheck?(txid: string): Promise<void>;
+  /**
+   * Gives the sync up as a definite failure (swamp-club#3802): the replica's
+   * storage was found unreachable. Unlike a sidecar's error answer, it does
+   * not mark the sidecar for replacement.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** A command's use of the sidecar, from acquire to release. */
@@ -785,8 +791,16 @@ class SharedHandle {
         this.paths.socket,
         this.paths.commitsDb,
         deadlineMs,
+        options.signal,
       );
     } catch (error) {
+      if (options.signal?.aborted === true) {
+        // The caller found the storage unreachable: the sidecar did not fail,
+        // so it is kept for the next command (swamp-club#3802).
+        throw new V3ReplicationError(messageOf(options.signal.reason), {
+          cause: error,
+        });
+      }
       if (error instanceof LitestreamControlError && error.timedOut) {
         // Still uploading, perhaps a large first snapshot: leave it be.
         throw new V3ReplicationError(

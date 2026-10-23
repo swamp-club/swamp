@@ -87,6 +87,31 @@ export class ReadModelApplyError extends Error {
   }
 }
 
+/** Error code for {@link ReadModelCatchUpUnreachableError}. */
+export const CATCH_UP_UNREACHABLE_CODE = "datastore_v3_catch_up_unreachable";
+
+/**
+ * Bringing a checkout up to date could not reach the datastore's storage
+ * (swamp-club#3802): to read a commit's content while the read model caught
+ * up (`cause` is then the {@link ReadModelApplyError}; the commits before it
+ * stay applied and the cursor stays before it), or to read the replica's
+ * lineage while a reader made its copy current. Nothing was changed, and the
+ * next command finishes once the storage is reachable.
+ */
+export class ReadModelCatchUpUnreachableError extends UserError {
+  constructor(cause: Error) {
+    super(
+      `Swamp could not reach the datastore's storage while bringing this ` +
+        `checkout up to date (${cause.message}), so nothing was changed. ` +
+        `The next command finishes bringing it up to date once the ` +
+        `datastore is reachable; run this one again then.`,
+      CATCH_UP_UNREACHABLE_CODE,
+    );
+    this.name = "ReadModelCatchUpUnreachableError";
+    this.cause = cause;
+  }
+}
+
 /**
  * A checkout file holds the only copy of committed content whose chunks the
  * storage refused to store again, and the file can be neither moved nor
