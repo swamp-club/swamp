@@ -485,7 +485,7 @@ Deno.test("outrankingForeignLineage: only a lineage under another root that woul
   );
 });
 
-Deno.test("lineagesKeptForFork: keeps lineages a swamp before swamp-club#3801 left under two spellings, unless the current chain continues them", () => {
+Deno.test("lineagesKeptForFork: keeps every lineage a swamp before swamp-club#3801 left under two spellings, the continued one included", () => {
   const a = "s3::bucket:prefix";
   const b = "s3:http://proxy:1:bucket:prefix";
   const start = (fence: number, replicaRoot: string, follows?: number) => ({
@@ -499,32 +499,19 @@ Deno.test("lineagesKeptForFork: keeps lineages a swamp before swamp-club#3801 le
     new Map(list.map((s) => [s.fence, s]));
   // One history: nothing kept, whatever the spellings of later lineages.
   assertEquals(
-    lineagesKeptForFork(
-      starts(start(1, a), start(2, a), start(5, b, 2), start(6, a, 5)),
-      6,
-    ),
+    lineagesKeptForFork(starts(start(1, a), start(2, a), start(5, b, 2)), 6),
     new Set(),
   );
-  // Forked: only what the current lineage's chain continues may go.
+  // Forked, one lineage a side: both kept, so a later round still sees it.
   assertEquals(
-    lineagesKeptForFork(
-      starts(
-        start(1, a),
-        start(2, b),
-        start(3, a),
-        start(4, b),
-        start(5, a, 4),
-        start(6, b, 5),
-      ),
-      6,
-    ),
-    new Set([1, 2, 3]),
+    lineagesKeptForFork(starts(start(3, a), start(4, b), start(6, b, 4)), 8),
+    new Set([3, 4]),
   );
-  // A chain that loops on a malformed record still ends.
+  // Lineages that continue the chain are never kept.
   assertEquals(
     lineagesKeptForFork(
-      starts(start(1, a), start(2, b), start(3, a, 3), start(4, a, 3)),
-      4,
+      starts(start(1, a), start(2, b), start(5, a, 2), start(6, b, 5)),
+      8,
     ),
     new Set([1, 2]),
   );

@@ -805,23 +805,29 @@ Deno.test({
 
 Deno.test({
   name:
-    "collectV3Lineages: lineages a fork before swamp-club#3801 left under two endpoint spellings are kept, never collected over (swamp-club#3801)",
+    "collectV3Lineages: lineages a fork before swamp-club#3801 left under two endpoint spellings are kept in every later collection (swamp-club#3801)",
   ignore: !UNIX,
   async fn() {
     await withCopy(async (env) => {
-      // Two spellings that never saw each other: each its own history.
-      await publish(env, 1, { confirmed: true });
-      await publish(env, 2, { confirmed: true, root: PROXIED_BUCKET_ROOT });
+      // A swamp before the fix collected each side down to one lineage:
+      // two spellings that never saw each other.
       await publish(env, 3, { confirmed: true });
       await publish(env, 4, { confirmed: true, root: PROXIED_BUCKET_ROOT });
       // The first lineage after the fix continued the highest of them.
       await publish(env, 6, { confirmed: true, follows: 4 });
-      const { store, removed } = recordingStore();
+      const first = recordingStore();
       await collectV3Lineages(env.copy, 6, {
-        replicaPaths: { root: env.root, store },
+        replicaPaths: { root: env.root, store: first.store },
       });
-      assertEquals(removed, ["000000000004"], "only the chain is collected");
-      for (const fence of [1, 2, 3]) {
+      assertEquals(first.removed, [], "the first round keeps both sides");
+      // A later lineage's first confirmation collects again.
+      await publish(env, 8, { confirmed: true, follows: 6 });
+      const second = recordingStore();
+      await collectV3Lineages(env.copy, 8, {
+        replicaPaths: { root: env.root, store: second.store },
+      });
+      assertEquals(second.removed, ["000000000006"]);
+      for (const fence of [3, 4]) {
         assert(await startOf(env, fence) !== undefined, `${fence} is kept`);
       }
     }, { setting: BUCKET_REPLICA });

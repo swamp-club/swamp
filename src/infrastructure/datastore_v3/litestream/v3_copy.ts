@@ -1008,25 +1008,16 @@ export async function collectV3Lineages(
       if (started !== undefined) starts.set(fence, started);
       candidates.push(fence);
     }
-    // The current lineage's chain, so a fork left by a swamp before
-    // swamp-club#3801 is kept, never collected over (lineagesKeptForFork).
-    for (
-      let at: number | undefined = current;
-      at !== undefined && !starts.has(at);
-    ) {
-      const started = await registry.started(at);
-      if (typeof started !== "object") break;
-      starts.set(at, started);
-      at = started.follows;
-    }
+    // A fork a swamp before swamp-club#3801 left is kept, never collected
+    // over (lineagesKeptForFork).
     const kept = lineagesKeptForFork(starts, current);
     if (kept.size > 0) {
       logger
-        .warn`The v3 datastore at ${copy.datastorePath} forked before swamp-club#3801: replication lineages ${
+        .warn`The v3 datastore at ${copy.datastorePath} may have forked before swamp-club#3801: replication lineages ${
         [...kept].sort((a, b) => a - b).map(padFence).join(", ")
-      } hold commits another endpoint spelling's checkouts never saw, and replication lineage ${
+      } were started under different spellings of its S3 endpoint by a swamp that did not match them, so each may hold commits the others lack; replication lineage ${
         padFence(current)
-      } does not continue them. They are kept, never collected; recover what you need from them, then remove their _control/lineage/ records and _litestream/ paths`;
+      } is current. They are kept, never collected. If one checkout only changed its endpoint spelling, nothing forked. Otherwise recover what you need from them; then remove their _control/lineage/ records and _litestream/ paths`;
     }
     for (const fence of candidates) {
       if (kept.has(fence)) continue;

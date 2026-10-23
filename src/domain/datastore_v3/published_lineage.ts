@@ -355,41 +355,31 @@ export function collectableLineages(
 
 /**
  * The lineages below `current` that garbage collection keeps because the
- * datastore forked before swamp-club#3801 (empty when it did not). A swamp
- * before it never continued a lineage started under another spelling of
- * the S3 endpoint, so lineages it started (no `follows`) under two or more
- * spellings are separate histories, each holding commits the other lacks.
- * Matching every spelling now makes only the highest of them current; the
- * others' commits stay in their lineages, which are kept for an operator to
- * recover, unless the current lineage continues them (its `follows` chain).
+ * datastore may have forked before swamp-club#3801 (empty when it cannot
+ * have). A swamp before it never continued a lineage started under another
+ * spelling of the S3 endpoint, so lineages it started (no `follows`) under
+ * two or more spellings are separate histories, each holding commits the
+ * other lacks. Matching every spelling now makes only the highest of them
+ * current; every such lineage is kept, the one the current lineage
+ * continues included, so the evidence of the fork outlives each collection
+ * and the others are never collected in a later one. They stay for an
+ * operator to recover from and remove. A checkout that only changed its
+ * endpoint spelling leaves the same records: kept too, which costs storage,
+ * never commits.
  *
- * `starts` holds every start read: the lineages collection would remove,
- * and the current lineage's `follows` chain. A lineage whose start was not
- * read is not judged here.
+ * `starts` holds the starts of the lineages collection would remove.
  */
 export function lineagesKeptForFork(
   starts: ReadonlyMap<number, LineageStarted>,
   current: number,
 ): Set<number> {
   const legacy = [...starts.values()].filter((started) =>
-    started.follows === undefined
+    started.follows === undefined && started.fence < current
   );
   if (new Set(legacy.map((started) => started.replicaRoot)).size < 2) {
     return new Set();
   }
-  const chain = new Set<number>();
-  for (
-    let at = starts.get(current)?.follows;
-    at !== undefined && !chain.has(at);
-    at = starts.get(at)?.follows
-  ) {
-    chain.add(at);
-  }
-  return new Set(
-    legacy
-      .filter((started) => started.fence < current && !chain.has(started.fence))
-      .map((started) => started.fence),
-  );
+  return new Set(legacy.map((started) => started.fence));
 }
 
 /**
