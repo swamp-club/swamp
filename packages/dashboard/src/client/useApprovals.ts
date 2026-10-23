@@ -30,8 +30,6 @@ export interface SharedApprovals extends ApprovalsSnapshot {
   refetch(): void;
   /** After a mutation: supersedes any earlier read. */
   refresh(): void;
-  /** Refusal reconciliation also needs the fresh reply, not retained data. */
-  readFresh(): Promise<ApprovalsReply | null>;
 }
 
 /** Mounted once by Dashboard, which is keyed to the connection generation. */
@@ -51,5 +49,5 @@ export function useApprovals(): SharedApprovals {
   const refresh = useCallback(() => {
     owner.refresh().catch(() => {});
   }, [owner]);
-  return { ...snapshot, refetch, refresh, readFresh: owner.refresh };
+  return { ...snapshot, refetch, refresh };
 }

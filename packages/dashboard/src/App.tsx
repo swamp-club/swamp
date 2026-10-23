@@ -356,7 +356,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   health={health}
                   healthDenied={healthDenied}
                   onOpenRun={openRun}
-                  approvalsReq={approvals}
+                  approvalsRequest={approvals}
                 />
               )}
               {view === "workflows" && (

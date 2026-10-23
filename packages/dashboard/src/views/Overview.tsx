@@ -83,11 +83,11 @@ interface OverviewProps {
   /** Serve refused the health stream for this token. */
   healthDenied: boolean;
   onOpenRun?: (workflowName: string, runId?: string) => void;
-  approvalsReq: SharedApprovals;
+  approvalsRequest: SharedApprovals;
 }
 
 export function Overview(
-  { health, healthDenied, onOpenRun, approvalsReq }: OverviewProps,
+  { health, healthDenied, onOpenRun, approvalsRequest }: OverviewProps,
 ) {
   const healthState = healthViewState(health, healthDenied);
   const queuedFires = totalQueued(health?.scheduling?.schedules ?? []);
@@ -99,7 +99,7 @@ export function Overview(
     data: approvalsData,
     refetch: refetchApprovals,
     refresh: refreshApprovals,
-  } = approvalsReq;
+  } = approvalsRequest;
   // Refresh on route entry, sharing the owner's initial read if still pending.
   useEffect(() => refetchApprovals(), [refetchApprovals]);
 
@@ -112,7 +112,10 @@ export function Overview(
     () => new Set(),
   );
   const runsState = loadState(runsReq, () => runs.length === 0);
-  const approvalsState = loadState(approvalsReq, () => approvals.length === 0);
+  const approvalsState = loadState(
+    approvalsRequest,
+    () => approvals.length === 0,
+  );
   const runsLoading = runsState === "loading";
   const healthLoading = healthState === "loading";
 
@@ -405,7 +408,7 @@ export function Overview(
             {approvalsState === "error" && (
               <LoadError
                 subject="approvals"
-                message={approvalsReq.error}
+                message={approvalsRequest.error}
                 onRetry={refetchApprovals}
                 inset
               />

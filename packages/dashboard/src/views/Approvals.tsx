@@ -118,8 +118,7 @@ export function Approvals({ health, approvalsRequest }: ApprovalsProps) {
   const catalog = useWorkflowCatalog(health ?? null);
   const [filter, setFilter] = useWorkflowFilter();
 
-  const { data, refetch, refresh: refreshApprovals, readFresh } =
-    approvalsRequest;
+  const { data, refetch, refresh: refreshApprovals } = approvalsRequest;
   useEffect(() => refetch(), [refetch]);
   const { decided, hold } = useDecidedGates(data);
   // Every suspended run, page by page: a single capped page would drop
@@ -199,7 +198,6 @@ export function Approvals({ health, approvalsRequest }: ApprovalsProps) {
       reasonText: string,
     ): Promise<boolean> => {
       let landed = false;
-      let reconciled = false;
       setError(null);
       setNotice(null);
       markDeciding(a, decision);
@@ -227,36 +225,23 @@ export function Approvals({ health, approvalsRequest }: ApprovalsProps) {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Only a refusal from serve can mean the gate was already decided;
-        // a lost connection leaves the gate as it was.
-        let stillListed = true;
-        if (err instanceof RequestError) {
-          const fresh = await readFresh();
-          reconciled = true;
-          if (fresh !== null) {
-            stillListed = pendingApprovals(fresh).some((g) =>
-              gateKey(g) === gateKey(a)
-            );
-          }
-        }
+        // a lost connection leaves the gate as it was. The check reads on its
+        // own: a shared read could be superseded by another decision.
+        const stillListed = err instanceof RequestError
+          ? await request("workflow.approvals").then(
+            (fresh) =>
+              pendingApprovals(fresh).some((g) => gateKey(g) === gateKey(a)),
+            () => true,
+          )
+          : true;
         if (stillListed) setError(refusalMessage(decision, message, true));
         else setNotice(refusalMessage(decision, message, false));
       }
       markDeciding(a, null);
-      // Reconciliation already updated the shared listing, including the badge.
-      if (!reconciled) refreshApprovals();
-      refetchSuspended();
-      refetchWaits();
+      refresh();
       return landed;
     },
-    [
-      request,
-      refreshApprovals,
-      readFresh,
-      refetchSuspended,
-      refetchWaits,
-      markDeciding,
-      hold,
-    ],
+    [request, refresh, markDeciding, hold],
   );
 
   // Longest wait first in every list: the oldest gate is the most urgent.
