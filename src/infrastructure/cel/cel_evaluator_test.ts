@@ -19,6 +19,7 @@
 
 import {
   assertEquals,
+  assertRejects,
   assertStrictEquals,
   assertStringIncludes,
   assertThrows,
@@ -30,10 +31,49 @@ import {
   coerceBigInts,
   createExtensionCelEnvironment,
 } from "./cel_evaluator.ts";
-import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  InvalidExpressionError,
+  UnboundExpressionError,
+} from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
+
+Deno.test("CelEvaluator: only missing top-level input and env bindings are unbound errors", async () => {
+  const evaluator = new CelEvaluator();
+  const context = { inputs: { cfg: {} }, env: {}, other: {} };
+  for (
+    const [expression, unbound] of [
+      ["inputs.x", true],
+      ['inputs["x"]', true],
+      ["env.X", true],
+      ['env["X"]', true],
+      ["inputs.cfg.nope", false],
+      ["other.x", false],
+      ["inputs.cfg + 1", false],
+    ] as const
+  ) {
+    const sync = assertThrows(
+      () => evaluator.evaluate(expression, context),
+      InvalidExpressionError,
+    );
+    const async = await assertRejects(
+      () => evaluator.evaluateAsync(expression, context),
+      InvalidExpressionError,
+    );
+    for (const error of [sync, async]) {
+      assertEquals(
+        error instanceof UnboundExpressionError,
+        unbound,
+        expression,
+      );
+      if (unbound) {
+        assertEquals(error.expression, expression);
+        assertEquals(error.cause, undefined);
+      }
+    }
+  }
+});
 
 Deno.test("createExtensionCelEnvironment: arithmetic overloads work for double/int mixes", () => {
   const env = createExtensionCelEnvironment();
