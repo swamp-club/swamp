@@ -906,17 +906,24 @@ the state: readers and writers alike are refused with
 an empty datastore or starting a lineage beside it.
 
 A lineage's start also records `follows`, the current lineage the writer's
-copy was made current to, so the lineages form a chain. A swamp before this
-never continued a lineage of another endpoint spelling, so its lineages
-(no `follows`) under two or more spellings are a **fork**: separate
-histories, each with commits the other lacks. Once every spelling matches,
-the highest of them is current; collection keeps every such lineage,
-records and paths, the one the current lineage continues included, so the
-evidence of the fork outlives each collection. A warning names them for an
-operator to recover from and remove by hand. While they stay, chunk
-collection defers, so their chunks stay too. A checkout that only changed
-its endpoint spelling leaves the same records and is kept the same way: it
-costs storage, never commits.
+copy was made current to, and `chained`, so a lineage this swamp began with
+nothing to follow is never read as an older swamp's. The lineages form a
+chain: one this swamp started continues the one it follows; one a swamp
+before swamp-club#3801 started (no `chained`) continues the highest
+complete lineage below it under its exact root spelling, the only ones it
+could restore. Collection removes a lineage below the current one unless an
+older swamp's ancestor of the current lineage, under another spelling,
+superseded it: that ancestor never saw it, so its commits may be nowhere
+else (a fork left by older swamps, or an older swamp writing beside an
+upgraded one during a rollout). Such a lineage is kept, and
+`lineage/<fence>/kept.json` records it, so every later collection keeps it
+too, after the chain that showed the fork is collected. A warning names
+them once, for an operator to recover from and remove by hand; while they
+stay, chunk collection defers, so their chunks stay too. A checkout that
+only changed its endpoint spelling under an older swamp leaves the same
+records and is kept the same way: it costs storage, never commits. An
+older swamp still collects lineages of its own spelling below its current
+one, kept or not, as it always did.
 
 > **Decision: head, then confirmation, then the lease check.** A writer's
 > end of command is: sync, publish the head, publish the confirmation (the

@@ -70,6 +70,12 @@ export interface LineageStarted {
    * in a lineage a swamp before it started.
    */
   readonly follows?: number;
+  /**
+   * Set by every swamp that matches endpoint spellings (swamp-club#3801), so
+   * a lineage it began with nothing to follow is never read as one a swamp
+   * before it started.
+   */
+  readonly chained?: true;
 }
 
 /** That a lineage's first sync was confirmed. */
@@ -355,31 +361,76 @@ export function collectableLineages(
 
 /**
  * The lineages below `current` that garbage collection keeps because the
- * datastore may have forked before swamp-club#3801 (empty when it cannot
- * have). A swamp before it never continued a lineage started under another
- * spelling of the S3 endpoint, so lineages it started (no `follows`) under
- * two or more spellings are separate histories, each holding commits the
- * other lacks. Matching every spelling now makes only the highest of them
- * current; every such lineage is kept, the one the current lineage
- * continues included, so the evidence of the fork outlives each collection
- * and the others are never collected in a later one. They stay for an
- * operator to recover from and remove. A checkout that only changed its
- * endpoint spelling leaves the same records: kept too, which costs storage,
- * never commits.
+ * current state may lack their commits (swamp-club#3801). A lineage's
+ * commits are in `current` when `current` descends from it: a lineage this
+ * swamp started (`chained`) continues the one it `follows`, and one a swamp
+ * before it started continues the highest complete lineage below it under
+ * its exact root spelling, the only ones that swamp could restore.
  *
- * `starts` holds the starts of the lineages collection would remove.
+ * A lineage below `current` that an ancestor started by a swamp before
+ * this superseded under another spelling was never seen by that ancestor:
+ * a fork, or an older swamp writing beside an upgraded one. Its commits may
+ * be nowhere else, so it is kept. Every other lineage below `current`
+ * is collected as before: one `current` descends from, or one a fenced
+ * writer left, whose commits nobody acknowledged.
+ *
+ * A collection that keeps a lineage records it (`marked`), and every later
+ * one keeps it too: collecting the chain between `current` and the
+ * ancestor that showed the fork would otherwise hide it from the next.
+ *
+ * `starts` holds the starts of the lineages collection would remove and of
+ * `current`'s chain; `complete` the fences started, confirmed and headed. A
+ * lineage whose start was not read is not judged here.
  */
 export function lineagesKeptForFork(
   starts: ReadonlyMap<number, LineageStarted>,
   current: number,
+  recorded: {
+    readonly complete: ReadonlySet<number>;
+    readonly marked?: ReadonlySet<number>;
+  },
 ): Set<number> {
-  const legacy = [...starts.values()].filter((started) =>
-    started.follows === undefined && started.fence < current
-  );
-  if (new Set(legacy.map((started) => started.replicaRoot)).size < 2) {
-    return new Set();
+  const parentOf = (started: LineageStarted): number | undefined => {
+    if (started.chained === true) return started.follows;
+    let parent: number | undefined;
+    for (const other of starts.values()) {
+      if (
+        other.fence < started.fence &&
+        other.replicaRoot === started.replicaRoot &&
+        recorded.complete.has(other.fence) &&
+        (parent === undefined || other.fence > parent)
+      ) {
+        parent = other.fence;
+      }
+    }
+    return parent;
+  };
+  const ancestors: LineageStarted[] = [];
+  const onChain = new Set<number>();
+  for (
+    let started = starts.get(current);
+    started !== undefined && !onChain.has(started.fence);
+  ) {
+    onChain.add(started.fence);
+    ancestors.push(started);
+    const parent = parentOf(started);
+    started = parent === undefined ? undefined : starts.get(parent);
   }
-  return new Set(legacy.map((started) => started.fence));
+  const kept = new Set(
+    [...(recorded.marked ?? [])].filter((fence) => fence < current),
+  );
+  for (const started of starts.values()) {
+    if (started.fence >= current || onChain.has(started.fence)) continue;
+    for (const ancestor of ancestors) {
+      if (
+        ancestor.chained !== true && ancestor.fence > started.fence &&
+        ancestor.replicaRoot !== started.replicaRoot
+      ) {
+        kept.add(started.fence);
+      }
+    }
+  }
+  return kept;
 }
 
 /**
@@ -541,6 +592,7 @@ export function parseLineageStarted(
     replicaRoot: r.replicaRoot,
     startedAt: r.startedAt,
     ...(follows !== undefined ? { follows } : {}),
+    ...(r.chained === true ? { chained: true as const } : {}),
   };
 }
 

@@ -744,6 +744,7 @@ export async function prepareV3WriterLineage(
             replicaRoot: root.value,
             startedAt: new Date().toISOString(),
             ...(follows !== undefined && follows < fence ? { follows } : {}),
+            chained: true,
           })
         ) {
           return;
@@ -1008,16 +1009,37 @@ export async function collectV3Lineages(
       if (started !== undefined) starts.set(fence, started);
       candidates.push(fence);
     }
-    // A fork a swamp before swamp-club#3801 left is kept, never collected
-    // over (lineagesKeptForFork).
-    const kept = lineagesKeptForFork(starts, current);
-    if (kept.size > 0) {
+    // The current lineage's chain, so lineages it may lack are kept, never
+    // collected over (lineagesKeptForFork). A lineage a swamp before
+    // swamp-club#3801 started continues one below it already read.
+    for (
+      let at: number | undefined = current;
+      at !== undefined && !starts.has(at);
+    ) {
+      const started = await registry.started(at);
+      if (typeof started !== "object" || !root.matches(started.replicaRoot)) {
+        break;
+      }
+      starts.set(at, started);
+      at = started.chained === true ? started.follows : undefined;
+    }
+    const marked = await registry.kept();
+    const kept = lineagesKeptForFork(starts, current, {
+      complete: await registry.completeFences(),
+      marked,
+    });
+    for (const fence of kept) {
+      if (!marked.has(fence)) await registry.keep(fence);
+    }
+    // Said once, when a collection first keeps them; later ones keep them
+    // quietly.
+    if ([...kept].some((fence) => !marked.has(fence))) {
       logger
-        .warn`The v3 datastore at ${copy.datastorePath} may have forked before swamp-club#3801: replication lineages ${
-        [...kept].sort((a, b) => a - b).map(padFence).join(", ")
-      } were started under different spellings of its S3 endpoint by a swamp that did not match them, so each may hold commits the others lack; replication lineage ${
+        .warn`The v3 datastore at ${copy.datastorePath} may hold commits outside its current replication lineage ${
         padFence(current)
-      } is current. They are kept, never collected. If one checkout only changed its endpoint spelling, nothing forked. Otherwise recover what you need from them; then remove their _control/lineage/ records and _litestream/ paths`;
+      }: replication lineages ${
+        [...kept].sort((a, b) => a - b).map(padFence).join(", ")
+      } were written under different spellings of its S3 endpoint, at least one by a swamp before swamp-club#3801 that did not see the others. They are kept, never collected. If one checkout only changed its endpoint spelling, nothing is missing. Otherwise recover what you need from them; then remove their _control/lineage/ records and _litestream/ paths`;
     }
     for (const fence of candidates) {
       if (kept.has(fence)) continue;

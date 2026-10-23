@@ -107,7 +107,10 @@ async function publish(
     holder: "test",
     replicaRoot: options.root ?? env.root,
     startedAt: AT,
-    ...(options.follows !== undefined ? { follows: options.follows } : {}),
+    // A lineage this swamp began: it names what it follows.
+    ...(options.follows !== undefined
+      ? { follows: options.follows, chained: true as const }
+      : {}),
   });
   if (options.confirmed === true) {
     await registry.publishHead({
@@ -819,7 +822,7 @@ Deno.test({
       await collectV3Lineages(env.copy, 6, {
         replicaPaths: { root: env.root, store: first.store },
       });
-      assertEquals(first.removed, [], "the first round keeps both sides");
+      assertEquals(first.removed, ["000000000004"], "6 continues 4, not 3");
       // A later lineage's first confirmation collects again.
       await publish(env, 8, { confirmed: true, follows: 6 });
       const second = recordingStore();
@@ -827,9 +830,7 @@ Deno.test({
         replicaPaths: { root: env.root, store: second.store },
       });
       assertEquals(second.removed, ["000000000006"]);
-      for (const fence of [3, 4]) {
-        assert(await startOf(env, fence) !== undefined, `${fence} is kept`);
-      }
+      assert(await startOf(env, 3) !== undefined, "3 is kept");
     }, { setting: BUCKET_REPLICA });
   },
 });
@@ -854,6 +855,32 @@ Deno.test({
       assertEquals(removed, ["000000000001", "000000000005"]);
       assertEquals(await startOf(env, 1), undefined);
       assertEquals(await startOf(env, 5), undefined);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: an upgraded checkout's lineage an older swamp superseded without seeing it is kept (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true });
+      // The upgraded checkout, through its proxy, continued 3.
+      await publish(env, 5, {
+        confirmed: true,
+        root: PROXIED_BUCKET_ROOT,
+        follows: 3,
+      });
+      // An older swamp, blind to 5, continued its own 3.
+      await publish(env, 6, { confirmed: true });
+      await publish(env, 7, { confirmed: true, follows: 6 });
+      const { store, removed } = recordingStore();
+      await collectV3Lineages(env.copy, 7, {
+        replicaPaths: { root: env.root, store },
+      });
+      assertEquals(removed, ["000000000003", "000000000006"]);
+      assert(await startOf(env, 5) !== undefined, "5 is kept");
     }, { setting: BUCKET_REPLICA });
   },
 });

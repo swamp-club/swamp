@@ -485,35 +485,143 @@ Deno.test("outrankingForeignLineage: only a lineage under another root that woul
   );
 });
 
-Deno.test("lineagesKeptForFork: keeps every lineage a swamp before swamp-club#3801 left under two spellings, the continued one included", () => {
-  const a = "s3::bucket:prefix";
-  const b = "s3:http://proxy:1:bucket:prefix";
-  const start = (fence: number, replicaRoot: string, follows?: number) => ({
+const SPELLED = "s3::bucket:prefix";
+const PROXIED = "s3:http://proxy:1:bucket:prefix";
+
+/** A start a swamp before swamp-club#3801 wrote, or this one (`chain`). */
+function startOf(
+  fence: number,
+  replicaRoot: string,
+  chain?: { follows?: number },
+) {
+  return {
     fence,
     holder: "h",
     replicaRoot,
     startedAt: AT,
-    ...(follows !== undefined ? { follows } : {}),
-  });
-  const starts = (...list: ReturnType<typeof start>[]) =>
-    new Map(list.map((s) => [s.fence, s]));
-  // One history: nothing kept, whatever the spellings of later lineages.
+    ...(chain?.follows !== undefined ? { follows: chain.follows } : {}),
+    ...(chain !== undefined ? { chained: true as const } : {}),
+  };
+}
+
+/** What collection at `current` keeps; every listed lineage is complete. */
+function keptOf(
+  list: ReturnType<typeof startOf>[],
+  current: number,
+  options: { incomplete?: number[]; marked?: number[] } = {},
+): Set<number> {
+  return lineagesKeptForFork(
+    new Map(list.map((s) => [s.fence, s])),
+    current,
+    {
+      complete: new Set(
+        list.map((s) => s.fence).filter((fence) =>
+          !options.incomplete?.includes(fence)
+        ),
+      ),
+      marked: new Set(options.marked ?? []),
+    },
+  );
+}
+
+Deno.test("lineagesKeptForFork: one history is collected whatever the spellings, a fenced writer's lineage included (swamp-club#3801)", () => {
   assertEquals(
-    lineagesKeptForFork(starts(start(1, a), start(2, a), start(5, b, 2)), 6),
+    keptOf([
+      startOf(1, SPELLED),
+      startOf(2, SPELLED),
+      startOf(5, PROXIED, { follows: 2 }),
+      startOf(6, SPELLED, { follows: 5 }),
+    ], 6),
     new Set(),
   );
-  // Forked, one lineage a side: both kept, so a later round still sees it.
+  // Lineage 8's writer was fenced before 9 began, from 7.
   assertEquals(
-    lineagesKeptForFork(starts(start(3, a), start(4, b), start(6, b, 4)), 8),
-    new Set([3, 4]),
+    keptOf([
+      startOf(7, SPELLED, {}),
+      startOf(8, SPELLED, { follows: 7 }),
+      startOf(9, PROXIED, { follows: 7 }),
+    ], 9),
+    new Set(),
   );
-  // Lineages that continue the chain are never kept.
+});
+
+Deno.test("lineagesKeptForFork: a fork older swamps left keeps the side the current state lacks, in every round (swamp-club#3801)", () => {
+  const fork = [startOf(3, SPELLED), startOf(4, PROXIED)];
+  const first = keptOf([...fork, startOf(6, PROXIED, { follows: 4 })], 6);
+  assertEquals(first, new Set([3]));
+  // The next round: 4 was collected, so only the record shows 3's fork.
   assertEquals(
-    lineagesKeptForFork(
-      starts(start(1, a), start(2, b), start(5, a, 2), start(6, b, 5)),
+    keptOf(
+      [
+        startOf(3, SPELLED),
+        startOf(6, PROXIED, { follows: 4 }),
+        startOf(8, SPELLED, { follows: 6 }),
+      ],
       8,
+      { marked: [...first] },
     ),
-    new Set([1, 2]),
+    new Set([3]),
+  );
+});
+
+Deno.test("lineagesKeptForFork: an upgraded checkout's lineage an older swamp superseded without seeing it is kept (swamp-club#3801)", () => {
+  assertEquals(
+    keptOf([
+      startOf(1, SPELLED),
+      startOf(2, SPELLED),
+      startOf(3, SPELLED),
+      // The upgraded checkout continued 3 through its proxy.
+      startOf(5, PROXIED, { follows: 3 }),
+      // The older swamp, blind to 5, continued its own 3.
+      startOf(6, SPELLED),
+      startOf(7, PROXIED, { follows: 6 }),
+    ], 7),
+    new Set([5]),
+  );
+});
+
+Deno.test("lineagesKeptForFork: an older swamp continues only a complete lineage of its spelling (swamp-club#3801)", () => {
+  // 2 was never confirmed, so 3 (an older swamp's) began from nothing and
+  // never held 1's commits.
+  assertEquals(
+    keptOf(
+      [
+        startOf(1, PROXIED),
+        startOf(2, SPELLED, { follows: 1 }),
+        startOf(3, SPELLED),
+        startOf(4, SPELLED, { follows: 3 }),
+      ],
+      4,
+      { incomplete: [2] },
+    ),
+    new Set([1]),
+  );
+});
+
+Deno.test("lineagesKeptForFork: a first lineage this swamp began with nothing to follow is not an older swamp's (swamp-club#3801)", () => {
+  assertEquals(
+    keptOf(
+      [
+        // Never confirmed; a checkout through the proxy began again.
+        startOf(1, SPELLED, {}),
+        startOf(2, PROXIED, {}),
+        startOf(3, PROXIED, { follows: 2 }),
+      ],
+      3,
+      { incomplete: [1] },
+    ),
+    new Set(),
+  );
+});
+
+Deno.test("lineagesKeptForFork: one checkout that changed its spelling under an older swamp is kept too, costing storage, never commits", () => {
+  assertEquals(
+    keptOf([
+      startOf(3, SPELLED),
+      startOf(5, PROXIED),
+      startOf(6, PROXIED, { follows: 5 }),
+    ], 6),
+    new Set([3]),
   );
 });
 

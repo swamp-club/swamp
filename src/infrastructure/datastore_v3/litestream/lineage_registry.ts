@@ -24,7 +24,10 @@
  * - `lineage/<fence>/started.json`, created once;
  * - `lineage/<fence>/confirmed.json`, created once;
  * - `lineage/<fence>/head-<writer fence>.json`, rewritten by that writer;
- *   a read takes the highest writer's, so a head never goes backwards.
+ *   a read takes the highest writer's, so a head never goes backwards;
+ * - `lineage/<fence>/kept.json`, created once collection decided the
+ *   lineage may hold commits the current state lacks (swamp-club#3801), so
+ *   every later collection keeps it too.
  *
  * Creates use `putIfAbsent`, so of two writers only one can claim a
  * lineage or confirm it. A read lists `lineage/` once and fetches only the
@@ -52,7 +55,7 @@ import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 /** The control-plane prefix every lineage record is under. */
 export const LINEAGE_PREFIX = "lineage/";
 
-type RecordName = "started" | "confirmed";
+type RecordName = "started" | "confirmed" | "kept";
 
 const KEY_PATTERN =
   /^lineage\/(\d{12})\/(started|confirmed|head-(\d{12}))\.json$/;
@@ -239,6 +242,38 @@ export class LineageRegistry {
       headKeyOf(record.fence, record.writerFence),
       encode(serializeLineageRecord(record)),
     );
+  }
+
+  /**
+   * Records that collection keeps lineage `fence` (swamp-club#3801). It
+   * stays kept in every later collection, whatever the chain then shows.
+   */
+  async keep(fence: number): Promise<void> {
+    await this.store.putIfAbsent(keyOf(fence, "kept"), encode("{}"));
+  }
+
+  /**
+   * The fences whose lineage was started, confirmed and has a head, as
+   * listed: the lineages a writer could have restored from.
+   */
+  async completeFences(): Promise<Set<number>> {
+    const complete = new Set<number>();
+    for (const [fence, entry] of await this.#list()) {
+      if (entry.started && entry.confirmed && entry.heads.length > 0) {
+        complete.add(fence);
+      }
+    }
+    return complete;
+  }
+
+  /** The fences a collection recorded as kept. */
+  async kept(): Promise<Set<number>> {
+    const kept = new Set<number>();
+    for (const key of await this.store.list(LINEAGE_PREFIX)) {
+      const match = /^lineage\/(\d{12})\/kept\.json$/.exec(key);
+      if (match !== null) kept.add(Number(match[1]));
+    }
+    return kept;
   }
 
   /**
