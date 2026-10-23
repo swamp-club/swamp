@@ -29,6 +29,7 @@ import { isBareSpecifier, isZod4Specifier } from "../models/bundle.ts";
 import { findImportSpecifiers } from "./extension_dependency_extractor.ts";
 import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
+import { DEPENDENCY_AUDIT_RECORD_FILENAME } from "./dependency_audit_record.ts";
 import {
   type AstNode,
   isNode,
@@ -110,6 +111,7 @@ const UP_SEGMENT = "_up";
 const RESERVED_ROOT_NAMES: ReadonlySet<string> = new Set([
   "manifest.yaml",
   QUALITY_SIDECAR_FILENAME,
+  DEPENDENCY_AUDIT_RECORD_FILENAME,
   "models",
   "bundles",
   "workflows",

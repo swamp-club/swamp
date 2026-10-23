@@ -122,6 +122,7 @@ Deno.test("push: behaviors-dir sources, includes and a models-dir file resolved 
     )).filter((e) => !e.endsWith("/")).sort();
     assertEquals(entries, [
       "extension/bundles/aws/ec2.js",
+      "extension/dependency-audit.json",
       "extension/manifest.yaml",
       "extension/models/acme/wf/model.ts",
       "extension/models/aws/data.json",

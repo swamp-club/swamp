@@ -1696,3 +1696,94 @@ Deno.test("onlyOutagesNotAudited: true only when every fix is an outage", () => 
   assertEquals(onlyOutagesNotAudited(["name"]), false);
   assertEquals(onlyOutagesNotAudited([]), false);
 });
+
+// ── The shipped versions the archive records (swamp-club#3662) ──────────
+
+Deno.test("checkDependencyTrust: returns the version that ships for each specifier, with where it came from", async () => {
+  const installed: DependencySpecifier = {
+    ...npmSpec("express", "^4.17.0"),
+    importedAs: "express",
+    installedVersion: "4.17.0",
+  };
+  const result = await checkDependencyTrust(
+    [npmSpec("express", "^4.18.0"), npmSpec("express", "4.21.1"), installed],
+    routedFetcher(healthyRoutes(RANGE_NPM_BODY)),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "npm:express": ["4.18.2"] }),
+  );
+  assertEquals(result.shipped, [
+    {
+      specifier: npmSpec("express", "^4.18.0"),
+      shipped: { version: "4.18.2", from: "lockfile" },
+    },
+    {
+      specifier: npmSpec("express", "4.21.1"),
+      shipped: { version: "4.21.1", from: "exact" },
+    },
+    { specifier: installed, shipped: { version: "4.17.0", from: "installed" } },
+  ]);
+});
+
+Deno.test("checkDependencyTrust: npm down still returns a locked or exact version that ships, but no registry one", async () => {
+  const result = await checkDependencyTrust(
+    [
+      npmSpec("express", "^4.17.0"),
+      npmSpec("left-pad", "1.3.0"),
+      npmSpec("chalk", "^5.0.0"),
+    ],
+    routedFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: { status: 503, body: {} },
+      [DOWNLOADS_URL]: { status: 503, body: {} },
+    }),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "npm:express": ["4.18.2"] }),
+  );
+  assertEquals(notAuditedCount(result), 3);
+  assertEquals(
+    result.shipped?.map((s) => [s.specifier.name, s.shipped.version]),
+    [["express", "4.18.2"], ["left-pad", "1.3.0"]],
+  );
+});
+
+Deno.test("checkDependencyTrust: a version npm never published is not returned as shipping", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("express", "9.9.9")],
+    routedFetcher(healthyRoutes(RANGE_NPM_BODY)),
+  );
+  assertEquals(
+    result.audited[0].reason?.includes("npm lists no version"),
+    true,
+  );
+  assertEquals(result.shipped, []);
+});
+
+Deno.test("checkDependencyTrust: JSR returns a version that exists, a locked one when JSR is down, and none that is missing", async () => {
+  const found = await checkDependencyTrust(
+    [jsrSpec("@std/assert", "^1.0.0")],
+    jsrFetcher({ status: 200, body: JSR_META }),
+  );
+  assertEquals(found.shipped?.map((s) => s.shipped), [
+    { version: "1.0.2", from: "registry" },
+  ]);
+
+  const down = await checkDependencyTrust(
+    [jsrSpec("@std/assert", "^1.0.0")],
+    jsrFetcher("throw"),
+    DEFAULT_TRUST_THRESHOLDS,
+    undefined,
+    lockOf({ "jsr:@std/assert": ["1.0.0"] }),
+  );
+  assertEquals(notAuditedCount(down), 1);
+  assertEquals(down.shipped?.map((s) => s.shipped), [
+    { version: "1.0.0", from: "lockfile" },
+  ]);
+
+  const missing = await checkDependencyTrust(
+    [jsrSpec("@std/assert", "0.0.999")],
+    jsrFetcher({ status: 200, body: JSR_META }),
+  );
+  assertEquals(missing.shipped, []);
+});

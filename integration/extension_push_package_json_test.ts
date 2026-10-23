@@ -50,6 +50,7 @@ import {
   type DependencySpecifier,
   extractDependencySpecifiers,
 } from "../src/domain/extensions/extension_dependency_extractor.ts";
+import { checkDependencyTrust } from "../src/domain/extensions/extension_dependency_trust_checker.ts";
 import { bundleExtension } from "../src/domain/models/bundle.ts";
 import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 import { SHARED_SWAMP_DENO_CACHE } from "./test_helpers.ts";
@@ -60,6 +61,25 @@ const ENV = {
 };
 
 const logger = getLogger(["test"]);
+
+/** npm, its download counts and OSV, answering for ms 2.1.3 only. */
+function fakeRegistries(url: string | URL): Promise<Response> {
+  const host = new URL(String(url)).host;
+  if (host === "registry.npmjs.org") {
+    return Promise.resolve(Response.json({
+      "dist-tags": { latest: "2.1.3" },
+      versions: { "2.1.3": { license: "MIT", maintainers: [{ name: "a" }] } },
+      time: { "2.1.3": new Date().toISOString() },
+    }));
+  }
+  if (host === "api.npmjs.org") {
+    return Promise.resolve(Response.json({ downloads: 1_000_000 }));
+  }
+  if (host === "api.osv.dev") {
+    return Promise.resolve(Response.json({ vulns: [] }));
+  }
+  throw new Error(`unexpected call to ${host}`);
+}
 
 function stubDeps(audited: DependencySpecifier[]): ExtensionPushPrepareDeps {
   return {
@@ -81,14 +101,11 @@ function stubDeps(audited: DependencySpecifier[]): ExtensionPushPrepareDeps {
     analyzeExtensionSafety: () => Promise.resolve({ errors: [], warnings: [] }),
     checkExtensionQuality: () => Promise.resolve({ passed: true, issues: [] }),
     extractDependencySpecifiers,
+    // The real audit, so the archive records what it resolved
+    // (swamp-club#3662); only the registries are fake.
     checkDependencyTrust: (specifiers) => {
       audited.push(...specifiers);
-      return Promise.resolve({
-        errors: [],
-        warnings: [],
-        audited: [],
-        passed: true,
-      });
+      return checkDependencyTrust(specifiers, fakeRegistries);
     },
     checkReviewRules: () =>
       Promise.resolve({ errors: [], warnings: [], passed: true }),
@@ -335,6 +352,18 @@ for (
         audited.map((s) => [s.name, s.version, s.installedVersion]),
         [["ms", "^2.1.0", "2.1.3"]],
       );
+      // The record keys ms by the installed version the source now pins
+      // (swamp-club#3662).
+      assertEquals(JSON.parse(files.get("dependency-audit.json") ?? ""), {
+        recordVersion: 1,
+        dependencies: [{
+          registry: "npm",
+          name: "ms",
+          spec: "2.1.3",
+          version: "2.1.3",
+          from: "installed",
+        }],
+      });
     });
   });
 }

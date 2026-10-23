@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { DependencySpecifier } from "./extension_dependency_extractor.ts";
+import type { ShippedDependency } from "./dependency_audit_record.ts";
 import {
   type LockedDependencyVersions,
   type PublishedPackage,
@@ -107,6 +108,12 @@ export interface DependencyTrustResult {
   warnings: DependencyTrustIssue[];
   audited: DependencyAuditSummary[];
   passed: boolean;
+  /**
+   * The version that ships for each specifier the audit resolved, for the
+   * archive's dependency audit record (swamp-club#3662). A version the
+   * audit found unpublished is left out. Never rendered.
+   */
+  shipped?: ShippedDependency[];
 }
 
 export interface TrustThresholds {
@@ -777,6 +784,7 @@ function attributeToImport(
     message: issue.message + suffix,
   });
   return {
+    ...audit,
     errors: audit.errors.map(attribute),
     warnings: audit.warnings.map(attribute),
     summary: { ...audit.summary, importedAs: spec.importedAs },
@@ -788,6 +796,8 @@ interface SpecifierAudit {
   errors: DependencyTrustIssue[];
   warnings: DependencyTrustIssue[];
   summary: DependencyAuditSummary;
+  /** The version that ships, unless the audit found it unpublished. */
+  shipped?: ShippedVersion;
 }
 
 /**
@@ -888,6 +898,9 @@ async function auditNpmPackage(
     // A wrong specifier fails the same way on every re-run; a lookup that
     // failed may not.
     let wrongSpecifier = false;
+    // An exact, installed or locked version still ships when npm is down,
+    // so only a version npm says it never published is left unrecorded.
+    let unpublished = false;
     if (npm.kind === "unavailable") {
       failures.push(`npm registry lookup failed (${npm.reason})`);
     } else if (
@@ -895,6 +908,7 @@ async function auditNpmPackage(
     ) {
       failures.push(`npm lists no version ${version}`);
       wrongSpecifier = true;
+      unpublished = true;
     }
     if (osv === null) {
       failures.push(
@@ -937,22 +951,21 @@ async function auditNpmPackage(
       weeklyDownloads: facts?.weeklyDownloads ?? null,
       publishedAgo: formatAge(facts?.lastPublish ?? null),
     };
-    audits.push(
-      failures.length > 0
-        ? notAudited(
-          spec,
-          failures.join("; "),
-          summary,
-          wrongSpecifier ? "specifier" : "outage",
-          errors,
-          warnings,
-        )
-        : {
-          errors,
-          warnings,
-          summary: { ...summary, passed: errors.length === 0 },
-        },
-    );
+    const audit: SpecifierAudit = failures.length > 0
+      ? notAudited(
+        spec,
+        failures.join("; "),
+        summary,
+        wrongSpecifier ? "specifier" : "outage",
+        errors,
+        warnings,
+      )
+      : {
+        errors,
+        warnings,
+        summary: { ...summary, passed: errors.length === 0 },
+      };
+    audits.push(shipped && !unpublished ? { ...audit, shipped } : audit);
   }
   return audits;
 }
@@ -992,12 +1005,21 @@ async function auditJsrPackage(
     if (meta === null) return missing("invalid JSR package name");
     if (meta.kind === "missing") return missing("JSR package not found");
     if (meta.kind === "unavailable") {
-      return notAudited(
+      const audit = notAudited(
         spec,
         `JSR lookup failed (${meta.reason})`,
         base,
         "outage",
       );
+      // An exact or locked version ships whether or not JSR answered.
+      const known = resolveShippedVersion(
+        "jsr",
+        name,
+        spec.version,
+        lock,
+        null,
+      );
+      return known ? { ...audit, shipped: known } : audit;
     }
 
     const shipped = resolveShippedVersion("jsr", name, spec.version, lock, {
@@ -1047,6 +1069,7 @@ async function auditJsrPackage(
         resolvedFrom: shipped.from,
         passed: true,
       },
+      shipped,
     };
   });
 }
@@ -1066,6 +1089,7 @@ export async function checkDependencyTrust(
   const allErrors: DependencyTrustIssue[] = [];
   const allWarnings: DependencyTrustIssue[] = [];
   const audited: DependencyAuditSummary[] = [];
+  const shipped: ShippedDependency[] = [];
 
   const packages = new Map<string, DependencySpecifier[]>();
   for (const spec of specifiers) {
@@ -1124,6 +1148,9 @@ export async function checkDependencyTrust(
         for (const error of audit.errors) allErrors.push(error);
         for (const warning of audit.warnings) allWarnings.push(warning);
         audited.push(audit.summary);
+        if (audit.shipped) {
+          shipped.push({ specifier: specs[i], shipped: audit.shipped });
+        }
       }
     }
   }
@@ -1133,6 +1160,7 @@ export async function checkDependencyTrust(
     warnings: allWarnings,
     audited,
     passed: allErrors.length === 0,
+    shipped,
   };
 }
 

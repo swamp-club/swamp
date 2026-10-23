@@ -34,6 +34,7 @@ Deno.test("planArchiveRootSources: installs mirrored root files, skipping reserv
     dir("extension/"),
     file("extension/manifest.yaml"),
     file("extension/quality.yaml"),
+    file("extension/dependency-audit.json"),
     file("extension/models/x.ts"),
     file("extension/bundles/x.js"),
     file("extension/skills/s/SKILL.md"),
