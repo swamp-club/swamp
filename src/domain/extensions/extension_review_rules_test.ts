@@ -979,6 +979,218 @@ Deno.test("credentials-sensitive-field: every .meta({ sensitive: true }) form su
   }
 });
 
+// ── credentials-sensitive-field: wrapped metadata objects (swamp-club#3852) ──
+
+/** A parseable module whose schema object holds `fields`. */
+function schemaModule(fields: string): string {
+  return `import { z } from "npm:zod@4";\n\nexport const GlobalArgs = z.object({\n${fields}\n});\n`;
+}
+
+/** The issue's field, as deno fmt wraps it, with `entry` inside the object. */
+function wrappedApiKey(entry: string): string {
+  return schemaModule(`  apiKey: z.string().meta({
+${entry}    description:
+      "The API key issued to the game owner, found under the game admin page.",
+  }),`);
+}
+
+Deno.test("credentials-sensitive-field: a .meta object wrapped by deno fmt is marked", () => {
+  assertEquals(sensitiveFindings(wrappedApiKey("    sensitive: true,\n")), []);
+});
+
+Deno.test("credentials-sensitive-field: a wrapped .meta object without the entry warns on the field line", () => {
+  const findings = sensitiveFindings(wrappedApiKey(""));
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].line, 4);
+});
+
+Deno.test("credentials-sensitive-field: a wrapped sensitive: false warns", () => {
+  assertEquals(
+    sensitiveFindings(wrappedApiKey("    sensitive: false,\n")).length,
+    1,
+  );
+});
+
+Deno.test("credentials-sensitive-field: a wrapped quoted sensitive key is marked", () => {
+  assertEquals(
+    sensitiveFindings(wrappedApiKey('    "sensitive": true,\n')),
+    [],
+  );
+});
+
+Deno.test("credentials-sensitive-field: a cast sensitive: true as const on a continuation line is marked", () => {
+  const content = schemaModule(`  apiKey: z.string()
+    .meta({ sensitive: true as const }),`);
+  assertEquals(sensitiveFindings(content), []);
+});
+
+Deno.test("credentials-sensitive-field: a marked field does not hide an unmarked one on the same line", () => {
+  const content = `import { z } from "npm:zod@4";
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ password: z.string(), apiKey: z.string().meta({
+  sensitive: true,
+}) });
+`;
+  const findings = sensitiveFindings(content);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].line, 3);
+});
+
+Deno.test("credentials-sensitive-field: a destructured or shorthand name on the field line does not hide a continuation marker", () => {
+  const destructured = schemaModule(
+    `  apiKey: z.string().transform(({ token }) => token)
+    .meta({ sensitive: true }),`,
+  );
+  const shorthand = `import { z } from "npm:zod@4";
+const apiKey = "";
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ apiKey, password: z.string()
+  .meta({ sensitive: true }) });
+`;
+  assertEquals(sensitiveFindings(destructured), []);
+  assertEquals(sensitiveFindings(shorthand), []);
+});
+
+Deno.test("credentials-sensitive-field: a secret-named key that is not a schema does not hide a continuation marker", () => {
+  const callbackObject = schemaModule(
+    `  credentials: z.string().transform((s) => ({ token: s }))
+    .meta({ sensitive: true }),`,
+  );
+  const callbackConst = schemaModule(
+    `  credentials: z.string().transform((v) => { const secret = v.trim(); return secret; })
+    .meta({ sensitive: true }),`,
+  );
+  const variableValue = `import { z } from "npm:zod@4";
+const apiKeySchema = z.string().meta({ sensitive: true });
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ apiKey: apiKeySchema, password: z.string()
+  .meta({ sensitive: true }) });
+`;
+  const logicalValue = `import { z } from "npm:zod@4";
+const fallback = undefined;
+export const GlobalArgs = z.object({
+  apiKey: fallback ?? z.string()
+    .meta({ sensitive: true }),
+});
+`;
+  assertEquals(sensitiveFindings(callbackObject), []);
+  assertEquals(sensitiveFindings(callbackConst), []);
+  assertEquals(sensitiveFindings(variableValue), []);
+  assertEquals(sensitiveFindings(logicalValue), []);
+});
+
+Deno.test("credentials-sensitive-field: a class field with a wrapped marker is marked, and without one warns", () => {
+  const field = (entry: string) =>
+    `import { z } from "npm:zod@4";
+export class Args {
+  private apiKey = z.string().meta({
+${entry}    description: "The API key issued to the game owner.",
+  });
+}
+`;
+  assertEquals(sensitiveFindings(field("    sensitive: true,\n")), []);
+  assertEquals(sensitiveFindings(field("")).length, 1);
+});
+
+Deno.test("credentials-sensitive-field: a wrapped register entry is marked", () => {
+  const content = schemaModule(
+    `  apiKey: z.string().register(z.globalRegistry, {
+    description: "The API key issued to the game owner.",
+    sensitive: true,
+  }),`,
+  );
+  assertEquals(sensitiveFindings(content), []);
+});
+
+Deno.test("credentials-sensitive-field: a wrapped .meta object followed by a describe call is marked", () => {
+  const content = schemaModule(`  apiKey: z.string().meta({
+    sensitive: true,
+    title: "API key",
+  }).describe("The API key issued to the game owner."),`);
+  assertEquals(sensitiveFindings(content), []);
+});
+
+Deno.test("credentials-sensitive-field: a marked sibling field does not mark an unmarked one", () => {
+  const content = schemaModule(`  apiKey: z.string(),
+  region: z.string().meta({
+    sensitive: true,
+  }),`);
+  const findings = sensitiveFindings(content);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].line, 4);
+});
+
+// The object opens on the field line; z.object( there would skip the line.
+Deno.test("credentials-sensitive-field: an inline object's marked sibling does not mark the field", () => {
+  const content = `import { z } from "npm:zod@4";
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ apiKey: z.string(),
+  region: z.string().meta({
+    sensitive: true,
+  }),
+});
+`;
+  assertEquals(sensitiveFindings(content).length, 1);
+});
+
+Deno.test("credentials-sensitive-field: a nested field's metadata does not mark the field holding it", () => {
+  const content = schemaModule(`  credential: z.union([
+    z.string(),
+    z.object({
+      password: z.string().meta({ sensitive: true }),
+    }),
+  ]),`);
+  const findings = sensitiveFindings(content);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].line, 4);
+});
+
+Deno.test("credentials-sensitive-field: sensitive: true in string or comment text on later lines does not count", () => {
+  const inDescription = schemaModule(`  apiKey: z.string().meta({
+    description:
+      "Set sensitive: true on any field that holds this value.",
+  }),`);
+  const inComment = schemaModule(`  apiKey: z.string().meta({
+    // sensitive: true
+    title: "API key",
+  }),`);
+  const inDescribe = schemaModule(`  apiKey: z.string()
+    .min(1)
+    .describe("sensitive: true"),`);
+  assertEquals(sensitiveFindings(inDescription).length, 1);
+  assertEquals(sensitiveFindings(inComment).length, 1);
+  assertEquals(sensitiveFindings(inDescribe).length, 1);
+});
+
+Deno.test("credentials-sensitive-field: a wrapped marker on a const declaration is marked", () => {
+  const content = `import { z } from "npm:zod@4";
+export const apiToken = z.string().meta({
+  sensitive: true,
+  description: "The token issued to the game owner.",
+});
+`;
+  assertEquals(sensitiveFindings(content), []);
+});
+
+Deno.test("credentials-sensitive-field: a .tsx source with a wrapped marker is marked", () => {
+  const content = wrappedApiKey("    sensitive: true,\n") +
+    "export const View = () => <div>{GlobalArgs.description}</div>;\n";
+  const findings = evaluateReviewRules([
+    source({ path: "/ext/models/thing.tsx", content }),
+  ]).warnings.filter((w) => w.ruleId === "credentials-sensitive-field");
+  assertEquals(findings, []);
+});
+
+Deno.test("credentials-sensitive-field: a source that does not parse falls back to continuation lines", () => {
+  const marked = `  apiKey: z.string(
+    .meta({ sensitive: true }),`;
+  const wrapped = `  apiKey: z.string(.meta({
+    sensitive: true,
+  }),`;
+  assertEquals(sensitiveFindings(marked), []);
+  assertEquals(sensitiveFindings(wrapped).length, 1);
+});
+
 Deno.test("checkReviewRules: the missing-report finding carries the catalog remediation", async () => {
   const dims = applicableDimensions(["model"]);
   const result = await checkReviewRules(

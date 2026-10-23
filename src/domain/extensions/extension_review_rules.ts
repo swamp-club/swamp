@@ -20,6 +20,20 @@
 import { extname, join } from "@std/path";
 import { z } from "zod";
 import { remediationFor } from "./extension_rule_catalog.ts";
+import {
+  type AstNode,
+  child,
+  isCall,
+  isMember,
+  isNode,
+  LineIndex,
+  literalKey,
+  parseExtensionSource,
+  str,
+  TS_WRAPPERS,
+  unwrap,
+  walkRuntimeNodes,
+} from "./extension_source_ast.ts";
 
 /**
  * Deterministic, push-time static rules for extensions.
@@ -218,12 +232,18 @@ const DECLARED_IDENTIFIER =
 /**
  * The metadata entry that marks a field sensitive: `sensitive: true` (the key
  * may be quoted), as swamp reads it back from `z.globalRegistry`. Any way of
- * writing that entry on the field's line or its continuation lines counts —
- * `.meta({ sensitive: true })`, a meta object with other keys before it, or
+ * writing that entry on the field's line counts — `.meta({ sensitive: true })`,
+ * a meta object with other keys before it, or
  * `.register(z.globalRegistry, { sensitive: true })`. The word `sensitive` in
  * a `describe()` string does not count, and neither does `sensitive: false`.
- * Metadata passed as a variable (`.meta(SENSITIVE)`) or on a later line of a
- * multi-line object is not recognised; write the entry out on the chain.
+ *
+ * Past the field's line, a source that parses is read as a syntax tree: the
+ * entry counts anywhere in the field's own chain, however `deno fmt` wraps
+ * the object, and text in a string or comment never counts (see
+ * `carriesSensitiveMarker`). A source that does not parse is read line by
+ * line, and the entry counts on `.`-prefixed continuation lines only.
+ * Metadata passed as a variable (`.meta(SENSITIVE)`) is not recognised; write
+ * the entry out on the chain.
  */
 export const MARKED_SENSITIVE = /(?:^|[^\w$])["']?sensitive["']?\s*:\s*true\b/;
 
@@ -284,6 +304,138 @@ const NON_SECRET_ZOD_TYPE =
 const EMPTY_OBJECT_PASSTHROUGH =
   /z\s*\.\s*object\s*\(\s*\{\s*\}\s*\)\s*\.\s*passthrough\s*\(/;
 
+/**
+ * True when a `.`-prefixed continuation line after line `index` carries the
+ * sensitive marker — the text check for a source that does not parse.
+ */
+function markedOnContinuationLines(lines: string[], index: number): boolean {
+  for (let j = index + 1; j < lines.length; j++) {
+    const cont = stripLineComment(lines[j]);
+    if (!/^\s+\./.test(cont)) return false;
+    if (MARKED_SENSITIVE.test(cont)) return true;
+  }
+  return false;
+}
+
+/** The syntax-tree nodes whose `key` or `id` names a field. */
+const FIELD_NODES = new Set([
+  "ObjectProperty",
+  "ClassProperty",
+  "VariableDeclarator",
+]);
+
+/** The name a field node declares: an identifier or a string-literal key. */
+function fieldName(node: AstNode): string | undefined {
+  const key = child(node, node.type === "VariableDeclarator" ? "id" : "key");
+  if (key?.type === "Identifier") {
+    return node.computed === true ? undefined : str(key, "name");
+  }
+  return literalKey(key);
+}
+
+/** The child nodes held in an array property, such as call arguments. */
+function childList(node: AstNode, key: string): AstNode[] {
+  const value = node[key];
+  return Array.isArray(value) ? value.filter(isNode) : [];
+}
+
+/**
+ * `sensitive: true` as an object-literal entry; the key may be quoted and
+ * the value cast (`true as const`).
+ */
+function isSensitiveEntry(node: AstNode): boolean {
+  const value = unwrap(child(node, "value"));
+  return node.type === "ObjectProperty" && fieldName(node) === "sensitive" &&
+    value?.type === "BooleanLiteral" && value.value === true;
+}
+
+/**
+ * True when a field's value expression carries `sensitive: true` on its own
+ * chain: in an object literal passed to one of its calls (`.meta({ ... })`,
+ * `.register(z.globalRegistry, { ... })`), however the object is laid out.
+ * The search follows calls, member access, casts, parentheses and array
+ * elements, and checks only an object literal's direct entries, so the
+ * metadata of a nested field (a `z.object` inside a `z.union`) never marks
+ * the field that holds it. The stack is explicit because extension source is
+ * untrusted.
+ */
+function carriesSensitiveMarker(value: AstNode): boolean {
+  const stack: AstNode[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === "ObjectExpression") {
+      if (childList(node, "properties").some(isSensitiveEntry)) return true;
+    } else if (isCall(node)) {
+      const callee = child(node, "callee");
+      if (callee) stack.push(callee);
+      for (const argument of childList(node, "arguments")) {
+        stack.push(argument);
+      }
+    } else if (isMember(node)) {
+      const object = child(node, "object");
+      if (object) stack.push(object);
+    } else if (TS_WRAPPERS.has(node.type)) {
+      const expression = child(node, "expression");
+      if (expression) stack.push(expression);
+    } else if (node.type === "ArrayExpression") {
+      for (const element of childList(node, "elements")) stack.push(element);
+    }
+  }
+  return false;
+}
+
+/**
+ * True when `value` is a Zod schema expression: a chain of calls, member
+ * access and casts that starts at `z` (`z.string().meta({ ... })`,
+ * `z.optional(...)`).
+ */
+function isZodChain(value: AstNode | undefined): value is AstNode {
+  let current = unwrap(value);
+  while (current) {
+    if (isCall(current)) current = unwrap(child(current, "callee"));
+    else if (isMember(current)) current = unwrap(child(current, "object"));
+    else return current.type === "Identifier" && str(current, "name") === "z";
+  }
+  return false;
+}
+
+/**
+ * Parses `source` and returns, for each line (1-based, split on `\n`) that
+ * declares a secret-named schema field, whether every such field declared there
+ * carries `sensitive: true` (see {@link carriesSensitiveMarker}), so one
+ * marked field never hides an unmarked one on its line. Null when the source
+ * does not parse.
+ */
+function parsedSensitiveFields(
+  source: ReviewSource,
+): Map<number, boolean> | null {
+  const program = parseExtensionSource(source.content, {
+    jsx: [".tsx", ".jsx"].includes(extname(source.path)),
+  });
+  if (!program) return null;
+  const lineIndex = new LineIndex(source.content);
+  const marked = new Map<number, boolean>();
+  walkRuntimeNodes(program, ({ node }) => {
+    if (!FIELD_NODES.has(node.type)) return;
+    const name = fieldName(node);
+    if (name === undefined || !namesSecretValue(name)) return;
+    const isDeclarator = node.type === "VariableDeclarator";
+    const start = child(node, isDeclarator ? "id" : "key")?.start;
+    if (typeof start !== "number") return;
+    const value = child(node, isDeclarator ? "init" : "value");
+    // Only a schema declares a field. A destructured name, a shorthand or
+    // variable value, or a key in a callback's object literal is left to the
+    // line check, so it cannot cancel a marker on the field beside it.
+    if (!isZodChain(value)) return;
+    const line = lineIndex.position(start).line;
+    marked.set(
+      line,
+      (marked.get(line) ?? true) && carriesSensitiveMarker(value),
+    );
+  });
+  return marked;
+}
+
 // ── Default ruleset ───────────────────────────────────────────────────
 
 /**
@@ -340,6 +492,9 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     detect: (source) => {
       const detections: RuleDetection[] = [];
       const lines = source.content.split("\n");
+      // Parsed on the first field not marked on its own line; null when the
+      // source does not parse.
+      let parsed: Map<number, boolean> | null | undefined;
       for (let i = 0; i < lines.length; i++) {
         const line = stripLineComment(lines[i]);
         if (!/z\s*\./.test(line)) continue;
@@ -349,16 +504,16 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
 
         if (MARKED_SENSITIVE.test(line)) continue;
 
-        let foundSensitive = false;
-        for (let j = i + 1; j < lines.length; j++) {
-          const cont = stripLineComment(lines[j]);
-          if (!/^\s+\./.test(cont)) break;
-          if (MARKED_SENSITIVE.test(cont)) {
-            foundSensitive = true;
-            break;
-          }
-        }
-        if (foundSensitive) continue;
+        // The syntax tree decides when it has a secret field on this line,
+        // so a wrapped `.meta({ ... })` counts and string text does not.
+        if (parsed === undefined) parsed = parsedSensitiveFields(source);
+        const parsedMarked = parsed?.get(i + 1);
+        if (parsedMarked === true) continue;
+
+        // Otherwise read the chain's continuation lines as text.
+        if (
+          parsedMarked === undefined && markedOnContinuationLines(lines, i)
+        ) continue;
 
         detections.push({
           line: i + 1,
