@@ -28,6 +28,7 @@ import {
   SECRET_DESTINATION_REFUSED,
   SECRET_OPERATION_UNSUPPORTED,
   SECRET_REFERENCE_INVALID,
+  secretRefusalCode,
   SecretRefusedError,
   UnresolvedExpressionError,
 } from "./errors.ts";
@@ -178,4 +179,26 @@ Deno.test("SecretRefusedError: secret_reference_invalid is a stable code, and it
     `Expression refused a secret (secret_reference_invalid): ${operation}, in data.latest('db', 'main').attributes.password`,
   );
   assertEquals(error.cause, undefined);
+});
+
+Deno.test("secretRefusalCode: preserves only refusal codes through wrappers and tolerates cycles", () => {
+  for (
+    const code of [
+      SECRET_OPERATION_UNSUPPORTED,
+      SECRET_DESTINATION_REFUSED,
+      SECRET_REFERENCE_INVALID,
+    ] as const
+  ) {
+    const cause = new SecretRefusedError(code, "operation", "expression");
+    assertEquals(secretRefusalCode(cause), code);
+    assertEquals(secretRefusalCode(new Error("wrapper", { cause })), code);
+    assertEquals(secretRefusalCode({ code, message: "transported" }), code);
+  }
+  const cycle = new Error("secret_operation_unsupported is only text");
+  cycle.cause = cycle;
+  assertEquals(secretRefusalCode(cycle), undefined);
+  assertEquals(
+    secretRefusalCode(new UserError("failure", "validation_failed")),
+    undefined,
+  );
 });

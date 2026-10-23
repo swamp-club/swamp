@@ -3864,6 +3864,7 @@ export class WorkflowExecutionService {
           // Restore cached references without reading the vault. Each delivery
           // loads their current values under the current grants.
           const restored = await rehydrateEvaluatedWorkflow({
+            sensitiveFormat: lastEvaluated.sensitiveFormat,
             workflow: lastEvaluated.workflow,
             deferredExpressions: lastEvaluated.deferredExpressions,
             writtenReferences: lastEvaluated.writtenReferences,

@@ -133,6 +133,23 @@ export type SecretRefusalCode =
   | typeof SECRET_DESTINATION_REFUSED
   | typeof SECRET_REFERENCE_INVALID;
 
+/** Keeps a secret refusal's code through evaluation and transport wrappers. */
+export function secretRefusalCode(
+  error: unknown,
+): SecretRefusalCode | undefined {
+  const seen = new Set<unknown>();
+  while (typeof error === "object" && error !== null && !seen.has(error)) {
+    seen.add(error);
+    const { code, cause } = error as { code?: unknown; cause?: unknown };
+    if (
+      code === SECRET_OPERATION_UNSUPPORTED ||
+      code === SECRET_DESTINATION_REFUSED || code === SECRET_REFERENCE_INVALID
+    ) return code;
+    error = cause;
+  }
+  return undefined;
+}
+
 /**
  * An expression refused an operation on a secret
  * (design/enablers/typed-secrets.md Section 4). The message names the refused

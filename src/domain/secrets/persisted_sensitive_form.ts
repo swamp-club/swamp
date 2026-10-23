@@ -70,9 +70,12 @@ export const WrittenReferenceSchema = z.object({
  * and records those positions in the evaluated definition's `maskedPaths`
  * (swamp-club#3681). A reader at version 1 would run the mask as the value,
  * so a reader refuses a format newer than its own; see
- * `isNewerSensitiveFormat`.
+ * `isNewerSensitiveFormat`. Version 3 records reliable reference origins.
+ * Earlier writers could mark plaintext found through data as `dataOrigin:
+ * false`; their readers restored every reference as data regardless of that
+ * flag. Readers preserve that historical behavior for versions 1 and 2.
  */
-export const SENSITIVE_FORMAT_VERSION = 2;
+export const SENSITIVE_FORMAT_VERSION = 3;
 
 /** Data ready to persist, and where it holds references. */
 export interface PersistedForm<T> {
@@ -187,7 +190,8 @@ const RESERVED_VAULT = "_token-secrets";
  * Restores the written references of an existing file as sentinels, reading
  * no vault (typed-secrets 4.4, design/enablers/typed-secrets.md Section
  * 8.1): each entry becomes a sentinel `bag` issues for its reference, with
- * the file's encoding and origin, spliced where the reference text sits, so
+ * the file's encoding and origin (all data for formats before version 3),
+ * spliced where the reference text sits, so
  * the run binds a reference where it held one and a delivery loads the
  * current value under current authorization. Only the listed entries are
  * touched: reference text anywhere else stays as it is, and a hand-edited
@@ -203,6 +207,7 @@ export function rehydrateReferences<T>(
   writtenReferences: readonly WrittenReference[],
   bag: VaultSecretBag,
   label: string,
+  sensitiveFormat: number = SENSITIVE_FORMAT_VERSION,
 ): T {
   if (writtenReferences.length === 0) return data;
   for (const entry of writtenReferences) {
@@ -221,7 +226,7 @@ export function rehydrateReferences<T>(
     const sentinel = bag.addWrittenReference(
       { vaultName: entry.vaultName, key: entry.key },
       entry.encoding,
-      entry.dataOrigin,
+      sensitiveFormat < 3 || entry.dataOrigin,
       `${label}: ${spellPath(entry.path)}`,
     );
     replaceAt(restored, entry, vaultReferenceText(entry), sentinel);

@@ -166,6 +166,7 @@ function extractExpressionsRecursive(
 ): void {
   if (skipPath?.(path)) return;
   if (typeof data === "string") {
+    const embedded = matchSingleExpression(data) === null;
     for (const span of scanExpressions(data)) {
       locations.push({
         path,
@@ -173,6 +174,7 @@ function extractExpressionsRecursive(
         celExpression: span.inner,
         start: span.start,
         end: span.end,
+        ...(embedded ? { embedded: true } : {}),
       });
     }
   } else if (Array.isArray(data)) {

@@ -2951,3 +2951,84 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
     assertEquals(context.steps!.seed.outputs!.password, reference);
   });
 });
+
+Deno.test("evaluateDefinition: replay checks only authored occurrences in the selected method and preserves cached data and literal text", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const read = "${{ self.globalArguments.snapshot }}";
+    const unlisted = "${{ file.contents('unlisted') }}";
+    const other = "${{ file.contents('other') }}";
+    const literal = "${{ 1 + 1 }}";
+    const definition = Definition.create({
+      name: "cached",
+      globalArguments: { snapshot: "cached value" },
+      methods: {
+        run: {
+          arguments: {
+            selected: read,
+            data: read,
+            unlisted,
+            literal,
+            foreign: "${{ github.sha }}",
+            frozen: "previously evaluated",
+          },
+        },
+        other: { arguments: { shared: read, sideEffect: other } },
+      },
+    });
+    const authoredExpressions = new Set([
+      read,
+      other,
+      "${{ github.sha }}",
+      "${{ literal('${{ 1 + 1 }}') }}",
+    ]);
+    const map = ProvenanceMap.authored().withWholeData(
+      "methods.run.arguments.data",
+    );
+    let reads = 0;
+    const result = await service.evaluateDefinition(
+      definition,
+      ModelType.create("test/replay"),
+      new RunSensitiveValues(),
+      undefined,
+      {
+        model: {},
+        env: {},
+        file: {
+          contents: () => {
+            reads++;
+            return "new value";
+          },
+        },
+      },
+      undefined,
+      {
+        definition: { raw: map, sanitized: map },
+        authoredExpressions,
+        methodName: "run",
+      },
+    );
+    assertEquals(result.definition.getMethodArguments("run"), {
+      selected: "cached value",
+      data: read,
+      unlisted,
+      literal,
+      foreign: "${{ github.sha }}",
+      frozen: "previously evaluated",
+    });
+    assertEquals(result.definition.getMethodArguments("other"), {
+      shared: read,
+      sideEffect: other,
+    });
+    assertEquals(result.failedExpressions?.size, 0);
+    assertEquals(reads, 0);
+    assertEquals(result.authoredExpressions, authoredExpressions);
+    assertEquals(
+      result.provenance?.isWholeDataAt("methods.run.arguments.data"),
+      true,
+    );
+  });
+});

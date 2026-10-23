@@ -976,20 +976,25 @@ export class ExpressionEvaluationService {
     inputValues?: Record<string, unknown>,
     context?: ExpressionContext,
     secretBag?: VaultSecretBag,
-    provenance: {
+    options: {
       /** Where data already sits in the definition's data. */
       definition?: DefinitionPassProvenance;
       /** Where data sits in `inputValues`. */
       inputs?: ProvenanceMap;
+      /** On replay, only expressions vouched for by source/cache may run. */
+      authoredExpressions?: ReadonlySet<string>;
+      /** On replay, evaluate only globals and the selected method. */
+      methodName?: string;
     } = {},
   ): Promise<EvaluatedDefinition> {
     secretBag ??= new VaultSecretBag(sensitiveValues.sentinels);
     const definitionData = definition.toData();
-    const definitionProvenance = provenance.definition ?? AUTHORED_DEFINITION;
-    const authoredExpressions = collectAuthoredExpressions(
-      inputValues,
-      collectAuthoredExpressions(definitionData),
-    );
+    const definitionProvenance = options.definition ?? AUTHORED_DEFINITION;
+    const authoredExpressions = options.authoredExpressions ??
+      collectAuthoredExpressions(
+        inputValues,
+        collectAuthoredExpressions(definitionData),
+      );
 
     // Build context if not provided.
     const ctx = context ??
@@ -999,7 +1004,7 @@ export class ExpressionEvaluationService {
     if (inputValues) {
       ctx.inputs = inputValues;
       attachBindingProvenance(ctx, {
-        inputs: provenance.inputs ?? ProvenanceMap.authored(),
+        inputs: options.inputs ?? ProvenanceMap.authored(),
       });
     }
 
@@ -1020,8 +1025,20 @@ export class ExpressionEvaluationService {
       ),
     });
 
-    // Extract expressions from definition data
-    const expressions = extractExpressions(definitionData);
+    const methodName = options.methodName;
+    // A replay supplies the original authored set: cached data cannot vouch
+    // for its own expressions. The fresh pass retains its ordinary rules.
+    let expressions = extractExpressions(definitionData).filter((expr) =>
+      methodName === undefined || isDeliveredWithMethod(expr.path, methodName)
+    );
+    if (options.authoredExpressions !== undefined) {
+      expressions = partitionAuthoredAt(
+        expressions,
+        authoredExpressions,
+        definitionProvenance.raw,
+        sensitiveValues,
+      );
+    }
 
     if (expressions.length === 0) {
       return {
@@ -1063,6 +1080,9 @@ export class ExpressionEvaluationService {
       sensitiveSpliceSanitizer(secretBag),
       definitionData,
       definitionProvenance,
+      methodName === undefined
+        ? undefined
+        : (path) => isOutsideMethodDelivery(path, methodName),
     );
 
     // Create new Definition from evaluated data

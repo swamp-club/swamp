@@ -193,6 +193,9 @@ Deno.test("extractExpressions: finds every embedded expression with its path", (
         assertEquals(locations[0].raw, `\${{ ${e1} }}`);
         assertEquals(locations[1].raw, `\${{ ${e2} }}`);
         assertEquals(locations[2].raw, `\${{ ${e3} }}`);
+        assertEquals(locations[0].embedded, undefined);
+        assertEquals(locations[1].embedded, undefined);
+        assertEquals(locations[2].embedded ?? false, lit.length > 0);
       },
     ),
     { numRuns: 200 },

@@ -302,8 +302,10 @@ export function createModelValidateDeps(
           refuseLiteralSensitiveGlobals: true,
           method: options?.method,
           // Each finding names the definition file beside its authored path.
-          diagnoseSecretMisuse: (expression, location) =>
-            diagnoseSecretMisuse(expression, location).map((finding) => ({
+          diagnoseSecretMisuse: (expression, location, embedded) =>
+            diagnoseSecretMisuse(expression, location, embedded).map((
+              finding,
+            ) => ({
               ...finding,
               location: `${file} ${finding.location}`,
             })),

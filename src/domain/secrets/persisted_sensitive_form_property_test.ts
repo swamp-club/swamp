@@ -191,3 +191,44 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
     ),
   );
 });
+
+Deno.test("rehydrateReferences: every legacy reference retains the historical data origin across rewrite", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbSecret, { minLength: 1, maxLength: 6 }),
+      fc.integer({ min: 0, max: 2 }),
+      (secrets, format) => {
+        const writer = new RunSensitiveValues();
+        const writerBag = new VaultSecretBag(writer.sentinels);
+        const data = {
+          items: secrets.map((secret, i) =>
+            writerBag.addWrittenReference(
+              { vaultName: "prod", key: `${secret.key}${i}` },
+              secret.json ? "json" : "raw",
+              secret.dataOrigin,
+              "test",
+            )
+          ),
+        };
+        const persisted = toPersistedForm(data, writer);
+        const reader = new RunSensitiveValues();
+        const readerBag = new VaultSecretBag(reader.sentinels);
+        const restored = rehydrateReferences(
+          persisted.data,
+          persisted.writtenReferences,
+          readerBag,
+          "legacy",
+          format,
+        );
+        assertEquals(reader.isEmpty, true);
+        assertEquals(toPersistedForm(restored, reader), {
+          data: persisted.data,
+          writtenReferences: persisted.writtenReferences.map((entry) => ({
+            ...entry,
+            dataOrigin: true,
+          })),
+        });
+      },
+    ),
+  );
+});

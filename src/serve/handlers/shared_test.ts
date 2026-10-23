@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../../domain/errors.ts";
 import {
   assertEquals,
   assertInstanceOf,
@@ -2624,4 +2625,34 @@ Deno.test("runFailureForClient: a commit part of which had landed keeps its own 
   );
   assertEquals(partly.code, COMMIT_PARTLY_COMMITTED_CODE);
   assertStringIncludes(partly.message, "steps had already run");
+});
+
+Deno.test("runFailureForClient: preserves secret refusal codes for direct, wrapped and transported failures", () => {
+  for (
+    const code of [
+      "secret_operation_unsupported",
+      "secret_destination_refused",
+      "secret_reference_invalid",
+    ]
+  ) {
+    const cause = new UserError("Refused a secret", code);
+    for (
+      const error of [cause, new Error("wrapper", { cause }), {
+        code,
+        message: cause.message,
+      }]
+    ) {
+      assertEquals(
+        runFailureForClient(error, "method_execution_failed").code,
+        code,
+      );
+    }
+  }
+  assertEquals(
+    runFailureForClient(
+      new UserError("other", "other_code"),
+      "method_execution_failed",
+    ).code,
+    "method_execution_failed",
+  );
 });

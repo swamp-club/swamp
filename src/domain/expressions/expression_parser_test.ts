@@ -810,3 +810,44 @@ Deno.test("isTaskTargetPath does not match a field merely containing the name", 
     false,
   );
 });
+
+Deno.test("extractExpressions: records the same whole-field versus embedded context that replacement uses", () => {
+  const expression = "${{ {'token': vault.get('v', 'k')} }}";
+  for (
+    const [text, embedded] of [
+      [expression, false],
+      [expression + "  ", false],
+      ["prefix:" + expression, true],
+      [expression + " suffix", true],
+      [expression + expression, true],
+      [" " + expression, true],
+    ] as const
+  ) {
+    const expressions = extractExpressions({ env: [text] });
+    assertEquals(
+      expressions.every((entry) => (entry.embedded ?? false) === embedded),
+      true,
+      text,
+    );
+    const splices: string[] = [];
+    replaceExpressions(
+      { env: [text] },
+      new Map([[expression, { token: "value" }]]),
+      undefined,
+      {
+        whole: (value) => {
+          splices.push("whole");
+          return value;
+        },
+        embedded: (text) => {
+          splices.push("embedded");
+          return text;
+        },
+      },
+    );
+    assertEquals(
+      splices,
+      expressions.map(() => embedded ? "embedded" : "whole"),
+    );
+  }
+});

@@ -693,6 +693,38 @@ Deno.test(
           `${join(dir, "models")}`,
         );
         assertStringIncludes(usage?.error ?? "", "globalArguments.token:1:1");
+        for (
+          const [value, passed] of [
+            ['prefix:${{ {"token": vault.get("default", "token")} }}', false],
+            ['${{ [vault.get("default", "token")] }} suffix', false],
+            ['${{ {"token": vault.get("default", "token")} }}', true],
+            ['prefix:${{ vault.get("default", "token") }}', true],
+          ] as const
+        ) {
+          const interpolated = Definition.create({
+            name: "interpolated",
+            globalArguments: { token: value },
+            methods: { create: { arguments: { env: { TOKEN: value } } } },
+          });
+          const outcome = await typed.validateModel(
+            interpolated,
+            modelDef,
+            type,
+          );
+          const usage = outcome.results.find((r) => r.name === "Secret usage");
+          assertEquals(usage?.passed, passed, value);
+          if (!passed) {
+            assertStringIncludes(
+              usage?.error ?? "",
+              "secret_operation_unsupported",
+            );
+            assertStringIncludes(usage?.error ?? "", "globalArguments.token:");
+            assertStringIncludes(
+              usage?.error ?? "",
+              "methods.create.arguments.env.TOKEN:",
+            );
+          }
+        }
       } finally {
         store.close();
       }
