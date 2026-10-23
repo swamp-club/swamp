@@ -62,14 +62,16 @@ const ENV = {
 
 const logger = getLogger(["test"]);
 
-/** npm, its download counts and OSV, answering for ms 2.1.3 only. */
+/** npm, its download counts and OSV, answering for ms 2.1.2 and 2.1.3. */
 function fakeRegistries(url: string | URL): Promise<Response> {
   const host = new URL(String(url)).host;
   if (host === "registry.npmjs.org") {
+    const manifest = { license: "MIT", maintainers: [{ name: "a" }] };
+    const published = new Date().toISOString();
     return Promise.resolve(Response.json({
       "dist-tags": { latest: "2.1.3" },
-      versions: { "2.1.3": { license: "MIT", maintainers: [{ name: "a" }] } },
-      time: { "2.1.3": new Date().toISOString() },
+      versions: { "2.1.2": manifest, "2.1.3": manifest },
+      time: { "2.1.2": published, "2.1.3": published },
     }));
   }
   if (host === "api.npmjs.org") {
@@ -367,3 +369,119 @@ for (
     });
   });
 }
+
+Deno.test("extension push (package.json, nested node_modules): audits and records each installed copy under one declared range (swamp-club#3793)", async () => {
+  await withAuthor(npmLayout, async (author) => {
+    // A workspace member declares the same range and installs its own copy,
+    // which Deno resolves for the module beside it.
+    const member = join(author, "extensions", "models", "member");
+    await write(
+      join(member, "package.json"),
+      JSON.stringify({ dependencies: { "ms": "^2.1.0" } }) + "\n",
+    );
+    await writePackage(
+      join(member, "node_modules", "ms"),
+      "ms",
+      "2.1.2",
+      MS_CODE,
+    );
+    await write(
+      join(member, "also.ts"),
+      'import ms from "ms";\nexport const also = { took: ms(3) };\n',
+    );
+    await write(
+      join(author, "manifest.yaml"),
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/package-json-push",
+        version: "2026.10.22.1",
+        models: ["took.ts", "member/also.ts"],
+      }),
+    );
+
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: author,
+      outputMode: "log",
+    });
+    const resolved = await resolveExtensionFiles({
+      repoDir: author,
+      manifestPath: join(author, "manifest.yaml"),
+      repoContext,
+      logger,
+      moduleGraphReader: new DenoInfoModuleGraphReader(
+        Deno.execPath(),
+        ENV,
+        { readOnlyLock: true },
+      ),
+    });
+
+    const audited: DependencySpecifier[] = [];
+    const prepared = await extensionPushPrepare(
+      createLibSwampContext(),
+      stubDeps(audited),
+      {
+        manifest: resolved.manifest,
+        bareImports: resolved.bareImports,
+        repoDir: author,
+        manifestDir: author,
+        modelsDir: resolved.modelsDir,
+        allModelFiles: resolved.allModelFiles,
+        modelEntryPoints: resolved.modelEntryPoints,
+        vaultsDir: resolved.vaultsDir,
+        allVaultFiles: resolved.allVaultFiles,
+        vaultEntryPoints: resolved.vaultEntryPoints,
+        datastoresDir: resolved.datastoresDir,
+        allDatastoreFiles: resolved.allDatastoreFiles,
+        datastoreEntryPoints: resolved.datastoreEntryPoints,
+        reportsDir: resolved.reportsDir,
+        allReportFiles: resolved.allReportFiles,
+        reportEntryPoints: resolved.reportEntryPoints,
+        webhooksDir: resolved.webhooksDir,
+        allWebhookFiles: resolved.allWebhookFiles,
+        webhookEntryPoints: resolved.webhookEntryPoints,
+        workflowFiles: resolved.workflowFiles,
+        skillDirs: resolved.skillDirs,
+        allSkillFiles: resolved.allSkillFiles,
+        includeFilePaths: resolved.includeFilePaths,
+        additionalFilePaths: resolved.additionalFilePaths,
+        binaryFilePaths: resolved.binaryFilePaths,
+        dataFilesByKind: resolved.dataFilesByKind,
+        sourcePlan: resolved.sourcePlan,
+        missingModules: resolved.missingModules,
+        entryPointsReachingSymlinks: resolved.entryPointsReachingSymlinks,
+        packageJsonDir: resolved.packageJsonDir,
+        dryRun: true,
+        registryChecks: "skip",
+      },
+    );
+
+    const files = await archiveFiles(prepared.archiveBytes);
+    assertEquals(
+      files.get("models/member/also.ts"),
+      'import ms from "npm:ms@2.1.2";\nexport const also = { took: ms(3) };\n',
+    );
+    assertEquals(
+      audited.map((s) => [s.name, s.version, s.installedVersion]).sort(),
+      [["ms", "^2.1.0", "2.1.2"], ["ms", "^2.1.0", "2.1.3"]],
+    );
+    assertEquals(JSON.parse(files.get("dependency-audit.json") ?? ""), {
+      recordVersion: 1,
+      dependencies: [
+        {
+          registry: "npm",
+          name: "ms",
+          spec: "2.1.2",
+          version: "2.1.2",
+          from: "installed",
+        },
+        {
+          registry: "npm",
+          name: "ms",
+          spec: "2.1.3",
+          version: "2.1.3",
+          from: "installed",
+        },
+      ],
+    });
+  });
+});

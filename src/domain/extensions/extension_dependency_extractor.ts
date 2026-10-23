@@ -253,10 +253,23 @@ export function importMapResolver(imports: ImportMap): BareImportResolver {
   };
 }
 
+/**
+ * A specifier's identity for deduplication: an installed package.json
+ * dependency ships pinned to its installed version, so two installed copies
+ * under one declared range are two dependencies (swamp-club#3793).
+ */
 function specifierKey(
-  spec: { registry: string; name: string; version: string | null },
+  spec: {
+    registry: string;
+    name: string;
+    version: string | null;
+    installedVersion?: string;
+  },
 ): string {
-  return `${spec.registry}:${spec.name}@${spec.version ?? ""}`;
+  const key = `${spec.registry}:${spec.name}@${spec.version ?? ""}`;
+  return spec.installedVersion === undefined
+    ? key
+    : `${key}#${spec.installedVersion}`;
 }
 
 /**
@@ -343,8 +356,9 @@ export async function extractDependencySpecifiers(
       continue;
     }
     for (const spec of extractSpecifiersFromSource(source, file, resolver)) {
-      // Each version of a package is audited: two specifiers can ship two
-      // different versions. A written specifier replaces a mapped one.
+      // Each version of a package is audited: two specifiers, or two
+      // installed copies, can ship two different versions. A written
+      // specifier replaces a mapped one.
       const key = specifierKey(spec);
       const existing = seen.get(key);
       if (!existing || (existing.importedAs && !spec.importedAs)) {

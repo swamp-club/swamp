@@ -410,6 +410,59 @@ Deno.test("extractDependencySpecifiers: a written import in one file replaces th
   });
 });
 
+Deno.test("extractDependencySpecifiers: two installed copies under one declared range are each audited (swamp-club#3793)", async () => {
+  await withTempDir(async (dir) => {
+    const a = join(dir, "a.ts");
+    const b = join(dir, "b.ts");
+    const c = join(dir, "c.ts");
+    for (const file of [a, b, c]) {
+      await Deno.writeTextFile(file, `import ms from "ms";`);
+    }
+    const installed = (importer: string, version: string) => ({
+      importer,
+      specifier: "ms",
+      target: `npm:ms@${version}`,
+      installedVersion: version,
+      declared: "npm:ms@^2.1.0",
+    });
+    const specs = await extractDependencySpecifiers(
+      [a, b, c],
+      bareImportResolverFrom([
+        installed(a, "2.1.3"),
+        installed(b, "2.1.2"),
+        installed(c, "2.1.3"),
+      ]),
+    );
+    assertEquals(
+      specs.map((s) => [s.version, s.installedVersion, s.sourceFile]),
+      [["^2.1.0", "2.1.3", a], ["^2.1.0", "2.1.2", b]],
+    );
+  });
+});
+
+Deno.test("extractDependencySpecifiers: a written import never replaces an installed copy under the same range (swamp-club#3793)", async () => {
+  await withTempDir(async (dir) => {
+    const a = join(dir, "a.ts");
+    const b = join(dir, "b.ts");
+    await Deno.writeTextFile(a, `import ms from "ms";`);
+    await Deno.writeTextFile(b, `import ms from "npm:ms@^2.1.0";`);
+    const specs = await extractDependencySpecifiers(
+      [a, b],
+      bareImportResolverFrom([{
+        importer: a,
+        specifier: "ms",
+        target: "npm:ms@2.1.3",
+        installedVersion: "2.1.3",
+        declared: "npm:ms@^2.1.0",
+      }]),
+    );
+    assertEquals(
+      specs.map((s) => [s.version, s.installedVersion, s.sourceFile]),
+      [["^2.1.0", "2.1.3", a], ["^2.1.0", undefined, b]],
+    );
+  });
+});
+
 Deno.test("extractDependencySpecifiers: audits JavaScript code modules too", async () => {
   await withTempDir(async (dir) => {
     const js = join(dir, "helper.js");
@@ -558,6 +611,32 @@ Deno.test("extractSpecifiersFromSource: an installed package.json dependency car
       installedVersion: "4.3.4",
       sourceFile: file,
       importedAs: "debug",
+    },
+  ]);
+});
+
+Deno.test("extractSpecifiersFromSource: a written import and an installed copy under the same range are both audited (swamp-club#3793)", () => {
+  const file = "/ext/models/a.ts";
+  const specs = extractSpecifiersFromSource(
+    'import ms from "npm:ms@^2.1.0";\nimport msToo from "ms";\n',
+    file,
+    bareImportResolverFrom([{
+      importer: file,
+      specifier: "ms",
+      target: "npm:ms@2.1.3",
+      installedVersion: "2.1.3",
+      declared: "npm:ms@^2.1.0",
+    }]),
+  );
+  assertEquals(specs, [
+    { name: "ms", version: "^2.1.0", registry: "npm", sourceFile: file },
+    {
+      name: "ms",
+      version: "^2.1.0",
+      registry: "npm",
+      installedVersion: "2.1.3",
+      sourceFile: file,
+      importedAs: "ms",
     },
   ]);
 });
