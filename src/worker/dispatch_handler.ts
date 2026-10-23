@@ -310,6 +310,42 @@ async function handleDispatch(
   ctx: RpcHandlerContext,
   options: DispatchHandlerOptions,
 ): Promise<DispatchResult> {
+  let started: WorkerDispatchEvent | undefined;
+  let finished = false;
+  const start = performance.now();
+  try {
+    return await runDispatch(rawParams, ctx, {
+      ...options,
+      onDispatch: (event) => {
+        if (event.kind === "dispatch_started") started = event;
+        else finished = true;
+        options.onDispatch?.(event);
+      },
+    });
+  } catch (error) {
+    // A dispatch that fails before its runner reports (the spawn, the
+    // bootstrap frame) still finishes, so the worker's count of running
+    // dispatches stays exact (swamp-club#3854).
+    if (started !== undefined && !finished) {
+      options.onDispatch?.({
+        kind: "dispatch_finished",
+        dispatchId: started.dispatchId,
+        modelType: started.modelType,
+        methodName: started.methodName,
+        status: "error",
+        durationMs: performance.now() - start,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
+}
+
+async function runDispatch(
+  rawParams: unknown,
+  ctx: RpcHandlerContext,
+  options: DispatchHandlerOptions,
+): Promise<DispatchResult> {
   const params = DispatchParamsSchema.parse(rawParams);
   const execution = params.execution;
   const start = performance.now();

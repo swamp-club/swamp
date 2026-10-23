@@ -37,6 +37,7 @@ import {
 import {
   buildRunnerBootstrapParams,
   registerDispatchHandler,
+  type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { RunnerBootstrapParamsSchema } from "./runner_protocol.ts";
 import { context, trace } from "@opentelemetry/api";
@@ -167,6 +168,39 @@ Deno.test("buildRunnerEnvironment: trace headers overlay on top of snapshot", ()
   assertEquals(env["API_KEY"], "secret");
   // Only W3C trace headers reach the spawn env; other keys are dropped.
   assertEquals("LD_PRELOAD" in env, false);
+});
+
+Deno.test("registerDispatchHandler: a dispatch whose runner cannot be spawned still reports it finished (swamp-club#3854)", async () => {
+  const { worker, orchestrator } = channelPair();
+  const events: WorkerDispatchEvent[] = [];
+  registerDispatchHandler({
+    channel: worker,
+    sessionCredential: () => "test-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
+    runnerCommand: { cmd: "/nonexistent/swamp-runner", args: [] },
+    onDispatch: (event) => events.push(event),
+  });
+
+  let failed = false;
+  try {
+    await orchestrator.call(WorkerMethod.dispatch, dispatchParams(), {
+      timeoutMs: 5_000,
+    });
+  } catch {
+    failed = true;
+  }
+  assertEquals(failed, true);
+  assertEquals(events.map((e) => e.kind), [
+    "dispatch_started",
+    "dispatch_finished",
+  ]);
+  const finished = events[1];
+  assertEquals(
+    finished.kind === "dispatch_finished" ? finished.status : undefined,
+    "error",
+  );
 });
 
 Deno.test("registerDispatchHandler: draining rejects with worker_draining", async () => {

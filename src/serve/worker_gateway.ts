@@ -391,17 +391,19 @@ export class WorkerGateway {
   }
 
   /**
-   * Shuts the gateway down: its timers are cleared and no enrollment verify
-   * starts or records a result, so no transition begins later, and the
-   * transitions already queued are awaited, so a worker status recorded
-   * during shutdown is written before the process exits (swamp-club#3854).
-   * The wait is bounded by `deadlineMs`, so a write that never settles does
-   * not hold up the rest of shutdown.
+   * Shuts the gateway down (swamp-club#3854). Every connected worker is
+   * removed, its socket closed and its disconnect queued, so the socket
+   * closing later opens no grace window; timers are cleared and no
+   * enrollment verify starts or records a result, so no transition begins
+   * later. The transitions queued are then awaited, so the workers' status
+   * is written before serve stops its datastore. The wait is bounded by
+   * `deadlineMs`, so a write that never settles does not hold up the rest
+   * of shutdown.
    */
   async close(deadlineMs: number = GATEWAY_CLOSE_DEADLINE_MS): Promise<void> {
     this.#closing = true;
     this.dispose();
-    for (const entry of this.#workers.values()) {
+    for (const entry of [...this.#workers.values()]) {
       if (entry.graceTimer !== undefined) {
         clearTimeout(entry.graceTimer);
         entry.graceTimer = undefined;
@@ -410,6 +412,14 @@ export class WorkerGateway {
         clearTimeout(entry.expiryTimer);
         entry.expiryTimer = undefined;
       }
+      if (entry.channel === null) continue;
+      const name = entry.name;
+      this.#removeWorker(entry, "serve shutting down");
+      // #recordDisconnected logs its own failures, so this never rejects.
+      this.#recordTransition(
+        "worker_disconnected",
+        () => this.#recordDisconnected(name),
+      ).catch(() => {});
     }
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<"expired">((resolve) => {

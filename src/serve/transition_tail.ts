@@ -99,7 +99,13 @@ export class TransitionTail {
    */
   async settled(): Promise<void> {
     while (this.#pending > 0) {
-      await this.#tail;
+      const tail = this.#tail;
+      await tail;
+      // A count the chain no longer moves must not spin on microtasks: a
+      // full turn lets a caller's timer still fire.
+      if (tail === this.#tail && this.#pending > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
   }
 }

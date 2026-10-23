@@ -105,7 +105,11 @@ async function withCopy(
     );
   } finally {
     setV3ReplicationForTesting(undefined);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 }
 

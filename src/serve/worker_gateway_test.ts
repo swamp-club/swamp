@@ -659,18 +659,35 @@ Deno.test("WorkerGateway: close does not wait on an enrollment probe, and the pr
   // A full turn for the verify to resume; nothing it could record is awaited.
   await new Promise((r) => setTimeout(r, 0));
   assertEquals(
-    h.transitions.filter((t) => t.methodName === "set_status").length,
+    h.transitions.filter((t) => t.inputs.status === "idle").length,
     0,
   );
-  assertEquals(h.gateway.workers()[0].status, "unverified");
+});
+
+Deno.test("WorkerGateway: close disconnects a connected worker and records it before resolving, and its socket closing later opens no grace window (swamp-club#3854)", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+
+  await h.gateway.close();
+  assertEquals(h.transitions.at(-1)?.inputs.status, "disconnected");
+  assertEquals(h.gateway.workers().length, 0);
+  assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
+  // The socket's own close event, arriving after shutdown began.
+  dropSocket();
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.disconnected.length, 0);
 });
 
 Deno.test("WorkerGateway: close gives up at its deadline on a write that never settles (swamp-club#3854)", async () => {
   const held = Promise.withResolvers<void>();
+  let written = false;
   const h = createHarness({
     graceWindowMs: 60_000,
     runModelMethod: async (input) => {
-      if (input.inputs.status === "disconnected") await held.promise;
+      if (input.inputs.status !== "disconnected") return;
+      await held.promise;
+      written = true;
     },
   });
   const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
@@ -678,6 +695,8 @@ Deno.test("WorkerGateway: close gives up at its deadline on a write that never s
   dropSocket();
   try {
     await h.gateway.close(10);
+    // The deadline ended the wait, not the write.
+    assertEquals(written, false);
   } finally {
     held.resolve();
   }
