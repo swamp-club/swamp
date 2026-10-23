@@ -316,3 +316,13 @@ Deno.test("doctorVaults: no fallback warning without sensitive outputs", async (
 
   assertEquals(data.fallbackWarning, undefined);
 });
+
+Deno.test("doctorVaults: an empty defaultVault is reported as unset, not as a missing vault", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, sensitiveModel, true),
+    { userVaultNames: ["infra", "local-secrets"], configuredDefaultVault: "" },
+  ));
+
+  assertEquals(data.fallbackWarning?.fallbackVault, "infra");
+  assertEquals("unregisteredDefaultVault" in data.fallbackWarning!, false);
+});

@@ -71,6 +71,7 @@ Deno.test("doctor_vaults log renderer: warns about the fallback vault and still 
   assertStringIncludes(out, "pve-auth");
   assertStringIncludes(out, "defaultVault: <vault>");
   assertStringIncludes(out, "(defaultVault is not set)");
+  assertStringIncludes(out, "(1 definition(s) scanned, 1 warning)");
   assert(!out.includes("not a vault in this repository"));
 });
 
@@ -104,6 +105,7 @@ Deno.test("doctor_vaults log renderer: no fallback warning when none applies", a
 
   assertEquals(r.overallStatus, "pass");
   assert(!out.includes("are stored in"));
+  assert(!out.includes("warning)"));
 });
 
 Deno.test("doctor_vaults json renderer: includes fallbackWarning only when it applies", async () => {

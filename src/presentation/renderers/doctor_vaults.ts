@@ -75,7 +75,7 @@ function renderFallbackWarningLog(data: DoctorVaultsData): void {
   }
   writeOutput(
     dim(
-      `  With no default vault, swamp uses the first of ${warning.userVaults.length} vaults by vault type, then id (the order of 'swamp vault list'): ${
+      `  Without a registered default vault, swamp uses the first of ${warning.userVaults.length} vaults by vault type, then id (the order of 'swamp vault list'): ${
         warning.userVaults.join(", ")
       }.`,
     ),
@@ -111,7 +111,13 @@ class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
               bold(
                 "All behaviors with sensitive outputs have a vault configured",
               )
-            } ${dim(`(${data.scanned} definition(s) scanned)`)}`,
+            } ${
+              dim(
+                `(${data.scanned} definition(s) scanned${
+                  data.fallbackWarning ? ", 1 warning" : ""
+                })`,
+              )
+            }`,
           );
           renderUnresolvedLog(data);
           renderFallbackWarningLog(data);

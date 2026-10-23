@@ -246,7 +246,8 @@ function vaultFallbackWarning(
   return {
     fallbackVault: state.userVaultNames[0],
     userVaults: state.userVaultNames,
-    ...(state.configuredDefaultVault !== undefined
+    // An empty defaultVault is no setting at all, not a missing vault.
+    ...(state.configuredDefaultVault
       ? { unregisteredDefaultVault: state.configuredDefaultVault }
       : {}),
     definitions,
