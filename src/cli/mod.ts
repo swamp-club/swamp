@@ -2233,7 +2233,9 @@ document:
 
     { "error": "<message>", "code": "<error_code>" }
 
-Match on "code"; the message text can change between releases.
+Match on "code" when it is present (an error without a stable identifier
+has none, and other fields may appear); the message text can change
+between releases.
 
 Exit codes, shared by every command:
 

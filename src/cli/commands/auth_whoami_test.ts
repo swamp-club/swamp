@@ -34,7 +34,7 @@ Deno.test("authWhoamiCommand exposes the status alias", async () => {
 Deno.test("authWhoamiCommand: description tells serverUrl from the serve orchestrator", async () => {
   const { authWhoamiCommand } = await import("./auth_whoami.ts");
   const description = authWhoamiCommand.getDescription();
-  assertStringIncludes(description, "serverUrl is the swamp-club site");
+  assertStringIncludes(description, "serverUrl: the swamp-club site");
   assertStringIncludes(description, "SWAMP_CLUB_URL");
   assertStringIncludes(description, "effectiveServeUrl");
 });

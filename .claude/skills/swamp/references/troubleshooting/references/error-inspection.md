@@ -26,7 +26,9 @@ Every swamp command exposes the same surfaces. Cover them in order:
    debug logs.
 2. **Stdout** — command output. In `--json` mode the structured payload lands
    here; a failure's error goes to stderr as one JSON document,
-   `{ "error": "<message>", "code": "<error_code>" }`. Match on `code`.
+   `{ "error": "<message>", "code": "<error_code>" }`. Match on `code` when it
+   is present; an error without a stable identifier has none, and other fields
+   may appear.
 3. **Exit code** — see [Exit codes](#exit-codes). Doctor commands exit `1` on
    any check fail; CI should gate on this.
 4. **Audit log** — `.swamp/audit/<date>.jsonl` records every CLI action with

@@ -34,12 +34,10 @@ export const authWhoamiCommand = new Command()
   .alias("status")
   .description(
     "Show current authenticated identity.\n\n" +
-      "serverUrl is the swamp-club site you are signed in to " +
-      "(SWAMP_CLUB_URL, set with 'swamp auth login --club'). The 'swamp serve' " +
-      "orchestrator that --server, SWAMP_SERVE_URL and SWAMP_SERVER_URL route " +
-      "commands to is a different server; whoami reports it as " +
-      "effectiveServeUrl (Serve: in log output) when SWAMP_SERVE_URL or " +
-      "SWAMP_SERVER_URL is set.",
+      "serverUrl: the swamp-club site you are signed in to (SWAMP_CLUB_URL, " +
+      "set with 'swamp auth login --club').\n" +
+      "effectiveServeUrl (Serve: in log output): the 'swamp serve' orchestrator " +
+      "SWAMP_SERVE_URL or SWAMP_SERVER_URL routes commands to, when set.",
   )
   .example("Show current identity", "swamp auth whoami")
   .example("Show current identity (alias)", "swamp auth status")

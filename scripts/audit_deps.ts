@@ -122,6 +122,11 @@ const OSV_API = "https://api.osv.dev/v1";
 const FETCH_TIMEOUT_MS = 30_000;
 const DETAIL_CONCURRENCY = 8;
 
+interface AcceptedFinding {
+  pkg: PackageInfo;
+  advisory: AcceptedAdvisory;
+}
+
 interface VulnFinding {
   pkg: PackageInfo;
   vulns: OsvVulnerability[];
@@ -344,6 +349,7 @@ function formatChain(chain: string[]): string {
 async function writeGitHubSummary(
   direct: VulnFinding[],
   transitive: VulnFinding[],
+  accepted: AcceptedFinding[],
 ): Promise<void> {
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (!summaryFile) return;
@@ -382,6 +388,19 @@ async function writeGitHubSummary(
       }
       lines.push("");
     }
+  }
+
+  if (accepted.length > 0) {
+    lines.push("### Accepted Advisories\n");
+    lines.push(
+      "Listed in `ACCEPTED_ADVISORIES`; each fails the build again from its review date.\n",
+    );
+    for (const { pkg, advisory } of accepted) {
+      lines.push(
+        `- \`${pkg.name}@${pkg.version}\` ${advisory.id}, review by ${advisory.reviewBy}: ${advisory.reason}`,
+      );
+    }
+    lines.push("");
   }
 
   if (direct.length === 0 && transitive.length === 0) {
@@ -516,7 +535,7 @@ async function main(): Promise<void> {
   // Set aside accepted advisories; a package with any other advisory still
   // fails on that one.
   const today = new Date().toISOString().slice(0, 10);
-  const accepted: { pkg: PackageInfo; advisory: AcceptedAdvisory }[] = [];
+  const accepted: AcceptedFinding[] = [];
   for (let i = direct.length - 1; i >= 0; i--) {
     const finding = direct[i];
     finding.vulns = finding.vulns.filter((vuln) => {
@@ -533,7 +552,7 @@ async function main(): Promise<void> {
   }
 
   // Write GitHub Actions job summary
-  await writeGitHubSummary(direct, transitive);
+  await writeGitHubSummary(direct, transitive, accepted);
 
   if (direct.length === 0 && transitive.length === 0) {
     console.log("No known vulnerabilities found.");

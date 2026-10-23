@@ -61,7 +61,7 @@ export const authLoginCommand = new Command()
   )
   .option(
     "--club, --server <url:string>",
-    "swamp-club URL to sign in to (env: SWAMP_CLUB_URL); --server is the kept older spelling and has nothing to do with 'swamp serve'",
+    "swamp-club URL to sign in to (env: SWAMP_CLUB_URL; --server: kept older spelling, not 'swamp serve')",
   )
   .option("--username <username:string>", "Username or email")
   .option("--password <password:string>", "Password (omit to prompt)")
