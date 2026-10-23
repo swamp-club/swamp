@@ -942,11 +942,55 @@ export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
     root,
   );
   if (decision.kind === "defer") {
+    // Kept lineages wait for an operator, not for a later lineage: said on
+    // every deferral, with what to do (swamp-club#3801).
+    const kept = await v3KeptLineages(copy.datastorePath);
+    if (kept.length > 0) {
+      throw new V3ChunkCollectionDeferredError(
+        copy.datastorePath,
+        `${kept.length} replication lineage(s) (${
+          kept.map((lineage) => padFence(lineage.fence)).join(", ")
+        }) are kept because they may hold commits the current lineage lacks`,
+        "once they are recovered and removed by hand: `swamp doctor " +
+          "datastores` lists them and says how",
+      );
+    }
     throw new V3ChunkCollectionDeferredError(
       copy.datastorePath,
       decision.reason,
     );
   }
+}
+
+/** A replication lineage collection keeps for an operator (swamp-club#3801). */
+export interface V3KeptLineage {
+  readonly fence: number;
+  readonly replicaRoot: string;
+  readonly holder: string;
+  readonly startedAt: string;
+}
+
+/**
+ * The lineages collection keeps because they may hold commits the current
+ * lineage lacks, lowest fence first: those `lineage/<fence>/kept.json`
+ * records whose lineage still has its start. Read-only.
+ */
+export async function v3KeptLineages(
+  datastorePath: string,
+): Promise<V3KeptLineage[]> {
+  const registry = lineageRegistryFor(datastorePath);
+  const kept: V3KeptLineage[] = [];
+  for (const fence of [...await registry.kept()].sort((a, b) => a - b)) {
+    const started = await registry.started(fence);
+    if (typeof started !== "object") continue;
+    kept.push({
+      fence,
+      replicaRoot: started.replicaRoot,
+      holder: started.holder,
+      startedAt: started.startedAt,
+    });
+  }
+  return kept;
 }
 
 /**

@@ -116,6 +116,7 @@ import {
   prepareV3WriterLineage,
   publishV3Head,
 } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
+import { inspectV3KeptLineages } from "../src/infrastructure/datastore_v3/v3_content_inspection.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
 import {
@@ -325,6 +326,44 @@ Deno.test({
         outputMode: "json",
       });
       assert(repoContext.commitLog !== undefined, "the context commits on v3");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: doctor's kept-lineage check reads the lineages the bucket's control plane records as kept (swamp-club#3801)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      // As doctor reads it, from the repository's datastore config.
+      const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+      const kept = () => inspectV3KeptLineages({ repoDir, datastoreConfig });
+      assertEquals(await kept(), []);
+      const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
+      const registry = lineageRegistryFor(location.path);
+      await registry.start({
+        fence: 4,
+        holder: "ci@runner",
+        replicaRoot: "s3:http://proxy:1:team-bucket:",
+        startedAt: "2026-10-22T18:00:00.000Z",
+      });
+      await registry.keep(4);
+      assertEquals(await kept(), [{
+        fence: 4,
+        replicaRoot: "s3:http://proxy:1:team-bucket:",
+        holder: "ci@runner",
+        startedAt: "2026-10-22T18:00:00.000Z",
+      }]);
+      assert(
+        [...bucket.remote.controlPlaneRecords().keys()].includes(
+          "_control/lineage/000000000004/kept.json",
+        ),
+        "the record is in the bucket's control plane",
+      );
     });
   },
 });

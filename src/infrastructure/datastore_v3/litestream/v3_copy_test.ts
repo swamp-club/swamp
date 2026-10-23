@@ -18,9 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
+  V3ChunkCollectionDeferredError,
   V3ReplicaRootMismatchError,
   V3ReplicationError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
@@ -47,6 +53,7 @@ import {
 } from "../../../domain/datastore_v3/v3_test_helpers.ts";
 import { SqliteCommitStore } from "../sqlite_commit_store.ts";
 import {
+  assertV3ChunksCollectable,
   collectV3Lineages,
   lineageRegistryFor,
   makeV3CopyCurrent,
@@ -54,6 +61,7 @@ import {
   publishV3Head,
   recordV3LeaseFence,
   type V3Copy,
+  v3KeptLineages,
   V3LineageOutrankedError,
 } from "./v3_copy.ts";
 
@@ -881,6 +889,42 @@ Deno.test({
       });
       assertEquals(removed, ["000000000003", "000000000006"]);
       assert(await startOf(env, 5) !== undefined, "5 is kept");
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "assertV3ChunksCollectable: every deferral while lineages are kept names them and how to resolve them (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true });
+      await publish(env, 5, { confirmed: true, root: PROXIED_BUCKET_ROOT });
+      await publish(env, 7, { confirmed: true, follows: 5 });
+      const registry = lineageRegistryFor(env.copy.datastorePath);
+      await registry.keep(3);
+      // Not every gc run decides to keep them: each still says so.
+      for (let run = 0; run < 2; run++) {
+        const error = await assertRejects(
+          () => assertV3ChunksCollectable(env.copy),
+          V3ChunkCollectionDeferredError,
+        );
+        assertStringIncludes(
+          error.message,
+          "1 replication lineage(s) (000000000003) are kept",
+        );
+        assertStringIncludes(error.message, "swamp doctor datastores");
+      }
+      assertEquals(
+        (await v3KeptLineages(env.copy.datastorePath)).map((l) => l.fence),
+        [3],
+      );
+      // A kept record whose lineage is gone lists nothing, and holds
+      // nothing up: removing the lineage removes its record too.
+      await registry.remove(3);
+      assertEquals(await v3KeptLineages(env.copy.datastorePath), []);
+      assertEquals([...await registry.kept()], []);
     }, { setting: BUCKET_REPLICA });
   },
 });

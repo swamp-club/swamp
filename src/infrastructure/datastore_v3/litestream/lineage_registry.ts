@@ -299,7 +299,9 @@ export class LineageRegistry {
     for (const writer of (await this.#list()).get(fence)?.heads ?? []) {
       await this.store.delete(headKeyOf(fence, writer));
     }
-    for (const name of ["confirmed", "started"] as const) {
+    // A kept lineage is removed only by hand, or by a swamp before
+    // swamp-club#3801; its record goes with it.
+    for (const name of ["kept", "confirmed", "started"] as const) {
       await this.store.delete(keyOf(fence, name));
     }
   }

@@ -4991,7 +4991,11 @@ may lag the datastore's. An inspection that throws (a read-only state
 directory, where SQLite cannot create the WAL's shared-memory file) is a
 failed `v3_content` check, "Could not inspect this v3 checkout's content",
 while the other checks still report, so `doctor datastores` exits 1 in that
-v3 checkout.
+v3 checkout. Its `v3_kept_lineages` check (swamp-club#3801) lists, on every
+run, the replication lineages collection keeps because they may hold commits
+the current lineage lacks (JSON key `v3KeptLineagesFinding`), and fails while
+any remain: chunk collection waits on them. `datastore-litestream.md`,
+"Recovering kept replication lineages", is the manual way out.
 
 **Run artifacts.** On v3 a data save reports its content's checksum, and the
 `DataArtifactRef`s built from it record `sha256`. A streamed version reports

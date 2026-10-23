@@ -925,6 +925,49 @@ records and is kept the same way: it costs storage, never commits. An
 older swamp still collects lineages of its own spelling below its current
 one, kept or not, as it always did.
 
+#### Recovering kept replication lineages
+
+`swamp doctor datastores` reports kept lineages on every run (the
+`v3_kept_lineages` check, and `v3KeptLineagesFinding` in `--json`): each
+one's fence, replica root, holder and start time. While any remain,
+`swamp datastore gc` refuses chunk collection on every run and names them.
+There is no repair command; an operator resolves them by hand:
+
+1. **Restore a kept lineage to a scratch file.** Use the Litestream swamp
+   pins (`~/.swamp/litestream/<version>/litestream`) with a config naming the
+   lineage's replica path, `<prefix>/_litestream/<fence>` in the bucket, and
+   the bucket's `region`, `endpoint` and `force-path-style` as the datastore
+   uses them:
+
+   ```yaml
+   dbs:
+     - path: "/tmp/kept-<fence>.db"
+       replica:
+         type: s3
+         bucket: "<bucket>"
+         path: "<prefix>/_litestream/<fence>"
+         endpoint: "<endpoint>"
+   ```
+
+   then `litestream restore -config kept.yml -o /tmp/kept-<fence>.db
+   /tmp/kept-<fence>.db`.
+2. **Tell whether it holds commits the current state lacks.** The checkout's
+   own copy is `.swamp/_datastore_v3_copies/<key>/commits.db`, current after
+   any command. Commits are named by `(namespace, partition, txn_id)` in the
+   `commits` table: any row in the kept lineage's file whose triple is
+   missing from the copy is a commit only that lineage holds. None missing
+   means nothing is lost: go to step 4.
+3. **Recover what is missing.** Each missing row's `body` is the commit's
+   operations. Re-run the work that produced them in a checkout of the
+   current state (rerun the method or workflow, or re-put the data), rather
+   than copying rows between databases: the current lineage's sequence
+   numbers and fences differ.
+4. **Remove the lineage.** Delete its records under the datastore's control
+   plane, `_control/lineage/<fence>/` (`started.json`, `confirmed.json`,
+   every `head-*.json` and `kept.json`), then its replica path
+   `<prefix>/_litestream/<fence>/`. Once no kept lineage remains, the next
+   collection runs.
+
 > **Decision: head, then confirmation, then the lease check.** A writer's
 > end of command is: sync, publish the head, publish the confirmation (the
 > first time), check the lease, acknowledge. A model-based property test
