@@ -18,13 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { join, relative } from "@std/path";
 import {
   countYamlRunFiles,
   deleteRunIndex,
   fingerprintMatches,
   getIndexPath,
   INDEX_SCHEMA_VERSION,
+  indexQueueGeneration,
   isIndexStale,
   readRunIndex,
   removeRunIndexes,
@@ -256,6 +257,25 @@ Deno.test("withIndexQueue: a failed function rejects its caller and does not hol
 
   await assertRejects(() => failed, Error, "index write failed");
   assertEquals(await next, "ran");
+});
+
+Deno.test("indexQueueGeneration: identifies the queue tail across equivalent paths and clears it after failure", async () => {
+  await withTempDir(async (dir) => {
+    const alias = relative(Deno.cwd(), dir);
+    const release = Promise.withResolvers<void>();
+    const first = withIndexQueue(dir, () => release.promise);
+    const generation = indexQueueGeneration(dir);
+    assertEquals(indexQueueGeneration(alias), generation);
+    const second = withIndexQueue(
+      alias,
+      () => Promise.reject(new Error("failed")),
+    );
+    assertEquals(indexQueueGeneration(dir) === generation, false);
+    const rejected = assertRejects(() => second, Error, "failed");
+    release.resolve();
+    await Promise.all([first, rejected]);
+    assertEquals(indexQueueGeneration(dir), undefined);
+  });
 });
 
 Deno.test("statRecord: fingerprints a file, and is null for one that is gone", async () => {

@@ -328,28 +328,50 @@ Deno.test("RunIndexCache: reads from a stamp too recent to trust do not share a 
   assertEquals(h.cache.runs, 0);
 });
 
-Deno.test("RunIndexCache: a read waiting on a load whose own reader was aborted loads for itself", async () => {
+Deno.test("RunIndexCache: cancelling the initiating reader keeps its shared load alive for a follower", async () => {
   const h = harness();
   h.stamps.set("wf", stampAt(OLD, OLD));
-  const d = deferredLoads();
+  const ready = Promise.withResolvers<AbortSignal>();
+  const release = Promise.withResolvers<LoadedRunIndex>();
   const abort = new AbortController();
-  const aborted = h.cache.get("wf", d.load(snapshotOf(1)), abort.signal);
-  const waiting = h.cache.get("wf", d.load(snapshotOf(2)));
-  await waitFor(
-    () => Promise.resolve(d.releases.length >= 1),
-    "the first read to start loading",
-  );
-  assertEquals(d.releases.length, 1);
-  abort.abort();
-  d.releases[0](new DOMException("stopped", "AbortError"));
-  await assertRejects(() => aborted, DOMException, "stopped");
-  await waitFor(
-    () => Promise.resolve(d.releases.length >= 2),
-    "the waiting read to load for itself",
-  );
-  const fresh = snapshotOf(2);
-  d.releases[1]({ snapshot: fresh, fromIndex: true });
-  assertStrictEquals(await waiting, fresh);
+  const first = h.cache.get("wf", (signal) => {
+    ready.resolve(signal);
+    return release.promise;
+  }, abort.signal);
+  const rejected = assertRejects(() => first, DOMException, "stopped");
+  const waiting = h.cache.get("wf", h.load(snapshotOf(2)));
+  const sharedSignal = await ready.promise;
+  abort.abort(new DOMException("stopped", "AbortError"));
+  await rejected;
+  assertEquals(sharedSignal.aborted, false);
+  const snapshot = snapshotOf(3);
+  release.resolve({ snapshot, fromIndex: true });
+  assertStrictEquals(await waiting, snapshot);
+  assertEquals(h.loads, 0);
+  assertEquals(h.cache.runs, 3);
+});
+
+Deno.test("RunIndexCache: cancelling every reader stops the loader and a later read retries", async () => {
+  const h = harness();
+  h.stamps.set("wf", stampAt(OLD, OLD));
+  const ready = Promise.withResolvers<AbortSignal>();
+  const release = Promise.withResolvers<LoadedRunIndex>();
+  const abort = new AbortController();
+  const first = h.cache.get("wf", (signal) => {
+    ready.resolve(signal);
+    return release.promise;
+  }, abort.signal);
+  const rejected = assertRejects(() => first, DOMException, "stopped");
+  const sharedSignal = await ready.promise;
+  abort.abort(new DOMException("stopped", "AbortError"));
+  await rejected;
+  assertEquals(sharedSignal.aborted, true);
+  const snapshot = snapshotOf(2);
+  assertStrictEquals(await h.cache.get("wf", h.load(snapshot)), snapshot);
+  // The old load finishes after its replacement. It must neither remove
+  // the replacement nor cache a result that nobody is waiting for.
+  release.resolve({ snapshot: snapshotOf(1), fromIndex: true });
+  assertStrictEquals(await h.cache.get("wf", h.load(snapshotOf(9))), snapshot);
   assertEquals(h.cache.runs, 2);
 });
 
@@ -402,37 +424,30 @@ Deno.test("RunIndexCache.get: a read that waits on another read's load records j
   });
 });
 
-Deno.test("RunIndexCache.get: a read whose shared load's reader was aborted records that it loaded for itself", async () => {
+Deno.test("RunIndexCache.get: a follower records sharing even if the initiating reader cancels", async () => {
   await withCapturedSpans(async (spans) => {
     const h = harness();
     const workflowId = crypto.randomUUID();
     h.stamps.set(workflowId, stampAt(OLD, OLD));
     const d = deferredLoads();
     const abort = new AbortController();
-    const aborted = h.cache.get(
-      workflowId,
-      d.load(snapshotOf(1)),
-      abort.signal,
-    );
+    const first = h.cache.get(workflowId, d.load(snapshotOf(1)), abort.signal);
+    const rejected = assertRejects(() => first, DOMException, "stopped");
     const waiting = h.cache.get(workflowId, d.load(snapshotOf(2)));
     await waitFor(
       () => Promise.resolve(d.releases.length >= 1),
-      "the first read to start loading",
+      "the shared load to start",
     );
-    abort.abort();
-    d.releases[0](new DOMException("stopped", "AbortError"));
-    await assertRejects(() => aborted, DOMException, "stopped");
-    await waitFor(
-      () => Promise.resolve(d.releases.length >= 2),
-      "the waiting read to load for itself",
-    );
-    d.releases[1]({ snapshot: snapshotOf(2), fromIndex: true });
+    abort.abort(new DOMException("stopped", "AbortError"));
+    await rejected;
+    d.releases[0]({ snapshot: snapshotOf(2), fromIndex: true });
     await waiting;
-
+    assertEquals(d.releases.length, 1);
     const loads = spans.filter((s) => s.name === INDEX_LOAD_SPAN);
     assertEquals(loads.length, 2);
-    for (const load of loads) {
-      assertEquals(load.attributes["run_index.joined_inflight"], false);
-    }
+    assertEquals(
+      loads.map((s) => s.attributes["run_index.joined_inflight"]).sort(),
+      [false, true],
+    );
   });
 });

@@ -1,6 +1,6 @@
 ---
 audience: maintainer, operator
-last-verified: 2026-10-20 @ b0bbe4832
+last-verified: 2026-10-23 @ 645153e9d
 ---
 
 # Workflows
@@ -3222,6 +3222,23 @@ otherwise waits for `swamp run doctor` (`verifyIndexes`), or for a read of
 that run. An index of another schema version is rebuilt from every record
 (`YamlWorkflowRunRepository`).
 
+Readers whose repairs wait behind the same index work share one validation
+pass, including approvals and run selection (swamp-club#3857). The group closes
+when its pass starts or another index operation is queued. Every member's
+validation therefore starts after it observed the invalid index, in the same
+queue order as a separate repair would. A reader that arrives during a rebuild
+joins the next queued validation. Several such readers pay for one fingerprint
+scan after the rebuild, not one each. They cannot reuse the rebuild just
+because its count now agrees: an intervening writer may have changed a record
+and published an old index entry. No completed repair is kept, and this sharing
+does not rely on file timestamp precision. The record directory and local index
+directory together identify the group, including across repository instances.
+
+Each reader may cancel its wait independently. The shared operation has its own
+abort signal and stops between records only once every reader has left. Its
+queue slot and registration are released on success, failure or cancellation,
+so a later read can retry. Repair spans count the work once per shared pass.
+
 Run retention and `swamp run gc` keep the index. Once a pass has removed a
 workflow's records, it drops their entries in the index queue, each only while
 its record is still gone, and removes the index once no record is left. A
@@ -3267,8 +3284,8 @@ A read that misses while a load of the same workflow from the same stamp is in
 flight waits for that load instead of starting another, so many readers after
 one write build the snapshot once. A load that started from an older stamp is
 not shared, since it may predate the write. Neither is one whose stamp is too
-recent to trust. A read that waited on a load whose own reader was aborted
-loads for itself. `swamp serve` and the local
+recent to trust. A cancelled reader releases its wait without cancelling a load
+another reader still needs. `swamp serve` and the local
 dashboard child fill the cache in the background once they are listening
 (`RunIndexWarmup`, `src/serve/run_index_warmup.ts`). They read one workflow at
 a time, so requests that arrive meanwhile interleave with the warm-up or wait
@@ -3277,17 +3294,17 @@ counts its record files; a workflow with more runs than the cache holds is
 skipped, since its snapshot would not be kept. That listing is repeated when
 the index is then read, a cost the warm-up pays only once at startup. Shutdown
 aborts the warm-up before it drains runs, and waits for it after the drain. The
-warm-up passes its abort signal into each read, so its own rebuild or repair
-stops between records without writing the index. Shutdown does not wait for the
-read in flight to end, though (swamp-club#3468): a plain read of an intact
-index, a load a request started, or a repair queued behind another reader does
-not watch that signal. The warm-up stops waiting for it at once and leaves it
-to finish in the background. The continuation sweep reads each workflow's
-index too, to list its suspended runs, and shutdown disposes it after the
-drain. Disposing aborts the sweep's own signal, which reaches that read in the
-same way (swamp-club#3472): its rebuild or repair stops between records and
-writes no index, and the pass stops waiting at once, even for a read queued
-behind a request's rebuild. A run continuation the pass already started is
+warm-up passes its abort signal into each read. Its rebuild or repair stops
+between records once no other reader needs it. Shutdown does not wait for the
+read in flight to end, though (swamp-club#3468): filesystem reads already
+underway and shared work another reader needs may continue. The warm-up races
+its signal against each dependency's promise and stops waiting at once, even
+if the dependency cannot be cancelled. The continuation sweep reads each
+workflow's index too, to list its suspended runs, and shutdown disposes it after
+the drain. Disposing aborts the sweep's own signal, which reaches that read in the
+same way (swamp-club#3472): its rebuild or repair stops between records once no
+other reader needs it, and the pass stops waiting at once, even for a read
+queued behind a request's rebuild. A run continuation the pass already started is
 still awaited, so the claim it took is released while the instance is live.
 The run search and run summary handlers pass no signal to their reads, but
 shutdown does not wait for those reads.

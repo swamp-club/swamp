@@ -37,8 +37,8 @@ export interface RunIndexWarmupDeps {
    */
   maxRuns: number;
   /**
-   * Reads one workflow's run index snapshot, which keeps it cached. Stops
-   * when `signal` aborts, between records if it is rebuilding the index.
+   * Reads one workflow's run index snapshot, which keeps it cached. The caller
+   * stops when `signal` aborts; shared work continues for its other readers.
    */
   warm(workflowId: string, signal: AbortSignal): Promise<unknown>;
 }
@@ -48,14 +48,15 @@ export interface RunIndexWarmupDeps {
  * dashboard's first requests find them cached rather than building them
  * (swamp-club#3443). One workflow at a time, so requests that arrive
  * meanwhile interleave with it; a request for a workflow it is loading
- * waits on that load rather than starting another, and loads it itself if
- * the warm-up stops first. A workflow whose index cannot be read is left to
- * the request that needs it, as is one with more runs than the cache keeps.
+ * waits on that load rather than starting another. Stopping the warm-up
+ * releases its wait without cancelling a request sharing the load. A workflow
+ * whose index cannot be read is left to the request that needs it, as is one
+ * with more runs than the cache keeps.
  *
- * Stopping does not wait for the load in flight (swamp-club#3468): a plain
- * read of the index, a load a request started, or a repair queued behind
- * another reader does not watch the warm-up's signal, and would hold
- * shutdown for as long as it takes.
+ * Stopping does not wait for the load in flight (swamp-club#3468): filesystem
+ * reads already underway and shared work another reader needs may continue.
+ * The warm-up races its own signal against each dependency's promise so even
+ * an uncancellable dependency cannot hold shutdown for as long as it takes.
  */
 export class RunIndexWarmup {
   readonly #deps: RunIndexWarmupDeps;
@@ -85,8 +86,8 @@ export class RunIndexWarmup {
 
   /**
    * Stops the warm-up without waiting for it. It lets go of the load in
-   * flight at once; that load stops between records and writes no index if
-   * it is the warm-up's own rebuild or repair, and otherwise runs on
+   * flight at once; that load stops between records if no other reader
+   * needs its rebuild or repair, and otherwise runs on
    * unwatched. Shutdown calls this before it drains runs, and waits with
    * `finished` after.
    */

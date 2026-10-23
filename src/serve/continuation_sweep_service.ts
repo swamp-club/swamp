@@ -73,9 +73,9 @@ export async function sweepContinuations(
     isStopping?: () => boolean;
     /**
      * Aborts the listing of a workflow's suspended runs: a rebuild or repair
-     * of its run index stops between records and writes no index, and the
-     * pass stops waiting for the listing at once, even one queued behind
-     * another reader of the index (swamp-club#3472).
+     * of its run index stops between records and writes no index once no
+     * other reader needs it. The pass stops waiting for the listing at once,
+     * even one queued behind another reader of the index (swamp-club#3472).
      */
     signal?: AbortSignal;
     /** The clock deadlines and backoffs are read against, for tests. */
@@ -134,9 +134,9 @@ export async function sweepContinuations(
 
 /**
  * A workflow's suspended runs, or {@link STOPPED} once `signal` aborts
- * first. The listing is then let go: its own rebuild or repair stops at the
- * next record and writes no index, and a wait in the index queue or a plain
- * read of the index finishes unwatched.
+ * first. The listing is then let go: a rebuild or repair stops at the next
+ * record if no other reader needs it. Shared work and a plain read of the
+ * index finish without holding up the sweep's shutdown.
  */
 async function listSuspendedRuns(
   runRepo: ConnectionContext["repoContext"]["workflowRunRepo"],

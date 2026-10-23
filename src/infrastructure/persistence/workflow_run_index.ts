@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -214,6 +214,17 @@ export function isIndexStale(
 const indexQueues = new Map<string, Promise<unknown>>();
 
 /**
+ * Identity of the work last queued for an index. A pending repair may gain a
+ * reader only while it is still the tail: a writer queued since must precede
+ * that reader's validation, even if its write restores the record count.
+ */
+export function indexQueueGeneration(
+  workflowRunsDir: string,
+): Promise<unknown> | undefined {
+  return indexQueues.get(getIndexPath(resolve(workflowRunsDir)));
+}
+
+/**
  * Runs `fn` after every index operation already queued for the same index
  * directory in this process, so one read-modify-write of the index file
  * never interleaves with another. A failed `fn` does not hold up the ones
@@ -223,7 +234,7 @@ export async function withIndexQueue<T>(
   workflowRunsDir: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = getIndexPath(workflowRunsDir);
+  const key = getIndexPath(resolve(workflowRunsDir));
   // A queued tail never rejects, so `fn` runs whatever happened before it.
   const run = (indexQueues.get(key) ?? Promise.resolve()).then(fn);
   const tail = run.then(() => {}, () => {});

@@ -3143,6 +3143,120 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: removes the repo-loc
 
 // --- Incremental index repair (swamp-club#3443, swamp-club#3407) ---
 
+for (const missing of [true, false]) {
+  Deno.test(`repairIndex: queued readers share one ${missing ? "rebuild" : "validation"} across repository instances (swamp-club#3857)`, async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const other = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+      const indexDir = localRunsDir(dir, workflow.id);
+      const indexPath = getIndexPath(indexDir);
+      const runs = await saveRunningRuns(repo, workflow, 3);
+      if (missing) await Deno.remove(indexPath);
+      else await dropIndexEntries(indexDir, [runs[0].id]);
+
+      const release = Promise.withResolvers<void>();
+      const held = withIndexQueue(indexDir, () => release.promise);
+      const original = Deno.readTextFile;
+      let observed = 0;
+      Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+        try {
+          return await original(...args);
+        } finally {
+          if (String(args[0]) === indexPath) observed++;
+        }
+      };
+      const reading: Promise<unknown>[] = [];
+      try {
+        await withCapturedSpans(async (spans) => {
+          const summaries = repo.findAllSummariesFromIndex(workflow.id);
+          const status = other.findSummariesByStatus(workflow.id, "running");
+          const latest = other.findLatestByWorkflowId(workflow.id);
+          reading.push(summaries, status, latest);
+          await waitFor(
+            () => Promise.resolve(observed === 3),
+            "all readers to observe the invalid index",
+          );
+          release.resolve();
+          const [all, running, last] = await Promise.all([
+            summaries,
+            status,
+            latest,
+          ]);
+          assertEquals(all.length, 3);
+          assertEquals(running.length, 3);
+          assert(last && runs.some((run) => run.id === last.id));
+          const repairs = spans.filter((s) =>
+            s.name === "swamp.workflow_runs.index.repair"
+          );
+          assertEquals(repairs.length, 1);
+          assertEquals(
+            repairs[0].attributes["workflow_runs.records_read"],
+            missing ? 0 : 1,
+          );
+          assertEquals(
+            spans.filter((s) => s.name === "swamp.workflow_runs.index.rebuild")
+              .length,
+            missing ? 1 : 0,
+          );
+        });
+      } finally {
+        release.resolve();
+        await held;
+        await Promise.allSettled(reading);
+        Deno.readTextFile = original;
+      }
+    });
+  });
+}
+
+Deno.test("repairIndex: cancelling the first queued reader does not cancel its peers (swamp-club#3857)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    await saveRunningRuns(repo, workflow, 2);
+    await Deno.remove(indexPath);
+    const release = Promise.withResolvers<void>();
+    const held = withIndexQueue(indexDir, () => release.promise);
+    const abort = new AbortController();
+    const original = Deno.readTextFile;
+    let observed = 0;
+    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (String(args[0]) === indexPath) observed++;
+      }
+    };
+    const first = repo.findSummariesByStatus(
+      workflow.id,
+      "running",
+      abort.signal,
+    );
+    const rejected = assertRejects(() => first, DOMException, "stopped");
+    const peer = repo.findAllSummariesFromIndex(workflow.id);
+    try {
+      await waitFor(
+        () => Promise.resolve(observed === 2),
+        "both reads to queue",
+      );
+      abort.abort(new DOMException("stopped", "AbortError"));
+      // Cancellation returns even while the index queue is still held.
+      await rejected;
+      release.resolve();
+      assertEquals((await peer).length, 2);
+    } finally {
+      abort.abort();
+      release.resolve();
+      await held;
+      await Promise.allSettled([rejected, peer]);
+      Deno.readTextFile = original;
+    }
+  });
+});
+
 /** Rewrites a workflow's run index without the entries of `runIds`. */
 async function dropIndexEntries(indexDir: string, runIds: string[]) {
   const result = await readRunIndex(indexDir);
@@ -3153,6 +3267,178 @@ async function dropIndexEntries(indexDir: string, runIds: string[]) {
     JSON.stringify({ version: INDEX_SCHEMA_VERSION, entries }),
   );
 }
+
+Deno.test("repairIndex: cancelling a snapshot initiator preserves both snapshot and repair followers (swamp-club#3857)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      () => Date.now() + 60_000,
+    );
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    await saveRunningRuns(repo, workflow, 2);
+    await Deno.remove(indexPath);
+    const release = Promise.withResolvers<void>();
+    const held = withIndexQueue(indexDir, () => release.promise);
+    const abort = new AbortController();
+    const original = Deno.readTextFile;
+    let observed = 0;
+    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (String(args[0]) === indexPath) observed++;
+      }
+    };
+    const first = repo.runIndexSnapshot(workflow.id, abort.signal);
+    const rejected = assertRejects(() => first, DOMException, "stopped");
+    const reading: Promise<unknown>[] = [rejected];
+    try {
+      await waitFor(
+        () => Promise.resolve(observed === 1),
+        "snapshot loader to queue",
+      );
+      const snapshot = repo.runIndexSnapshot(workflow.id);
+      const status = repo.findSummariesByStatus(workflow.id, "running");
+      reading.push(snapshot, status);
+      await waitFor(
+        () => Promise.resolve(observed === 2),
+        "status reader to join the repair",
+      );
+      abort.abort(new DOMException("stopped", "AbortError"));
+      await rejected;
+      release.resolve();
+      assertEquals((await snapshot).size, 2);
+      assertEquals((await status).length, 2);
+    } finally {
+      abort.abort();
+      release.resolve();
+      await held;
+      await Promise.allSettled(reading);
+      Deno.readTextFile = original;
+    }
+  });
+});
+
+Deno.test("repairIndex: different record directories never share a repair through the same local index (swamp-club#3857)", async () => {
+  await withTempDir(async (dir) => {
+    const firstRepo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      join(dir, "store-a"),
+    );
+    const secondRepo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      join(dir, "store-b"),
+    );
+    const workflow = createTestWorkflow();
+    const [firstRun] = await saveRunningRuns(firstRepo, workflow, 1);
+    const [secondRun] = await saveRunningRuns(secondRepo, workflow, 1);
+    const indexDir = localRunsDir(dir, workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    await Deno.remove(indexPath);
+    const release = Promise.withResolvers<void>();
+    const held = withIndexQueue(indexDir, () => release.promise);
+    const original = Deno.readTextFile;
+    let observed = 0;
+    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (String(args[0]) === indexPath) observed++;
+      }
+    };
+    const first = firstRepo.findAllSummariesFromIndex(workflow.id);
+    const second = secondRepo.findAllSummariesFromIndex(workflow.id);
+    try {
+      await waitFor(
+        () => Promise.resolve(observed === 2),
+        "both repositories to observe the missing index",
+      );
+      release.resolve();
+      assertEquals((await first).map((run) => run.id), [firstRun.id]);
+      assertEquals((await second).map((run) => run.id), [secondRun.id]);
+    } finally {
+      release.resolve();
+      await held;
+      await Promise.allSettled([first, second]);
+      Deno.readTextFile = original;
+    }
+  });
+});
+
+Deno.test("repairIndex: a writer queued between readers separates their validations (swamp-club#3857)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    const [finished, added] = await saveRunningRuns(repo, workflow, 2);
+    const staleEntry = (await readRunIndex(indexDir))!.entries[finished.id];
+    finished.interruptOrphaned("test");
+    await repo.save(workflow.id, finished);
+    await dropIndexEntries(indexDir, [added.id]);
+    const release = Promise.withResolvers<void>();
+    const held = withIndexQueue(indexDir, () => release.promise);
+    const original = Deno.readTextFile;
+    let observed = 0;
+    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (String(args[0]) === indexPath) observed++;
+      }
+    };
+    const reading: Promise<unknown>[] = [];
+    try {
+      await withCapturedSpans(async (spans) => {
+        const first = repo.findAllSummariesFromIndex(workflow.id);
+        reading.push(first);
+        await waitFor(
+          () => Promise.resolve(observed === 1),
+          "first reader to queue",
+        );
+        const writer = withIndexQueue(indexDir, async () => {
+          const current = (await readRunIndex(indexDir))!;
+          current.entries[finished.id] = staleEntry;
+          await Deno.writeTextFile(indexPath, JSON.stringify(current));
+        });
+        reading.push(writer);
+        const second = repo.findAllSummariesFromIndex(workflow.id);
+        reading.push(second);
+        await waitFor(
+          () => Promise.resolve(observed === 2),
+          "later reader to observe its mismatch",
+        );
+        release.resolve();
+        await Promise.all([first, writer]);
+        assertEquals(
+          (await second).find((run) => run.id === finished.id)?.status,
+          "interrupted",
+        );
+        assertEquals(
+          (await readRunIndex(indexDir))!.entries[finished.id].status,
+          "interrupted",
+        );
+        assertEquals(
+          spans.filter((s) => s.name === "swamp.workflow_runs.index.repair")
+            .length,
+          2,
+        );
+      });
+    } finally {
+      release.resolve();
+      await held;
+      await Promise.allSettled(reading);
+      Deno.readTextFile = original;
+    }
+  });
+});
 
 /** Counts reads of run record files while `fn` runs. */
 async function countingRecordReads<T>(
@@ -3170,6 +3456,115 @@ async function countingRecordReads<T>(
     Deno.readTextFile = original;
   }
 }
+
+Deno.test("repairIndex: cancelling every queued reader leaves the index untouched and permits a new cohort (swamp-club#3857)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    await saveRunningRuns(repo, workflow, 2);
+    await Deno.remove(indexPath);
+    const release = Promise.withResolvers<void>();
+    const held = withIndexQueue(indexDir, () => release.promise);
+    const controllers = [new AbortController(), new AbortController()];
+    const original = Deno.readTextFile;
+    let observed = 0;
+    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (String(args[0]) === indexPath) observed++;
+      }
+    };
+    const rejected = controllers.map((controller) => {
+      const read = repo.findSummariesByStatus(
+        workflow.id,
+        "running",
+        controller.signal,
+      );
+      return assertRejects(() => read, DOMException, "stopped");
+    });
+    const reading: Promise<unknown>[] = [...rejected];
+    try {
+      await waitFor(
+        () => Promise.resolve(observed === 2),
+        "both readers to queue",
+      );
+      for (const controller of controllers) {
+        controller.abort(new DOMException("stopped", "AbortError"));
+      }
+      await Promise.all(rejected);
+      assertEquals(await pathExists(indexPath), false);
+      // The cancelled queue slot has not run yet. Its eventual cleanup must
+      // not delete this replacement's registration.
+      const next = repo.findAllSummariesFromIndex(workflow.id);
+      const peer = repo.findSummariesByStatus(workflow.id, "running");
+      reading.push(next, peer);
+      await waitFor(
+        () => Promise.resolve(observed === 4),
+        "replacement readers to queue",
+      );
+      release.resolve();
+      assertEquals((await next).length, 2);
+      assertEquals((await peer).length, 2);
+    } finally {
+      for (const controller of controllers) controller.abort();
+      release.resolve();
+      await held;
+      await Promise.allSettled(reading);
+      Deno.readTextFile = original;
+    }
+  });
+});
+
+Deno.test("repairIndex: a shared parse failure reaches every reader and the next read retries (swamp-club#3857)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const indexDir = localRunsDir(dir, workflow.id);
+    const indexPath = getIndexPath(indexDir);
+    const [run] = await saveRunningRuns(repo, workflow, 1);
+    const path = repo.getPath(workflow.id, run.id);
+    const record = await Deno.readTextFile(path);
+    await Deno.writeTextFile(path, "status: [");
+    await Deno.remove(indexPath);
+    const release = Promise.withResolvers<void>();
+    const held = withIndexQueue(indexDir, () => release.promise);
+    const original = Deno.readTextFile;
+    let observed = 0;
+    Deno.readTextFile = async (...args: Parameters<typeof original>) => {
+      try {
+        return await original(...args);
+      } finally {
+        if (String(args[0]) === indexPath) observed++;
+      }
+    };
+    const failed = [
+      assertRejects(() => repo.findAllSummariesFromIndex(workflow.id)),
+      assertRejects(() => repo.findSummariesByStatus(workflow.id, "running")),
+    ];
+    try {
+      await waitFor(
+        () => Promise.resolve(observed === 2),
+        "both readers to queue",
+      );
+      release.resolve();
+      await Promise.all(failed);
+      assertEquals(await pathExists(indexPath), false);
+      await Deno.writeTextFile(path, record);
+      assertEquals(
+        (await repo.findAllSummariesFromIndex(workflow.id)).length,
+        1,
+      );
+    } finally {
+      release.resolve();
+      await held;
+      await Promise.allSettled(failed);
+      Deno.readTextFile = original;
+    }
+  });
+});
 
 Deno.test("getValidatedIndex: a count mismatch reads only the records the index does not list", async () => {
   await withTempDir(async (dir) => {
