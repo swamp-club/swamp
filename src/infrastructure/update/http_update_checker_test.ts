@@ -31,6 +31,7 @@ import {
   type BinaryFileOps,
   cleanupStaleBinary,
   HttpUpdateChecker,
+  replaceBinary,
   replaceBinaryWindows,
 } from "./http_update_checker.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
@@ -1215,6 +1216,46 @@ Deno.test({
 
       assertEquals(archivesAtReplace, [false]);
       assertEquals((await Deno.stat(binaryPath)).mode! & 0o777, 0o755);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "replaceBinary: permission denied on the rename gives the shared permission message",
+  // The Windows strategy has its own tests above
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const root = await Deno.makeTempDir({ prefix: "swamp-update-test-" });
+    try {
+      const targetPath = join(root, "swamp");
+      const sourcePath = join(root, "staged");
+      await Deno.writeTextFile(targetPath, "old binary");
+      await Deno.writeTextFile(sourcePath, "new binary");
+      const ops: BinaryFileOps = {
+        rename: () =>
+          Promise.reject(new Deno.errors.PermissionDenied("not permitted")),
+        copyFile: (from, to) => Deno.copyFile(from, to),
+        remove: (path) => Deno.remove(path),
+      };
+
+      const error = await assertRejects(() =>
+        replaceBinary(sourcePath, targetPath, ops)
+      );
+
+      assertInstanceOf(error, UserError);
+      assertStringIncludes(
+        error.message,
+        `Cannot update ${targetPath}: permission denied.`,
+      );
+      // The test user owns the directory: the shared builder's chmod hint,
+      // not the old unconditional sudo hint
+      if (Deno.uid() !== 0) {
+        assertStringIncludes(error.message, `chmod u+w ${root}`);
+      }
+      assertEquals(await Deno.readTextFile(targetPath), "old binary");
     } finally {
       await Deno.remove(root, { recursive: true }).catch(() => {});
     }

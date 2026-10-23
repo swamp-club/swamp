@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, join } from "@std/path";
+import { dirname, isAbsolute, join, relative } from "@std/path";
 import type { Platform } from "./platform.ts";
 import type { DownloadOptions } from "./download_progress.ts";
 import { validateRedirectUrl } from "./integrity.ts";
@@ -100,6 +100,107 @@ export function parseVersionFromRedirectUrl(url: string): string | null {
   return match ? match[1] : null;
 }
 
+/** What decides the hint when an update cannot replace the binary. */
+export interface PermissionDeniedFacts {
+  os: typeof Deno.build.os;
+  binaryPath: string;
+  /** The user's home directory; undefined when HOME is unset. */
+  homeDir?: string;
+  /** Owner of the binary's directory; null when it cannot be read. */
+  dirOwnerUid: number | null;
+  currentUid: number | null;
+  /** The user's login name; undefined when USER is unset. */
+  userName?: string;
+}
+
+function isWithin(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The message for an update that cannot write the binary's directory.
+ * Suggests sudo only for a root-owned directory outside the home directory;
+ * sudo on a binary in a user's directory leaves it owned by root.
+ */
+export function permissionDeniedMessage(facts: PermissionDeniedFacts): string {
+  const prefix = `Cannot update ${facts.binaryPath}: permission denied.`;
+  if (facts.os === "windows") {
+    return `${prefix} Try running the terminal as Administrator.`;
+  }
+  const dir = dirname(facts.binaryPath);
+  const { dirOwnerUid, currentUid, homeDir } = facts;
+  const underHome = homeDir !== undefined && homeDir !== "" &&
+    isWithin(homeDir, dir);
+  if (
+    dirOwnerUid === null || currentUid === null ||
+    (dirOwnerUid === 0 && !underHome)
+  ) {
+    return `${prefix} Re-run with: sudo swamp update`;
+  }
+  if (dirOwnerUid === currentUid) {
+    return `${prefix} ${dir} is owned by you but is not writable. ` +
+      `Make it writable, then run swamp update without sudo:\n\n` +
+      `  chmod u+w ${dir}`;
+  }
+  const user = facts.userName || "$(whoami)";
+  return `${prefix} ${dir} is owned by another user (uid ${dirOwnerUid}), ` +
+    `so swamp cannot replace the binary in it. Give the directory to your ` +
+    `user, then run swamp update without sudo:\n\n` +
+    `  sudo chown ${user} ${dir}`;
+}
+
+/**
+ * The warning after an update run as root into a directory a non-root user
+ * owns: the new binary is now root-owned there, and sudo was not needed.
+ */
+export function needlessRootUpdateWarning(
+  binaryPath: string,
+  currentUid: number | null,
+  dirOwnerUid: number | null,
+): string | undefined {
+  if (currentUid !== 0 || dirOwnerUid === null || dirOwnerUid === 0) {
+    return undefined;
+  }
+  return `Updated ${binaryPath} as root, so it is now owned by root, but ` +
+    `its directory is owned by uid ${dirOwnerUid}. sudo is not needed ` +
+    `here: run swamp update without sudo next time, which also makes your ` +
+    `user the owner of the binary again.`;
+}
+
+function currentUid(): number | null {
+  try {
+    return Deno.uid();
+  } catch {
+    return null;
+  }
+}
+
+async function directoryOwnerUid(binaryPath: string): Promise<number | null> {
+  try {
+    return (await Deno.stat(dirname(binaryPath))).uid;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The permission-denied message for `binaryPath`, from the live directory
+ * owner, user and home directory.
+ */
+export async function describePermissionDenied(
+  binaryPath: string,
+): Promise<string> {
+  return permissionDeniedMessage({
+    os: Deno.build.os,
+    binaryPath,
+    homeDir: Deno.env.get("HOME"),
+    dirOwnerUid: await directoryOwnerUid(binaryPath),
+    currentUid: currentUid(),
+    userName: Deno.env.get("USER"),
+  });
+}
+
 /**
  * Domain service for self-update operations.
  */
@@ -161,53 +262,29 @@ export class UpdateService {
   }
 
   /**
-   * Check whether the process can write to the binary path.
+   * Check whether the process can replace the binary.
    * Throws a UserError with remediation advice if not.
    *
-   * On Windows the running binary is locked and cannot be opened for writing,
-   * so we probe directory writability instead — the rename-then-replace
-   * strategy only needs write access to the containing directory.
+   * Every OS installs by renaming a new file into the binary's directory, so
+   * only write access to that directory matters — not to the binary itself,
+   * which may be read-only or owned by another user (swamp-club#3817).
    */
   async checkWritePermission(): Promise<void> {
-    const permissionHint = Deno.build.os === "windows"
-      ? "Try running the terminal as Administrator."
-      : "Re-run with: sudo swamp update";
-
-    if (Deno.build.os === "windows") {
-      const probeFile = join(
-        dirname(this.binaryPath),
-        `.swamp.tmp.${crypto.randomUUID()}`,
-      );
-      try {
-        await Deno.writeTextFile(probeFile, "");
-        await Deno.remove(probeFile);
-      } catch (error) {
-        if (error instanceof Deno.errors.PermissionDenied) {
-          throw markErrorPaths(
-            new UserError(
-              `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
-            ),
-            [this.binaryPath],
-          );
-        }
-        // Other errors (e.g. disk full) are not permission issues
-      }
-      return;
-    }
-
+    const probeFile = join(
+      dirname(this.binaryPath),
+      `.swamp.tmp.${crypto.randomUUID()}`,
+    );
     try {
-      const file = await Deno.open(this.binaryPath, { write: true });
-      file.close();
+      await Deno.writeTextFile(probeFile, "");
+      await Deno.remove(probeFile);
     } catch (error) {
       if (error instanceof Deno.errors.PermissionDenied) {
         throw markErrorPaths(
-          new UserError(
-            `Cannot update ${this.binaryPath}: permission denied. ${permissionHint}`,
-          ),
+          new UserError(await describePermissionDenied(this.binaryPath)),
           [this.binaryPath],
         );
       }
-      // Other errors (e.g. NotFound) are fine — the file may not exist yet
+      // Other errors (e.g. NotFound, disk full) are not permission issues
     }
   }
 
@@ -256,11 +333,19 @@ export class UpdateService {
       options,
     );
 
+    const warnings = [
+      this.devBuildWarning(),
+      needlessRootUpdateWarning(
+        this.binaryPath,
+        currentUid(),
+        await directoryOwnerUid(this.binaryPath),
+      ),
+    ].filter((warning) => warning !== undefined);
     return {
       status: "updated",
       previousVersion: this.currentVersion,
       newVersion: latestVersion,
-      warning: this.devBuildWarning(),
+      warning: warnings.length > 0 ? warnings.join("\n") : undefined,
     };
   }
 }
