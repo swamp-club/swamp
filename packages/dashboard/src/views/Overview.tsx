@@ -20,6 +20,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider.tsx";
 import { useRequest } from "../client/useRequest.ts";
+import {
+  type SharedApprovals,
+  usePageApprovals,
+} from "../client/useApprovals.ts";
 import { extractArray } from "../client/extract.ts";
 import { type ApprovalInfo, pendingApprovals } from "../client/approvals.ts";
 import { useDecidedGates } from "../client/useDecidedGates.ts";
@@ -82,21 +86,24 @@ interface OverviewProps {
   /** Serve refused the health stream for this token. */
   healthDenied: boolean;
   onOpenRun?: (workflowName: string, runId?: string) => void;
-  /** Called after a gate decision or resume, so the sidebar count refreshes. */
-  onApprovalsChanged?: () => void;
+  approvalsRequest: SharedApprovals;
 }
 
 export function Overview(
-  { health, healthDenied, onOpenRun, onApprovalsChanged }: OverviewProps,
+  { health, healthDenied, onOpenRun, approvalsRequest: shared }: OverviewProps,
 ) {
   const healthState = healthViewState(health, healthDenied);
   const queuedFires = totalQueued(health?.scheduling?.schedules ?? []);
   const { request } = useSwamp();
 
   const runsReq = useRequest("workflow.run.search", { limit: 500 });
-  const approvalsReq = useRequest("workflow.approvals");
   const { data: runsData, refetch: refetchRuns } = runsReq;
-  const { data: approvalsData, refetch: refetchApprovals } = approvalsReq;
+  const approvalsRequest = usePageApprovals(shared);
+  const {
+    data: approvalsData,
+    refetch: refetchApprovals,
+    refresh: refreshApprovals,
+  } = approvalsRequest;
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
   const approvals = pendingApprovals(approvalsData);
@@ -107,7 +114,10 @@ export function Overview(
     () => new Set(),
   );
   const runsState = loadState(runsReq, () => runs.length === 0);
-  const approvalsState = loadState(approvalsReq, () => approvals.length === 0);
+  const approvalsState = loadState(
+    approvalsRequest,
+    () => approvals.length === 0,
+  );
   const runsLoading = runsState === "loading";
   const healthLoading = healthState === "loading";
 
@@ -139,9 +149,8 @@ export function Overview(
 
   const refresh = useCallback(() => {
     refetchRuns();
-    refetchApprovals();
-    onApprovalsChanged?.();
-  }, [refetchRuns, refetchApprovals, onApprovalsChanged]);
+    refreshApprovals();
+  }, [refetchRuns, refreshApprovals]);
 
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [resumingRuns, setResumingRuns] = useState<ReadonlySet<string>>(
@@ -401,7 +410,7 @@ export function Overview(
             {approvalsState === "error" && (
               <LoadError
                 subject="approvals"
-                message={approvalsReq.error}
+                message={approvalsRequest.error}
                 onRetry={refetchApprovals}
                 inset
               />

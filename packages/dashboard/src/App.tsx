@@ -30,7 +30,7 @@ import { SwampProvider, useSwamp } from "./client/SwampProvider.tsx";
 import { useAuditStream } from "./client/useAuditStream.ts";
 import { auditEnabled } from "./client/audit_state.ts";
 import { useHealthStream } from "./client/useHealthStream.ts";
-import { useRequest } from "./client/useRequest.ts";
+import { useApprovals } from "./client/useApprovals.ts";
 import { pendingApprovals } from "./client/approvals.ts";
 import { Logo } from "./components/Logo.tsx";
 import { localToken, PAGE_WORKSPACE } from "./client/workspace_path.ts";
@@ -138,8 +138,15 @@ function LocalTokenMissing() {
 }
 
 function AppShell() {
-  const { connected, token, authMode, sessionReady, logout, local } =
-    useSwamp();
+  const {
+    connected,
+    connectionGeneration,
+    token,
+    authMode,
+    sessionReady,
+    logout,
+    local,
+  } = useSwamp();
 
   if (authMode === null || !sessionReady) {
     return <AppShellSkeleton label="Connecting" />;
@@ -155,7 +162,7 @@ function AppShell() {
 
   return (
     <TimeRangeProvider>
-      <Dashboard onLogout={logout} />
+      <Dashboard key={connectionGeneration} onLogout={logout} />
     </TimeRangeProvider>
   );
 }
@@ -178,11 +185,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   );
   const auditStream = useAuditStream();
 
-  const { data: approvalsData, refetch: refetchApprovals } = useRequest(
-    "workflow.approvals",
-  );
+  const approvals = useApprovals();
   // Only gates that can still be decided: expired ones are not pending.
-  const approvalCount = pendingApprovals(approvalsData).length;
+  const approvalCount = pendingApprovals(approvals.data).length;
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -351,7 +356,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   health={health}
                   healthDenied={healthDenied}
                   onOpenRun={openRun}
-                  onApprovalsChanged={refetchApprovals}
+                  approvalsRequest={approvals}
                 />
               )}
               {view === "workflows" && (
@@ -370,7 +375,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "approvals" && (
                 <Approvals
                   health={health}
-                  onApprovalsChanged={refetchApprovals}
+                  approvalsRequest={approvals}
                 />
               )}
               {view === "activity" && <Activity auditStream={auditStream} />}

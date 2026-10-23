@@ -51,6 +51,11 @@ export interface ExpiredGate {
   parentWaiting?: boolean;
 }
 
+/** The shared listing, including replies from serve versions without expired gates. */
+export interface ApprovalsReply {
+  data?: { approvals?: ApprovalInfo[]; expired?: ExpiredGate[] };
+}
+
 /**
  * Reads one list of a `workflow.approvals` reply by its key. The reply holds
  * more than one list, so it is never read by position.
