@@ -363,8 +363,8 @@ Deno.test(
       // key exists once. This vault has no has(), so the check is a probe
       // read. A key in the global arguments of both steps (and one method
       // argument) is one probe and two loads; a key only in a method argument
-      // is one probe and one load. The fields `create` stored are read twice
-      // in the run.
+      // is one probe and one load. Stored fields load only in the trusted
+      // readResource call; expression-facing read-back keeps references.
       assertEquals(
         readCounts(vault),
         Object.fromEntries([
@@ -372,7 +372,7 @@ Deno.test(
             c,
             i,
           ) => [keyOf(i), NOT_GLOBAL.has(c.class) ? 2 : 3]),
-          ...canaries.map((_, i) => [`stored-s${i}`, 2]),
+          ...canaries.map((_, i) => [`stored-s${i}`, 1]),
         ]),
       );
       assert(vault.reads.every((r) => r.vault === VAULT));

@@ -51,6 +51,7 @@ import {
   ExpressionEvaluationService,
 } from "../src/domain/expressions/expression_evaluation_service.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { SENSITIVE_FIELDS_TAG } from "../src/domain/models/data_writer.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
@@ -1618,8 +1619,9 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
       assertEquals(vaultReads, 0);
 
       // Pass 2, gated: the spliced text is left alone and the vault stays cold.
+      const controlValues = new RunSensitiveValues();
       const ctx = await new ModelResolver(definitionRepo, { repoDir, ...repos })
-        .buildContext(new RunSensitiveValues());
+        .buildContext(controlValues);
       const gated = await evalService.evaluateData(
         evaluated.definition.globalArguments,
         ctx,
@@ -1628,14 +1630,19 @@ Deno.test("CEL Data Access: data.latest() on a sensitive field injected through 
       assertEquals(gated.run, injected);
       assertEquals(vaultReads, 0);
 
-      // Control: with the gate open the same fixture reads the vault, so the
-      // zero above is the gate working and not a fixture that never could.
+      // Control: the authored read produces a reference that loads at delivery.
       const open = await evalService.evaluateData(
         evaluated.definition.globalArguments,
         ctx,
         "unrestricted",
       ) as { run: string };
-      assertEquals(open.run, "super-secret-api-key-12345");
+      assertEquals(open.run.startsWith("__SWAMP_VSEC_"), true);
+      assertEquals(vaultReads, 0);
+      const loaded = await evalService.secretLoader(undefined).load(
+        new VaultSecretBag(controlValues.sentinels),
+        open,
+      );
+      assertEquals(loaded.resolveRaw(open.run), "super-secret-api-key-12345");
       assertEquals(vaultReads, 1);
     } finally {
       catalog.close();

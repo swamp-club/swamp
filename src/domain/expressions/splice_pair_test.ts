@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
+import { SecretRefusedError } from "./errors.ts";
+import { ProvenanceMap } from "./provenance_map.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
@@ -155,4 +157,46 @@ Deno.test("sensitiveSpliceSanitizer: keeps issued sentinels at every splice path
     (pair.sanitized.globalArguments.token as string).includes("s3cret-pw"),
     false,
   );
+});
+
+Deno.test("SplicePair.splice: refuses an issued secret in an interpolated container, with plain and whole-field controls", () => {
+  const { bag } = setup();
+  const sentinel = bag.addDataReference(
+    { vaultName: "prod", key: "tls" },
+    "args",
+  );
+  const foreign = "__SWAMP_VSEC_" + "f".repeat(32) + "_0__";
+  for (
+    const provenance of [
+      ProvenanceMap.authored(),
+      ProvenanceMap.authored().graft("other", ProvenanceMap.data()),
+    ]
+  ) {
+    for (const value of [{ key: sentinel }, [sentinel]]) {
+      const error = assertThrows(
+        () =>
+          SplicePair.of(
+            { body: `payload=${recordExpr}` },
+            provenance,
+          ).splice(
+            new Map([[recordExpr, value]]),
+            sensitiveSpliceSanitizer(bag),
+          ),
+        SecretRefusedError,
+      );
+      assertEquals(error.code, "secret_operation_unsupported");
+    }
+  }
+  const plain = SplicePair.of({ body: `payload=${recordExpr}` }).splice(
+    new Map([[recordExpr, { key: foreign }]]),
+    sensitiveSpliceSanitizer(bag),
+  );
+  assertEquals(plain.raw, plain.sanitized);
+  assertEquals(JSON.parse(plain.sanitized.body.slice(8)), { key: foreign });
+  const whole = SplicePair.of<Record<string, unknown>>({ body: recordExpr })
+    .splice(
+      new Map([[recordExpr, { key: sentinel }]]),
+      sensitiveSpliceSanitizer(bag),
+    );
+  assertEquals(whole.sanitized.body, { key: sentinel });
 });

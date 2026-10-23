@@ -85,7 +85,8 @@ function underPath(
       : `${prefix}.${path}`;
   return {
     whole: (value, path) => sanitizer.whole(value, full(path)),
-    embedded: (text, path) => sanitizer.embedded(text, full(path)),
+    embedded: (text, path, value) =>
+      sanitizer.embedded(text, full(path), value),
   };
 }
 

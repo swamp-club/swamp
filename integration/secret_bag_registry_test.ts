@@ -47,6 +47,8 @@ import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts
 import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import { vaultReferenceText } from "../src/domain/secrets/run_sensitive_values.ts";
+import { SecretLoader } from "../src/domain/vaults/secret_loader.ts";
+import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
 import {
   holdsValue,
@@ -299,28 +301,32 @@ Deno.test(
       assertStringIncludes(await shellStdout(repoDir, "first"), "FIRST_OK");
       assertStringIncludes(await shellStdout(repoDir, "second"), "SECOND_OK");
 
-      // The child's workflow bag and each child step's bag issued under
-      // prefixes of their own, into one registry, every entry the same
-      // secret from the same reference. The parent's call step issues none:
-      // a workflow task's inputs cross as values until Phase 4.
+      // Parent and child retain the same unloaded reference in their shared
+      // registry. Each delivery loads a view without filling that registry.
       const entries = [...values.sentinels.all()];
       assertEquals(
         entries.length,
-        3,
+        1,
         JSON.stringify(entries.map((e) => e.sentinel)),
       );
-      assertEquals(prefixesOf(values).size, 3);
+      assertEquals(prefixesOf(values).size, 1);
       for (const entry of entries) {
         assert(isIssuedEntry(entry));
-        assertEquals(holdsValue(entry) && entry.value, SECRET);
+        assertEquals(holdsValue(entry), false);
         assertEquals(entry.dataOrigin, true);
         assertEquals(entry.encoding, "raw");
-        assertEquals(values.sourceOf(SECRET), entry.reference);
+        assertEquals(values.sourceOf(SECRET), undefined);
       }
       // A bag of a later pass resolves any sentinel the run issued, with no
       // rehoming.
-      const later = new VaultSecretBag(values.sentinels);
-      assertEquals(later.isEmpty, true);
+      const bag = new VaultSecretBag(values.sentinels);
+      assertEquals(bag.isEmpty, true);
+      const later = await new SecretLoader(() =>
+        VaultService.fromRepository(repoDir)
+      ).load(
+        bag,
+        entries.map((entry) => entry.sentinel),
+      );
       for (const entry of entries) {
         assertEquals(later.resolveRaw(`<${entry.sentinel}>`), `<${SECRET}>`);
       }
@@ -330,7 +336,9 @@ Deno.test(
       const cached = await new YamlEvaluatedWorkflowRepository(repoDir)
         .findByNameWithProvenance(child.name);
       assert(cached);
-      const reference = vaultReferenceText(values.sourceOf(SECRET)!);
+      const reference = vaultReferenceText(
+        values.sentinels.issuedEntryOf(entries[0].sentinel)!.reference,
+      );
       const stepArgs = cached.workflow.jobs[0].steps.map((step) =>
         JSON.stringify(step.task.data)
       );
@@ -346,7 +354,7 @@ Deno.test(
         assertEquals(written.encoding, "raw");
         assertEquals(
           { vaultName: written.vaultName, key: written.key },
-          values.sourceOf(SECRET),
+          values.sentinels.issuedEntryOf(entries[0].sentinel)!.reference,
         );
       }
     });
@@ -399,17 +407,20 @@ Deno.test(
       assertStringIncludes(stdout, "CHILD_OK");
       assertEquals(VaultSecretBag.SENTINEL_PATTERN.test(stdout), false);
 
-      // The child's workflow bag and step bag drew prefixes of their own in
-      // the parent's registry, and every entry resolves from any view of it.
-      // The child's workflow bag and its step's bag.
+      // The child retains the parent's reference; a delivery view resolves it.
       const entries = [...values.sentinels.all()];
       assertEquals(
         entries.length,
-        2,
+        1,
         JSON.stringify(entries.map((e) => e.sentinel)),
       );
-      assertEquals(prefixesOf(values).size, 2);
-      const view = new VaultSecretBag(values.sentinels);
+      assertEquals(prefixesOf(values).size, 1);
+      const view = await new SecretLoader(() =>
+        VaultService.fromRepository(repoDir)
+      ).load(
+        new VaultSecretBag(values.sentinels),
+        entries.map((entry) => entry.sentinel),
+      );
       for (const entry of entries) {
         assert(isIssuedEntry(entry));
         assertEquals(entry.dataOrigin, true);

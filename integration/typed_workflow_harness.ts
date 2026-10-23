@@ -34,8 +34,7 @@
  * answers existence itself and counts every value it hands out, so a load
  * is a load and a check costs nothing. The internal option is turned on by
  * passing the run its sensitive values over a typed registry, as only tests
- * may; every scenario also runs with the option off and asserts today's
- * behavior.
+ * may. Every scenario uses default production construction.
  */
 
 import { assert, assertEquals } from "@std/assert";

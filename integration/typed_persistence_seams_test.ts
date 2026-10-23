@@ -21,7 +21,7 @@
  * The persistence seams of typed secrets, end to end (design/enablers/
  * typed-secrets.md Sections 8.1, 8.2 and the Persistence row of 12.1,
  * typed-secrets 4.4): a run that suspends and resumes, and a replay of its
- * cache, with the option on and off. Every seam round-trips through
+ * cache. Every seam round-trips through
  * writtenReferences, the run index holds reference text, the output
  * records and the catalog hold neither a value nor a sentinel, a record
  * written with the json, number and boolean encodings of an untyped run
@@ -160,7 +160,7 @@ async function assertCatalogClean(f: Fixture): Promise<void> {
   assertEquals(text.includes(SENTINEL_MARK), false, "catalog sentinel");
 }
 
-Deno.test("typed persistence: a suspended child run's record, caches and index hold references and the persisted maps; the typed resume restores references, loads the rotated values once each at delivery and reruns no completed step; the untyped resume delivers the same", async () => {
+Deno.test("typed persistence: a suspended child run's record, caches and index hold references and the persisted maps; the typed resume restores references, loads the rotated values once each at delivery and reruns no completed step", async () => {
   {
     await withFixture(async (f) => {
       await f.seed();
@@ -263,7 +263,7 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
   }
 });
 
-Deno.test("typed persistence: a typed replay of the evaluated cache reads nothing to restore and the child it calls delivers the rotated values once each; the untyped replay delivers the same", async () => {
+Deno.test("typed persistence: a typed replay of the evaluated cache reads nothing to restore and the child it calls delivers the rotated values once each", async () => {
   // The data read the parent hands the child is deferred to the call step,
   // and a child cache whose inputs held a secret withholds its inputs and is
   // never replayed, so the replay that reaches a delivery end to end is the
