@@ -65,10 +65,15 @@ export interface ControlResponse {
 /** The control calls a sidecar answers. */
 export interface LitestreamControl {
   info(socketPath: string, deadlineMs: number): Promise<LitestreamInfo>;
+  /**
+   * Forces a sync. `signal` ends the wait early as a definite failure: the
+   * caller found the replica's storage unreachable (swamp-club#3802).
+   */
   sync(
     socketPath: string,
     dbPath: string,
     deadlineMs: number,
+    signal?: AbortSignal,
   ): Promise<LitestreamSyncResponse>;
 }
 
@@ -93,9 +98,10 @@ export const unixLitestreamControl: LitestreamControl = {
       ...(typeof pid === "number" ? { pid } : {}),
     };
   },
-  async sync(socketPath, dbPath, deadlineMs) {
+  async sync(socketPath, dbPath, deadlineMs, signal) {
     const response = await controlRequest(socketPath, "POST", "/sync", {
       deadlineMs,
+      ...(signal === undefined ? {} : { signal }),
       // Litestream's own wait outlasts ours, so a slow upload ends at this
       // client's deadline, a timeout that leaves the sidecar uploading.
       // Litestream's own timeout answer would read as a definite failure
@@ -121,7 +127,8 @@ export const unixLitestreamControl: LitestreamControl = {
 
 /**
  * Sends one request on the control socket at `socketPath` and reads the
- * whole response, failing once `deadlineMs` has passed.
+ * whole response, failing once `deadlineMs` has passed, or as soon as
+ * `signal` aborts (not a timeout: the caller gave up on the answer).
  *
  * @throws LitestreamControlError
  */
@@ -129,8 +136,13 @@ export async function controlRequest(
   socketPath: string,
   method: "GET" | "POST",
   path: string,
-  options: { readonly deadlineMs: number; readonly body?: unknown },
+  options: {
+    readonly deadlineMs: number;
+    readonly body?: unknown;
+    readonly signal?: AbortSignal;
+  },
 ): Promise<ControlResponse> {
+  options.signal?.throwIfAborted();
   await requireOwnSocket(socketPath);
   const payload = options.body === undefined
     ? new Uint8Array()
@@ -158,6 +170,27 @@ export async function controlRequest(
   // The race below handles the rejection; this keeps it from being reported
   // as unhandled when the request settles first.
   expired.catch(() => {});
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      try {
+        conn?.close();
+      } catch {
+        // Closed already.
+      }
+      reject(
+        new LitestreamControlError(
+          `${method} ${path} was given up: ${
+            messageOf(options.signal?.reason)
+          }`,
+          false,
+          { cause: options.signal?.reason },
+        ),
+      );
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  aborted.catch(() => {});
   try {
     return await Promise.race([
       (async () => {
@@ -196,9 +229,13 @@ export async function controlRequest(
         }
       })(),
       expired,
+      aborted,
     ]);
   } finally {
     clearTimeout(timer);
+    if (onAbort !== undefined) {
+      options.signal?.removeEventListener("abort", onAbort);
+    }
     try {
       conn?.close();
     } catch {

@@ -109,10 +109,19 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   isReservedNamespaceName,
   reservedV3NamespaceMessage,
+  restoreNamespace,
+  SOLO_NAMESPACE,
 } from "../../domain/data/namespace.ts";
 import { assertV3CacheSubdirsContained } from "./cache_root_containment.ts";
 import { recoverCommitOutbox } from "./commit_outbox_recovery.ts";
-import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  V3StorageUnreachableError,
+  WriterFencedError,
+} from "../../domain/datastore_v3/writer_lease.ts";
+import { isNetworkFailure } from "./network_failure.ts";
+import { ReadModelCatchUpUnreachableError } from "../../domain/datastore_v3/read_model.ts";
+import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
+import { storageNamespaceOf } from "../../domain/datastore_v3/chunk_store.ts";
 import {
   V3ChunkCollectionDeferredError,
   V3ReplicationError,
@@ -478,9 +487,11 @@ export async function ensureV3CopyCurrent(
       if (mode === "write" || release !== undefined) {
         try {
           await rebuilt.recoverInterruptedWriter(0);
-        } finally {
-          await release?.();
+        } catch (error) {
+          if (release !== undefined) await releaseAfterFailure(release, error);
+          throw error;
         }
+        await release?.();
       } else {
         // The read model replays every commit from the start. Files only
         // dropped commits wrote may stay: the reset keeps the files it
@@ -507,6 +518,8 @@ export async function ensureV3CopyCurrent(
  * Released by {@link closeV3Datastores}.
  *
  * @throws V3WriterBusyError when another process is writing
+ * @throws V3StorageUnreachableError when the datastore's storage cannot be
+ *   reached meanwhile (swamp-club#3802): nothing was changed yet
  */
 export async function holdV3Writer(
   config: V3DatastoreConfig,
@@ -515,6 +528,22 @@ export async function holdV3Writer(
     /** Take the lease again once it is lost: serve's lifetime hold. */
     readonly retakeLost?: boolean;
   } = {},
+): Promise<void> {
+  try {
+    await takeV3WriterHold(config, repoDir, options);
+  } catch (error) {
+    if (!(error instanceof UserError) && isNetworkFailure(error)) {
+      throw new V3StorageUnreachableError(config.path, error);
+    }
+    throw error;
+  }
+}
+
+/** {@link holdV3Writer}, before a storage failure is given its code. */
+async function takeV3WriterHold(
+  config: V3DatastoreConfig,
+  repoDir: string,
+  options: { readonly retakeLost?: boolean },
 ): Promise<void> {
   // Before the lease and the recovery of an interrupted writer, which
   // would meet the same checkout (swamp-club#3691).
@@ -555,7 +584,7 @@ export async function holdV3Writer(
         await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
       }
     } catch (error) {
-      await release();
+      await releaseAfterFailure(release, error);
       throw error;
     }
   }
@@ -612,7 +641,7 @@ export async function holdV3Writer(
         markedCheckouts.delete(checkout);
       }
     }
-    await release();
+    await releaseAfterFailure(release, error);
     throw error;
   }
   releases.push(async () => {
@@ -698,6 +727,9 @@ async function recoverAndMark(
       holdsWriterLock: true,
     });
   } catch (error) {
+    // Cut off from the storage, the recovery is retried by the next command;
+    // the hold gives the failure its code (swamp-club#3802).
+    if (!(error instanceof UserError) && isNetworkFailure(error)) throw error;
     const markerPath = writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
       new UserError(
@@ -991,7 +1023,19 @@ export async function v3RepositoryFactoryConfig(
   ) {
     currentCopies.add(handleKey(repoDir, config));
   } else if (!writer) {
-    await ensureV3CopyCurrent(repoDir, config, "read");
+    try {
+      await ensureV3CopyCurrent(repoDir, config, "read");
+    } catch (error) {
+      // Cut off from the replica's storage, the reader changed nothing, and
+      // the next command makes its copy current (swamp-club#3802).
+      if (
+        error instanceof Error && !(error instanceof UserError) &&
+        isNetworkFailure(error)
+      ) {
+        throw new ReadModelCatchUpUnreachableError(error);
+      }
+      throw error;
+    }
   }
   const handle = v3DatastoreFor(repoDir, config);
   // In the checkout another process is writing, its files are already the
@@ -1090,6 +1134,143 @@ function writesCurrentCopy(key: string, handle: V3Datastore): boolean {
 }
 
 /**
+ * The closing sync's deadline once the datastore's storage is known
+ * unreachable (swamp-club#3802): what it would confirm replicates with the
+ * next write in this checkout, so the command does not wait for it.
+ */
+export const UNREACHABLE_SYNC_DEADLINE_MS = 1_000;
+
+/**
+ * How long a closing sync runs before its storage is probed
+ * (swamp-club#3802): a sync that answers sooner, as a healthy one does, is
+ * never probed.
+ */
+export const STORAGE_PROBE_GRACE_MS = 2_000;
+
+/**
+ * How long a lease release may take once the storage is known unreachable
+ * (swamp-club#3802): one that cannot finish leaves the lease to expire by
+ * its TTL, as a release that fails does.
+ */
+export const UNREACHABLE_RELEASE_BOUND_MS = 1_000;
+
+let teardownTiming = {
+  probeGraceMs: STORAGE_PROBE_GRACE_MS,
+  releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
+};
+
+/** Test seam: the teardown's probe grace and release bound, or the defaults. */
+export function setV3TeardownTimingForTesting(
+  timing: { probeGraceMs: number; releaseBoundMs: number } | undefined,
+): void {
+  teardownTiming = timing ?? {
+    probeGraceMs: STORAGE_PROBE_GRACE_MS,
+    releaseBoundMs: UNREACHABLE_RELEASE_BOUND_MS,
+  };
+}
+
+/** A content hash no chunk has, for a probe that only needs an answer. */
+const PROBE_HASH = "0".repeat(64);
+
+/**
+ * Watches a closing sync of `datastore` (swamp-club#3802): once it has run
+ * {@link STORAGE_PROBE_GRACE_MS}, asks the datastore's storage whether a
+ * chunk exists, and aborts `signal` when the storage cannot be reached, so
+ * the sync is given up as a definite failure instead of waiting out its
+ * deadline. `stop` ends the watch and says whether the storage was found
+ * unreachable. Nothing is watched when the storage is already known
+ * unreachable or the datastore has no open handle.
+ */
+function watchStorageDuringSync(
+  datastore: string,
+  handles: readonly V3Datastore[],
+  known: boolean,
+): { readonly signal?: AbortSignal; stop(): boolean } {
+  const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
+  if (known || handle === undefined) return { stop: () => false };
+  const controller = new AbortController();
+  const probe = new AbortController();
+  let found = false;
+  const timer = setTimeout(() => {
+    handle.storage.has(
+      storageNamespaceOf(
+        handle.namespace === ""
+          ? SOLO_NAMESPACE
+          : restoreNamespace(handle.namespace),
+      ),
+      [PROBE_HASH],
+      probe.signal,
+    ).then(
+      () => {},
+      (error) => {
+        if (!isNetworkFailure(error)) return;
+        found = true;
+        controller.abort(
+          new Error(
+            `the datastore's storage could not be reached: ${
+              errorMessage(error)
+            }`,
+            { cause: error },
+          ),
+        );
+      },
+    );
+  }, teardownTiming.probeGraceMs);
+  return {
+    signal: controller.signal,
+    stop: () => {
+      clearTimeout(timer);
+      probe.abort();
+      return found;
+    },
+  };
+}
+
+/**
+ * Runs a lease release, but waits at most
+ * {@link UNREACHABLE_RELEASE_BOUND_MS} for it (swamp-club#3802): with the
+ * storage unreachable it can only fail, and the lease expires by its TTL.
+ * The release keeps running until the process exits; its outcome is logged.
+ */
+async function boundedRelease(release: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const running = release().catch((error) => {
+    logger
+      .debug`A v3 writer lease release with the storage unreachable failed; the lease expires on its own: ${error}`;
+  });
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      logger
+        .debug`Not waiting for a v3 writer lease release with the storage unreachable; the lease expires on its own`;
+      resolve();
+    }, teardownTiming.releaseBoundMs);
+  });
+  try {
+    await Promise.race([running, bound]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Releases a writer lease after the work under it failed with `failure`,
+ * which stays the error reported (swamp-club#3802): a release that fails too,
+ * as one cut off from the storage does, is logged, and the lease expires by
+ * its TTL.
+ */
+async function releaseAfterFailure(
+  release: () => Promise<void>,
+  failure: unknown,
+): Promise<void> {
+  try {
+    await release();
+  } catch (error) {
+    logger
+      .warn`Releasing the v3 writer lease after a failure also failed; it expires on its own: ${error} (the failure: ${failure})`;
+  }
+}
+
+/**
  * Recovers the work a checkout's units dropped (swamp-club#3553) before the
  * command ends, with the swamp-club#3299 recovery. A process that lost its
  * lease, a checkout with a unit still open, or a recovery that fails keeps
@@ -1100,6 +1281,7 @@ async function recoverDroppedWork(
   key: string,
   handle: V3Datastore,
   current: boolean,
+  storageUnreachable: boolean,
 ): Promise<void> {
   const checkout = key.split("\0")[0];
   const keep = (why: string): void => {
@@ -1117,8 +1299,21 @@ async function recoverDroppedWork(
     keep("runs may still be writing");
     return;
   }
+  if (storageUnreachable) {
+    // Its replay would wait on the storage too (swamp-club#3802).
+    keep("the datastore's storage could not be reached");
+    return;
+  }
   try {
-    const outcome = await handle.recoverDroppedWork();
+    let outcome: "clean" | "busy" | "recovered" | undefined;
+    try {
+      outcome = await handle.recoverDroppedWork();
+    } finally {
+      // A recovery that ran, finished or not, may have rewritten run records.
+      if (outcome === undefined || outcome === "recovered") {
+        await removeStaleRunIndexes(checkout);
+      }
+    }
     if (outcome === "busy") {
       keep(
         `${
@@ -1135,8 +1330,19 @@ async function recoverDroppedWork(
  * Closes every v3 datastore handle this process opened and releases its
  * writer-lock holds. Idempotent; the CLI calls it at teardown on every
  * outcome, and serve when it stops.
+ *
+ * Once the datastore's storage is known unreachable (swamp-club#3802),
+ * because `options.storageUnreachable` says the command found it so or the
+ * closing sync's probe finds it so, nothing waits on retries that cannot
+ * succeed: compaction and the recovery of dropped work are left to the next
+ * command, the closing sync gets {@link UNREACHABLE_SYNC_DEADLINE_MS}, and
+ * each lease release gets {@link UNREACHABLE_RELEASE_BOUND_MS} before the
+ * lease is left to expire by its TTL. It holds for this call only.
  */
-export async function closeV3Datastores(): Promise<void> {
+export async function closeV3Datastores(
+  options: { readonly storageUnreachable?: boolean } = {},
+): Promise<void> {
+  let unreachable = options.storageUnreachable === true;
   const pending = releases.splice(0);
   markedCheckouts.clear();
   const entries = [...opened.entries()];
@@ -1151,7 +1357,7 @@ export async function closeV3Datastores(): Promise<void> {
   );
   // A writer folds history the policy no longer retains before it lets go
   // of the lock: compaction is the single writer's (swamp-club#3258).
-  for (const handle of handles) {
+  for (const handle of unreachable ? [] : handles) {
     if (holdsV3WriterLock(handle.datastorePath)) await compactQuietly(handle);
   }
   // One sync per datastore confirms every commit this process made,
@@ -1163,10 +1369,24 @@ export async function closeV3Datastores(): Promise<void> {
   const owed = [...owedReplications].filter((key) => !replications.has(key));
   replications.clear();
   owedReplications.clear();
+  const deadlineMs = unreachable
+    ? UNREACHABLE_SYNC_DEADLINE_MS
+    : v3SyncDeadlineMs();
   const synced = await Promise.allSettled([
-    ...heldEntries.map(([datastore, uses]) =>
-      syncAndPublish(datastore, uses[0], handles, v3SyncDeadlineMs())
-    ),
+    ...heldEntries.map(async ([datastore, uses]) => {
+      const watch = watchStorageDuringSync(datastore, handles, unreachable);
+      try {
+        return await syncAndPublish(
+          datastore,
+          uses[0],
+          handles,
+          deadlineMs,
+          watch.signal,
+        );
+      } finally {
+        if (watch.stop()) unreachable = true;
+      }
+    }),
     ...owed.map((datastore) =>
       Promise.reject(
         markErrorPaths(
@@ -1184,7 +1404,7 @@ export async function closeV3Datastores(): Promise<void> {
   // After the closing sync, which serve's drain deadline is for, and before
   // the stores close.
   for (const { key, handle, current } of dropped) {
-    await recoverDroppedWork(key, handle, current);
+    await recoverDroppedWork(key, handle, current, unreachable);
   }
   // Once the command's own commits were confirmed, a closing sync that
   // fails covers only what was committed since: kept in commits.db, it
@@ -1214,7 +1434,7 @@ export async function closeV3Datastores(): Promise<void> {
     held.flat().map((use) => use.release()),
   );
   const released = await Promise.allSettled(
-    pending.map((release) => release()),
+    pending.map((release) => unreachable ? boundedRelease(release) : release()),
   );
   keepMarkers = false;
   keptMarkers.clear();
@@ -1240,12 +1460,13 @@ async function syncAndPublish(
   use: ReplicationHandle,
   handles: readonly V3Datastore[],
   deadlineMs: number,
+  signal?: AbortSignal,
 ): Promise<number | undefined> {
   // One at a time per datastore: serve's probe and a drain can both sync,
   // and a head taken earlier must never be published over a later one.
   const previous = publishing.get(datastore) ?? Promise.resolve();
   const run = previous.catch(() => {}).then(() =>
-    syncAndPublishNow(datastore, use, handles, deadlineMs)
+    syncAndPublishNow(datastore, use, handles, deadlineMs, signal)
   );
   publishing.set(datastore, run);
   try {
@@ -1263,6 +1484,7 @@ async function syncAndPublishNow(
   use: ReplicationHandle,
   handles: readonly V3Datastore[],
   deadlineMs: number,
+  signal?: AbortSignal,
 ): Promise<number | undefined> {
   const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
   const copy = handle === undefined
@@ -1274,7 +1496,7 @@ async function syncAndPublishNow(
     ? undefined
     : v3WriterFence(handle.datastorePath);
   if (handle === undefined || copy === undefined || writerFence === undefined) {
-    await use.sync(deadlineMs);
+    await use.sync(deadlineMs, signal === undefined ? {} : { signal });
     return undefined;
   }
   // Taken before the sync: what the sync covers. A serve that lost its lease
@@ -1284,6 +1506,7 @@ async function syncAndPublishNow(
   const mark = handle.commitStore.highWaterMark();
   let first = false;
   await use.sync(deadlineMs, {
+    ...(signal === undefined ? {} : { signal }),
     beforeLeaseCheck: async (txid) => {
       first = await publishV3Head(copy, {
         lineageFence: use.lineageFence,

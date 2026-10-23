@@ -31,6 +31,7 @@ import {
   type CommitLogUnitOfWork,
   CommitUnreachableError,
   PartitionsRefusedError,
+  RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
@@ -42,6 +43,7 @@ import {
   commitLogParentFor,
   type CommitLogUnitOptions,
   createCommitLogUnitOfWork,
+  failedReachingStorage,
 } from "./commit_log_unit_of_work.ts";
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
@@ -194,8 +196,12 @@ export async function runInCommitLogRoot<T>(
         // An end that could not record the failure says so instead of it.
         rethrowUnrecordedEnd(endError, error);
         // So does one that could not reach the storage: nothing of the
-        // operation, its failure included, was committed (swamp-club#3759).
-        if (endError instanceof CommitUnreachableError) {
+        // operation, its failure included, was committed (swamp-club#3759),
+        // beyond the runs a checkpoint committed (swamp-club#3802).
+        if (
+          endError instanceof CommitUnreachableError ||
+          endError instanceof RunPartlyCommittedError
+        ) {
           throw endError.during(error);
         }
         logger
@@ -257,6 +263,10 @@ async function settleRefusals(
       if (error instanceof PartitionsRefusedError) {
         return await settle(root, onRefused, error);
       }
+      // Cut off from the storage before its append, a checkpoint meets no
+      // refusal, and another would wait out the same retries; the commit
+      // says the storage is unreachable (swamp-club#3802).
+      if (failedReachingStorage(error)) return undefined;
       if (attempt === SETTLE_CHECKPOINT_ATTEMPTS) return undefined;
     }
   }

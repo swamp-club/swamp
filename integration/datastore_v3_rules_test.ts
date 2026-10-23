@@ -257,13 +257,17 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
   // swamp-club#3759: a commit that could not reach the storage. The runs
   // word it for steps that ran, the error renderer and serve give it its
-  // code, and the CLI's failed teardown shortens the closing sync for it.
+  // code, and the CLI's failed teardown tells the close the storage is
+  // unreachable (swamp-club#3802: also for a hold or a catch-up cut off from
+  // it, whose codes the error renderer maps too).
   "src/cli/commands/model_method_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/commands/workflow_resume.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/commands/workflow_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/litestream/v3_replication.ts",
+  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/read_model.ts",
+  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
 ];
 

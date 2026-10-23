@@ -17,9 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
-import { waitFor } from "@swamp-club/swamp-testing";
+import { createInMemoryRemote, waitFor } from "@swamp-club/swamp-testing";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { V3ChunkCollectionDeferredError } from "../../domain/datastore_v3/litestream_replication.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -59,7 +64,17 @@ import {
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import type { ProcessIdentity } from "../../domain/datastore_v3/process_liveness.ts";
-import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  V3_STORAGE_UNREACHABLE_CODE,
+  V3StorageUnreachableError,
+  WriterFencedError,
+} from "../../domain/datastore_v3/writer_lease.ts";
+import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
+import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  bindV3BucketDatastore,
+  resetV3BucketBindingsForTesting,
+} from "./v3_datastore_binding.ts";
 import { writerMarkerPath } from "./interrupted_writer_recovery.ts";
 import {
   localProcess,
@@ -1211,4 +1226,200 @@ Deno.test({
       assertEquals(await fetcher("beta", FOREIGN_KEY), null);
     });
   },
+});
+
+/**
+ * A set-up bucket datastore's provider whose datastore-wide control plane
+ * writes fail with `failure()`, once `seeded` has written its marker.
+ */
+async function failingControlPlaneProvider(
+  failure: () => Error,
+): Promise<DatastoreProvider> {
+  const remote = createInMemoryRemote({
+    controlPlane: true,
+    storage: true,
+    replicaTarget: {
+      type: "s3",
+      bucket: "team-bucket",
+      prefix: "",
+      region: "us-east-1",
+    },
+    replicaPaths: true,
+  });
+  const store = remote.datastoreControlPlaneStore!();
+  // The datastore was set up: its format marker is there to read.
+  const seeded = store.put(
+    "datastore-format",
+    new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
+  );
+  const failing = new Proxy(store, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      if (
+        !["put", "putIfAbsent", "delete"].includes(String(property))
+      ) {
+        return value.bind(target);
+      }
+      return () => Promise.reject(failure());
+    },
+  });
+  await seeded;
+  return {
+    createLock: () => {
+      throw new Error("not used");
+    },
+    createVerifier: () => {
+      throw new Error("not used");
+    },
+    resolveDatastorePath: (repoDir) => join(repoDir, ".swamp"),
+    datastoreWideLease: true,
+    datastoreControlPlaneStore: () => failing,
+    storage: () => remote.storage!(),
+    replicaTarget: () => remote.replicaTarget!(),
+    replicaPaths: () => remote.replicaPaths!(),
+  };
+}
+
+const BUCKET_CONFIG: CustomDatastoreConfig = {
+  type: "@test/bucket",
+  config: {},
+  datastorePath: "/unused",
+  format: 3,
+};
+
+Deno.test("holdV3Writer: a datastore whose storage cannot be reached while the lease is taken fails with the storage-unreachable code (swamp-club#3802)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir, { recursive: true });
+    try {
+      const location = bindV3BucketDatastore(
+        repoDir,
+        { ...BUCKET_CONFIG },
+        await failingControlPlaneProvider(() =>
+          new Error("S3 putObjectConditional failed key=_control/writer/x", {
+            cause: Object.assign(new Error("read ECONNRESET"), {
+              code: "ECONNRESET",
+            }),
+          })
+        ),
+        { platform: { os: "linux", arch: "x86_64" } },
+      );
+      const error = await assertRejects(
+        () => holdV3Writer(location, repoDir),
+        V3StorageUnreachableError,
+      );
+      assertEquals(error.code, V3_STORAGE_UNREACHABLE_CODE);
+      assertStringIncludes(error.message, "nothing was changed");
+      assertStringIncludes(error.message, "putObjectConditional");
+    } finally {
+      resetV3BucketBindingsForTesting();
+    }
+  });
+});
+
+Deno.test("holdV3Writer: a storage failure that is not a network failure keeps its own error (swamp-club#3802)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir, { recursive: true });
+    try {
+      const location = bindV3BucketDatastore(
+        repoDir,
+        { ...BUCKET_CONFIG },
+        await failingControlPlaneProvider(() =>
+          new Error("HTTP 403 forbidden")
+        ),
+        { platform: { os: "linux", arch: "x86_64" } },
+      );
+      const error = await assertRejects(
+        () => holdV3Writer(location, repoDir),
+        Error,
+        "HTTP 403 forbidden",
+      );
+      assert(!(error instanceof V3StorageUnreachableError));
+    } finally {
+      resetV3BucketBindingsForTesting();
+    }
+  });
+});
+
+Deno.test("holdV3Writer: a lease release that fails after the hold's restore failed never replaces the error getting ready failed with (swamp-club#3802)", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir, { recursive: true });
+    const remote = createInMemoryRemote({
+      controlPlane: true,
+      storage: true,
+      replicaTarget: {
+        type: "s3",
+        bucket: "team-bucket",
+        prefix: "",
+        region: "us-east-1",
+      },
+      replicaPaths: true,
+    });
+    const store = remote.datastoreControlPlaneStore!();
+    await store.put(
+      "datastore-format",
+      new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
+    );
+    // The lease's fence is created. Getting ready then fails with an error
+    // of its own (the lineage record is refused), and the release that
+    // follows is cut off, as the reporter's was.
+    let releases = 0;
+    const cut = new Proxy(store, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        if (property !== "putIfAbsent") return value.bind(target);
+        return (key: string, ...rest: unknown[]) => {
+          if (key.includes("released")) {
+            releases++;
+            return Promise.reject(
+              new Error(`S3 putObjectConditional failed key=${key}`, {
+                cause: Object.assign(new Error("read ECONNRESET"), {
+                  code: "ECONNRESET",
+                }),
+              }),
+            );
+          }
+          if (key.startsWith("writer/")) {
+            return value.apply(target, [key, ...rest]);
+          }
+          return Promise.reject(new Error("HTTP 412 lineage refused"));
+        };
+      },
+    });
+    try {
+      const location = bindV3BucketDatastore(
+        repoDir,
+        { ...BUCKET_CONFIG },
+        {
+          createLock: () => {
+            throw new Error("not used");
+          },
+          createVerifier: () => {
+            throw new Error("not used");
+          },
+          resolveDatastorePath: (repo) => join(repo, ".swamp"),
+          datastoreWideLease: true,
+          datastoreControlPlaneStore: () => cut,
+          storage: () => remote.storage!(),
+          replicaTarget: () => remote.replicaTarget!(),
+          replicaPaths: () => remote.replicaPaths!(),
+        },
+        { platform: { os: "linux", arch: "x86_64" } },
+      );
+      const error = await assertRejects(() => holdV3Writer(location, repoDir));
+      assertEquals(releases, 1, "the release was attempted");
+      assert(error instanceof Error, String(error));
+      assertStringIncludes(error.message, "HTTP 412 lineage refused");
+      assert(
+        !error.message.includes("putObjectConditional failed"),
+        error.message,
+      );
+    } finally {
+      resetV3BucketBindingsForTesting();
+    }
+  });
 });

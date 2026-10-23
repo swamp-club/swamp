@@ -241,3 +241,58 @@ Deno.test("parseResponse: dechunks by bytes, so non-ASCII text survives", () => 
     error: "database not found: /tmp/caf\u00e9.db",
   });
 });
+
+Deno.test({
+  name:
+    "unixLitestreamControl.sync: a signal aborted mid-request ends the wait as a definite failure carrying its reason (swamp-club#3802)",
+  ignore: !UNIX,
+  async fn() {
+    const controller = new AbortController();
+    const reason = new Error("the datastore's storage could not be reached");
+    await withServer(
+      () => {
+        // The request reached the sidecar, which never answers.
+        controller.abort(reason);
+        return undefined;
+      },
+      async (socket) => {
+        const error = await assertRejects(
+          () =>
+            unixLitestreamControl.sync(
+              socket,
+              "/db",
+              60_000,
+              controller.signal,
+            ),
+          LitestreamControlError,
+          "was given up",
+        );
+        assertEquals(error.timedOut, false);
+        assertEquals(error.cause, reason);
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "unixLitestreamControl.sync: an already aborted signal rejects before connecting (swamp-club#3802)",
+  ignore: !UNIX,
+  async fn() {
+    let connections = 0;
+    await withServer(
+      () => {
+        connections++;
+        return json(200, { replicated_txid: "0000000000000001" });
+      },
+      async (socket) => {
+        const controller = new AbortController();
+        controller.abort(new Error("cut off"));
+        await assertRejects(() =>
+          unixLitestreamControl.sync(socket, "/db", 5_000, controller.signal)
+        );
+        assertEquals(connections, 0);
+      },
+    );
+  },
+});

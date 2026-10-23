@@ -25,8 +25,11 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
   CommitUnreachableError,
+  RUN_PARTLY_COMMITTED_CODE,
+  RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3ReplicationError } from "../../domain/datastore_v3/litestream_replication.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
@@ -2564,4 +2567,27 @@ Deno.test("runFailureForClient: a commit that could not reach the storage keeps 
     runFailureForClient(new Error("boom"), "method_execution_failed").code,
     "method_execution_failed",
   );
+});
+
+Deno.test("runFailureForClient: a run a checkpoint partly committed keeps its code, worded for a run whose steps ran (swamp-club#3802)", () => {
+  const partly = runFailureForClient(
+    new RunPartlyCommittedError(new Error("connect ECONNREFUSED"), [
+      { workflowId: "wf-1", runId: "run-1" },
+    ]),
+    "workflow_execution_failed",
+  );
+  assertEquals(partly.code, RUN_PARTLY_COMMITTED_CODE);
+  assertStringIncludes(partly.message, "steps had already run");
+  assertStringIncludes(partly.message, "swamp workflow recover wf-1");
+});
+
+Deno.test("runFailureForClient: a commit part of which had landed keeps its own code (swamp-club#3802)", () => {
+  const partly = runFailureForClient(
+    new CommitUnreachableError(new Error("connect ECONNREFUSED"), {
+      partly: true,
+    }),
+    "method_execution_failed",
+  );
+  assertEquals(partly.code, COMMIT_PARTLY_COMMITTED_CODE);
+  assertStringIncludes(partly.message, "steps had already run");
 });

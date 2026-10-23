@@ -24,12 +24,13 @@
  */
 
 import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
-import { CommitUnreachableError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
-import { closeV3Datastores } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
-  SERVE_REQUEST_SYNC_DEADLINE_MS,
-  setV3SyncDeadline,
-} from "../infrastructure/datastore_v3/litestream/v3_replication.ts";
+  CommitUnreachableError,
+  RunPartlyCommittedError,
+} from "../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ReadModelCatchUpUnreachableError } from "../domain/datastore_v3/read_model.ts";
+import { V3StorageUnreachableError } from "../domain/datastore_v3/writer_lease.ts";
+import { closeV3Datastores } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 /**
@@ -54,37 +55,44 @@ export async function closeV3DatastoresAfterSuccess(
 
 /**
  * Closes the v3 datastores after a command that failed, best effort: the
- * command's error is the one reported. When it failed because its commit
- * could not reach the datastore's storage, the closing sync gets a request's
- * short deadline instead of a command's minute (swamp-club#3759): the
- * storage was just found unreachable, so waiting the full minute would only
- * delay the error, and what the sync would confirm replicates with the next
- * write either way.
+ * command's error is the one reported. When it failed because the
+ * datastore's storage could not be reached, the close is told so
+ * (swamp-club#3759, swamp-club#3802): it gives the closing sync a short
+ * deadline and stops waiting on compaction, recovery and lease retries that
+ * cannot succeed, so the error is not delayed by them. What the sync would
+ * confirm replicates with the next write either way.
  */
 export async function closeV3DatastoresAfterFailure(
   error: unknown,
-  close: () => Promise<void> = closeV3Datastores,
-  setDeadline: (ms: number | undefined) => void = setV3SyncDeadline,
+  close: (
+    options: { readonly storageUnreachable?: boolean },
+  ) => Promise<void> = closeV3Datastores,
 ): Promise<void> {
-  const unreachable = failedReachingStorage(error);
-  if (unreachable) setDeadline(SERVE_REQUEST_SYNC_DEADLINE_MS);
   try {
-    await close();
+    await close({ storageUnreachable: failedReachingStorage(error) });
   } catch {
     // Best effort: the writer lock's TTL expires if its release failed.
-  } finally {
-    if (unreachable) setDeadline(undefined);
   }
 }
 
 /** How far {@link failedReachingStorage} follows `cause` links. */
 const MAX_CAUSE_DEPTH = 8;
 
-/** Whether `error`, or an error it wraps, is a {@link CommitUnreachableError}. */
+/**
+ * Whether `error`, or an error it wraps, says the datastore's storage could
+ * not be reached.
+ */
 function failedReachingStorage(error: unknown): boolean {
   let current = error;
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (current instanceof CommitUnreachableError) return true;
+    if (
+      current instanceof CommitUnreachableError ||
+      current instanceof RunPartlyCommittedError ||
+      current instanceof V3StorageUnreachableError ||
+      current instanceof ReadModelCatchUpUnreachableError
+    ) {
+      return true;
+    }
     if (!(current instanceof Error)) return false;
     current = current.cause;
   }

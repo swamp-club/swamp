@@ -1212,3 +1212,37 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a sync given up because the storage is unreachable fails with the reason and keeps the sidecar (swamp-club#3802)",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const controller = new AbortController();
+      world.syncAnswer = () => {
+        controller.abort(
+          new Error("the datastore's storage could not be reached: refused"),
+        );
+        return Promise.reject(
+          new LitestreamControlError("POST /sync was given up", false),
+        );
+      };
+      const handle = await replicator.acquire(world.request(db, 1));
+      await assertRejects(
+        () => handle.sync(5_000, { signal: controller.signal }),
+        V3ReplicationError,
+        "storage could not be reached",
+      );
+      await handle.release();
+      assertEquals(
+        await isMarkedForReplacement(
+          world.paths,
+          world.sidecars[0].supervisorPid,
+        ),
+        false,
+      );
+    });
+  },
+});

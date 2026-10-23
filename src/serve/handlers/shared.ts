@@ -35,8 +35,11 @@ import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_uni
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import { WRITER_FENCED_CODE } from "../../domain/datastore_v3/writer_lease.ts";
 import {
+  COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
   CommitUnreachableError,
+  RUN_PARTLY_COMMITTED_CODE,
+  RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -2389,17 +2392,26 @@ export async function confirmRunReplicated(
 
 /**
  * The code and message a failed run reports (swamp-club#3759): a run whose
- * commit could not reach the datastore's storage keeps that code, as the
- * CLI reports it, worded for a run whose steps ran; any other failure is
- * `fallbackCode`.
+ * commit could not reach the datastore's storage keeps that code, or the
+ * run-partly-committed one when a checkpoint had committed it
+ * (swamp-club#3802), as the CLI reports it, worded for a run whose steps
+ * ran; any other failure is `fallbackCode`.
  */
 export function runFailureForClient(
   error: unknown,
   fallbackCode: string,
 ): { readonly code: string; readonly message: string } {
   if (error instanceof CommitUnreachableError) {
+    const worded = error.afterStepsRan();
     return {
-      code: COMMIT_UNREACHABLE_CODE,
+      code: worded.code ?? COMMIT_UNREACHABLE_CODE,
+      message: sanitizeErrorForClient(worded),
+    };
+  }
+  // A run a checkpoint committed is left running (swamp-club#3802).
+  if (error instanceof RunPartlyCommittedError) {
+    return {
+      code: RUN_PARTLY_COMMITTED_CODE,
       message: sanitizeErrorForClient(error.afterStepsRan()),
     };
   }
@@ -2420,7 +2432,9 @@ export function replicationErrorForClient(
     error instanceof UserError &&
     (error.code === V3_REPLICATION_UNCONFIRMED_CODE ||
       error.code === WRITER_FENCED_CODE ||
-      error.code === COMMIT_UNREACHABLE_CODE)
+      error.code === COMMIT_UNREACHABLE_CODE ||
+      error.code === COMMIT_PARTLY_COMMITTED_CODE ||
+      error.code === RUN_PARTLY_COMMITTED_CODE)
   ) {
     return { code: error.code, message };
   }
