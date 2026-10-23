@@ -60,7 +60,7 @@ export const dataVersionsCommand = withRemoteOptions(
     )
     .option(
       "--behavior, --model <behavior:string>",
-      "Behavior name or ID (alternative to positional argument)",
+      "Behavior name or ID (alternative to positional argument; --model is the kept legacy spelling)",
     )
     .option(
       "--name <name:string>",

@@ -210,7 +210,7 @@ export const dataSearchCommand = withRemoteOptions(
     )
     .option(
       "--behavior, --model <name:string>",
-      "Filter to data owned by this behavior name",
+      "Filter to data owned by this behavior name (--model is the kept legacy spelling)",
     )
     .option(
       "--content-type <mime:string>",

@@ -45,7 +45,8 @@ Deno.test("modelMethodRunCommand has correct description", async () => {
     "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
   );
   assertStringIncludes(desc, "lock_timeout");
-  assertStringIncludes(desc, "Exit codes:");
+  assertStringIncludes(desc, "(exit 75)");
+  assertStringIncludes(desc, "'swamp --help'");
   assertStringIncludes(desc, "SWAMP_LOCK_TIMEOUT_MS");
 });
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -29,4 +29,12 @@ await initializeLogging({});
 Deno.test("authWhoamiCommand exposes the status alias", async () => {
   const { authWhoamiCommand } = await import("./auth_whoami.ts");
   assertEquals(authWhoamiCommand.getAliases().includes("status"), true);
+});
+
+Deno.test("authWhoamiCommand: description tells serverUrl from the serve orchestrator", async () => {
+  const { authWhoamiCommand } = await import("./auth_whoami.ts");
+  const description = authWhoamiCommand.getDescription();
+  assertStringIncludes(description, "serverUrl is the swamp-club site");
+  assertStringIncludes(description, "SWAMP_CLUB_URL");
+  assertStringIncludes(description, "effectiveServeUrl");
 });

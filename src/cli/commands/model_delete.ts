@@ -101,7 +101,7 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
       .option("-y, --yes", "Skip confirmation prompt")
       .option(
         "-f, --force",
-        "Skip confirmation and allow deletion when data artifacts exist",
+        "Skip confirmation prompt (alias for --yes) and allow deletion when data artifacts exist",
       ),
     syntax,
   )).action(

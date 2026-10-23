@@ -58,7 +58,7 @@ export const dataListCommand = withRemoteOptions(
     )
     .option(
       "--behavior, --model <behavior:string>",
-      "Behavior name or ID (alternative to positional argument)",
+      "Behavior name or ID (alternative to positional argument; --model is the kept legacy spelling)",
     )
     .option(
       "--type <type:string>",

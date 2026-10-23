@@ -142,7 +142,10 @@ export const repoInitCommand = new Command()
   .example("Force reinitialize", "swamp repo init --force")
   .example("Initialize without the default vault", "swamp repo init --no-vault")
   .arguments("[path:string]")
-  .option("-f, --force", "Reinitialize if already exists")
+  .option(
+    "-f, --force",
+    "Reinitialize if already exists (not an alias for --yes)",
+  )
   .type("toolName", new ToolNameType())
   .option("-t, --tool <tool:toolName>", TOOL_FLAG_DESCRIPTION, {
     collect: true,

@@ -247,7 +247,7 @@ export const reportSearchCommand = withRemoteOptions(
     )
     .option(
       "--behavior, --model <name:string>",
-      "Filter to a specific behavior",
+      "Filter to a specific behavior (--model is the kept legacy spelling)",
     )
     .option("--workflow <name:string>", "Filter to a specific workflow")
     .option(

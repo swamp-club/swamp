@@ -225,11 +225,7 @@ export function createModelMethodRunCommand(syntax: RunCommandSyntax) {
     .description(
       `Execute a method on a ${syntax.surface}. With @type prefix, auto-creates the definition if needed.
 
-When --json is set, errors are written to stderr as a JSON envelope:
-
-    { "error": "<message>", "code": "<error_code>" }
-
-The "code" field is a stable, machine-readable identifier. Callers should match on "code" rather than parsing the error message. Known codes for this command:
+Errors follow the --json envelope and exit codes in 'swamp --help'. Error codes this command reports (match on "code", not the message):
 
     lock_timeout             Another invocation holds the ${syntax.surface} lock (exit 75)
     datastore_v3_writer_busy Another process is writing the v3 datastore (exit 75)
@@ -247,8 +243,6 @@ The "code" field is a stable, machine-readable identifier. Callers should match 
     method_execution_failed  The method returned an error
     not_authenticated        Not signed in (run 'swamp auth login')
     cancelled                Operation was cancelled (e.g. Ctrl+C)
-
-Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — retry with backoff).
 
 The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment variable (milliseconds) to wait longer.`,
     )
