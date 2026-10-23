@@ -33,6 +33,7 @@ import { UserError } from "../../domain/errors.ts";
 import {
   InvalidExpressionError,
   SecretRefusedError,
+  UnboundExpressionError,
 } from "../../domain/expressions/errors.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
@@ -115,6 +116,31 @@ Deno.test("CelEvaluator vault.get: returns a registered reference, never a value
     assertEquals(f.ctx.getOperationsByMethod("get"), []);
     assertEquals(f.ctx.getOperationsByMethod("has").length, 1);
     assertEquals(f.redacted, []);
+  });
+});
+
+Deno.test("CelEvaluator vault.get: missing top-level selector bindings are unbound without probing the vault", async () => {
+  await withVault(async (f) => {
+    for (
+      const [selector, unbound] of [
+        ["inputs.key", true],
+        ["env.KEY", true],
+        ["inputs.cfg.key", false],
+        ["other.key", false],
+      ] as const
+    ) {
+      const expression = `vault.get('prod', ${selector})`;
+      const error = await assertRejects(
+        () =>
+          f.evaluate(expression, { inputs: { cfg: {} }, env: {}, other: {} }),
+        InvalidExpressionError,
+      );
+      assertEquals(error instanceof UnboundExpressionError, unbound, selector);
+      assertEquals(error.expression, expression);
+      assertEquals(error.cause, undefined);
+    }
+    assertEquals(f.ctx.getOperationsByMethod("get"), []);
+    assertEquals(f.ctx.getOperationsByMethod("has"), []);
   });
 });
 
