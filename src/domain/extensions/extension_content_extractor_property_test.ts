@@ -222,3 +222,76 @@ Deno.test("extractContentMetadata: braces in describe text never change the extr
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+/** Zod factories a field may start with, namespaced ones included. */
+const fieldTypeArb = fc.constantFrom(
+  "string",
+  "number",
+  "iso.datetime",
+  "iso.date",
+  "coerce.number",
+);
+
+/**
+ * A field's description text and how it is set. The text never holds its own
+ * quote or a backslash, and a template's never holds a dollar sign, so the
+ * literal reads back whole.
+ */
+const describedArgsArb = fc.uniqueArray(
+  fc.record({
+    name: identifierArb,
+    type: fieldTypeArb,
+    text: describeNoiseArb,
+    quote: fc.constantFrom('"', "'", "`"),
+    via: fc.constantFrom("describe", "meta"),
+    optional: fc.boolean(),
+  }).map((a) => {
+    const text = a.text.replace(/\\/g, "").replaceAll(a.quote, "");
+    return { ...a, text: a.quote === "`" ? text.replaceAll("$", "") : text };
+  }),
+  { minLength: 1, maxLength: 6, selector: (a) => a.name },
+);
+
+Deno.test("extractContentMetadata: a literal description set through describe or meta reads back on any field type", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const file = join(modelsDir, "model.ts");
+
+    await fc.assert(
+      fc.asyncProperty(describedArgsArb, async (args) => {
+        const source = [
+          'import { z } from "npm:zod@4";',
+          "export const model = {",
+          '  type: "@test/property",',
+          '  version: "2026.10.23.1",',
+          "  globalArguments: z.object({",
+          ...args.map((a) => {
+            const literal = `${a.quote}${a.text}${a.quote}`;
+            const setter = a.via === "describe"
+              ? `.describe(${literal})`
+              : `.meta({ description: ${literal} })`;
+            return `    ${a.name}: z.${a.type}()${
+              a.optional ? ".optional()" : ""
+            }${setter},`;
+          }),
+          "  }),",
+          "  methods: {},",
+          "};",
+        ].join("\n");
+        await Deno.writeTextFile(file, source);
+
+        const result = await extractContentMetadata([file], modelsDir, []);
+        assertEquals(
+          result.models[0]?.globalArguments.map((
+            a,
+          ) => [a.name, a.type, a.description, a.required]),
+          args.map((a) => [a.name, a.type, a.text, !a.optional]),
+        );
+      }),
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
