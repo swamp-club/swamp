@@ -5,7 +5,7 @@ methods. They validate conditions before execution — avoiding half-completed
 operations.
 
 A method's kind is its declared `kind` when set, otherwise inferred from its
-name:
+name (case-insensitive, so `Get` and `LIST` count too):
 
 - `get`, `read`, `describe`, `show` → read: no checks.
 - `list`, `search`, `find` → list: no checks.
@@ -14,6 +14,9 @@ name:
 
 Set `kind: "read"` or `kind: "list"` on a method to skip checks for a read-only
 method with another name; a declared `kind` overrides the name.
+
+Exception: a workflow step placed on a worker skips pre-flight checks entirely —
+neither the orchestrator nor the worker runs them.
 
 ## CheckDefinition Interface
 

@@ -508,7 +508,7 @@ history and cleanup.
 Pre-flight checks run automatically before every method except read and list
 methods (`get`, `read`, `describe`, `show`, `list`, `search`, `find`, or a
 method that declares `kind: "read"` or `kind: "list"`). Any other name,
-including `sync`, runs checks.
+including `sync`, runs checks. A workflow step placed on a worker skips them.
 
 **Environment variable warnings** are emitted before execution if the behavior
 definition uses `${{ env.* }}` expressions. When you see these warnings in the
