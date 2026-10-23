@@ -146,12 +146,10 @@ Deno.test("expression provenance rules: evaluated-cache writers record where dat
 
 /**
  * Runtime passes over a definition that may hold spliced data. Each must
- * pass the definition's provenance; only the legacy seam, whose callers hand
- * in unsubstituted source, may leave it out.
+ * pass the definition's provenance. The deprecated legacy seam was removed
+ * in typed-secrets 4.5, so no production caller may leave it out.
  */
-const PINNED_RUNTIME_PASSES_WITHOUT_PROVENANCE: readonly string[] = [
-  "src/domain/expressions/expression_evaluation_service.ts",
-];
+const PINNED_RUNTIME_PASSES_WITHOUT_PROVENANCE: readonly string[] = [];
 
 Deno.test("expression provenance rules: every runtime pass over a definition passes its provenance", async () => {
   let sites = 0;

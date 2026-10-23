@@ -1,7 +1,7 @@
 ---
 audience: maintainer
 enables: [behaviors, workflows, vaults, serve]
-last-verified: 2026-10-22 @ bc388c720
+last-verified: 2026-10-23 @ issue-3734
 ---
 
 # Typed Secrets for Expressions
@@ -270,20 +270,30 @@ Swamp loads a secret only when it delivers it:
 Some code resolves sentinels inline today, through
 `resolveRuntimeExpressionsInData` and `resolveAllExpressionsInData`, which call
 `VaultSecretBag.resolveDeep`. Phase 2 turns each of these into a load under the
-same rules. That keeps its behavior unchanged until the phase that refuses or
-masks the destination:
+same rules. Phase 4.5 removes those loads at typed routing destinations. The
+option-off path keeps its behavior until the 4.6 release flip:
 
-| Inline resolution                                                                                       | Destination (Section 7.1)                                  | Loads until                                |
-| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------ |
-| Pre-flight checks in `swamp behavior validate` (`src/libswamp/models/validate.ts`)                      | Pre-flight checks, a trusted consumer                      | Always. In a typed run, through the shared refuse-then-load step (Phase 3.5). |
-| Placement and task selectors (`execution_service.ts`)                                                   | Refuses secrets                                            | Phase 4                                    |
-| Child workflow references (`execution_service.ts`)                                                      | Refuses secrets                                            | Phase 4                                    |
-| Deferred task targets, `inputs` and `globalArgs` (`resolveRecordExpression`, `resolveScalarExpression`) | Targets refuse secrets. Records issue into the step's bag. | Phase 4                                    |
-| Assert message interpolation (`execution_service.ts`)                                                   | Masked                                                     | Phase 4                                    |
-| `resolveVaultExpressionsInDefinition`, `resolveVaultExpressionsInData` (deprecated)                     | The caller's                                               | Phase 4, which deletes them                |
+| Inventory key | Inline resolution | Destination (Section 7.1) | Loading contract |
+| --- | --- | --- | --- |
+| `validation` | Pre-flight checks in `swamp behavior validate` (`src/libswamp/models/validate.ts`) | Trusted consumer | Loads at delivery. In a typed run, through the shared refuse-then-load step (Phase 3.5). |
+| `routing` | Placement and task selectors (`execution_service.ts`) | Refuses secrets | Typed: no load, including references issued by earlier passes. Legacy: inline load. |
+| `child` | Child workflow references (`execution_service.ts`) | Refuses secrets | Typed: no load before lookup or invocation. Legacy: inline load. |
+| `deferred` | Deferred targets, `inputs` and `globalArgs` (`resolveRecordExpression`, `resolveScalarExpression`) | Targets refuse; records issue into the step's bag | Typed: no inline load. Records load at method delivery. |
+| `assert-message` | Assert message interpolation (`execution_service.ts`) | Masked | Typed: masks references without loading, including messages already reduced to literal sentinel text. Legacy: loads then redacts. |
+| `runtime` | `resolveRuntimeExpressionsInData`, composed by `resolveAllExpressionsInData` | The caller's explicit destination | Typed routing options refuse before the loader. Legacy and trusted validation callers retain inline loading. |
+| `delivery` | Method argument parsing and local/remote delivery (`method_execution_service.ts`) | Trusted consumer | Loads per attempt; remote delivery remains unchanged until Phase 5. |
+
+Phase 4.5 deletes `resolveVaultExpressionsInDefinition` and
+`resolveVaultExpressionsInData`; neither had a production caller.
 
 A new inline caller of `resolveDeep`, or a new direct `evaluateAsync` caller
-outside the passes in Section 5, needs a row here.
+outside the passes in Section 5, needs a row here. The fitness rule in
+`integration/inline_secret_resolution_rules_test.ts` pins calls by file,
+containing function or method, receiver and multiplicity, including calls of
+the runtime wrappers. Each maps to a row above or explicitly to a Section 5
+pass or the bag's own recursion. Another call in an already-pinned method
+changes the set. The scanner parses TypeScript, so comments and declarations
+are excluded and multiline and computed calls are included.
 
 A load calls `VaultService.get(vault, key, "expression:vault-resolve")` inside
 the run's ambient `RunVaultAccess`. The principal's grants and the workflow's
@@ -1580,8 +1590,8 @@ so a resumed run kept the untyped path (its run-start pass is routed through
 the seam and received the legacy evaluator); `swamp workflow evaluate` built
 an untyped registry until 4.4, so its `forEach` names kept the value search;
 `resolveScalarExpression`
-(task targets), placement and the task selectors keep today's evaluation, their
-refusals being the next slice with child workflow references; step outputs
+(task targets), placement and the task selectors kept the legacy evaluation
+until Phase 4.5 added their refusals with child workflow references; step outputs
 (`steps.*.outputs`, `fromResourceHandle`) still read tagged fields eagerly for
 a method that wrote them, which the outputs slice adapts; and masking in run records
 and the index, and the release flip follow (the query view is Phase 4.3).
@@ -1673,6 +1683,24 @@ slice: the release flip, the untyped branches (the value search, the
 vault-reading rehydrate, the legacy evaluator) and the resume test seam, which
 4.6 removes.
 
+Phase 4.5 (swamp-club#3734) completes the inline destinations behind the
+internal option. Placement and every task selector, including deferred type
+and method names, refuse through the run's value-free occurrence view before
+any inline load. Runtime resolution checks both its input and result, so a
+sentinel left by run-start evaluation or restored from a cache cannot bypass
+the policy when no expression remains. Deferred targets use
+`passEvaluatorFor` with an explicit destination and authored location instead
+of constructing an untyped evaluator. The same checks apply to child workflow
+references before lookup or recursion checks. Records keep the issuing pass
+and bag from 4.1, and assert messages keep that phase's reference masking.
+The failure event masks its model and method fields too, so a refused selector
+never reaches telemetry as a sentinel. The old vault-only resolvers are
+deleted. The counting-vault scenarios and caller inventory live in
+`integration/typed_inline_destinations_test.ts` and
+`integration/inline_secret_resolution_rules_test.ts`. CLI acceptance coverage
+and public manual updates accompany the 4.6 release flip, since the internal
+option still cannot be enabled from the CLI.
+
 Then turn the path on for every entry point and remove the internal option.
 Delete the regular-expression rewrite, the value search, and the
 expression-facing plaintext resolution of tagged fields.
@@ -1761,6 +1789,7 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
 | Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |
+| Inline destinations (Sections 3.3, 7.1) | `src/domain/expressions/expression_evaluation_service.ts` (`refuseRoutingSecrets`, explicit pass and runtime destinations), `src/domain/workflows/execution_service.ts` (placement, selectors and child targets), `integration/typed_inline_destinations_test.ts`, `integration/inline_secret_resolution_rules_test.ts` |
 | Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts` (`toPersistedForm`, `rehydrateReferences`, the legacy `rehydratePersistedForm`), `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/vaults/secret_bag_registry.ts` (`SecretEncoding`, `jsonEscaped`, `restoreScalar`), `vault_secret_bag.ts` (`addWrittenReference`, encoding-aware delivery), `src/domain/expressions/persisted_evaluation.ts` (`replayProvenance`, `withWrittenReferenceRanges`), `provenance_map.ts` (`sentinelReferenceTextOf`), `src/domain/workflows/persisted_workflow.ts` (`persistedProvenance`, `rehydrateRunReferences`), `workflow_run.ts` (`persistedInputsProvenance`, `mask`), `integration/typed_persistence_seams_test.ts` |
 | Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
 | Queries (Section 6.2)                         | `src/domain/data/query_view.ts` (the `QueryView` port, `QueryViewRefusal`), `data_query_service.ts` (`DataQueryOptions.view`, `createQueryEnvironment`), `src/infrastructure/cel/query_view.ts` (`expressionQueryView`, `queryViewEnvironment`), `src/infrastructure/cel/cel_evaluator.ts` (the typed `data.query` handlers), `integration/typed_data_secrets_test.ts`                                                                                                                                                                                                                                                                                                                               |

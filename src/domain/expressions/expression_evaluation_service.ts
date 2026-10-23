@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ModelType } from "../models/model_type.ts";
+import { SecretDestinationRefusedError } from "../models/secret_destinations.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { Definition as DefinitionClass } from "../definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -94,6 +95,7 @@ import type {
   UnreadReferenceLookup,
 } from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { secretOccurrencesOf } from "../vaults/secret_occurrences.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import type { ProbeRedactor } from "../vaults/secret_reference_check.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -143,6 +145,42 @@ function bagFor(context: ExpressionContext | undefined): VaultSecretBag {
   return new VaultSecretBag(
     sensitiveValuesOf(context)?.sentinels ?? new SecretBagRegistry(),
   );
+}
+
+/**
+ * A routing destination sees references only (typed-secrets 4.5). Check even
+ * literal text: an earlier pass may already have issued its sentinel. Keys
+ * are checked before entering them, so no sentinel becomes an error path.
+ */
+function refuseRoutingSecrets(
+  value: unknown,
+  registry: SecretBagRegistry,
+  destination: string,
+  location: string,
+): void {
+  const secrets = secretOccurrencesOf(registry);
+  const seen = new WeakSet<object>();
+  const text = (value: string, at: string): void => {
+    const occurrence = secrets.occurrencesIn(value)[0];
+    if (occurrence) {
+      throw new SecretDestinationRefusedError(
+        destination,
+        occurrence.reference,
+        at,
+        "routing values must not contain secrets",
+      );
+    }
+  };
+  const visit = (value: unknown, at: string): void => {
+    if (typeof value === "string") return text(value, at);
+    if (value === null || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    for (const [key, item] of Object.entries(value)) {
+      text(key, at);
+      visit(item, at ? `${at}.${key}` : key);
+    }
+  };
+  visit(value, location);
 }
 
 /**
@@ -583,6 +621,8 @@ export interface PassEvaluatorOptions {
    * secret is refused instead of leaving as a sentinel.
    */
   readonly secretResult?: "refuse";
+  /** A routing destination: refuse issued references before returning a result. */
+  readonly destination?: string;
 }
 
 /**
@@ -704,12 +744,23 @@ export class ExpressionEvaluationService {
         ? {}
         : { secretResult: options.secretResult }),
     };
+    const routed = (value: unknown): unknown => {
+      if (options.destination !== undefined) {
+        refuseRoutingSecrets(
+          value,
+          registry,
+          options.destination,
+          options.location,
+        );
+      }
+      return value;
+    };
     return {
       typed: true,
       evaluate: (expression, context) =>
-        evaluator.evaluate(expression, context, scope),
-      evaluateAsync: (expression, context) =>
-        evaluator.evaluateAsync(expression, context, scope),
+        routed(evaluator.evaluate(expression, context, scope)),
+      evaluateAsync: async (expression, context) =>
+        routed(await evaluator.evaluateAsync(expression, context, scope)),
       validate: (expression) => evaluator.validate(expression),
       prepare: async (content, context) => {
         scope = await evaluator.prepareSynchronousReads(
@@ -1480,17 +1531,17 @@ export class ExpressionEvaluationService {
    * Resolves remaining runtime expressions (vault and env) in arbitrary data.
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
-   * When vault secrets are present, sentinels are loaded and resolved to raw
-   * values inline (no VaultSecretBag is returned): each destination that
-   * receives this data takes the value today (design/enablers/typed-secrets.md
-   * Section 3.3). This is appropriate for non-shell data contexts.
+   * Typed routing callers supply a destination: references in both the input
+   * and result are refused without loading, even when no expression remains.
+   * Legacy callers and trusted validation load inline (no bag is returned).
+   * These callers are pinned by the Section 3.3 fitness rule.
    *
    * @param data - The data (may contain remaining runtime expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @param expressionContext - Optional context for CEL-evaluating dynamic vault.get() arguments
    * @param authored - Expressions the author wrote. See
    *   {@link resolveRuntimeExpressionsInDefinition}.
-   * @returns The data with all runtime expressions resolved (sentinels replaced with raw values)
+   * @returns Resolved data; typed routing refuses secrets before returning it.
    */
   async resolveRuntimeExpressionsInData(
     data: unknown,
@@ -1499,7 +1550,23 @@ export class ExpressionEvaluationService {
     authored: AuthoredExpressions,
     /** Where data sits in `data`. */
     provenance: ProvenanceMap = ProvenanceMap.authored(),
+    /** Typed routing refuses before any load; legacy/trusted callers still load. */
+    destination?: PassEvaluatorOptions & { destination: string },
   ): Promise<unknown> {
+    const secretBag = destination?.secretBag ?? bagFor(expressionContext);
+    const refusing = secretBag.registry.typedSecrets &&
+      destination !== undefined;
+    const refuse = (value: unknown): void => {
+      if (refusing) {
+        refuseRoutingSecrets(
+          value,
+          secretBag.registry,
+          destination.destination,
+          destination.location,
+        );
+      }
+    };
+    refuse(data);
     const expressions = extractExpressions(data);
     const runtimeExpressions = partitionAuthoredAt(
       expressions.filter((expr) =>
@@ -1519,7 +1586,6 @@ export class ExpressionEvaluationService {
       ...expressionContext,
       env: buildEnvContext(),
     };
-    const secretBag = bagFor(expressionContext);
     const resolved = await this.resolveRuntimeData(
       data,
       runtimeExpressions,
@@ -1529,6 +1595,11 @@ export class ExpressionEvaluationService {
       undefined,
       provenance,
     );
+
+    if (refusing) {
+      refuse(resolved);
+      return resolved;
+    }
 
     // For the data path, load and resolve sentinels to raw values
     // immediately since there's no shell context to worry about.
@@ -1549,10 +1620,9 @@ export class ExpressionEvaluationService {
    *
    *   1. {@link evaluateData} — CEL only, skips runtime. Resolves self.*,
    *      inputs.*, model.*, data.*, etc. against the supplied context.
-   *   2. {@link resolveRuntimeExpressionsInData} — env and vault. Vault
-   *      values are resolved to raw strings and registered with the
-   *      optional redactor for log scrubbing. The expression context is
-   *      forwarded so dynamic vault.get() arguments can be CEL-evaluated.
+   *   2. {@link resolveRuntimeExpressionsInData} — env and vault, with the
+   *      caller's destination. Typed routing refuses references; legacy
+   *      callers load and redact. The context carries dynamic vault selectors.
    *
    * Used at execution-time seams that consume workflow-level data where
    * CEL must materialize before runtime resolution walks the now-CEL-
@@ -1567,6 +1637,7 @@ export class ExpressionEvaluationService {
     authored: AuthoredExpressions,
     /** Where data sits in `data`. */
     provenance: ProvenanceMap = ProvenanceMap.authored(),
+    destination?: PassEvaluatorOptions & { destination: string },
   ): Promise<unknown> {
     const afterCel = await this.evaluateDataTracked(
       data,
@@ -1580,49 +1651,7 @@ export class ExpressionEvaluationService {
       context,
       authored,
       afterCel.provenance,
-    );
-  }
-
-  /**
-   * @deprecated Use resolveRuntimeExpressionsInDefinition instead.
-   */
-  async resolveVaultExpressionsInDefinition(
-    definition: Definition,
-  ): Promise<Definition> {
-    // Legacy seam: callers hand in a definition they own, with no CEL
-    // substitution applied, so every expression in it is author-written.
-    const result = await this.resolveRuntimeExpressionsInDefinition(
-      definition,
-      undefined,
-      undefined,
-      "unrestricted",
-    );
-    // Legacy callers expect raw values, so load and resolve sentinels
-    // immediately
-    if (result.secretBag.resolvesAny) {
-      const data = result.definition.toData();
-      const loaded = await this.secretLoader(undefined).load(
-        result.secretBag,
-        data,
-      );
-      const resolved = loaded.resolveDeep(data);
-      return DefinitionClass.fromData(
-        resolved as ReturnType<Definition["toData"]>,
-      );
-    }
-    return result.definition;
-  }
-
-  /**
-   * @deprecated Use resolveRuntimeExpressionsInData instead.
-   */
-  resolveVaultExpressionsInData(data: unknown): Promise<unknown> {
-    // Legacy seam: see resolveVaultExpressionsInDefinition.
-    return this.resolveRuntimeExpressionsInData(
-      data,
-      undefined,
-      undefined,
-      "unrestricted",
+      destination,
     );
   }
 

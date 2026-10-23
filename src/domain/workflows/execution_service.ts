@@ -281,7 +281,6 @@ import {
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import {
-  CelEvaluator,
   createExtensionCelEnvironment,
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
@@ -635,6 +634,7 @@ async function resolveScalarExpression(
   value: string | undefined,
   fieldName: string,
   expressionContext: Record<string, unknown> | undefined,
+  celEvaluator: CelExpressionEvaluator,
   authored: AuthoredExpressions,
   /** Where data sits in `value`. */
   provenance: ProvenanceMap,
@@ -655,7 +655,6 @@ async function resolveScalarExpression(
   ) {
     throw new UserError(`${fieldName} must be an authored expression`);
   }
-  const celEvaluator = new CelEvaluator();
   const cel = expressions.length === 1 ? extractCelExpression(value) : null;
   if (!cel) {
     const values = new Map<string, unknown>();
@@ -1887,6 +1886,11 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.secretRedactor,
         ctx.authoredExpressions,
         placementMap,
+        {
+          secretBag: stepSecretBag,
+          destination: "placement",
+          location: `${ctx.stepName}.placement`,
+        },
       ) as typeof resolvedPlacement;
     }
 
@@ -1913,6 +1917,11 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext,
         ctx.authoredExpressions,
         taskProvenance,
+        {
+          secretBag: stepSecretBag,
+          destination: "task selector",
+          location: `${ctx.stepName}.task`,
+        },
       ) as typeof selectors,
     };
 
@@ -1922,22 +1931,31 @@ export class DefaultStepExecutor implements StepExecutor {
     // has already decided: runStep returns early on a guarded skip and never
     // reaches this executor, so a step that will not run never resolves the
     // target it would have used.
+    const resolveSelector = async (field: keyof typeof selectors) =>
+      await resolveScalarExpression(
+        task[field],
+        `task.${field}`,
+        ctx.expressionContext,
+        await expressionEvaluator.passEvaluatorFor(ctx.sensitiveValues, {
+          secretBag: stepSecretBag,
+          destination: "task selector",
+          location: `${ctx.stepName}.task.${field}`,
+        }),
+        ctx.authoredExpressions,
+        taskProvenance.subtree(field),
+      );
     task = {
       ...task,
-      modelIdOrName: await resolveScalarExpression(
-        task.modelIdOrName,
-        "task.modelIdOrName",
-        ctx.expressionContext,
-        ctx.authoredExpressions,
-        taskProvenance.subtree("modelIdOrName"),
-      ),
-      modelName: await resolveScalarExpression(
-        task.modelName,
-        "task.modelName",
-        ctx.expressionContext,
-        ctx.authoredExpressions,
-        taskProvenance.subtree("modelName"),
-      ),
+      modelIdOrName: await resolveSelector("modelIdOrName"),
+      modelName: await resolveSelector("modelName"),
+      // The typed path covers every selector, including a type or method
+      // deferred until step outputs exist. Keep the legacy passes unchanged.
+      modelType: stepSecretBag.registry.typedSecrets
+        ? await resolveSelector("modelType")
+        : task.modelType,
+      methodName: stepSecretBag.registry.typedSecrets
+        ? (await resolveSelector("methodName"))!
+        : task.methodName,
     };
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
@@ -7032,10 +7050,12 @@ export class WorkflowExecutionService {
         ...(errorCode !== undefined ? { errorCode } : {}),
         allowedFailure: isAllowed || undefined,
         modelName: taskData.type === "model_method"
-          ? taskData.modelIdOrName
+          ? options.sensitiveValues.masked(taskData.modelIdOrName) as
+            | string
+            | undefined
           : undefined,
         methodName: taskData.type === "model_method"
-          ? taskData.methodName
+          ? options.sensitiveValues.masked(taskData.methodName) as string
           : undefined,
         dataHandles: failedDataHandles.length > 0
           ? failedDataHandles
@@ -7348,6 +7368,11 @@ export class WorkflowExecutionService {
     // Resolve whole-field expression string for inputs that survived
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
     const sourceInputs = task.inputs;
+    const childReference = {
+      secretBag: new VaultSecretBag(options.sensitiveValues.sentinels),
+      destination: "child workflow reference",
+      location: `${stepName}.task.workflowIdOrName`,
+    };
     task = {
       ...task,
       workflowIdOrName: await inStepReport(() =>
@@ -7357,6 +7382,7 @@ export class WorkflowExecutionService {
           expressionContext,
           options.authoredExpressions,
           taskProvenance.subtree("workflowIdOrName"),
+          childReference,
         )
       ) as string,
       inputs: await inStepReport(() =>
@@ -7384,11 +7410,15 @@ export class WorkflowExecutionService {
     // steps have written the data it names (swamp-club#2351).
     task = {
       ...task,
-      workflowIdOrName: await inStepReport(() =>
+      workflowIdOrName: await inStepReport(async () =>
         resolveScalarExpression(
           task.workflowIdOrName,
           "task.workflowIdOrName",
           expressionContext,
+          await this.expressionEvaluator.passEvaluatorFor(
+            options.sensitiveValues,
+            childReference,
+          ),
           options.authoredExpressions,
           taskProvenance.subtree("workflowIdOrName"),
         )
