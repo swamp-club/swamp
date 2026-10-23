@@ -2521,3 +2521,190 @@ Deno.test("extractContentMetadata: never reads a symlinked source, so its target
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+/** Extracts the global arguments of a model whose schema body is `fields`. */
+async function extractGlobalArguments(fields: string[]) {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const modelFile = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        'const DESC = "a constant";',
+        "export const model = {",
+        '  type: "test/descriptions",',
+        '  version: "2026.10.23.1",',
+        "  globalArguments: z.object({",
+        ...fields.map((f) => `    ${f},`),
+        "  }),",
+        "  methods: {},",
+        "};",
+      ].join("\n"),
+    );
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    return result.models[0].globalArguments;
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+Deno.test("extractContentMetadata reads a global argument description set through .meta", async () => {
+  const args = await extractGlobalArguments([
+    'appId: z.number().int().positive().meta({ description: "Steam app id" })',
+    "quoted: z.string().meta({ \"description\": 'Quoted key', sensitive: true })",
+    'later: z.string().meta({ title: "T", description: `Later key` })',
+  ]);
+  assertEquals(args.map((a) => [a.name, a.description, a.sensitive]), [
+    ["appId", "Steam app id", undefined],
+    ["quoted", "Quoted key", true],
+    ["later", "Later key", undefined],
+  ]);
+});
+
+Deno.test("extractContentMetadata reads a template literal description without interpolation", async () => {
+  const args = await extractGlobalArguments([
+    "plain: z.string().describe(`Plain template`)",
+    "interpolated: z.string().describe(`Region ${DESC}`)",
+    "constant: z.string().describe(DESC)",
+    "metaConstant: z.string().meta({ description: DESC })",
+  ]);
+  assertEquals(args.map((a) => [a.name, a.description]), [
+    ["plain", "Plain template"],
+    ["interpolated", ""],
+    ["constant", ""],
+    ["metaConstant", ""],
+  ]);
+});
+
+Deno.test("extractContentMetadata keeps a quoted describe first, and otherwise takes the last call that sets a description", async () => {
+  const args = await extractGlobalArguments([
+    'metaThenDescribe: z.string().meta({ foreignTemplate: true }).describe("Alert body")',
+    // A quoted describe anywhere in the chain is read as it always was, so
+    // published descriptions do not change.
+    'describeThenMeta: z.string().describe("First").meta({ description: "Second" })',
+    'nested: z.string().pipe(z.string().describe("Inner")).meta({ description: "Outer" })',
+    'metaThenTemplate: z.string().meta({ description: "Meta" }).describe(`Template`)',
+    'templateThenMeta: z.string().describe(`Template`).meta({ description: "Meta" })',
+    'metaThenPlainMeta: z.string().meta({ description: "Kept" }).meta({ title: "x" })',
+    'nestedMeta: z.string().meta({ examples: [{ description: "Example" }] })',
+  ]);
+  assertEquals(args.map((a) => [a.name, a.description]), [
+    ["metaThenDescribe", "Alert body"],
+    ["describeThenMeta", "First"],
+    ["nested", "Inner"],
+    ["metaThenTemplate", "Template"],
+    ["templateThenMeta", "Meta"],
+    ["metaThenPlainMeta", "Kept"],
+    ["nestedMeta", ""],
+  ]);
+});
+
+Deno.test("extractContentMetadata reads a quoted describe string as it always has", async () => {
+  const args = await extractGlobalArguments([
+    'escaped: z.string().describe("Say \\"hi\\"")',
+    "single: z.string().describe('It\\'s here')",
+  ]);
+  assertEquals(args.map((a) => [a.name, a.description]), [
+    ["escaped", "Say \\"],
+    ["single", "It\\"],
+  ]);
+});
+
+Deno.test("extractContentMetadata keeps arguments whose zod type is namespaced", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const modelFile = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const model = {",
+        '  type: "test/namespaced",',
+        '  version: "2026.10.23.1",',
+        "  globalArguments: z.object({",
+        '    port: z.coerce.number().int().describe("Port"),',
+        "  }),",
+        "  methods: {",
+        "    list: {",
+        '      description: "List",',
+        "      arguments: z.object({",
+        "        since: z.iso.datetime().optional(),",
+        '        day: z.iso.date().meta({ description: "Day" }),',
+        "        after: z.string(),",
+        "      }),",
+        "      execute: () => Promise.resolve({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    const model = result.models[0];
+    assertEquals(
+      model.globalArguments.map((a) => [a.name, a.type, a.description]),
+      [["port", "coerce.number", "Port"]],
+    );
+    assertEquals(
+      model.methods[0].arguments.map((
+        a,
+      ) => [a.name, a.type, a.description, a.required]),
+      [
+        ["since", "iso.datetime", "", false],
+        ["day", "iso.date", "Day", true],
+        ["after", "string", "", true],
+      ],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata reads vault configSchema descriptions set through .meta", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+    const vaultFile = join(vaultsDir, "custom.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const vault = {",
+        '  type: "@myorg/custom",',
+        '  name: "Custom Vault",',
+        '  description: "A custom vault provider.",',
+        "  configSchema: z.object({",
+        '    address: z.string().url().meta({ description: "Server address" }),',
+        "    expires: z.iso.datetime().optional(),",
+        "  }),",
+        "  createProvider(name: string) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(
+      result.vaults[0].configFields.map((f) => [f.name, f.type, f.description]),
+      [
+        ["address", "string", "Server address"],
+        ["expires", "iso.datetime", ""],
+      ],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

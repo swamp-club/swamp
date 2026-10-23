@@ -989,9 +989,10 @@ const DESCRIBE_CALL =
 function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
   const args: ExtractedArgument[] = [];
 
-  // Find field starts: fieldName: z.type( or "field-name": z.type(
+  // Find field starts: fieldName: z.type( or "field-name": z.type(, where
+  // the type may be namespaced, as in z.iso.datetime( or z.coerce.number(
   const fieldStartPattern =
-    /(?:(\w+)|"([^"\\\n]+)"|'([^'\\\n]+)')\s*:\s*z\.(\w+)\(/g;
+    /(?:(\w+)|"([^"\\\n]+)"|'([^'\\\n]+)')\s*:\s*z\.(\w+(?:\.\w+)*)\(/g;
   let startMatch;
   while ((startMatch = fieldStartPattern.exec(schemaBody)) !== null) {
     const name = startMatch[1] ?? startMatch[2] ?? startMatch[3];
@@ -1005,22 +1006,23 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
     // Extract chain methods after the initial z.type(...) call
     // e.g. .optional().describe("...")
     let chain = "";
+    const calls: ChainCall[] = [];
     let pos = parenEnd + 1;
     while (pos < schemaBody.length) {
-      const chainMatch = schemaBody.slice(pos).match(/^\s*\.\w+\(/);
+      const chainMatch = schemaBody.slice(pos).match(/^\s*\.(\w+)\(/);
       if (!chainMatch) break;
       const chainCallStart = pos + chainMatch[0].length;
       const chainCallEnd = findBalancedParen(schemaBody, chainCallStart);
       if (chainCallEnd === -1) break;
       chain += schemaBody.slice(pos, chainCallEnd + 1);
+      calls.push({
+        method: chainMatch[1],
+        args: schemaBody.slice(chainCallStart, chainCallEnd),
+      });
       pos = chainCallEnd + 1;
     }
 
-    // Extract description from .describe("...")
-    const descMatch = chain.match(
-      /\.describe\(\s*(?:"([^"]*?)"|'([^']*?)')/,
-    );
-    const description = descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "";
+    const description = fieldDescription(calls, chain);
 
     // A field is required unless its chain lets undefined through
     // (optional, nullish) or replaces it (default, catch, prefault), or
@@ -1051,6 +1053,86 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
   }
 
   return args;
+}
+
+/** One call chained directly on a field, such as `.describe("...")`. */
+interface ChainCall {
+  method: string;
+  /** The text between the call's parentheses. */
+  args: string;
+}
+
+/**
+ * The text of a string literal at the start of `text`, up to the first quote
+ * of the same kind, as the describe pattern has always read it. A template
+ * literal counts only without interpolation.
+ */
+function leadingStringLiteral(text: string): string | undefined {
+  const match = text.match(/^\s*(?:"([^"]*?)"|'([^']*?)'|`([^`]*?)`)/);
+  if (!match) return undefined;
+  if (match[3] !== undefined) {
+    return match[3].includes("${") ? undefined : match[3];
+  }
+  return match[1] ?? match[2];
+}
+
+const META_DESCRIPTION_KEY = /^(?:description|"description"|'description')\s*:/;
+
+/**
+ * The `description` set by a `.meta({...})` call's own object literal: its
+ * text, "" when the key is there but its value is not a string literal, or
+ * undefined when the object sets no description.
+ */
+function metaDescription(args: string): string | undefined {
+  const body = args.trimStart();
+  if (!body.startsWith("{")) return undefined;
+  let depth = 0;
+  let quote: string | undefined;
+  let previous = "";
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (depth === 1 && (previous === "{" || previous === ",")) {
+      const key = body.slice(i).match(META_DESCRIPTION_KEY);
+      if (key) {
+        return leadingStringLiteral(body.slice(i + key[0].length)) ?? "";
+      }
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "{" || ch === "[" || ch === "(") depth++;
+    else if (ch === "}" || ch === "]" || ch === ")") {
+      depth--;
+      if (depth === 0) return undefined;
+    }
+    if (!/\s/.test(ch)) previous = ch;
+  }
+  return undefined;
+}
+
+/**
+ * A field's description. The first `.describe` with a quoted string anywhere
+ * in the chain is used, as it always has been. Otherwise the last call on the
+ * field that sets one decides, as zod keeps the last: a `.describe` with a
+ * template literal, or a `.meta({...})` with a `description` key.
+ */
+function fieldDescription(calls: ChainCall[], chain: string): string {
+  const descMatch = chain.match(
+    /\.describe\(\s*(?:"([^"]*?)"|'([^']*?)')/,
+  );
+  if (descMatch) return descMatch[1] ?? descMatch[2] ?? "";
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const { method, args } = calls[i];
+    if (method === "describe") return leadingStringLiteral(args) ?? "";
+    if (method === "meta") {
+      const text = metaDescription(args);
+      if (text !== undefined) return text;
+    }
+  }
+  return "";
 }
 
 /**
