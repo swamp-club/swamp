@@ -1152,22 +1152,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                   options?.dryRun ?? false,
                   localLogDirs,
                 );
+                const fileRunId = runIdFromFileName(fileEntry.name);
                 if (!options?.dryRun) {
                   await cleanupEmptyParentDirs(yamlPath, this.baseDir);
-                  noteRemoved(
-                    dir,
-                    workflowId,
-                    runIdFromFileName(fileEntry.name),
-                  );
-                  await this.stageRunRemoval(
-                    workflowId,
-                    runIdFromFileName(fileEntry.name),
-                    dir,
-                  );
+                  noteRemoved(dir, workflowId, fileRunId);
+                  await this.stageRunRemoval(workflowId, fileRunId, dir);
                 }
                 deleted++;
                 bytesReclaimed += fileBytes;
-                const fileRunId = runIdFromFileName(fileEntry.name);
                 if (isSinglePathSegment(fileRunId)) {
                   deletedRunIds.push(fileRunId);
                 }
@@ -1209,23 +1201,19 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 options?.dryRun ?? false,
                 localLogDirs,
               );
-              if (!options?.dryRun) {
-                await cleanupEmptyParentDirs(yamlPath, this.baseDir);
-                noteRemoved(dir, workflowId, runIdFromFileName(fileEntry.name));
-                await this.stageRunRemoval(
-                  workflowId,
-                  runIdFromFileName(fileEntry.name),
-                  dir,
-                );
-              }
-
-              deleted++;
-              bytesReclaimed += fileBytes;
               // Report the ID of the file actually deleted — its name, which
               // save() writes via getPath — not the body's `id`, which could
               // name a different (live) run. Only a single safe path segment
               // may name a snapshot directory.
               const runId = runIdFromFileName(fileEntry.name);
+              if (!options?.dryRun) {
+                await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+                noteRemoved(dir, workflowId, runId);
+                await this.stageRunRemoval(workflowId, runId, dir);
+              }
+
+              deleted++;
+              bytesReclaimed += fileBytes;
               if (isSinglePathSegment(runId)) deletedRunIds.push(runId);
             } catch (error) {
               if (error instanceof Deno.errors.NotFound) continue;
@@ -1966,6 +1954,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * directory can be removed. A missing index is left for the next read to
    * build; one of another schema version, or that cannot be updated, is
    * deleted for a rebuild, as {@link updateIndexEntry} does.
+   *
+   * Entries are looked up by the run id in each removed file's name, while
+   * a rebuild keys them by the id in the record's body. Where a hand-edited
+   * or corrupted record makes the two differ, an entry can be left behind
+   * or dropped for a record that remains; either way the index then lists
+   * a different number of runs than there are records, and the next read's
+   * repair corrects it with a stat per record (see {@link reconcileSuspects}).
    */
   private async dropRemovedIndexEntries(
     workflowId: WorkflowId,

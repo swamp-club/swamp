@@ -4047,7 +4047,7 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the index entry of a
   });
 });
 
-Deno.test("getValidatedIndex: records removed by an interrupted cleanup are dropped from the index without reading a record (swamp-club#3856)", async () => {
+Deno.test("YamlWorkflowRunRepository.findAllSummariesFromIndex: records removed by an interrupted cleanup are dropped from the index without reading a record (swamp-club#3856)", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
     const workflow = createWorkflowWithId(crypto.randomUUID(), "interrupted");
