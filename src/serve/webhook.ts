@@ -34,6 +34,13 @@ import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import type { SyncGate } from "./sync_gate.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
+import {
+  type ExecutionObservation,
+  observeExecution,
+  observeExecutionWork,
+  type TraceCarrier,
+  traceCarrier,
+} from "../domain/remote/observability.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   extractFirstStepError,
@@ -531,7 +538,16 @@ export interface WebhookQueueStatus {
   readonly lastQueueDelayMs: number | null;
 }
 
+import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts";
+
 interface QueuedWebhookRun {
+  lastProgressAt: string;
+  admittedAt?: number;
+  phaseStartedAt: number;
+  runId?: string;
+  queueObservation?: ExecutionObservation;
+  receiptId?: string;
+  receiptTrace?: TraceCarrier;
   pendingRunId?: string;
   putPromise?: Promise<void>;
   workflowIdOrName: string;
@@ -618,6 +634,31 @@ export class WebhookService {
 
   setEventHandler(handler: WebhookEventHandler): void {
     this.eventHandler = handler;
+  }
+
+  /** Admin-only diagnostics; receipt IDs are not workflow run IDs. */
+  admissionSnapshots(): WebhookAdmissionSnapshot[] {
+    const active = [...this.inFlight.values()];
+    return [...this.runQueue, ...active].map((entry) => {
+      const queued = entry.admittedAt === undefined;
+      const blocked = queued && active.length >= this.maxConcurrentRuns
+        ? active
+        : [];
+      return {
+        receiptId: entry.receiptId ?? entry.pendingRunId ?? "unknown",
+        workflow: entry.workflowIdOrName,
+        phase: queued ? "queued" : entry.runId ? "executing" : "starting",
+        phaseElapsedMs: Math.max(0, performance.now() - entry.phaseStartedAt),
+        enqueuedAt: new Date(entry.enqueuedAt).toISOString(),
+        lastProgressAt: entry.lastProgressAt,
+        traceId: entry.receiptTrace?.traceparent.split("-")[1],
+        runId: entry.runId,
+        blockingRunIds: blocked.flatMap((item) =>
+          item.runId ? [item.runId] : []
+        ),
+        unknownBlockers: blocked.filter((item) => !item.runId).length,
+      };
+    });
   }
 
   /**
@@ -709,6 +750,38 @@ export class WebhookService {
   async handleRequest(
     req: Request,
     sourceIp?: string,
+  ): Promise<Response | null> {
+    if (
+      req.method !== "POST" ||
+      !this.endpoints.some((endpoint) =>
+        endpoint.route === new URL(req.url).pathname
+      )
+    ) {
+      return null;
+    }
+    const receiptId = crypto.randomUUID();
+    return await observeExecutionWork("webhook.receipt", {
+      "swamp.webhook.receipt_id": receiptId,
+    }, async (observation) => {
+      const response = await this.handleObservedRequest(
+        req,
+        sourceIp,
+        receiptId,
+        observation,
+      );
+      observation.attributes({
+        "http.response.status_code": response?.status ?? 404,
+      });
+      if (response && response.status >= 400) observation.end("error");
+      return response;
+    });
+  }
+
+  private async handleObservedRequest(
+    req: Request,
+    sourceIp: string | undefined,
+    receiptId: string,
+    receipt: ExecutionObservation,
   ): Promise<Response | null> {
     if (req.method !== "POST") {
       return null;
@@ -858,16 +931,17 @@ export class WebhookService {
     let pendingRunId: string | undefined;
     let putPromise: Promise<void> | undefined;
     if (this.deps.runTracker) {
-      pendingRunId = crypto.randomUUID();
+      pendingRunId = receiptId;
       const pendingEntry = {
         id: pendingRunId,
+        receiptTrace: receipt.carrier,
         source: "webhook" as const,
         workflowIdOrName: endpoint.workflowIdOrName,
         payload: serializedPayload,
         route: endpoint.route,
         traceparent,
         tracestate,
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(this.now()).toISOString(),
       };
       this.deps.runTracker.enqueuePendingRun(pendingEntry);
       if (this.deps.controlPlaneStore) {
@@ -887,6 +961,13 @@ export class WebhookService {
     }
 
     this.runQueue.push({
+      phaseStartedAt: performance.now(),
+      lastProgressAt: new Date(this.now()).toISOString(),
+      queueObservation: observeExecution("webhook.queue", {
+        "swamp.webhook.receipt_id": receiptId,
+      }, receipt.carrier),
+      receiptId,
+      receiptTrace: receipt.carrier,
       pendingRunId,
       putPromise,
       workflowIdOrName: endpoint.workflowIdOrName,
@@ -963,6 +1044,8 @@ export class WebhookService {
   }
 
   enqueueForReplay(entry: {
+    receiptTrace?: TraceCarrier;
+    createdAt?: string;
     pendingRunId: string;
     workflowIdOrName: string;
     route: string;
@@ -972,7 +1055,23 @@ export class WebhookService {
   }): void {
     // The pending entry stays in the run tracker for the next boot to replay.
     if (this.draining) return;
-    this.runQueue.push({ ...entry, replayed: true, enqueuedAt: this.now() });
+    const original = typeof entry.createdAt === "string"
+      ? Date.parse(entry.createdAt)
+      : NaN;
+    const receiptTrace = traceCarrier(entry.receiptTrace);
+    this.runQueue.push({
+      ...entry,
+      phaseStartedAt: performance.now(),
+      lastProgressAt: new Date(this.now()).toISOString(),
+      receiptTrace,
+      queueObservation: observeExecution("webhook.queue", {
+        "swamp.webhook.receipt_id": entry.pendingRunId,
+        "swamp.webhook.replayed": true,
+      }, receiptTrace),
+      receiptId: entry.pendingRunId,
+      replayed: true,
+      enqueuedAt: Number.isFinite(original) ? original : this.now(),
+    });
     this.processQueue();
   }
 
@@ -987,6 +1086,7 @@ export class WebhookService {
     // A dropped entry's control-plane write is what a replacement instance
     // replays, so it must land before shutdown moves on.
     const dropped = this.runQueue.splice(0);
+    for (const entry of dropped) entry.queueObservation?.end("cancelled");
     await Promise.allSettled(dropped.map((entry) => entry.putPromise));
     if (timeoutMs <= 0) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1007,6 +1107,7 @@ export class WebhookService {
    */
   async stop(): Promise<void> {
     this.stopped = true;
+    for (const entry of this.runQueue) entry.queueObservation?.end("cancelled");
     this.runQueue.length = 0;
     for (const { controller } of this.running.values()) {
       controller.abort();
@@ -1056,6 +1157,10 @@ export class WebhookService {
       this.inFlight.size < this.maxConcurrentRuns && this.runQueue.length > 0
     ) {
       const entry = this.runQueue.shift()!;
+      entry.admittedAt = performance.now();
+      entry.phaseStartedAt = entry.admittedAt;
+      entry.lastProgressAt = new Date(this.now()).toISOString();
+      entry.queueObservation?.end("ok");
       // Detached: a launch from a request, from boot replay or from a
       // settling run must not carry that context's span into this run.
       const settled: Promise<void> = runDetached(() => this.runEntry(entry))
@@ -1075,12 +1180,29 @@ export class WebhookService {
 
   /** Never rejects: a failure is logged and the queue keeps going. */
   private async runEntry(entry: QueuedWebhookRun): Promise<void> {
+    const observation = observeExecution(
+      "webhook.run",
+      {
+        "swamp.webhook.receipt_id": entry.receiptId ?? entry.pendingRunId ??
+          crypto.randomUUID(),
+        "swamp.webhook.replayed": entry.replayed ?? false,
+        "swamp.webhook.queue_wait_ms": Math.max(
+          0,
+          this.now() - entry.enqueuedAt,
+        ),
+      },
+      undefined,
+      entry.receiptTrace ? [entry.receiptTrace] : undefined,
+    );
     try {
       const { pendingRunId, putPromise } = entry;
       if (putPromise) await putPromise;
       // A drain that began while this entry was dequeued leaves it pending
       // for the next boot to replay rather than starting it now.
-      if (this.draining) return;
+      if (this.draining) {
+        observation.end("cancelled");
+        return;
+      }
       if (pendingRunId && this.deps.runTracker) {
         this.deps.runTracker.deletePendingRun(pendingRunId);
         if (this.deps.controlPlaneStore) {
@@ -1100,8 +1222,11 @@ export class WebhookService {
       // Each entry starts outside any vault scope: the run enters its own
       // principal's scope, and the queue's inherited context never carries
       // another entry's (swamp-club#2676).
-      await withoutVaultAccess(() => this.executeWorkflow(entry));
+      await observation.run(() =>
+        withoutVaultAccess(() => this.executeWorkflow(entry, observation))
+      );
     } catch (error) {
+      observation.end("error");
       logger.error(
         "Webhook run for workflow {workflow} on {route} did not start: {error}",
         {
@@ -1110,10 +1235,15 @@ export class WebhookService {
           error: error instanceof Error ? error.message : String(error),
         },
       );
+    } finally {
+      observation.end("ok");
     }
   }
 
-  private async executeWorkflow(entry: QueuedWebhookRun): Promise<void> {
+  private async executeWorkflow(
+    entry: QueuedWebhookRun,
+    observation: ExecutionObservation,
+  ): Promise<void> {
     const { route, payload, traceparent, tracestate, sourceIp } = entry;
     const replayed = entry.replayed ?? false;
     const authorization = await this.authorize({
@@ -1123,6 +1253,10 @@ export class WebhookService {
       replayed,
     });
     if (!authorization.allowed) {
+      observation.attributes({
+        "swamp.webhook.rejection": "authorization_denied",
+      });
+      observation.end("error");
       const reason = authorization.reason ?? "denied";
       this.emit({
         kind: "webhook_denied",
@@ -1177,6 +1311,10 @@ export class WebhookService {
           // this webhook's run is the one without a parent.
           if (event.kind === "started" && event.parentRunId === undefined) {
             runId = event.runId;
+            entry.runId = runId;
+            entry.phaseStartedAt = performance.now();
+            entry.lastProgressAt = new Date(this.now()).toISOString();
+            observation.attributes({ "workflow.run_id": runId });
             tracked.runId = runId;
             // A route removed while this run was queued keeps no delay.
             if (this.endpoints.some((e) => e.route === route)) {
@@ -1237,6 +1375,7 @@ export class WebhookService {
       // webhook_completed feeds the "completed" bucket of the health
       // endpoint's throughput metrics.
       if (completedRun?.status === "succeeded") {
+        observation.end("ok");
         this.emit({
           kind: "webhook_completed",
           route,
@@ -1257,6 +1396,9 @@ export class WebhookService {
             ? "workflow was cancelled"
             : extractFirstStepError(completedRun))
           : streamError ?? "workflow did not complete";
+        observation.end(
+          completedRun?.status === "cancelled" ? "cancelled" : "error",
+        );
         this.emit({
           kind: "webhook_failed",
           route,
@@ -1266,12 +1408,14 @@ export class WebhookService {
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
+        observation.end("cancelled");
         logger.info("Webhook workflow {workflow} aborted", {
           workflow: workflowIdOrName,
         });
         return;
       }
 
+      observation.end("error");
       const message = error instanceof Error ? error.message : String(error);
       this.emit({
         kind: "webhook_failed",

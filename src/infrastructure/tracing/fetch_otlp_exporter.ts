@@ -21,6 +21,7 @@ import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
 import { JsonTraceSerializer } from "@opentelemetry/otlp-transformer";
+import { metrics } from "@opentelemetry/api";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -66,9 +67,20 @@ export class FetchOtlpExporter implements SpanExporter {
       return;
     }
 
+    const accounting = metrics.getMeter("swamp.execution", "1").createCounter(
+      "swamp.export.spans",
+      { unit: "{span}" },
+    );
+    accounting.add(spans.length, { outcome: "attempted" });
     const pending = this.#send(spans).then(
-      () => resultCallback({ code: ExportResultCode.SUCCESS }),
-      () => resultCallback({ code: ExportResultCode.FAILED }),
+      () => {
+        accounting.add(spans.length, { outcome: "collector_acknowledged" });
+        resultCallback({ code: ExportResultCode.SUCCESS });
+      },
+      () => {
+        accounting.add(spans.length, { outcome: "not_fully_acknowledged" });
+        resultCallback({ code: ExportResultCode.FAILED });
+      },
     );
     // Track the in-flight send so forceFlush()/shutdown() can drain it, and
     // remove it once settled to bound the set's size. `pending` rejects only
@@ -111,11 +123,15 @@ export class FetchOtlpExporter implements SpanExporter {
         signal: controller.signal,
       });
 
-      if (!response.ok) {
-        // Drain the body to avoid resource leaks, but don't throw.
-        await response.arrayBuffer();
-      } else {
-        await response.body?.cancel();
+      const text = await response.text();
+      if (!response.ok) throw new Error("Trace collector rejected export");
+      if (text) {
+        const reply = JSON.parse(text) as {
+          partialSuccess?: { rejectedSpans?: string | number };
+        };
+        if (Number(reply.partialSuccess?.rejectedSpans ?? 0) > 0) {
+          throw new Error("Trace collector partially rejected export");
+        }
       }
     } finally {
       clearTimeout(timer);

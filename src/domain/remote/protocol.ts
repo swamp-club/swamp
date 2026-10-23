@@ -69,7 +69,13 @@ export interface RpcErrorDetail {
 }
 
 export type RpcFrame =
-  | { type: "rpc.request"; id: string; method: string; params: unknown }
+  | {
+    type: "rpc.request";
+    id: string;
+    method: string;
+    params: unknown;
+    trace?: unknown;
+  }
   | { type: "rpc.response"; id: string; result: unknown }
   | { type: "rpc.error"; id: string; error: RpcErrorDetail }
   | { type: "rpc.stream"; id: string; event: RpcStreamEvent }
@@ -80,6 +86,7 @@ const RpcRequestFrameSchema = z.object({
   id: z.string().min(1),
   method: z.string().min(1),
   params: z.unknown(),
+  trace: z.unknown().optional(),
 });
 
 const RpcResponseFrameSchema = z.object({
@@ -414,6 +421,7 @@ export function dispatchErrorCode(error: unknown): string | undefined {
 }
 
 export const DispatchResultSchema = z.object({
+  trace: z.unknown().optional(),
   status: z.enum(["success", "error"]),
   error: z.string().optional(),
   /**

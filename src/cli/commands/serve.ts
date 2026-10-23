@@ -5953,6 +5953,8 @@ export const serveCommand = new Command()
       }
       : undefined;
     connectionCtx.webhookUpdater = webhookUpdater;
+    connectionCtx.webhookAdmissionSnapshots = () =>
+      webhookService?.admissionSnapshots() ?? [];
 
     const wsUpgradeOpts: Deno.UpgradeWebSocketOptions = {};
     if (wsIdleTimeoutSeconds !== undefined) {

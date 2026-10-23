@@ -31,6 +31,7 @@
  */
 
 import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { observeExecution } from "../domain/remote/observability.ts";
 
 /** Which of serve's two chains a transition runs on. */
 export type TransitionTailName = "dispatch" | "gateway";
@@ -57,22 +58,30 @@ export class TransitionTail {
   run<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     const ahead = this.#pending++;
     const enqueuedAt = performance.now();
+    const waiting = observeExecution("transition.wait", {
+      "swamp.transition.tail": this.#name,
+    });
     const traced = () =>
-      withSpan(
-        "swamp.serve.transition",
-        {
-          "swamp.transition.tail": this.#name,
-          "swamp.transition.operation": operation,
-          "swamp.transition.queue_depth": ahead,
-          "swamp.transition.queue_wait_ms": Math.round(
-            performance.now() - enqueuedAt,
-          ),
-        },
-        // An async wrapper turns a synchronous throw into a rejection, so the
-        // span still ends and the pending count still drops.
-        async () => await fn(),
-      ).finally(() => {
-        this.#pending--;
+      waiting.run(() => {
+        waiting.end("ok");
+        return (
+          withSpan(
+            "swamp.serve.transition",
+            {
+              "swamp.transition.tail": this.#name,
+              "swamp.transition.operation": operation,
+              "swamp.transition.queue_depth": ahead,
+              "swamp.transition.queue_wait_ms": Math.round(
+                performance.now() - enqueuedAt,
+              ),
+            },
+            // An async wrapper turns a synchronous throw into a rejection, so the
+            // span still ends and the pending count still drops.
+            async () => await fn(),
+          ).finally(() => {
+            this.#pending--;
+          })
+        );
       });
     const next = this.#tail.then(traced, traced);
     this.#tail = next.then(() => undefined, () => undefined);

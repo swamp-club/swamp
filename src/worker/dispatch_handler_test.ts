@@ -39,6 +39,68 @@ import {
   registerDispatchHandler,
 } from "./dispatch_handler.ts";
 import { RunnerBootstrapParamsSchema } from "./runner_protocol.ts";
+import { context, trace } from "@opentelemetry/api";
+import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
+import {
+  installExecutionObserver,
+  uninstallExecutionObserver,
+} from "../infrastructure/tracing/execution_observer.ts";
+
+Deno.test("registerDispatchHandler: headerless dispatches detach from the connection trace", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const { worker, orchestrator } = channelPair();
+    const connection = trace.getTracer("test").startSpan("connection");
+    registerDispatchHandler({
+      channel: worker,
+      sessionCredential: () => "test",
+      dataPlaneUrl: "http://localhost:0",
+      cacheDirPath: "/unused",
+      capacity: 1,
+      onDispatch: () => {
+        throw new Error("stop before spawning a runner");
+      },
+    });
+    try {
+      await context.with(
+        trace.setSpan(context.active(), connection),
+        async () => {
+          for (let i = 0; i < 2; i++) {
+            await orchestrator.call(WorkerMethod.dispatch, dispatchParams())
+              .catch(() => {});
+          }
+        },
+      );
+      const dispatches = spans.filter((s) =>
+        s.name === "swamp.worker.dispatch"
+      );
+      assertEquals(dispatches.length, 2);
+      assertEquals(
+        new Set(dispatches.map((s) => s.spanContext().traceId)).size,
+        2,
+      );
+      for (const span of dispatches) {
+        const replies = spans.filter((reply) =>
+          reply.name === "swamp.rpc.submit" &&
+          reply.attributes["swamp.rpc.frame"] === "rpc.error" &&
+          reply.parentSpanId === span.spanContext().spanId &&
+          reply.spanContext().traceId === span.spanContext().traceId
+        );
+        assertEquals(replies.length, 1);
+        assertEquals(span.parentSpanId, undefined);
+        assertEquals(
+          span.spanContext().traceId === connection.spanContext().traceId,
+          false,
+        );
+      }
+    } finally {
+      connection.end();
+      worker.close();
+      orchestrator.close();
+      uninstallExecutionObserver();
+    }
+  });
+});
 
 function channelPair(): { worker: RpcChannel; orchestrator: RpcChannel } {
   const worker: RpcChannel = new RpcChannel({

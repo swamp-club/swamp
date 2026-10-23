@@ -69,6 +69,8 @@ import {
   type MaxEnrollments,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { observeExecutionWork } from "../domain/remote/observability.ts";
+import { runDetached } from "../infrastructure/tracing/tracer.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import { TransitionTail } from "./transition_tail.ts";
 
@@ -401,7 +403,24 @@ export class WorkerGateway {
     };
     state.channel.register(
       RemoteMethod.enroll,
-      (params) => this.#handleEnroll(state, params),
+      (params, ctx) =>
+        runDetached(() =>
+          observeExecutionWork("enrollment.request", {
+            "swamp.rpc.request_id": ctx.requestId,
+          }, async (observation) => {
+            // Authentication is server-owned; only an accepted peer may link
+            // its context into the enrollment trace.
+            ctx.responseTrace = observation.carrier;
+            const result = await this.#handleEnroll(state, params);
+            return await observeExecutionWork(
+              "enrollment.accepted",
+              {},
+              () => Promise.resolve(result),
+              undefined,
+              ctx.trace ? [ctx.trace] : undefined,
+            );
+          })
+        ),
     );
     return {
       feed: (raw) => state.channel.handleRaw(raw),

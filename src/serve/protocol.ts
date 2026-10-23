@@ -2039,10 +2039,16 @@ export interface RunHistoryResponse {
     heartbeatAt: string;
     stale: boolean;
     initiatedBy?: string | null;
+    progress?: import("../domain/remote/run_progress.ts").RunProgressSnapshot[];
+    progressScope?: string;
   }>;
 }
 
 export interface RunDoctorResponse {
+  liveProgress?:
+    import("../domain/remote/run_progress.ts").RunProgressSnapshot[];
+  webhookAdmissions?:
+    import("../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[];
   totalTracked: number;
   active: number;
   stale: number;

@@ -126,6 +126,9 @@ export async function initTracing(
 
   providerRef = provider;
 
+  const { installExecutionObserver } = await import("./execution_observer.ts");
+  installExecutionObserver();
+
   // Extract inbound TRACEPARENT from the parent process, if present.
   const traceparent = config?.traceparent ?? envGet("TRACEPARENT");
   if (traceparent) {
@@ -145,6 +148,10 @@ export async function initTracing(
  * No-op when tracing was not initialized.
  */
 export async function shutdownTracing(): Promise<void> {
+  const { setExecutionObserver } = await import(
+    "../../domain/remote/observability.ts"
+  );
+  setExecutionObserver(undefined);
   if (providerRef) {
     try {
       await providerRef.shutdown();

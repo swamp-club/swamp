@@ -27,6 +27,10 @@
  */
 
 import { Definition } from "../domain/definitions/definition.ts";
+import {
+  observeExecutionWork,
+  type TraceCarrier,
+} from "../domain/remote/observability.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
 import type { DataHandle } from "../domain/models/model.ts";
 import { withConsoleGuard } from "../domain/models/console_guard.ts";
@@ -161,6 +165,7 @@ export async function runDispatchRunner(
   let getHandles: () => DataHandle[] = () => [];
 
   let result: DispatchResult;
+  let completionTrace: TraceCarrier | undefined;
 
   const scratchDir = await Deno.makeTempDir({
     prefix: `swamp-dispatch-${dispatch.dispatchId.slice(0, 8)}-`,
@@ -192,9 +197,16 @@ export async function runDispatchRunner(
     });
     const bundleCache = new WorkerBundleCache(params.cacheDirPath, client);
 
-    const { modelDef, filesDir } = await bundleCache.load(
-      dispatch.bundleFingerprint,
-      signal,
+    const { modelDef, filesDir } = await observeExecutionWork(
+      "worker.prepare",
+      {
+        "swamp.dispatch.id": dispatch.dispatchId,
+      },
+      () =>
+        bundleCache.load(
+          dispatch.bundleFingerprint,
+          signal,
+        ),
     );
     const method = modelDef.methods[execution.methodName];
     if (!method) {
@@ -231,11 +243,17 @@ export async function runDispatchRunner(
     getHandles = remote.getHandles;
 
     const executor = new DefaultMethodExecutionService();
-    const methodResult = await withConsoleGuard(
-      () => executor.execute(definition, method, remote.context),
-      logs,
-      { jsonMode: true },
-    );
+    const methodResult = await observeExecutionWork("worker.execute", {
+      "swamp.dispatch.id": dispatch.dispatchId,
+      "swamp.lease.id": dispatch.leaseId,
+    }, (observation) => {
+      completionTrace = observation.carrier;
+      return withConsoleGuard(
+        () => executor.execute(definition, method, remote.context),
+        logs,
+        { jsonMode: true },
+      );
+    });
 
     const handles = methodResult.dataHandles?.length
       ? methodResult.dataHandles
@@ -270,6 +288,7 @@ export async function runDispatchRunner(
     await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
   }
 
+  result.trace = completionTrace;
   await transport.sendFinal(JSON.stringify({ type: "runner.result", result }));
   // Return rather than exit: the CLI then ends the runner's swamp.cli span
   // and flushes tracing before main.ts exits the process. Without that, every

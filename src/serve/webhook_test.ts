@@ -26,7 +26,12 @@ import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { type Span, trace } from "@opentelemetry/api";
+import { propagation, type Span, trace } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import {
+  installExecutionObserver,
+  uninstallExecutionObserver,
+} from "../infrastructure/tracing/execution_observer.ts";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
@@ -1323,6 +1328,114 @@ Deno.test("WebhookService: a nested workflow's started event does not retarget t
 
 // ── trace context of queued runs (swamp-club#2467) ──
 
+Deno.test("WebhookService: telemetry distinguishes queued receipt from refused execution", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const { service, calls, events } = await triggerService({
+      authorizeRun: () =>
+        Promise.resolve({
+          allowed: false,
+          workflowIdOrName: "deploy",
+          reason: "private policy detail",
+        }),
+    });
+    try {
+      await service.handleRequest(await signedDelivery("{}"));
+      await waitFor(
+        () => events.some((e) => e.kind === "webhook_denied"),
+        "run refused",
+      );
+      await service.stop();
+      assertEquals(calls.length, 0);
+      const run = spans.find((s) => s.name === "swamp.webhook.run")!;
+      assertEquals(run.attributes["swamp.outcome"], "error");
+      assertEquals(
+        run.attributes["swamp.webhook.rejection"],
+        "authorization_denied",
+      );
+      assertEquals(
+        JSON.stringify(run.attributes).includes("private policy detail"),
+        false,
+      );
+      const receipt = spans.find((s) => s.name === "swamp.webhook.receipt")!;
+      assertEquals(receipt.attributes["swamp.outcome"], "ok");
+    } finally {
+      await service.stop();
+      uninstallExecutionObserver();
+    }
+  });
+});
+
+Deno.test("WebhookService: telemetry links replay to its receipt without inheriting boot context", async () => {
+  await withCapturedSpans(async (spans) => {
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    installExecutionObserver();
+    const { service, calls } = await triggerService();
+    try {
+      const receiptId = crypto.randomUUID();
+      const traceId = "0af7651916cd43dd8448eb211c80319c";
+      const spanId = "b7ad6b7169203331";
+      await withSpan("boot", {}, () => {
+        service.enqueueForReplay({
+          pendingRunId: receiptId,
+          workflowIdOrName: "deploy",
+          route: "/hooks/gh",
+          payload: { body: null, headers: {}, route: "/hooks/gh" },
+          receiptTrace: { traceparent: `00-${traceId}-${spanId}-01` },
+        });
+        return Promise.resolve();
+      });
+      await waitFor(() => calls.length === 1, "replay executed");
+      await service.stop();
+      const run = spans.find((s) => s.name === "swamp.webhook.run")!;
+      assertEquals(run.parentSpanId, undefined);
+      assertEquals(
+        run.links.map((link) => ({
+          traceId: link.context.traceId,
+          spanId: link.context.spanId,
+        })),
+        [{ traceId, spanId }],
+      );
+      assertEquals(run.attributes["swamp.webhook.receipt_id"], receiptId);
+      assertEquals(run.attributes["swamp.webhook.replayed"], true);
+      assertEquals(run.attributes["swamp.outcome"], "ok");
+      const queue = spans.find((s) => s.name === "swamp.webhook.queue")!;
+      assertEquals(queue.parentSpanId, spanId);
+      assertEquals(queue.spanContext().traceId, traceId);
+    } finally {
+      await service.stop();
+      uninstallExecutionObserver();
+      propagation.disable();
+    }
+  });
+});
+
+Deno.test("WebhookService: malformed replay receipt metadata does not reject execution", async () => {
+  await withCapturedSpans(async (spans) => {
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    installExecutionObserver();
+    const { service, calls } = await triggerService();
+    try {
+      service.enqueueForReplay({
+        pendingRunId: crypto.randomUUID(),
+        workflowIdOrName: "deploy",
+        route: "/hooks/gh",
+        payload: { body: null, headers: {}, route: "/hooks/gh" },
+        receiptTrace: { traceparent: "malformed" },
+      });
+      await waitFor(() => calls.length === 1, "replay executed");
+      await service.stop();
+      const run = spans.find((span) => span.name === "swamp.webhook.run")!;
+      assertEquals(run.links, []);
+      assertEquals(run.attributes["swamp.outcome"], "ok");
+    } finally {
+      await service.stop();
+      uninstallExecutionObserver();
+      propagation.disable();
+    }
+  });
+});
+
 /** An executor that records the span active when each run starts. */
 function spanRecordingExecutor(seen: (Span | undefined)[]) {
   return ((
@@ -1532,6 +1645,12 @@ Deno.test("WebhookService.cancelByRunId: a run whose start is not recorded yet i
 
   assertEquals(service.cancelByRunId(""), false);
   assertEquals(service.cancelByRunId("run-1"), false);
+  await service.handleRequest(await signedDelivery("{}"));
+  const queued = service.admissionSnapshots().find((entry) =>
+    entry.phase === "queued"
+  )!;
+  assertEquals(queued.blockingRunIds, []);
+  assertEquals(queued.unknownBlockers, 1);
   release();
   await service.stop();
 });
@@ -1641,6 +1760,17 @@ Deno.test("WebhookService: by default a delivery waits for the run ahead of it",
   assertEquals(service.queueStatus("/hooks/gh").active, 1);
   assertEquals(service.queueStatus("/hooks/alerts").queued, 1);
   assertEquals(runs.length, 1);
+  const waiting = service.admissionSnapshots().find((entry) =>
+    entry.phase === "queued"
+  )!;
+  assertEquals(waiting.blockingRunIds, ["run-1"]);
+  assertEquals(waiting.unknownBlockers, 0);
+  assertEquals(waiting.runId, undefined);
+  const running = service.admissionSnapshots().find((entry) =>
+    entry.runId === "run-1"
+  )!;
+  assertEquals(running.phase, "executing");
+  assertEquals(completed("run-1"), false);
 
   runs[0].release();
   await waitFor(() => runs.length === 2, "delivery B started");
@@ -1648,6 +1778,7 @@ Deno.test("WebhookService: by default a delivery waits for the run ahead of it",
   runs[1].release();
   await waitFor(() => completed("run-2"), "delivery B completed");
   await service.stop();
+  assertEquals(service.admissionSnapshots(), []);
 });
 
 Deno.test("WebhookService: a delivery beyond the limit starts when a run settles", async () => {

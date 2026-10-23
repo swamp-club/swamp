@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
+import { runProgressSnapshots } from "../remote/run_progress.ts";
+import {
+  type ObservationOutcome,
+  setExecutionObserver,
+} from "../remote/observability.ts";
 import type { ModelDefinition } from "../models/model.ts";
 import {
   ModelLockLostError,
@@ -319,6 +324,108 @@ function createSimpleWorkflow(): Workflow {
     ],
   });
 }
+
+Deno.test("WorkflowExecutionService: observes dependency and scheduler waits before execution and closes abandoned waits", async () => {
+  for (const abandon of [false, true]) {
+    await withTempDir(async (tempDir) => {
+      const waits: Array<{
+        operation: string;
+        step: string;
+        outcomes: ObservationOutcome[];
+      }> = [];
+      setExecutionObserver({
+        start(operation, attributes) {
+          const wait = {
+            operation,
+            step: String(attributes["step.name"]),
+            outcomes: [] as ObservationOutcome[],
+          };
+          waits.push(wait);
+          return {
+            carrier: undefined,
+            run: (fn) => fn(),
+            attributes: () => {},
+            end: (outcome) => {
+              wait.outcomes.push(outcome);
+            },
+          };
+        },
+      });
+      const catalog = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const workflowRepo = new InMemoryWorkflowRepository();
+        const workflow = Workflow.create({
+          name: "admission",
+          jobs: [Job.create({
+            name: "job",
+            concurrency: 1,
+            steps: [
+              Step.create({
+                name: "first",
+                task: StepTask.model("test", "run"),
+              }),
+              Step.create({
+                name: "sibling",
+                task: StepTask.model("test", "run"),
+              }),
+              Step.create({
+                name: "dependent",
+                task: StepTask.model("test", "run"),
+                dependsOn: [{
+                  step: "first",
+                  condition: TriggerCondition.succeeded(),
+                }],
+              }),
+            ],
+          })],
+        });
+        await workflowRepo.save(workflow);
+        const executor: StepExecutor = {
+          execute(_step, ctx) {
+            if (ctx.stepName === "first") {
+              assertEquals(
+                waits.find((w) =>
+                  w.step === "dependent" && w.operation === "step.dependency"
+                )?.outcomes,
+                [],
+              );
+              assertEquals(
+                waits.find((w) =>
+                  w.step === "sibling" && w.operation === "step.scheduler"
+                )?.outcomes,
+                [],
+              );
+            }
+            return Promise.resolve({});
+          },
+        };
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          new InMemoryWorkflowRunRepository(),
+          tempDir,
+          executor,
+          undefined,
+          catalog,
+        );
+        for await (const event of service.run(workflow.name)) {
+          if (abandon && event.kind === "step_started") break;
+        }
+        const dependency = waits.filter((w) =>
+          w.operation === "step.dependency"
+        );
+        assertEquals(dependency.length, 3);
+        for (const wait of waits) assertEquals(wait.outcomes.length, 1);
+        assertEquals(
+          dependency.find((w) => w.step === "dependent")?.outcomes,
+          [abandon ? "closed" : "ok"],
+        );
+      } finally {
+        setExecutionObserver(undefined);
+        catalog.close();
+      }
+    });
+  }
+});
 
 Deno.test("executes simple workflow with one job and one step", async () => {
   await withTempDir(async (tempDir) => {
@@ -8100,17 +8207,18 @@ Deno.test({
       const runRepo = new InMemoryWorkflowRunRepository();
       const executor = new MockStepExecutor();
 
-      // Make the first step slow so the signal fires while it's running
+      const controller = new AbortController();
+      // Cancel only once the first step is executing.
       const originalExecute = executor.execute.bind(executor);
       executor.execute = async (step: Step, ctx: StepExecutionContext) => {
         if (step.name === "slow") {
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          controller.abort();
           // Check if signal was aborted
           if (ctx.signal?.aborted) {
             throw new DOMException("The operation was aborted.", "AbortError");
           }
         }
-        return originalExecute(step, ctx);
+        return await originalExecute(step, ctx);
       };
 
       const workflow = Workflow.create({
@@ -8146,9 +8254,6 @@ Deno.test({
         undefined,
         catalogStore,
       );
-
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 100);
 
       const events = [];
       for await (
@@ -14006,6 +14111,20 @@ Deno.test("abort cleanup: a step queued behind job concurrency is cancelled, so 
       ],
     });
     const executor = new AbortingStepExecutor("a");
+    const execute = executor.execute.bind(executor);
+    let observedCleanup = false;
+    executor.execute = async (step, context) => {
+      if (step.name === "on-completed") {
+        observedCleanup = true;
+        assertEquals(
+          runProgressSnapshots().filter((entry) =>
+            entry.workflow === workflow.name && entry.step === "b"
+          ),
+          [],
+        );
+      }
+      return await execute(step, context);
+    };
     const { service } = await setupRetry(
       tempDir,
       workflow,
@@ -14023,6 +14142,7 @@ Deno.test("abort cleanup: a step queued behind job concurrency is cancelled, so 
     assertCancelledBeforeStart(run, "main", ["b"]);
     assertEquals(executor.count("main/b"), 0);
     assertEquals(executor.count("main/on-completed"), 1);
+    assertEquals(observedCleanup, true);
     assertEquals(executor.count("main/on-failed"), 1);
     assertEquals(executor.count("main/on-succeeded"), 0);
     assertDependencySkipped(run, ["on-succeeded"]);
@@ -19052,6 +19172,33 @@ Deno.test("resume(): refuses a parent whose nested run has not finished, changin
     );
     const after = await runRepo.findById(parent.id, parentRun.id);
     assertEquals(after!.toData(), before);
+  });
+});
+
+Deno.test("resume: reentered nested waits retain step diagnostics", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(service.run(parent.name));
+    const childRun = await decideChildGate(runRepo, child, true);
+    await drain(service.resume(child.name, childRun.id));
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    let observed = false;
+    for await (const event of service.resume(parent.name, parentRun.id)) {
+      if (event.kind === "step_started" && event.stepId === "call-child") {
+        const step = runProgressSnapshots(parentRun.id).find((p) =>
+          p.step === "call-child"
+        );
+        assertEquals(step?.phase, "executing");
+        assertEquals(step?.job, "main");
+        observed = true;
+      }
+    }
+    assertEquals(observed, true);
+    assertEquals(runProgressSnapshots(parentRun.id), []);
   });
 });
 

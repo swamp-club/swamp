@@ -41,6 +41,11 @@ import {
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessGone } from "../runtime/process.ts";
+import { currentRunProgress } from "../../domain/remote/run_progress.ts";
+
+// Nonces are used only to join diagnostics to a locally observed acquisition.
+// A process ID alone cannot distinguish concurrent runs in one serve process.
+const observedOwners = new Map<string, string>();
 
 /** TTL of a {@link FileLock} created without a `ttlMs` option. */
 export const DEFAULT_LOCK_TTL_MS = 30_000;
@@ -240,6 +245,20 @@ export class FileLock implements DistributedLock {
   }
 
   async acquire(): Promise<void> {
+    const details: { resource: string; holderRunId?: string } = {
+      resource: this.lockPath,
+    };
+    const leave = currentRunProgress()?.enter("waiting_for_lock", details);
+    try {
+      await this.acquireObserved(details);
+    } finally {
+      leave?.();
+    }
+  }
+
+  private async acquireObserved(
+    details: { holderRunId?: string },
+  ): Promise<void> {
     const startTime = Date.now();
     this.releasing = false;
 
@@ -275,6 +294,9 @@ export class FileLock implements DistributedLock {
 
       const holder = await this.clearStaleHolder();
       if (holder === "cleared") continue; // Retry create (timeout checked at top of loop)
+      details.holderRunId = holder !== "unreadable" && holder.nonce
+        ? observedOwners.get(holder.nonce)
+        : undefined;
 
       if (holder !== "unreadable" && !contentionLogged) {
         const ageMs = Date.now() - new Date(holder.acquiredAt).getTime();
@@ -327,6 +349,7 @@ export class FileLock implements DistributedLock {
 
     if (!this.held) return;
     this.held = false;
+    if (this.nonce) observedOwners.delete(this.nonce);
     this.nonce = undefined;
     this.skipping = undefined;
 
@@ -385,6 +408,9 @@ export class FileLock implements DistributedLock {
       );
       if (!await this.keptAfterWrite()) return undefined;
       this.nonce = nonce;
+      const owner = observedOwners.get(retired);
+      observedOwners.delete(retired);
+      if (owner) observedOwners.set(nonce, owner);
       return retired;
     });
   }
@@ -427,6 +453,7 @@ export class FileLock implements DistributedLock {
     if (!this.held || !this.nonce || this.releasing) return false;
     const current = await this.readLockFile();
     if (!current || current.nonce !== this.nonce) {
+      observedOwners.delete(this.nonce);
       this.held = false;
       this.stopHeartbeat();
       return false;
@@ -521,6 +548,8 @@ export class FileLock implements DistributedLock {
     file.close();
     this.nonce = nonce;
     this.held = true;
+    const progress = currentRunProgress();
+    if (progress) observedOwners.set(nonce, progress.identity.runId);
     this.startHeartbeat();
     return true;
   }

@@ -33,6 +33,13 @@
 
 import { hostname } from "node:os";
 import {
+  observeExecutionWork,
+  type TraceCarrier,
+  traceCarrier,
+} from "../domain/remote/observability.ts";
+import { injectTraceContext } from "../infrastructure/tracing/propagation.ts";
+import { runDetached } from "../infrastructure/tracing/tracer.ts";
+import {
   type RemoteLockHolder,
   withRemoteLockHolder,
 } from "../domain/datastore/lock_holder_marker.ts";
@@ -89,6 +96,7 @@ export type WorkerDispatchEvent =
   };
 
 export interface DispatchHandlerOptions {
+  lifecycleTrace?: TraceCarrier;
   channel: RpcChannel;
   /** Session credential getter for the data plane. */
   sessionCredential: () => string;
@@ -163,7 +171,24 @@ export function registerDispatchHandler(
           "connection closed before the worker was admitted",
         );
       }
-      return await handleDispatch(rawParams, ctx, options);
+      const dispatch = DispatchParamsSchema.parse(rawParams);
+      return await runDetached(() =>
+        observeExecutionWork(
+          "worker.dispatch",
+          {
+            "swamp.dispatch.id": dispatch.dispatchId,
+            "swamp.lease.id": dispatch.leaseId,
+          },
+          async (observation) => {
+            ctx.responseTrace = observation.carrier;
+            const result = await handleDispatch(rawParams, ctx, options);
+            if (result.status === "error") observation.end("error");
+            return result;
+          },
+          traceCarrier(dispatch.execution.traceHeaders),
+          options.lifecycleTrace ? [options.lifecycleTrace] : undefined,
+        )
+      );
     } finally {
       activeRunners--;
       if (draining && activeRunners === 0 && onDrainComplete) {
@@ -309,7 +334,7 @@ async function handleDispatch(
   const spawnEnv = buildRunnerEnvironment(
     Deno.env.toObject(),
     params.environmentSnapshot,
-    execution.traceHeaders,
+    injectTraceContext(),
     params.lockHolder,
   );
 

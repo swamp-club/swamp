@@ -18,6 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { DatabaseSync } from "node:sqlite";
+import { traceCarrier } from "../../domain/remote/observability.ts";
+import { registerTrackedRunSource } from "../../domain/remote/run_progress.ts";
+
+function parseReceiptTrace(value: string) {
+  try {
+    return traceCarrier(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
+}
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { hostname } from "node:os";
@@ -53,7 +63,7 @@ const RETENTION_DAYS = 7;
  * backstop for a row no path ever settles (swamp-club#2917).
  */
 const UNSETTLED_RETENTION_DAYS = 90;
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 export interface PendingRunEntry {
   id: string;
@@ -64,6 +74,7 @@ export interface PendingRunEntry {
   traceparent?: string;
   tracestate?: string;
   createdAt: string;
+  receiptTrace?: { traceparent: string; tracestate?: string };
 }
 
 interface PendingRunRow {
@@ -75,6 +86,7 @@ interface PendingRunRow {
   traceparent: string | null;
   tracestate: string | null;
   created_at: string;
+  receipt_trace: string | null;
 }
 
 interface ActiveRunRow {
@@ -99,6 +111,7 @@ export class RunTrackerStore implements RunTrackerRepository {
   private db: DatabaseSync;
   private readonly dbPath: string;
   private closed = false;
+  private readonly removeObservationSource: () => void;
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
@@ -106,6 +119,13 @@ export class RunTrackerStore implements RunTrackerRepository {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout=5000");
     this.initializeWithRetry();
+    const localHostname = hostname();
+    this.removeObservationSource = registerTrackedRunSource(() =>
+      this.findAllRunning().filter((run) =>
+        run.pid === Deno.pid && run.hostname === localHostname
+      )
+        .map((run) => ({ runId: run.id, kind: run.runKind }))
+    );
   }
 
   private initializeWithRetry(): void {
@@ -124,8 +144,17 @@ export class RunTrackerStore implements RunTrackerRepository {
             value TEXT NOT NULL
           );
         `);
-        this.migrateIfNeeded();
-        this.createSchema();
+        // Lock before reading the version: concurrent openers must not both
+        // decide to add the same column from an obsolete schema snapshot.
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          this.migrateIfNeeded();
+          this.createSchema();
+          this.db.exec("COMMIT");
+        } catch (error) {
+          this.db.exec("ROLLBACK");
+          throw error;
+        }
         this.purgeOldRuns();
         return;
       } catch (error: unknown) {
@@ -239,6 +268,13 @@ export class RunTrackerStore implements RunTrackerRepository {
       }
     }
 
+    if (currentVersion < 6) {
+      const columns = this.db.prepare("PRAGMA table_info(pending_runs)")
+        .all() as unknown as { name: string }[];
+      if (columns.length && !columns.some((c) => c.name === "receipt_trace")) {
+        this.db.exec("ALTER TABLE pending_runs ADD COLUMN receipt_trace TEXT");
+      }
+    }
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -277,7 +313,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         route                TEXT,
         traceparent          TEXT,
         tracestate           TEXT,
-        created_at           TEXT NOT NULL
+        created_at           TEXT NOT NULL,
+        receipt_trace        TEXT
       );
     `);
   }
@@ -476,8 +513,8 @@ export class RunTrackerStore implements RunTrackerRepository {
 
   enqueuePendingRun(entry: PendingRunEntry): void {
     this.db.prepare(
-      `INSERT INTO pending_runs (id, source, workflow_id_or_name, payload, route, traceparent, tracestate, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO pending_runs (id, source, workflow_id_or_name, payload, route, traceparent, tracestate, created_at, receipt_trace)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       entry.id,
       entry.source,
@@ -487,6 +524,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       entry.traceparent ?? null,
       entry.tracestate ?? null,
       entry.createdAt,
+      entry.receiptTrace ? JSON.stringify(entry.receiptTrace) : null,
     );
   }
 
@@ -543,10 +581,14 @@ export class RunTrackerStore implements RunTrackerRepository {
       traceparent: r.traceparent ?? undefined,
       tracestate: r.tracestate ?? undefined,
       createdAt: r.created_at,
+      ...(r.receipt_trace
+        ? { receiptTrace: parseReceiptTrace(r.receipt_trace) }
+        : {}),
     }));
   }
 
   close(): void {
+    this.removeObservationSource();
     if (!this.closed) {
       this.closed = true;
       this.db.close();

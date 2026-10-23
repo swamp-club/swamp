@@ -375,6 +375,7 @@ export const workflowRunCommand = new Command()
     const exitSuppress = suppressSyncExitOnSignal();
     let shutdownHandle: { dispose(): void } | undefined;
     let currentRunId: string | undefined;
+    const executionTrackers = new Set<RunTrackerStore>();
     const syncService = unlocked.syncService;
     const namespace = isCustomDatastoreConfig(unlocked.datastoreConfig)
       ? unlocked.datastoreConfig.namespace
@@ -522,6 +523,7 @@ export const workflowRunCommand = new Command()
                 };
 
                 const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
+                executionTrackers.add(tracker);
                 const service = new WorkflowExecutionService(
                   wfRepo,
                   rnRepo,
@@ -688,7 +690,12 @@ export const workflowRunCommand = new Command()
                   baseHandlers.started(e);
                 },
               });
-              await consumeStream(eventStream, wrappedHandlers);
+              try {
+                await consumeStream(eventStream, wrappedHandlers);
+              } finally {
+                for (const tracker of executionTrackers) tracker.close();
+                executionTrackers.clear();
+              }
 
               if (abort.signal.aborted) {
                 Deno.exitCode = 1;
@@ -761,6 +768,8 @@ export const workflowRunCommand = new Command()
         ? error.afterStepsRan()
         : error;
     } finally {
+      for (const tracker of executionTrackers) tracker.close();
+      executionTrackers.clear();
       await runCheckpointer.close();
       shutdownHandle?.dispose();
       exitSuppress.dispose();

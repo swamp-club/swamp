@@ -361,6 +361,18 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import {
+  bindRunProgress,
+  currentRunProgress,
+  registerRunProgress,
+  removeRunProgress,
+  type RunProgress,
+  trackWorkflowProgress,
+} from "../remote/run_progress.ts";
+import {
+  type ExecutionObservation,
+  observeExecution,
+} from "../remote/observability.ts";
 import { minOf } from "../array_extrema.ts";
 import {
   currentVaultAccess,
@@ -3664,23 +3676,28 @@ export class WorkflowExecutionService {
     // lookup is reported inside the run as before, so no workflow ever runs
     // without its vaults list.
     let lookup: RunWorkflowLookup = { workflow: null };
-    yield* bindGeneratorToSpan(
-      runSpan,
-      runGeneratorWithVaultAccess(
-        async () => {
-          try {
-            lookup = {
-              workflow: await this.findRunWorkflow(idOrName, options),
-            };
-          } catch (error) {
-            lookup = { error };
-          }
-          return workflowVaultAccess(
-            "workflow" in lookup ? lookup.workflow ?? undefined : undefined,
-          );
-        },
-        () => this.runInSpan(runSpan, idOrName, lookup, options),
+    yield* trackWorkflowProgress(
+      bindGeneratorToSpan(
+        runSpan,
+        runGeneratorWithVaultAccess(
+          async () => {
+            try {
+              lookup = {
+                workflow: await this.findRunWorkflow(idOrName, options),
+              };
+            } catch (error) {
+              lookup = { error };
+            }
+            return workflowVaultAccess(
+              "workflow" in lookup ? lookup.workflow ?? undefined : undefined,
+            );
+          },
+          () => this.runInSpan(runSpan, idOrName, lookup, options),
+        ),
       ),
+      /^0+$/.test(runSpan.spanContext().traceId)
+        ? undefined
+        : runSpan.spanContext().traceId,
     );
   }
 
@@ -4319,6 +4336,7 @@ export class WorkflowExecutionService {
         }
       }
 
+      currentRunProgress()?.enter("finalizing");
       // Handle suspension: all parallel siblings at the current level have
       // drained, so the persisted run is a consistent checkpoint.
       if (run.status === "suspended") {
@@ -4395,6 +4413,11 @@ export class WorkflowExecutionService {
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
+      if (
+        workflowRun && currentRunProgress()?.identity.runId === workflowRun.id
+      ) {
+        currentRunProgress()?.enter("finalizing");
+      }
       if (error instanceof WorkflowSuspendedError && workflowRun) {
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "suspended");
@@ -4851,7 +4874,7 @@ export class WorkflowExecutionService {
     }
     // A resume is held to the workflow's vaults list as a run is, and to the
     // list the run recorded when it started.
-    yield* runGeneratorWithVaultAccess(
+    yield* trackWorkflowProgress(runGeneratorWithVaultAccess(
       resumeVaultAccess(workflow, located),
       () =>
         this.resumeWorkflow(
@@ -4861,7 +4884,7 @@ export class WorkflowExecutionService {
           runId,
           options,
         ),
-    );
+    ));
   }
 
   /** Body of {@link resume}, once the workflow and run are found. */
@@ -5260,6 +5283,7 @@ export class WorkflowExecutionService {
         }
       }
 
+      currentRunProgress()?.enter("finalizing");
       if (existingRun.status === "suspended") {
         if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
         if (this.runTracker) {
@@ -5403,6 +5427,8 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    const stepWaits = new Map<string, ExecutionObservation>();
+    const progress = new Map<string, RunProgress>();
     try {
       const job = workflow.getJob(jobName);
       if (!job) {
@@ -5531,11 +5557,54 @@ export class WorkflowExecutionService {
       const sortedSteps = this.sortService.sort(effectiveNodes);
       const globalLimit = readGlobalConcurrencyLimit();
 
+      // Admission is before the level walk: later levels already wait here,
+      // even though their generators have not been created yet.
+      for (const node of effectiveNodes) {
+        const status = jobRun.getStep(node.name)?.status;
+        if (
+          status === "succeeded" || status === "failed" ||
+          status === "skipped" || status === "unknown"
+        ) continue;
+        progress.set(
+          node.name,
+          registerRunProgress({
+            runId: run.id,
+            workflow: workflow.name,
+            job: jobName,
+            step: node.name,
+            traceId: /^0+$/.test(jobSpan.spanContext().traceId)
+              ? undefined
+              : jobSpan.spanContext().traceId,
+          }),
+        );
+        stepWaits.set(
+          node.name,
+          observeExecution("step.dependency", {
+            "swamp.workflow.run.id": run.id,
+            "job.name": jobName,
+            "step.name": node.name,
+          }),
+        );
+      }
+
       // Execute steps level by level
       let jobFailed = false;
       // Set when an interrupted level leaves a guarded step undecided.
       let jobUndecided = false;
       for (const level of sortedSteps.levels) {
+        for (const stepName of level) {
+          const dependencyWait = stepWaits.get(stepName);
+          if (!dependencyWait) continue;
+          dependencyWait.end("ok");
+          stepWaits.set(
+            stepName,
+            observeExecution("step.scheduler", {
+              "swamp.workflow.run.id": run.id,
+              "job.name": jobName,
+              "step.name": stepName,
+            }),
+          );
+        }
         // After a step failure with an aborted signal, give subsequent
         // levels a fresh cleanup signal so always/completed dependents
         // can run. shouldStepRun() handles condition-based filtering —
@@ -5609,6 +5678,8 @@ export class WorkflowExecutionService {
             levelOptions,
             forEachIndex,
             forEachTemplate,
+            stepWaits,
+            progress.get(stepName),
           );
         });
 
@@ -5649,6 +5720,13 @@ export class WorkflowExecutionService {
             const stepRun = jobRun.getStep(stepName);
             if (stepRun?.status !== "pending") continue;
             settleUnstartedStep(levelSteps.get(stepName), stepRun, jobRun);
+            // This level will not start the step, even when its guard leaves
+            // the persisted outcome undecided for a future resume.
+            stepWaits.get(stepName)?.end("cancelled");
+            stepWaits.delete(stepName);
+            const entry = progress.get(stepName);
+            if (entry) removeRunProgress(entry);
+            progress.delete(stepName);
           }
         }
 
@@ -5786,6 +5864,11 @@ export class WorkflowExecutionService {
       });
       throw error;
     } finally {
+      // A concurrency-limited generator may never start. Its wait still ends
+      // when this walk ends, including suspension and consumer abandonment.
+      for (const wait of stepWaits.values()) wait.end("closed");
+      stepWaits.clear();
+      for (const entry of progress.values()) removeRunProgress(entry);
       const job = workflow.getJob(jobName);
       if (job?.affinity && !workflow.affinity) {
         getRemoteStepDispatcher()?.releaseAffinity(
@@ -5812,14 +5895,18 @@ export class WorkflowExecutionService {
     options: StepOptions,
     forEachIndex?: number,
     forEachTemplate?: string,
+    stepWaits?: Map<string, ExecutionObservation>,
+    progress?: RunProgress,
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    stepWaits?.get(stepName)?.end("ok");
+    stepWaits?.delete(stepName);
     const stepSpan = getTracer().startSpan("swamp.workflow.step", {
       attributes: {
         "step.name": stepName,
         "job.name": job.name,
       },
     });
-    yield* bindGeneratorToSpan(
+    const generator = bindGeneratorToSpan(
       stepSpan,
       this.runStepInSpan(
         stepSpan,
@@ -5836,6 +5923,17 @@ export class WorkflowExecutionService {
         forEachTemplate,
       ),
     );
+    if (!progress) {
+      yield* generator;
+      return;
+    }
+    const leave = progress.enter("executing");
+    try {
+      yield* bindRunProgress(progress, generator);
+    } finally {
+      leave();
+      removeRunProgress(progress);
+    }
   }
 
   /**

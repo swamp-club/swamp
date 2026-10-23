@@ -19,6 +19,14 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  findSpan,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
+import {
+  installExecutionObserver,
+  uninstallExecutionObserver,
+} from "../infrastructure/tracing/execution_observer.ts";
+import {
   createDataPlaneFetch,
   DataPlaneClient,
   dataPlaneUrlFromConnectUrl,
@@ -30,6 +38,36 @@ interface RecordedRequest {
   authorization: string | null;
   body?: string;
 }
+
+Deno.test("DataPlaneClient: partial response failure ends the span and preserves the stream error", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const failure = new Error("body interrupted");
+    let reads = 0;
+    const { client } = clientWith(() =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (reads++ === 0) controller.enqueue(new Uint8Array([1, 2, 3]));
+            else controller.error(failure);
+          },
+        }),
+      )
+    );
+    try {
+      const error = await assertRejects(() =>
+        client.readArtifact("/data/t/m/n/1")
+      );
+      assertEquals(error, failure);
+      const span = findSpan(spans, "swamp.data.client");
+      assertEquals(span.attributes["swamp.outcome"], "error");
+      assertEquals(span.attributes["swamp.response.partial"], true);
+      assertEquals(span.attributes["swamp.response.bytes"], 3);
+    } finally {
+      uninstallExecutionObserver();
+    }
+  });
+});
 
 function clientWith(
   respond: (req: RecordedRequest) => Response,
@@ -153,6 +191,21 @@ Deno.test("DataPlaneClient: writer protocol routes and bodies", async () => {
     "/data/writers/w-1/finalize",
   ]);
   assertEquals(requests[1].body, "a log line");
+});
+
+Deno.test("DataPlaneClient: acknowledged append survives response body cleanup failure", async () => {
+  const { client, requests } = clientWith(() =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error("connection reset"));
+        },
+      }),
+      { status: 200 },
+    )
+  );
+  await client.writeLine("w-1", "committed line");
+  assertEquals(requests.length, 1);
 });
 
 Deno.test("DataPlaneClient: bundle and asset fetch paths are fingerprint-keyed", async () => {
@@ -370,18 +423,59 @@ Deno.test("DataPlaneClient: a read past the read timeout fails at the read bound
 });
 
 Deno.test("DataPlaneClient: a cancelled write keeps the caller's abort reason", async () => {
-  const client = slowClient({
-    answerAfterMs: 60_000,
-    timeoutMs: 60_000,
-    writeTimeoutMs: 60_000,
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    try {
+      const client = slowClient({
+        answerAfterMs: 60_000,
+        timeoutMs: 60_000,
+        writeTimeoutMs: 60_000,
+      });
+      const controller = new AbortController();
+      const pending = client.writeResource(
+        { specName: "result", name: "result", data: { ok: true } },
+        controller.signal,
+      );
+      const reason = new Error("step cancelled");
+      controller.abort(reason);
+      const error = await assertRejects(() => pending, Error);
+      assertEquals(error, reason);
+      assertEquals(
+        findSpan(spans, "swamp.data.client").attributes["swamp.outcome"],
+        "cancelled",
+      );
+    } finally {
+      uninstallExecutionObserver();
+    }
   });
-  const controller = new AbortController();
-  const pending = client.writeResource(
-    { specName: "result", name: "result", data: { ok: true } },
-    controller.signal,
-  );
-  const reason = new Error("step cancelled");
-  controller.abort(reason);
-  const error = await assertRejects(() => pending, Error);
-  assertEquals(error, reason);
+});
+
+Deno.test("DataPlaneClient: caller cancellation during the response body preserves its reason and outcome", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const controller = new AbortController();
+    const reason = new Error("step cancelled during body");
+    const { client } = clientWith(() =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(stream) {
+            controller.abort(reason);
+            stream.error(reason);
+          },
+        }),
+      )
+    );
+    try {
+      const error = await assertRejects(() =>
+        client.readArtifact("/data/t/m/n/1", controller.signal)
+      );
+      assertEquals(error, reason);
+      assertEquals(
+        findSpan(spans, "swamp.data.client").attributes["swamp.outcome"],
+        "cancelled",
+      );
+    } finally {
+      uninstallExecutionObserver();
+    }
+  });
 });

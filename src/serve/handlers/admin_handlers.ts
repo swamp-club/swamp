@@ -23,6 +23,7 @@
 
 import { runGeneratorWithoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
+import { runProgressSnapshots } from "../../domain/remote/run_progress.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   InstanceHeartbeatService,
@@ -2239,6 +2240,8 @@ export async function handleRunDoctor(
     heartbeatAt: r.heartbeatAt.toISOString(),
     stale: r.isStale(STALE_TTL_MS),
     initiatedBy: r.initiatedBy,
+    progress: runProgressSnapshots(r.id),
+    progressScope: "process_local_admitted_steps",
   });
 
   send(socket, {
@@ -2252,6 +2255,8 @@ export async function handleRunDoctor(
       orphanedWorkflowRuns,
       orphanedReaped,
       activeRuns: active.map(mapRun),
+      liveProgress: runProgressSnapshots(),
+      webhookAdmissions: ctx.webhookAdmissionSnapshots?.(),
       staleRuns: stale.map(mapRun),
     },
   });

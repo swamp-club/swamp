@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -331,6 +331,7 @@ function makePendingRun(
     route: overrides.route,
     traceparent: overrides.traceparent,
     tracestate: overrides.tracestate,
+    receiptTrace: overrides.receiptTrace,
     createdAt: overrides.createdAt ?? new Date().toISOString(),
   };
 }
@@ -415,6 +416,10 @@ Deno.test("RunTrackerStore: pending run preserves webhook payload and trace head
       route: "/hooks/ci",
       traceparent: "00-abc-def-01",
       tracestate: "vendor=value",
+      receiptTrace: {
+        traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        tracestate: "receipt=yes",
+      },
     }));
 
     const found = store.findAllPendingRuns();
@@ -422,8 +427,72 @@ Deno.test("RunTrackerStore: pending run preserves webhook payload and trace head
     assertEquals(found[0].route, "/hooks/ci");
     assertEquals(found[0].traceparent, "00-abc-def-01");
     assertEquals(found[0].tracestate, "vendor=value");
+    assertEquals(found[0].receiptTrace, {
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+      tracestate: "receipt=yes",
+    });
   } finally {
     store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: v6 migration preserves legacy pending deliveries and their original timestamps", () => {
+  const path = makeTempDbPath();
+  const db = new DatabaseSync(path);
+  db.exec(
+    `CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO run_tracker_meta VALUES ('schema_version', '5');
+    CREATE TABLE pending_runs (id TEXT PRIMARY KEY, source TEXT NOT NULL,
+      workflow_id_or_name TEXT NOT NULL, payload TEXT, route TEXT,
+      traceparent TEXT, tracestate TEXT, created_at TEXT NOT NULL);
+    INSERT INTO pending_runs VALUES ('old', 'webhook', 'deploy', '{}', '/hook', NULL, NULL, '2026-01-01T00:00:00Z');`,
+  );
+  db.close();
+  const store = new RunTrackerStore(path);
+  try {
+    const pending = store.findAllPendingRuns();
+    assertEquals(pending[0].createdAt, "2026-01-01T00:00:00Z");
+    assertEquals(pending[0].receiptTrace, undefined);
+    store.enqueuePendingRun(
+      makePendingRun({
+        id: "new",
+        receiptTrace: {
+          traceparent:
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        },
+      }),
+    );
+    assertEquals(store.findAllPendingRuns().length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: migration owns the writer lock before reading the version", () => {
+  const path = makeTempDbPath();
+  const contender = new DatabaseSync(path);
+  contender.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=0");
+  const prepare = DatabaseSync.prototype.prepare;
+  let versionReads = 0;
+  DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+    if (
+      this !== contender && sql.includes("SELECT value FROM run_tracker_meta")
+    ) {
+      versionReads++;
+      assertThrows(() => contender.exec("BEGIN IMMEDIATE"), Error, "locked");
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    const first = new RunTrackerStore(path);
+    first.close();
+    const second = new RunTrackerStore(path);
+    second.close();
+    assertEquals(versionReads, 2);
+    contender.exec("BEGIN IMMEDIATE; ROLLBACK");
+  } finally {
+    DatabaseSync.prototype.prepare = prepare;
+    contender.close();
   }
 });
 

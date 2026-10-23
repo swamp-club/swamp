@@ -42,6 +42,10 @@ import {
   unknownModelType,
 } from "./run.ts";
 import { createLibSwampContext } from "../context.ts";
+import {
+  currentRunProgress,
+  runProgressSnapshots,
+} from "../../domain/remote/run_progress.ts";
 import { collect } from "../testing.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -357,6 +361,95 @@ Deno.test("modelMethodRun happy path yields model_resolved, evaluating, executin
     assertEquals(completed.run.modelType, "test/model");
   }
 });
+
+Deno.test("modelMethodRun: blocked execution and finalization remain visible until stream cleanup", async () => {
+  const entered = Promise.withResolvers<string>();
+  const release = Promise.withResolvers<void>();
+  const deps = createTestDeps(
+    createTestDefinition("test-model", "run"),
+    createTestModelDef("run"),
+  );
+  deps.createExecutionService = () => ({
+    ...createFakeExecutionService(),
+    executeWorkflow: async () => {
+      const progress = currentRunProgress();
+      assertEquals(progress?.identity.scope, "method");
+      entered.resolve(progress!.identity.runId);
+      await release.promise;
+      return { dataHandles: [] };
+    },
+  });
+  const stream = modelMethodRun(
+    createLibSwampContext(),
+    deps,
+    createTestInput("test-model", "run"),
+  );
+  const completed = (async () => {
+    for await (const event of stream) {
+      if (event.kind === "completed") {
+        assertEquals(
+          runProgressSnapshots(event.run.outputId)[0].phase,
+          "finalizing",
+        );
+        break;
+      }
+    }
+  })();
+  let runId: string | undefined;
+  try {
+    runId = await entered.promise;
+    assertEquals(currentRunProgress(), undefined);
+    const snapshot = runProgressSnapshots(runId)[0];
+    assertEquals(snapshot.phase, "executing");
+    assertEquals(snapshot.model, "test-model");
+    assertEquals(snapshot.method, "run");
+  } finally {
+    release.resolve();
+    await completed;
+  }
+  assertEquals(runProgressSnapshots(runId), []);
+});
+
+for (const fails of [false, true]) {
+  Deno.test(`modelMethodRun: ${fails ? "failed" : "successful"} output persistence is visible while blocked`, async () => {
+    const entered = Promise.withResolvers<string>();
+    const release = Promise.withResolvers<void>();
+    const deps = createTestDeps(
+      createTestDefinition("test-model", "run"),
+      createTestModelDef("run"),
+    );
+    if (fails) {
+      deps.createExecutionService = () =>
+        createFailingExecutionService(new Error("method failed"));
+    }
+    deps.outputRepo.save = async () => {
+      entered.resolve(currentRunProgress()!.identity.runId);
+      await release.promise;
+    };
+    const execution = collect(
+      modelMethodRun(
+        createLibSwampContext(),
+        deps,
+        createTestInput("test-model", "run"),
+      ),
+    );
+    let runId: string | undefined;
+    try {
+      runId = await Promise.race([
+        entered.promise,
+        execution.then(() => {
+          throw new Error("run ended before persistence");
+        }),
+      ]);
+      assertEquals(runProgressSnapshots(runId)[0].phase, "persisting");
+      assertEquals(currentRunProgress(), undefined);
+    } finally {
+      release.resolve();
+      await execution;
+    }
+    assertEquals(runProgressSnapshots(runId), []);
+  });
+}
 
 /** A tracker that records the rows a run registers. */
 function createRecordingTracker(registrations: ActiveRun[]) {

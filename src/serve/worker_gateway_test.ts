@@ -20,6 +20,10 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  installExecutionObserver,
+  uninstallExecutionObserver,
+} from "../infrastructure/tracing/execution_observer.ts";
+import {
   findSpan,
   withCapturedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
@@ -241,6 +245,40 @@ Deno.test("WorkerGateway: malformed token is rejected", async () => {
     RpcError,
   );
   assertEquals(error.code, "invalid_token");
+});
+
+Deno.test("WorkerGateway: invalid enrollment cannot suppress server tracing with an unsampled carrier", async () => {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    const h = createHarness();
+    const reply = Promise.withResolvers<string>();
+    const attached = h.gateway.attachTransport({
+      send: (raw) => reply.resolve(raw),
+    });
+    const traceId = "11111111111111111111111111111111";
+    try {
+      attached.feed(JSON.stringify({
+        type: "rpc.request",
+        id: "untrusted",
+        method: RemoteMethod.enroll,
+        params: { ...enrollParams, token: "nodot" },
+        trace: { traceparent: `00-${traceId}-2222222222222222-00` },
+      }));
+      assertEquals(JSON.parse(await reply.promise).error.code, "invalid_token");
+      const span = findSpan(spans, "swamp.enrollment.request");
+      assertEquals(span.parentSpanId, undefined);
+      assertEquals(span.spanContext().traceId === traceId, false);
+      assertEquals(span.spanContext().traceFlags, 1);
+      assertEquals(
+        spans.some((s) => s.name === "swamp.enrollment.accepted"),
+        false,
+      );
+    } finally {
+      attached.closed();
+      h.gateway.dispose();
+      uninstallExecutionObserver();
+    }
+  });
 });
 
 Deno.test("WorkerGateway: failed redemption leaves no pool state behind", async () => {

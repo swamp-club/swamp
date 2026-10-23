@@ -30,12 +30,17 @@
  * fails the run.
  */
 
+import { currentRunProgress } from "../domain/remote/run_progress.ts";
 import {
   currentVaultAccess,
   runGeneratorWithoutVaultAccess,
   withoutVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
 import { join } from "@std/path";
+import {
+  dispatchTraceCarrier,
+  observeExecutionWork,
+} from "../domain/remote/observability.ts";
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -314,6 +319,17 @@ export class DispatchService {
    * write-bearing attempt drops.
    */
   async executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult> {
+    return await observeExecutionWork("dispatch.logical", {
+      "swamp.logical_dispatch.id": crypto.randomUUID(),
+      ...(request.workflowRunId
+        ? { "workflow.run_id": request.workflowRunId }
+        : {}),
+      ...(request.jobName ? { "job.name": request.jobName } : {}),
+      ...(request.stepName ? { "step.name": request.stepName } : {}),
+    }, () => this.#executeRemote(request));
+  }
+
+  async #executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult> {
     if (this.#gateway === null) {
       throw new Error("DispatchService has no gateway bound");
     }
@@ -376,7 +392,11 @@ export class DispatchService {
         if (!pinnedWorker) {
           const inflight = this.#affinityInflight.get(affinityKey);
           if (inflight) {
-            pinnedWorker = await inflight;
+            pinnedWorker = await observeExecutionWork(
+              "dispatch.affinity",
+              {},
+              () => inflight,
+            );
           } else {
             const { promise, resolve, reject } = Promise.withResolvers<
               string
@@ -433,12 +453,17 @@ export class DispatchService {
         request.signal?.throwIfAborted();
         const scheduled = !(request.skipScheduler && effectivePlacement.target);
         const workerName = scheduled
-          ? await this.#acquireWorker(
-            effectivePlacement,
-            request.signal,
-            deadline,
-            emitQueued,
-            assertPinHeld,
+          ? await observeExecutionWork(
+            "dispatch.queue",
+            {},
+            () =>
+              this.#acquireWorker(
+                effectivePlacement,
+                request.signal,
+                deadline,
+                emitQueued,
+                assertPinHeld,
+              ),
           )
           : effectivePlacement.target!;
         // One per attempt: every pass of this loop takes its own
@@ -551,7 +576,11 @@ export class DispatchService {
             endQueue("mark_dispatched", {
               dispatchId: lastDispatchId ?? "unknown",
             });
-            await this.#waitForPoolChange(remaining, request.signal);
+            await observeExecutionWork(
+              "dispatch.queue",
+              { "swamp.queue.reason": "worker_refused" },
+              () => this.#waitForPoolChange(remaining, request.signal),
+            );
             continue;
           }
           throw error;
@@ -599,7 +628,22 @@ export class DispatchService {
     request: RemoteStepRequest,
     onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
-    const handOff = await request.beginLockHandOff?.();
+    return await observeExecutionWork("dispatch.attempt", {
+      "swamp.attempt.id": crypto.randomUUID(),
+      "swamp.worker.id": workerName,
+    }, () => this.#dispatchObserved(workerName, request, onRegistered));
+  }
+
+  async #dispatchObserved(
+    workerName: string,
+    request: RemoteStepRequest,
+    onRegistered: () => void,
+  ): Promise<RemoteStepResult & { dispatchId: string }> {
+    const handOff = await observeExecutionWork(
+      "dispatch.lock_handoff",
+      {},
+      async () => await request.beginLockHandOff?.(),
+    );
     let outcome:
       | { ok: true; result: RemoteStepResult & { dispatchId: string } }
       | { ok: false; error: unknown };
@@ -620,7 +664,11 @@ export class DispatchService {
       // An attempt that failed has nothing to write, so a cancel ends the
       // wait for a structural command. One that succeeded waits: a cancel
       // must not discard its result.
-      await handOff?.end(outcome.ok ? undefined : request.signal);
+      await observeExecutionWork(
+        "dispatch.lock_reclaim",
+        {},
+        async () => await handOff?.end(outcome.ok ? undefined : request.signal),
+      );
     } catch (error) {
       // The locks could not be taken back, so the step must not write. An
       // attempt that succeeded fails here even when the step was cancelled
@@ -667,7 +715,9 @@ export class DispatchService {
     const leaseId = dispatchId;
     let leaseSettled = false;
 
-    const bundleFingerprint = await this.#ensureBundle(request.modelDef);
+    const bundleFingerprint = await observeExecutionWork("dispatch.prepare", {
+      "swamp.dispatch.id": dispatchId,
+    }, () => this.#ensureBundle(request.modelDef));
 
     await this.#leaseTransition("acquire", {
       leaseId,
@@ -688,6 +738,7 @@ export class DispatchService {
     }
 
     this.#options.dispatches.register({
+      progress: currentRunProgress(),
       workerName,
       dispatchId,
       leaseId,
@@ -750,10 +801,25 @@ export class DispatchService {
     };
 
     try {
-      const result = await gateway.dispatch(workerName, params, {
-        signal: request.signal,
-        onEvent: request.onEvent,
-        onRegistered,
+      const result = await observeExecutionWork("dispatch.send", {
+        "swamp.dispatch.id": dispatchId,
+        "swamp.lease.id": leaseId,
+        "swamp.worker.id": workerName,
+      }, (observation) => {
+        const traceHeaders = observation.carrier
+          ? { ...observation.carrier }
+          : request.traceHeaders;
+        params.execution.traceHeaders = traceHeaders;
+        const registration = this.#options.dispatches.forDispatch(
+          workerName,
+          dispatchId,
+        );
+        if (registration) registration.traceHeaders = traceHeaders;
+        return gateway.dispatch(workerName, params, {
+          signal: request.signal,
+          onEvent: request.onEvent,
+          onRegistered,
+        });
       });
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
@@ -807,7 +873,15 @@ export class DispatchService {
         );
       }
       leaseSettled = true;
-      await this.#leaseTransition("complete", { leaseId });
+      await observeExecutionWork(
+        "dispatch.settle",
+        {
+          "swamp.dispatch.id": dispatchId,
+          "swamp.lease.id": leaseId,
+        },
+        () => this.#leaseTransition("complete", { leaseId }),
+        dispatchTraceCarrier(params.execution.traceHeaders, result.trace),
+      );
       return {
         outputs: result.outputs,
         logs: result.logs,

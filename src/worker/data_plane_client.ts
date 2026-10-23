@@ -30,6 +30,10 @@
  */
 
 import { createTlsHttpClient } from "../cli/remote_run.ts";
+import {
+  observationOutcome,
+  observeExecution,
+} from "../domain/remote/observability.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type {
   FileWriterOverrides,
@@ -128,18 +132,38 @@ export class DataPlaneClient {
       ? undefined
       : AbortSignal.timeout(timeoutMs);
     let response: Response;
+    const requestId = crypto.randomUUID();
+    const observation = observeExecution("data.client", {
+      "swamp.request.id": requestId,
+      "swamp.data.write": init?.write ?? false,
+    });
     try {
-      response = await this.#fetch(url, {
-        method,
-        body: init?.body,
-        headers: {
-          ...this.#options.extraHeaders,
-          authorization: `Bearer ${this.#options.credential()}`,
-          ...init?.headers,
-        },
-        signal: combineSignals(timeoutSignal, init?.signal),
-      });
+      response = await observation.run(() =>
+        this.#fetch(url, {
+          method,
+          body: init?.body,
+          headers: {
+            ...this.#options.extraHeaders,
+            authorization: `Bearer ${this.#options.credential()}`,
+            ...init?.headers,
+            ...observation.carrier,
+            "x-swamp-request-id": requestId,
+          },
+          signal: combineSignals(timeoutSignal, init?.signal),
+        })
+      );
     } catch (error) {
+      observation.attributes({
+        "swamp.commit.state": init?.write ? "unknown" : "not_applicable",
+        "swamp.reconciliation": "unsupported",
+      });
+      observation.end(
+        init?.signal?.aborted
+          ? "cancelled"
+          : timeoutSignal?.aborted
+          ? "timeout"
+          : observationOutcome(error),
+      );
       // Only this request's own deadline is reworded. The bare DOMException
       // text ("The operation was aborted due to timeout") names neither serve
       // nor the request, and a cancelled step keeps its own abort reason.
@@ -155,11 +179,64 @@ export class DataPlaneClient {
     }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
+      observation.attributes({ "http.response.status_code": response.status });
+      observation.end("error");
       throw new Error(
         `Data plane ${method} ${path} failed (${response.status}): ${detail}`,
       );
     }
-    return response;
+    observation.attributes({ "http.response.status_code": response.status });
+    if (!response.body) {
+      observation.end("ok");
+      return response;
+    }
+    const reader = response.body.getReader();
+    let bytes = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const result = await reader.read();
+          if (result.done) {
+            observation.attributes({ "swamp.response.bytes": bytes });
+            observation.end("ok");
+            reader.releaseLock();
+            controller.close();
+          } else {
+            bytes += result.value.byteLength;
+            controller.enqueue(result.value);
+          }
+        } catch (error) {
+          observation.attributes({
+            "swamp.response.bytes": bytes,
+            "swamp.response.partial": true,
+            "swamp.commit.state": init?.write ? "unknown" : "not_applicable",
+            "swamp.reconciliation": "unsupported",
+          });
+          observation.end(
+            init?.signal?.aborted
+              ? "cancelled"
+              : timeoutSignal?.aborted
+              ? "timeout"
+              : observationOutcome(error),
+          );
+          reader.releaseLock();
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        observation.end("cancelled");
+        try {
+          await reader.cancel(reason);
+        } finally {
+          reader.releaseLock();
+        }
+      },
+    }, { highWaterMark: 0 });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   }
 
   /** Read artifact bytes by data-plane content path; cached forever. */
@@ -232,11 +309,18 @@ export class DataPlaneClient {
     text: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.#request("POST", `/data/writers/${writerId}/line`, {
-      body: text,
-      signal,
-      write: true,
-    });
+    const response = await this.#request(
+      "POST",
+      `/data/writers/${writerId}/line`,
+      {
+        body: text,
+        signal,
+        write: true,
+      },
+    );
+    // The successful headers acknowledge the append. Body cleanup cannot
+    // revoke that result; the response observation records transport failure.
+    await response.body?.cancel().catch(() => {});
   }
 
   /** Stream content to the writer and finalize it. No upper time bound. */
@@ -249,7 +333,7 @@ export class DataPlaneClient {
       "POST",
       `/data/writers/${writerId}/content`,
       // Uint8Array views are valid fetch bodies; the lib typing is narrower.
-      { body: content as BodyInit, signal, timeoutMs: null },
+      { body: content as BodyInit, signal, timeoutMs: null, write: true },
     );
     return await response.json() as RemoteDataHandle;
   }

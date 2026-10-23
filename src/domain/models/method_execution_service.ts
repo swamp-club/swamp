@@ -1007,7 +1007,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         methodArgs,
         resourceSpecs: executionRequest.resourceSpecs,
         fileSpecs: executionRequest.fileSpecs,
-        traceHeaders: executionRequest.traceHeaders,
+        traceHeaders: injectTraceContext(),
         runtimeTags: context.runtimeTags,
         tagOverrides: context.tagOverrides,
         dataOutputOverrides: context.dataOutputOverrides,

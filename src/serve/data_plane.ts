@@ -43,6 +43,16 @@
  */
 
 import type { z } from "zod";
+function validRequestId(value: string | null): boolean {
+  return value !== null &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      value,
+    );
+}
+import {
+  dispatchTraceCarrier,
+  observeExecutionWork,
+} from "../domain/remote/observability.ts";
 import { isAbsolute, join, normalize, resolve } from "@std/path";
 import { ModelType } from "../domain/models/model_type.ts";
 import {
@@ -231,7 +241,11 @@ export class DataPlane {
   }
 
   /** Counts one write request of `dispatchId`; call the result when it ends. */
-  #beginWrite(dispatchId: string): () => void {
+  #beginWrite(dispatch: ActiveDispatch): () => void {
+    const dispatchId = dispatch.dispatchId;
+    const leave = dispatch.progress?.enter("persisting", {
+      worker: dispatch.workerName,
+    });
     let entry = this.#inFlight.get(dispatchId);
     if (entry === undefined) {
       entry = { count: 0, idle: Promise.withResolvers<void>() };
@@ -240,6 +254,7 @@ export class DataPlane {
     entry.count++;
     const counted = entry;
     return () => {
+      leave?.();
       counted.count--;
       if (counted.count === 0) {
         this.#inFlight.delete(dispatchId);
@@ -278,8 +293,9 @@ export class DataPlane {
     try {
       // The work runs in the dispatch's own trace, taken from serve's record
       // of the dispatch. The request's SERVER span stays a root, and an
-      // inbound traceparent header is never consulted.
+      // authenticated worker context is constrained to that dispatch's trace.
       return await this.#inDispatchTrace(
+        req,
         auth.workerName,
         auth.dispatchId,
         dataPlaneOperation(req.method, segments),
@@ -337,6 +353,7 @@ export class DataPlane {
    * it. Otherwise it nests under the request's own span.
    */
   #inDispatchTrace(
+    req: Request,
     workerName: string,
     dispatchId: string | undefined,
     operation: string,
@@ -348,7 +365,18 @@ export class DataPlane {
     const run = () =>
       withSpan(
         "swamp.serve.data_plane",
-        { "swamp.data_plane.operation": operation },
+        {
+          "swamp.data_plane.operation": operation,
+          ...(dispatch
+            ? {
+              "swamp.dispatch.id": dispatch.dispatchId,
+              "swamp.lease.id": dispatch.leaseId,
+            }
+            : {}),
+          ...(validRequestId(req.headers.get("x-swamp-request-id"))
+            ? { "swamp.request.id": req.headers.get("x-swamp-request-id")! }
+            : {}),
+        },
         async (span) => {
           const response = await fn();
           span.setAttribute("http.response.status_code", response.status);
@@ -359,9 +387,13 @@ export class DataPlane {
     // dispatching run's vault scope (swamp-club#2676).
     const scope = dispatch?.vaultAccess;
     const scoped = scope ? () => runWithVaultAccess(scope, run) : run;
-    if (!dispatch?.traceHeaders) return scoped();
+    const parent = dispatchTraceCarrier(dispatch?.traceHeaders, {
+      traceparent: req.headers.get("traceparent"),
+      tracestate: req.headers.get("tracestate") ?? undefined,
+    });
+    if (!parent) return scoped();
     return runWithParentTrace(
-      extractTraceContext({ ...dispatch.traceHeaders }),
+      extractTraceContext({ ...parent }),
       scoped,
     );
   }
@@ -552,7 +584,11 @@ export class DataPlane {
     dispatchId?: string,
   ): Promise<Response> {
     const dispatch = this.#activeDispatch(workerName, dispatchId);
-    const body = await req.json() as {
+    const body = await observeExecutionWork(
+      "data.body",
+      {},
+      () => req.json(),
+    ) as {
       specName?: string;
       name?: string;
       data?: Record<string, unknown>;
@@ -590,13 +626,28 @@ export class DataPlane {
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.
     await this.#recordWrite(dispatch);
-    const done = this.#beginWrite(dispatch.dispatchId);
+    const done = this.#beginWrite(dispatch);
     let handle: DataHandle;
     try {
       handle = await withSpan(
         "swamp.serve.data_plane.persist",
         {},
-        () => writeResource(specName, name, data, overrides.value),
+        async (span) => {
+          const saved = await writeResource(
+            specName,
+            name,
+            data,
+            overrides.value,
+          );
+          span.setAttributes({
+            "swamp.data.id": String(saved.dataId),
+            "swamp.data.version": saved.version,
+            "swamp.commit.state": "committed",
+            "swamp.commit.guarantee": "writer_returned",
+            "swamp.response.delivery": "unknown",
+          });
+          return saved;
+        },
       );
       this.#recordVersion(dispatch, handle);
     } catch (error) {
@@ -724,7 +775,7 @@ export class DataPlane {
       case "content": {
         const body = req.body ?? ReadableStream.from<Uint8Array>([]);
         await this.#recordWrite(dispatch);
-        const done = this.#beginWrite(dispatch.dispatchId);
+        const done = this.#beginWrite(dispatch);
         try {
           const handle = await withSpan(
             "swamp.serve.data_plane.persist",
@@ -740,7 +791,7 @@ export class DataPlane {
       }
       case "finalize": {
         await this.#recordWrite(dispatch);
-        const done = this.#beginWrite(dispatch.dispatchId);
+        const done = this.#beginWrite(dispatch);
         try {
           const handle = await withSpan(
             "swamp.serve.data_plane.persist",

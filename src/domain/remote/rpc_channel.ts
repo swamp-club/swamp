@@ -36,8 +36,23 @@ import {
   type RpcStreamEvent,
 } from "./protocol.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  observationOutcome,
+  observeExecution,
+  type TraceCarrier,
+  traceCarrier,
+} from "./observability.ts";
 
 const logger = getSwampLogger(["remote", "rpc"]);
+
+/** A fixed vocabulary, never a caller-controlled method as a metric label. */
+function observedRpcOperation(method: string): string {
+  return ["capability.queryData", "worker.enroll", "worker.dispatch"].includes(
+      method,
+    )
+    ? method
+    : "other";
+}
 
 /** Minimal outbound transport: a WebSocket or an in-memory test pipe. */
 export interface RpcTransport {
@@ -48,6 +63,10 @@ export interface RpcTransport {
 export interface RpcHandlerContext {
   /** The caller-assigned request id for this inbound request. */
   requestId: string;
+  /** Observational metadata; handlers validate it against dispatch authority. */
+  trace?: TraceCarrier;
+  /** Set by an authenticated handler to parent terminal transport submission. */
+  responseTrace?: TraceCarrier;
   /** Aborted when the peer cancels the request or the channel closes. */
   signal: AbortSignal;
   /** Emit a stream event for this request before the final response. */
@@ -150,6 +169,10 @@ export class RpcChannel {
       return Promise.reject(new Error("RPC channel is closed"));
     }
     const id = crypto.randomUUID();
+    const observation = observeExecution("rpc.client", {
+      "swamp.rpc.request_id": id,
+      "swamp.rpc.operation": observedRpcOperation(method),
+    });
     const timeoutMs = options?.timeoutMs === undefined
       ? DEFAULT_CALL_TIMEOUT_MS
       : options.timeoutMs;
@@ -188,10 +211,31 @@ export class RpcChannel {
         this.#pending.delete(id);
       };
       const settleResolve = (result: unknown) => {
+        observation.attributes({
+          "swamp.rpc.items": Array.isArray(result) ? result.length : 0,
+        });
+        observation.end("ok");
         cleanup();
         resolve(result as T);
       };
       const settleReject = (error: Error) => {
+        const outcome = error instanceof RpcError && error.code === "cancelled"
+          ? "cancelled"
+          : observationOutcome(error);
+        if (outcome === "timeout" || outcome === "cancelled") {
+          const now = performance.now();
+          for (const [key, entry] of this.#late) {
+            if (entry.expires < now) this.#late.delete(key);
+          }
+          if (this.#late.size >= 1024) {
+            this.#late.delete(this.#late.keys().next().value!);
+          }
+          this.#late.set(id, {
+            expires: now + 300_000,
+            carrier: observation.carrier,
+          });
+        }
+        observation.end(outcome);
         cleanup();
         reject(error);
       };
@@ -226,7 +270,21 @@ export class RpcChannel {
         }, timeoutMs);
       }
 
-      this.#sendFrame({ type: "rpc.request", id, method, params });
+      try {
+        observation.run(() =>
+          this.#sendFrame({
+            type: "rpc.request",
+            id,
+            method,
+            params,
+            ...(observation.carrier ? { trace: observation.carrier } : {}),
+          })
+        );
+      } catch (error) {
+        settleReject(
+          error instanceof Error ? error : new Error("RPC send failed"),
+        );
+      }
     });
   }
 
@@ -273,6 +331,7 @@ export class RpcChannel {
       pending.reject(error);
     }
     this.#pending.clear();
+    this.#late.clear();
     for (const controller of this.#inflight.values()) {
       controller.abort();
     }
@@ -286,15 +345,22 @@ export class RpcChannel {
   #handleFrame(frame: RpcFrame): void {
     switch (frame.type) {
       case "rpc.request":
-        this.#handleRequest(frame.id, frame.method, frame.params);
+        this.#handleRequest(
+          frame.id,
+          frame.method,
+          frame.params,
+          traceCarrier(frame.trace),
+        );
         break;
       case "rpc.response": {
         const pending = this.#pending.get(frame.id);
+        if (!pending) this.#observeLate(frame.id, "ok");
         pending?.resolve(frame.result);
         break;
       }
       case "rpc.error": {
         const pending = this.#pending.get(frame.id);
+        if (!pending) this.#observeLate(frame.id, "error");
         pending?.reject(new RpcError(frame.error));
         break;
       }
@@ -311,7 +377,12 @@ export class RpcChannel {
     }
   }
 
-  #handleRequest(id: string, method: string, params: unknown): void {
+  #handleRequest(
+    id: string,
+    method: string,
+    params: unknown,
+    parent?: TraceCarrier,
+  ): void {
     if (this.#inflight.has(id)) {
       this.#sendFrame({
         type: "rpc.error",
@@ -340,6 +411,7 @@ export class RpcChannel {
     this.#inflight.set(id, controller);
     const ctx: RpcHandlerContext = {
       requestId: id,
+      trace: parent,
       signal: controller.signal,
       stream: (event) => {
         this.#sendFrame({ type: "rpc.stream", id, event });
@@ -353,7 +425,10 @@ export class RpcChannel {
     handler(params, ctx).then(
       (result) => {
         this.#inflight.delete(id);
-        this.#sendFrame({ type: "rpc.response", id, result: result ?? null });
+        this.#sendFrame(
+          { type: "rpc.response", id, result: result ?? null },
+          ctx.responseTrace,
+        );
       },
       (error: unknown) => {
         this.#inflight.delete(id);
@@ -365,7 +440,7 @@ export class RpcChannel {
             type: "rpc.error",
             id,
             error: { code: "cancelled", message },
-          });
+          }, ctx.responseTrace);
           return;
         }
         if (error instanceof RpcError) {
@@ -377,7 +452,7 @@ export class RpcChannel {
               message: error.message,
               details: error.details,
             },
-          });
+          }, ctx.responseTrace);
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
@@ -385,21 +460,51 @@ export class RpcChannel {
           error instanceof DOMException && error.name === "AbortError"
             ? "cancelled"
             : "handler_failed";
-        this.#sendFrame({ type: "rpc.error", id, error: { code, message } });
+        this.#sendFrame(
+          { type: "rpc.error", id, error: { code, message } },
+          ctx.responseTrace,
+        );
       },
     );
   }
 
-  #sendFrame(frame: RpcFrame): void {
+  #sendFrame(frame: RpcFrame, parent?: TraceCarrier): void {
     if (this.#closed) {
       return;
     }
+    const observation = observeExecution("rpc.submit", {
+      "swamp.rpc.request_id": frame.id,
+      "swamp.rpc.frame": frame.type,
+      "swamp.transport.delivery": "unknown",
+    }, parent);
     try {
-      this.#transport.send(JSON.stringify(frame));
+      const encoded = JSON.stringify(frame);
+      observation.attributes({
+        "swamp.rpc.encoded_bytes": new TextEncoder().encode(encoded).byteLength,
+      });
+      this.#transport.send(encoded);
+      observation.end("ok");
     } catch (error) {
+      observation.end("error");
       logger.warn("Failed to send RPC frame: {error}", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  // Bounded, timer-free retention: expired context is reported as unknown.
+  readonly #late = new Map<
+    string,
+    { expires: number; carrier?: TraceCarrier }
+  >();
+  #observeLate(id: string, outcome: "ok" | "error"): void {
+    const entry = this.#late.get(id);
+    this.#late.delete(id);
+    const known = entry && entry.expires >= performance.now();
+    const observation = observeExecution("rpc.late", {
+      "swamp.rpc.request_id": id,
+      "swamp.rpc.correlation": known ? "retained" : "unknown",
+    }, known ? entry.carrier : undefined);
+    observation.end(outcome);
   }
 }

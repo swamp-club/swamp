@@ -33,8 +33,11 @@ import type {
 } from "../domain/expressions/vault_reference_extractor.ts";
 import type { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import type { RunVaultAccess } from "../domain/vaults/run_vault_access.ts";
+import type { RunProgress } from "../domain/remote/run_progress.ts";
 
 export interface ActiveDispatch {
+  /** Captured by serve; never supplied by the worker. */
+  progress?: RunProgress;
   workerName: string;
   dispatchId: string;
   leaseId: string;
