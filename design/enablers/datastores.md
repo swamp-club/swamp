@@ -5466,7 +5466,7 @@ process's start time (`/proc/<pid>/stat` field 22 on Linux, `kern.proc`'s
 `p_starttime` on macOS, read over FFI since the compiled binary may not read
 `/proc` directly). `judgeRecordedProcess` (`process_liveness.ts`) decides:
 
-- a record from another host, pid namespace or boot, or with no identity (a
+- a record from another kernel or pid namespace, or with no identity (a
   swamp from before it), is **unknown**: never gone, so the caller falls
   back to the lease's TTL plus skew and the fence. A boot id that differs is
   unknown rather than proof of a reboot, since two machines can share a
@@ -5474,7 +5474,13 @@ process's start time (`/proc/<pid>/stat` field 22 on Linux, `kern.proc`'s
   either side on Linux and macOS (a failed read, an image without `cat`):
   only Windows, which has no boot id, judges by hostname and pid, as
   before, so two Windows machines with one hostname on one datastore behave
-  as they did. On a bucket datastore this is the normal case;
+  as they did. On a bucket datastore this is the normal case. Where both
+  sides have one boot id, the hostname does not decide (`sameKernel`,
+  swamp-club#3801): the boot id and the pid namespace do, so a record of
+  this kernel stays judgeable after a DHCP renewal renames the machine, and
+  a container sharing the boot id is still another namespace. Only when
+  neither names a namespace on Linux (it could not be read) does the
+  hostname decide alongside the boot id;
 - on this kernel, a pid that is absent, a zombie, or started at another
   time than recorded is **gone**, as is this process's own pid in a record
   whose token is not this process's;

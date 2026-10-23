@@ -739,8 +739,12 @@ child in the supervisor's process group. Litestream starts with
 
 - Beside `commits.db`, in `.commits.db-replication/`, only non-secret shared
   files: `supervisor.lock`, `presence.json` (the pidfile: pids, uid, hostname,
-  lineage fence), `replace-<pid>` marks, `use.lock` and `lineage.json`. The
-  directory and the pidfile are trusted only when this user owns them.
+  the supervisor's process identity, lineage fence), `replace-<pid>` marks,
+  `use.lock` and `lineage.json`. The directory and the pidfile are trusted
+  only when this user owns them. A sidecar is this machine's by the
+  supervisor's process identity (`sameKernel`: boot id and pid namespace),
+  never by the hostname, which a DHCP renewal can change under a live
+  sidecar (swamp-club#3801); a record without one is judged by hostname.
 - In `/tmp/swamp-<uid>/<hash>/`, created 0700 and checked before every use:
   the Litestream config and the control socket. A socket another user owns is
   refused before it is connected to.
@@ -884,8 +888,22 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
 - `confirmed.json`, created once, after the lineage's first head.
 
 **The current state** is the highest lineage under the current replica root
-that is started, confirmed and has a head. Records under another root, or
-that do not parse, are ignored.
+that is started, confirmed and has a head. Records that do not parse are
+ignored.
+
+A lineage is under the current root when its recorded root matches
+(`ReplicaRoot.matches`, swamp-club#3801). The root is still written in full
+(`s3:<endpoint>:<bucket>:<path>`), but an S3 root matches any endpoint
+spelling of its bucket and path: the endpoint is how a checkout reaches the
+bucket, not which replica it is, and the records live in that bucket, so
+another S3 service never sees them. Two checkouts that spell one endpoint
+differently (a trailing slash, the default explicit or implicit, a proxy)
+share one lineage chain. A lineage under a root that does not match is
+history while a lineage of this root was started after it, and ignored. One
+started above every lineage of this root, or when none was, would decide
+the state: readers and writers alike are refused with
+`datastore_v3_replica_root_mismatch`, naming both roots, rather than reading
+an empty datastore or starting a lineage beside it.
 
 > **Decision: head, then confirmation, then the lease check.** A writer's
 > end of command is: sync, publish the head, publish the confirmation (the

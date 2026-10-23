@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ReplicaRoot } from "./replica_root.ts";
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
@@ -39,11 +40,12 @@ Deno.test("decideLineage: consecutive or repeated fences under one root keep one
       arbStart,
       fc.array(fc.integer({ min: 0, max: 1 }), { maxLength: 40 }),
       (start, gaps) => {
-        let record = decideLineage(undefined, "/a", start).lineage;
+        let record =
+          decideLineage(undefined, ReplicaRoot.of("/a"), start).lineage;
         let fence = start;
         for (const gap of gaps) {
           fence += gap;
-          const decision = decideLineage(record, "/a", fence);
+          const decision = decideLineage(record, ReplicaRoot.of("/a"), fence);
           assertEquals(decision.kind, "continue");
           record = decision.lineage;
         }
@@ -59,12 +61,13 @@ Deno.test("decideLineage: consecutive or repeated fences under one root keep one
 Deno.test("decideLineage: lastFence never decreases and previousLineages only grows", () => {
   fc.assert(
     fc.property(arbStart, arbSteps, (start, steps) => {
-      let record: ReplicationLineage = decideLineage(undefined, "/a", start)
-        .lineage;
+      let record: ReplicationLineage =
+        decideLineage(undefined, ReplicaRoot.of("/a"), start)
+          .lineage;
       let fence = start;
       for (const { gap, root } of steps) {
         fence += gap;
-        const next = decideLineage(record, root, fence).lineage;
+        const next = decideLineage(record, ReplicaRoot.of(root), fence).lineage;
         assert(next.lastFence >= record.lastFence);
         assertEquals(
           next.previousLineages.slice(0, record.previousLineages.length),
@@ -79,13 +82,14 @@ Deno.test("decideLineage: lastFence never decreases and previousLineages only gr
 Deno.test("decideLineage: a gap or a root change restarts at the new fence, never on a used path", () => {
   fc.assert(
     fc.property(arbStart, arbSteps, (start, steps) => {
-      let record = decideLineage(undefined, "/a", start).lineage;
+      let record =
+        decideLineage(undefined, ReplicaRoot.of("/a"), start).lineage;
       let fence = start;
       // Every replica path a lineage began on: root and fence.
       const used = new Set([`/a:${start}`]);
       for (const { gap, root } of steps) {
         fence += gap;
-        const decision = decideLineage(record, root, fence);
+        const decision = decideLineage(record, ReplicaRoot.of(root), fence);
         const continues = root === record.replicaRoot && gap <= 1;
         const expected = continues
           ? "continue"

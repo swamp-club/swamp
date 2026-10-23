@@ -51,6 +51,7 @@
 
 import { padFence } from "./writer_lease.ts";
 import type { ReplicationLineage } from "./replication_lineage.ts";
+import type { ReplicaRoot } from "./replica_root.ts";
 
 /** The format every published lineage record carries. */
 export const PUBLISHED_LINEAGE_FORMAT = 1;
@@ -131,12 +132,13 @@ export type CompleteLineage = PublishedLineage & {
  */
 export function currentLineage(
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): CompleteLineage | undefined {
   let current: CompleteLineage | undefined;
   for (const lineage of lineages) {
     if (
-      lineage.started?.replicaRoot === replicaRoot &&
+      lineage.started !== undefined &&
+      replicaRoot.matches(lineage.started.replicaRoot) &&
       lineage.confirmed !== undefined && lineage.head !== undefined &&
       lineage.head.fence === lineage.fence &&
       (current === undefined || lineage.fence > current.fence)
@@ -150,12 +152,13 @@ export function currentLineage(
 /** The highest fence any lineage under `replicaRoot` was started at. */
 export function newestStartedFence(
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): number | undefined {
   let newest: number | undefined;
   for (const lineage of lineages) {
     if (
-      lineage.started?.replicaRoot === replicaRoot &&
+      lineage.started !== undefined &&
+      replicaRoot.matches(lineage.started.replicaRoot) &&
       (newest === undefined || lineage.fence > newest)
     ) {
       newest = lineage.fence;
@@ -195,7 +198,7 @@ export function decideLocalCopy(
     readonly lineage?: ReplicationLineage;
   } | undefined,
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): LocalCopyDecision {
   const current = currentLineage(lineages, replicaRoot);
   if (current === undefined) return { kind: "none" };
@@ -207,7 +210,7 @@ export function decideLocalCopy(
   if (local === undefined) return restore("missing");
   const own = local.lineage;
   if (
-    own !== undefined && own.replicaRoot === replicaRoot &&
+    own !== undefined && replicaRoot.matches(own.replicaRoot) &&
     own.lineageFence > current.fence &&
     newestStartedFence(lineages, replicaRoot) === own.lineageFence
   ) {
@@ -215,7 +218,7 @@ export function decideLocalCopy(
   }
   const copy = local.copy;
   if (
-    copy === undefined || copy.replicaRoot !== replicaRoot ||
+    copy === undefined || !replicaRoot.matches(copy.replicaRoot) ||
     copy.lineageFence !== current.fence
   ) {
     return restore("foreign");
@@ -223,6 +226,34 @@ export function decideLocalCopy(
   return compareTxid(copy.txid, head.txid) >= 0
     ? { kind: "current" }
     : restore("behind");
+}
+
+/**
+ * The start of a lineage under another replica root that would decide the
+ * datastore's state (swamp-club#3801): one started above every lineage
+ * under `replicaRoot`, or any, when none was started under it. Ignoring it
+ * would fork the datastore: a writer would start a lineage beside it, and a
+ * reader would see an empty datastore. Lineages under another root below
+ * this replica's newest start are history (a replica target that moved) and
+ * stay ignored. The highest such start, or undefined.
+ */
+export function outrankingForeignLineage(
+  lineages: readonly PublishedLineage[],
+  replicaRoot: ReplicaRoot,
+): LineageStarted | undefined {
+  const newestOwn = newestStartedFence(lineages, replicaRoot);
+  let found: LineageStarted | undefined;
+  for (const lineage of lineages) {
+    const started = lineage.started;
+    if (
+      started !== undefined && !replicaRoot.matches(started.replicaRoot) &&
+      (newestOwn === undefined || lineage.fence > newestOwn) &&
+      (found === undefined || lineage.fence > found.fence)
+    ) {
+      found = started;
+    }
+  }
+  return found;
 }
 
 /**
@@ -253,14 +284,15 @@ export function copyNeverRestored(
 export function mayContinueLineage(
   previous: ReplicationLineage | undefined,
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): boolean {
-  if (previous === undefined || previous.replicaRoot !== replicaRoot) {
+  if (previous === undefined || !replicaRoot.matches(previous.replicaRoot)) {
     return false;
   }
   const started = lineages.some((lineage) =>
     lineage.fence === previous.lineageFence &&
-    lineage.started?.replicaRoot === replicaRoot
+    lineage.started !== undefined &&
+    replicaRoot.matches(lineage.started.replicaRoot)
   );
   return started &&
     newestStartedFence(lineages, replicaRoot) === previous.lineageFence;
@@ -272,12 +304,12 @@ export function mayContinueLineage(
  */
 export function restartLineage(
   previous: ReplicationLineage | undefined,
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
   fence: number,
 ): ReplicationLineage {
   padFence(fence);
   return {
-    replicaRoot,
+    replicaRoot: replicaRoot.value,
     lineageFence: fence,
     lastFence: fence,
     previousLineages: previous === undefined ? [] : [
@@ -299,7 +331,7 @@ export function restartLineage(
 export function collectableLineages(
   lineages: readonly PublishedLineage[],
   abandoned: readonly number[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
   current: number,
 ): number[] {
   const fences = new Set<number>(abandoned.filter((fence) => fence < current));
@@ -307,7 +339,7 @@ export function collectableLineages(
     if (
       lineage.fence < current &&
       (lineage.started === undefined ||
-        lineage.started.replicaRoot === replicaRoot)
+        replicaRoot.matches(lineage.started.replicaRoot))
     ) {
       fences.add(lineage.fence);
     }
@@ -356,14 +388,14 @@ export type ChunkCollectionDecision =
 export function decideChunkCollection(
   copy: LocalCopyState | undefined,
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): ChunkCollectionDecision {
   const current = currentLineage(lineages, replicaRoot);
   if (current === undefined) {
     return { kind: "defer", reason: "no replication lineage is confirmed yet" };
   }
   if (
-    copy === undefined || copy.replicaRoot !== replicaRoot ||
+    copy === undefined || !replicaRoot.matches(copy.replicaRoot) ||
     copy.lineageFence !== current.fence ||
     compareTxid(copy.txid, current.head.txid) < 0
   ) {
@@ -377,7 +409,7 @@ export function decideChunkCollection(
   const other = lineages.find((lineage) =>
     lineage.fence !== current.fence &&
     (lineage.started === undefined ||
-      lineage.started.replicaRoot === replicaRoot)
+      replicaRoot.matches(lineage.started.replicaRoot))
   );
   if (other !== undefined) {
     const fence = padFence(other.fence);

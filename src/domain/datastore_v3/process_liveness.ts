@@ -35,6 +35,14 @@
  * the same hostname in the root namespace then names nothing. Only where no
  * boot id exists (Windows) do the host and pid alone decide, as before.
  *
+ * Where both sides have the same boot id, the hostname does not decide
+ * (swamp-club#3801): it changes under a running process (a DHCP renewal
+ * on macOS), and a record of this very kernel must not turn unjudgeable.
+ * The boot id names the kernel, and on Linux the pid namespace names where
+ * a pid lives in it, so a container sharing the host's boot id is still
+ * another namespace. Only when a Linux namespace could not be read on
+ * either side does the hostname decide alongside the boot id, as before.
+ *
  * On this kernel, a pid that is absent, a zombie, or started at another
  * time than the record says is `gone`; any other present pid is `alive`.
  * When either side has no start time (the **start time is unreadable**:
@@ -99,6 +107,17 @@ export interface LocalProcess {
    * one cannot be placed on this kernel: false only on Windows.
    */
   readonly bootIdRequired: boolean;
+  /**
+   * Whether the platform has pid namespaces (Linux), so a host identity
+   * without one is a namespace that could not be read. Unset, it is assumed
+   * to: the hostname then decides whenever a namespace is missing.
+   */
+  readonly pidNamespaces?: boolean;
+  /**
+   * This machine's hostname now, which a record without an identity is
+   * judged by. It may change while the process runs.
+   */
+  readonly hostname?: () => string;
 }
 
 /** Decides whether the writer `recorded` names is still running. */
@@ -134,11 +153,38 @@ function unjudgeable(
   recorded: ProcessIdentity | undefined,
   local: LocalProcess,
 ): boolean {
-  if (recorded === undefined || recorded.host !== local.identity.host) {
-    return true;
+  return recorded === undefined || !sameKernel(recorded, local);
+}
+
+/**
+ * Whether `recorded` was written on this kernel and pid namespace, by the
+ * rule {@link judgeRecordedProcess} judges pids by: the same boot id and
+ * pid namespace, never the hostname where those decide (swamp-club#3801).
+ */
+export function sameKernel(
+  recorded: ProcessIdentity,
+  local: LocalProcess,
+): boolean {
+  const here = local.identity;
+  if (recorded.bootId !== undefined && here.bootId !== undefined) {
+    if (recorded.bootId !== here.bootId) return false;
+    const namespace = pidNamespaceOf(recorded.host);
+    const ours = pidNamespaceOf(here.host);
+    if (namespace !== undefined || ours !== undefined) {
+      return namespace === ours;
+    }
+    // Neither names a namespace: none exist here, or they could not be read.
+    return local.pidNamespaces === false || recorded.host === here.host;
   }
-  if (recorded.bootId !== local.identity.bootId) return true;
-  return local.bootIdRequired && recorded.bootId === undefined;
+  if (recorded.host !== here.host) return false;
+  if (recorded.bootId !== here.bootId) return false;
+  return !local.bootIdRequired;
+}
+
+/** The pid namespace a host identity names (`<hostname>#<namespace>`). */
+function pidNamespaceOf(host: string): string | undefined {
+  const at = host.lastIndexOf("#");
+  return at === -1 ? undefined : host.slice(at + 1);
 }
 
 /**

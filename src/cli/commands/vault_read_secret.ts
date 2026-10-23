@@ -33,7 +33,7 @@ import {
 } from "../context.ts";
 import {
   acquireVaultSync,
-  requireInitializedRepoUnlocked,
+  requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
@@ -106,14 +106,16 @@ unless --force is set. In --json mode, outputs the value directly.`,
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
-    await requireInitializedRepoUnlocked({
+  // It only reads: it never takes the v3 writer lease, which would start a
+  // replication lineage on a bucket (swamp-club#3801).
+  const { repoDir, repoContext, datastoreResolver, vaultsDir } =
+    await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
   const { flush } = await acquireVaultSync(
-    datastoreConfig,
-    syncService,
+    datastoreResolver.config(),
+    undefined,
     repoDir,
   );
 

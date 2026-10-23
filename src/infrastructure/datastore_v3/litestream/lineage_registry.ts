@@ -47,6 +47,7 @@ import {
   serializeLineageRecord,
 } from "../../../domain/datastore_v3/published_lineage.ts";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
+import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 
 /** The control-plane prefix every lineage record is under. */
 export const LINEAGE_PREFIX = "lineage/";
@@ -115,7 +116,7 @@ export class LineageRegistry {
    * lineage's head is its highest writer's that parses.
    */
   async read(
-    replicaRoot: string,
+    replicaRoot: ReplicaRoot,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<PublishedLineage[]> {
     const listed = await this.#list();
@@ -142,14 +143,24 @@ export class LineageRegistry {
     for (const fence of fences) {
       if (!listed.get(fence)!.started) continue;
       const entry = await started(fence);
-      if (entry.started?.replicaRoot === replicaRoot) break;
+      if (
+        entry.started !== undefined &&
+        replicaRoot.matches(entry.started.replicaRoot)
+      ) {
+        break;
+      }
     }
     // The current lineage: the newest started and confirmed under this root.
     for (const fence of fences) {
       const has = listed.get(fence)!;
       if (!has.started || !has.confirmed || has.heads.length === 0) continue;
       const entry = await started(fence);
-      if (entry.started?.replicaRoot !== replicaRoot) continue;
+      if (
+        entry.started === undefined ||
+        !replicaRoot.matches(entry.started.replicaRoot)
+      ) {
+        continue;
+      }
       const confirmed = parseLineageConfirmed(
         await this.#get(keyOf(fence, "confirmed"), options.signal),
       );

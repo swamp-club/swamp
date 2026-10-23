@@ -26,6 +26,7 @@
 // `published_lineage.ts` and `replication_lineage.ts` make every decision;
 // the model only plays the object store, the replica paths and the copies.
 
+import { ReplicaRoot } from "./replica_root.ts";
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
@@ -197,7 +198,11 @@ function restore(world: World, lineage: CompleteLineage): string[] {
 
 /** What a fresh copy restores now, or undefined when nothing is published. */
 function freshRestore(world: World): string[] | undefined {
-  const decision = decideLocalCopy(undefined, publishedList(world), ROOT);
+  const decision = decideLocalCopy(
+    undefined,
+    publishedList(world),
+    ReplicaRoot.of(ROOT),
+  );
   if (decision.kind === "none") return undefined;
   assertEquals(decision.kind, "missing");
   if (decision.kind !== "missing") return undefined;
@@ -243,7 +248,7 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
           ? undefined
           : { copy: w.copyState, lineage: w.lineage },
         lineages,
-        ROOT,
+        ReplicaRoot.of(ROOT),
       );
       let restored = false;
       if (
@@ -262,11 +267,12 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
         w.copy = [];
       }
       const fenceRule = w.lineage !== undefined &&
-        decideLineage(w.lineage, ROOT, fence).kind === "continue";
+        decideLineage(w.lineage, ReplicaRoot.of(ROOT), fence).kind ===
+          "continue";
       let fresh: boolean;
       if (
         !restored && fenceRule &&
-        mayContinueLineage(w.lineage, lineages, ROOT)
+        mayContinueLineage(w.lineage, lineages, ReplicaRoot.of(ROOT))
       ) {
         // Invariant 3: a writer only ever continues a published lineage.
         assert(
@@ -277,7 +283,7 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
         fresh = false;
         hit.add("continue");
       } else {
-        w.lineage = restartLineage(w.lineage, ROOT, fence);
+        w.lineage = restartLineage(w.lineage, ReplicaRoot.of(ROOT), fence);
         fresh = true;
         hit.add("restart");
       }
@@ -411,7 +417,7 @@ function step(world: World, action: Action, hit: Set<Branch>): void {
       const fence = ++world.maxFence;
       hit.add("recovery-hold");
       if (w.copy === undefined) return;
-      const decision = decideLineage(w.lineage, ROOT, fence);
+      const decision = decideLineage(w.lineage, ReplicaRoot.of(ROOT), fence);
       if (decision.kind !== "conflict") w.lineage = decision.lineage;
       return;
     }
@@ -464,7 +470,10 @@ function bruteCurrent(world: World): number | undefined {
  */
 function checkInvariants(world: World): void {
   const lineages = publishedList(world);
-  assertEquals(currentLineage(lineages, ROOT)?.fence, bruteCurrent(world));
+  assertEquals(
+    currentLineage(lineages, ReplicaRoot.of(ROOT))?.fence,
+    bruteCurrent(world),
+  );
 
   const restored = freshRestore(world) ?? [];
   assertEquals(new Set(restored).size, restored.length, "duplicate commit");
@@ -481,7 +490,7 @@ function checkInvariants(world: World): void {
   for (const w of world.writers) {
     if (w.lineage !== undefined && !isStarted(world, w.lineage.lineageFence)) {
       assert(
-        !mayContinueLineage(w.lineage, lineages, ROOT),
+        !mayContinueLineage(w.lineage, lineages, ReplicaRoot.of(ROOT)),
         `unpublished lineage ${w.lineage.lineageFence} is continuable`,
       );
     }
@@ -563,7 +572,7 @@ Deno.test("published lineage: a crash between confirmed and the lease check keep
     assertEquals([...world.acked], ["c1"]);
     assertEquals(freshRestore(world), ["c1"]);
     assertEquals(
-      currentLineage(publishedList(world), ROOT)?.fence,
+      currentLineage(publishedList(world), ReplicaRoot.of(ROOT))?.fence,
       crashAfter === "publishConfirmed" ? 2 : 1,
     );
   }

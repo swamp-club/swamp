@@ -173,3 +173,65 @@ Deno.test("parseProcessIdentity: reads the fields it knows and rejects malformed
   assertEquals(parseProcessIdentity(null), undefined);
   assertEquals(parseProcessIdentity([HERE]), undefined);
 });
+
+Deno.test("judgeRecordedProcess: a hostname change under one boot and pid namespace is still this kernel (swamp-club#3801)", () => {
+  const before = { ...HERE, host: "Old-Name.local#pid:[4026531836]" };
+  assertEquals(
+    judgeRecordedProcess({ pid: 42, process: before }, local()),
+    "gone",
+  );
+  assertEquals(
+    judgeRecordedProcess(
+      { pid: 42, process: before },
+      local({ 42: running("linux-ticks:500") }),
+    ),
+    "alive",
+  );
+  // This process's own record, written before the change.
+  assertEquals(
+    judgeRecordedProcess({ pid: 10, process: before }, local()),
+    "alive",
+  );
+});
+
+Deno.test("judgeRecordedProcess: on macOS, with no pid namespaces, the boot id alone places the record (swamp-club#3801)", () => {
+  const mac: ProcessIdentity = {
+    host: "Mac.localdomain",
+    bootId: "boot-id:aaaa",
+    startTime: "darwin:500",
+  };
+  const renamed = { ...mac, host: "Pauls-MacBook.local" };
+  const here: LocalProcess = { ...local({}, mac), pidNamespaces: false };
+  assertEquals(
+    judgeRecordedProcess({ pid: 42, process: renamed }, here),
+    "gone",
+  );
+  assertEquals(
+    judgeRecordedProcess(
+      { pid: 42, process: { ...renamed, bootId: "b2" } },
+      here,
+    ),
+    "unknown",
+  );
+});
+
+Deno.test("judgeRecordedProcess: a container sharing the host's boot id is another namespace, and a missing namespace keeps the hostname rule (swamp-club#3801)", () => {
+  const container = { ...HERE, host: "container#pid:[4026532001]" };
+  assertEquals(
+    judgeRecordedProcess({ pid: 42, process: container }, local()),
+    "unknown",
+  );
+  // A namespace that could not be read: the hostname decides, as before.
+  const unread = { ...HERE, host: "other-host" };
+  assertEquals(
+    judgeRecordedProcess({ pid: 42, process: unread }, local()),
+    "unknown",
+  );
+  assertEquals(
+    judgeRecordedProcess(
+      { pid: 42, process: { ...HERE, host: "shared-host" } },
+      local({}, { ...HERE, host: "shared-host" }),
+    ),
+    "gone",
+  );
+});

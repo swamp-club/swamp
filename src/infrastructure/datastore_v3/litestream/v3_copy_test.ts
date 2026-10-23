@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { V3ReplicationError } from "../../../domain/datastore_v3/litestream_replication.ts";
+import {
+  V3ReplicaRootMismatchError,
+  V3ReplicationError,
+} from "../../../domain/datastore_v3/litestream_replication.ts";
 import { replicaPathFor } from "../../../domain/datastore_v3/replication_lineage.ts";
 import { currentLineage } from "../../../domain/datastore_v3/published_lineage.ts";
 import { withMockedEnv } from "../../persistence/path_test_helpers.ts";
@@ -85,7 +89,7 @@ async function withCopy(
       { type: "file" as const, path: replica };
     await withMockedEnv(
       { [V3_REPLICA_ENV]: JSON.stringify(setting) },
-      () => fn({ copy, replica, root: replicaRootOf(setting), dir }),
+      () => fn({ copy, replica, root: replicaRootOf(setting).value, dir }),
     );
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -221,13 +225,21 @@ Deno.test({
         assert(error.cause instanceof V3LineageOutrankedError);
       }
       assertEquals(await startOf(env, 3), undefined, "nothing was started");
-      // Another root's newer lineage outranks nothing here.
+      // Another root's newer lineage is refused, never forked beside
+      // (swamp-club#3801), and nothing is started.
       await publish(env, 9, { root: "file:/elsewhere" });
-      await prepareV3WriterLineage(env.copy, 5, { restored: true });
-      assertEquals((await lineageOf(env))?.lineageFence, 5);
-      // Its own lineage, at its fence, is kept as before.
-      await prepareV3WriterLineage(env.copy, 5, { restored: false });
-      assertEquals((await lineageOf(env))?.lineageFence, 5);
+      for (const restored of [true, false]) {
+        await assertRejects(
+          () => prepareV3WriterLineage(env.copy, 5, { restored }),
+          V3ReplicaRootMismatchError,
+          "was started under replica root file:/elsewhere",
+        );
+      }
+      assertEquals(await startOf(env, 5), undefined, "nothing was started");
+      // Once a lineage of its own outranks it, it is history.
+      await publish(env, 10);
+      await prepareV3WriterLineage(env.copy, 11, { restored: true });
+      assertEquals((await lineageOf(env))?.lineageFence, 11);
     });
   },
 });
@@ -565,8 +577,10 @@ Deno.test({
       assertEquals(await at(7, "0000000000000020"), true);
       assertEquals(await at(6, "0000000000000018"), false);
       const current = currentLineage(
-        await lineageRegistryFor(env.copy.datastorePath).read(env.root),
-        env.root,
+        await lineageRegistryFor(env.copy.datastorePath).read(
+          ReplicaRoot.of(env.root),
+        ),
+        ReplicaRoot.of(env.root),
       );
       assertEquals(current?.head?.writerFence, 7);
       assertEquals(
@@ -687,13 +701,14 @@ Deno.test({
   async fn() {
     await withCopy(async (env) => {
       await sharedWithOneCommit(env);
-      // Confirmed under another replica root: nothing is current under this
-      // one, and the copy is still empty, yet the shared commits are no
-      // longer the state, so they are not seeded.
+      // Confirmed under another replica root, with nothing under this one:
+      // the shared commits are no longer the state, and that lineage would
+      // decide it, so the copy is refused and nothing is seeded
+      // (swamp-club#3801).
       await publish(env, 2, { confirmed: true, root: "file:/elsewhere" });
-      assertEquals(
-        await makeV3CopyCurrent(env.copy, { mode: "write", lockWaitMs: 1_000 }),
-        {},
+      await assertRejects(
+        () => makeV3CopyCurrent(env.copy, { mode: "write", lockWaitMs: 1_000 }),
+        V3ReplicaRootMismatchError,
       );
       assertEquals(await exists(env.copy.commitsDb), false);
       await lineageRegistryFor(env.copy.datastorePath).remove(2);
@@ -709,5 +724,64 @@ Deno.test({
         await copy.close();
       }
     });
+  },
+});
+
+const S3_PROXIED: V3ReplicaSetting = {
+  type: "s3",
+  bucket: "bucket",
+  path: "prefix",
+  endpoint: "http://localhost:47441",
+};
+
+Deno.test({
+  name:
+    "prepareV3WriterLineage: a lineage another spelling of the S3 endpoint started is this replica's, never forked beside (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      // The writer reached the bucket directly, this checkout through a
+      // proxy: one replica.
+      await publish(env, 9, {
+        confirmed: true,
+        root: "s3:http://localhost:47411/:bucket:prefix",
+      });
+      for (const restored of [true, false]) {
+        const error = await assertRejects(
+          () => prepareV3WriterLineage(env.copy, 5, { restored }),
+          V3ReplicationError,
+        );
+        assert(error.cause instanceof V3LineageOutrankedError);
+      }
+      assertEquals(await startOf(env, 5), undefined, "nothing was started");
+      // Above it, the lineage continues the one chain.
+      await prepareV3WriterLineage(env.copy, 10, { restored: true });
+      assertEquals(
+        (await startOf(env, 10))?.replicaRoot,
+        "s3:http://localhost:47441:bucket:prefix",
+      );
+    }, { setting: S3_PROXIED });
+  },
+});
+
+Deno.test({
+  name:
+    "makeV3CopyCurrent: a reader is refused, never shown an empty datastore, when another bucket or path started the newest lineage (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, {
+        confirmed: true,
+        root: "s3:http://localhost:47441:bucket:elsewhere",
+      });
+      for (const mode of ["read", "write"] as const) {
+        await assertRejects(
+          () => makeV3CopyCurrent(env.copy, { mode, lockWaitMs: 1_000 }),
+          Error,
+          "was started under replica root s3:http://localhost:47441:bucket:elsewhere",
+        );
+      }
+      assertEquals(await exists(env.copy.commitsDb), false);
+    }, { setting: S3_PROXIED });
   },
 });

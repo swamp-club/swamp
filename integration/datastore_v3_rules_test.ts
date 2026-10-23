@@ -409,7 +409,7 @@ const PINNED_STORAGE_CALLS: readonly string[] = [
   // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
   // gives a bucket v3 datastore its chunk storage.
   "src/infrastructure/datastore_v3/v3_bucket_setup.ts:131",
-  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:345",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:347",
 ];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {
