@@ -28,7 +28,11 @@ import type {
   UpdateCheckDeps,
   UpdateCheckEvent,
 } from "../../libswamp/update/check.ts";
-import { updateWithin } from "./update.ts";
+import {
+  globalSkillSyncLine,
+  globalSkillSyncNote,
+  updateWithin,
+} from "./update.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});
@@ -268,4 +272,24 @@ Deno.test("updateWithin: other failures keep their message", async () => {
     Error,
     "permission denied",
   );
+});
+
+Deno.test("globalSkillSyncLine: names the dir as an agent skill directory", () => {
+  assertEquals(
+    globalSkillSyncLine("/home/u/.agents/skills"),
+    "Synced global skills to the agent skill directory /home/u/.agents/skills",
+  );
+});
+
+Deno.test("globalSkillSyncNote: explains SWAMP_HOME when it is set and a dir synced", () => {
+  assertEquals(
+    globalSkillSyncNote(2, true),
+    "Agent skill directories stay in your home directory, where your agents read them; SWAMP_HOME moves only swamp's own files.",
+  );
+});
+
+Deno.test("globalSkillSyncNote: is null without SWAMP_HOME or without a synced dir", () => {
+  assertEquals(globalSkillSyncNote(2, false), null);
+  assertEquals(globalSkillSyncNote(0, true), null);
+  assertEquals(globalSkillSyncNote(0, false), null);
 });

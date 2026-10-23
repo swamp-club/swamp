@@ -416,6 +416,11 @@ still takes priority if set. Nothing is moved for you: log in again after
 setting it, and copy the old `.swamp` directory across first if you want to keep
 workspaces and caches.
 
+`SWAMP_HOME` does not move your AI agent's skills. `swamp repo init` and
+`swamp update` keep them in the agent's own skill directory under your home
+directory (`~/.agents/skills`, `~/.claude/skills` or `~/.kiro/skills`), because
+that is the only place the agent reads them.
+
 When `SWAMP_HOME` is set, the installers put swamp itself in `$SWAMP_HOME/bin`
 too, unless you pass a destination. `install.sh` links it into `/usr/local/bin`
 when `$SWAMP_HOME/bin` is not on your `PATH`:
@@ -457,8 +462,10 @@ swamp auth login
 
 New terminals pick up both the PATH and `SWAMP_HOME` changes. After your first
 `swamp extension pull`, `C:\Sources\Repo\.swamp` contains `bin`, `deno` and
-`deno-cache`, and nothing new appears under `C:\Users\<you>\.swamp`. To undo,
-remove the variable with
+`deno-cache`, and nothing new appears under `C:\Users\<you>\.swamp`. Your AI
+agent's skills stay in its own folder under your profile, such as
+`C:\Users\<you>\.agents\skills`: they are Markdown files, not programs, so the
+policy does not block them. To undo, remove the variable with
 `[Environment]::SetEnvironmentVariable("SWAMP_HOME", $null, "User")`; swamp then
 uses the default home directory again. `swamp.exe` stays in
 `C:\Sources\Repo\.swamp\bin` on your PATH until you reinstall or remove it.

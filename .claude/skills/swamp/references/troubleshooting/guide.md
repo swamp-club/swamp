@@ -129,6 +129,10 @@ home directory into a folder it allows:
   session: with `SWAMP_HOME` set it installs `swamp.exe` into `$SWAMP_HOME\bin`
   and adds it to PATH, so swamp itself also runs from the allowed folder.
 - `SWAMP_HOME` also moves the login, so run `swamp auth login` again.
+- Agent skills stay in the agent's own folder under the user profile (for
+  example `C:\Users\<user>\.agents\skills`) — that is intended, since the agent
+  reads them only there, and they are Markdown, not programs, so the policy does
+  not block them.
 
 The README section "Windows: running swamp from an allowed folder" has the full
 PowerShell walkthrough.

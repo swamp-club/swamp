@@ -90,6 +90,41 @@ async function dirExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * The log line `swamp update` prints after syncing global skills to `dir`.
+ * The directories belong to the AI agents, so they stay under the user's
+ * home directory even when SWAMP_HOME moves swamp's own files elsewhere
+ * (swamp-club#3813).
+ */
+export function globalSkillSyncLine(dir: string): string {
+  return `Synced global skills to the agent skill directory ${dir}`;
+}
+
+/**
+ * The closing note explaining that SWAMP_HOME does not move agent skill
+ * directories, or null when there is nothing to explain.
+ */
+export function globalSkillSyncNote(
+  syncedCount: number,
+  swampHomeSet: boolean,
+): string | null {
+  if (!swampHomeSet || syncedCount === 0) return null;
+  return "Agent skill directories stay in your home directory, where your agents read them; SWAMP_HOME moves only swamp's own files.";
+}
+
+function writeGlobalSkillSyncNote(
+  syncedCount: number,
+  outputMode: "log" | "json",
+): void {
+  if (outputMode !== "log") return;
+  // Same test as getSwampDataDir: an empty SWAMP_HOME is unset.
+  const note = globalSkillSyncNote(
+    syncedCount,
+    Boolean(Deno.env.get("SWAMP_HOME")),
+  );
+  if (note) writeOutput(note);
+}
+
 async function syncGlobalSkills(
   logger: ReturnType<typeof getSwampLogger>,
   outputMode: "log" | "json" = "log",
@@ -120,6 +155,7 @@ async function syncGlobalSkills(
   }
 
   const skillAssets = new SkillAssets();
+  let syncedCount = 0;
 
   for (const dir of builtInDirs) {
     const resolved = resolve(dir);
@@ -134,12 +170,16 @@ async function syncGlobalSkills(
     }
     await skillAssets.copySkillsTo(resolved);
     await removeSupersededSkills(resolved);
+    syncedCount++;
     if (outputMode === "log") {
-      writeOutput(`Synced global skills to ${resolved}`);
+      writeOutput(globalSkillSyncLine(resolved));
     }
   }
 
-  if (customDirs.length === 0) return;
+  if (customDirs.length === 0) {
+    writeGlobalSkillSyncNote(syncedCount, outputMode);
+    return;
+  }
 
   const survivingCustomDirs: string[] = [];
   for (const dir of customDirs) {
@@ -156,11 +196,13 @@ async function syncGlobalSkills(
     }
     await skillAssets.copySkillsTo(resolved);
     await removeSupersededSkills(resolved);
+    syncedCount++;
     if (outputMode === "log") {
-      writeOutput(`Synced global skills to ${resolved}`);
+      writeOutput(globalSkillSyncLine(resolved));
     }
     survivingCustomDirs.push(dir);
   }
+  writeGlobalSkillSyncNote(syncedCount, outputMode);
 
   if (survivingCustomDirs.length !== customDirs.length && customToolRepo) {
     try {
