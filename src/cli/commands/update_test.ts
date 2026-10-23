@@ -28,7 +28,11 @@ import type {
   UpdateCheckDeps,
   UpdateCheckEvent,
 } from "../../libswamp/update/check.ts";
-import { globalSkillSyncLines, updateWithin } from "./update.ts";
+import {
+  globalSkillSyncLine,
+  globalSkillSyncNote,
+  updateWithin,
+} from "./update.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 
 await initializeLogging({});
@@ -270,27 +274,22 @@ Deno.test("updateWithin: other failures keep their message", async () => {
   );
 });
 
-Deno.test("globalSkillSyncLines: names each synced dir as an agent skill directory", () => {
+Deno.test("globalSkillSyncLine: names the dir as an agent skill directory", () => {
   assertEquals(
-    globalSkillSyncLines(
-      ["/home/u/.agents/skills", "/home/u/.claude/skills"],
-      false,
-    ),
-    [
-      "Synced global skills to the agent skill directory /home/u/.agents/skills",
-      "Synced global skills to the agent skill directory /home/u/.claude/skills",
-    ],
+    globalSkillSyncLine("/home/u/.agents/skills"),
+    "Synced global skills to the agent skill directory /home/u/.agents/skills",
   );
 });
 
-Deno.test("globalSkillSyncLines: adds the SWAMP_HOME note when SWAMP_HOME is set", () => {
-  assertEquals(globalSkillSyncLines(["/home/u/.agents/skills"], true), [
-    "Synced global skills to the agent skill directory /home/u/.agents/skills",
+Deno.test("globalSkillSyncNote: explains SWAMP_HOME when it is set and a dir synced", () => {
+  assertEquals(
+    globalSkillSyncNote(2, true),
     "Agent skill directories stay in your home directory, where your agents read them; SWAMP_HOME moves only swamp's own files.",
-  ]);
+  );
 });
 
-Deno.test("globalSkillSyncLines: prints nothing when no dir was synced", () => {
-  assertEquals(globalSkillSyncLines([], true), []);
-  assertEquals(globalSkillSyncLines([], false), []);
+Deno.test("globalSkillSyncNote: is null without SWAMP_HOME or without a synced dir", () => {
+  assertEquals(globalSkillSyncNote(2, false), null);
+  assertEquals(globalSkillSyncNote(0, true), null);
+  assertEquals(globalSkillSyncNote(0, false), null);
 });
