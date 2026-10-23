@@ -386,9 +386,14 @@ Deno.test("typed workflow passes: a child workflow binds a parent sentinel as a 
     const run = await f.run(parent(), false, [child()]);
     assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
     // Today the parent's sentinel is text in the child's guard, so the
-    // comparison is simply false and the step runs.
+    // comparison is simply false and the step runs. The two steps have no
+    // dependency, so their payloads arrive in either order.
     assertEquals(run.errors.has("compare"), false);
-    assertEquals(f.received.at(-1), { password: quotes(f), note: f.token });
+    assertEquals(f.received.length, 2);
+    assertEquals(
+      f.received.filter((r) => r.password !== undefined),
+      [{ password: quotes(f), note: f.token }],
+    );
   });
 });
 
