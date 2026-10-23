@@ -83,7 +83,7 @@ export const reportGetCommand = withRemoteOptions(
     )
     .option(
       "--behavior, --model <name:string>",
-      "Scope to a specific behavior",
+      "Scope to a specific behavior (--model is the kept legacy spelling)",
     )
     .option("--workflow <name:string>", "Scope to a specific workflow")
     .option(

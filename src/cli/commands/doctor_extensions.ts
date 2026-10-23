@@ -223,7 +223,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
     .option("-y, --yes", "Skip confirmation prompt (use with --repair)")
     .option(
       "-f, --force",
-      "Skip confirmation prompt (alias for --yes, use with --repair)",
+      "Skip confirmation prompt (alias for --yes; use with --repair)",
     ),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, [

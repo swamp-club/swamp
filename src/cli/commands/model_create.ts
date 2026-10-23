@@ -248,7 +248,7 @@ export function createModelCommand(
     .name("model")
     .description(
       syntax.surface === "model"
-        ? "Manage models (legacy spelling of 'behavior')"
+        ? "Manage models (legacy spelling of 'behavior'; kept, no removal planned)"
         : `Manage ${syntax.surface}s`,
     )
     .error(unknownCommandErrorHandler)

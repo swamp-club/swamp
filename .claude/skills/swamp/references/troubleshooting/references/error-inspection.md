@@ -24,10 +24,13 @@ Every swamp command exposes the same surfaces. Cover them in order:
 
 1. **Stderr** — human-readable errors, warnings (`swamp-warning:` prefix), and
    debug logs.
-2. **Stdout** — command output. In `--json` mode, errors and structured payloads
-   land here too.
-3. **Exit code** — `0` on success, `1` on user-facing failure. Doctor commands
-   exit `1` on any check fail; CI should gate on this.
+2. **Stdout** — command output. In `--json` mode the structured payload lands
+   here; a failure's error goes to stderr as one JSON document,
+   `{ "error": "<message>", "code": "<error_code>" }`. Match on `code` when it
+   is present; an error without a stable identifier has none, and other fields
+   may appear.
+3. **Exit code** — see [Exit codes](#exit-codes). Doctor commands exit `1` on
+   any check fail; CI should gate on this.
 4. **Audit log** — `.swamp/audit/<date>.jsonl` records every CLI action with
    inputs, outputs, and exit codes. Useful when the failure is not from the
    command being investigated but from something earlier.
@@ -61,14 +64,19 @@ right surface for scripting and CI gating.
 
 ## Exit codes
 
-| Code | Meaning                                                       |
-| ---- | ------------------------------------------------------------- |
-| `0`  | Success                                                       |
-| `1`  | User-facing failure (validation, missing config, doctor fail) |
-| `2+` | Reserved — currently unused, but capture for future-proofing  |
+These are shared by every command and stated in `swamp --help`; a command that
+adds codes of its own lists them in its help.
 
-CI should treat any non-zero exit as actionable. Combine with `--json` for the
-structured failure context.
+| Code  | Meaning                                                                   |
+| ----- | ------------------------------------------------------------------------- |
+| `0`   | Success                                                                   |
+| `1`   | Error (validation, missing config, doctor fail)                           |
+| `2`   | Unknown command or subcommand, or too many arguments                      |
+| `75`  | Temporary failure (lock contention, temporary sign-in block): retry later |
+| `130` | Interrupted (Ctrl+C)                                                      |
+
+CI should treat any non-zero exit as actionable, and retry `75` with backoff.
+Combine with `--json` and read stderr for the structured failure context.
 
 ## `swamp-warning:` lines
 

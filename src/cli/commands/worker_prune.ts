@@ -73,6 +73,13 @@ type AnyOptions = any;
 
 const DEFAULT_GRACE_PERIOD = "24h";
 
+/** --yes skips the prune prompt; --force is its alias (swamp-club#1290). */
+export function skipsPruneConfirmation(
+  options: { yes?: boolean; force?: boolean },
+): boolean {
+  return options.yes === true || options.force === true;
+}
+
 export const workerPruneCommand = withRemoteOptions(
   new Command()
     .name("prune")
@@ -94,7 +101,8 @@ export const workerPruneCommand = withRemoteOptions(
       `Only prune workers disconnected longer than this (default: ${DEFAULT_GRACE_PERIOD})`,
     )
     .option("--dry-run", "Preview what would be pruned without deleting")
-    .option("-f, --force", "Skip confirmation prompt"),
+    .option("-y, --yes", "Skip confirmation prompt")
+    .option("-f, --force", "Skip confirmation prompt (alias for --yes)"),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, [
     "worker",
@@ -228,7 +236,7 @@ export const workerPruneCommand = withRemoteOptions(
       }),
   };
 
-  const force = !!options.force;
+  const force = skipsPruneConfirmation(options);
   let prunableCount = 0;
   let prunableWorkers:
     import("../../libswamp/worker/prune.ts").PrunableWorker[] = [];

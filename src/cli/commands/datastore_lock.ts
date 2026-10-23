@@ -148,10 +148,14 @@ const datastoreLockReleaseCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("--force", "Required to confirm force release", { required: true })
+  .option(
+    "--force",
+    "Required to confirm force release (not an alias for --yes)",
+    { required: true },
+  )
   .option(
     "--behavior, --model <behavior:string>",
-    "Release a specific behavior's lock (type/id format, e.g. aws-ec2/my-server)",
+    "Release a specific behavior's lock (type/id format, e.g. aws-ec2/my-server; --model is the kept legacy spelling)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [

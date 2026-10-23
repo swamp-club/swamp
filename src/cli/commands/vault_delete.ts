@@ -78,7 +78,10 @@ When using --server, the confirmation prompt is not available — use --force to
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option("-y, --yes", "Skip confirmation prompt")
-    .option("-f, --force", "Skip confirmation prompt and ignore missing keys"),
+    .option(
+      "-f, --force",
+      "Skip confirmation prompt (alias for --yes) and succeed when the key is missing",
+    ),
 ).action(async function (
   options: AnyOptions,
   vaultName: string,

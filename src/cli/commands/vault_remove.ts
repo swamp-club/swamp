@@ -100,7 +100,7 @@ To delete a single secret, use 'swamp vault delete <vault> <key>'.`,
   .option("-y, --yes", "Skip confirmation prompt")
   .option(
     "-f, --force",
-    "Remove the vault even while behaviors, workflows or the datastore config reference it",
+    "Remove the vault even while behaviors, workflows or the datastore config reference it (not an alias for --yes)",
   )
   .action(async function (options: AnyOptions, vaultName: string) {
     const cliCtx = createContext(options as GlobalOptions, ["vault", "remove"]);

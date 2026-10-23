@@ -48,8 +48,8 @@ export const authLoginCommand = new Command()
   )
   .example("Login via browser", "swamp auth login")
   .example(
-    "Login to custom server",
-    "swamp auth login --server https://registry.example.com",
+    "Login to a self-hosted swamp-club",
+    "swamp auth login --club https://registry.example.com",
   )
   .example(
     "Non-interactive login (env var)",
@@ -60,8 +60,8 @@ export const authLoginCommand = new Command()
     "printf 'mypassword\\n' | swamp auth login --username alice --no-browser",
   )
   .option(
-    "--server <url:string>",
-    "Server URL (env: SWAMP_CLUB_URL)",
+    "--club, --server <url:string>",
+    "swamp-club URL to sign in to (env: SWAMP_CLUB_URL; --server: kept older spelling, not 'swamp serve')",
   )
   .option("--username <username:string>", "Username or email")
   .option("--password <password:string>", "Password (omit to prompt)")
@@ -78,7 +78,7 @@ export const authLoginCommand = new Command()
       );
     }
 
-    const serverUrl: string = options.server ?? resolveServerUrl();
+    const serverUrl: string = options.club ?? resolveServerUrl();
 
     // Decide which flow to use:
     // - stdin flow if --username/--password provided, --no-browser, or non-TTY

@@ -32,7 +32,13 @@ type AnyOptions = any;
 export const authWhoamiCommand = new Command()
   .name("whoami")
   .alias("status")
-  .description("Show current authenticated identity")
+  .description(
+    "Show current authenticated identity.\n\n" +
+      "serverUrl: the swamp-club site you are signed in to (SWAMP_CLUB_URL, " +
+      "set with 'swamp auth login --club').\n" +
+      "effectiveServeUrl (Serve: in log output): the 'swamp serve' orchestrator " +
+      "SWAMP_SERVE_URL or SWAMP_SERVER_URL routes commands to, when set.",
+  )
   .example("Show current identity", "swamp auth whoami")
   .example("Show current identity (alias)", "swamp auth status")
   .action(async function (options: AnyOptions) {

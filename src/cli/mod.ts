@@ -2223,6 +2223,32 @@ function endInvocation(): void {
 }
 
 /**
+ * The root help text. It states the error contract every command shares, so
+ * a command's own help lists only the codes it adds (swamp-club#3834).
+ */
+export const ROOT_DESCRIPTION = `AI Native Automation CLI
+
+With --json, a command that fails writes its error to stderr as one JSON
+document:
+
+    { "error": "<message>", "code": "<error_code>" }
+
+Match on "code" when it is present (an error without a stable identifier
+has none, and other fields may appear); the message text can change
+between releases.
+
+Exit codes, shared by every command:
+
+    0    success
+    1    error
+    2    unknown command or subcommand, or too many arguments
+    75   temporary failure, such as lock contention or a temporary sign-in
+         block; retry with backoff
+    130  interrupted (Ctrl+C)
+
+A command that adds codes of its own lists them in its help.`;
+
+/**
  * The root command with its global types and options, and no invocation
  * state. runInvocation adds the global action; the auth gate resolves which
  * command a line runs against the same declarations, so its decision and
@@ -2241,7 +2267,7 @@ export function createRootCommand(colorEnabled: boolean): AnyCommand {
       // piped stdout. Subcommands inherit this: `getHelpHandler` walks to the
       // parent.
       .help({ colors: colorEnabled })
-      .description("AI Native Automation CLI"),
+      .description(ROOT_DESCRIPTION),
   )
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .globalOption(

@@ -79,7 +79,6 @@
     "npm:typescript@^5.8.3": "5.9.3",
     "npm:vite@^6.3.5": "6.4.3_@types+node@24.0.7_yaml@2.9.0",
     "npm:yaml@^2.9.0": "2.9.0",
-    "npm:zod@3.24.4": "3.24.4",
     "npm:zod@^4.3.6": "4.4.3",
     "npm:zod@^4.4.3": "4.4.3"
   },
@@ -2590,9 +2589,6 @@
     },
     "yoga-layout@3.2.1": {
       "integrity": "sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ=="
-    },
-    "zod@3.24.4": {
-      "integrity": "sha512-OdqJE9UDRPwWsrHjLN2F8bPxvwJBK22EHLWtanu0LSYr5YqzsaaW3RMgmjwr8Rypg5k+meEJdSPXJZXE/yqOMg=="
     },
     "zod@4.4.3": {
       "integrity": "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="

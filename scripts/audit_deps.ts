@@ -23,7 +23,9 @@
  *
  * Direct dependency vulnerabilities fail the build. Transitive dependency
  * vulnerabilities are reported as warnings with their full dependency chain
- * (since they require upstream fixes).
+ * (since they require upstream fixes). An advisory listed in
+ * ACCEPTED_ADVISORIES is reported but does not fail the build until its
+ * review date passes.
  *
  * Usage: deno run audit
  *
@@ -77,9 +79,53 @@ interface PackageInfo {
   isDirect: boolean;
 }
 
+/** A direct-dependency advisory accepted for now, with why and until when. */
+export interface AcceptedAdvisory {
+  /** The OSV id, or one of its aliases (a GHSA or CVE id). */
+  id: string;
+  package: string;
+  /** The exact versions accepted; any other version still fails. */
+  versions: string[];
+  reason: string;
+  /** YYYY-MM-DD. From this day on the advisory fails the build again. */
+  reviewBy: string;
+}
+
+export const ACCEPTED_ADVISORIES: AcceptedAdvisory[] = [
+  {
+    id: "GHSA-mrhx-c7xc-m3w5",
+    package: "zod",
+    versions: ["4.4.3"],
+    reason: "swamp's zod is the instance every extension bundle runs on, so " +
+      "upgrading it changes every installed extension; the fixed 4.6.6 only " +
+      "bounds arrays that declare .max(), .length() or .size(), and an " +
+      "unbounded array still builds one issue per element (swamp-club#3834)",
+    reviewBy: "2027-01-23",
+  },
+];
+
+/** Whether `vuln` on `pkg` is accepted on `today` (YYYY-MM-DD). */
+export function isAcceptedAdvisory(
+  pkg: { name: string; version: string },
+  vuln: { id: string; aliases?: string[] },
+  today: string,
+  accepted: AcceptedAdvisory[] = ACCEPTED_ADVISORIES,
+): AcceptedAdvisory | undefined {
+  const ids = [vuln.id, ...(vuln.aliases ?? [])];
+  return accepted.find((a) =>
+    a.package === pkg.name && a.versions.includes(pkg.version) &&
+    ids.includes(a.id) && today < a.reviewBy
+  );
+}
+
 const OSV_API = "https://api.osv.dev/v1";
 const FETCH_TIMEOUT_MS = 30_000;
 const DETAIL_CONCURRENCY = 8;
+
+interface AcceptedFinding {
+  pkg: PackageInfo;
+  advisory: AcceptedAdvisory;
+}
 
 interface VulnFinding {
   pkg: PackageInfo;
@@ -303,6 +349,7 @@ function formatChain(chain: string[]): string {
 async function writeGitHubSummary(
   direct: VulnFinding[],
   transitive: VulnFinding[],
+  accepted: AcceptedFinding[],
 ): Promise<void> {
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (!summaryFile) return;
@@ -341,6 +388,19 @@ async function writeGitHubSummary(
       }
       lines.push("");
     }
+  }
+
+  if (accepted.length > 0) {
+    lines.push("### Accepted Advisories\n");
+    lines.push(
+      "Listed in `ACCEPTED_ADVISORIES`; each fails the build again from its review date.\n",
+    );
+    for (const { pkg, advisory } of accepted) {
+      lines.push(
+        `- \`${pkg.name}@${pkg.version}\` ${advisory.id}, review by ${advisory.reviewBy}: ${advisory.reason}`,
+      );
+    }
+    lines.push("");
   }
 
   if (direct.length === 0 && transitive.length === 0) {
@@ -472,8 +532,27 @@ async function main(): Promise<void> {
     finding.vulns = finding.vulns.map((v) => details.get(v.id) ?? v);
   }
 
+  // Set aside accepted advisories; a package with any other advisory still
+  // fails on that one.
+  const today = new Date().toISOString().slice(0, 10);
+  const accepted: AcceptedFinding[] = [];
+  for (let i = direct.length - 1; i >= 0; i--) {
+    const finding = direct[i];
+    finding.vulns = finding.vulns.filter((vuln) => {
+      const advisory = isAcceptedAdvisory(finding.pkg, vuln, today);
+      if (advisory) accepted.push({ pkg: finding.pkg, advisory });
+      return !advisory;
+    });
+    if (finding.vulns.length === 0) direct.splice(i, 1);
+  }
+  for (const { pkg, advisory } of accepted) {
+    console.warn(
+      `Accepted until ${advisory.reviewBy}: ${advisory.id} on ${pkg.name}@${pkg.version} — ${advisory.reason}`,
+    );
+  }
+
   // Write GitHub Actions job summary
-  await writeGitHubSummary(direct, transitive);
+  await writeGitHubSummary(direct, transitive, accepted);
 
   if (direct.length === 0 && transitive.length === 0) {
     console.log("No known vulnerabilities found.");

@@ -289,8 +289,9 @@ credentials (auto-registered on first start, or supplied via
 authorization flow:
 
 1. User runs `swamp auth server-login --server <url>`
-   (`src/cli/commands/auth_server_login.ts`). `swamp auth login --server` is a
-   different command, the swamp-club registry login.
+   (`src/cli/commands/auth_server_login.ts`). `swamp auth login --club` (kept
+   older spelling `--server`) is a different command, the swamp-club registry
+   login.
 2. CLI calls `GET /auth/info` on the serve instance to find the auth mode.
 3. CLI calls `POST /auth/device`. Serve starts a device grant against
    swamp-club and returns a user code and verification URL.
