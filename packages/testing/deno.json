@@ -7,6 +7,6 @@
     "@std/assert": "jsr:@std/assert@1.0.19",
     "@std/path": "jsr:@std/path@^1.1.4",
     "cel-js": "npm:@marcbachmann/cel-js@7.6.1",
-    "zod": "npm:zod@^4.6.7"
+    "zod": "npm:zod@^4.3.6"
   }
 }
