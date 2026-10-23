@@ -1203,6 +1203,29 @@ Deno.test("default validation: a global that reads a model with no data yet stay
     );
     assertEquals(f.checked.length, checksBefore + 2);
     assertEquals(f.checked.at(-1)!.globalArgs.token, viaData);
+
+    // The gap is the select on the lookup itself. A miss elsewhere in the
+    // expression does not excuse an invalid select on something else, which
+    // fails the checks whether or not the unrelated record exists.
+    const unrelated = await f.save(Definition.create({
+      name: "downstream-unrelated-miss",
+      type: f.type.normalized,
+      globalArguments: {
+        token: "${{ [data.latest('upstream', 'main'), {}][1].attributes }}",
+      },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const unrelatedResult = await deps.validateModel(
+      unrelated,
+      f.model,
+      f.type,
+    );
+    assertEquals(
+      unrelatedResult.results.some((r) => !r.passed),
+      true,
+      JSON.stringify(unrelatedResult.results),
+    );
+    assertEquals(f.checked.length, checksBefore + 2);
   });
 });
 

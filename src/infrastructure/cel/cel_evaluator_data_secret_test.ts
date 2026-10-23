@@ -277,9 +277,31 @@ Deno.test("CelEvaluator data secrets: data.version, findBySpec and findByTag ada
   );
   assertStringIncludes(missing.message, "found no data record");
   await assertRejects(
+    () => f.evaluate("data.latest('db', 'missing')['attributes']"),
+    MissingModelDataError,
+  );
+  await assertRejects(
     () => f.evaluate("data.latest('db', 'main').attributes.nope"),
     InvalidExpressionError,
   );
+  // A miss elsewhere in the expression does not excuse a select on something
+  // other than the lookup: that is the expression's own failure, whether or
+  // not the unrelated record exists.
+  for (
+    const expression of [
+      "[data.latest('db', 'missing'), {}][1].attributes.password",
+      "data.latest('db', 'missing').?attributes.orValue({}) == {} " +
+      "&& [{}][0].attributes",
+    ]
+  ) {
+    const failure = await assertRejects(
+      () => f.evaluate(expression),
+      InvalidExpressionError,
+      undefined,
+      expression,
+    );
+    assertEquals(failure instanceof MissingModelDataError, false, expression);
+  }
   // No tag: reference-looking text stays text, and nothing needs a scope.
   const unscoped = { secretBag: f.bag };
   assertEquals(

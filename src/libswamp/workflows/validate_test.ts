@@ -896,6 +896,7 @@ Deno.test("createWorkflowValidateDeps: description prose that documents the expr
       "Reads ${{ vault }} secrets; see ${{ dyn(vault).get('p', 'k') }}",
     jobs: [Job.create({
       name: "main",
+      description: "Needs ${{ dyn(vault).get('p', 'k') }} to run",
       steps: [
         Step.create({
           name: "wait",
@@ -905,6 +906,14 @@ Deno.test("createWorkflowValidateDeps: description prose that documents the expr
         Step.create({
           name: "misused",
           task: StepTask.manualApproval("${{ dyn(vault).get('prod', 'key') }}"),
+        }),
+        // An environment variable named description is not prose: a run
+        // evaluates it, so its misuse is diagnosed (swamp-club#3735).
+        Step.create({
+          name: "env-named-description",
+          task: StepTask.model("consumer", "run", {
+            env: { description: "${{ dyn(vault).get('prod', 'key') }}" },
+          }),
         }),
       ],
     })],
@@ -917,9 +926,13 @@ Deno.test("createWorkflowValidateDeps: description prose that documents the expr
   const findings = (await deps.validate(workflow)).filter((r) =>
     r.name === "Secret usage"
   );
-  // Only the step argument the run evaluates is diagnosed.
-  assertEquals(findings.length, 1);
+  // Only the step arguments the run evaluates are diagnosed.
+  assertEquals(findings.length, 2, JSON.stringify(findings));
   assertStringIncludes(findings[0].error ?? "", "jobs[0].steps[1]");
+  assertStringIncludes(
+    findings[1].error ?? "",
+    "jobs[0].steps[2].task.inputs.env.description",
+  );
 });
 
 Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path and code in JSON, including raw guards and asserts", async () => {

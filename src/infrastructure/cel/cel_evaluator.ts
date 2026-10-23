@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Environment, Optional } from "cel-js";
+import type { ASTNode } from "cel-js";
 import { getLogger } from "@logtape/logtape";
 import {
   InvalidExpressionError,
@@ -243,6 +244,30 @@ function describeSpecInstances(
     `${listed}${order}${more}. Pass one of those names to ` +
     `data.${accessor}(), or use data.findBySpec("${modelName}", ` +
     `"${specName}") to get every record of that spec.`;
+}
+
+/**
+ * Whether cel-js failed a field select or index whose operand is a
+ * `data.latest()` or `data.version()` call, the two lookups that resolve to
+ * null and record a miss when no record exists. The error carries the AST
+ * node of the failing select, so the operand is read from it rather than
+ * guessed from the expression text.
+ */
+function selectsDataLookup(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { code, node } = error as { code?: unknown; node?: unknown };
+  if (code !== "no_such_key" || !isAstNode(node)) return false;
+  if (node.op !== "." && node.op !== "[]") return false;
+  const operand = node.args[0];
+  if (operand.op !== "rcall") return false;
+  const [name, receiver] = operand.args;
+  return (name === "latest" || name === "version") &&
+    receiver.op === "id" && receiver.args === "data";
+}
+
+function isAstNode(value: unknown): value is ASTNode {
+  return typeof value === "object" && value !== null && "op" in value &&
+    "args" in value;
 }
 
 /**
@@ -1528,12 +1553,14 @@ export class CelEvaluator {
     }
     const message = error instanceof Error ? error.message : String(error);
     const explained = this.explainMissedLookups(message, wrappedContext);
-    // A select on a lookup that found no record is upstream data not
-    // produced yet, which validation tolerates as it tolerates an absent
-    // binding; any other failure is the expression's own.
-    const Failure = explained === message
-      ? InvalidExpressionError
-      : MissingModelDataError;
+    // A select whose operand is the lookup that found no record is upstream
+    // data not produced yet, which validation tolerates as it tolerates an
+    // absent binding. The gap is recognized by the failing select itself: a
+    // miss elsewhere in the expression does not excuse a select on something
+    // else, which is the expression's own failure whatever the hint says.
+    const Failure = explained !== message && selectsDataLookup(error)
+      ? MissingModelDataError
+      : InvalidExpressionError;
     return new Failure(
       explained,
       expression,

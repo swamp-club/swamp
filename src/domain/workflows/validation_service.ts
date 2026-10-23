@@ -183,6 +183,14 @@ export interface WorkflowValidationService {
 }
 
 /**
+ * The path of the workflow's, a job's or a step's `description`: the only
+ * description fields in a workflow definition, and the only ones a run never
+ * evaluates.
+ */
+const PROSE_DESCRIPTION_PATH =
+  /^(?:jobs\[\d+\](?:\.steps\[\d+\])?\.)?description$/;
+
+/**
  * Default implementation of workflow validation service.
  */
 export class DefaultWorkflowValidationService
@@ -287,8 +295,10 @@ export class DefaultWorkflowValidationService
 
   private validateSecretUsage(workflow: Workflow): WorkflowValidationResult[] {
     if (!this.diagnoseSecrets) return [];
-    // A description is prose a run never evaluates, so text documenting the
-    // syntax there is not diagnosed.
+    // The workflow, job and step descriptions are prose a run never
+    // evaluates, so text documenting the syntax there is not diagnosed. Any
+    // other field named description, such as an environment variable under
+    // task.inputs.env, reaches a run and is diagnosed like the rest.
     const expressions: {
       celExpression: string;
       path: string;
@@ -296,7 +306,7 @@ export class DefaultWorkflowValidationService
     }[] = extractExpressions(
       workflow.toData(),
       "",
-      (path) => path === "description" || path.endsWith(".description"),
+      (path) => PROSE_DESCRIPTION_PATH.test(path),
     );
     for (const [jobIndex, job] of workflow.jobs.entries()) {
       for (const [stepIndex, step] of job.steps.entries()) {
