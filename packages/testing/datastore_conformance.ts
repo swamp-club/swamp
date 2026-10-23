@@ -670,6 +670,13 @@ function fetchContentOf(
 }
 
 const NO_FETCH_CONTENT = "second.service has no fetchContent";
+const NO_TWO_PHASE = "the sync service has no preparePush/commitPush";
+
+function skipWithoutTwoPhase(
+  fixture: SyncServiceRoundTripFixture,
+): string | undefined {
+  return twoPhasePush(fixture.first.service) ? undefined : NO_TWO_PHASE;
+}
 
 /** Content with a NUL and high bytes, unique to one run. */
 function sampleBytes(label: string): Uint8Array {
@@ -930,10 +937,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
   },
   {
     name: "two-phase",
-    skip: (fixture) =>
-      twoPhasePush(fixture.first.service)
-        ? undefined
-        : "the sync service has no preparePush/commitPush",
+    skip: skipWithoutTwoPhase,
     run: async ({ first, second }) => {
       const twoPhase = twoPhasePush(first.service)!;
 
@@ -1192,6 +1196,144 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       );
     },
   },
+  {
+    name: "mark-between-prepare-and-commit",
+    skip: skipWithoutTwoPhase,
+    run: async ({ first, second }) => {
+      const twoPhase = twoPhasePush(first.service)!;
+      const prepared = `${ROOT}/mark-between/prepared/raw`;
+      const later = `${ROOT}/mark-between/later/raw`;
+      const preparedBytes = sampleBytes("mark-between-prepared");
+      const laterBytes = sampleBytes("mark-between-later");
+      await markAndWrite(first, prepared, preparedBytes);
+      const manifest = await twoPhase.preparePush();
+      // Another write of the same process, while the push is in flight.
+      await markAndWrite(first, later, laterBytes);
+      assertChanged(await twoPhase.commitPush(manifest), "first commitPush()");
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of a path marked after preparePush",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        prepared,
+        preparedBytes,
+        "commitPush must publish the prepared manifest",
+      );
+      await assertHasBytes(
+        second,
+        later,
+        laterBytes,
+        "commitPush must clear only the marks the prepare handled, so a path marked after preparePush is pushed next",
+      );
+    },
+  },
+  {
+    name: "remark-between-prepare-and-commit",
+    skip: skipWithoutTwoPhase,
+    run: async ({ first, second }) => {
+      const twoPhase = twoPhasePush(first.service)!;
+      const rel = `${ROOT}/remark-between/raw`;
+      await markAndWrite(first, rel, sampleBytes("remark-between-prepared"));
+      const manifest = await twoPhase.preparePush();
+      // The same path written again while the push is in flight.
+      const rewritten = sampleBytes("remark-between-rewritten");
+      await markAndWrite(first, rel, rewritten);
+      assertChanged(await twoPhase.commitPush(manifest), "first commitPush()");
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of a path marked again after preparePush",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        rel,
+        rewritten,
+        "a path marked again after preparePush must stay dirty through commitPush, so its new bytes are pushed next",
+      );
+    },
+  },
+  {
+    name: "bulk-between-prepare-and-commit",
+    skip: skipWithoutTwoPhase,
+    run: async ({ first, second }) => {
+      const twoPhase = twoPhasePush(first.service)!;
+      const prepared = `${ROOT}/bulk-between/prepared/raw`;
+      const later = `${ROOT}/bulk-between/later/raw`;
+      const preparedBytes = sampleBytes("bulk-between-prepared");
+      const laterBytes = sampleBytes("bulk-between-later");
+      await markAndWrite(first, prepared, preparedBytes);
+      const manifest = await twoPhase.preparePush();
+      await first.service.markDirty();
+      await writeLocal(first.cacheDir, later, laterBytes);
+      assertChanged(await twoPhase.commitPush(manifest), "first commitPush()");
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() after a bare mark made after preparePush",
+      );
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        prepared,
+        preparedBytes,
+        "commitPush must publish the prepared manifest",
+      );
+      await assertHasBytes(
+        second,
+        later,
+        laterBytes,
+        "a bare markDirty() after preparePush must stay set through commitPush, so the next push sends every changed file",
+      );
+    },
+  },
+  {
+    name: "vanish-during-walk",
+    // Windows hosts without Developer Mode cannot create symlinks, and
+    // Windows is not fully supported yet.
+    skip: () =>
+      Deno.build.os === "windows"
+        ? "Windows hosts without Developer Mode cannot create the dangling symlink this case needs"
+        : undefined,
+    run: async ({ first, second }) => {
+      const dir = `${ROOT}/vanish-during-walk`;
+      const live = `${dir}/live/raw`;
+      const added = `${dir}/added/raw`;
+      const liveBytes = sampleBytes("vanish-live");
+      const addedBytes = sampleBytes("vanish-added");
+      await markAndWrite(first, live, liveBytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+
+      await first.service.markDirty({ relPath: dir });
+      await writeLocal(first.cacheDir, added, addedBytes);
+      // An entry the walk lists but cannot stat, as a file removed while a
+      // push walks the directory is.
+      await Deno.symlink(
+        localPath(first.cacheDir, `${dir}/missing-target`),
+        localPath(first.cacheDir, `${dir}/vanished`),
+        { type: "file" },
+      );
+      assertChanged(
+        await first.service.pushChanged(),
+        "first pushChanged() of a marked directory with a vanished entry",
+      );
+      // second never pulled live, so it only appears if the remote still
+      // holds it.
+      assertChanged(await second.service.pullChanged(), "second pullChanged()");
+      await assertHasBytes(
+        second,
+        live,
+        liveBytes,
+        "an entry that vanishes while a push walks a marked directory must not delete the directory's other files remotely",
+      );
+      await assertHasBytes(
+        second,
+        added,
+        addedBytes,
+        "an entry that vanishes while a push walks a marked directory must not stop the push sending the directory's changes",
+      );
+    },
+  },
 ];
 
 /**
@@ -1233,6 +1375,19 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  *   `namespace`. It has only been run against `createInMemoryRemote`, which
  *   binds a namespace as the S3 and GCS datastores do but stores a
  *   namespaced path as a plain key.
+ * - `mark-between-prepare-and-commit`: a path marked and written after
+ *   `preparePush` stays dirty through `commitPush`, and the next push sends
+ *   it. Skipped without `preparePush` and `commitPush`.
+ * - `remark-between-prepare-and-commit`: a path the prepare handled, marked
+ *   and rewritten again before `commitPush`, stays dirty, and the next push
+ *   sends its new bytes. Skipped without `preparePush` and `commitPush`.
+ * - `bulk-between-prepare-and-commit`: a bare `markDirty()` after
+ *   `preparePush` stays set through `commitPush`, and the next push sends a
+ *   file written after it. Skipped without `preparePush` and `commitPush`.
+ * - `vanish-during-walk`: a push of a marked directory holding an entry it
+ *   cannot stat (a dangling symlink, as a file removed mid-walk would be)
+ *   still sends the directory's changes and deletes none of its other files
+ *   remotely. Skipped on Windows.
  *
  * Counts may be void ("unknown") everywhere. A failing case rejects with an
  * error naming it; skipped cases are returned so callers can assert on them.

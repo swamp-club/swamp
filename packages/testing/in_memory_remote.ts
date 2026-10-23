@@ -22,12 +22,16 @@
  * simulated machines.
  *
  * Its default behaviour reproduces what `@swamp/s3-datastore` and
- * `@swamp/gcs-datastore` 2026.10.06.1 through 2026.10.07.1 do, quirks
+ * `@swamp/gcs-datastore` 2026.10.06.1 through 2026.10.20.2 do, quirks
  * included, so a test that passes against this fake cannot lose data that
- * production would keep. Each pinned behaviour was checked against
- * swamp-extensions @ 7c0b1eacf; `S3SYNC` below is
- * `datastore/s3/extensions/datastores/_lib/s3_cache_sync.ts`, and the GCS
- * equivalent behaves the same.
+ * production would keep, except in two places where the default models the
+ * fix of swamp-club#3860 instead: a push clears only the marks it handled,
+ * and skips an entry that vanished while it walked. Those two releases'
+ * behaviours are {@link EXTENSION_2026_10_20_SEMANTICS}. Each pinned
+ * behaviour was checked against swamp-extensions @ 7c0b1eacf, and the
+ * clearing and vanished-entry ones again @ ad6b66233; `S3SYNC` below is
+ * `datastore/s3/extensions/datastores/_lib/s3_cache_sync.ts` @ 7c0b1eacf
+ * unless another commit is named, and the GCS equivalent behaves the same.
  *
  * - A path mark records a cache-relative path. A bare mark, an empty path or
  *   a path that climbs out of the cache with `..` sets the bulk flag. An
@@ -56,7 +60,19 @@
  *   set, and the next push loses the recorded deletes.
  * - Dirty state is cleared only when a push succeeds (S3SYNC:3398-3427). A
  *   pull keeps it, so a write whose push failed is sent by the next push
- *   (S3SYNC:1843-1877, 2792-2796, 2826-2851).
+ *   (S3SYNC:1843-1877, 2792-2796, 2826-2851). Each mark gives its path a
+ *   new generation, even when the path is already marked; a push or
+ *   `preparePush` snapshots the marks when it starts and walks only those,
+ *   and success removes only the snapshot's paths whose generation is
+ *   unchanged, and clears the bulk flag only when no bulk mark (nor a path
+ *   mark the flag absorbed) came after the snapshot. The sidecar stays dirty
+ *   while any mark remains. With `commitClearsLaterMarks`, as released, a
+ *   push walks the live marks and success clears every mark.
+ * - In the walk of a marked directory, an entry whose target cannot be
+ *   stat'ed, such as a dangling symlink, is skipped. With
+ *   `vanishedEntryDeletesDir`, as released, it makes the push delete every
+ *   committed key under the directory, and ends a full walk early
+ *   (S3SYNC @ ad6b66233:3454, 3473-3492, 3528, 3532-3534).
  * - A pull downloads committed entries that are new or differ and
  *   overwrites local files even if they are dirty (S3SYNC:2616-2690). An
  *   unchanged remote takes the fast path and touches nothing
@@ -76,7 +92,8 @@
  *   `pullChanged` contract asks for them.
  * - `preparePush` uploads and deletes content at once but publishes nothing
  *   other machines can pull, and keeps dirty state; `commitPush` publishes
- *   the index and clears dirty state, including marks made in between
+ *   the index and clears the marks the prepare snapshotted, or, with
+ *   `commitClearsLaterMarks`, every mark including those made in between
  *   (S3SYNC:3517-4089). After an unscoped prepare, commit checks
  *   completeness against the index it read at prepare plus its own changes,
  *   so a peer's commit in between is skipped by the next pull
@@ -91,8 +108,10 @@
  *   one, the fake treats both as no namespace, as the `fetchContent` contract
  *   does.
  *
- * Earlier releases are available through {@link InMemoryRemoteSemantics}:
- * {@link EXTENSION_2026_10_01_SEMANTICS} removes nothing, and
+ * Released behaviour is available through {@link InMemoryRemoteSemantics}:
+ * {@link EXTENSION_2026_10_20_SEMANTICS} is the default with released
+ * clearing and vanished-entry handling, {@link EXTENSION_2026_10_01_SEMANTICS}
+ * also removes nothing, and
  * {@link LEGACY_EXTENSION_SEMANTICS} (2026.09.24.1 and earlier) also makes
  * an unscoped pull of a moved remote mark the sidecar clean, dropping a
  * pending push, and a later mark of a path it still lists leave it clean.
@@ -185,12 +204,35 @@ export interface InMemoryRemoteSemantics {
    * decides what a pull removes instead.
    */
   removesPeerDeletes: boolean;
+  /**
+   * A successful push or `commitPush` clears every mark, including marks
+   * made after the push began walking or after `preparePush`, and marking
+   * a path that is already marked leaves no trace. What every released
+   * extension does (swamp-club#3860). When unset, each mark gives its path
+   * a new generation, a push or `preparePush` snapshots the marks it walks,
+   * and clearing removes only the snapshot's paths whose generation is
+   * unchanged, and the bulk flag only when no bulk mark came after the
+   * snapshot; the sidecar stays dirty while any mark remains.
+   */
+  commitClearsLaterMarks: boolean;
+  /**
+   * In the walk of a marked directory, an entry that cannot be stat'ed,
+   * such as a dangling symlink, makes the push treat the whole directory
+   * as absent: it deletes every committed key under it, uploading only the
+   * files walked before that entry. A full walk stops at such an entry, so
+   * after an overflow every committed key not walked is deleted. What
+   * every released extension does (swamp-club#3860). When unset, such an
+   * entry is skipped. Names are walked in sorted order, where the
+   * extensions follow directory order.
+   */
+  vanishedEntryDeletesDir: boolean;
 }
 
 /**
- * What `@swamp/s3-datastore` and `@swamp/gcs-datastore` do from
- * 2026.10.06.1, checked through 2026.10.07.1 (swamp-extensions
- * @ 7c0b1eacf). The default.
+ * The default: what `@swamp/s3-datastore` and `@swamp/gcs-datastore` are
+ * expected to do once a push clears only the marks it handled and skips an
+ * entry that vanished mid-walk (swamp-club#3860). Otherwise as
+ * {@link EXTENSION_2026_10_20_SEMANTICS}.
  */
 export const EXTENSION_SEMANTICS: Readonly<InMemoryRemoteSemantics> = Object
   .freeze({
@@ -198,7 +240,27 @@ export const EXTENSION_SEMANTICS: Readonly<InMemoryRemoteSemantics> = Object
     bulkDisablesDeletes: true,
     pullClearsPendingPush: false,
     removesPeerDeletes: true,
+    commitClearsLaterMarks: false,
+    vanishedEntryDeletesDir: false,
   });
+
+/**
+ * What `@swamp/s3-datastore` and `@swamp/gcs-datastore` do from
+ * 2026.10.06.1 through 2026.10.20.2 (checked at swamp-extensions
+ * @ 7c0b1eacf and ad6b66233): a push or commit clears marks made after it
+ * began, and an entry that vanishes mid-walk deletes its whole marked
+ * directory remotely (swamp-club#3860).
+ */
+export const EXTENSION_2026_10_20_SEMANTICS: Readonly<
+  InMemoryRemoteSemantics
+> = Object.freeze({
+  pullDeletes: false,
+  bulkDisablesDeletes: true,
+  pullClearsPendingPush: false,
+  removesPeerDeletes: true,
+  commitClearsLaterMarks: true,
+  vanishedEntryDeletesDir: true,
+});
 
 /**
  * What the extensions do in 2026.10.01.1: a pull keeps a pending push
@@ -211,6 +273,8 @@ export const EXTENSION_2026_10_01_SEMANTICS: Readonly<
   bulkDisablesDeletes: true,
   pullClearsPendingPush: false,
   removesPeerDeletes: false,
+  commitClearsLaterMarks: true,
+  vanishedEntryDeletesDir: true,
 });
 
 /**
@@ -224,6 +288,8 @@ export const LEGACY_EXTENSION_SEMANTICS: Readonly<InMemoryRemoteSemantics> =
     bulkDisablesDeletes: true,
     pullClearsPendingPush: true,
     removesPeerDeletes: false,
+    commitClearsLaterMarks: true,
+    vanishedEntryDeletesDir: true,
   });
 
 /** Options for {@link createInMemoryRemote}. */
@@ -452,12 +518,27 @@ const PLAN_SCOPED = Symbol("scoped");
 const PLAN_PRIOR_SEQ = Symbol("priorSeq");
 const PLAN_INDEX = Symbol("index");
 const PLAN_OVERFLOWED = Symbol("overflowed");
+const PLAN_MARKS = Symbol("marks");
 
 interface InternalManifest extends InMemoryPushManifest {
   [PLAN_SCOPED]?: boolean;
   [PLAN_PRIOR_SEQ]?: number;
   [PLAN_INDEX]?: ReadonlyMap<string, Uint8Array>;
   [PLAN_OVERFLOWED]?: boolean;
+  [PLAN_MARKS]?: MarkSnapshot;
+}
+
+/**
+ * The marks a push or `preparePush` walks, taken when it starts. Clearing
+ * removes only what this snapshot holds and has not been marked since.
+ */
+interface MarkSnapshot {
+  /** Each marked path with its generation. */
+  paths: ReadonlyMap<string, number>;
+  /** The generation of the latest bulk mark. */
+  bulkGen: number;
+  bulk: boolean;
+  overflowed: boolean;
 }
 
 interface Sidecar {
@@ -465,6 +546,12 @@ interface Sidecar {
   dirtyPaths: Set<string>;
   bulk: boolean;
   overflowed: boolean;
+  /** Each marked path's generation, renewed by every mark of it. */
+  pathGens: Map<string, number>;
+  /** The generation of the latest bulk mark, 0 for none. */
+  bulkGen: number;
+  /** The last generation handed out. */
+  markSeq: number;
   /** The remote commit sequence this cache last saw in full. */
   commitSeq?: number;
   /** Committed keys this cache saw at its last pull. */
@@ -645,9 +732,21 @@ async function statLocal(
   }
 }
 
-/** Lists every non-internal file under `rel` in the cache, sorted. */
-async function walkLocal(cacheDir: string, rel: string): Promise<string[]> {
-  const found: string[] = [];
+/** A walked entry: a file, or an entry whose target cannot be stat'ed. */
+interface WalkedEntry {
+  rel: string;
+  dangling: boolean;
+}
+
+/**
+ * Lists every non-internal file under `rel` in the cache, and every
+ * symlink whose target is missing, sorted.
+ */
+async function walkLocalEntries(
+  cacheDir: string,
+  rel: string,
+): Promise<WalkedEntry[]> {
+  const found: WalkedEntry[] = [];
   const visit = async (dirRel: string): Promise<void> => {
     const dirPath = dirRel === ""
       ? cacheDir
@@ -663,13 +762,21 @@ async function walkLocal(cacheDir: string, rel: string): Promise<string[]> {
       const child = dirRel === "" ? entry.name : `${dirRel}/${entry.name}`;
       if (entry.isDirectory) {
         await visit(child);
-      } else if (entry.isFile && !isInternalCacheFile(child)) {
-        found.push(child);
+      } else if (isInternalCacheFile(child)) {
+        continue;
+      } else if (entry.isFile) {
+        found.push({ rel: child, dangling: false });
+      } else if (entry.isSymlink && !(await statLocal(cacheDir, child))) {
+        found.push({ rel: child, dangling: true });
       }
     }
   };
   await visit(rel);
-  return found.sort();
+  return found.sort((a, b) => a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+}
+
+function filesOf(entries: readonly WalkedEntry[]): string[] {
+  return entries.filter((entry) => !entry.dangling).map((entry) => entry.rel);
 }
 
 /**
@@ -846,7 +953,24 @@ export function createInMemoryRemote(
         if (info?.isFile) {
           await uploadIfChanged(rel);
         } else if (info?.isDirectory) {
-          const local = await walkLocal(cacheDir, rel);
+          const entries = await walkLocalEntries(cacheDir, rel);
+          const cut = semantics.vanishedEntryDeletesDir
+            ? entries.findIndex((entry) => entry.dangling)
+            : -1;
+          if (cut !== -1) {
+            // The failed stat escapes the walk, so the directory is taken
+            // as absent (S3SYNC @ ad6b66233:3454, 3473-3492).
+            for (const entry of entries.slice(0, cut)) {
+              await uploadIfChanged(entry.rel);
+            }
+            for (const remoteKey of committed.keys()) {
+              if (remoteKey === rel || isUnder(remoteKey, rel)) {
+                deletes.add(remoteKey);
+              }
+            }
+            continue;
+          }
+          const local = filesOf(entries);
           for (const file of local) await uploadIfChanged(file);
           const present = new Set(local);
           for (const remoteKey of committed.keys()) {
@@ -865,8 +989,13 @@ export function createInMemoryRemote(
       return { uploads, deletes: [...deletes].sort(), scoped };
     }
 
-    // Full walk: a bulk mark, an empty set, or no sidecar yet.
-    const local = await walkLocal(cacheDir, "");
+    // Full walk: a bulk mark, an empty set, or no sidecar yet. A failed
+    // stat ends it early, unnoticed (S3SYNC @ ad6b66233:3528, 3532-3534).
+    const entries = await walkLocalEntries(cacheDir, "");
+    const cut = semantics.vanishedEntryDeletesDir
+      ? entries.findIndex((entry) => entry.dangling)
+      : -1;
+    const local = filesOf(cut === -1 ? entries : entries.slice(0, cut));
     for (const file of local) await uploadIfChanged(file);
     const deletesMissing = sidecar !== undefined &&
       (sidecar.overflowed ||
@@ -918,6 +1047,9 @@ export function createInMemoryRemote(
           dirtyPaths: new Set(),
           bulk: false,
           overflowed: false,
+          pathGens: new Map(),
+          bulkGen: 0,
+          markSeq: 0,
           pulledKeys: new Set(),
         };
         sidecars.set(key, sidecar);
@@ -927,6 +1059,37 @@ export function createInMemoryRemote(
 
     const planPush = (sidecar: Sidecar | undefined): Promise<PushPlan> =>
       planPushFor(cacheDir, sidecar);
+
+    /** The marks a push or prepare starting now walks. */
+    const snapshotMarks = (sidecar: Sidecar | undefined): MarkSnapshot => ({
+      paths: new Map(sidecar?.pathGens ?? []),
+      bulkGen: sidecar?.bulkGen ?? 0,
+      bulk: sidecar?.bulk ?? false,
+      overflowed: sidecar?.overflowed ?? false,
+    });
+
+    /**
+     * What a push walks: the live sidecar where a push reads the marks as
+     * it goes, or the snapshot's marks where it walks only those.
+     */
+    const walkedSidecar = (
+      sidecar: Sidecar | undefined,
+      marks: MarkSnapshot,
+    ): Sidecar | undefined =>
+      semantics.commitClearsLaterMarks || !sidecar ? sidecar : {
+        ...sidecar,
+        dirtyPaths: new Set(marks.paths.keys()),
+        bulk: marks.bulk,
+        overflowed: marks.overflowed,
+      };
+
+    /** Sets the bulk flag with a new generation. */
+    const markBulkOn = (sidecar: Sidecar, overflow: boolean): void => {
+      sidecar.bulk = true;
+      sidecar.bulkGen = ++sidecar.markSeq;
+      sidecar.localDirty = true;
+      if (overflow) sidecar.overflowed = true;
+    };
 
     /** Whether every key in `index` (default: the live remote) is local. */
     async function hasAll(index: Iterable<string>): Promise<boolean> {
@@ -949,12 +1112,28 @@ export function createInMemoryRemote(
       overflowed: boolean;
       /** The index this cache holds; defaults to the live remote. */
       index?: Iterable<string>;
+      /** The marks the push walked; absent when it walked none. */
+      marks?: MarkSnapshot;
     }): Promise<void> {
       const sidecar = ensureSidecar();
-      sidecar.dirtyPaths.clear();
-      sidecar.bulk = false;
-      sidecar.overflowed = false;
-      sidecar.localDirty = false;
+      if (semantics.commitClearsLaterMarks) {
+        sidecar.dirtyPaths.clear();
+        sidecar.pathGens.clear();
+        sidecar.bulk = false;
+        sidecar.overflowed = false;
+        sidecar.localDirty = false;
+      } else if (arm.marks) {
+        for (const [rel, gen] of arm.marks.paths) {
+          if (sidecar.pathGens.get(rel) !== gen) continue;
+          sidecar.dirtyPaths.delete(rel);
+          sidecar.pathGens.delete(rel);
+        }
+        if (sidecar.bulkGen === arm.marks.bulkGen) {
+          sidecar.bulk = false;
+          sidecar.overflowed = false;
+        }
+        sidecar.localDirty = sidecar.bulk || sidecar.dirtyPaths.size > 0;
+      }
       const reconciled = (arm.scoped || arm.overflowed) &&
         arm.priorSeq === arm.baseSeq;
       const armed = arm.upToDate &&
@@ -1050,17 +1229,15 @@ export function createInMemoryRemote(
       const baseSeq = commitSeq;
       const overflowed = sidecar?.overflowed ?? false;
       const snapshot = new Map(committed);
-      const removed = await removeBeforePush(sidecar);
-      const plan = await planPush(sidecar);
+      const marks = snapshotMarks(sidecar);
+      const walked = walkedSidecar(sidecar, marks);
+      const removed = await removeBeforePush(walked);
+      const plan = await planPush(walked);
       if (failure) {
         // Uploads landed as objects but the index was never committed, and
         // each upload's bare mark leaves the bulk flag set (S3SYNC:2911).
         for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);
-        if (plan.uploads.size > 0) {
-          const dirty = ensureSidecar();
-          dirty.bulk = true;
-          dirty.localDirty = true;
-        }
+        if (plan.uploads.size > 0) markBulkOn(ensureSidecar(), false);
         throw failure.error;
       }
       for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);
@@ -1074,6 +1251,7 @@ export function createInMemoryRemote(
         upToDate,
         scoped: plan.scoped,
         overflowed,
+        marks,
       });
       recordPushed(plan.scoped, snapshot, plan.uploads, plan.deletes);
       record({
@@ -1097,8 +1275,10 @@ export function createInMemoryRemote(
       }
       checkReachable("prepare", instance);
       const snapshot = new Map(committed);
-      const removed = await removeBeforePush(sidecar);
-      const plan = await planPush(sidecar);
+      const marks = snapshotMarks(sidecar);
+      const walked = walkedSidecar(sidecar, marks);
+      const removed = await removeBeforePush(walked);
+      const plan = await planPush(walked);
       for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);
       for (const rel of plan.deletes) objects.delete(rel);
       record({
@@ -1115,6 +1295,7 @@ export function createInMemoryRemote(
         [PLAN_PRIOR_SEQ]: sidecar?.commitSeq,
         [PLAN_INDEX]: snapshot,
         [PLAN_OVERFLOWED]: sidecar?.overflowed ?? false,
+        [PLAN_MARKS]: marks,
       } as InMemoryPushManifest;
     }
 
@@ -1141,6 +1322,7 @@ export function createInMemoryRemote(
         scoped,
         overflowed: internal[PLAN_OVERFLOWED] ?? false,
         index: index.keys(),
+        marks: internal[PLAN_MARKS],
       });
       recordPushed(scoped, index, manifest.uploads, manifest.deletes);
       record({
@@ -1229,26 +1411,33 @@ export function createInMemoryRemote(
     function markDirty(options?: DatastoreSyncOptions): Promise<void> {
       const relPath = options?.relPath;
       const sidecar = ensureSidecar();
-      const markBulk = (overflow: boolean) => {
-        sidecar.bulk = true;
-        sidecar.localDirty = true;
-        if (overflow) sidecar.overflowed = true;
-      };
+      const markBulk = (overflow: boolean) => markBulkOn(sidecar, overflow);
+      // Without generations a repeated mark leaves no trace.
+      const tracksGenerations = !semantics.commitClearsLaterMarks;
 
       if (relPath) {
         record({ instance, op: "markDirty", paths: [relPath], deleted: [] });
-        if (sidecar.bulk) return Promise.resolve();
+        if (sidecar.bulk) {
+          // The path is not recorded, so the bulk flag carries the mark: a
+          // push that snapshotted the flag before this keeps it set.
+          if (tracksGenerations) sidecar.bulkGen = ++sidecar.markSeq;
+          return Promise.resolve();
+        }
         const rel = toCacheRelative(relPath);
         if (rel === undefined) {
           markBulk(false);
           return Promise.resolve();
         }
-        if (sidecar.dirtyPaths.has(rel)) return Promise.resolve();
+        if (sidecar.dirtyPaths.has(rel)) {
+          if (tracksGenerations) sidecar.pathGens.set(rel, ++sidecar.markSeq);
+          return Promise.resolve();
+        }
         if (sidecar.dirtyPaths.size >= dirtyPathsCap) {
           markBulk(true);
           return Promise.resolve();
         }
         sidecar.dirtyPaths.add(rel);
+        sidecar.pathGens.set(rel, ++sidecar.markSeq);
         sidecar.localDirty = true;
         return Promise.resolve();
       }

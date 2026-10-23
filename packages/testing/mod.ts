@@ -220,6 +220,7 @@ export type { ReplicaPathConformanceOptions } from "./replica_path_conformance.t
 export {
   createInMemoryRemote,
   EXTENSION_2026_10_01_SEMANTICS,
+  EXTENSION_2026_10_20_SEMANTICS,
   EXTENSION_SEMANTICS,
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";

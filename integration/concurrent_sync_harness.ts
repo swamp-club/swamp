@@ -25,6 +25,7 @@ import "../src/domain/models/models.ts";
 import { join } from "@std/path";
 import {
   createInMemoryRemote,
+  EXTENSION_2026_10_20_SEMANTICS,
   type InMemoryRemote,
   type InMemorySyncService,
 } from "@swamp-club/swamp-testing";
@@ -74,7 +75,12 @@ export interface Harness {
 export async function withHarness(
   fn: (h: Harness) => Promise<void>,
 ): Promise<void> {
-  const remote = createInMemoryRemote();
+  // The released extensions' clearing: a commit clears every mark, those
+  // made after its prepare included. That is the race these tests hold
+  // core to surviving while those releases are deployed (swamp-club#3860).
+  const remote = createInMemoryRemote({
+    semantics: EXTENSION_2026_10_20_SEMANTICS,
+  });
   const { typeName, dispose } = registerTestDatastoreType(remote);
   const dir = await Deno.makeTempDir({ prefix: "swamp-concurrent-sync-" });
   try {

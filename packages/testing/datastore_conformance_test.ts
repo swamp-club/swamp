@@ -43,6 +43,7 @@ import type {
 } from "./datastore_types.ts";
 import {
   createInMemoryRemote,
+  EXTENSION_2026_10_20_SEMANTICS,
   type InMemoryRemoteOptions,
   type InMemorySyncService,
   LEGACY_EXTENSION_SEMANTICS,
@@ -265,7 +266,14 @@ const ALL_ROUND_TRIP_CASES = [
   "fetch-content",
   "fetch-content-error",
   "fetch-content-namespace",
+  "mark-between-prepare-and-commit",
+  "remark-between-prepare-and-commit",
+  "bulk-between-prepare-and-commit",
+  "vanish-during-walk",
 ];
+
+/** Cases that skip on this OS whatever the fixture. */
+const OS_SKIPPED = Deno.build.os === "windows" ? ["vanish-during-walk"] : [];
 
 Deno.test("assertSyncServiceRoundTripConformance: the default in-memory remote passes and skips only pull-deletes", async () => {
   const result = await assertSyncServiceRoundTripConformance(
@@ -273,10 +281,15 @@ Deno.test("assertSyncServiceRoundTripConformance: the default in-memory remote p
   );
   // Known gap: like the S3 and GCS datastores, the remote does not pass
   // pull-deletes, so it is skipped by default.
-  assertEquals(result.skipped.map((s) => s.name), ["pull-deletes"]);
+  assertEquals(result.skipped.map((s) => s.name), [
+    "pull-deletes",
+    ...OS_SKIPPED,
+  ]);
   assertEquals(
     result.passed,
-    ALL_ROUND_TRIP_CASES.filter((name) => name !== "pull-deletes"),
+    ALL_ROUND_TRIP_CASES.filter((name) =>
+      name !== "pull-deletes" && !OS_SKIPPED.includes(name)
+    ),
   );
 });
 
@@ -288,6 +301,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips failed-push-retry withou
     "pull-deletes",
     "failed-push-retry",
     "fetch-content-error",
+    ...OS_SKIPPED,
   ]);
 });
 
@@ -296,8 +310,11 @@ Deno.test("assertSyncServiceRoundTripConformance: a remote whose pulls delete pa
     inMemoryRemoteFactory({ semantics: { pullDeletes: true } }),
     { expectPullDeletes: true },
   );
-  assertEquals(result.skipped, []);
-  assertEquals(result.passed, ALL_ROUND_TRIP_CASES);
+  assertEquals(result.skipped.map((s) => s.name), OS_SKIPPED);
+  assertEquals(
+    result.passed,
+    ALL_ROUND_TRIP_CASES.filter((name) => !OS_SKIPPED.includes(name)),
+  );
 });
 
 Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case for a service without fetchContent", async () => {
@@ -309,7 +326,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case
     }),
   );
   const reason = "second.service has no fetchContent";
-  assertEquals(result.skipped.slice(1), [
+  assertEquals(result.skipped.slice(1, 4), [
     { name: "fetch-content", reason },
     { name: "fetch-content-error", reason },
     { name: "fetch-content-namespace", reason },
@@ -330,7 +347,10 @@ Deno.test("assertSyncServiceRoundTripConformance: a fetchContent that returns a 
       });
     }),
   );
-  assertEquals(result.skipped.map((s) => s.name), ["pull-deletes"]);
+  assertEquals(result.skipped.map((s) => s.name), [
+    "pull-deletes",
+    ...OS_SKIPPED,
+  ]);
   assertEquals(result.passed.includes("fetch-content"), true);
   assertEquals(result.passed.includes("fetch-content-error"), true);
   assertEquals(result.passed.includes("fetch-content-namespace"), true);
@@ -346,6 +366,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips fetch-content-namespace 
   assertEquals(result.skipped.map((s) => s.name), [
     "pull-deletes",
     "fetch-content-namespace",
+    ...OS_SKIPPED,
   ]);
   assertEquals(result.passed.includes("fetch-content"), true);
 });
@@ -563,6 +584,8 @@ interface BrokenImplementation {
   bug: string;
   remoteOptions?: InMemoryRemoteOptions;
   options?: { expectPullDeletes?: boolean };
+  /** Whether the case skips on this OS, so the break cannot show. */
+  ignore?: boolean;
   breakFixture: (
     fixture: InMemoryRoundTripFixture,
   ) => SyncServiceRoundTripFixture;
@@ -769,6 +792,75 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
       });
     },
   },
+  {
+    caseName: "mark-between-prepare-and-commit",
+    bug:
+      "commit clears marks made after preparePush, as extensions through 2026.10.20.2 do",
+    remoteOptions: { semantics: EXTENSION_2026_10_20_SEMANTICS },
+    breakFixture: (fixture) => fixture,
+  },
+  {
+    caseName: "remark-between-prepare-and-commit",
+    bug:
+      "a mark of a path already marked is dropped, so commit clears the path by name",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      const marked = new Set<string>();
+      return withFirst(fixture, {
+        ...service,
+        markDirty: async (options) => {
+          const relPath = options?.relPath;
+          if (relPath !== undefined) {
+            if (marked.has(relPath)) return;
+            marked.add(relPath);
+          }
+          await service.markDirty(options);
+        },
+        pushChanged: async (options) => {
+          const changed = await service.pushChanged(options);
+          marked.clear();
+          return changed;
+        },
+        commitPush: async (manifest, options) => {
+          const changed = await service.commitPush(manifest, options);
+          marked.clear();
+          return changed;
+        },
+      } as InMemorySyncService);
+    },
+  },
+  {
+    caseName: "bulk-between-prepare-and-commit",
+    bug: "commit clears a bare mark made after preparePush",
+    breakFixture: (fixture) => {
+      const { service } = fixture.first;
+      let preparing = false;
+      return withFirst(fixture, {
+        ...service,
+        markDirty: (options) =>
+          preparing && !options?.relPath
+            ? Promise.resolve()
+            : service.markDirty(options),
+        preparePush: async (options?: DatastoreSyncOptions) => {
+          const manifest = await service.preparePush(options);
+          preparing = true;
+          return manifest;
+        },
+        commitPush: async (manifest, options) => {
+          preparing = false;
+          return await service.commitPush(manifest, options);
+        },
+      } as InMemorySyncService);
+    },
+  },
+  {
+    caseName: "vanish-during-walk",
+    bug:
+      "an entry that vanishes mid-walk deletes its marked directory, as extensions through 2026.10.20.2 do",
+    remoteOptions: { semantics: { vanishedEntryDeletesDir: true } },
+    ignore: Deno.build.os === "windows",
+    breakFixture: (fixture) => fixture,
+  },
 ];
 
 Deno.test("assertSyncServiceRoundTripConformance: the broken implementations cover every case", () => {
@@ -779,7 +871,11 @@ Deno.test("assertSyncServiceRoundTripConformance: the broken implementations cov
 });
 
 for (const broken of BROKEN_IMPLEMENTATIONS) {
-  Deno.test(`assertSyncServiceRoundTripConformance: fails case "${broken.caseName}" when ${broken.bug}`, async () => {
+  Deno.test({
+    name:
+      `assertSyncServiceRoundTripConformance: fails case "${broken.caseName}" when ${broken.bug}`,
+    ignore: broken.ignore ?? false,
+  }, async () => {
     const error = await assertRejects(
       () =>
         assertSyncServiceRoundTripConformance(
