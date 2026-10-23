@@ -109,13 +109,33 @@ export interface PermissionDeniedFacts {
    * binary itself is protected (an immutable flag, a sticky directory).
    */
   dirWritable: boolean;
+  /** Whether the binary's directory has the sticky bit (mode 1000). */
+  dirSticky?: boolean;
   /** The user's home directory; undefined when HOME is unset. */
   homeDir?: string;
   /** Owner of the binary's directory; null when it cannot be read. */
   dirOwnerUid: number | null;
+  /** Owner of the binary; null when it cannot be read or does not exist. */
+  binaryOwnerUid?: number | null;
   currentUid: number | null;
   /** The invoking user's login name (SUDO_USER, else USER). */
   userName?: string;
+}
+
+/**
+ * Whether a sticky directory stops this user replacing the binary. In a
+ * sticky directory only the file's owner, the directory's owner and root may
+ * rename over a file (swamp-club#3822). A non-root process holding
+ * CAP_FOWNER may too; it is treated as blocked, and the hint still applies.
+ */
+export function stickyDirectoryBlocksReplace(
+  facts: PermissionDeniedFacts,
+): boolean {
+  const { binaryOwnerUid, currentUid, dirOwnerUid } = facts;
+  return facts.os !== "windows" && facts.dirSticky === true &&
+    binaryOwnerUid !== undefined && binaryOwnerUid !== null &&
+    currentUid !== null && currentUid !== 0 &&
+    binaryOwnerUid !== currentUid && dirOwnerUid !== currentUid;
 }
 
 function isWithin(parent: string, child: string): boolean {
@@ -136,11 +156,22 @@ export function permissionDeniedMessage(facts: PermissionDeniedFacts): string {
   }
   const dir = dirname(facts.binaryPath);
   const { dirOwnerUid, currentUid, homeDir } = facts;
+  const user = facts.userName || "$(whoami)";
+  if (stickyDirectoryBlocksReplace(facts)) {
+    return `${prefix} ${dir} is a sticky directory and the binary is owned ` +
+      `by another user (uid ${facts.binaryOwnerUid}), so only that user, ` +
+      `the directory's owner or root can replace it. Re-run with:\n\n` +
+      `  sudo swamp update\n\n` +
+      `or take ownership of the binary, then run swamp update without ` +
+      `sudo:\n\n` +
+      `  sudo chown ${user} ${facts.binaryPath}`;
+  }
   // Neither sudo nor an ownership change helps in the next two cases
   if (facts.dirWritable) {
     return `${prefix} The binary is protected against replacement even ` +
       `though ${dir} accepts new files — check it for an immutable flag ` +
-      `(chflags or chattr).`;
+      `(chflags or chattr), or, if ${dir} is a sticky directory, whether ` +
+      `another user owns the binary.`;
   }
   if (currentUid === 0) {
     return `${prefix} ${dir} does not accept new files even as root — ` +
@@ -160,7 +191,6 @@ export function permissionDeniedMessage(facts: PermissionDeniedFacts): string {
       `Make it writable, then run swamp update without sudo:\n\n` +
       `  chmod u+w ${dir}`;
   }
-  const user = facts.userName || "$(whoami)";
   return `${prefix} ${dir} is owned by another user (uid ${dirOwnerUid}), ` +
     `so swamp cannot replace the binary in it. Give the directory to your ` +
     `user, then run swamp update without sudo:\n\n` +
@@ -229,24 +259,64 @@ async function directoryAcceptsFiles(binaryPath: string): Promise<boolean> {
   return true;
 }
 
+/** Mode and owners of a binary and its directory; null when unreadable. */
+export interface BinaryOwnership {
+  dirMode: number | null;
+  dirOwnerUid: number | null;
+  binaryOwnerUid: number | null;
+}
+
+/** Reads the {@link BinaryOwnership} of `binaryPath`. */
+export type ReadBinaryOwnership = (
+  binaryPath: string,
+) => Promise<BinaryOwnership>;
+
+async function readBinaryOwnership(
+  binaryPath: string,
+): Promise<BinaryOwnership> {
+  const dir = await Deno.stat(dirname(binaryPath)).catch(() => null);
+  // The sticky rule applies to the directory entry, so a symlink's own owner
+  const binary = await Deno.lstat(binaryPath).catch(() => null);
+  return {
+    dirMode: dir?.mode ?? null,
+    dirOwnerUid: dir?.uid ?? null,
+    binaryOwnerUid: binary?.uid ?? null,
+  };
+}
+
+async function permissionDeniedFacts(
+  binaryPath: string,
+  dirWritable: boolean | undefined,
+  readOwnership: ReadBinaryOwnership,
+): Promise<PermissionDeniedFacts> {
+  const ownership = await readOwnership(binaryPath);
+  return {
+    os: Deno.build.os,
+    binaryPath,
+    dirWritable: dirWritable ?? await directoryAcceptsFiles(binaryPath),
+    dirSticky: ownership.dirMode !== null &&
+      (ownership.dirMode & 0o1000) !== 0,
+    homeDir: Deno.env.get("HOME"),
+    dirOwnerUid: ownership.dirOwnerUid,
+    binaryOwnerUid: ownership.binaryOwnerUid,
+    currentUid: currentUid(),
+    userName: Deno.env.get("SUDO_USER") ?? Deno.env.get("USER"),
+  };
+}
+
 /**
  * The permission-denied message for `binaryPath`, from the live directory
- * owner, user and home directory. `dirWritable` skips the directory probe
- * when the caller has just run it.
+ * mode, owners, user and home directory. `dirWritable` skips the directory
+ * probe when the caller has just run it.
  */
 export async function describePermissionDenied(
   binaryPath: string,
   dirWritable?: boolean,
+  readOwnership: ReadBinaryOwnership = readBinaryOwnership,
 ): Promise<string> {
-  return permissionDeniedMessage({
-    os: Deno.build.os,
-    binaryPath,
-    dirWritable: dirWritable ?? await directoryAcceptsFiles(binaryPath),
-    homeDir: Deno.env.get("HOME"),
-    dirOwnerUid: await directoryOwnerUid(binaryPath),
-    currentUid: currentUid(),
-    userName: Deno.env.get("SUDO_USER") ?? Deno.env.get("USER"),
-  });
+  return permissionDeniedMessage(
+    await permissionDeniedFacts(binaryPath, dirWritable, readOwnership),
+  );
 }
 
 /**
@@ -256,15 +326,18 @@ export class UpdateService {
   private readonly checker: UpdateChecker;
   private readonly currentVersion: string;
   private readonly binaryPath: string;
+  private readonly readOwnership: ReadBinaryOwnership;
 
   constructor(
     checker: UpdateChecker,
     currentVersion: string,
     binaryPath: string,
+    readOwnership: ReadBinaryOwnership = readBinaryOwnership,
   ) {
     this.checker = checker;
     this.currentVersion = currentVersion;
     this.binaryPath = binaryPath;
+    this.readOwnership = readOwnership;
   }
 
   private devBuildWarning(): string | undefined {
@@ -315,7 +388,9 @@ export class UpdateService {
    *
    * Every OS installs by renaming a new file into the binary's directory, so
    * only write access to that directory matters — not to the binary itself,
-   * which may be read-only or owned by another user (swamp-club#3817).
+   * which may be read-only or owned by another user (swamp-club#3817) —
+   * unless the directory is sticky, where another user's binary cannot be
+   * renamed over (swamp-club#3822).
    */
   async checkWritePermission(): Promise<void> {
     const probeFile = join(
@@ -328,11 +403,29 @@ export class UpdateService {
     } catch (error) {
       if (error instanceof Deno.errors.PermissionDenied) {
         throw markErrorPaths(
-          new UserError(await describePermissionDenied(this.binaryPath, false)),
+          new UserError(
+            await describePermissionDenied(
+              this.binaryPath,
+              false,
+              this.readOwnership,
+            ),
+          ),
           [this.binaryPath],
         );
       }
       // Other errors (e.g. NotFound, disk full) are not permission issues
+      return;
+    }
+    const facts = await permissionDeniedFacts(
+      this.binaryPath,
+      true,
+      this.readOwnership,
+    );
+    if (stickyDirectoryBlocksReplace(facts)) {
+      throw markErrorPaths(
+        new UserError(permissionDeniedMessage(facts)),
+        [this.binaryPath],
+      );
     }
   }
 
