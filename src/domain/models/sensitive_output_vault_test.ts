@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import {
+  reliesOnVaultFallback,
   resolveSensitiveOutputVault,
   sensitiveOutputTargets,
   sensitiveOutputTargetVaults,
@@ -173,4 +174,66 @@ Deno.test("resolveSensitiveOutputVault: an empty override vaultName is ignored, 
     ),
     ["spec-vault"],
   );
+});
+
+Deno.test("reliesOnVaultFallback: true only when a sensitive output names no vault of its own", () => {
+  const spec = (
+    schema: z.ZodObject<z.ZodRawShape>,
+    extra: Partial<ResourceOutputSpec> = {},
+  ): ResourceOutputSpec => ({
+    schema,
+    lifetime: "infinite",
+    garbageCollection: 10,
+    ...extra,
+  });
+  const unnamedField = z.object({ k: z.string().meta({ sensitive: true }) });
+  const namedField = z.object({
+    k: z.string().meta({ sensitive: true, vaultName: "erp" }),
+  });
+
+  assertEquals(
+    reliesOnVaultFallback({ c: spec(unnamedField) }, undefined),
+    true,
+  );
+  assertEquals(
+    reliesOnVaultFallback({ c: spec(namedField) }, undefined),
+    false,
+  );
+  assertEquals(
+    reliesOnVaultFallback(
+      { c: spec(unnamedField, { vaultName: "s" }) },
+      undefined,
+    ),
+    false,
+  );
+  assertEquals(
+    reliesOnVaultFallback({ c: spec(unnamedField) }, [
+      { specName: "c", vaultName: "ovr" },
+    ]),
+    false,
+  );
+  // An empty override name is ignored, so the field still falls back.
+  assertEquals(
+    reliesOnVaultFallback({ c: spec(unnamedField) }, [
+      { specName: "c", vaultName: "" },
+    ]),
+    true,
+  );
+  // A sensitiveOutput spec falls back for the fields only known at write time,
+  // even when every declared sensitive field names its own vault.
+  assertEquals(
+    reliesOnVaultFallback(
+      { c: spec(namedField, { sensitiveOutput: true }) },
+      undefined,
+    ),
+    true,
+  );
+  assertEquals(
+    reliesOnVaultFallback(
+      { p: spec(z.object({ x: z.string() })) },
+      undefined,
+    ),
+    false,
+  );
+  assertEquals(reliesOnVaultFallback(undefined, undefined), false);
 });

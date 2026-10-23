@@ -31,6 +31,7 @@ type DefStub = {
   id: string;
   name: string;
   globalArguments: Record<string, unknown>;
+  resources?: Record<string, { vaultName?: string }>;
 };
 
 function makeDeps(
@@ -195,4 +196,133 @@ Deno.test("doctorVaults: sensitiveOutput flag triggers finding without vault", a
     assertEquals(completed.data.findings.length, 1);
     assertEquals(completed.data.findings[0].definitionName, "all-sensitive");
   }
+});
+
+const sensitiveModel = () => ({
+  resources: {
+    creds: {
+      schema: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  },
+});
+
+async function completedData(
+  deps: DoctorVaultsDeps,
+) {
+  const events = await collect<DoctorVaultsEvent>(
+    doctorVaults(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  return completed.data;
+}
+
+function withVaultState(
+  deps: DoctorVaultsDeps,
+  state: Awaited<ReturnType<NonNullable<DoctorVaultsDeps["vaultState"]>>>,
+): DoctorVaultsDeps {
+  return { ...deps, vaultState: () => Promise.resolve(state) };
+}
+
+const oneSensitiveDef = [{
+  definition: { id: "d1", name: "pve-auth", globalArguments: {} },
+  type: "test/sensitive",
+}];
+
+Deno.test("doctorVaults: fallback warning with several vaults and no default vault", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, sensitiveModel, true),
+    { userVaultNames: ["infra", "local-secrets"] },
+  ));
+
+  assertEquals(data.findings, []);
+  assertEquals(data.fallbackWarning, {
+    fallbackVault: "infra",
+    userVaults: ["infra", "local-secrets"],
+    definitions: [{
+      definitionId: "d1",
+      definitionName: "pve-auth",
+      type: "test/sensitive",
+    }],
+  });
+});
+
+Deno.test("doctorVaults: fallback warning names a defaultVault that is not registered", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, sensitiveModel, true),
+    {
+      userVaultNames: ["infra", "local-secrets"],
+      configuredDefaultVault: "gone",
+    },
+  ));
+
+  assertEquals(data.fallbackWarning?.unregisteredDefaultVault, "gone");
+  assertEquals(data.fallbackWarning?.fallbackVault, "infra");
+});
+
+Deno.test("doctorVaults: no fallback warning when a default vault is in effect", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, sensitiveModel, true),
+    {
+      userVaultNames: ["infra", "local-secrets"],
+      defaultVaultName: "local-secrets",
+      configuredDefaultVault: "local-secrets",
+    },
+  ));
+
+  assertEquals(data.fallbackWarning, undefined);
+});
+
+Deno.test("doctorVaults: no fallback warning with a single vault", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, sensitiveModel, true),
+    { userVaultNames: ["local-secrets"] },
+  ));
+
+  assertEquals(data.fallbackWarning, undefined);
+});
+
+Deno.test("doctorVaults: no fallback warning when every sensitive output names its vault", async () => {
+  const named = makeDeps(
+    [{
+      definition: {
+        id: "d1",
+        name: "pinned",
+        globalArguments: {},
+        // A definition-level override naming the vault for the spec.
+        resources: { creds: { vaultName: "local-secrets" } },
+      } as DefStub,
+      type: "test/sensitive",
+    }],
+    sensitiveModel,
+    true,
+  );
+  const data = await completedData(withVaultState(named, {
+    userVaultNames: ["infra", "local-secrets"],
+  }));
+
+  assertEquals(data.fallbackWarning, undefined);
+});
+
+Deno.test("doctorVaults: no fallback warning without sensitive outputs", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, () => ({ resources: {} }), true),
+    { userVaultNames: ["infra", "local-secrets"] },
+  ));
+
+  assertEquals(data.fallbackWarning, undefined);
+});
+
+Deno.test("doctorVaults: an empty defaultVault is reported as unset, not as a missing vault", async () => {
+  const data = await completedData(withVaultState(
+    makeDeps(oneSensitiveDef, sensitiveModel, true),
+    { userVaultNames: ["infra", "local-secrets"], configuredDefaultVault: "" },
+  ));
+
+  assertEquals(data.fallbackWarning?.fallbackVault, "infra");
+  assertEquals("unregisteredDefaultVault" in data.fallbackWarning!, false);
 });

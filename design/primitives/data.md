@@ -199,7 +199,14 @@ derived `type/modelId/method/spec/instance/field.path`, where `instance` is the
 data name plus any vary suffix in its key form: kept as written when it is at
 most 32 lowercase letters, digits and `-`, hashed otherwise
 ([vaults.md §Vault Key Naming](./vaults.md#vault-key-naming)). The vault is
-`field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`.
+`field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`. The
+default vault is the one `defaultVault` in `.swamp.yaml` names, when it is
+registered. The first user vault is the first in load order: vault configs are
+read from `vaults/<type>/<id>.yaml` sorted by path segment, so by vault type,
+then id (the order of `swamp vault list`), not by creation order. That order
+changed in swamp-club#3067, which replaced filesystem listing order with the
+sort, so a repo with several vaults sets `defaultVault`; `swamp doctor vaults`
+warns when one does not (swamp-club#3805).
 `modelRequiresVault()` (`data_writer.ts`) tells callers up front whether a
 behavior has such a spec. With no vault configured, the write fails rather than
 saving the secret. The whole serialised payload then passes through the
