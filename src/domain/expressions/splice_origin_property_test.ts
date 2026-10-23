@@ -20,8 +20,17 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { extractExpressions, readSetMap } from "./expression_parser.ts";
-import { indexPath, keyPath, ProvenanceMap } from "./provenance_map.ts";
-import { attachBindingProvenance, spliceOrigin } from "./splice_origin.ts";
+import {
+  indexPath,
+  keyPath,
+  keySegment,
+  ProvenanceMap,
+} from "./provenance_map.ts";
+import {
+  attachBindingProvenance,
+  bindingMapAt,
+  spliceOrigin,
+} from "./splice_origin.ts";
 
 // Keys that stress path spelling: plain, dotted, bracketed, quoted, empty.
 const key = fc.constantFrom(
@@ -141,5 +150,163 @@ Deno.test("spliceOrigin: the authored raws of a computed read match the unskippe
       },
     ),
     { numRuns: 2000 },
+  );
+});
+
+// Behavior names and fields as the model namespace binds them: names that
+// need quoting in a path, definition fields beside data fields.
+const modelName = fc.constantFrom("db", "web.1", "a[0]", 'q"x', "", "[x");
+const modelField = fc.constantFrom(
+  "definition",
+  "input",
+  "resource",
+  "file",
+  "execution",
+  "x.y",
+);
+const modelNamespace = fc.array(
+  fc.tuple(
+    modelName,
+    fc.oneof(
+      fc.array(fc.tuple(modelField, tree), { maxLength: 4 }),
+      fc.constantFrom(null, "text"),
+    ),
+    fc.boolean(),
+  ),
+  { maxLength: 4 },
+);
+
+/**
+ * The namespace twice: plain, and with every data field behind a getter
+ * that counts its reads, as ModelResolver.buildContext puts loaders on
+ * resources and files. An aliased entry is bound under a second key, as a
+ * behavior is under its id.
+ */
+function buildModelNamespace(
+  entries: [string, [string, unknown][] | null | string, boolean][],
+) {
+  const plain: Record<string, unknown> = {};
+  const lazy: Record<string, unknown> = {};
+  const loads = { count: 0 };
+  entries.forEach(([name, fields, alias], i) => {
+    let plainEntry: unknown = fields;
+    let lazyEntry: unknown = fields;
+    if (Array.isArray(fields)) {
+      const p: Record<string, unknown> = {};
+      const l: Record<string, unknown> = {};
+      for (const [field, value] of fields) {
+        p[field] = value;
+        if (field === "definition" || field === "input") {
+          l[field] = value;
+        } else {
+          Object.defineProperty(l, field, {
+            enumerable: true,
+            configurable: true,
+            get() {
+              loads.count++;
+              return value;
+            },
+          });
+        }
+      }
+      plainEntry = p;
+      lazyEntry = l;
+    }
+    plain[name] = plainEntry;
+    lazy[name] = lazyEntry;
+    if (alias) {
+      plain[`id-${i}`] = plainEntry;
+      lazy[`id-${i}`] = lazyEntry;
+    }
+  });
+  return { plain, lazy, loads };
+}
+
+/** The model namespace map as built one withWholeData call per path. */
+function incrementalModelMap(
+  model: Record<string, unknown>,
+  only?: string,
+): ProvenanceMap {
+  let map = ProvenanceMap.authored();
+  for (const name of only === undefined ? Object.keys(model) : [only]) {
+    const entry = model[name];
+    if (entry === null || typeof entry !== "object") continue;
+    for (const field of Object.keys(entry)) {
+      if (field === "definition" || field === "input") continue;
+      map = map.withWholeData(
+        only === undefined
+          ? keyPath(keySegment(name), field)
+          : keySegment(field),
+      );
+    }
+  }
+  return map;
+}
+
+Deno.test("spliceOrigin: a model read matches the unskipped scan and reads no data field", () => {
+  fc.assert(
+    fc.property(
+      modelNamespace,
+      // Computed reads of the model root, with whether they also read a
+      // namespace that is always data.
+      fc.constantFrom<[string, boolean]>(
+        ['model.db.input.?url.orValue("") + ""', false],
+        ["string(size(model))", false],
+        ['model[env.K].definition + ""', true],
+        // Unparsable text: every authored root is scanned.
+        ["model.(", true],
+      ),
+      tree,
+      (entries, [celExpression, readsOtherData], value) => {
+        const { plain, lazy, loads } = buildModelNamespace(entries);
+        const context = { model: lazy, env: {} };
+        assertEquals(
+          bindingMapAt(context, "model", []).toData(),
+          incrementalModelMap(plain).toData(),
+        );
+        for (const name of Object.keys(plain)) {
+          assertEquals(
+            bindingMapAt(context, "model", [name]).toData(),
+            incrementalModelMap(plain, name).toData(),
+          );
+        }
+        const origin = spliceOrigin(celExpression, context, value);
+        const modelMap = incrementalModelMap(plain);
+        if (modelMap.isAuthored && !readsOtherData) {
+          assertEquals(origin.authoredRaws, undefined);
+          assertEquals(origin.map.isAuthored, true);
+        } else {
+          const expected = referenceRaws(plain, modelMap);
+          for (const expr of extractExpressions(celExpression)) {
+            expected.add(expr.raw);
+          }
+          assertEquals(
+            [...origin.authoredRaws ?? []].sort(),
+            [...expected].sort(),
+          );
+          assertEquals(
+            origin.map.toData(),
+            readSetMap(value, expected).toData(),
+          );
+        }
+        // A direct read of one behavior carries its map, scanning the
+        // value it read without touching that behavior's data fields.
+        for (const name of Object.keys(plain)) {
+          const direct = spliceOrigin(
+            `model[${JSON.stringify(name)}]`,
+            context,
+            lazy[name],
+          );
+          const map = incrementalModelMap(plain, name);
+          assertEquals(direct.map.toData(), map.toData());
+          assertEquals(
+            [...direct.authoredRaws ?? []].sort(),
+            map.isAuthored ? [] : [...referenceRaws(plain[name], map)].sort(),
+          );
+        }
+        assertEquals(loads.count, 0);
+      },
+    ),
+    { numRuns: 1000 },
   );
 });
