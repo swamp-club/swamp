@@ -52,6 +52,10 @@ Deno.test("run method writes expected resource", async () => {
 | `storedResources` | `{}`                | Pre-seed data for `readResource` calls                |
 | `onEvent`         | captures only       | Optional callback for domain events                   |
 
+`globalArgs` accepts any object type, including an interface, and
+`context.globalArgs` comes back as that type, so the context passes to an
+`execute` typed with the same global arguments.
+
 ## CEL Evaluation in Tests
 
 `createModelTestContext` provides `ctx.createCelEnvironment()` — a working
@@ -70,12 +74,17 @@ The return value includes helpers to inspect what happened during execution:
 const {
   context, // MethodContext to pass to execute()
   getWrittenResources, // Returns Array<{ specName, name, data, handle }>
-  getWrittenFiles, // Returns Array<{ specName, name, content, handle }>
+  getWrittenFiles, // Returns Array<{ specName, name, content, text?, handle }>
   getLogs, // Returns Array<{ level, message, args }>
   getLogsByLevel, // (level) => filtered log entries
   getEvents, // Returns Array<{ type, ...fields }>
 } = createModelTestContext();
 ```
+
+`getWrittenFiles()` entries hold the written bytes in `content` (a
+`Uint8Array`). Files written with `writeText`, or with `writeLine` and then
+`finalize`, also carry the string in `text`; for `writeAll` and `writeStream`,
+decode `content` with `new TextDecoder().decode(content)`.
 
 ## Testing CRUD Lifecycle Models
 

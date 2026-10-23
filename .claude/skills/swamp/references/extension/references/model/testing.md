@@ -21,18 +21,27 @@ Install: `deno add jsr:@swamp-club/swamp-testing`
 | `storedResources` | `{}`                | Pre-seed data for `readResource` calls    |
 | `onEvent`         | captures only       | Callback for domain events                |
 
+`globalArgs` accepts any object type, including an interface, and
+`context.globalArgs` comes back as that type, so the context passes to an
+`execute` typed with the same global arguments.
+
 ## Inspection Helpers
 
 ```typescript
 const {
   context, // MethodContext to pass to execute()
   getWrittenResources, // Array<{ specName, name, data, handle }>
-  getWrittenFiles, // Array<{ specName, name, content, handle }>
+  getWrittenFiles, // Array<{ specName, name, content, text?, handle }>
   getLogs, // Array<{ level, message, args }>
   getLogsByLevel, // (level) => filtered logs
   getEvents, // Array<{ type, ...fields }>
 } = createModelTestContext();
 ```
+
+`getWrittenFiles()` entries hold the written bytes in `content` (a
+`Uint8Array`). Files written with `writeText`, or with `writeLine` and then
+`finalize`, also carry the string in `text`; for `writeAll` and `writeStream`,
+decode `content` with `new TextDecoder().decode(content)`.
 
 ## Testing CRUD Lifecycle Behaviors
 

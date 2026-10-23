@@ -41,6 +41,12 @@ export interface WrittenFile {
   specName: string;
   name: string;
   content: Uint8Array;
+  /**
+   * The written text, for files written with `writeText`, or with `writeLine`
+   * and then `finalize`. Unset for `writeAll` and `writeStream`, whose bytes
+   * need not be text — decode `content` for those.
+   */
+  text?: string;
   handle: DataHandle;
 }
 
@@ -51,10 +57,17 @@ export interface CapturedLog {
   args: unknown[];
 }
 
-/** Options for creating a test context. */
-export interface ModelTestContextOptions {
+/**
+ * Options for creating a test context.
+ *
+ * `TGlobalArgs` is the type of `globalArgs`. It accepts any object type,
+ * including interfaces, and is usually inferred from the `globalArgs` option.
+ */
+export interface ModelTestContextOptions<
+  TGlobalArgs = Record<string, unknown>,
+> {
   /** Global arguments passed to the execute function (default: {}). */
-  globalArgs?: Record<string, unknown>;
+  globalArgs?: TGlobalArgs;
   /** Definition metadata overrides. */
   definition?: Partial<DefinitionInfo>;
   /** Method name (default: "run"). */
@@ -82,9 +95,9 @@ export interface ModelTestContextOptions {
 }
 
 /** The return value from createModelTestContext. */
-export interface ModelTestContextResult {
+export interface ModelTestContextResult<TGlobalArgs = Record<string, unknown>> {
   /** The MethodContext to pass to your execute function. */
-  context: MethodContext;
+  context: MethodContext<TGlobalArgs>;
   /** Returns all resources written via writeResource during execution. */
   getWrittenResources(): WrittenResource[];
   /** Returns all files written via createFileWriter during execution. */
@@ -120,10 +133,14 @@ export interface ModelTestContextResult {
  *   assertEquals(resources[0].data.message, "HELLO");
  * });
  * ```
+ *
+ * `context.globalArgs` takes the type of the `globalArgs` option, so an
+ * interface-typed value comes back as that interface. A type argument given
+ * without a `globalArgs` value still yields an empty object at runtime.
  */
-export function createModelTestContext(
-  options?: ModelTestContextOptions,
-): ModelTestContextResult {
+export function createModelTestContext<TGlobalArgs = Record<string, unknown>>(
+  options?: ModelTestContextOptions<TGlobalArgs>,
+): ModelTestContextResult<TGlobalArgs> {
   const writtenResources: WrittenResource[] = [];
   const writtenFiles: WrittenFile[] = [];
   const logs: CapturedLog[] = [];
@@ -222,9 +239,9 @@ export function createModelTestContext(
     const dataId = allocateDataId();
     const lines: string[] = [];
 
-    function capture(content: Uint8Array): DataHandle {
+    function capture(content: Uint8Array, text?: string): DataHandle {
       const handle = makeHandle(specName, name, "file", content.length, dataId);
-      writtenFiles.push({ specName, name, content, handle });
+      writtenFiles.push({ specName, name, content, text, handle });
       return handle;
     }
 
@@ -236,7 +253,7 @@ export function createModelTestContext(
       },
       writeText(text: string): Promise<DataHandle> {
         return Promise.resolve(
-          capture(new TextEncoder().encode(text)),
+          capture(new TextEncoder().encode(text), text),
         );
       },
       writeLine(line: string): Promise<void> {
@@ -267,8 +284,8 @@ export function createModelTestContext(
         return Promise.resolve(`/tmp/swamp-test/${dataId}`);
       },
       finalize(): Promise<DataHandle> {
-        const content = new TextEncoder().encode(lines.join("\n"));
-        return Promise.resolve(capture(content));
+        const text = lines.join("\n");
+        return Promise.resolve(capture(new TextEncoder().encode(text), text));
       },
     };
   };
@@ -303,10 +320,10 @@ export function createModelTestContext(
     options?.onEvent?.(event);
   };
 
-  const context: MethodContext = {
+  const context: MethodContext<TGlobalArgs> = {
     signal: options?.signal ?? new AbortController().signal,
     repoDir: options?.repoDir ?? "/tmp/swamp-test",
-    globalArgs: options?.globalArgs ?? {},
+    globalArgs: options?.globalArgs ?? ({} as TGlobalArgs),
     definition,
     methodName: options?.methodName ?? "run",
     traceHeaders: options?.traceHeaders,

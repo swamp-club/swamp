@@ -19,6 +19,7 @@
 
 import { assertEquals, assertExists, assertThrows } from "@std/assert";
 import { createModelTestContext } from "./test_context.ts";
+import type { MethodContext } from "./types.ts";
 
 Deno.test("createModelTestContext: returns context with default values", () => {
   const { context } = createModelTestContext();
@@ -446,4 +447,86 @@ Deno.test("createModelTestContext: readResource uses instanceName not specName",
   assertEquals(await context.readResource("settings"), { debug: true });
   assertEquals(await context.readResource("state"), null);
   assertEquals(await context.readResource("config"), null);
+});
+
+// swamp-club#3849: context.globalArgs takes the type of the globalArgs option.
+// These assignments fail `deno check` if the inference regresses.
+interface InterfaceGlobalArgs {
+  appId: number;
+  apiKey: string;
+}
+
+Deno.test("createModelTestContext: accepts interface-typed globalArgs and returns them typed", () => {
+  const globalArgs: InterfaceGlobalArgs = { appId: 480, apiKey: "k" };
+  const { context } = createModelTestContext({ globalArgs });
+
+  const typed: InterfaceGlobalArgs = context.globalArgs;
+  assertEquals(typed, { appId: 480, apiKey: "k" });
+});
+
+Deno.test("createModelTestContext: globalArgs stays Record<string, unknown> when omitted", () => {
+  const { context } = createModelTestContext();
+
+  const untyped: Record<string, unknown> = context.globalArgs;
+  assertEquals(untyped, {});
+});
+
+Deno.test("createModelTestContext: context passes to execute functions typed narrow or default", async () => {
+  const narrow = (
+    ctx: { globalArgs: { region: string; bucket: string } },
+  ): Promise<string> =>
+    Promise.resolve(`${ctx.globalArgs.region}/${ctx.globalArgs.bucket}`);
+  const byDefault = (ctx: MethodContext): Promise<unknown> =>
+    Promise.resolve(ctx.globalArgs.region);
+
+  const { context } = createModelTestContext({
+    globalArgs: { region: "us-east-1", bucket: "my-bucket" },
+  });
+
+  assertEquals(await narrow(context), "us-east-1/my-bucket");
+  assertEquals(await byDefault(context), "us-east-1");
+});
+
+// swamp-club#3847: text writes expose the string alongside the bytes.
+Deno.test("createModelTestContext: writeText records text beside content", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  await context.createFileWriter("log", "out").writeText("hello");
+
+  const [file] = getWrittenFiles();
+  assertEquals(file.text, "hello");
+  assertEquals(file.content, new TextEncoder().encode("hello"));
+});
+
+Deno.test("createModelTestContext: writeLine + finalize records the joined text", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  const writer = context.createFileWriter("log", "lines");
+  await writer.writeLine("line 1");
+  await writer.writeLine("line 2");
+  await writer.finalize();
+
+  assertEquals(getWrittenFiles()[0].text, "line 1\nline 2");
+});
+
+Deno.test("createModelTestContext: writeAll and writeStream leave text unset", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  await context.createFileWriter("bin", "all").writeAll(
+    new Uint8Array([1, 2, 3]),
+  );
+  await context.createFileWriter("bin", "stream").writeStream(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("streamed"));
+        controller.close();
+      },
+    }),
+  );
+
+  const files = getWrittenFiles();
+  assertEquals(files.length, 2);
+  assertEquals(files[0].text, undefined);
+  assertEquals(files[1].text, undefined);
+  assertEquals(new TextDecoder().decode(files[1].content), "streamed");
 });
