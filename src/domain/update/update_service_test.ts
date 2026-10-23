@@ -29,6 +29,7 @@ import {
   needlessRootUpdateWarning,
   parseVersionFromRedirectUrl,
   permissionDeniedMessage,
+  stickyDirectoryBlocksReplace,
   type UpdateChecker,
   UpdateService,
 } from "./update_service.ts";
@@ -478,6 +479,92 @@ Deno.test("update proceeds when binary does not exist yet", async () => {
   assertEquals(result.status, "up_to_date");
 });
 
+Deno.test({
+  name:
+    "update replaces the user's own binary in a sticky directory (swamp-club#3822)",
+  ignore: modeBitsIgnored,
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir();
+    try {
+      await Deno.chmod(tempDir, 0o1777);
+      const binaryPath = join(tempDir, "swamp");
+      await Deno.writeTextFile(binaryPath, "binary");
+      const calls: MockCheckerCalls = {
+        downloadUrls: [],
+        checksumUrls: [],
+        expectedChecksums: [],
+      };
+      const redirectUrl =
+        "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+      const service = new UpdateService(
+        createMockChecker(redirectUrl, calls),
+        "20260207.123456.0-sha.abc12345",
+        binaryPath,
+      );
+
+      const result = await service.update(platform);
+
+      assertEquals(result.status, "updated");
+      assertEquals(calls.downloadUrls, [redirectUrl]);
+    } finally {
+      await Deno.chmod(tempDir, 0o755).catch(() => {});
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "update rejects before downloading when a sticky directory holds another user's binary (swamp-club#3822)",
+  ignore: modeBitsIgnored,
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir();
+    try {
+      const binaryPath = join(tempDir, "swamp");
+      await Deno.writeTextFile(binaryPath, "binary");
+      const otherUid = Deno.uid()! + 1;
+      const calls: MockCheckerCalls = {
+        downloadUrls: [],
+        checksumUrls: [],
+        expectedChecksums: [],
+      };
+      const redirectUrl =
+        "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+      // Only root can give a file to another user, so the owners are faked
+      const service = new UpdateService(
+        createMockChecker(redirectUrl, calls),
+        "20260207.123456.0-sha.abc12345",
+        binaryPath,
+        () =>
+          Promise.resolve({
+            dirMode: 0o41777,
+            dirOwnerUid: 0,
+            binaryOwnerUid: otherUid,
+          }),
+      );
+
+      const error = await assertRejects(
+        () => service.update(platform),
+        UserError,
+      );
+
+      assertStringIncludes(
+        error.message,
+        `Cannot update ${binaryPath}: permission denied.`,
+      );
+      assertStringIncludes(error.message, `${tempDir} is a sticky directory`);
+      assertStringIncludes(error.message, `(uid ${otherUid})`);
+      assertStringIncludes(error.message, "sudo swamp update");
+      assertStringIncludes(error.message, `sudo chown`);
+      assert(!error.message.includes("immutable flag"));
+      assertEquals(calls.checksumUrls, []);
+      assertEquals(calls.downloadUrls, []);
+    } finally {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
 // --- permissionDeniedMessage tests ---
 
 const posixFacts = {
@@ -611,6 +698,85 @@ Deno.test("permissionDeniedMessage: a HOME subdirectory whose name starts with .
     dirOwnerUid: 0,
   });
   assertStringIncludes(message, "sudo chown alice /Users/alice/..tools");
+});
+
+const stickyFacts = {
+  ...posixFacts,
+  binaryPath: "/opt/shared/swamp",
+  dirWritable: true,
+  dirSticky: true,
+  dirOwnerUid: 0,
+  binaryOwnerUid: 502,
+};
+
+Deno.test("permissionDeniedMessage: another user's binary in a sticky directory gives sudo and take-ownership fixes", () => {
+  const message = permissionDeniedMessage(stickyFacts);
+  assertStringIncludes(
+    message,
+    "/opt/shared is a sticky directory and the binary is owned by another user (uid 502)",
+  );
+  assertStringIncludes(message, "sudo swamp update");
+  assertStringIncludes(message, "sudo chown alice /opt/shared/swamp");
+  assert(!message.includes("immutable flag"));
+});
+
+Deno.test("stickyDirectoryBlocksReplace: blocks only a non-root user who owns neither the binary nor the directory", () => {
+  assertEquals(stickyDirectoryBlocksReplace(stickyFacts), true);
+  // The binary's owner, the directory's owner and root may rename over it
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, binaryOwnerUid: 501 }),
+    false,
+  );
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, dirOwnerUid: 501 }),
+    false,
+  );
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, currentUid: 0 }),
+    false,
+  );
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, dirSticky: false }),
+    false,
+  );
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, binaryOwnerUid: null }),
+    false,
+  );
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, currentUid: null }),
+    false,
+  );
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, os: "windows" }),
+    false,
+  );
+});
+
+Deno.test("permissionDeniedMessage: a sticky directory with an unknown binary owner names both causes", () => {
+  const message = permissionDeniedMessage({
+    ...stickyFacts,
+    binaryOwnerUid: null,
+  });
+  assertStringIncludes(message, "protected against replacement");
+  assertStringIncludes(message, "immutable flag (chflags or chattr)");
+  assertStringIncludes(message, "/opt/shared is a sticky directory");
+  assert(!message.includes("sudo"));
+});
+
+Deno.test("permissionDeniedMessage: a sticky directory that refuses new files gives the directory-ownership fix", () => {
+  const message = permissionDeniedMessage({
+    ...stickyFacts,
+    dirWritable: false,
+  });
+  // Owning the binary would not let the user create files in /opt/shared
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, dirWritable: false }),
+    false,
+  );
+  assertStringIncludes(message, "Re-run with: sudo swamp update");
+  assert(!message.includes("sticky"));
+  assert(!message.includes("sudo chown alice /opt/shared/swamp"));
 });
 
 // --- needlessRootUpdateWarning tests ---
