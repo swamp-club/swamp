@@ -49,8 +49,13 @@ swamp repo init --no-vault --json
 
 `--force` keeps an existing vault named `default` (`"created": false`) and the
 `defaultVault` already in `.swamp.yaml`. `swamp repo upgrade` never adds the
-vault to an existing repo. The vault's key and secrets stay on the machine
-(`.swamp/secrets/`), so a clone starts with an empty `default` vault.
+vault, or `defaultVault`, to an existing repo. The vault's key and secrets stay
+on the machine (`.swamp/secrets/`), so a clone starts with an empty `default`
+vault.
+
+Without `defaultVault`, sensitive outputs go to the first vault by type, then
+id; `swamp doctor vaults` warns when a repo has several vaults and no
+`defaultVault`.
 
 ### Multi-tool repos
 

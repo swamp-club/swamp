@@ -233,7 +233,7 @@ swamp vault remove trip-planner --yes --json
 - Deletes the config, then a `local_encryption` vault's secrets and key for
   good. Other types lose only the local config.
 - Refuses the default vault (`defaultVault` in `.swamp.yaml`, or the first vault
-  when none is set); change `defaultVault` first.
+  by type, then id, when none is set); change `defaultVault` first.
 - Refuses a vault that definitions, workflows or the datastore config reference;
   remove the references, or pass `--force`. Unlike `vault delete --force`, this
   `--force` does not skip the prompt.
@@ -445,6 +445,13 @@ The actual value is stored in the vault.
 - `vaultKey` on field metadata — override the auto-generated vault key
 
 A vault must be configured or an error is thrown at write time.
+
+**Which vault:** the field's `vaultName`, else a data output override's, else
+the spec's, else `defaultVault` from `.swamp.yaml`, else the first vault by
+vault type, then id: the order of `swamp vault list`, not creation order. A repo
+with more than one vault should set `defaultVault`; `swamp doctor vaults --json`
+reports a `fallbackWarning` naming the vault the fallback picks when it does
+not.
 
 See the **swamp-extension** skill for full schema examples.
 

@@ -105,39 +105,80 @@ export function sensitiveOutputTargets(
   vaults: SensitiveOutputVaultConfig,
 ): SensitiveOutputTarget[] {
   const targets = new Map<string, SensitiveOutputTarget>();
+  for (
+    const { choice, key } of sensitiveOutputChoices(
+      resources,
+      dataOutputOverrides,
+    )
+  ) {
+    const vaultName = resolveSensitiveOutputVault(choice, vaults);
+    if (vaultName === undefined) continue;
+    const id = `${vaultName}\0${key === undefined ? "\0" : key}`;
+    if (!targets.has(id)) {
+      targets.set(
+        id,
+        key === undefined ? { vaultName } : { vaultName, vaultKey: key },
+      );
+    }
+  }
+  return [...targets.values()];
+}
+
+/**
+ * Whether any sensitive output of `resources` names no vault of its own (no
+ * field, override or spec `vaultName`), so it is stored in the default vault,
+ * or in the first user vault when no default vault is in effect.
+ */
+export function reliesOnVaultFallback(
+  resources: Record<string, ResourceOutputSpec> | undefined,
+  dataOutputOverrides:
+    | ReadonlyArray<{ specName: string; vaultName?: string }>
+    | undefined,
+): boolean {
+  const noVaults: SensitiveOutputVaultConfig = {
+    getDefaultVaultName: () => undefined,
+    getUserVaultNames: () => [],
+  };
+  return sensitiveOutputChoices(resources, dataOutputOverrides).some(
+    ({ choice }) => resolveSensitiveOutputVault(choice, noVaults) === undefined,
+  );
+}
+
+/**
+ * The vault choice of every sensitive output of `resources`: one per
+ * sensitive field, with the field's own key, plus one for a
+ * `sensitiveOutput` spec, whose fields are only known at write time.
+ */
+function sensitiveOutputChoices(
+  resources: Record<string, ResourceOutputSpec> | undefined,
+  dataOutputOverrides:
+    | ReadonlyArray<{ specName: string; vaultName?: string }>
+    | undefined,
+): { choice: SensitiveOutputVaultChoice; key?: string }[] {
+  const choices: { choice: SensitiveOutputVaultChoice; key?: string }[] = [];
   for (const [specName, spec] of Object.entries(resources ?? {})) {
     const fields = extractSensitiveFields(spec.schema);
     if (!spec.sensitiveOutput && fields.length === 0) continue;
     const overrideVaultName = dataOutputOverrides?.find((o) =>
       o.specName === specName
     )?.vaultName;
-    const choices: { choice: SensitiveOutputVaultChoice; key?: string }[] =
-      fields.map((field) => ({
+    for (const field of fields) {
+      choices.push({
         choice: {
           fieldVaultName: field.vaultName,
           overrideVaultName,
           specVaultName: spec.vaultName,
         },
         key: field.vaultKey,
-      }));
+      });
+    }
     if (spec.sensitiveOutput) {
       choices.push({
         choice: { overrideVaultName, specVaultName: spec.vaultName },
       });
     }
-    for (const { choice, key } of choices) {
-      const vaultName = resolveSensitiveOutputVault(choice, vaults);
-      if (vaultName === undefined) continue;
-      const id = `${vaultName}\0${key === undefined ? "\0" : key}`;
-      if (!targets.has(id)) {
-        targets.set(
-          id,
-          key === undefined ? { vaultName } : { vaultName, vaultKey: key },
-        );
-      }
-    }
   }
-  return [...targets.values()];
+  return choices;
 }
 
 /**

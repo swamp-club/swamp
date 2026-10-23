@@ -50,6 +50,46 @@ function renderUnresolvedLog(data: DoctorVaultsData): void {
   }
 }
 
+function renderFallbackWarningLog(data: DoctorVaultsData): void {
+  const warning = data.fallbackWarning;
+  if (!warning) {
+    return;
+  }
+  writeOutput(
+    `\n${yellow("⚠")} ${
+      bold(
+        `Sensitive outputs without a vault of their own are stored in '${warning.fallbackVault}'`,
+      )
+    }${
+      warning.unregisteredDefaultVault === undefined
+        ? ` ${dim("(defaultVault is not set)")}`
+        : ""
+    }`,
+  );
+  if (warning.unregisteredDefaultVault !== undefined) {
+    writeOutput(
+      dim(
+        `  defaultVault in .swamp.yaml names '${warning.unregisteredDefaultVault}', which is not a vault in this repository.`,
+      ),
+    );
+  }
+  writeOutput(
+    dim(
+      `  With no default vault, swamp uses the first of ${warning.userVaults.length} vaults by vault type, then id (the order of 'swamp vault list'): ${
+        warning.userVaults.join(", ")
+      }.`,
+    ),
+  );
+  for (const d of warning.definitions) {
+    writeOutput(`    ${yellow("•")} ${d.definitionName} ${dim(`[${d.type}]`)}`);
+  }
+  writeOutput(
+    dim(
+      `\n  Name the vault to use: set defaultVault: <vault> in .swamp.yaml.`,
+    ),
+  );
+}
+
 class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
   overallStatus: DoctorVaultsStatus = "pass";
 
@@ -74,6 +114,7 @@ class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
             } ${dim(`(${data.scanned} definition(s) scanned)`)}`,
           );
           renderUnresolvedLog(data);
+          renderFallbackWarningLog(data);
           return;
         }
 
@@ -102,6 +143,7 @@ class LogDoctorVaultsRenderer implements DoctorVaultsRenderer {
         );
 
         renderUnresolvedLog(data);
+        renderFallbackWarningLog(data);
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -127,6 +169,9 @@ class JsonDoctorVaultsRenderer implements DoctorVaultsRenderer {
               hasVault: data.hasVault,
               findings: data.findings,
               unresolved: data.unresolved,
+              ...(data.fallbackWarning
+                ? { fallbackWarning: data.fallbackWarning }
+                : {}),
             },
             null,
             2,

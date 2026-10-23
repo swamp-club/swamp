@@ -9,7 +9,9 @@ last-verified: 2026-08-28 @ 3d5955a9
 `swamp doctor vaults` is a read-only check. It reports behavior definitions
 whose resource output schemas have sensitive fields (`{ sensitive: true }`
 metadata or `sensitiveOutput: true` on the spec) when the repository has no
-vault. It exits non-zero on any finding, so CI can gate on it.
+vault. It exits non-zero on any finding, so CI can gate on it. It also warns,
+without failing, when sensitive outputs would land in a fallback vault the repo
+never chose (see [Fallback vault warning](#fallback-vault-warning)).
 
 ## Why it exists
 
@@ -58,6 +60,30 @@ configured (`src/libswamp/models/doctor_vaults.ts`). Reserved vaults, such as
 the `_token-secrets` control-plane vault that serve registers in every
 `VaultService`, are not counted: sensitive data is never stored in them. The
 runtime pre-flight and `processSensitiveResourceData` use the same check.
+
+## Fallback vault warning
+
+When no field, data output override or spec names a vault, a sensitive output
+is stored in the default vault, or, with no default vault in effect, in the
+first user vault: first by vault type, then by id
+(`resolveSensitiveOutputVault` in `src/domain/models/sensitive_output_vault.ts`).
+That is not the order vaults were created, and it changed once already
+(swamp-club#3067), so a repo with several vaults and no `defaultVault` can store
+secrets in a vault the user did not expect (swamp-club#3805).
+
+The scan reports a `fallbackWarning` when all of these hold:
+
+- the repository has two or more user vaults,
+- no default vault is in effect (`defaultVault` unset, or naming a vault that
+  is not registered; the warning names such a `defaultVault`), and
+- at least one definition relies on the fallback: `reliesOnVaultFallback()`
+  over its type's resource specs and its own `resources` overrides. A workflow
+  step's `dataOutputOverrides` are not considered.
+
+The warning names the fallback vault, lists every user vault and the affected
+definitions, and suggests setting `defaultVault`. It is advisory: it does not
+change `overallStatus` or the exit code. The CLI and serve's `doctor.vaults`
+both pass the repo's `defaultVault` to the scan.
 
 ## Best-effort residual
 

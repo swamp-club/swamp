@@ -1649,7 +1649,9 @@ export async function handleDoctorVaults(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createDoctorVaultsDeps(ctx.repoDir);
+    const deps = await createDoctorVaultsDeps(ctx.repoDir, {
+      defaultVaultName: ctx.defaultVault,
+    });
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

@@ -105,7 +105,10 @@ export const doctorVaultsCommand = withRemoteOptions(
   }
 
   const libCtx = createLibSwampContext();
-  const deps = await createDoctorVaultsDeps(repoDir, { vaultsDir });
+  const deps = await createDoctorVaultsDeps(repoDir, {
+    vaultsDir,
+    defaultVaultName: marker?.defaultVault,
+  });
   const renderer = createDoctorVaultsRenderer(cliCtx.outputMode);
 
   await consumeStream(
