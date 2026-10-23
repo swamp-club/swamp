@@ -119,6 +119,9 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 /** How long close() waits for queued transitions before shutdown moves on. */
 export const GATEWAY_CLOSE_DEADLINE_MS = 10_000;
 
+/** A retryable refusal: the worker enrolls again with the next serve. */
+const SHUTTING_DOWN_CODE = "orchestrator_shutting_down";
+
 /**
  * Splits a presented enrollment credential of the form `<name>.<secret>`.
  * The name half addresses the token aggregate; the secret half is compared
@@ -404,15 +407,18 @@ export class WorkerGateway {
     this.#closing = true;
     this.dispose();
     for (const entry of [...this.#workers.values()]) {
-      if (entry.graceTimer !== undefined) {
-        clearTimeout(entry.graceTimer);
-        entry.graceTimer = undefined;
+      if (entry.channel === null) {
+        // In its grace window: the disconnect is already recorded.
+        if (entry.graceTimer !== undefined) {
+          clearTimeout(entry.graceTimer);
+          entry.graceTimer = undefined;
+        }
+        if (entry.expiryTimer !== undefined) {
+          clearTimeout(entry.expiryTimer);
+          entry.expiryTimer = undefined;
+        }
+        continue;
       }
-      if (entry.expiryTimer !== undefined) {
-        clearTimeout(entry.expiryTimer);
-        entry.expiryTimer = undefined;
-      }
-      if (entry.channel === null) continue;
       const name = entry.name;
       this.#removeWorker(entry, "serve shutting down");
       // #recordDisconnected logs its own failures, so this never rejects.
@@ -808,6 +814,14 @@ export class WorkerGateway {
           "control socket closed before enrollment began",
         );
       }
+      // Shutting down: a worker that reconnects, or whose enrollment was
+      // queued, records nothing (swamp-club#3854).
+      if (this.#closing) {
+        throw new RpcError({
+          code: SHUTTING_DOWN_CODE,
+          message: "The orchestrator is shutting down",
+        });
+      }
       // Redeem validates state, expiry, the secret, and allowance — and
       // appends a binding on first enrollment or re-auths a known machine.
       // Must happen before the already-connected check because the worker
@@ -952,6 +966,14 @@ export class WorkerGateway {
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;
       entry.tokenCreatedAt = tokenCreatedAt;
+      // close() began while the token was redeemed: the worker stays out of
+      // the pool it has already disconnected.
+      if (this.#closing) {
+        throw new RpcError({
+          code: SHUTTING_DOWN_CODE,
+          message: "The orchestrator is shutting down",
+        });
+      }
       this.#workers.set(workerName, entry);
       state.workerName = workerName;
 
@@ -1045,7 +1067,8 @@ export class WorkerGateway {
   #handleSocketClosed(state: SocketState): void {
     state.channel.close("control socket closed");
     const name = state.workerName;
-    if (name === null) {
+    // close() already disconnected and recorded every worker.
+    if (name === null || this.#closing) {
       return;
     }
     const entry = this.#workers.get(name);

@@ -679,6 +679,58 @@ Deno.test("WorkerGateway: close disconnects a connected worker and records it be
   assertEquals(h.disconnected.length, 0);
 });
 
+Deno.test("WorkerGateway: a worker that reconnects after close is refused before its token is redeemed (swamp-club#3854)", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  await h.gateway.close();
+  const recorded = h.transitions.length;
+
+  const second = connectWorkerSocket(h.gateway);
+  const refusal = await assertRejects(
+    () => enroll(second.workerChannel),
+    RpcError,
+  );
+  assertEquals(refusal.code, "orchestrator_shutting_down");
+  assertEquals(h.transitions.length, recorded);
+  assertEquals(h.gateway.workers().length, 0);
+  second.dropSocket();
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.transitions.length, recorded);
+});
+
+Deno.test("WorkerGateway: an enrollment queued when close begins records nothing (swamp-club#3854)", async () => {
+  const held = Promise.withResolvers<void>();
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    runModelMethod: async (input) => {
+      if (input.inputs.status === "disconnected") await held.promise;
+      h.transitions.push(input);
+    },
+  });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  // Its disconnect write holds the tail, so the next enrollment queues.
+  first.dropSocket();
+  const second = connectWorkerSocket(h.gateway);
+  const enrolling = enroll(second.workerChannel, {
+    ...enrollParams,
+    instanceUuid: "uuid-2",
+  });
+  const closing = h.gateway.close();
+  held.resolve();
+  const refusal = await assertRejects(() => enrolling, RpcError);
+  assertEquals(refusal.code, "orchestrator_shutting_down");
+  await closing;
+  assertEquals(
+    h.transitions.filter((t) => t.methodName === "redeem").length,
+    1,
+  );
+  // Only the first worker, in its grace window: the second never joined.
+  assertEquals(h.gateway.workers().map((w) => w.connected), [false]);
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+});
+
 Deno.test("WorkerGateway: close gives up at its deadline on a write that never settles (swamp-club#3854)", async () => {
   const held = Promise.withResolvers<void>();
   let written = false;
