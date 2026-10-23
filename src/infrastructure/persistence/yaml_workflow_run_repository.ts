@@ -34,12 +34,14 @@ import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { RunIndexCache, type RunIndexStamp } from "./run_index_cache.ts";
+import { SharedIndexRead } from "./shared_index_read.ts";
 import {
   countYamlRunFiles,
   deleteRunIndex,
   fingerprintMatches,
   getIndexPath,
   INDEX_SCHEMA_VERSION,
+  indexQueueGeneration,
   isIndexStale,
   isYamlRunFile,
   listDirEntries,
@@ -129,6 +131,22 @@ interface ValidatedIndex {
   entries: WorkflowRunIndex;
   inStep: boolean;
 }
+
+/**
+ * Repairs that have not yet acquired their index queue, with the queue tail
+ * each follows. An intervening queued writer closes the cohort. Once a pass starts,
+ * its cohort is closed: a later reader may have seen an invalidation that the
+ * pass already missed. Later readers share the next queued pass instead.
+ * Both paths identify the data, including when two repository instances use
+ * different record stores with the same repo-local index (swamp-club#3857).
+ */
+const pendingIndexRepairs = new Map<
+  string,
+  {
+    read: SharedIndexRead<ValidatedIndex | null>;
+    generation: Promise<unknown> | undefined;
+  }
+>();
 
 /**
  * The run records a traced read has read so far: how many, and the length
@@ -1449,10 +1467,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * could not materialise are warned about when a snapshot is built
    * (swamp-club#3617), not on a reuse.
    *
-   * With `signal`, a read that has to rebuild or repair the index stops
-   * between records once it aborts, writes no index, and rejects with the
-   * signal's reason: serve's warm-up passes its own, so shutdown is not
-   * held up by it.
+   * With `signal`, the caller stops waiting once it aborts. A shared load
+   * continues for its other readers; once none remain, a rebuild or repair
+   * stops between records without publishing a partial index. Serve's warm-up
+   * passes its own signal so shutdown is not held up by the read.
    *
    * On the concrete repository only, for the same reason as
    * {@link findGlobalById}: only the run search and run summary paths use it.
@@ -1461,10 +1479,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     workflowId: WorkflowId,
     signal?: AbortSignal,
   ): Promise<RunIndexSnapshot> {
-    return await this.runIndexCache.get(workflowId, async () => {
+    return await this.runIndexCache.get(workflowId, async (sharedSignal) => {
       const runsDir = this.getRunsDir(workflowId);
       const indexDir = this.getLocalIndexDir(workflowId);
-      const index = await this.validateIndex(runsDir, indexDir, signal);
+      const index = await this.validateIndex(runsDir, indexDir, sharedSignal);
       await this.warnLeftOut(runsDir);
       if (index) {
         return {
@@ -1527,11 +1545,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   /**
-   * The workflow's runs with `status`, read through its index. With
-   * `signal`, a read that has to rebuild or repair the index stops between
-   * records once it aborts, writes no index, and rejects with the signal's
-   * reason: serve's continuation sweep passes its own, so shutdown is not
-   * held up by it (swamp-club#3472).
+   * The workflow's runs with `status`, read through its index. With `signal`,
+   * a caller waiting on a repair rejects when it aborts. The shared repair
+   * stops between records only once no caller needs it. Serve's continuation
+   * sweep passes its own signal so shutdown is not held up (swamp-club#3472).
    */
   async findSummariesByStatus(
     workflowId: WorkflowId,
@@ -1567,6 +1584,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     indexDir: string,
     signal?: AbortSignal,
   ): Promise<ValidatedIndex | null> {
+    signal?.throwIfAborted();
     const entries = await listDirEntries(runsDir);
     const yamlCount = countYamlRunFiles(entries);
     if (yamlCount === 0) return null;
@@ -1598,6 +1616,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
    * fingerprint of an earlier write of its record and the count unchanged;
    * a reader that has seen a mismatch is what corrects it (swamp-club#3452).
    *
+   * Readers queued behind the same work share one pass until it starts or
+   * another index operation is queued. That pass starts after every member
+   * observed its mismatch and after the work it was waiting on. A reader
+   * arriving later joins the next pass, never an earlier scan that could
+   * predate its invalidation. This works with external writers and coarse
+   * file clocks without caching a completed repair (swamp-club#3857).
+   *
    * The entries are in step only when the index file holds them and lists
    * one per record: a repair that could not be written, or a record that
    * cannot be indexed (an empty one), leaves them out of step.
@@ -1611,51 +1636,82 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     indexDir: string,
     signal?: AbortSignal,
   ): Promise<ValidatedIndex | null> {
-    return withRecordReadSpan(
-      "swamp.workflow_runs.index.repair",
-      workflowOfRunsDir(runsDir),
-      (tally, span) =>
-        withTimedIndexQueue(span, indexDir, async () => {
-          signal?.throwIfAborted();
-          const files = await listDirEntries(runsDir);
-          const count = countYamlRunFiles(files);
-          if (count === 0) return null;
-          const result = await readRunIndex(indexDir);
-          if (!result || result.version !== INDEX_SCHEMA_VERSION) {
-            return await this.rebuildIndexUnqueued(runsDir, indexDir, signal);
-          }
+    signal?.throwIfAborted();
+    const key = JSON.stringify([resolve(runsDir), resolve(indexDir)]);
+    const pending = pendingIndexRepairs.get(key);
+    const generation = indexQueueGeneration(indexDir);
+    if (
+      pending && !pending.read.signal.aborted &&
+      pending.generation === generation
+    ) return pending.read.get(signal);
 
-          const entries = result.entries;
-          const suspects = await this.findSuspectRecords(
-            runsDir,
-            entries,
-            signal,
-          );
-          let written = true;
-          if (
-            await this.reconcileSuspects(
+    const forget = () => {
+      if (pendingIndexRepairs.get(key)?.read === repair) {
+        pendingIndexRepairs.delete(key);
+      }
+    };
+    const repair = new SharedIndexRead((sharedSignal) =>
+      withRecordReadSpan(
+        "swamp.workflow_runs.index.repair",
+        workflowOfRunsDir(runsDir),
+        (tally, span) => {
+          const queued = withTimedIndexQueue(span, indexDir, async () => {
+            // Every member observed its mismatch before this pass. Never join
+            // after it starts, even if the index count has come back into line.
+            forget();
+            sharedSignal.throwIfAborted();
+            const files = await listDirEntries(runsDir);
+            const count = countYamlRunFiles(files);
+            if (count === 0) return null;
+            const result = await readRunIndex(indexDir);
+            if (!result || result.version !== INDEX_SCHEMA_VERSION) {
+              return await this.rebuildIndexUnqueued(
+                runsDir,
+                indexDir,
+                sharedSignal,
+              );
+            }
+
+            const entries = result.entries;
+            const suspects = await this.findSuspectRecords(
               runsDir,
               entries,
-              suspects,
-              signal,
-              tally,
-            )
-          ) {
-            try {
-              await ensureDir(indexDir);
-              await writeRunIndex(indexDir, entries);
-            } catch (error) {
-              written = false;
-              logger
-                .warn`Failed to write repaired index, will retry next read: ${error}`;
+              sharedSignal,
+            );
+            let written = true;
+            if (
+              await this.reconcileSuspects(
+                runsDir,
+                entries,
+                suspects,
+                sharedSignal,
+                tally,
+              )
+            ) {
+              sharedSignal.throwIfAborted();
+              try {
+                await ensureDir(indexDir);
+                sharedSignal.throwIfAborted();
+                await writeRunIndex(indexDir, entries);
+              } catch (error) {
+                sharedSignal.throwIfAborted();
+                written = false;
+                logger
+                  .warn`Failed to write repaired index, will retry next read: ${error}`;
+              }
             }
-          }
-          return {
-            entries,
-            inStep: written && Object.keys(entries).length === count,
-          };
-        }),
-    );
+            return {
+              entries,
+              inStep: written && Object.keys(entries).length === count,
+            };
+          });
+          cohort.generation = indexQueueGeneration(indexDir);
+          return queued;
+        },
+      ), forget);
+    const cohort = { read: repair, generation };
+    pendingIndexRepairs.set(key, cohort);
+    return repair.get(signal);
   }
 
   /**
@@ -1888,11 +1944,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       throw error;
     }
 
+    signal?.throwIfAborted();
     let written = true;
     try {
       await ensureDir(indexDir);
+      signal?.throwIfAborted();
       await writeRunIndex(indexDir, index);
     } catch (error) {
+      signal?.throwIfAborted();
       written = false;
       logger
         .warn`Failed to write rebuilt index, will retry next read: ${error}`;

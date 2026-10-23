@@ -26,18 +26,34 @@
  * snapshots must follow it.
  */
 
-import { assertEquals, assertStrictEquals } from "@std/assert";
-import { join } from "@std/path";
+import { assert, assertEquals, assertStrictEquals } from "@std/assert";
+import { basename, dirname, join } from "@std/path";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { trace } from "@opentelemetry/api";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
-import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
-import { getIndexPath } from "../src/infrastructure/persistence/workflow_run_index.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
+import {
+  getIndexPath,
+  readRunIndex,
+  withIndexQueue,
+} from "../src/infrastructure/persistence/workflow_run_index.ts";
+import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import {
+  createWorkflowApprovalsDeps,
+  workflowApprovals,
+} from "../src/libswamp/workflows/approvals.ts";
 import {
   workflowRunSearch,
   type WorkflowRunSearchDeps,
@@ -369,3 +385,194 @@ Deno.test("run index cache: the serve warm-up leaves each snapshot cached for th
     }
   });
 });
+
+// The requests a dashboard issues together, over the same long-lived repo.
+// A queued cohort validates once after every member's observation; readers
+// arriving during a scan share one subsequent pass, never its older result.
+for (
+  const scenario of ["queued", "rebuilding", "writer", "recent-stamp"] as const
+) {
+  Deno.test(`run index repair: concurrent search, summary and two approvals, ${scenario} (swamp-club#3857)`, async () => {
+    await withRepoDir(async (dir) => {
+      const workflowRepo = new YamlWorkflowRepository(dir);
+      const runRepo = new YamlWorkflowRunRepository(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        scenario === "recent-stamp" ? undefined : () => Date.now() + 60_000,
+      );
+      const workflow = workflowNamed(`cohort-${crypto.randomUUID()}`);
+      await workflowRepo.save(workflow);
+      const runs: WorkflowRun[] = [];
+      for (let i = 0; i < 4; i++) runs.push(await startRun(runRepo, workflow));
+      const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+      const indexPath = getIndexPath(runsDir);
+      const changedPath = runRepo.getPath(workflow.id, runs[0].id);
+      await Deno.remove(indexPath);
+      const deps = {
+        findAllWorkflows: () => workflowRepo.findAllListings(),
+        runIndexOf: (id: string) =>
+          runRepo.runIndexSnapshot(createWorkflowId(id)),
+      };
+      const approvalDeps = createWorkflowApprovalsDeps(
+        workflowRepo,
+        runRepo,
+        async (id) => {
+          const suspended = await runRepo.findSummariesByStatus(
+            id,
+            "suspended",
+          );
+          const found = await Promise.all(
+            suspended.map((s) =>
+              runRepo.findById(id, createWorkflowRunId(s.id))
+            ),
+          );
+          return found.filter((r): r is WorkflowRun => r !== null);
+        },
+      );
+      const ctx = createLibSwampContext();
+      const release = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const held = scenario === "queued"
+        ? withIndexQueue(runsDir, () => release.promise)
+        : Promise.resolve();
+      const originalRead = Deno.readTextFile;
+      const originalStat = Deno.stat;
+      const originalRename = Deno.rename;
+      const statsBySpan = new Map<string, number>();
+      let indexReads = 0;
+      let blocked = false;
+      let writerApplied = false;
+      const isRecord = (path: string | URL) =>
+        dirname(String(path)) === runsDir &&
+        /^workflow-run-.*\.yaml$/.test(basename(String(path)));
+      Deno.readTextFile = async (...args: Parameters<typeof originalRead>) => {
+        if (scenario !== "queued" && isRecord(args[0]) && !blocked) {
+          blocked = true;
+          entered.resolve();
+          await release.promise;
+        }
+        try {
+          return await originalRead(...args);
+        } finally {
+          if (String(args[0]) === indexPath) indexReads++;
+        }
+      };
+      Deno.stat = async (...args: Parameters<typeof originalStat>) => {
+        if (isRecord(args[0])) {
+          const id = trace.getActiveSpan()?.spanContext().spanId ?? "none";
+          statsBySpan.set(id, (statsBySpan.get(id) ?? 0) + 1);
+        }
+        return await originalStat(...args);
+      };
+      Deno.rename = async (...args: Parameters<typeof originalRename>) => {
+        await originalRename(...args);
+        if (
+          scenario === "writer" && String(args[1]) === indexPath &&
+          !writerApplied
+        ) {
+          writerApplied = true;
+          // A foreign writer bypasses the process-local queue. Its index copy
+          // has the same count and even the same contents, but the record moved.
+          const staleIndex = await originalRead(indexPath);
+          const record = parseYaml(await originalRead(changedPath)) as Record<
+            string,
+            unknown
+          >;
+          record.status = "interrupted";
+          await Deno.writeTextFile(changedPath, stringifyYaml(record));
+          const when = new Date("2030-01-01T00:00:00Z");
+          await Deno.utime(changedPath, when, when);
+          const temporary = join(runsDir, `.${crypto.randomUUID()}.tmp`);
+          await Deno.writeTextFile(temporary, staleIndex);
+          await originalRename(temporary, indexPath);
+        }
+      };
+      const reading: Promise<unknown>[] = [];
+      try {
+        await withCapturedSpans(async (spans) => {
+          const search = collect(workflowRunSearch(ctx, deps, {}));
+          reading.push(search);
+          if (scenario !== "queued") await entered.promise;
+          const summary = collect(workflowRunSummary(ctx, deps, {}));
+          const approvals = [
+            collect(workflowApprovals(ctx, approvalDeps)),
+            collect(workflowApprovals(ctx, approvalDeps)),
+          ];
+          reading.push(summary, ...approvals);
+          // One initial index read per uncached consumer, plus the repair's
+          // read once its queue is acquired. A settled snapshot shares search
+          // and summary; the real clock may conservatively load both.
+          const expectedReads = scenario === "queued"
+            ? 3
+            : scenario === "recent-stamp"
+            ? 5
+            : 4;
+          await waitFor(
+            () => Promise.resolve(indexReads >= expectedReads),
+            "all readers to observe the invalid index",
+          );
+          release.resolve();
+          const [searchEvents, summaryEvents, ...approvalEvents] = await Promise
+            .all([search, summary, ...approvals]);
+          const searched = searchEvents.find((e) => e.kind === "completed");
+          const summarized = summaryEvents.find((e) => e.kind === "completed");
+          assert(searched?.kind === "completed" && "total" in searched);
+          assert(
+            summarized?.kind === "completed" && "totals" in summarized.data,
+          );
+          assertEquals(searched.total, 4);
+          assertEquals(summarized.data.totals.runs, 4);
+          for (const events of approvalEvents) {
+            const result = events.find((e) => e.kind === "completed");
+            assert(result?.kind === "completed");
+            assertEquals(result.data, { approvals: [], expired: [] });
+          }
+          const repairs = spans.filter((s) =>
+            s.name === "swamp.workflow_runs.index.repair"
+          );
+          assertEquals(repairs.length, scenario === "queued" ? 1 : 2);
+          assertEquals(
+            spans.filter((s) => s.name === "swamp.workflow_runs.index.rebuild")
+              .length,
+            1,
+          );
+          const stats = repairs.map((s) =>
+            statsBySpan.get(s.spanContext().spanId) ?? 0
+          ).sort((a, b) => a - b);
+          assertEquals(
+            stats,
+            scenario === "queued"
+              ? [0]
+              : scenario === "writer"
+              ? [0, 7]
+              : [0, 4],
+          );
+          assertEquals(
+            repairs.reduce(
+              (sum, s) =>
+                sum + Number(s.attributes["workflow_runs.records_read"]),
+              0,
+            ),
+            scenario === "writer" ? 1 : 0,
+          );
+          if (scenario === "writer") {
+            assert(writerApplied);
+            assertEquals(
+              (await readRunIndex(runsDir))!.entries[runs[0].id].status,
+              "interrupted",
+            );
+          }
+        });
+      } finally {
+        release.resolve();
+        await held;
+        await Promise.allSettled(reading);
+        Deno.readTextFile = originalRead;
+        Deno.stat = originalStat;
+        Deno.rename = originalRename;
+      }
+    });
+  });
+}
