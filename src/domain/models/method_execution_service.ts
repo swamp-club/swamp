@@ -36,7 +36,11 @@ import {
   type RemoteLockHolder,
 } from "../datastore/lock_holder_marker.ts";
 import { Definition } from "../definitions/definition.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import {
+  describeUnreadReference,
+  type SecretRedactor,
+  type UnreadReferenceLookup,
+} from "../secrets/mod.ts";
 import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
@@ -221,6 +225,40 @@ export interface MethodDeliveryOptions {
    * method runs.
    */
   onArgumentsValidated?: () => Promise<void>;
+  /**
+   * The run's record of stored sensitive-field references whose vault read
+   * failed. An argument still holding one fails naming the vault, key and
+   * provider error, where the method reads it (a global argument) or at
+   * delivery (a method argument), rather than as an unresolved expression
+   * (swamp-club#3806). Not part of the context a method receives.
+   */
+  unreadReferences?: UnreadReferenceLookup;
+}
+
+/**
+ * The error for an argument that still holds the stored reference of a
+ * sensitive field whose vault could not be read in this run, naming the
+ * vault, key and provider error; undefined when `value` holds none.
+ */
+function unreadReferenceError(
+  location: string,
+  value: unknown,
+  unread: UnreadReferenceLookup | undefined,
+): Error | undefined {
+  if (!unread) return undefined;
+  for (const expr of extractExpressions(value, location)) {
+    const reference = unread.unreadReferenceFor(expr.raw);
+    if (!reference) continue;
+    // An argument and a data field, never a filesystem path.
+    const argument = expr.path;
+    const field = reference.fieldPath;
+    return new Error(
+      `Could not read ${argument}: it holds the stored reference of sensitive field ${field}, whose vault could not be read (${
+        describeUnreadReference(reference)
+      })`,
+    );
+  }
+  return undefined;
 }
 
 /**
@@ -515,6 +553,7 @@ function parseMethodArguments(
   methodName: string,
   secretBag: VaultSecretBag | undefined,
   redactor: SecretRedactor | undefined,
+  unread?: UnreadReferenceLookup,
 ): {
   rawMethodArgs: Record<string, unknown>;
   resolvedGlobalArgs: Record<string, unknown>;
@@ -561,6 +600,16 @@ function parseMethodArguments(
     }
     filteredRawGlobalArgs[key] = value;
   }
+
+  // Method arguments are always delivered, so one still holding a stored
+  // reference its vault could not read fails here, before the method
+  // receives the reference text as if it were the secret.
+  const unreadError = unreadReferenceError(
+    "methodArguments",
+    resolvedMethodArgs,
+    unread,
+  );
+  if (unreadError) throw unreadError;
 
   const mergedArgs = isRecordSchema(method.arguments)
     ? resolvedMethodArgs
@@ -705,6 +754,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     method: MethodDefinition,
     context: MethodContext,
     onArgumentsValidated?: () => Promise<void>,
+    unread?: UnreadReferenceLookup,
   ): Promise<MethodResult> {
     const {
       rawMethodArgs,
@@ -718,6 +768,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       context.methodName,
       context.vaultSecrets,
       context.redactor,
+      unread,
     );
     registerDeliveredSecrets(
       method.arguments,
@@ -737,6 +788,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
         if (typeof prop === "string" && containsSwampExpression(value)) {
+          // A stored sensitive-field reference left as text because its
+          // vault could not be read is reported as that read's failure.
+          const unreadError = unreadReferenceError(
+            `globalArguments.${prop}`,
+            value,
+            unread,
+          );
+          if (unreadError) throw unreadError;
           const exprs = extractExpressions(value);
           const hasVault = exprs.some((e) =>
             containsVaultExpression(e.celExpression)
@@ -1564,6 +1623,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             methodName,
             context.vaultSecrets,
             context.redactor,
+            options.unreadReferences,
           );
           registerDeliveredSecrets(
             method.arguments,
@@ -1626,6 +1686,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                   method,
                   context,
                   options.onArgumentsValidated,
+                  options.unreadReferences,
                 ),
             },
             currentDefinition,

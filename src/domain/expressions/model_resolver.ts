@@ -42,7 +42,8 @@ import { isTextContentType } from "../data/content_type.ts";
 import { localContentPath } from "../data/data_record_mapper.ts";
 import {
   parseSensitiveFieldsTag,
-  resolveSensitiveVaultRefs,
+  recordSensitiveVaultRefsUnread,
+  resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { isUuid } from "../models/model_lookup.ts";
@@ -1073,9 +1074,10 @@ export class ModelResolver {
 
   /**
    * Resolves vault references in a data record's attributes, limited to the
-   * fields the record's schema marked sensitive. Leaves refs unresolved when
-   * no vault is available. Every resolved value is recorded in the run's
-   * sensitive-value record, which also forwards it to the run redactor.
+   * fields the record's schema marked sensitive. A reference whose vault
+   * cannot be read stays as stored, and the failure is recorded as unread in
+   * the run's sensitive-value record (swamp-club#3806). Every resolved value
+   * is recorded there too, which also forwards it to the run redactor.
    */
   private async resolveRecordVaultRefs(
     record: DataRecord | null,
@@ -1086,21 +1088,28 @@ export class ModelResolver {
     if (Object.keys(record.attributes).length === 0) return;
     const sensitiveFields = parseSensitiveFieldsTag(tags);
     if (!sensitiveFields) return;
+    let vaultService: VaultService;
     try {
-      const vaultService = await this.getVaultService();
-      await resolveSensitiveVaultRefs(
-        record.attributes,
-        sensitiveFields,
-        vaultService,
-        sensitiveValues,
-      );
+      vaultService = await this.getVaultService();
     } catch (error) {
       // A refusal by the run's vault access fails the read like every
       // other vault path (swamp-club#2676); it is never mistaken for an
       // unavailable vault.
       if (error instanceof VaultAccessDeniedError) throw error;
-      // Vault unavailable — leave refs unresolved
+      await recordSensitiveVaultRefsUnread(
+        record.attributes,
+        sensitiveFields,
+        error,
+        sensitiveValues,
+      );
+      return;
     }
+    await resolveSensitiveVaultRefsLeavingUnread(
+      record.attributes,
+      sensitiveFields,
+      vaultService,
+      sensitiveValues,
+    );
   }
 
   /**

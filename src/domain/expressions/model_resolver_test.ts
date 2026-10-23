@@ -24,6 +24,7 @@ import {
   assertExists,
   assertRejects,
   assertStrictEquals,
+  assertStringIncludes,
 } from "@std/assert";
 import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
@@ -3784,6 +3785,76 @@ Deno.test("data.latest with the stored option returns tagged references as writt
       });
       assertEquals(explicit?.attributes.apiKey, "secret-123");
       assertEquals(reads, 2);
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("data.latest: a tagged field whose vault read fails stays as stored and is recorded as unread, on both paths (swamp-club#3806)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+      );
+      const type = ModelType.create("test/model");
+      // "holder" reads by its coordinates; "orphan" through the catalog.
+      const holder = Definition.create({ name: "holder" });
+      await defRepo.save(type, holder);
+      const orphan = Definition.create({ name: "orphan" });
+      const reference = "${{ vault.get('infra', 'ticket-key') }}";
+      for (const model of [holder, orphan]) {
+        const data = Data.create({
+          name: "creds",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: {
+            type: "resource",
+            modelName: model.name,
+            "_swamp.sensitiveFields": JSON.stringify(["ticket"]),
+          },
+          ownerDefinition: owner,
+        });
+        await dataRepo.save(
+          type,
+          model.id,
+          data,
+          new TextEncoder().encode(JSON.stringify({ ticket: reference })),
+        );
+      }
+      const dqs = new DataQueryService(catalog, dataRepo);
+      await dqs.query('name == ""');
+
+      const vaultService = {
+        get: () =>
+          Promise.reject(
+            new Error("1Password authentication failed: authorization timeout"),
+          ),
+      } as unknown as VaultService;
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+        vaultService,
+      });
+      for (const name of ["holder", "orphan"]) {
+        const values = new RunSensitiveValues();
+        const ctx = await resolver.buildContext(values);
+        const record = await ctx.data!.latest(name, "creds");
+        assertEquals(record?.attributes.ticket, reference, name);
+        const unread = values.unreadReferenceFor(reference);
+        assertExists(unread, name);
+        assertEquals(unread.vaultName, "infra");
+        assertEquals(unread.key, "ticket-key");
+        assertEquals(unread.fieldPath, "ticket");
+        assertStringIncludes(unread.reason, "authorization timeout");
+      }
     } finally {
       catalog.close();
     }

@@ -2189,6 +2189,70 @@ Deno.test("partitionAuthoredAt: the data-content warning quotes the raw expressi
   }
 });
 
+/** A run that could not read `key` from `infra` for its `ticket` field. */
+function unreadRun(key: string): { values: RunSensitiveValues; raw: string } {
+  const raw = `\${{ vault.get('infra', '${key}') }}`;
+  const values = new RunSensitiveValues();
+  values.recordUnread({
+    vaultName: "infra",
+    key,
+    text: raw,
+    fieldPath: "ticket",
+    reason: "1Password authentication failed: authorization timeout",
+  });
+  return { values, raw };
+}
+
+Deno.test("partitionAuthored: a stored reference whose vault read failed is refused with a warning naming the read (swamp-club#3806)", async () => {
+  const { values, raw } = unreadRun(crypto.randomUUID());
+  const messages = await capturingExpressionWarnings(() => {
+    assertEquals(
+      partitionAuthored(
+        extractExpressions({ globalArguments: { ticket: raw } }),
+        new Set(),
+        values,
+      ),
+      [],
+    );
+  });
+  assertEquals(messages.length, 1);
+  assertStringIncludes(messages[0], "Could not read sensitive field");
+  assertStringIncludes(messages[0], "infra");
+  assertStringIncludes(messages[0], "authorization timeout");
+  assertEquals(messages[0].includes("arrived as data content"), false);
+});
+
+Deno.test("partitionAuthoredAt: a stored reference in data whose vault read failed is refused with a warning naming the read (swamp-club#3806)", async () => {
+  const { values, raw } = unreadRun(crypto.randomUUID());
+  const messages = await capturingExpressionWarnings(() => {
+    assertEquals(
+      partitionAuthoredAt(
+        extractExpressions({ run: raw }),
+        new Set([raw]),
+        ProvenanceMap.data(),
+        values,
+      ),
+      [],
+    );
+  });
+  assertEquals(messages.length, 1);
+  assertStringIncludes(messages[0], "Could not read sensitive field");
+  assertEquals(messages[0].includes("sits in data content"), false);
+});
+
+Deno.test("partitionAuthored: a reference the run never tried to read keeps the data-content warning (swamp-club#3806)", async () => {
+  const { values } = unreadRun(crypto.randomUUID());
+  const other = `\${{ vault.get('infra', '${crypto.randomUUID()}') }}`;
+  const messages = await capturingExpressionWarnings(() => {
+    assertEquals(
+      partitionAuthored(extractExpressions({ run: other }), new Set(), values),
+      [],
+    );
+  });
+  assertEquals(messages.length, 1);
+  assertStringIncludes(messages[0], "arrived as data content");
+});
+
 // ============================================================================
 // Refusals of text the author wrote on purpose stay silent (swamp-club#3402)
 // ============================================================================

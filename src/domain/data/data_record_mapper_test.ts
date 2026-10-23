@@ -544,6 +544,55 @@ Deno.test("fromResourceHandle: resolves vault references in attributes when vaul
   }]);
 });
 
+Deno.test("fromResourceHandle: a reference whose vault read fails stays as stored and is recorded as unread (swamp-club#3806)", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "myvault", type: "mock", config: {} });
+  const sensitiveValues = new RunSensitiveValues();
+  const vaultRef = "${{ vault.get('myvault', 'missing-key') }}";
+  const repo = stubRepo(
+    null,
+    encoder.encode(JSON.stringify({ apiKey: vaultRef })),
+  );
+
+  const handle: DataHandle = {
+    name: "instance-1",
+    specName: "creds",
+    kind: "resource",
+    dataId: "data-id-1" as DataId,
+    version: 1,
+    size: 100,
+    tags: {
+      type: "resource",
+      modelName: "test-model",
+      "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+    },
+    metadata: {
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: {},
+      ownerDefinition: { ownerType: "model-method", ownerRef: "ref-1" },
+    },
+  };
+
+  const record = await fromResourceHandle(
+    handle,
+    ModelType.create("test/model"),
+    "model-123",
+    "test-model",
+    repo,
+    sensitiveValues,
+    vaultService,
+  );
+
+  assertEquals(record.attributes.apiKey, vaultRef);
+  const unread = sensitiveValues.unreadReferenceFor(vaultRef);
+  assertEquals(unread?.vaultName, "myvault");
+  assertEquals(unread?.key, "missing-key");
+  assertEquals(unread?.fieldPath, "apiKey");
+});
+
 Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitted", async () => {
   const vaultRef = "${{ vault.get('myvault', 'secret-key') }}";
   const data = { apiKey: vaultRef, label: "test" };
