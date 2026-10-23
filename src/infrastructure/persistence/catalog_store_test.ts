@@ -37,9 +37,19 @@ import {
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import { SharedDatastoreWriteTracker } from "./shared_datastore_write_tracker.ts";
 
-function makeTempDbPath(): string {
+function makeTempDb(): Disposable & { path: string } {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-test-" });
-  return join(dir, "_catalog.db");
+  return {
+    path: join(dir, "_catalog.db"),
+    [Symbol.dispose]() {
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch (error) {
+        // Windows refuses while V8 still holds the SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
 }
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
@@ -76,14 +86,16 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
 }
 
 Deno.test("CatalogStore: creates schema on construction", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   assertEquals(store.count(), 0);
   store.close();
 });
 
 Deno.test("CatalogStore: upsert and iterate round-trip", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   const row = makeRow();
@@ -99,7 +111,8 @@ Deno.test("CatalogStore: upsert and iterate round-trip", () => {
 });
 
 Deno.test("CatalogStore: upsert keeps separate rows for distinct versions", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ version: 1, size: 100, is_latest: 0 }));
@@ -115,7 +128,8 @@ Deno.test("CatalogStore: upsert keeps separate rows for distinct versions", () =
 });
 
 Deno.test("CatalogStore: upsert replaces row at same (type, model, name, version)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ version: 1, size: 100 }));
@@ -128,7 +142,8 @@ Deno.test("CatalogStore: upsert replaces row at same (type, model, name, version
 });
 
 Deno.test("CatalogStore: upsertNewVersion clears is_latest on prior rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -144,7 +159,8 @@ Deno.test("CatalogStore: upsertNewVersion clears is_latest on prior rows", () =>
 });
 
 Deno.test("CatalogStore: upsertNewVersion ignores is_latest on input row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // Caller passes is_latest: 0 but the method always records the incoming
@@ -158,7 +174,8 @@ Deno.test("CatalogStore: upsertNewVersion ignores is_latest on input row", () =>
 });
 
 Deno.test("CatalogStore: upsertNewVersion does not touch unrelated data names", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ data_name: "alpha", version: 1 }));
@@ -186,7 +203,8 @@ function flagsByVersion(store: CatalogStore): string[] {
 }
 
 Deno.test("CatalogStore: upsertNewVersion keeps one latest across workflow steps and a step latest per step", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(
@@ -204,7 +222,8 @@ Deno.test("CatalogStore: upsertNewVersion keeps one latest across workflow steps
 });
 
 Deno.test("CatalogStore: upsertNewVersion three steps across jobs leave one latest", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
@@ -216,7 +235,8 @@ Deno.test("CatalogStore: upsertNewVersion three steps across jobs leave one late
 });
 
 Deno.test("CatalogStore: upsertNewVersion clears is_latest within same step_name", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(
@@ -235,7 +255,8 @@ Deno.test("CatalogStore: upsertNewVersion clears is_latest within same step_name
 });
 
 Deno.test("CatalogStore: upsertNewVersion model-method demotes all step_names", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(
@@ -259,7 +280,8 @@ Deno.test("CatalogStore: upsertNewVersion model-method demotes all step_names", 
 });
 
 Deno.test("CatalogStore: upsertNewVersion workflow step demotes model-method rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(
@@ -280,7 +302,8 @@ Deno.test("CatalogStore: upsertNewVersion workflow step demotes model-method row
 });
 
 Deno.test("CatalogStore: upsertNewVersion workflow step does not demote other steps' step latest", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
@@ -292,7 +315,8 @@ Deno.test("CatalogStore: upsertNewVersion workflow step does not demote other st
 });
 
 Deno.test("CatalogStore: upsertNewVersion out-of-order promotion from parallel steps keeps the highest version latest", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // Parallel steps allocate v1 and v2, then promote in reverse order.
@@ -304,7 +328,8 @@ Deno.test("CatalogStore: upsertNewVersion out-of-order promotion from parallel s
 });
 
 Deno.test("CatalogStore: upsertNewVersion lower step write below a model-method latest stays unflagged", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 2, step_name: "" }));
@@ -315,7 +340,8 @@ Deno.test("CatalogStore: upsertNewVersion lower step write below a model-method 
 });
 
 Deno.test("CatalogStore: upsertNewVersion lower model-method write below a step latest stays unflagged", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 2, step_name: "step-a" }));
@@ -326,7 +352,8 @@ Deno.test("CatalogStore: upsertNewVersion lower model-method write below a step 
 });
 
 Deno.test("CatalogStore: upsertNewVersion ignores a higher unpromoted deferred row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // A deferred write lands with both flags 0 until it is promoted.
@@ -342,7 +369,8 @@ Deno.test("CatalogStore: upsertNewVersion ignores a higher unpromoted deferred r
 });
 
 Deno.test("CatalogStore: upsertNewVersion re-upserting the latest keeps its flags", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1, step_name: "step-a" }));
@@ -356,7 +384,8 @@ Deno.test("CatalogStore: upsertNewVersion re-upserting the latest keeps its flag
 });
 
 Deno.test("CatalogStore: upsertNewVersion model-method after workflow steps demotes all", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(
@@ -383,7 +412,8 @@ Deno.test("CatalogStore: upsertNewVersion model-method after workflow steps demo
 });
 
 Deno.test("CatalogStore: removeVersion deletes a single version row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -406,7 +436,8 @@ Deno.test("CatalogStore: removeVersion deletes a single version row", () => {
 });
 
 Deno.test("CatalogStore: remove deletes every version of a data name", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -420,7 +451,8 @@ Deno.test("CatalogStore: remove deletes every version of a data name", () => {
 });
 
 Deno.test("CatalogStore: remove deletes row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow());
@@ -433,7 +465,8 @@ Deno.test("CatalogStore: remove deletes row", () => {
 });
 
 Deno.test("CatalogStore: remove nonexistent row is a no-op", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.remove("", "nonexistent", "nope", "nothing");
@@ -442,7 +475,8 @@ Deno.test("CatalogStore: remove nonexistent row is a no-op", () => {
 });
 
 Deno.test("CatalogStore: isPopulated and markPopulated lifecycle", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   assertEquals(store.isPopulated(), false);
@@ -452,7 +486,8 @@ Deno.test("CatalogStore: isPopulated and markPopulated lifecycle", () => {
 });
 
 Deno.test("CatalogStore: reopen preserves data", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   const store1 = new CatalogStore(dbPath);
   store1.upsert(makeRow());
@@ -468,7 +503,8 @@ Deno.test("CatalogStore: reopen preserves data", () => {
 });
 
 Deno.test("CatalogStore: multiple rows with different keys", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ data_name: "alpha", model_id: "m1" }));
@@ -484,7 +520,8 @@ Deno.test("CatalogStore: multiple rows with different keys", () => {
 });
 
 Deno.test("CatalogStore: empty catalog iterates zero rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   const rows = [...store.iterate()];
   assertEquals(rows.length, 0);
@@ -492,7 +529,8 @@ Deno.test("CatalogStore: empty catalog iterates zero rows", () => {
 });
 
 Deno.test("CatalogStore: iterate paginates across page boundaries", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   const totalRows = ITERATE_PAGE_SIZE + 1;
@@ -519,7 +557,8 @@ Deno.test("CatalogStore: iterate paginates across page boundaries", () => {
 });
 
 Deno.test("CatalogStore: distinctValues returns unique non-empty values", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(
@@ -543,14 +582,16 @@ Deno.test("CatalogStore: distinctValues returns unique non-empty values", () => 
 });
 
 Deno.test("CatalogStore: distinctValues returns empty for empty catalog", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   assertEquals(store.distinctValues("model_name"), []);
   store.close();
 });
 
 Deno.test("CatalogStore: distinctTagKeys collects keys from all rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(
@@ -577,7 +618,8 @@ Deno.test("CatalogStore: distinctTagKeys collects keys from all rows", () => {
 });
 
 Deno.test("CatalogStore: distinctTagKeys handles invalid JSON gracefully", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(
@@ -597,7 +639,8 @@ Deno.test("CatalogStore: distinctTagKeys handles invalid JSON gracefully", () =>
 });
 
 Deno.test("CatalogStore: distinctTagValues returns values for a key", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(
@@ -641,7 +684,8 @@ Deno.test("CatalogStore: distinctTagValues returns values for a key", () => {
 });
 
 Deno.test("CatalogStore: constructor retries under write lock contention", async () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const dir = dirname(dbPath);
 
   // Pre-create the database with WAL mode so it exists on disk
@@ -707,7 +751,8 @@ Deno.test("CatalogStore: constructor retries under write lock contention", async
 });
 
 Deno.test("CatalogStore: migrates v1 catalog DB to v2 without throwing", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // Pre-create a v1 catalog DB: no provenance columns, schema_version=1
   const db = new DatabaseSync(dbPath);
@@ -750,7 +795,8 @@ Deno.test("CatalogStore: migrates v1 catalog DB to v2 without throwing", () => {
 });
 
 Deno.test("CatalogStore: bulkRemoveVersions deletes all specified versions atomically", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -774,7 +820,8 @@ Deno.test("CatalogStore: bulkRemoveVersions deletes all specified versions atomi
 });
 
 Deno.test("CatalogStore: bulkRemoveVersions is a no-op for empty array", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -792,7 +839,8 @@ Deno.test("CatalogStore: bulkRemoveVersions is a no-op for empty array", () => {
 });
 
 Deno.test("CatalogStore: removeVersion makes a step's previous version its step latest again (swamp-club#2975)", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
   store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
   store.upsertNewVersion(makeRow({ version: 3, step_name: "s1" }));
@@ -812,7 +860,8 @@ Deno.test("CatalogStore: removeVersion makes a step's previous version its step 
 });
 
 Deno.test("CatalogStore: bulkRemoveVersions recomputes both flags for the group's promoted rows (swamp-club#2975)", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
   store.upsertNewVersion(makeRow({ version: 2, step_name: "s2" }));
   store.upsertNewVersion(makeRow({ version: 3, step_name: "s2" }));
@@ -845,7 +894,8 @@ Deno.test("CatalogStore: bulkRemoveVersions recomputes both flags for the group'
 });
 
 Deno.test("CatalogStore: upsertNewVersion clears the pending mark of the version it promotes", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.upsert(
     makeRow({
       version: 1,
@@ -877,7 +927,8 @@ Deno.test("CatalogStore: upsertNewVersion clears the pending mark of the version
 });
 
 Deno.test("CatalogStore: bulkUpsert never overwrites a pending row and derives flags without it (swamp-club#2975)", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.upsertNewVersion(makeRow({ version: 1, step_name: "s1" }));
   store.upsert(
     makeRow({
@@ -909,7 +960,8 @@ Deno.test("CatalogStore: bulkUpsert never overwrites a pending row and derives f
 });
 
 Deno.test("CatalogStore: bulkUpsert without computeFlags writes flags as supplied", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.bulkUpsert([
     makeRow({ version: 1, is_latest: 0, is_step_latest: 1 }),
     makeRow({ version: 2, is_latest: 1 }),
@@ -919,7 +971,8 @@ Deno.test("CatalogStore: bulkUpsert without computeFlags writes flags as supplie
 });
 
 Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // Write enough rows to force WAL pages to accumulate
@@ -951,7 +1004,8 @@ Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", 
 });
 
 Deno.test("CatalogStore: vacuum returns boolean and does not throw", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   store.upsert(makeRow());
 
@@ -962,7 +1016,8 @@ Deno.test("CatalogStore: vacuum returns boolean and does not throw", () => {
 });
 
 Deno.test("CatalogStore: vacuum reclaims space and preserves rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // Insert enough fragmentation that the rebuild measurably shrinks the file,
@@ -1008,7 +1063,8 @@ Deno.test("CatalogStore: vacuum reclaims space and preserves rows", () => {
 });
 
 Deno.test("CatalogStore: vacuum on an empty catalog returns true and keeps schema", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   assertEquals(store.vacuum(), true);
@@ -1020,7 +1076,8 @@ Deno.test("CatalogStore: vacuum on an empty catalog returns true and keeps schem
 });
 
 Deno.test("CatalogStore: store is usable after vacuum and close is idempotent", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   store.upsert(makeRow({ version: 1 }));
 
@@ -1041,7 +1098,8 @@ Deno.test({
   // Only Windows refuses to rename or remove a file another handle holds open.
   ignore: Deno.build.os !== "windows",
   fn: () => {
-    const dbPath = makeTempDbPath();
+    using tempDb = makeTempDb();
+    const dbPath = tempDb.path;
     const store = new CatalogStore(dbPath);
     store.upsert(makeRow({ version: 1 }));
     const other = new CatalogStore(dbPath);
@@ -1060,7 +1118,8 @@ Deno.test({
 });
 
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow());
@@ -1076,7 +1135,8 @@ Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () =>
 });
 
 Deno.test("CatalogStore: namespace round-trips through upsert and iterate", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ namespace: "infra" }));
@@ -1088,7 +1148,8 @@ Deno.test("CatalogStore: namespace round-trips through upsert and iterate", () =
 });
 
 Deno.test("CatalogStore: namespace is part of the primary key", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // Same (type, model, name, version) in two namespaces must coexist as
@@ -1101,7 +1162,8 @@ Deno.test("CatalogStore: namespace is part of the primary key", () => {
 });
 
 Deno.test("CatalogStore: upsertNewVersion does not clear is_latest across namespaces", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // infra's latest must survive when security promotes a new latest for the
@@ -1123,7 +1185,8 @@ Deno.test("CatalogStore: upsertNewVersion does not clear is_latest across namesp
 });
 
 Deno.test("CatalogStore: removeVersion is scoped to a namespace", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ namespace: "infra", version: 1 }));
@@ -1145,7 +1208,8 @@ Deno.test("CatalogStore: removeVersion is scoped to a namespace", () => {
 });
 
 Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // Pre-create a v3 catalog DB: no namespace column, schema_version=3, with a
   // pre-existing row and the populated flag set. This mirrors every existing
@@ -1205,7 +1269,8 @@ Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", ()
 });
 
 Deno.test("CatalogStore: rebuilds a v4 catalog holding per-step duplicate latests (swamp-club#2520)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // A v4 catalog: no is_step_latest column, and two workflow steps' versions
   // of one data name both flagged is_latest.
@@ -1264,7 +1329,8 @@ Deno.test("CatalogStore: rebuilds a v4 catalog holding per-step duplicate latest
 });
 
 Deno.test("CatalogStore: migrates v5 catalog DB to v6 with garbage_collection column", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // Build a v5 catalog: today's table without the garbage_collection column,
   // schema_version=5, with a row and the populated flag set.
@@ -1290,7 +1356,8 @@ Deno.test("CatalogStore: migrates v5 catalog DB to v6 with garbage_collection co
 });
 
 Deno.test("CatalogStore: rebuilds a catalog whose recorded version is current but whose table lacks a column (swamp-club#2994)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // Processes on different schema versions racing on one file can record the
   // current version over an older table. Build that: today's version and
@@ -1331,7 +1398,8 @@ Deno.test("CatalogStore: rebuilds a catalog whose recorded version is current bu
 });
 
 Deno.test("CatalogStore: rebuilds a schema 7 catalog, which has no is_pending column (swamp-club#2975)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   new CatalogStore(dbPath).close();
   const db = new DatabaseSync(dbPath);
   db.exec(`
@@ -1352,7 +1420,8 @@ Deno.test("CatalogStore: rebuilds a schema 7 catalog, which has no is_pending co
 });
 
 Deno.test("CatalogStore: rebuilds a populated catalog whose table is missing under the current version", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // An older binary can drop the table after this version is recorded; the
   // populated flag must not survive over the empty table created in its place.
@@ -1373,7 +1442,8 @@ Deno.test("CatalogStore: rebuilds a populated catalog whose table is missing und
 });
 
 Deno.test("CatalogStore: reopening a current catalog keeps its rows, populated flag and generation", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const first = new CatalogStore(dbPath);
   first.upsert(makeRow());
   first.markPopulated();
@@ -1388,7 +1458,8 @@ Deno.test("CatalogStore: reopening a current catalog keeps its rows, populated f
 });
 
 Deno.test("CatalogStore: CATALOG_COLUMNS lists every column of a new catalog table", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   new CatalogStore(dbPath).close();
   const db = new DatabaseSync(dbPath);
   const columns = (db.prepare("PRAGMA table_info(catalog)").all() as {
@@ -1399,7 +1470,8 @@ Deno.test("CatalogStore: CATALOG_COLUMNS lists every column of a new catalog tab
 });
 
 Deno.test("CatalogStore: every write path stores garbage_collection", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ data_name: "upsert", garbage_collection: "5" }));
@@ -1428,7 +1500,8 @@ Deno.test("CatalogStore: every write path stores garbage_collection", () => {
 });
 
 Deno.test("CatalogStore: rebuilds a schema 8 catalog, which has no lifecycle column (swamp-club#3706)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // A schema 8 catalog can hold write-through deletion markers. Defaulting
   // their new column to active would mislabel them, so the table is rebuilt.
@@ -1454,7 +1527,8 @@ Deno.test("CatalogStore: rebuilds a schema 8 catalog, which has no lifecycle col
 });
 
 Deno.test("CatalogStore: every write path stores lifecycle", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ data_name: "upsert", lifecycle: "deleted" }));
@@ -1481,7 +1555,8 @@ Deno.test("CatalogStore: every write path stores lifecycle", () => {
 // ── Phase 6c: namespace-scoped backfill and foreign upsert ──────────────────
 
 Deno.test("latestRowCountsByType: counts latest rows per type within a namespace", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({
@@ -1525,7 +1600,8 @@ Deno.test("latestRowCountsByType: counts latest rows per type within a namespace
 });
 
 Deno.test("latestRowCountsByType: returns an empty map for an empty catalog", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   assertEquals(store.latestRowCountsByType("own").size, 0);
@@ -1534,7 +1610,8 @@ Deno.test("latestRowCountsByType: returns an empty map for an empty catalog", ()
 });
 
 Deno.test("bulkUpsertForeign: upserts foreign rows and records lastSynced", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.bulkUpsert([makeRow({ namespace: "own" })]);
@@ -1559,7 +1636,8 @@ Deno.test("bulkUpsertForeign: upserts foreign rows and records lastSynced", () =
 });
 
 Deno.test("bulkUpsertForeign: does not touch global populated flag", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.markPopulated();
@@ -1574,7 +1652,8 @@ Deno.test("bulkUpsertForeign: does not touch global populated flag", () => {
 });
 
 Deno.test("bulkUpsertForeign: updates existing foreign rows in place", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   const row1 = makeRow({
@@ -1602,7 +1681,8 @@ Deno.test("bulkUpsertForeign: updates existing foreign rows in place", () => {
 });
 
 Deno.test("bulkUpsertForeign: refuses a row claiming another namespace and leaves the reader's own row unchanged", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   const own = makeRow({ namespace: "team-a", tags: '{"owner":"a"}' });
   store.bulkUpsert([own]);
 
@@ -1630,7 +1710,8 @@ Deno.test("bulkUpsertForeign: refuses a row claiming another namespace and leave
 });
 
 Deno.test("bulkUpsertForeign: refuses the empty namespace", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   assertThrows(() => store.bulkUpsertForeign("", [makeRow()]));
   assertEquals(store.count(), 0);
   assertEquals(store.foreignSyncedAt(""), null);
@@ -1640,7 +1721,8 @@ Deno.test("bulkUpsertForeign: refuses the empty namespace", () => {
 Deno.test(
   "CatalogStore: findLatestRow returns the latest row by model name and data name",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(
       makeRow({
         model_name: "my-model",
@@ -1670,7 +1752,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRow returns null for non-existent data",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(
       makeRow({ model_name: "my-model", data_name: "my-data" }),
     );
@@ -1683,7 +1766,8 @@ Deno.test(
 );
 
 Deno.test("CatalogStore: bulkUpsert inserts rows when absent", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   const rows = [
     makeRow({ data_name: "a", version: 1 }),
     makeRow({ data_name: "b", version: 1 }),
@@ -1694,7 +1778,8 @@ Deno.test("CatalogStore: bulkUpsert inserts rows when absent", () => {
 });
 
 Deno.test("CatalogStore: bulkUpsert updates existing rows", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.upsert(makeRow({ data_name: "a", version: 1, size: 100 }));
   store.bulkUpsert([makeRow({ data_name: "a", version: 1, size: 999 })]);
   const rows = [...store.iterate()];
@@ -1706,7 +1791,8 @@ Deno.test("CatalogStore: bulkUpsert updates existing rows", () => {
 Deno.test(
   "CatalogStore: bulkUpsert preserves rows not in upsert set",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(makeRow({ data_name: "existing", version: 1, size: 100 }));
     store.bulkUpsert([makeRow({ data_name: "new", version: 1, size: 200 })]);
     assertEquals(store.count(), 2);
@@ -1722,7 +1808,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRow scopes by namespace when provided",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(makeRow({
       namespace: "ns-a",
       model_name: "shared-model",
@@ -1756,7 +1843,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRowsBySpecName returns all latest rows sharing a spec_name",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(
       makeRow({
         model_name: "fleet",
@@ -1794,7 +1882,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRowsBySpecName returns single match",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(
       makeRow({
         model_name: "fleet",
@@ -1815,7 +1904,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRowsBySpecName returns one row when several steps wrote the name (swamp-club#2520)",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     // Two workflow steps write a data name equal to its spec name; before
     // the fix both stayed latest and data.latest() reported ambiguity.
     store.upsertNewVersion(makeRow({
@@ -1844,7 +1934,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRowsBySpecName returns empty for no match",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(
       makeRow({ model_name: "fleet", spec_name: "other" }),
     );
@@ -1859,7 +1950,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRowsBySpecName scopes by namespace",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(makeRow({
       namespace: "ns-a",
       model_name: "fleet",
@@ -1891,7 +1983,8 @@ Deno.test(
 Deno.test(
   "CatalogStore: findLatestRowsBySpecName excludes non-latest rows",
   () => {
-    const store = new CatalogStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new CatalogStore(tempDb.path);
     store.upsert(
       makeRow({
         model_name: "fleet",
@@ -1924,7 +2017,8 @@ Deno.test(
 // --- countDuplicateLatest / enforceUniqueLatest tests ---
 
 Deno.test("countDuplicateLatest: zero when no duplicates", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -1935,7 +2029,8 @@ Deno.test("countDuplicateLatest: zero when no duplicates", () => {
 });
 
 Deno.test("countDuplicateLatest: detects duplicates created by plain upsert", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ version: 1, is_latest: 1 }));
@@ -1946,7 +2041,8 @@ Deno.test("countDuplicateLatest: detects duplicates created by plain upsert", ()
 });
 
 Deno.test("enforceUniqueLatest: demotes stale is_latest rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ version: 1, is_latest: 1 }));
@@ -1965,7 +2061,8 @@ Deno.test("enforceUniqueLatest: demotes stale is_latest rows", () => {
 });
 
 Deno.test("enforceUniqueLatest: demotes is_latest across steps but keeps each step latest", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   // The shape a catalog written before swamp-club#2520 holds: one latest
@@ -1984,7 +2081,8 @@ Deno.test("enforceUniqueLatest: demotes is_latest across steps but keeps each st
 });
 
 Deno.test("enforceUniqueLatest: promotes the highest step latest when no row is latest", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ version: 1, is_latest: 0, is_step_latest: 1 }));
@@ -1999,7 +2097,8 @@ Deno.test("enforceUniqueLatest: promotes the highest step latest when no row is 
 });
 
 Deno.test("enforceUniqueLatest: never promotes an unpromoted deferred row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -2011,7 +2110,8 @@ Deno.test("enforceUniqueLatest: never promotes an unpromoted deferred row", () =
 });
 
 Deno.test("enforceUniqueLatest: no-op when catalog is clean", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
@@ -2024,7 +2124,8 @@ Deno.test("enforceUniqueLatest: no-op when catalog is clean", () => {
 });
 
 Deno.test("enforceUniqueLatest: does not demote foreign namespace rows with same model_id and data_name", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ namespace: "local", version: 1, is_latest: 1 }));
@@ -2056,7 +2157,8 @@ Deno.test("enforceUniqueLatest: does not demote foreign namespace rows with same
 // ============================================================================
 
 Deno.test("CatalogStore: invalidate advances the generation", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   try {
     const before = store.generation();
     store.invalidate();
@@ -2067,7 +2169,8 @@ Deno.test("CatalogStore: invalidate advances the generation", () => {
 });
 
 Deno.test("CatalogStore: markPopulated with a stale generation leaves the catalog unpopulated", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   try {
     const generation = store.generation();
     store.invalidate();
@@ -2106,7 +2209,8 @@ Deno.test("CatalogStore: another writer's token invalidates once; this catalog's
 });
 
 Deno.test("CatalogStore: without a tracker, recordLocalWrite writes nothing", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   try {
     store.markPopulated();
@@ -2173,7 +2277,8 @@ function makeForward(
 }
 
 Deno.test("CatalogStore.recordRename: records a forward that lookups return", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.recordRename(makeForward());
   store.recordRename(makeForward({ model_id: "model-002", renamed_to: "b" }));
 
@@ -2194,7 +2299,8 @@ Deno.test("CatalogStore.recordRename: records a forward that lookups return", ()
 });
 
 Deno.test("CatalogStore.recordRename: a second rename of the same name replaces the forward", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.recordRename(makeForward({ renamed_to: "first" }));
   store.recordRename(makeForward({ renamed_to: "second" }));
   assertEquals(store.findRenamesFrom("old").map((f) => f.renamed_to), [
@@ -2204,7 +2310,8 @@ Deno.test("CatalogStore.recordRename: a second rename of the same name replaces 
 });
 
 Deno.test("CatalogStore.removeRename: removes only the named forward", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.recordRename(makeForward());
   store.recordRename(makeForward({ model_id: "model-002" }));
   store.removeRename("", "test-model", "model-001", "old");
@@ -2215,7 +2322,8 @@ Deno.test("CatalogStore.removeRename: removes only the named forward", () => {
 });
 
 Deno.test("CatalogStore.upsertNewVersion: writing the old name again ends its forward", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.recordRename(makeForward());
   store.recordRename(makeForward({ model_id: "model-002" }));
 
@@ -2234,7 +2342,8 @@ Deno.test("CatalogStore.upsertNewVersion: writing the old name again ends its fo
 });
 
 Deno.test("CatalogStore.upsert and bulkUpsert: leave forwards alone", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.recordRename(makeForward());
   store.upsert(makeRow({ data_name: "old" }));
   store.bulkUpsert([makeRow({ data_name: "old", version: 2 })]);
@@ -2246,7 +2355,8 @@ Deno.test("CatalogStore.upsert and bulkUpsert: leave forwards alone", () => {
 });
 
 Deno.test("CatalogStore.mergeRenames: adds and replaces forwards, keeping the rest", () => {
-  const store = new CatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
   store.recordRename(makeForward({ data_name: "unseen", renamed_to: "u2" }));
   store.recordRename(makeForward({ data_name: "moved", renamed_to: "before" }));
 
@@ -2264,7 +2374,8 @@ Deno.test("CatalogStore.mergeRenames: adds and replaces forwards, keeping the re
 });
 
 Deno.test("CatalogStore: a schema version change drops recorded forwards", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new CatalogStore(dbPath);
   store.recordRename(makeForward());
   store.markPopulated();

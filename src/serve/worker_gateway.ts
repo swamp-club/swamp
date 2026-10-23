@@ -353,6 +353,8 @@ export class WorkerGateway {
   ) => Promise<EnrollmentToken | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
+  /** Enrollment verifies in flight: each enqueues a transition when done. */
+  readonly #verifies = new Set<Promise<void>>();
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -383,6 +385,28 @@ export class WorkerGateway {
   /** Clean up internal timers (dispatch credential refresh). */
   dispose(): void {
     this.#sessions.dispose();
+  }
+
+  /**
+   * Shuts the gateway down: its timers are cleared so no transition starts
+   * later, and the verifies and transitions already under way are awaited,
+   * so a worker status recorded during shutdown is written before the
+   * process exits (swamp-club#3854).
+   */
+  async close(): Promise<void> {
+    this.dispose();
+    for (const entry of this.#workers.values()) {
+      if (entry.graceTimer !== undefined) {
+        clearTimeout(entry.graceTimer);
+        entry.graceTimer = undefined;
+      }
+      if (entry.expiryTimer !== undefined) {
+        clearTimeout(entry.expiryTimer);
+        entry.expiryTimer = undefined;
+      }
+    }
+    await Promise.allSettled(this.#verifies);
+    await this.#transitions.settled();
   }
 
   /**
@@ -1184,7 +1208,7 @@ export class WorkerGateway {
       return;
     }
     entry.verifying = true;
-    this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
+    const verify = this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
       logger.error(
         "Enrollment verify failed unexpectedly for {worker}: {error}",
         {
@@ -1193,6 +1217,7 @@ export class WorkerGateway {
         },
       );
     }).finally(() => {
+      this.#verifies.delete(verify);
       entry.verifying = false;
       if (!entry.verifyAgain) return;
       entry.verifyAgain = false;
@@ -1204,6 +1229,7 @@ export class WorkerGateway {
         this.#startEnrollmentVerify(workerName);
       }
     });
+    this.#verifies.add(verify);
   }
 
   async #runEnrollmentVerify(workerName: string): Promise<void> {

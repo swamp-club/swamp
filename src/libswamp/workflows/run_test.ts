@@ -210,8 +210,7 @@ function createTestDeps(
 ): WorkflowRunDeps {
   const workflowRepo = new InMemoryWorkflowRepository();
   const runRepo = new InMemoryWorkflowRunRepository();
-  const tempDir = Deno.makeTempDirSync();
-  const catalogStore = new CatalogStore(join(tempDir, "catalog.db"));
+  const catalogStore = new CatalogStore(":memory:");
 
   return {
     workflowRepo,
@@ -855,8 +854,7 @@ function createTestDepsWithCapture(
 ): WorkflowRunDeps {
   const workflowRepo = new InMemoryWorkflowRepository();
   const runRepo = new InMemoryWorkflowRunRepository();
-  const tempDir = Deno.makeTempDirSync();
-  const catalogStore = new CatalogStore(join(tempDir, "catalog.db"));
+  const catalogStore = new CatalogStore(":memory:");
 
   return {
     workflowRepo,

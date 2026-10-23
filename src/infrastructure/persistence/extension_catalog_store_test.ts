@@ -37,12 +37,22 @@ import { MAX_SOURCE_MODULES } from "../../domain/extensions/bundle_freshness.ts"
  * (`<repoRoot>/extensions/<kind>/...` or
  * `<repoRoot>/.swamp/pulled-extensions/<name>/<kind>/...`).
  */
-function makeTempDbPath(): string {
+function makeTempDb(): Disposable & { path: string } {
   const repoRoot = Deno.makeTempDirSync({
     prefix: "swamp-ext-catalog-test-",
   });
   ensureDirSync(join(repoRoot, ".swamp"));
-  return join(repoRoot, ".swamp", "_extension_catalog.db");
+  return {
+    path: join(repoRoot, ".swamp", "_extension_catalog.db"),
+    [Symbol.dispose]() {
+      try {
+        Deno.removeSync(repoRoot, { recursive: true });
+      } catch (error) {
+        // Windows refuses while V8 still holds the SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
 }
 
 function makeRow(overrides: Partial<ExtensionTypeRow> = {}): ExtensionTypeRow {
@@ -60,14 +70,16 @@ function makeRow(overrides: Partial<ExtensionTypeRow> = {}): ExtensionTypeRow {
 }
 
 Deno.test("ExtensionCatalogStore: creates schema on construction", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   assertEquals(store.count(), 0);
   store.close();
 });
 
 Deno.test("ExtensionCatalogStore: openOnFirstUse writes nothing until the catalog is used (swamp-club#3139)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath, { openOnFirstUse: true });
   assertEquals([...Deno.readDirSync(dirname(dbPath))], []);
 
@@ -79,7 +91,8 @@ Deno.test("ExtensionCatalogStore: openOnFirstUse writes nothing until the catalo
 });
 
 Deno.test("ExtensionCatalogStore: closing an unused openOnFirstUse catalog writes nothing (swamp-club#3139)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath, { openOnFirstUse: true });
   store.close();
   assertEquals([...Deno.readDirSync(dirname(dbPath))], []);
@@ -90,7 +103,8 @@ Deno.test("ExtensionCatalogStore: closing an unused openOnFirstUse catalog write
 });
 
 Deno.test("ExtensionCatalogStore: upsert and findByType round-trip", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const row = makeRow();
@@ -106,7 +120,8 @@ Deno.test("ExtensionCatalogStore: upsert and findByType round-trip", () => {
 });
 
 Deno.test("ExtensionCatalogStore: upsert overwrites existing row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ version: "2026.01.15.1" }));
@@ -119,7 +134,8 @@ Deno.test("ExtensionCatalogStore: upsert overwrites existing row", () => {
 });
 
 Deno.test("ExtensionCatalogStore: removeBySourcePath deletes row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow());
@@ -132,7 +148,8 @@ Deno.test("ExtensionCatalogStore: removeBySourcePath deletes row", () => {
 });
 
 Deno.test("ExtensionCatalogStore: removeBySourcePath nonexistent is a no-op", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   store.removeBySourcePath("/nonexistent");
   assertEquals(store.count(), 0);
@@ -140,7 +157,8 @@ Deno.test("ExtensionCatalogStore: removeBySourcePath nonexistent is a no-op", ()
 });
 
 Deno.test("ExtensionCatalogStore: findByKind returns only matching kind", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({
@@ -172,7 +190,8 @@ Deno.test("ExtensionCatalogStore: findByKind returns only matching kind", () => 
 });
 
 Deno.test("ExtensionCatalogStore: findExtensionsForType returns targeting extensions", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   // Base model
@@ -208,7 +227,8 @@ Deno.test("ExtensionCatalogStore: findExtensionsForType returns targeting extens
 });
 
 Deno.test("ExtensionCatalogStore: count filters by kind", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({
@@ -234,7 +254,8 @@ Deno.test("ExtensionCatalogStore: count filters by kind", () => {
 });
 
 Deno.test("ExtensionCatalogStore: isPopulated and markPopulated per kind", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   assertEquals(store.isPopulated("model"), false);
@@ -250,7 +271,8 @@ Deno.test("ExtensionCatalogStore: isPopulated and markPopulated per kind", () =>
 });
 
 Deno.test("ExtensionCatalogStore: invalidate clears populated flag for one kind", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.markPopulated("model");
@@ -265,7 +287,8 @@ Deno.test("ExtensionCatalogStore: invalidate clears populated flag for one kind"
 });
 
 Deno.test("ExtensionCatalogStore: reopen preserves data", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   const store1 = new ExtensionCatalogStore(dbPath);
   store1.upsert(makeRow());
@@ -281,7 +304,8 @@ Deno.test("ExtensionCatalogStore: reopen preserves data", () => {
 });
 
 Deno.test("ExtensionCatalogStore: removeBySourcePrefix removes matching entries", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({
@@ -313,7 +337,8 @@ Deno.test("ExtensionCatalogStore: removeBySourcePrefix removes matching entries"
 });
 
 Deno.test("findBySourcePathPrefix: returns matching rows ordered by source_path", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({
@@ -346,7 +371,8 @@ Deno.test("findBySourcePathPrefix: returns matching rows ordered by source_path"
 });
 
 Deno.test("findBySourcePathPrefix and removeBySourcePrefix: treat _ and % in the prefix literally", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   const root = "/repo/.swamp/pulled-extensions/@acme";
   store.upsert(makeRow({
@@ -386,7 +412,8 @@ Deno.test("findBySourcePathPrefix and removeBySourcePrefix: treat _ and % in the
 });
 
 Deno.test("findBySourcePathPrefix: works when extension_name is empty", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({
@@ -422,7 +449,8 @@ Deno.test("findBySourcePathPrefix: works when extension_name is empty", () => {
 });
 
 Deno.test("ExtensionCatalogStore: same type different kinds are separate entries", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   // Hypothetical: same name used as both model and vault (different source files)
@@ -452,7 +480,8 @@ Deno.test("ExtensionCatalogStore: same type different kinds are separate entries
 });
 
 Deno.test("ExtensionCatalogStore: concurrent opens do not throw database is locked", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // Simulate two processes opening the same DB simultaneously
   const store1 = new ExtensionCatalogStore(dbPath);
@@ -483,7 +512,8 @@ Deno.test("ExtensionCatalogStore: concurrent opens do not throw database is lock
 });
 
 Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type coexist", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   // Base model
@@ -522,13 +552,15 @@ Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type c
 });
 
 Deno.test("ExtensionCatalogStore: getLayoutVersion returns undefined when not set", () => {
-  const store = new ExtensionCatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new ExtensionCatalogStore(tempDb.path);
   assertEquals(store.getLayoutVersion(), undefined);
   store.close();
 });
 
 Deno.test("ExtensionCatalogStore: setLayoutVersion and getLayoutVersion round-trip", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   store.setLayoutVersion("namespaced-v1");
   assertEquals(store.getLayoutVersion(), "namespaced-v1");
@@ -541,7 +573,8 @@ Deno.test("ExtensionCatalogStore: setLayoutVersion and getLayoutVersion round-tr
 });
 
 Deno.test("ExtensionCatalogStore: setLayoutVersion overwrites previous value", () => {
-  const store = new ExtensionCatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new ExtensionCatalogStore(tempDb.path);
   store.setLayoutVersion("v1");
   store.setLayoutVersion("v2");
   assertEquals(store.getLayoutVersion(), "v2");
@@ -549,7 +582,8 @@ Deno.test("ExtensionCatalogStore: setLayoutVersion overwrites previous value", (
 });
 
 Deno.test("ExtensionCatalogStore: upsert and findByType round-trip source_fingerprint", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ source_fingerprint: "abc123deadbeef" }));
@@ -559,7 +593,8 @@ Deno.test("ExtensionCatalogStore: upsert and findByType round-trip source_finger
 });
 
 Deno.test("ExtensionCatalogStore: source_fingerprint defaults to empty string when omitted from upsert", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   // Row built without source_fingerprint — sibling loaders (reports,
@@ -571,7 +606,8 @@ Deno.test("ExtensionCatalogStore: source_fingerprint defaults to empty string wh
 });
 
 Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fingerprint column", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
   // Seed a DB with the pre-#125 schema — no source_fingerprint column.
@@ -653,7 +689,8 @@ for (
   Deno.test(
     `ExtensionCatalogStore: migrates pre-#128 ${kind} row by adding empty source_fingerprint (#128)`,
     () => {
-      const dbPath = makeTempDbPath();
+      using tempDb = makeTempDb();
+      const dbPath = tempDb.path;
       ensureDirSync(dirname(dbPath));
 
       // Source path under <repoRoot>/.swamp/pulled-extensions/... so the
@@ -792,7 +829,8 @@ function seedCatalogAwaitingExtendsBackfill(
 }
 
 Deno.test("ExtensionCatalogStore: backfills empty extends_type on Indexed extension rows (swamp-club#903)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const sourcePath = join(
     dirname(dirname(dbPath)),
     ".swamp",
@@ -819,7 +857,8 @@ Deno.test("ExtensionCatalogStore: backfills empty extends_type on Indexed extens
 });
 
 Deno.test("ExtensionCatalogStore: extends_type backfill leaves primary and non-Indexed rows untouched (swamp-club#903)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const base = join(dirname(dirname(dbPath)), ".swamp", "pulled-extensions");
   seedCatalogAwaitingExtendsBackfill(dbPath, [
     // Primary model — must stay empty.
@@ -851,7 +890,8 @@ Deno.test("ExtensionCatalogStore: extends_type backfill leaves primary and non-I
 });
 
 Deno.test("ExtensionCatalogStore: extends_type backfill runs at most once (swamp-club#903)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const sourcePath = join(
     dirname(dirname(dbPath)),
     ".swamp",
@@ -904,7 +944,8 @@ Deno.test("ExtensionCatalogStore: extends_type backfill runs at most once (swamp
 // state === 'ValidationFailed'.
 
 Deno.test("ExtensionCatalogStore: upsert and findByType round-trip state", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ state: "ValidationFailed" }));
@@ -914,7 +955,8 @@ Deno.test("ExtensionCatalogStore: upsert and findByType round-trip state", () =>
 });
 
 Deno.test("ExtensionCatalogStore: state defaults to 'Indexed' when omitted from upsert", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow());
@@ -924,7 +966,8 @@ Deno.test("ExtensionCatalogStore: state defaults to 'Indexed' when omitted from 
 });
 
 Deno.test("ExtensionCatalogStore: upsert without state preserves existing non-default state", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ state: "ValidationFailed" }));
@@ -935,7 +978,8 @@ Deno.test("ExtensionCatalogStore: upsert without state preserves existing non-de
 });
 
 Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites existing state", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ state: "ValidationFailed" }));
@@ -946,7 +990,8 @@ Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites existing
 });
 
 Deno.test("ExtensionCatalogStore: upsert without state preserves existing last_error", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ state: "BundleBuildFailed", last_error: "boom" }));
@@ -958,7 +1003,8 @@ Deno.test("ExtensionCatalogStore: upsert without state preserves existing last_e
 });
 
 Deno.test("ExtensionCatalogStore: canonicalized source_path resolves via deriveExtensionIdentity", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const windowsPath = "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts";
@@ -982,7 +1028,8 @@ Deno.test("ExtensionCatalogStore: canonicalized source_path resolves via deriveE
 });
 
 Deno.test("ExtensionCatalogStore: findBySourcePath canonicalizes input before lookup", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const canonical = canonicalizePathFor(
@@ -1013,7 +1060,8 @@ Deno.test("ExtensionCatalogStore: findBySourcePath canonicalizes input before lo
 });
 
 Deno.test("ExtensionCatalogStore: removeBySourcePath deletes by exact stored path", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const canonical = canonicalizePathFor(
@@ -1029,7 +1077,8 @@ Deno.test("ExtensionCatalogStore: removeBySourcePath deletes by exact stored pat
 });
 
 Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites both state and last_error", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ state: "BundleBuildFailed", last_error: "boom" }));
@@ -1045,7 +1094,8 @@ Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of state", 
   // ValidationFailed rows so the stable broken fingerprint terminates
   // the rebundle loop (swamp-club#209). Filtering must NOT happen at
   // the store layer — only at registration call sites.
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const repoRoot = dirname(dirname(dbPath));
@@ -1077,7 +1127,8 @@ Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of state", 
 });
 
 Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_failed column", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
   // Source path under <repoRoot>/.swamp/pulled-extensions/... so the
@@ -1157,7 +1208,8 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
 // post-bump rescan story).
 
 Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling state from validation_failed", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
   // Source paths under <repoRoot>/.swamp/pulled-extensions/... so the
@@ -1253,7 +1305,8 @@ Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling stat
 });
 
 Deno.test("ExtensionCatalogStore: W1a migration backfills extension_name for pulled rows (extension_version intentionally empty per Option A)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
   const repoRoot = dirname(dirname(dbPath));
   const sourcePath = join(
@@ -1311,7 +1364,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills extension_name for pul
 });
 
 Deno.test("ExtensionCatalogStore: W1a migration backfills @local/<repo> for rows under extensions/<kind>/ (version 0.0.0)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
   const repoRoot = dirname(dirname(dbPath));
   const sourcePath = join(repoRoot, "extensions", "models", "echo.ts");
@@ -1357,7 +1411,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills @local/<repo> for rows
 });
 
 Deno.test("ExtensionCatalogStore: W1a migration drops rows whose path doesn't match the heuristic (and post-condition verify rebuild path)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
 
   const seed = new DatabaseSync(dbPath);
@@ -1407,7 +1462,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
   // the DELETE step. validation_failed=1 → state='ValidationFailed' on
   // the broken pulled row. Verifies all branches of
   // deriveExtensionIdentity compose correctly inside one transaction.
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   ensureDirSync(dirname(dbPath));
   const repoRoot = dirname(dirname(dbPath));
 
@@ -1566,7 +1622,8 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
 // catch handler is sufficient.
 
 Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clears populated:* keys, marks migration applied", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   const repoRoot = dirname(dirname(dbPath));
 
@@ -1652,11 +1709,10 @@ type MigrationInternals = {
  * flag, then clears the v3 migration marker so the next migrateSchema
  * call runs the data-migration transaction again.
  */
-function openStoreWithPendingMigration(): {
+function openStoreWithPendingMigration(dbPath: string): {
   store: ExtensionCatalogStore;
   internals: MigrationInternals;
 } {
-  const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
   const repoRoot = dirname(dirname(dbPath));
   store.upsert(makeRow({
@@ -1680,7 +1736,8 @@ function openStoreWithPendingMigration(): {
 }
 
 Deno.test("ExtensionCatalogStore: data migration rethrows a lock error without a cold-start rebuild", () => {
-  const { store, internals } = openStoreWithPendingMigration();
+  using tempDb = makeTempDb();
+  const { store, internals } = openStoreWithPendingMigration(tempDb.path);
   try {
     internals.backfillExtensionIdentity = () => {
       throw new Error("database is locked");
@@ -1703,7 +1760,8 @@ Deno.test("ExtensionCatalogStore: data migration rethrows a lock error without a
 });
 
 Deno.test("ExtensionCatalogStore: data migration falls back to cold-start rebuild on a non-lock error", () => {
-  const { store, internals } = openStoreWithPendingMigration();
+  using tempDb = makeTempDb();
+  const { store, internals } = openStoreWithPendingMigration(tempDb.path);
   try {
     internals.backfillExtensionIdentity = () => {
       throw new Error("backfill heuristic gap");
@@ -1720,7 +1778,8 @@ Deno.test("ExtensionCatalogStore: data migration falls back to cold-start rebuil
 });
 
 Deno.test("ExtensionCatalogStore: data migration skips work another process applied while it waited for the lock", () => {
-  const { store, internals } = openStoreWithPendingMigration();
+  using tempDb = makeTempDb();
+  const { store, internals } = openStoreWithPendingMigration(tempDb.path);
   try {
     // The outer fast-path check sees no marker; the re-check under the
     // write lock sees the marker another process committed meanwhile.
@@ -1758,7 +1817,8 @@ Deno.test("ExtensionCatalogStore: data migration skips work another process appl
 // identity columns to the SET list.
 
 Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extension_name/extension_version on UPDATE (ADV-V3-1 canary)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   // Manually INSERT a row with backfilled identity, simulating the
@@ -1820,7 +1880,8 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
   // Set up a pre-W1b shape on disk: bundle_types includes the
   // validation_failed column, has a real row with a value, and the W1a
   // marker keys are absent so the data migration also runs.
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const seed = new DatabaseSync(dbPath);
   seed.exec(`
     CREATE TABLE bundle_types (
@@ -1930,7 +1991,8 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes t
 Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration is idempotent (second run is a no-op)", () => {
   // Run migrateSchema twice; second run finds the marker and short-
   // circuits without touching the schema.
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   // First open: creates fresh schema (no validation_failed column),
   // then migrateSchema marks the migration as applied.
   const store1 = new ExtensionCatalogStore(dbPath);
@@ -1968,7 +2030,8 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs
   // ROLLBACK fired, the original schema and rows survive, the
   // bundle_meta marker was NOT set (so the next migrateSchema run
   // retries cleanly).
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
 
   // Step 1: open a fresh catalog so the schema is created and the
   // drop-migration marker is set (for a fresh DB the column is already
@@ -2091,7 +2154,8 @@ Deno.test({
     "ExtensionCatalogStore: recovers from read-only catalog by deleting and recreating",
   ignore: Deno.build.os === "windows",
   fn() {
-    const dbPath = makeTempDbPath();
+    using tempDb = makeTempDb();
+    const dbPath = tempDb.path;
 
     // Seed an old-schema catalog missing the 'last_error' column.
     const seed = new DatabaseSync(dbPath);
@@ -2146,7 +2210,8 @@ Deno.test({
 });
 
 Deno.test("ExtensionCatalogStore: runInTransaction retries on database-is-locked then succeeds", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   let callCount = 0;
@@ -2174,7 +2239,8 @@ Deno.test("ExtensionCatalogStore: runInTransaction retries on database-is-locked
 });
 
 Deno.test("ExtensionCatalogStore: runInTransaction gives up after MAX_RETRIES on persistent lock", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   let callCount = 0;
@@ -2197,7 +2263,8 @@ Deno.test("ExtensionCatalogStore: runInTransaction gives up after MAX_RETRIES on
 });
 
 Deno.test("ExtensionCatalogStore: runInTransaction throws non-lock errors immediately", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   try {
@@ -2216,7 +2283,8 @@ Deno.test("ExtensionCatalogStore: runInTransaction throws non-lock errors immedi
 });
 
 Deno.test("pruneUnreachableSources: removes rows outside the repo root", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2250,7 +2318,8 @@ Deno.test("pruneUnreachableSources: removes rows outside the repo root", () => {
 });
 
 Deno.test("pruneUnreachableSources: skips Tombstoned rows even if outside repo root", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2272,7 +2341,8 @@ Deno.test("pruneUnreachableSources: skips Tombstoned rows even if outside repo r
 });
 
 Deno.test("pruneUnreachableSources: preserves all rows under the repo root", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2300,7 +2370,8 @@ Deno.test("pruneUnreachableSources: preserves all rows under the repo root", () 
 });
 
 Deno.test("pruneUnreachableSources: preserves rows in protectedPaths even if outside repo root", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2341,7 +2412,8 @@ Deno.test("pruneUnreachableSources: preserves rows in protectedPaths even if out
 });
 
 Deno.test("pruneUnreachableSources: keeps rows of live sources under a mounted dir (swamp-club#2563)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2374,7 +2446,8 @@ Deno.test("pruneUnreachableSources: keeps rows of live sources under a mounted d
 // ── settleMountedTypeConflicts ──────────────────────────────────────
 
 Deno.test("settleMountedTypeConflicts: a local row wins over a mounted row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2399,7 +2472,8 @@ Deno.test("settleMountedTypeConflicts: a local row wins over a mounted row", () 
 });
 
 Deno.test("settleMountedTypeConflicts: the earlier mount wins, whatever the path order", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2420,7 +2494,8 @@ Deno.test("settleMountedTypeConflicts: the earlier mount wins, whatever the path
 });
 
 Deno.test("settleMountedTypeConflicts: leaves pulled rows, local-vs-local and repos without mounts alone", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2458,7 +2533,8 @@ Deno.test("settleMountedTypeConflicts: leaves pulled rows, local-vs-local and re
 // ── resolveOriginConflicts ──────────────────────────────────────────
 
 Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2479,7 +2555,8 @@ Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {
 });
 
 Deno.test("resolveOriginConflicts: clears pulled type when local claims same type", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2516,7 +2593,8 @@ Deno.test("resolveOriginConflicts: clears pulled type when local claims same typ
 });
 
 Deno.test("resolveOriginConflicts: same-origin conflict is untouched", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2548,7 +2626,8 @@ Deno.test("resolveOriginConflicts: same-origin conflict is untouched", () => {
 });
 
 Deno.test("resolveOriginConflicts: skips extension-kind rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2580,7 +2659,8 @@ Deno.test("resolveOriginConflicts: skips extension-kind rows", () => {
 });
 
 Deno.test("resolveOriginConflicts: skips Tombstoned rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2611,7 +2691,8 @@ Deno.test("resolveOriginConflicts: skips Tombstoned rows", () => {
 });
 
 Deno.test("resolveOriginConflicts: idempotent", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2646,7 +2727,8 @@ Deno.test("resolveOriginConflicts: idempotent", () => {
 });
 
 Deno.test("resolveOriginConflicts: different kinds do not conflict", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const store = new ExtensionCatalogStore(dbPath);
 
@@ -2686,7 +2768,9 @@ Deno.test("deduplicateNonCanonicalPaths: heals ghost row during startup migratio
   // On POSIX canonicalizePath is a no-op — ghost rows can't exist.
   if (Deno.build.os !== "windows") return;
 
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+
+  const dbPath = tempDb.path;
   const canonicalPath = "c:/project/extensions/models/foo.ts";
   const ghostPath = "C:\\Project\\extensions\\models\\foo.ts";
 
@@ -2740,7 +2824,8 @@ Deno.test("deduplicateNonCanonicalPaths: heals ghost row during startup migratio
 });
 
 Deno.test("deduplicateNonCanonicalPaths: is idempotent (gated by migration marker)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow({ source_path: "/repo/extensions/models/baz.ts" }));
@@ -2753,7 +2838,8 @@ Deno.test("deduplicateNonCanonicalPaths: is idempotent (gated by migration marke
 });
 
 Deno.test("upsert: stores source_path through canonicalizePath", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const inputPath = "/repo/extensions/models/foo.ts";
@@ -2770,7 +2856,8 @@ Deno.test("upsert: stores source_path through canonicalizePath", () => {
 });
 
 Deno.test("removeBySourcePath: deletes by canonicalized path", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   const path = "/repo/extensions/models/foo.ts";
@@ -2783,7 +2870,8 @@ Deno.test("removeBySourcePath: deletes by canonicalized path", () => {
 });
 
 Deno.test("removeByRawSourcePath: deletes by exact stored PK without canonicalizing", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
 
   // Insert a row with a non-canonical path directly via SQL, simulating
@@ -2826,7 +2914,8 @@ const LEGACY = "/repo/.swamp/pulled-extensions";
 const MANAGED = "/repo/.swamp/config/pulled-extensions";
 
 function withStore(fn: (store: ExtensionCatalogStore) => void): void {
-  const store = new ExtensionCatalogStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new ExtensionCatalogStore(tempDb.path);
   try {
     fn(store);
   } finally {
@@ -3174,7 +3263,8 @@ const FIXTURE_TEXT =
   'const f = `export const model = { type: "@acme/thing" }`;\n';
 
 Deno.test("ExtensionCatalogStore: opening prunes duplicate claims whose sources declare the type only in fixtures", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const dir = fixtureDir(dbPath);
   const fixtureA = join(dir, "introspect_test.ts");
   const fixtureB = join(dir, "factory_test.ts");
@@ -3206,7 +3296,8 @@ Deno.test("ExtensionCatalogStore: opening prunes duplicate claims whose sources 
 });
 
 Deno.test("ExtensionCatalogStore: the prune keeps a duplicate claim whose source declares it behind a regex with a backtick", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const dir = fixtureDir(dbPath);
   const fixture = join(dir, "fixture_test.ts");
   const runner = join(dir, "runner.ts");
@@ -3232,7 +3323,8 @@ Deno.test("ExtensionCatalogStore: the prune keeps a duplicate claim whose source
 });
 
 Deno.test("ExtensionCatalogStore: the prune leaves claims that conflict with nothing", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const dir = fixtureDir(dbPath);
   const fixture = join(dir, "lonely_test.ts");
   Deno.writeTextFileSync(fixture, FIXTURE_TEXT);
@@ -3248,7 +3340,8 @@ Deno.test("ExtensionCatalogStore: the prune leaves claims that conflict with not
 });
 
 Deno.test("ExtensionCatalogStore: the prune leaves rows with an identity, extension rows, non-Indexed and unreadable rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const dir = fixtureDir(dbPath);
   const identified = join(dir, "identified_test.ts");
   const extensionRow = join(dir, "extension_test.ts");
@@ -3273,7 +3366,8 @@ Deno.test("ExtensionCatalogStore: the prune leaves rows with an identity, extens
 });
 
 Deno.test("ExtensionCatalogStore: the prune leaves pulled extension rows", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const repoRoot = dirname(dirname(dbPath));
   const pulledDir = join(
     repoRoot,
@@ -3302,7 +3396,8 @@ Deno.test("ExtensionCatalogStore: the prune leaves pulled extension rows", () =>
 });
 
 Deno.test("ExtensionCatalogStore: isKnownNoExport matches only the recorded kind and fingerprint", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   try {
     const path = join(
@@ -3327,7 +3422,8 @@ Deno.test("ExtensionCatalogStore: isKnownNoExport matches only the recorded kind
 // -- Recorded source modules (swamp-club#3385) ---------------------------
 
 Deno.test("ExtensionCatalogStore: recorded source modules round-trip, survive reopening, and can be deleted", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const root = dirname(dirname(dbPath));
   const entry = join(root, "extensions", "models", "echo.ts");
   const lib = join(root, "extensions", "lib", "msg.ts");
@@ -3352,7 +3448,8 @@ Deno.test("ExtensionCatalogStore: recorded source modules round-trip, survive re
 });
 
 Deno.test("ExtensionCatalogStore: recorded source modules are keyed by the canonical path", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   try {
     const entry = join(dirname(dirname(dbPath)), "Models", "Echo.ts");
@@ -3367,7 +3464,8 @@ Deno.test("ExtensionCatalogStore: recorded source modules are keyed by the canon
 });
 
 Deno.test("ExtensionCatalogStore: a malformed recorded module list reads as none", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new ExtensionCatalogStore(dbPath);
   const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
   try {
@@ -3401,7 +3499,8 @@ Deno.test("ExtensionCatalogStore: a malformed recorded module list reads as none
 // -- Graph-pending source modules (swamp-club#3487) ----------------------
 
 Deno.test("ExtensionCatalogStore: a graph-pending mark is set by a record, cleared by a re-record, and taken once", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
   const store = new ExtensionCatalogStore(dbPath);
   try {
@@ -3429,7 +3528,8 @@ Deno.test("ExtensionCatalogStore: a graph-pending mark is set by a record, clear
 });
 
 Deno.test("ExtensionCatalogStore: a catalog whose source_modules has no graph_pending column gains it on open", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
   const store = new ExtensionCatalogStore(dbPath);
   store.close();
@@ -3459,7 +3559,8 @@ Deno.test("ExtensionCatalogStore: a catalog whose source_modules has no graph_pe
 });
 
 Deno.test("ExtensionCatalogStore: a module list over the cap is refused, not stored", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const entry = join(dirname(dirname(dbPath)), "models", "echo.ts");
   const store = new ExtensionCatalogStore(dbPath);
   try {

@@ -40,6 +40,7 @@ import {
   type ReplicationHandle,
   type ReplicatorDeps,
 } from "./litestream_replicator.ts";
+import { defaultPrivateRoot } from "./replication_files.ts";
 import { v3ReplicaFor } from "../v3_datastore_binding.ts";
 
 export type { ReplicationHandle } from "./litestream_replicator.ts";
@@ -109,6 +110,15 @@ export function setV3ReplicationForTesting(
 /** This process's replicator: one per process, shared by every writer. */
 export function v3Replicator(): LitestreamReplicator {
   return theReplicator();
+}
+
+/**
+ * The private root this process's replicator uses, or the test seam's: a
+ * copy's paths are taken from it too, so the two always agree
+ * (swamp-club#3854).
+ */
+export function v3PrivateRoot(): string {
+  return testDeps?.privateRoot ?? defaultPrivateRoot();
 }
 
 /** The hash-checked Litestream binary, or the test seam's. */

@@ -615,6 +615,31 @@ Deno.test("WorkerGateway: disconnect starts the grace window; reconnect cancels 
   await new Promise((r) => setTimeout(r, 250));
 });
 
+Deno.test("WorkerGateway: close waits for a disconnect being recorded and stops the grace window (swamp-club#3854)", async () => {
+  const held = Promise.withResolvers<void>();
+  const order: string[] = [];
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    runModelMethod: async (input) => {
+      if (input.inputs.status !== "disconnected") return;
+      await held.promise;
+      order.push("disconnect written");
+    },
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  dropSocket();
+  assertEquals(h.gateway.pendingGraceWindows, 1);
+
+  const closing = h.gateway.close().then(() => order.push("closed"));
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  // A full turn: every microtask close() could settle on has run.
+  await new Promise((r) => setTimeout(r, 0));
+  held.resolve();
+  await closing;
+  assertEquals(order, ["disconnect written", "closed"]);
+});
+
 Deno.test("WorkerGateway: a restarted process on the same machine re-enrolls after a disconnect", async () => {
   const h = createHarness({ graceWindowMs: 200 });
   const first = connectWorkerSocket(h.gateway);

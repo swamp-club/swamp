@@ -102,7 +102,10 @@ export interface RunWorkerOptions {
   swampVersion: string;
   /** Overrides the data-plane base URL derived from the connect URL. */
   dataPlaneUrl?: string;
-  /** Bundle/asset cache directory; defaults to a fresh temp dir. */
+  /**
+   * Bundle/asset cache directory; defaults to a fresh temp dir, removed when
+   * the worker exits unless a dispatch is still running from it.
+   */
   cacheDir?: string;
   /** Abort to shut the worker down. */
   signal?: AbortSignal;
@@ -161,13 +164,53 @@ interface SessionState {
 export async function runWorker(
   options: RunWorkerOptions,
 ): Promise<WorkerExitResult> {
+  const dispatches: DispatchCount = { active: 0 };
+  if (options.cacheDir !== undefined) {
+    return await runWorkerFrom(options, options.cacheDir, dispatches);
+  }
+  const cacheDir = await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
+  try {
+    return await runWorkerFrom(options, cacheDir, dispatches);
+  } finally {
+    await releaseWorkerCacheDir(cacheDir, dispatches.active);
+  }
+}
+
+/**
+ * Removes the temp cache directory a worker made for itself. An abort
+ * returns without waiting for in-flight dispatches, which may still be
+ * running bundles from it: the directory is then left behind.
+ */
+export async function releaseWorkerCacheDir(
+  cacheDir: string,
+  activeDispatches: number,
+): Promise<void> {
+  if (activeDispatches > 0) {
+    logger
+      .debug`Keeping worker cache ${cacheDir}: ${activeDispatches} dispatch(es) still running`;
+    return;
+  }
+  try {
+    await Deno.remove(cacheDir, { recursive: true });
+  } catch (error) {
+    logger.debug`Removing worker cache ${cacheDir} failed: ${error}`;
+  }
+}
+
+interface DispatchCount {
+  active: number;
+}
+
+async function runWorkerFrom(
+  options: RunWorkerOptions,
+  cacheDir: string,
+  dispatches: DispatchCount,
+): Promise<WorkerExitResult> {
   const instanceUuid = crypto.randomUUID();
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const gate: GateState = { admitted: options.admitGatePass === undefined };
   const dataPlaneUrl = options.dataPlaneUrl ??
     dataPlaneUrlFromConnectUrl(options.url);
-  const cacheDir = options.cacheDir ??
-    await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
   const machineId = await loadOrCreateMachineId(cacheDir);
   const httpClient = options.caCerts?.length
     ? createTlsHttpClient({ caCerts: options.caCerts })
@@ -176,7 +219,6 @@ export async function runWorker(
   const concurrency = options.concurrency ?? 1;
   let drainReason: WorkerExitReason | null = null;
   let dispatchCount = 0;
-  let activeDispatches = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let currentDrainHandle: DispatchHandlerHandle | null = null;
   let currentChannel: RpcChannel | null = null;
@@ -269,18 +311,18 @@ export async function runWorker(
             startIdleTimer();
           },
           onDispatchStarted: () => {
-            activeDispatches++;
+            dispatches.active++;
             clearIdleTimer();
           },
           onDispatchFinished: () => {
-            activeDispatches--;
+            dispatches.active--;
             dispatchCount++;
             if (
               options.maxDispatches !== undefined &&
               dispatchCount >= options.maxDispatches
             ) {
               triggerDrain("max-dispatches");
-            } else if (activeDispatches === 0) {
+            } else if (dispatches.active === 0) {
               startIdleTimer();
             }
           },

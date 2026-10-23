@@ -18,8 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { runWorker, type WorkerStatusEvent } from "./connect.ts";
+import {
+  releaseWorkerCacheDir,
+  runWorker,
+  type WorkerStatusEvent,
+} from "./connect.ts";
 import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
@@ -319,10 +324,33 @@ Deno.test("runWorker: a stable cache directory keeps the machine id across resta
       enrollments[0].instanceUuid === enrollments[1].instanceUuid,
       false,
     );
+    // The caller's directory is the caller's: exit leaves it in place.
+    await Deno.stat(join(cacheDir, "machine-id"));
   } finally {
     await Deno.remove(cacheDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("releaseWorkerCacheDir: removes the worker's own cache once no dispatch is running (swamp-club#3854)", async () => {
+  const cacheDir = await Deno.makeTempDir({ prefix: "swamp-worker-test-" });
+  await Deno.mkdir(join(cacheDir, "bundles"));
+  await releaseWorkerCacheDir(cacheDir, 0);
+  assertEquals(await exists(cacheDir), false);
+});
+
+Deno.test("releaseWorkerCacheDir: keeps the cache while a dispatch is still running from it (swamp-club#3854)", async () => {
+  const cacheDir = await Deno.makeTempDir({ prefix: "swamp-worker-test-" });
+  try {
+    await releaseWorkerCacheDir(cacheDir, 1);
+    assertEquals(await exists(cacheDir), true);
+  } finally {
+    await Deno.remove(cacheDir, { recursive: true });
+  }
+});
+
+async function exists(path: string): Promise<boolean> {
+  return await Deno.stat(path).then(() => true, () => false);
+}
 
 /**
  * A socket that immediately closes without calling onopen — simulates

@@ -616,7 +616,7 @@ Deno.test("handleMessage cancel of another connection's run records who cancelle
     principalId: "user:someone-else",
   });
   const audit: AuditEvent[] = [];
-  const ctx = {
+  using ctx = {
     ...makeCtx(modeTokenConfig, [
       makeGrant({
         subject: { kind: "user", name: "adam" },
@@ -627,7 +627,7 @@ Deno.test("handleMessage cancel of another connection's run records who cancelle
     activeRunRegistry: registry,
     instanceId: "inst-1",
     auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
   const mock = createMockSocket();
 
   handleMessage(
@@ -666,7 +666,7 @@ Deno.test("handleMessage audits a request and a cancel with the connection's log
     principalId: "user:someone-else",
   });
   const audit: AuditEvent[] = [];
-  const ctx = {
+  using ctx = {
     ...makeCtx(modeTokenConfig, [
       makeGrant({
         subject: { kind: "user", name: "adam" },
@@ -677,7 +677,7 @@ Deno.test("handleMessage audits a request and a cancel with the connection's log
     activeRunRegistry: registry,
     instanceId: "inst-1",
     auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
   const mock = createMockSocket();
   const socket = mock as unknown as WebSocket;
   setConnectionCollectives(socket, ["a-collective"], []);
@@ -724,7 +724,7 @@ Deno.test("handleMessage cancel refused for lack of a run grant is silent and au
     principalId: "user:someone-else",
   });
   const audit: AuditEvent[] = [];
-  const ctx = {
+  using ctx = {
     ...makeCtx(modeTokenConfig, [
       makeGrant({
         subject: { kind: "user", name: "adam" },
@@ -735,7 +735,7 @@ Deno.test("handleMessage cancel refused for lack of a run grant is silent and au
     activeRunRegistry: registry,
     instanceId: "inst-1",
     auditEmitter: { emit: (event: AuditEvent) => audit.push(event) },
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
   const mock = createMockSocket();
 
   handleMessage(
@@ -760,12 +760,12 @@ function sendAuditGatedRequest(
   failOpen: boolean,
   durableStalled: boolean,
 ): MockSocket {
-  const ctx = {
+  using ctx = {
     ...makeCtx(modeTokenConfig, []),
     instanceId: "inst-1",
     auditEmitter: { emit: () => {}, durableStalled },
     auditFailOpen: failOpen,
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
   const mock = createMockSocket();
   handleMessage(
     mock as unknown as WebSocket,
@@ -1086,22 +1086,32 @@ const stubRepoContext = {
   },
 } as unknown as ConnectionContext["repoContext"];
 
-const stubRepoDir = await Deno.makeTempDir({ prefix: "swamp_conn_test_" });
-
+/** A ctx over its own temp repo dir, removed when the ctx is disposed. */
 function makeCtx(
   authConfig: ServeAuthConfig,
   grants: Grant[] = [],
-): ConnectionContext {
+): ConnectionContext & Disposable {
+  const repoDir = Deno.makeTempDirSync({ prefix: "swamp_conn_test_" });
   const ctx: Partial<ConnectionContext> = {
     authConfig,
     repoContext: stubRepoContext,
-    repoDir: stubRepoDir,
+    repoDir,
   };
   if (authConfig.mode !== "none") {
     (ctx as Record<string, unknown>).policySnapshotLoader =
       makeMockSnapshotLoader(grants);
   }
-  return ctx as ConnectionContext;
+  return {
+    ...ctx as ConnectionContext,
+    [Symbol.dispose]() {
+      try {
+        Deno.removeSync(repoDir, { recursive: true });
+      } catch (error) {
+        // Windows refuses while a handler still holds a SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
 }
 
 // ── Authorization: mode:none bypass ───────────────────────────────────────
@@ -1109,7 +1119,7 @@ function makeCtx(
 Deno.test("authorizeOrReject: mode:none allows all requests without principal", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeNoneConfig);
+  using ctx = makeCtx(modeNoneConfig);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1140,7 +1150,7 @@ Deno.test("authorizeOrReject: mode:none allows all requests without principal", 
 Deno.test("authorizeOrReject: null principal rejected in token mode", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1173,7 +1183,7 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
     actions: ["run"],
     resource: { kind: "workflow", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1205,7 +1215,7 @@ Deno.test("authorizeOrReject: authorized workflow.run proceeds", async () => {
 Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1239,7 +1249,7 @@ Deno.test("authorizeOrReject: access.reload requires admin on access:*", () => {
     actions: ["read"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1268,7 +1278,7 @@ Deno.test("authorizeOrReject: access.reload allowed with admin grant", () => {
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1304,7 +1314,7 @@ for (const type of ["cluster.instances", "serve.config"]) {
       actions: ["read"],
       resource: { kind: "access", pattern: "*" },
     });
-    const ctx = makeCtx(modeTokenConfig, [grant]);
+    using ctx = makeCtx(modeTokenConfig, [grant]);
 
     handleMessage(
       mock as unknown as WebSocket,
@@ -1332,7 +1342,7 @@ for (const type of ["cluster.instances", "serve.config"]) {
       actions: ["admin"],
       resource: { kind: "access", pattern: "*" },
     });
-    const ctx = makeCtx(modeTokenConfig, [grant]);
+    using ctx = makeCtx(modeTokenConfig, [grant]);
 
     handleMessage(
       mock as unknown as WebSocket,
@@ -1362,7 +1372,7 @@ for (const type of ["cluster.instances", "serve.config"]) {
 Deno.test("authorizeOrReject: access.grant.list rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1389,7 +1399,7 @@ Deno.test("authorizeOrReject: access.grant.list rejected without read grant", ()
 Deno.test("authorizeOrReject: access.group.list rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1421,7 +1431,7 @@ Deno.test("authorizeOrReject: admin on access:* allows grant list without explic
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1451,7 +1461,7 @@ Deno.test("authorizeOrReject: admin on access:* allows group list without explic
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1483,7 +1493,7 @@ Deno.test("authorizeOrReject: admin on access:* grants workflow run (superuser)"
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1523,7 +1533,7 @@ Deno.test("authorizeOrReject: explicit deny beats admin on access:*", () => {
       resource: { kind: "access", pattern: "*" },
     }),
   ];
-  const ctx = makeCtx(modeTokenConfig, grants);
+  using ctx = makeCtx(modeTokenConfig, grants);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1563,7 +1573,7 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", async (
       resource: { kind: "workflow", pattern: "*" },
     }),
   ];
-  const ctx = makeCtx(modeTokenConfig, grants);
+  using ctx = makeCtx(modeTokenConfig, grants);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1590,7 +1600,7 @@ Deno.test("authorizeOrReject: resolvedUserNames replaces raw ID in error message
   const active = new Map<string, AbortController>();
   const opaqueId = "699e486007f77116ebf44bd2";
   const principal: Principal = { kind: "user", id: opaqueId };
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
   ctx.resolvedUserNames = { [opaqueId]: "stack72" };
 
   handleMessage(
@@ -1619,7 +1629,7 @@ Deno.test("authorizeOrReject: falls back to raw ID when resolvedUserNames absent
   const active = new Map<string, AbortController>();
   const opaqueId = "699e486007f77116ebf44bd2";
   const principal: Principal = { kind: "user", id: opaqueId };
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1660,7 +1670,7 @@ function assertDenormDenied(
   Deno.test(`isAccessModelType: denormalized ${label} "${typeArg}" requires admin`, async () => {
     const mock = createMockSocket();
     const active = new Map<string, AbortController>();
-    const ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
+    using ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
 
     handleMessage(
       mock as unknown as WebSocket,
@@ -1765,7 +1775,7 @@ assertDenormDenied("swamp fleet-probe", "fleet-probe-space");
 Deno.test("isAccessModelType: normal model typeArg still uses model:* run, not admin", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
+  using ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1806,7 +1816,7 @@ Deno.test("isAccessModelType: admin user can still run canonical swamp/grant", a
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [adminGrant]);
+  using ctx = makeCtx(modeTokenConfig, [adminGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1856,7 +1866,7 @@ const restrictedConfig: ServeAuthConfig = {
 Deno.test("restrictedModelTypes: non-admin denied run on restricted type", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
+  using ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1891,7 +1901,7 @@ Deno.test("restrictedModelTypes: non-admin denied run on restricted type", async
 Deno.test("restrictedModelTypes: denormalized restricted type requires admin", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
+  using ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1926,7 +1936,7 @@ Deno.test("restrictedModelTypes: admin can run restricted type", async () => {
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(restrictedConfig, [adminGrant]);
+  using ctx = makeCtx(restrictedConfig, [adminGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -1959,7 +1969,7 @@ Deno.test("restrictedModelTypes: admin can run restricted type", async () => {
 Deno.test("restrictedModelTypes: non-restricted type still allowed for non-admin", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
+  using ctx = makeCtx(restrictedConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2008,7 +2018,7 @@ const restrictedCommandConfig: ServeAuthConfig = {
 Deno.test("restrictedCommands: non-admin denied on restricted command", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(restrictedCommandConfig, [lowPrivGrant]);
+  using ctx = makeCtx(restrictedCommandConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2044,7 +2054,7 @@ Deno.test("restrictedCommands: admin can use restricted command", async () => {
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(restrictedCommandConfig, [adminGrant]);
+  using ctx = makeCtx(restrictedCommandConfig, [adminGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2072,7 +2082,7 @@ Deno.test("restrictedCommands: admin can use restricted command", async () => {
 Deno.test("restrictedCommands: non-restricted command still allowed for non-admin", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(restrictedCommandConfig, [lowPrivGrant]);
+  using ctx = makeCtx(restrictedCommandConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2380,7 +2390,7 @@ Deno.test("validateServerRequest accepts report.type.search", () => {
 Deno.test("authorizeOrReject: data.get rejected without read grant", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2410,7 +2420,7 @@ Deno.test("authorizeOrReject: data.get rejected without read grant", async () =>
 Deno.test("authorizeOrReject: data.query rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2437,7 +2447,7 @@ Deno.test("authorizeOrReject: data.query rejected without read grant", () => {
 Deno.test("authorizeOrReject: model.search rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2463,7 +2473,7 @@ Deno.test("authorizeOrReject: model.search rejected without read grant", () => {
 Deno.test("authorizeOrReject: vault.get rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2490,7 +2500,7 @@ Deno.test("authorizeOrReject: vault.get rejected without read grant", () => {
 Deno.test("authorizeOrReject: vault.put rejected without write grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2522,7 +2532,7 @@ Deno.test("authorizeOrReject: vault.put with refreshFrom requires admin", () => 
     actions: ["write"],
     resource: { kind: "data", pattern: "vault" },
   });
-  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+  using ctx = makeCtx(modeTokenConfig, [writeGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2559,7 +2569,7 @@ Deno.test("authorizeOrReject: vault.put with clearRefresh requires admin", () =>
     actions: ["write"],
     resource: { kind: "data", pattern: "vault" },
   });
-  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+  using ctx = makeCtx(modeTokenConfig, [writeGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2596,7 +2606,7 @@ Deno.test("authorizeOrReject: vault.put with empty refreshFrom requires admin", 
     actions: ["write"],
     resource: { kind: "data", pattern: "vault" },
   });
-  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+  using ctx = makeCtx(modeTokenConfig, [writeGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2628,7 +2638,7 @@ Deno.test("authorizeOrReject: vault.put with empty refreshFrom requires admin", 
 Deno.test("authorizeOrReject: audit.timeline rejected without audit admin grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2659,7 +2669,7 @@ Deno.test("authorizeOrReject: audit.timeline rejected with only a model read gra
     actions: ["read"],
     resource: { kind: "model", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2690,7 +2700,7 @@ Deno.test("authorizeOrReject: audit.timeline allowed with admin on access:audit"
     actions: ["admin"],
     resource: { kind: "access", pattern: "audit" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2728,7 +2738,7 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", as
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [grant]);
+  using ctx = makeCtx(modeTokenConfig, [grant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -2785,7 +2795,7 @@ function withConditions(
 function makeCtxWithDefinitions(
   grants: Grant[],
   definitions: Record<string, string>,
-): ConnectionContext {
+): ConnectionContext & Disposable {
   const byName = new Map(
     Object.entries(definitions).map(([name, type]) => [name, {
       definition: Definition.create({ name, globalArguments: {} }),
@@ -2849,7 +2859,7 @@ const dataAndModelReader = [
 ];
 
 Deno.test("authorizeOrReject: data.get on a grant record refused for read on data:* and model:*", async () => {
-  const ctx = makeCtxWithDefinitions(dataAndModelReader, {
+  using ctx = makeCtxWithDefinitions(dataAndModelReader, {
     "grant-reader": "swamp/grant",
   });
   const frames = await sendAndCollect(ctx, "data.get", "auth-cp-1", {
@@ -2866,7 +2876,7 @@ Deno.test("authorizeOrReject: data.get on a grant record refused for read on dat
 });
 
 Deno.test("authorizeOrReject: data.get on a grant record served for admin on access:*", async () => {
-  const ctx = makeCtxWithDefinitions([
+  using ctx = makeCtxWithDefinitions([
     makeGrant({
       subject: { kind: "user", name: "adam" },
       actions: ["admin"],
@@ -2887,7 +2897,7 @@ Deno.test("authorizeOrReject: data.get on a grant record served for admin on acc
 });
 
 Deno.test("authorizeOrReject: read on access:* does not read a grant record", async () => {
-  const ctx = makeCtxWithDefinitions([
+  using ctx = makeCtxWithDefinitions([
     makeGrant({
       subject: { kind: "user", name: "adam" },
       actions: ["read"],
@@ -2912,7 +2922,7 @@ for (
   ] as const
 ) {
   Deno.test(`authorizeOrReject: ${type} on a server-token record refused for write on data:*`, async () => {
-    const ctx = makeCtxWithDefinitions([
+    using ctx = makeCtxWithDefinitions([
       makeGrant({
         subject: { kind: "user", name: "adam" },
         actions: ["read", "write", "run"],
@@ -2931,7 +2941,7 @@ for (
 }
 
 Deno.test("authorizeOrReject: data.get on a user model still allowed for read on data:*", async () => {
-  const ctx = makeCtxWithDefinitions(dataAndModelReader, {
+  using ctx = makeCtxWithDefinitions(dataAndModelReader, {
     "user-db": "command/shell",
   });
   const frames = await sendAndCollect(ctx, "data.get", "auth-cp-5", {
@@ -2963,7 +2973,7 @@ Deno.test("authorizeOrReject: a direct-type run on a control-plane definition is
       condition: 'name == "grant-locked"',
     }),
   ];
-  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  using ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
   const conditioned = withConditions(ctx, grants);
 
   const sent = await sendAndCollect(
@@ -3002,7 +3012,7 @@ Deno.test("authorizeOrReject: a method run on a control-plane model by name is j
       condition: 'name == "grant-locked"',
     }),
   ];
-  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  using ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
   const conditioned = withConditions(ctx, grants);
 
   const sent = await sendAndCollect(
@@ -3034,7 +3044,7 @@ Deno.test("authorizeOrReject: a data read of a control-plane record honours a de
       condition: 'name == "grant-locked"',
     }),
   ];
-  const ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
+  using ctx = makeCtxWithDefinitions(grants, { "grant-locked": "swamp/grant" });
   const conditioned = withConditions(ctx, grants);
 
   const sent = await sendAndCollect(conditioned, "data.get", "cp-deny-data", {
@@ -3062,7 +3072,7 @@ const narrowModelGrant = makeGrant({
 Deno.test("typeArg authz: narrow grant + mismatched typeArg is denied", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant]);
+  using ctx = makeCtx(modeTokenConfig, [narrowModelGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3095,7 +3105,7 @@ Deno.test("typeArg authz: narrow grant + mismatched typeArg is denied", async ()
 Deno.test("typeArg authz: direct command/shell without grant is denied", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant]);
+  using ctx = makeCtx(modeTokenConfig, [narrowModelGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3123,7 +3133,7 @@ Deno.test("typeArg authz: direct command/shell without grant is denied", async (
 Deno.test("typeArg authz: model:* grant + typeArg still works (no regression)", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
+  using ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3165,7 +3175,7 @@ Deno.test("typeArg authz: matching modelIdOrName and typeArg with narrow grant w
     actions: ["run"],
     resource: { kind: "model", pattern: "command/shell" },
   });
-  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, matchingGrant]);
+  using ctx = makeCtx(modeTokenConfig, [narrowModelGrant, matchingGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3207,7 +3217,7 @@ Deno.test("typeArg authz: admin superuser bypasses typeArg check", async () => {
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [adminGrant]);
+  using ctx = makeCtx(modeTokenConfig, [adminGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3249,7 +3259,7 @@ Deno.test("typeArg authz: prefix wildcard grant covers matching typeArg", async 
     actions: ["run"],
     resource: { kind: "model", pattern: "command/*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, prefixGrant]);
+  using ctx = makeCtx(modeTokenConfig, [narrowModelGrant, prefixGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3291,7 +3301,7 @@ Deno.test("typeArg authz: @ prefix on typeArg is preserved for authorization", a
     actions: ["run"],
     resource: { kind: "model", pattern: "@command/shell" },
   });
-  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, shellGrant]);
+  using ctx = makeCtx(modeTokenConfig, [narrowModelGrant, shellGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3416,10 +3426,10 @@ Deno.test("handleRunAttach: a nested child run's id reattaches to the run that s
     runId: "run-child",
     parentRunId: "run-parent",
   });
-  const ctx = {
+  using ctx = {
     ...makeCtx(modeTokenConfig, [runAttachGrant]),
     activeRunRegistry: registry,
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
   const mock = createMockSocket();
 
   handleMessage(
@@ -3453,7 +3463,7 @@ Deno.test("handleRunAttach: miss + active-runs record + fresh heartbeat returns 
   });
   seedHeartbeat(cpStore, "instance-remote", new Date().toISOString());
 
-  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  using ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
   (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
 
   handleMessage(
@@ -3493,7 +3503,7 @@ Deno.test("handleRunAttach: miss + active-runs record + stale heartbeat returns 
   });
   seedHeartbeat(cpStore, "instance-dead", "2026-07-01T00:00:00Z");
 
-  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  using ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
   (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
 
   handleMessage(
@@ -3534,7 +3544,7 @@ Deno.test("handleRunAttach: a run of a gone control-plane model stays admin-only
       startedAt: "2026-08-01T12:00:00Z",
     })),
   );
-  const ctx = makeCtx(modeTokenConfig, [
+  using ctx = makeCtx(modeTokenConfig, [
     makeGrant({
       subject: { kind: "user", name: "adam" },
       actions: ["run"],
@@ -3569,7 +3579,7 @@ Deno.test("handleRunAttach: a control-plane run stays admin-only when a user mod
       startedAt: "2026-08-01T12:00:00Z",
     })),
   );
-  const ctx = makeCtxWithDefinitions([
+  using ctx = makeCtxWithDefinitions([
     makeGrant({
       subject: { kind: "user", name: "adam" },
       actions: ["run"],
@@ -3594,7 +3604,7 @@ Deno.test("handleRunAttach: miss + no active-runs record returns not_found", asy
   const active = new Map<string, AbortController>();
   const cpStore = createMockControlPlaneStore();
 
-  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  using ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
   (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
 
   handleMessage(
@@ -3628,7 +3638,7 @@ Deno.test("handleRunAttach: miss + active-runs record + no heartbeat returns run
     runKind: "workflow-run",
   });
 
-  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  using ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
   (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
 
   handleMessage(
@@ -3656,7 +3666,7 @@ Deno.test("handleRunAttach: miss + active-runs record + no heartbeat returns run
 Deno.test("handleRunAttach: miss + no control-plane store returns not_found", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
+  using ctx = makeCtx(modeTokenConfig, [runAttachGrant]);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -3695,7 +3705,7 @@ Deno.test("handleRunAttach: miss + active-runs record + unauthorized principal r
     actions: ["read"],
     resource: { kind: "workflow", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [noRunGrant]);
+  using ctx = makeCtx(modeTokenConfig, [noRunGrant]);
   (ctx as unknown as Record<string, unknown>).controlPlaneStore = cpStore;
 
   handleMessage(
@@ -4198,7 +4208,10 @@ Deno.test("validateServerRequest: vault.audit-trail keeps action", () => {
 // ── handleMessage: workflow.resume routing on from (swamp-club#2356) ────
 
 /** A ctx whose repos hold one workflow and one run in the given status. */
-function makeResumeCtx(runId: string, runStatus: string): ConnectionContext {
+function makeResumeCtx(
+  runId: string,
+  runStatus: string,
+): ConnectionContext & Disposable {
   const workflow = { id: crypto.randomUUID(), name: "deploy", tags: {} };
   return {
     ...makeCtx(modeNoneConfig),
@@ -4219,9 +4232,10 @@ Deno.test("handleMessage: workflow.resume with from reaches the failed-run resol
   const mock = createMockSocket();
   const runId = crypto.randomUUID();
 
+  using ctx = makeResumeCtx(runId, "succeeded");
   handleMessage(
     mock as unknown as WebSocket,
-    makeResumeCtx(runId, "succeeded"),
+    ctx,
     new Map<string, AbortController>(),
     makeEvent(JSON.stringify({
       type: "workflow.resume",
@@ -4245,9 +4259,10 @@ Deno.test("handleMessage: workflow.resume without from uses the suspended-run re
   const mock = createMockSocket();
   const runId = crypto.randomUUID();
 
+  using ctx = makeResumeCtx(runId, "succeeded");
   handleMessage(
     mock as unknown as WebSocket,
-    makeResumeCtx(runId, "succeeded"),
+    ctx,
     new Map<string, AbortController>(),
     makeEvent(JSON.stringify({
       type: "workflow.resume",
@@ -4284,7 +4299,7 @@ for (
       );
       return Promise.resolve(null);
     };
-    const ctx: ConnectionContext = {
+    using ctx: ConnectionContext & Disposable = {
       ...makeCtx(modeNoneConfig),
       repoContext: {
         definitionRepo: {
@@ -4792,7 +4807,7 @@ Deno.test("validateServerRequest accepts datastore.namespace.list", () => {
 Deno.test("authorizeOrReject: access.token.list requires admin on access:*", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4815,7 +4830,7 @@ Deno.test("authorizeOrReject: access.token.list requires admin on access:*", () 
 Deno.test("authorizeOrReject: access.token.revoke requires admin on access:*", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4838,7 +4853,7 @@ Deno.test("authorizeOrReject: access.token.revoke requires admin on access:*", (
 Deno.test("authorizeOrReject: worker.token.create requires admin on access:*", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4865,7 +4880,7 @@ Deno.test("authorizeOrReject: worker.token.create requires admin on access:*", (
 Deno.test("authorizeOrReject: model.edit requires write on model:<name>", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4898,7 +4913,7 @@ Deno.test("authorizeOrReject: model.edit requires write on model:<name>", async 
 Deno.test("authorizeOrReject: workflow.create requires write on workflow:<name>", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4929,7 +4944,7 @@ Deno.test("authorizeOrReject: workflow.create requires write on workflow:<name>"
 Deno.test("authorizeOrReject: vault.read-secret requires read on data:<vault>", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4960,7 +4975,7 @@ Deno.test("authorizeOrReject: vault.read-secret requires read on data:<vault>", 
 Deno.test("authorizeOrReject: data.gc requires write on data:*", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -4987,7 +5002,7 @@ Deno.test("authorizeOrReject: data.gc requires write on data:*", () => {
 Deno.test("authorizeOrReject: model.type.search requires read on model:*", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
-  const ctx = makeCtx(modeTokenConfig, []);
+  using ctx = makeCtx(modeTokenConfig, []);
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -5011,7 +5026,7 @@ Deno.test("authorizeOrReject: model.type.search requires read on model:*", () =>
   );
 });
 
-Deno.test("authorizeOrReject: admin on access:* allows all new command types", () => {
+Deno.test("authorizeOrReject: admin on access:* allows all new command types", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const adminGrant = makeGrant({
@@ -5019,7 +5034,7 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", (
     actions: ["admin"],
     resource: { kind: "access", pattern: "*" },
   });
-  const ctx = makeCtx(modeTokenConfig, [adminGrant]);
+  using ctx = makeCtx(modeTokenConfig, [adminGrant]);
 
   const newTypes = [
     { type: "access.token.list", id: "admin-atl" },
@@ -5122,6 +5137,8 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", (
     0,
     "admin superuser should not be denied any new command type",
   );
+  // The handlers write into the repo dir; let them finish before it goes.
+  await waitFor(() => active.size === 0, "admin requests settled");
 });
 
 // ── workflow.approve → auto-resume ─────────────────────────────────────────
@@ -5129,7 +5146,7 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", (
 function makeApproveCtx(
   autoResume: boolean | undefined,
 ): {
-  ctx: ConnectionContext;
+  ctx: ConnectionContext & Disposable;
   registry: ActiveRunRegistry;
   run: WorkflowRun;
   workflow: Workflow;
@@ -5177,13 +5194,14 @@ function makeApproveCtx(
         save: () => Promise.resolve(),
       },
     } as unknown as ConnectionContext["repoContext"],
-  } as ConnectionContext;
+  } as ConnectionContext & Disposable;
   return { ctx, registry, run, workflow };
 }
 
 Deno.test("handleMessage: workflow.approve auto-resumes an opted-in run, addressed by its resolved identity", async () => {
   const mock = createMockSocket();
   const { ctx, registry, run, workflow } = makeApproveCtx(true);
+  using _ctx = ctx;
   const registered: string[] = [];
   const register = registry.register.bind(registry);
   registry.register = (r) => {
@@ -5218,6 +5236,7 @@ Deno.test("handleMessage: workflow.approve auto-resumes an opted-in run, address
 Deno.test("handleMessage: workflow.approve leaves a run that has not opted in suspended", async () => {
   const mock = createMockSocket();
   const { ctx, registry, run } = makeApproveCtx(undefined);
+  using _ctx = ctx;
 
   handleMessage(
     mock as unknown as WebSocket,
@@ -5324,10 +5343,10 @@ Deno.test("handleConnection: frames arriving on a closing session are not served
 });
 
 Deno.test("handleMessage: server.version lists the literal-inputs capability (swamp-club#3205)", async () => {
-  const ctx = {
+  using ctx = {
     ...makeCtx(modeTokenConfig, []),
     auditEmitter: { emit: () => {} },
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
   const mock = createMockSocket();
   handleMessage(
     mock as unknown as WebSocket,
@@ -5345,7 +5364,7 @@ Deno.test("handleMessage: server.version lists the literal-inputs capability (sw
 
 // ── handleMessage: request spans (swamp-club#3741) ─────────────────────────
 
-function tracedCtx(lagMs?: number): ConnectionContext {
+function tracedCtx(lagMs?: number): ConnectionContext & Disposable {
   return {
     ...makeCtx(modeTokenConfig),
     datastoreConfig: { type: "filesystem" },
@@ -5353,7 +5372,7 @@ function tracedCtx(lagMs?: number): ConnectionContext {
     ...(lagMs !== undefined && {
       eventLoopLag: { maxLagMs: () => lagMs },
     }),
-  } as unknown as ConnectionContext;
+  } as unknown as ConnectionContext & Disposable;
 }
 
 for (
@@ -5369,9 +5388,10 @@ for (
 
       // No principal under token auth: the handler refuses the read, which
       // records the error code on the request span it runs in.
+      using ctx = tracedCtx(12);
       handleMessage(
         mock as unknown as WebSocket,
-        tracedCtx(12),
+        ctx,
         active,
         makeEvent(JSON.stringify({ type, id: "req-traced" })),
       );
@@ -5406,9 +5426,10 @@ Deno.test("handleMessage: a workflow.history.get request records its type and pr
     const mock = createMockSocket();
     const active = new Map<string, AbortController>();
 
+    using ctx = tracedCtx();
     handleMessage(
       mock as unknown as WebSocket,
-      tracedCtx(),
+      ctx,
       active,
       makeEvent(JSON.stringify({
         type: "workflow.history.get",
@@ -5443,9 +5464,10 @@ Deno.test("handleMessage: an untraced request opens no swamp.serve.request span"
     const mock = createMockSocket();
     const active = new Map<string, AbortController>();
 
+    using ctx = tracedCtx();
     handleMessage(
       mock as unknown as WebSocket,
-      tracedCtx(),
+      ctx,
       active,
       makeEvent(JSON.stringify({ type: "server.version", id: "req-v" })),
       testPrincipal,

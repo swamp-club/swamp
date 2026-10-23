@@ -25,9 +25,19 @@ import { ActiveRun } from "../../domain/models/active_run.ts";
 import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
 import { isSensitiveHeader } from "../../serve/webhook.ts";
 
-function makeTempDbPath(): string {
+function makeTempDb(): Disposable & { path: string } {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-run-tracker-test-" });
-  return join(dir, "run_tracker.db");
+  return {
+    path: join(dir, "run_tracker.db"),
+    [Symbol.dispose]() {
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch (error) {
+        // Windows refuses while V8 still holds the SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
 }
 
 function makeRun(overrides: Partial<{
@@ -48,7 +58,8 @@ function makeRun(overrides: Partial<{
 }
 
 Deno.test("RunTrackerStore: register and findById", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = makeRun({ id: "run-1" });
     store.register(run);
@@ -65,7 +76,8 @@ Deno.test("RunTrackerStore: register and findById", () => {
 });
 
 Deno.test("RunTrackerStore: findById returns null for missing run", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     assertEquals(store.findById("nonexistent"), null);
   } finally {
@@ -74,7 +86,8 @@ Deno.test("RunTrackerStore: findById returns null for missing run", () => {
 });
 
 Deno.test("RunTrackerStore: heartbeat updates heartbeat_at", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = makeRun({ id: "run-1" });
     store.register(run);
@@ -92,7 +105,8 @@ Deno.test("RunTrackerStore: heartbeat updates heartbeat_at", () => {
 });
 
 Deno.test("RunTrackerStore: complete changes status", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = makeRun({ id: "run-1" });
     store.register(run);
@@ -118,7 +132,8 @@ function readCancelReason(dbPath: string, runId: string): string | null {
 }
 
 Deno.test("RunTrackerStore: recordCancelReason sets the reason on a row its owner cancelled", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(makeRun({ id: "run-1" }));
@@ -136,7 +151,8 @@ Deno.test("RunTrackerStore: recordCancelReason sets the reason on a row its owne
 });
 
 Deno.test("RunTrackerStore: recordCancelReason keeps a reason already recorded", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(makeRun({ id: "run-1" }));
@@ -151,7 +167,8 @@ Deno.test("RunTrackerStore: recordCancelReason keeps a reason already recorded",
 });
 
 Deno.test("RunTrackerStore: recordCancelReason leaves rows that did not end cancelled alone", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(makeRun({ id: "running" }));
@@ -171,7 +188,8 @@ Deno.test("RunTrackerStore: recordCancelReason leaves rows that did not end canc
 });
 
 Deno.test("RunTrackerStore: findAllRunning returns only running runs", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeRun({ id: "run-1" }));
     store.register(makeRun({ id: "run-2" }));
@@ -188,7 +206,8 @@ Deno.test("RunTrackerStore: findAllRunning returns only running runs", () => {
 });
 
 Deno.test("RunTrackerStore: findStaleRuns finds stale runs by TTL", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     // Insert a "stale" run with old heartbeat via raw fromData
     const staleRun = ActiveRun.fromData({
@@ -217,7 +236,8 @@ Deno.test("RunTrackerStore: findStaleRuns finds stale runs by TTL", () => {
 });
 
 Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as interrupted", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const staleRun = ActiveRun.fromData({
       id: "stale-1",
@@ -247,7 +267,8 @@ Deno.test("RunTrackerStore: reapStaleRuns marks stale runs as interrupted", () =
 });
 
 Deno.test("RunTrackerStore: reapStaleRuns is idempotent", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const staleRun = ActiveRun.fromData({
       id: "stale-1",
@@ -275,7 +296,8 @@ Deno.test("RunTrackerStore: reapStaleRuns is idempotent", () => {
 });
 
 Deno.test("RunTrackerStore: findAll returns all runs", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeRun({ id: "run-1" }));
     store.register(makeRun({ id: "run-2" }));
@@ -289,7 +311,8 @@ Deno.test("RunTrackerStore: findAll returns all runs", () => {
 });
 
 Deno.test("RunTrackerStore: heartbeat is no-op for completed runs", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeRun({ id: "run-1" }));
     store.complete("run-1", "completed");
@@ -303,7 +326,8 @@ Deno.test("RunTrackerStore: heartbeat is no-op for completed runs", () => {
 });
 
 Deno.test("RunTrackerStore: concurrent stores on same DB file", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store1 = new RunTrackerStore(dbPath);
   const store2 = new RunTrackerStore(dbPath);
   try {
@@ -337,7 +361,8 @@ function makePendingRun(
 }
 
 Deno.test("RunTrackerStore: enqueuePendingRun and findAllPendingRuns", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const entry = makePendingRun({ id: "pr-1", route: "/hooks/deploy" });
     store.enqueuePendingRun(entry);
@@ -354,7 +379,8 @@ Deno.test("RunTrackerStore: enqueuePendingRun and findAllPendingRuns", () => {
 });
 
 Deno.test("RunTrackerStore: deletePendingRun removes the entry", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.enqueuePendingRun(makePendingRun({ id: "pr-1" }));
     assertEquals(store.findAllPendingRuns().length, 1);
@@ -367,7 +393,8 @@ Deno.test("RunTrackerStore: deletePendingRun removes the entry", () => {
 });
 
 Deno.test("RunTrackerStore: deletePendingRun is idempotent", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.deletePendingRun("nonexistent");
     assertEquals(store.findAllPendingRuns().length, 0);
@@ -377,7 +404,8 @@ Deno.test("RunTrackerStore: deletePendingRun is idempotent", () => {
 });
 
 Deno.test("RunTrackerStore: findAllPendingRuns returns entries in creation order", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.enqueuePendingRun(
       makePendingRun({ id: "pr-2", createdAt: "2026-01-01T00:00:02Z" }),
@@ -397,7 +425,8 @@ Deno.test("RunTrackerStore: findAllPendingRuns returns entries in creation order
 });
 
 Deno.test("RunTrackerStore: findAllPendingRuns returns empty array when no entries", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     assertEquals(store.findAllPendingRuns().length, 0);
   } finally {
@@ -406,7 +435,8 @@ Deno.test("RunTrackerStore: findAllPendingRuns returns empty array when no entri
 });
 
 Deno.test("RunTrackerStore: pending run preserves webhook payload and trace headers", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const payload = JSON.stringify({ ref: "main", action: "push" });
     store.enqueuePendingRun(makePendingRun({
@@ -437,7 +467,8 @@ Deno.test("RunTrackerStore: pending run preserves webhook payload and trace head
 });
 
 Deno.test("RunTrackerStore: v6 migration preserves legacy pending deliveries and their original timestamps", () => {
-  const path = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const path = tempDb.path;
   const db = new DatabaseSync(path);
   db.exec(
     `CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -469,7 +500,8 @@ Deno.test("RunTrackerStore: v6 migration preserves legacy pending deliveries and
 });
 
 Deno.test("RunTrackerStore: migration owns the writer lock before reading the version", () => {
-  const path = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const path = tempDb.path;
   const contender = new DatabaseSync(path);
   contender.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=0");
   const prepare = DatabaseSync.prototype.prepare;
@@ -497,7 +529,8 @@ Deno.test("RunTrackerStore: migration owns the writer lock before reading the ve
 });
 
 Deno.test("RunTrackerStore: cron pending run has no payload or route", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.enqueuePendingRun(makePendingRun({
       id: "pr-1",
@@ -514,7 +547,8 @@ Deno.test("RunTrackerStore: cron pending run has no payload or route", () => {
 });
 
 Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   // Create a v1 store (existing schema without pending_runs)
   const store1 = new RunTrackerStore(dbPath);
   store1.register(makeRun({ id: "existing-run" }));
@@ -534,7 +568,8 @@ Deno.test("RunTrackerStore: schema v2 migration adds pending_runs to existing DB
 // ── reapDeadProcessRuns tests ──────────────────────────────────────
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as interrupted", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "dead-1",
@@ -561,7 +596,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns marks dead-PID runs as interrupt
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns skips runs from current process", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "self-1",
@@ -587,7 +623,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips runs from current process"
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns skips runs from different host", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "remote-1",
@@ -613,7 +650,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips runs from different host",
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns skips completed runs", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "done-1",
@@ -641,7 +679,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips completed runs", () => {
 // ── instanceId-aware reaping tests ────────────────────────────────
 
 Deno.test("RunTrackerStore: reapStaleRuns with instanceId skips rows from different instance on same hostname", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "foreign-instance-1",
@@ -669,7 +708,8 @@ Deno.test("RunTrackerStore: reapStaleRuns with instanceId skips rows from differ
 });
 
 Deno.test("RunTrackerStore: reapStaleRuns with instanceId checks PID for same-instance rows", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "local-instance-1",
@@ -696,7 +736,8 @@ Deno.test("RunTrackerStore: reapStaleRuns with instanceId checks PID for same-in
 });
 
 Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when row has no instanceId", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "legacy-1",
@@ -722,7 +763,8 @@ Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when row has no
 });
 
 Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when no instanceId passed", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "no-param-1",
@@ -749,7 +791,8 @@ Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when no instanc
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId skips rows from different instance on same hostname", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "container-1",
@@ -776,7 +819,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId skips rows from 
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId reaps dead PIDs from same instance", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "same-instance-dead-1",
@@ -804,7 +848,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId reaps dead PIDs 
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns falls back to hostname when row has no instanceId", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "legacy-dead-1",
@@ -830,7 +875,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns falls back to hostname when row 
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns falls back to hostname when no instanceId passed", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.fromData({
       id: "no-param-dead-1",
@@ -857,7 +903,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns falls back to hostname when no i
 });
 
 Deno.test("RunTrackerStore: schema v3 migration adds initiated_by column", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store1 = new RunTrackerStore(dbPath);
   store1.register(makeRun({ id: "pre-migration-run" }));
   store1.close();
@@ -873,7 +920,8 @@ Deno.test("RunTrackerStore: schema v3 migration adds initiated_by column", () =>
 });
 
 Deno.test("RunTrackerStore: register stores initiatedBy", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.createModelMethodRun({
       id: "with-user",
@@ -894,7 +942,8 @@ Deno.test("RunTrackerStore: register stores initiatedBy", () => {
 });
 
 Deno.test("RunTrackerStore: register stores null initiatedBy for ghost runs", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const run = ActiveRun.createModelMethodRun({
       id: "ghost-run",
@@ -916,7 +965,8 @@ Deno.test("RunTrackerStore: register stores null initiatedBy for ghost runs", ()
 // ── scrubPendingRunHeaders tests ─────────────────────────────────────
 
 Deno.test("scrubPendingRunHeaders: strips sensitive headers from pending run payloads", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const payload = JSON.stringify({
       headers: {
@@ -940,7 +990,8 @@ Deno.test("scrubPendingRunHeaders: strips sensitive headers from pending run pay
 });
 
 Deno.test("scrubPendingRunHeaders: leaves rows with no headers unchanged", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const payload = JSON.stringify({ body: {} });
     store.enqueuePendingRun(makePendingRun({ id: "pr-no-headers", payload }));
@@ -953,7 +1004,8 @@ Deno.test("scrubPendingRunHeaders: leaves rows with no headers unchanged", () =>
 });
 
 Deno.test("scrubPendingRunHeaders: handles null payload gracefully", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.enqueuePendingRun(makePendingRun({ id: "pr-null-payload" }));
 
@@ -998,7 +1050,8 @@ function completedAtOf(dbPath: string, id: string): string | null {
 
 for (const status of ["suspended", "failed", "interrupted"] as const) {
   Deno.test(`RunTrackerStore: reactivate hands a ${status} row to the resuming process`, () => {
-    const dbPath = makeTempDbPath();
+    using tempDb = makeTempDb();
+    const dbPath = tempDb.path;
     const store = new RunTrackerStore(dbPath);
     try {
       store.register(makeWorkflowRow("run-1", 2147483647, "instance-a"));
@@ -1028,7 +1081,8 @@ for (const status of ["suspended", "failed", "interrupted"] as const) {
 
 for (const status of ["running", "completed", "cancelled"] as const) {
   Deno.test(`RunTrackerStore: reactivate leaves a ${status} row unchanged`, () => {
-    const store = new RunTrackerStore(makeTempDbPath());
+    using tempDb = makeTempDb();
+    const store = new RunTrackerStore(tempDb.path);
     try {
       store.register(makeWorkflowRow("run-1", 1234));
       if (status !== "running") store.complete("run-1", status);
@@ -1045,7 +1099,8 @@ for (const status of ["running", "completed", "cancelled"] as const) {
 }
 
 Deno.test("RunTrackerStore: reactivate by a local resume clears the serve instance id", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeWorkflowRow("run-1", 2147483647, "instance-a"));
     store.complete("run-1", "failed");
@@ -1059,7 +1114,8 @@ Deno.test("RunTrackerStore: reactivate by a local resume clears the serve instan
 });
 
 Deno.test("RunTrackerStore: reactivate returns false when the row is missing", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     assertEquals(store.reactivate("run-1", 4242, "resuming-host"), false);
     assertEquals(store.findById("run-1"), null);
@@ -1072,7 +1128,8 @@ for (
   const status of ["completed", "failed", "cancelled", "suspended"] as const
 ) {
   Deno.test(`RunTrackerStore: reopenCompleted puts its owner's ${status} workflow row back to running (swamp-club#3587)`, () => {
-    const dbPath = makeTempDbPath();
+    using tempDb = makeTempDb();
+    const dbPath = tempDb.path;
     const store = new RunTrackerStore(dbPath);
     try {
       store.register(makeWorkflowRow("run-1", 4242));
@@ -1090,7 +1147,8 @@ for (
 }
 
 Deno.test("RunTrackerStore: reopenCompleted leaves another owner's, an interrupted, a running and a method row alone (swamp-club#3587)", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeWorkflowRow("other-pid", 4242));
     store.complete("other-pid", "completed");
@@ -1125,7 +1183,8 @@ Deno.test("RunTrackerStore: reopenCompleted leaves another owner's, an interrupt
 });
 
 Deno.test("RunTrackerStore: reapDeadProcessRuns skips a row reactivated by a live process", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeWorkflowRow("run-1", 2147483647));
     store.complete("run-1", "failed");
@@ -1140,7 +1199,8 @@ Deno.test("RunTrackerStore: reapDeadProcessRuns skips a row reactivated by a liv
 });
 
 Deno.test("RunTrackerStore: complete after reactivate records the final status", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeWorkflowRow("run-1", 1234));
     store.complete("run-1", "failed");
@@ -1157,7 +1217,8 @@ Deno.test("RunTrackerStore: complete after reactivate records the final status",
 // ── findDeadProcessRuns tests ──────────────────────────────────────
 
 Deno.test("RunTrackerStore: findDeadProcessRuns lists local dead-PID runs with a fresh heartbeat and changes nothing", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     const row = (id: string, pid: number, host: string) =>
       ActiveRun.fromData({
@@ -1216,7 +1277,8 @@ function reopenAfterRetention(dbPath: string, days = 30): RunTrackerStore {
 }
 
 Deno.test("RunTrackerStore: retention keeps an interrupted workflow or method row until it is settled", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("unsettled", "workflow"));
@@ -1248,7 +1310,8 @@ Deno.test("RunTrackerStore: retention keeps an interrupted workflow or method ro
 });
 
 Deno.test("RunTrackerStore: retention purges an unsettled interrupted row after 90 days (swamp-club#2917)", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("unsettled", "workflow"));
@@ -1276,7 +1339,8 @@ Deno.test("RunTrackerStore: retention purges an unsettled interrupted row after 
 });
 
 Deno.test("RunTrackerStore: a row reads as settled only once markSettled gives it a reason", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("unsettled", "model_method"));
@@ -1295,7 +1359,8 @@ Deno.test("RunTrackerStore: a row reads as settled only once markSettled gives i
 });
 
 Deno.test("RunTrackerStore: markSettled only touches an unsettled interrupted row", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("running", "workflow"));
@@ -1325,7 +1390,8 @@ Deno.test("RunTrackerStore: markSettled only touches an unsettled interrupted ro
 });
 
 Deno.test("RunTrackerStore: a resumed run killed again is unsettled once more", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("run-1", "workflow"));
@@ -1346,7 +1412,8 @@ Deno.test("RunTrackerStore: a resumed run killed again is unsettled once more", 
 });
 
 Deno.test("RunTrackerStore: a row reads back the reason it was completed or settled with", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   const store = new RunTrackerStore(dbPath);
   try {
     store.register(workflowRow("settled", "workflow"));
@@ -1367,7 +1434,8 @@ Deno.test("RunTrackerStore: a row reads back the reason it was completed or sett
 });
 
 Deno.test("RunTrackerStore: register stores the definition id", () => {
-  const store = new RunTrackerStore(makeTempDbPath());
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
   try {
     store.register(makeRun({ id: "with-definition" }));
     store.register(ActiveRun.createWorkflowRun({
@@ -1385,7 +1453,8 @@ Deno.test("RunTrackerStore: register stores the definition id", () => {
 });
 
 Deno.test("RunTrackerStore: schema v5 migration adds definition_id to a v4 database", () => {
-  const dbPath = makeTempDbPath();
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
   // A v4 tracker as an older swamp left it: no definition_id column.
   const db = new DatabaseSync(dbPath);
   db.exec(`

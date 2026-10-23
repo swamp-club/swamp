@@ -245,7 +245,12 @@ async function startOrchestrator(repoDir: string): Promise<Orchestrator> {
         new PolicySnapshot(grants, [], createConditionEvaluator()),
       );
     },
-    shutdown: () => server.shutdown(),
+    shutdown: async () => {
+      await server.shutdown();
+      // The disconnects the closed sockets recorded are written before the
+      // test removes the repo (swamp-club#3854).
+      await gateway.close();
+    },
   };
 }
 
@@ -409,7 +414,11 @@ Deno.test({
       if (workerDone) await workerDone.catch(() => {});
       await o.shutdown();
       o.repoContext.catalogStore.close();
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
     }
   },
 });
