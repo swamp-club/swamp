@@ -745,10 +745,15 @@ export interface WrittenVersion {
 
 /**
  * Thrown when the remote datastore still lacks a data version after the
- * lock's push published it and retried (swamp-club#3146): another sync in
- * the same process undid the push. A workflow step or CLI method run that
- * wrote the version fails with it; a serve method run, which has already
- * answered its client when it pushes, logs it.
+ * lock's push published it and retried (swamp-club#3146). Another sync in
+ * the same process (a parallel step of the run, another serve run, the serve
+ * poller) can undo the earlier attempts, but the last one normally runs with
+ * no other sync in the process (swamp-club#3860; a gate wait that times out
+ * goes ahead ungated), so what undid it is most likely another swamp process
+ * using the same repository, or a datastore that did not keep the files. A
+ * workflow step or CLI method run that wrote the version fails with it; a
+ * serve method run, which has already answered its client when it pushes,
+ * logs it.
  *
  * Extends `UserError` so the message renders clean at the CLI error boundary.
  */
@@ -761,9 +766,11 @@ export class UnpublishedDataVersionError extends UserError {
     ).join(", ");
     super(
       `The datastore does not hold ${names} after ${attempts} push ` +
-        `attempts: each time, a concurrent run or the serve poller synced ` +
-        `the datastore over the push. The data is on this host only; run ` +
-        `the step or method again to write and publish it.`,
+        `attempts: another swamp process using this repository (a ` +
+        `workflow run or swamp serve) may have synced over the last push, ` +
+        `or the datastore did not keep the uploaded files. The data is on ` +
+        `this host only; run the step or method again once that process ` +
+        `has finished, to write and publish it.`,
       "datastore_unpublished_data_version",
     );
     this.name = "UnpublishedDataVersionError";

@@ -62,8 +62,11 @@ export interface Harness {
   other: InMemorySyncService;
   /** Takes the model lock, pushing through `syncService` when given. */
   lock: (syncService?: DatastoreSyncService) => Promise<ModelLockResult>;
-  /** Writes one version of DATA_NAME, inside a unit of work like a step. */
-  write: (content: string) => Promise<number>;
+  /**
+   * Writes one version of DATA_NAME, inside a unit of work like a step, for
+   * the harness model or `modelId`.
+   */
+  write: (content: string, modelId?: string) => Promise<number>;
   remoteText: (relPath: string) => string | undefined;
   localLatest: () => Promise<string>;
 }
@@ -109,7 +112,7 @@ export async function withHarness(
           () => {},
           { repoContext: context.repoContext },
         ),
-      write: (content) =>
+      write: (content, writeModelId = modelId) =>
         runInRootUnitOfWork(
           context.repoContext,
           { flush: undefined },
@@ -124,7 +127,7 @@ export async function withHarness(
             });
             const saved = await context.repoContext.unifiedDataRepo.save(
               modelType,
-              modelId,
+              writeModelId,
               data,
               new TextEncoder().encode(content),
             );

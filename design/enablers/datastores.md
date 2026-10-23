@@ -1842,10 +1842,11 @@ publishes what the work under it wrote and checks it landed:
 What stays exposed until the S3/GCS extensions clear only the marks a push
 handled and stop overwriting paths with a pending mark:
 
-- In serve, the run lanes keep a run pull out of every run push, so a pull
-  can no longer revert a marker, locally or on the remote, after a push
-  verified it. Two processes sharing one cache (a CLI next to serve) are not
-  covered: there a pull can still do both.
+- In serve and in a CLI workflow run (swamp-club#3860), the run lanes keep a
+  run pull out of every run push, so a pull can no longer revert a marker,
+  locally or on the remote, after a push verified it. Two processes sharing one
+  cache (a CLI next to serve, or two CLI runs) are not covered: there a pull can
+  still do both.
 - Run records, evaluated definitions, output records, definition YAML and
   appends to an existing version can still be reverted locally by an
   overlapping pull; only data versions are verified.
@@ -1975,6 +1976,22 @@ serve function pushes outside the gate: a raw push outside a
 `createStepLockHook` and `executeWorkflowWithLocks` take the gate as a required
 parameter, so the compiler also catches callers outside `src/serve`, such as the
 scheduler in `src/cli/commands/serve.ts`.
+
+**A CLI workflow run gates its own steps (swamp-club#3860).** The steps of one
+`swamp workflow run` or `swamp workflow resume` share that command's sync
+service, so the same undo happens inside a single run: a parallel step's commit
+clears the marks another step just staged, and before #3860 nothing kept the
+step's last publish attempt apart from its siblings. Each command now builds its
+step lock hook with `workflowStepLockHook` (`src/cli/commands/workflow_run.ts`),
+which creates one gate per command and passes it to `createStepLockHook`. A
+run's steps take the shared mode in their lanes, and a lock's last publish
+attempt takes the exclusive mode, as in serve. The gate is per command, so two
+CLI processes on one repository still do not exclude each other. A fitness rule
+in `integration/serve_deps_rules_test.ts` pins that every CLI step lock hook is
+built this way. Since the last attempt normally runs with no other sync in the
+process (a gate wait that times out goes ahead ungated),
+`UnpublishedDataVersionError` names the likely causes left: another swamp
+process using the repository, or a datastore that did not keep the files.
 
 Six properties of the gate are easy to misread:
 

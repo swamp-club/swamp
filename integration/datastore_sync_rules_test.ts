@@ -485,7 +485,9 @@ Deno.test("commands that take model locks and cancel on Ctrl-C must suppress the
       .split("\n")
       .filter((line) => !line.trimStart().startsWith("//"))
       .join("\n");
-    if (!code.includes("acquireModelLocks(")) continue;
+    // workflowStepLockHook takes each step's model lock for workflow run and
+    // resume (swamp-club#3860).
+    if (!/\b(?:acquireModelLocks|workflowStepLockHook)\(/.test(code)) continue;
     if (!code.includes("registerShutdownHandler(")) continue;
     const rel = normalise(relative(ROOT, entry.path));
     commands.push(rel);

@@ -96,6 +96,7 @@ import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/y
 import {
   acquireModelLocks,
   createWorkflowRunClaims,
+  type LockProgressWriter,
 } from "../cli/repo_context.ts";
 import {
   extractTraceContext,
@@ -417,14 +418,16 @@ export async function createModelMethodRunDeps(
 }
 
 /**
- * Builds the per-step model lock hook serve's workflow executions use: it
- * acquires the step's model lock and invalidates the catalog when acquiring it
- * synced remote state.
+ * Builds the per-step model lock hook serve's workflow executions, and a CLI
+ * workflow run or resume (swamp-club#3860), use: it acquires the step's model
+ * lock and invalidates the catalog when acquiring it synced remote state.
  *
  * The step's pull and its flush push run under the sync gate's shared mode
- * (swamp-club#2405), so they never overlap a poller pull. `syncGate` is
- * required — pass `undefined` explicitly where no gate exists — so a new
- * caller cannot silently run its syncs ungated.
+ * (swamp-club#2405), so they never overlap a poller pull, and a lock's last
+ * publish attempt runs alone (swamp-club#3146). `syncGate` is required — pass
+ * `undefined` explicitly where no gate exists — so a new caller cannot
+ * silently run its syncs ungated. `progressWriter` gives each step's lock
+ * messages their writer; without it they go to the default lock writer.
  */
 export function createStepLockHook(
   repoDir: string,
@@ -432,6 +435,7 @@ export function createStepLockHook(
   datastoreConfig: DatastoreConfig,
   syncService: DatastoreSyncService | undefined,
   syncGate: SyncGate | undefined,
+  progressWriter?: (modelId: string) => LockProgressWriter,
 ): StepLockHook {
   return async (modelType, modelId) => {
     const result = await acquireModelLocks(
@@ -440,7 +444,7 @@ export function createStepLockHook(
       repoDir,
       syncService,
       repoContext.catalogStore,
-      undefined,
+      progressWriter?.(modelId),
       {
         wrapSync: (fn, kind) => withRunSyncGate(syncGate, fn, kind),
         repoContext,

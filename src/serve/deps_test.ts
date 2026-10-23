@@ -374,3 +374,42 @@ Deno.test("createStepLockHook: names the lock it took by the nonce in its lock f
     }
   }
 });
+
+// A CLI workflow run builds its step lock hook here too, and gives each
+// step's lock messages a writer labelled with the step's model
+// (swamp-club#3860).
+Deno.test("createStepLockHook: asks progressWriter for each step's writer by its model id", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-step-lock-hook-" });
+  try {
+    const homeDir = join(repoDir, "test-home");
+    await new RepoService(VERSION, {
+      homeDir,
+      configDir: join(homeDir, ".config", "swamp"),
+    }).init(RepoPath.create(repoDir), { tools: [] });
+    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    const asked: string[] = [];
+    const hook = createStepLockHook(
+      repoDir,
+      stubRepoContext(),
+      datastoreConfig,
+      undefined,
+      undefined,
+      (modelId) => {
+        asked.push(modelId);
+        return () => {};
+      },
+    );
+    const modelId = crypto.randomUUID();
+
+    const lock = await hook("test/step-lock-hook", modelId);
+    await lock.flush();
+
+    assertEquals(asked, [modelId]);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+});
