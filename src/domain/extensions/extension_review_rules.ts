@@ -31,6 +31,7 @@ import {
   parseExtensionSource,
   str,
   TS_WRAPPERS,
+  unwrap,
   walkRuntimeNodes,
 } from "./extension_source_ast.ts";
 
@@ -316,7 +317,7 @@ function markedOnContinuationLines(lines: string[], index: number): boolean {
   return false;
 }
 
-/** The syntax-tree nodes that declare a field, keyed by their name node. */
+/** The syntax-tree nodes whose `key` or `id` names a field. */
 const FIELD_NODES = new Set([
   "ObjectProperty",
   "ClassProperty",
@@ -338,9 +339,12 @@ function childList(node: AstNode, key: string): AstNode[] {
   return Array.isArray(value) ? value.filter(isNode) : [];
 }
 
-/** `sensitive: true` as an object-literal entry; the key may be quoted. */
+/**
+ * `sensitive: true` as an object-literal entry; the key may be quoted and
+ * the value cast (`true as const`).
+ */
 function isSensitiveEntry(node: AstNode): boolean {
-  const value = child(node, "value");
+  const value = unwrap(child(node, "value"));
   return node.type === "ObjectProperty" && fieldName(node) === "sensitive" &&
     value?.type === "BooleanLiteral" && value.value === true;
 }
@@ -382,9 +386,10 @@ function carriesSensitiveMarker(value: AstNode): boolean {
 
 /**
  * Parses `source` and returns, for each line (1-based, split on `\n`) that
- * declares a secret-named field, whether a field declared there carries
- * `sensitive: true` (see {@link carriesSensitiveMarker}). Null when the
- * source does not parse.
+ * declares a secret-named field, whether every such field declared there
+ * carries `sensitive: true` (see {@link carriesSensitiveMarker}), so one
+ * marked field never hides an unmarked one on its line. Null when the source
+ * does not parse.
  */
 function parsedSensitiveFields(
   source: ReviewSource,
@@ -405,7 +410,7 @@ function parsedSensitiveFields(
     const line = lineIndex.position(start).line;
     const value = child(node, isDeclarator ? "init" : "value");
     const fieldMarked = value !== undefined && carriesSensitiveMarker(value);
-    marked.set(line, (marked.get(line) ?? false) || fieldMarked);
+    marked.set(line, (marked.get(line) ?? true) && fieldMarked);
   });
   return marked;
 }

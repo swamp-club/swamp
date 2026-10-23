@@ -1018,6 +1018,24 @@ Deno.test("credentials-sensitive-field: a wrapped quoted sensitive key is marked
   );
 });
 
+Deno.test("credentials-sensitive-field: a cast sensitive: true as const on a continuation line is marked", () => {
+  const content = schemaModule(`  apiKey: z.string()
+    .meta({ sensitive: true as const }),`);
+  assertEquals(sensitiveFindings(content), []);
+});
+
+Deno.test("credentials-sensitive-field: a marked field does not hide an unmarked one on the same line", () => {
+  const content = `import { z } from "npm:zod@4";
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ password: z.string(), apiKey: z.string().meta({
+  sensitive: true,
+}) });
+`;
+  const findings = sensitiveFindings(content);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0].line, 3);
+});
+
 Deno.test("credentials-sensitive-field: a wrapped register entry is marked", () => {
   const content = schemaModule(
     `  apiKey: z.string().register(z.globalRegistry, {
