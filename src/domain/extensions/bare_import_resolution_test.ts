@@ -23,7 +23,6 @@ import {
   bareImportResolverFrom,
   bareImportsFromDenoInfo,
   denoInfoRootDir,
-  denoInfoRootDirs,
   hasUnresolvedBareImports,
   installedPackageImports,
   isLocalModuleSpecifier,
@@ -476,69 +475,16 @@ Deno.test("isLocalModuleSpecifier: reads node_modules only below the entry point
   const entryDir = join(repo, "extensions", "models");
   const at = (...parts: string[]) => toFileUrl(join(repo, ...parts)).href;
   assertEquals(
-    isLocalModuleSpecifier(at("extensions", "models", "m.ts"), [entryDir]),
+    isLocalModuleSpecifier(at("extensions", "models", "m.ts"), entryDir),
     true,
   );
-  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts"), [entryDir]), true);
+  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts"), entryDir), true);
   assertEquals(
-    isLocalModuleSpecifier(at("node_modules", "ms", "index.js"), [entryDir]),
+    isLocalModuleSpecifier(at("node_modules", "ms", "index.js"), entryDir),
     false,
   );
   // Without a root, every segment is read, as before.
   assertEquals(isLocalModuleSpecifier(at("lib", "a.ts")), false);
-});
-
-Deno.test("isLocalModuleSpecifier: a module reported under the entry point's resolved path is local when that spelling is given too, and an installed one is not (swamp-club#3794)", () => {
-  // The entry point is read through a link; deno info reports what it
-  // imports under the real path, which runs through a node_modules.
-  const linkDir = path("link", "extensions", "models");
-  const realRepo = path("real", "node_modules", "repo");
-  const realDir = join(realRepo, "extensions", "models");
-  const at = (...parts: string[]) => toFileUrl(join(realRepo, ...parts)).href;
-  assertEquals(isLocalModuleSpecifier(at("lib", "a.ts"), [linkDir]), false);
-  assertEquals(
-    isLocalModuleSpecifier(at("lib", "a.ts"), [linkDir, realDir]),
-    true,
-  );
-  assertEquals(
-    isLocalModuleSpecifier(at("node_modules", "ms", "index.js"), [
-      linkDir,
-      realDir,
-    ]),
-    false,
-  );
-});
-
-Deno.test("denoInfoRootDirs: the given root's directory, and the resolved one when it differs", () => {
-  const json = { roots: [url("models", "m.ts")] };
-  assertEquals(denoInfoRootDirs(json), [path("models")]);
-  assertEquals(denoInfoRootDirs(json, path("models")), [path("models")]);
-  assertEquals(denoInfoRootDirs(json, path("real")), [
-    path("models"),
-    path("real"),
-  ]);
-  assertEquals(denoInfoRootDirs({}, path("real")), []);
-});
-
-Deno.test("bareImportsFromDenoInfo: an importer reported under the entry point's resolved path is kept (swamp-club#3794)", () => {
-  const realRepo = path("real", "node_modules", "repo");
-  const at = (...parts: string[]) => toFileUrl(join(realRepo, ...parts)).href;
-  const json = {
-    roots: [toFileUrl(path("link", "m.ts")).href],
-    modules: [{
-      specifier: at("lib", "a.ts"),
-      dependencies: [{
-        specifier: "ms",
-        code: { specifier: at("node_modules", "ms", "index.js") },
-      }],
-    }],
-  };
-  assertEquals(bareImportsFromDenoInfo(json), []);
-  assertEquals(bareImportsFromDenoInfo(json, realRepo), [{
-    importer: join(realRepo, "lib", "a.ts"),
-    specifier: "ms",
-    installedFile: join(realRepo, "node_modules", "ms", "index.js"),
-  }]);
 });
 
 Deno.test("bareImportsFromDenoInfo: under a node_modules ancestor, local importers are kept and only the project's installed packages are installed files", () => {

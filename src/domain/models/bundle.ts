@@ -30,7 +30,6 @@ import {
 } from "../extensions/deno_config.ts";
 import {
   bareImportsFromDenoInfo,
-  denoInfoRootDir,
   hasUnresolvedBareImports,
   type ResolvedBareImport,
   withPackageSpecifiers,
@@ -1013,6 +1012,21 @@ async function configZodTarget(
 }
 
 /**
+ * The path to give deno info for `entryPoint`. Below a node_modules, deno
+ * info reports what a root imports by real path while naming the root as
+ * given, so an entry point reached through a symlink above a node_modules
+ * (macOS /var) would be read in two spellings and its own modules taken
+ * for installed packages (swamp-club#3794). Such an entry point is read by
+ * its real path; any other is read as given.
+ */
+export async function denoInfoEntryPoint(entryPoint: string): Promise<string> {
+  const real = await Deno.realPath(entryPoint).catch(() => entryPoint);
+  return real !== entryPoint && real.split(/[\\/]/).includes("node_modules")
+    ? real
+    : entryPoint;
+}
+
+/**
  * The bare imports `entryPoint`'s modules write and what Deno resolves
  * each to, read with `deno info` under the bundle's project config and
  * `--no-lock` (a resolution query never writes the author's lock), with
@@ -1025,6 +1039,7 @@ async function readBareImports(
   denoPath: string,
   options: BundleOptions,
 ): Promise<ResolvedBareImport[] | undefined> {
+  const root = toFileUrl(await denoInfoEntryPoint(entryPoint)).href;
   const read = async (extraArgs: string[]) => {
     const output = await new Deno.Command(denoPath, {
       args: [
@@ -1033,24 +1048,18 @@ async function readBareImports(
         // A resolution query only: never write or freeze the author's lock.
         ...denoProjectArgs({ ...options, readOnlyLock: {} }),
         ...extraArgs,
-        toFileUrl(entryPoint).href,
+        root,
       ],
       stdout: "piped",
       stderr: "piped",
       signal: options.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
       ...(options.env ? { env: options.env } : {}),
     }).output();
-    if (!output.success) return undefined;
-    const json = JSON.parse(new TextDecoder().decode(output.stdout));
-    // Below a node_modules, deno info reports modules by real path; the
-    // root's resolved spelling keeps them local (swamp-club#3794).
-    const rootDir = denoInfoRootDir(json);
-    return bareImportsFromDenoInfo(
-      json,
-      rootDir === undefined
-        ? undefined
-        : await Deno.realPath(rootDir).catch(() => undefined),
-    );
+    return output.success
+      ? bareImportsFromDenoInfo(
+        JSON.parse(new TextDecoder().decode(output.stdout)),
+      )
+      : undefined;
   };
   try {
     const first = await read([]);

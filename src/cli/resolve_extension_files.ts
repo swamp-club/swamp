@@ -62,6 +62,7 @@ import {
   type SourceArchivePlan,
 } from "../domain/extensions/source_archive_plan.ts";
 import {
+  denoInfoEntryPoint,
   groupStaleLockfiles,
   sourceHasBareSpecifiers,
   type StaleLockfile,
@@ -1960,7 +1961,13 @@ async function readSymlinkFreeGraph(
   }
   let graph: SourceModuleGraph;
   try {
-    graph = await options.reader.read(root, options.project);
+    // An entry point reached through a symlink above a node_modules is
+    // read by real path; the respell below puts every path back in the
+    // repo dir's spelling (swamp-club#3794).
+    graph = await options.reader.read(
+      await denoInfoEntryPoint(root),
+      options.project,
+    );
   } catch (error) {
     if (!options.lenient) throw error;
     if (error instanceof StaleLockfileError) options.staleLocks?.push(error);

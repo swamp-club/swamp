@@ -87,50 +87,6 @@ Deno.test("parseDenoInfoGraph: keeps local code and data modules and their edges
   assertEquals(graph.missing, []);
 });
 
-Deno.test("parseDenoInfoGraph: modules reported under the entry point's resolved path are local, read from that spelling (swamp-club#3794)", async () => {
-  const realRepo = path("real", "node_modules", "repo");
-  const real = (...parts: string[]) => toFileUrl(join(realRepo, ...parts)).href;
-  const json = {
-    roots: [url("link", "m.ts")],
-    modules: [
-      {
-        kind: "esm",
-        mediaType: "TypeScript",
-        specifier: real("lib", "two.ts"),
-      },
-      {
-        kind: "esm",
-        mediaType: "TypeScript",
-        specifier: url("link", "m.ts"),
-        dependencies: [{
-          specifier: "./lib/two.ts",
-          code: { specifier: real("lib", "two.ts"), span: span(0, 18, 32) },
-        }],
-      },
-    ],
-  };
-  const files = {
-    exists: () => Promise.resolve(true),
-    readText: () =>
-      Promise.resolve('import { t } from "./lib/two.ts";\nexport { t };\n'),
-  };
-  const withoutRealPath = await parseDenoInfoGraph(json, files);
-  assertEquals(withoutRealPath.modules.map((m) => m.path), [
-    path("link", "m.ts"),
-  ]);
-  const graph = await parseDenoInfoGraph(json, {
-    ...files,
-    realPath: (p) => Promise.resolve(p === path("link") ? realRepo : undefined),
-  });
-  assertEquals(graph.modules.map((m) => m.path), [
-    join(realRepo, "lib", "two.ts"),
-    path("link", "m.ts"),
-  ]);
-  assertEquals(graph.edges.map((e) => e.target), [
-    join(realRepo, "lib", "two.ts"),
-  ]);
-});
-
 Deno.test("parseDenoInfoGraph: a module deno cannot load is missing, naming its importer", async () => {
   const graph = await parseDenoInfoGraph(
     {
@@ -422,8 +378,10 @@ Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare impor
 // or package.json is in play (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
 // so the no-project case is the one swamp alone could break.
 Deno.test("DenoInfoModuleGraphReader: a repository checked out under a directory named node_modules keeps its local modules", async () => {
-  // Resolved, so paths compare in one spelling: a symlinked temp dir (macOS
-  // /var) is the case the next test covers.
+  // Resolved: below a node_modules, deno info reports imports by real path,
+  // so an entry point read through a symlinked temp dir (macOS /var) would
+  // be read in two spellings. Push resolves its entry points the same way
+  // (swamp-club#3794).
   const outer = await Deno.realPath(
     await Deno.makeTempDir({ prefix: "graph-reader-ancestor-" }),
   );
@@ -456,51 +414,6 @@ Deno.test("DenoInfoModuleGraphReader: a repository checked out under a directory
       if (Deno.build.os !== "windows") throw error;
     });
   }
-});
-
-Deno.test({
-  name:
-    "DenoInfoModuleGraphReader: an entry point reached through a symlinked directory keeps the local modules deno info reports under the real path, below a node_modules ancestor (swamp-club#3794)",
-  ignore: Deno.build.os === "windows",
-  async fn() {
-    const outer = await Deno.realPath(
-      await Deno.makeTempDir({ prefix: "graph-reader-link-" }),
-    );
-    try {
-      const real = join(outer, "real", "node_modules", "repo");
-      await Deno.mkdir(join(real, "lib"), { recursive: true });
-      await Deno.writeTextFile(
-        join(real, "lib", "two.ts"),
-        "export const t = 2;\n",
-      );
-      await Deno.writeTextFile(
-        join(real, "m.ts"),
-        'import { t } from "./lib/two.ts";\nexport { t };\n',
-      );
-      // Like macOS /var: a link above the node_modules the repo sits in.
-      await Deno.symlink(join(outer, "real"), join(outer, "link"), {
-        type: "dir",
-      });
-      const entry = join(outer, "link", "node_modules", "repo", "m.ts");
-      const graph = await new DenoInfoModuleGraphReader(
-        Deno.execPath(),
-        undefined,
-        { readOnlyLock: true },
-      ).read(entry, {});
-      // deno info names the root as given and, below a node_modules, what
-      // it imports by real path.
-      assertEquals(graph.modules.map((m) => m.path).sort(), [
-        entry,
-        join(real, "lib", "two.ts"),
-      ]);
-      assertEquals(graph.edges.map((e) => e.target), [
-        join(real, "lib", "two.ts"),
-      ]);
-      assertEquals(graph.missing, []);
-    } finally {
-      await Deno.remove(outer, { recursive: true });
-    }
-  },
 });
 
 Deno.test("DenoInfoModuleGraphReader: a package.json project whose package.json does not parse fails the read, rather than checking nothing it declares (swamp-club#3630)", async () => {

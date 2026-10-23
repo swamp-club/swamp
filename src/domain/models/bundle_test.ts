@@ -2020,7 +2020,7 @@ Deno.test("bundleExtension: under a config, reads the graph and externalizes a b
 
 Deno.test({
   name:
-    "bundleExtension: an importer deno info reports under the real path of a symlinked root still counts, so its zod 3 keeps the bare zod bundled (swamp-club#3794)",
+    "bundleExtension: an entry point reached through a symlink above a node_modules is read by real path, so an importer there counts and its zod 3 keeps the bare zod bundled (swamp-club#3794)",
   ignore: Deno.build.os === "windows",
   async fn() {
     const outer = await Deno.realPath(
@@ -2035,23 +2035,38 @@ Deno.test({
       const entry = join(outer, "link", "node_modules", "repo", "m.ts");
       await Deno.writeTextFile(entry, 'import { z } from "zod";\n');
       // deno info names the root as given and, below a node_modules, what
-      // it imports by real path.
-      const { calls, handler } = fakeDenoWithInfo({
-        roots: [toFileUrl(entry).href],
-        modules: [{
-          specifier: toFileUrl(entry).href,
-          dependencies: [{
-            specifier: "zod",
-            code: { specifier: "npm:zod@4.3.6" },
-          }],
-        }, {
-          specifier: toFileUrl(join(real, "lib.ts")).href,
-          dependencies: [{
-            specifier: "zod",
-            code: { specifier: "npm:zod@3.23.8" },
-          }],
-        }],
-      });
+      // it imports by real path; read as given, lib.ts would not count.
+      const calls: string[][] = [];
+      const handler = async (_cmd: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "info") {
+          const root = args[args.length - 1];
+          return {
+            stdout: JSON.stringify({
+              roots: [root],
+              modules: [{
+                specifier: root,
+                dependencies: [{
+                  specifier: "zod",
+                  code: { specifier: "npm:zod@4.3.6" },
+                }],
+              }, {
+                specifier: toFileUrl(join(real, "lib.ts")).href,
+                dependencies: [{
+                  specifier: "zod",
+                  code: { specifier: "npm:zod@3.23.8" },
+                }],
+              }],
+            }),
+            code: 0,
+          };
+        }
+        await Deno.writeTextFile(
+          args[args.indexOf("-o") + 1],
+          "export const bundled = 1;\n",
+        );
+        return { stdout: "", code: 0 };
+      };
       await withMockedCommand(handler, () =>
         bundleExtension(entry, DENO_PATH, {
           denoConfigPath: join(real, "deno.json"),
@@ -2059,6 +2074,10 @@ Deno.test({
           env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
         }));
       assertEquals(calls.length, 2);
+      assertEquals(
+        calls[0][calls[0].length - 1],
+        toFileUrl(join(real, "m.ts")).href,
+      );
       assertEquals(calls[1][0], "bundle");
       assertEquals(calls[1].includes("zod"), false);
     } finally {
