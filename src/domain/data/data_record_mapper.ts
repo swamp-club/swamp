@@ -36,7 +36,7 @@ import {
 } from "./data_metadata.ts";
 import {
   parseSensitiveFieldsTag,
-  resolveSensitiveVaultRefs,
+  resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
 
 export interface DataRecordMapperOptions {
@@ -120,7 +120,7 @@ async function resolveVaultRefs(
   }
   const sensitiveFields = parseSensitiveFieldsTag(tags);
   if (!sensitiveFields) return;
-  await resolveSensitiveVaultRefs(
+  await resolveSensitiveVaultRefsLeavingUnread(
     attributes,
     sensitiveFields,
     options.vaultService,
@@ -386,7 +386,7 @@ export async function fromResourceHandle(
       // A reference whose vault cannot be read stays as stored and is
       // recorded through the sink; a refusal by the run's vault access is
       // rethrown (swamp-club#2676, swamp-club#3806).
-      await resolveSensitiveVaultRefs(
+      await resolveSensitiveVaultRefsLeavingUnread(
         attributes,
         sensitiveFields,
         vaultService,

@@ -23,7 +23,7 @@ import type { SecretSink } from "../secrets/mod.ts";
 import {
   parseSensitiveFieldsTag,
   recordSensitiveVaultRefsUnread,
-  resolveSensitiveVaultRefs,
+  resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
@@ -410,7 +410,7 @@ export function createDataRepositoryAttributeReader(
           );
         }
         if (vaultService) {
-          await resolveSensitiveVaultRefs(
+          await resolveSensitiveVaultRefsLeavingUnread(
             parsed,
             sensitiveFields,
             vaultService,

@@ -43,7 +43,7 @@ import { localContentPath } from "../data/data_record_mapper.ts";
 import {
   parseSensitiveFieldsTag,
   recordSensitiveVaultRefsUnread,
-  resolveSensitiveVaultRefs,
+  resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { isUuid } from "../models/model_lookup.ts";
@@ -1104,7 +1104,7 @@ export class ModelResolver {
       );
       return;
     }
-    await resolveSensitiveVaultRefs(
+    await resolveSensitiveVaultRefsLeavingUnread(
       record.attributes,
       sensitiveFields,
       vaultService,

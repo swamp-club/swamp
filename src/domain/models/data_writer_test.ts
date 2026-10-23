@@ -42,6 +42,7 @@ import {
   readSensitiveFieldsTag,
   recordSensitiveVaultRefsUnread,
   resolveSensitiveVaultRefs,
+  resolveSensitiveVaultRefsLeavingUnread,
   resolveVaultRefsInData,
   sanitizeVaultKey,
   SENSITIVE_FIELDS_ALL,
@@ -4232,7 +4233,7 @@ function recordingSink(): SecretSink & {
   };
 }
 
-Deno.test("resolveSensitiveVaultRefs: a failing read is recorded and the other fields are still read", async () => {
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: a failing read is recorded and the other fields are still read", async () => {
   const vaultService = createTestVaultService();
   await vaultService.put("test-vault", "present", "secret-value");
   const missing = "${{ vault.get('test-vault', 'missing') }}";
@@ -4242,7 +4243,7 @@ Deno.test("resolveSensitiveVaultRefs: a failing read is recorded and the other f
   };
   const sink = recordingSink();
 
-  await resolveSensitiveVaultRefs(
+  await resolveSensitiveVaultRefsLeavingUnread(
     data,
     ["first", "second"],
     vaultService,
@@ -4261,13 +4262,13 @@ Deno.test("resolveSensitiveVaultRefs: a failing read is recorded and the other f
   assertStringIncludes(reference.reason, "missing");
 });
 
-Deno.test("resolveSensitiveVaultRefs: the * tag records a failing own key, dotted or not", async () => {
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: the * tag records a failing own key, dotted or not", async () => {
   const vaultService = createTestVaultService();
   const missing = "${{ vault.get('test-vault', 'missing') }}";
   const data: Record<string, unknown> = { "a.b": missing, nested: [missing] };
   const sink = recordingSink();
 
-  await resolveSensitiveVaultRefs(
+  await resolveSensitiveVaultRefsLeavingUnread(
     data,
     SENSITIVE_FIELDS_ALL,
     vaultService,
@@ -4278,7 +4279,7 @@ Deno.test("resolveSensitiveVaultRefs: the * tag records a failing own key, dotte
   assertEquals(sink.unread.map((r) => r.fieldPath), ["a.b", "nested.0"]);
 });
 
-Deno.test("resolveSensitiveVaultRefs: a refusal by the run's vault access is rethrown, not recorded", async () => {
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: a refusal by the run's vault access is rethrown, not recorded", async () => {
   const vaultService = new VaultService();
   vaultService.registerVault({ name: "erp", type: "mock", config: {} });
   await vaultService.put("erp", "k", "secret-value");
@@ -4289,7 +4290,7 @@ Deno.test("resolveSensitiveVaultRefs: a refusal by the run's vault access is ret
     () =>
       assertRejects(
         () =>
-          resolveSensitiveVaultRefs(
+          resolveSensitiveVaultRefsLeavingUnread(
             { secret: "${{ vault.get('erp', 'k') }}" },
             ["secret"],
             vaultService,
@@ -4297,6 +4298,20 @@ Deno.test("resolveSensitiveVaultRefs: a refusal by the run's vault access is ret
           ),
         VaultAccessDeniedError,
       ),
+  );
+  assertEquals(sink.unread, []);
+});
+
+Deno.test("resolveSensitiveVaultRefs: a failing read throws, for readResource", async () => {
+  const vaultService = createTestVaultService();
+  const sink = recordingSink();
+  await assertRejects(() =>
+    resolveSensitiveVaultRefs(
+      { secret: "${{ vault.get('test-vault', 'missing') }}" },
+      ["secret"],
+      vaultService,
+      sink,
+    )
   );
   assertEquals(sink.unread, []);
 });

@@ -249,8 +249,11 @@ function unreadReferenceError(
   for (const expr of extractExpressions(value, location)) {
     const reference = unread.unreadReferenceFor(expr.raw);
     if (!reference) continue;
+    // An argument and a data field, never a filesystem path.
+    const argument = expr.path;
+    const field = reference.fieldPath;
     return new Error(
-      `Could not read ${expr.path}: it holds the stored reference of sensitive field ${reference.fieldPath}, whose vault could not be read (${
+      `Could not read ${argument}: it holds the stored reference of sensitive field ${field}, whose vault could not be read (${
         describeUnreadReference(reference)
       })`,
     );
