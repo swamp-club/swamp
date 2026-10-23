@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-14 @ 3999f85e
+last-verified: 2026-10-23 @ 9a065cc6
 ---
 
 # swamp start
@@ -217,8 +217,9 @@ The launch prompt names the task's brief:
 | Antigravity | `agy`          | unknown | no         |
 
 Windows opens with Windows Terminal (`wt.exe`) or `cmd start`; Linux with the
-first terminal found when a display is set; macOS with Terminal.app. Over SSH,
-or when nothing opens, the page shows a command to copy.
+first terminal found when a display is set. macOS opens the launcher with the
+default application for `.command` files, normally Terminal.app. Over SSH, or
+when nothing opens, the page shows a command to copy.
 
 ## Not in phase 1
 

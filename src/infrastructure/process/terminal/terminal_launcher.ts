@@ -90,7 +90,7 @@ interface Candidate {
 }
 
 /**
- * Opens a new terminal window running the launcher: Terminal.app on macOS,
+ * Opens the launcher with the default .command application on macOS,
  * Windows Terminal or `cmd start` on Windows, the first terminal found on
  * Linux. With no display, over SSH, or when every attempt fails, it opens
  * nothing and returns the copy-command outcome.
@@ -153,7 +153,7 @@ export class SystemTerminalLauncher implements TerminalLauncher {
       return [{
         method: "macos_terminal",
         command: "open",
-        args: ["-a", "Terminal", scriptPath],
+        args: [scriptPath],
       }];
     }
     if (os === "windows") {
