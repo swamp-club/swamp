@@ -321,6 +321,11 @@ export interface SqliteReadModelOptions {
   readonly syncFile?: (path: string) => Promise<void>;
   /** {@link DEFAULT_AT_RISK_COPY_BYTES} by default. */
   readonly atRiskCopyBytes?: number;
+  /**
+   * The platform, which decides whether files the read model wrote are
+   * recorded ({@link WrittenFile}); `Deno.build.os` by default. For tests.
+   */
+  readonly os?: typeof Deno.build.os;
 }
 
 /** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
@@ -348,6 +353,7 @@ export class SqliteReadModel implements ReadModel {
     hashes: readonly string[],
   ) => Promise<ReadonlySet<string>>;
   readonly #clock: () => Date;
+  readonly #recordsWrittenFiles: boolean;
   readonly #rename: (from: string, to: string) => Promise<void>;
   readonly #readDir: (dir: string) => AsyncIterable<Deno.DirEntry>;
   readonly #syncDirectory: (dir: string) => Promise<void>;
@@ -407,6 +413,9 @@ export class SqliteReadModel implements ReadModel {
       ((namespace, hashes) =>
         commitStore.referencedChunks(namespace, hashes, NOT_RELEASED));
     this.#clock = options.clock ?? (() => new Date());
+    // Deno reports an NTFS file id as a number that loses its low bits past
+    // 2^53, so it does not name one file, and SQLite cannot read it back.
+    this.#recordsWrittenFiles = (options.os ?? Deno.build.os) !== "windows";
     this.#rename = options.rename ?? Deno.rename;
     this.#readDir = options.readDir ?? Deno.readDir;
     this.#syncDirectory = options.syncDirectory ?? syncDirectory;
@@ -1926,7 +1935,7 @@ export class SqliteReadModel implements ReadModel {
     try {
       const info = await Deno.lstat(path);
       if (!info.isFile || info.size <= MAX_INLINE_BYTES) return undefined;
-      if (!force && !this.#replaying) {
+      if (!force && !this.#replaying && this.#recordsWrittenFiles) {
         const written = this.#state.writtenFile(namespace, key);
         if (
           written !== undefined && stillAsWritten(written, info) &&
@@ -1953,8 +1962,8 @@ export class SqliteReadModel implements ReadModel {
    * ({@link WrittenFile}), from `temp`, the stat of the temp file it wrote:
    * only when the path still shows that inode, unchanged since, so a file
    * another process put there in between is never taken for this one.
-   * Without inode numbers (Windows) nothing is recorded, and the guard
-   * reads the file.
+   * On Windows, whose file ids Deno reports only as lossy numbers, and
+   * without inode numbers, nothing is recorded, and the guard reads the file.
    */
   async #noteWritten(
     namespace: string,
@@ -1963,7 +1972,12 @@ export class SqliteReadModel implements ReadModel {
     blob: BlobRef,
     temp: Deno.FileInfo,
   ): Promise<void> {
-    if (blob.size <= MAX_INLINE_BYTES || temp.ino === null) return;
+    if (
+      !this.#recordsWrittenFiles || blob.size <= MAX_INLINE_BYTES ||
+      temp.ino === null
+    ) {
+      return;
+    }
     let info: Deno.FileInfo;
     try {
       info = await Deno.lstat(path);

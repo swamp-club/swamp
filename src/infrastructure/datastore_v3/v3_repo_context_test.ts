@@ -1343,83 +1343,91 @@ Deno.test("holdV3Writer: a storage failure that is not a network failure keeps i
   });
 });
 
-Deno.test("holdV3Writer: a lease release that fails after the hold's restore failed never replaces the error getting ready failed with (swamp-club#3802)", async () => {
-  await withTempDir(async (dir) => {
-    const repoDir = join(dir, "repo");
-    await Deno.mkdir(repoDir, { recursive: true });
-    const remote = createInMemoryRemote({
-      controlPlane: true,
-      storage: true,
-      replicaTarget: {
-        type: "s3",
-        bucket: "team-bucket",
-        prefix: "",
-        region: "us-east-1",
-      },
-      replicaPaths: true,
-    });
-    const store = remote.datastoreControlPlaneStore!();
-    await store.put(
-      "datastore-format",
-      new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
-    );
-    // The lease's fence is created. Getting ready then fails with an error
-    // of its own (the lineage record is refused), and the release that
-    // follows is cut off, as the reporter's was.
-    let releases = 0;
-    const cut = new Proxy(store, {
-      get(target, property) {
-        const value = Reflect.get(target, property, target);
-        if (typeof value !== "function") return value;
-        if (property !== "putIfAbsent") return value.bind(target);
-        return (key: string, ...rest: unknown[]) => {
-          if (key.includes("released")) {
-            releases++;
-            return Promise.reject(
-              new Error(`S3 putObjectConditional failed key=${key}`, {
-                cause: Object.assign(new Error("read ECONNRESET"), {
-                  code: "ECONNRESET",
-                }),
-              }),
-            );
-          }
-          if (key.startsWith("writer/")) {
-            return value.apply(target, [key, ...rest]);
-          }
-          return Promise.reject(new Error("HTTP 412 lineage refused"));
-        };
-      },
-    });
-    try {
-      const location = bindV3BucketDatastore(
-        repoDir,
-        { ...BUCKET_CONFIG },
-        {
-          createLock: () => {
-            throw new Error("not used");
-          },
-          createVerifier: () => {
-            throw new Error("not used");
-          },
-          resolveDatastorePath: (repo) => join(repo, ".swamp"),
-          datastoreWideLease: true,
-          datastoreControlPlaneStore: () => cut,
-          storage: () => remote.storage!(),
-          replicaTarget: () => remote.replicaTarget!(),
-          replicaPaths: () => remote.replicaPaths!(),
+Deno.test({
+  name:
+    "holdV3Writer: a lease release that fails after the hold's restore failed never replaces the error getting ready failed with (swamp-club#3802)",
+  // Litestream replication needs a Unix user id.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repoDir = join(dir, "repo");
+      await Deno.mkdir(repoDir, { recursive: true });
+      const remote = createInMemoryRemote({
+        controlPlane: true,
+        storage: true,
+        replicaTarget: {
+          type: "s3",
+          bucket: "team-bucket",
+          prefix: "",
+          region: "us-east-1",
         },
-        { platform: { os: "linux", arch: "x86_64" } },
+        replicaPaths: true,
+      });
+      const store = remote.datastoreControlPlaneStore!();
+      await store.put(
+        "datastore-format",
+        new TextEncoder().encode('{"format":3,"minReaderFormat":3}'),
       );
-      const error = await assertRejects(() => holdV3Writer(location, repoDir));
-      assertEquals(releases, 1, "the release was attempted");
-      assert(error instanceof Error, String(error));
-      assertStringIncludes(error.message, "HTTP 412 lineage refused");
-      assert(
-        !error.message.includes("putObjectConditional failed"),
-        error.message,
-      );
-    } finally {
-      resetV3BucketBindingsForTesting();
-    }
-  });
+      // The lease's fence is created. Getting ready then fails with an error
+      // of its own (the lineage record is refused), and the release that
+      // follows is cut off, as the reporter's was.
+      let releases = 0;
+      const cut = new Proxy(store, {
+        get(target, property) {
+          const value = Reflect.get(target, property, target);
+          if (typeof value !== "function") return value;
+          if (property !== "putIfAbsent") return value.bind(target);
+          return (key: string, ...rest: unknown[]) => {
+            if (key.includes("released")) {
+              releases++;
+              return Promise.reject(
+                new Error(`S3 putObjectConditional failed key=${key}`, {
+                  cause: Object.assign(new Error("read ECONNRESET"), {
+                    code: "ECONNRESET",
+                  }),
+                }),
+              );
+            }
+            if (key.startsWith("writer/")) {
+              return value.apply(target, [key, ...rest]);
+            }
+            return Promise.reject(new Error("HTTP 412 lineage refused"));
+          };
+        },
+      });
+      try {
+        const location = bindV3BucketDatastore(
+          repoDir,
+          { ...BUCKET_CONFIG },
+          {
+            createLock: () => {
+              throw new Error("not used");
+            },
+            createVerifier: () => {
+              throw new Error("not used");
+            },
+            resolveDatastorePath: (repo) => join(repo, ".swamp"),
+            datastoreWideLease: true,
+            datastoreControlPlaneStore: () => cut,
+            storage: () => remote.storage!(),
+            replicaTarget: () => remote.replicaTarget!(),
+            replicaPaths: () => remote.replicaPaths!(),
+          },
+          { platform: { os: "linux", arch: "x86_64" } },
+        );
+        const error = await assertRejects(() =>
+          holdV3Writer(location, repoDir)
+        );
+        assertEquals(releases, 1, "the release was attempted");
+        assert(error instanceof Error, String(error));
+        assertStringIncludes(error.message, "HTTP 412 lineage refused");
+        assert(
+          !error.message.includes("putObjectConditional failed"),
+          error.message,
+        );
+      } finally {
+        resetV3BucketBindingsForTesting();
+      }
+    });
+  },
 });
