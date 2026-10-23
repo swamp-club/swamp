@@ -36,6 +36,7 @@ import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { UserError } from "../src/domain/errors.ts";
+import { parseStdinContent } from "../src/cli/input_parser.ts";
 import {
   Definition,
   type InputsSchema,
@@ -96,8 +97,8 @@ const PIN = 73816542;
  * `storePin` writes its sensitive number into a `pinned` resource as a
  * number node, beside a larger number that holds its digits and a note that
  * spells it. `record` takes a record of sensitive strings, `container` a
- * sensitive record and `pipeline` a transform into a sensitive output; all
- * three return.
+ * sensitive record, `argv` a plain name beside a sensitive array of strings
+ * and `pipeline` a transform into a sensitive output; all four return.
  * The `refuse*` and `throwMade` methods never run: their schemas refuse
  * what the transform made of the string, through an issue that echoes it
  * (`refuseMade` on the field, `refusePiped` in a pipeline's output) or by
@@ -177,6 +178,13 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       record: method(
         "record",
         z.object({ tokens: z.record(z.string(), secret) }),
+      ),
+      argv: method(
+        "argv",
+        z.object({
+          name: z.string(),
+          command: z.array(z.string()).meta({ sensitive: true }),
+        }),
       ),
       container: method(
         "container",
@@ -1096,5 +1104,43 @@ Deno.test("input values: a record of sensitive values whose keys came from an in
     assertEquals(errorsOf(replay).map((error) => error.code), [REFUSED]);
     assertEquals(errorsOf(replay)[0].message.includes(h.canary), false);
     assertEquals(h.received.length, 1);
+  });
+});
+
+/**
+ * Runs `argv` with `inputs` as method-argument overrides and checks that the
+ * completed event, which --json and the method-summary report show, masks
+ * the sensitive array element by element (swamp-club#3826).
+ */
+async function assertArrayMaskedPerElement(
+  h: Harness,
+  inputs: Record<string, unknown>,
+): Promise<void> {
+  await define(h, "argv", "argv", {}, undefined);
+  const events = await run(h, "argv", "argv", inputs);
+  assertEquals(errorsOf(events), []);
+  assertEquals(h.received, [inputs]);
+  assertEquals(completedOf(events).methodArguments, {
+    name: inputs.name,
+    command: (inputs.command as unknown[]).map(() => "***"),
+  });
+  assertEquals(await swampFilesHolding(h.dir, h.canary), []);
+}
+
+Deno.test("input values: a sensitive array passed with --input is masked element by element in the completed event, beside a plain argument shown as typed (swamp-club#3826)", async () => {
+  await withHarness(async (h) => {
+    await assertArrayMaskedPerElement(h, {
+      name: "visible-name",
+      command: ["curl", "-H", `Bearer ${h.canary}`],
+    });
+  });
+});
+
+Deno.test("input values: a sensitive array piped with --stdin is masked element by element in the completed event, beside a plain argument shown as typed (swamp-club#3826)", async () => {
+  await withHarness(async (h) => {
+    const [inputs] = parseStdinContent(
+      JSON.stringify({ name: "stdin-name", command: ["curl", h.canary] }),
+    );
+    await assertArrayMaskedPerElement(h, inputs);
   });
 });
