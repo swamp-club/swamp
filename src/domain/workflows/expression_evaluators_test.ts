@@ -37,6 +37,7 @@ import { attachSensitiveValues } from "../expressions/sensitive_context.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -84,6 +85,77 @@ Deno.test("WorkflowExpressionEvaluator: returns workflow unchanged when no expre
   );
   assertEquals(result.expressionsEvaluated, 0);
   assertEquals(result.workflow.name, "no-expr");
+  assertEquals(result.diagnostics, {
+    expressionOccurrences: 0,
+    distinctExpressions: 0,
+    celEvaluations: 0,
+    modelKeys: 0,
+    celDurationMs: 0,
+    provenanceDurationMs: 0,
+  });
+});
+
+Deno.test("WorkflowExpressionEvaluator: diagnostics count repeated attempts after provenance gating and before deferral", async () => {
+  const repeated = "${{ inputs.value }}";
+  const workflow = Workflow.create({
+    name: "diagnostics",
+    description: repeated,
+    jobs: [Job.create({
+      name: "j",
+      steps: [
+        Step.create({
+          name: "plain",
+          task: StepTask.model("m", "run", {
+            value: repeated,
+            runtime: "${{ env.X }}",
+            injected: "${{ nonexistent.value }}",
+          }),
+        }),
+        Step.create({
+          name: "guarded",
+          guard: "${{ inputs.guard }}",
+          task: StepTask.model(repeated, "run"),
+        }),
+      ],
+    })],
+  });
+  const cel = new CelEvaluator();
+  const calls: string[] = [];
+  const evaluator = new WorkflowExpressionEvaluator({
+    evaluate: cel.evaluate.bind(cel),
+    async evaluateAsync(expression, context) {
+      calls.push(expression);
+      return await cel.evaluateAsync(expression, context);
+    },
+  });
+  const result = await evaluator.evaluate(
+    workflow,
+    { ...emptyContext(), inputs: { value: "m", guard: true } },
+    "unrestricted",
+    ProvenanceMap.fromEntries(["jobs[0].steps[0].task.inputs.injected"], []),
+  );
+  assertEquals(calls, ["inputs.value", "inputs.value"]);
+  assertEquals(result.expressionsEvaluated, 1);
+  const { celDurationMs: _cel, provenanceDurationMs: _provenance, ...counts } =
+    result.diagnostics;
+  assertEquals(counts, {
+    expressionOccurrences: 5,
+    distinctExpressions: 3,
+    celEvaluations: 2,
+    modelKeys: 0,
+  });
+  assertEquals(
+    result.workflow.jobs[0].steps[1].task.data,
+    StepTask.model(repeated, "run").data,
+  );
+  assertEquals(
+    result.workflow.jobs[0].steps[0].task.data,
+    StepTask.model("m", "run", {
+      value: "m",
+      runtime: "${{ env.X }}",
+      injected: "${{ nonexistent.value }}",
+    }).data,
+  );
 });
 
 Deno.test("WorkflowExpressionEvaluator: skips runtime expressions (vault/env)", async () => {
@@ -490,6 +562,9 @@ Deno.test("WorkflowExpressionEvaluator: leaves another templating system's text 
     list: ["${{ matrix.os }}"],
   });
   assertEquals(result.expressionsEvaluated, 1);
+  assertEquals(result.diagnostics.expressionOccurrences, 4);
+  assertEquals(result.diagnostics.distinctExpressions, 4);
+  assertEquals(result.diagnostics.celEvaluations, 4);
   assertEquals(result.foreignTaskArguments, [
     {
       jobName: "build",

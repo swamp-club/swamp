@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { ProvenanceMap } from "./provenance_map.ts";
+import { keyPath, keySegment, ProvenanceMap } from "./provenance_map.ts";
 import {
   attachBindingProvenance,
   bindingMapAt,
@@ -130,4 +130,184 @@ Deno.test("spliceOrigin: vault results remain data after literal-name normalizat
       source,
     );
   }
+});
+
+/**
+ * A model namespace shaped like ModelResolver.buildContext: each behavior
+ * indexed by name and by id (one shared entry), definition fields beside
+ * resource and file loaders that replace themselves on first read.
+ */
+function aliasedModelContext(names: string[]) {
+  const loads = { count: 0 };
+  const model: Record<string, unknown> = {};
+  names.forEach((name, index) => {
+    const entry: Record<string, unknown> = {
+      input: {
+        globalArguments: { url: '${{ vault.get("v", "' + name + '") }}' },
+      },
+      definition: { globalArguments: { url: "plain" } },
+    };
+    for (const field of ["resource", "file"]) {
+      Object.defineProperty(entry, field, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          loads.count++;
+          const loaded = { spec: { main: { attributes: { leak: T } } } };
+          Object.defineProperty(this, field, {
+            value: loaded,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+          return loaded;
+        },
+      });
+    }
+    model[name] = entry;
+    model[`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`] = entry;
+  });
+  model["not-an-entry"] = "text";
+  model["null-entry"] = null;
+  return { context: { model, env: {} }, loads };
+}
+
+/** The model namespace map as built one withWholeData call per path. */
+function incrementalModelMap(model: Record<string, unknown>): ProvenanceMap {
+  let map = ProvenanceMap.authored();
+  for (const [name, entry] of Object.entries(model)) {
+    if (entry === null || typeof entry !== "object") continue;
+    for (const field of Object.keys(entry)) {
+      if (field === "input" || field === "definition") continue;
+      map = map.withWholeData(keyPath(keySegment(name), field));
+    }
+  }
+  return map;
+}
+
+Deno.test("bindingMapAt: the whole model namespace map matches one built path by path", () => {
+  const { context, loads } = aliasedModelContext([
+    "db",
+    "web.1",
+    "a[0]",
+    'q"uote',
+    "[x",
+    "",
+  ]);
+  (context.model as Record<string, Record<string, unknown>>).db.execution = {
+    status: "ok",
+  };
+  assertEquals(
+    bindingMapAt(context, "model", []).toData(),
+    incrementalModelMap(context.model).toData(),
+  );
+  assertEquals(
+    bindingMapAt(context, "model", ["web.1"]).toData(),
+    ProvenanceMap.fromEntries(["resource", "file"], []).toData(),
+  );
+  assertEquals(loads.count, 0);
+});
+
+Deno.test("spliceOrigin: a computed model read vouches definition text without loading resources", () => {
+  const { context, loads } = aliasedModelContext(["db", "web"]);
+  const origin = spliceOrigin(
+    'model.db.input.globalArguments.?url.orValue("none")',
+    context,
+    '${{ vault.get("v", "db") }}',
+  );
+  assertEquals(loads.count, 0);
+  assertEquals(
+    [...origin.authoredRaws ?? []].sort(),
+    ['${{ vault.get("v", "db") }}', '${{ vault.get("v", "web") }}'],
+  );
+  // Resource text is data whether or not a loader already ran.
+  void (context.model as Record<string, { resource: unknown }>).db.resource;
+  const loaded = spliceOrigin(
+    'model.db.input.globalArguments.?url.orValue("none")',
+    context,
+    T,
+  );
+  assertEquals(loaded.authoredRaws?.has(T), false);
+  assertEquals(loaded.map.isWholeData, true);
+});
+
+Deno.test("spliceOrigin: a computed model read builds its map without per-path grafts", () => {
+  const names = Array.from({ length: 200 }, (_, i) => `m${i}`);
+  const { context } = aliasedModelContext(names);
+  const graft = ProvenanceMap.prototype.graft;
+  let grafts = 0;
+  ProvenanceMap.prototype.graft = function (path, sub) {
+    grafts++;
+    return graft.call(this, path, sub);
+  };
+  try {
+    spliceOrigin(
+      'model.m0.input.globalArguments.?url.orValue("none")',
+      context,
+      "none",
+    );
+  } finally {
+    ProvenanceMap.prototype.graft = graft;
+  }
+  assertEquals(grafts, 0);
+});
+
+Deno.test("spliceOrigin: root maps are reused within a call but refreshed after context mutation", () => {
+  const { context } = aliasedModelContext(["db"]);
+  let enumerations = 0;
+  context.model = new Proxy(context.model, {
+    ownKeys(target) {
+      enumerations++;
+      return Reflect.ownKeys(target);
+    },
+  });
+  const expression = 'model.db.input.globalArguments.?url.orValue("none")';
+  spliceOrigin(expression, context, "none");
+  // One map construction and one authored-text scan.
+  assertEquals(enumerations, 2);
+  const entry = context.model.db as Record<string, unknown>;
+  entry.execution = { output: T };
+  const origin = spliceOrigin(expression, context, T);
+  assertEquals(enumerations, 4);
+  assertEquals(origin.authoredRaws?.has(T), false);
+  assertEquals(origin.map.isWholeData, true);
+});
+
+Deno.test("spliceOrigin: partial ranges and data-origin keys preserve authored sibling values", () => {
+  const other = "${{ env.Y }}";
+  const inputs = { "x.y": [T, `${T} ${other}`], keep: other };
+  const map = ProvenanceMap.fromEntries(
+    ['["x.y"][0]'],
+    [['["x.y"][1]', [[1, 2]]]],
+    [""],
+  );
+  const origin = spliceOrigin(
+    'inputs["x.y"] + ""',
+    attachBindingProvenance({ inputs }, { inputs: map }),
+    `${T} ${other}`,
+  );
+  assertEquals([...origin.authoredRaws ?? []], [other]);
+  assertEquals(origin.map.overlapsData("", 0, T.length), true);
+  assertEquals(
+    origin.map.overlapsData("", T.length + 1, T.length + 1 + other.length),
+    false,
+  );
+});
+
+Deno.test("spliceOrigin: skips whole-data object properties and array slots before reading them", () => {
+  const fail = () => {
+    throw new Error("whole-data getter was read");
+  };
+  const inputs = { list: [T, "unused"], keep: T };
+  Object.defineProperty(inputs.list, 1, { get: fail });
+  Object.defineProperty(inputs, "data", { enumerable: true, get: fail });
+  const origin = spliceOrigin(
+    'inputs.keep + ""',
+    attachBindingProvenance({ inputs }, {
+      inputs: ProvenanceMap.fromEntries(["data", "list[1]"], []),
+    }),
+    T,
+  );
+  assertEquals([...origin.authoredRaws ?? []], [T]);
+  assertEquals(origin.map.isAuthored, true);
 });

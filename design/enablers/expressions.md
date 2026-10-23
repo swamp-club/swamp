@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator
 enables: [behaviors, workflows]
-last-verified: 2026-09-16 @ uncommitted
+last-verified: 2026-10-23 @ uncommitted
 ---
 
 # Expressions
@@ -1301,6 +1301,33 @@ decides the provenance of what it splices:
   every other value, and the own keys of every object holding one; a subtree
   holding none is data whole. The read set comes from the CEL AST and widens
   to the whole binding root on dynamic access.
+
+The model namespace map is built in bulk from its data paths. Each computed
+splice builds a root's map once and reuses it for that splice's authored-text
+scan. The scan skips whole-data subtrees before reading their values, so
+provenance inspection never triggers lazy behavior resource or file loaders.
+Partly data-origin strings and objects still get scanned at their authored
+positions. Maps are not cached between splices because execution can add data to
+the context. These choices preserve the same provenance decisions while avoiding
+repeated map copies and unrelated data reads.
+
+The run-start `swamp.workflow.evaluate` span records the work of a successful
+evaluation. Counts and timings contain no expression text or values:
+
+| Attribute                         | Meaning                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| `workflow.expression_occurrences` | Authored occurrences after the position gate, before runtime deferral     |
+| `workflow.expressions_distinct`   | Distinct raw expressions among those occurrences, including deferred ones |
+| `workflow.cel_evaluations`        | Actual CEL attempts, including handled foreign-text failures              |
+| `workflow.model_keys`             | Model namespace keys, including name and UUID aliases                     |
+| `workflow.cel_duration_ms`        | Cumulative elapsed time awaiting CEL, including handled failures          |
+| `workflow.provenance_duration_ms` | Cumulative time computing splice origins; excludes later substitution     |
+
+The existing `workflow.expressions_evaluated` attribute keeps its meaning:
+distinct successfully evaluated raw expressions. Repeated occurrences still
+evaluate separately. Subphase timings need not sum to the span duration, which
+includes extraction and substitution. A fatal error retains the error span
+without success diagnostics.
 
 Authored namespaces are an allow-list:
 
