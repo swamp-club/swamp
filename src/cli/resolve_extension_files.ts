@@ -1863,7 +1863,8 @@ function staleInstallError(
  * info reports modules by real path, so a repo dir given through a symlink
  * (macOS /var) would see its own modules as outside it (swamp-club#3794).
  * Only the prefix naming the root is swapped ({@link respellUnderRepoDir}),
- * and a path already under a root costs nothing.
+ * and a path already under a root costs nothing. Used only for a graph read
+ * by real path.
  */
 async function respellGraphUnderRoots(
   graph: SourceModuleGraph,
@@ -1960,14 +1961,18 @@ async function readSymlinkFreeGraph(
     return withoutSymlinkedModules(empty, root, options.symlinkedRoots);
   }
   let graph: SourceModuleGraph;
+  // An entry point reached through a symlink above a node_modules is read
+  // by real path, and its graph put back in the repo dir's spelling; any
+  // other is read and used as given (swamp-club#3794).
+  const readAt = await denoInfoEntryPoint(root);
   try {
-    // An entry point reached through a symlink above a node_modules is
-    // read by real path; the respell below puts every path back in the
-    // repo dir's spelling (swamp-club#3794).
-    graph = await options.reader.read(
-      await denoInfoEntryPoint(root),
-      options.project,
-    );
+    graph = await options.reader.read(readAt, options.project);
+    if (readAt !== root) {
+      graph = await respellGraphUnderRoots(graph, [
+        options.repoDir,
+        options.extensionsRoot,
+      ]);
+    }
   } catch (error) {
     if (!options.lenient) throw error;
     if (error instanceof StaleLockfileError) options.staleLocks?.push(error);
@@ -1975,10 +1980,6 @@ async function readSymlinkFreeGraph(
       .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
     graph = { ...empty, modules: [{ path: root, kind: "code" }] };
   }
-  graph = await respellGraphUnderRoots(graph, [
-    options.repoDir,
-    options.extensionsRoot,
-  ]);
   // A module behind a symlinked directory counts as a symlink too: deno info
   // followed it, so its target was read (swamp-club#3421).
   const symlinks = new Set<string>();
