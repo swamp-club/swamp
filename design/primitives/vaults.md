@@ -1022,7 +1022,12 @@ replaced by fresh step inputs. Masking repeats until the repository guard agrees
 with the masked snapshot, including when a masked discriminator changes which
 union members are checked.
 The completed event and the method-summary report mask the same positions the
-cache masks, with a pipeline's raw inputs masked where they hold data.
+cache masks, with a pipeline's raw inputs masked where they hold data. Array
+indexes are not data, so a sensitive array of strings, numbers or booleans is
+masked element by element there, in `--json` and in the cache alike, and its
+length shows; an array holding an object, or one inside an object with data
+under it, is masked whole. This replaces the whole-array mask of
+swamp-club#3555 (swamp-club#3826).
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 A parse the schema refuses registers what each issue at a sensitive position

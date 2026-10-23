@@ -1472,6 +1472,59 @@ Deno.test("maskSensitiveArgumentsForDisplay: masks what the cache masks — data
   assertEquals(literal.records, { [INPUT_VALUE]: "***" });
 });
 
+Deno.test("maskSensitiveArgumentsForDisplay: masks a sensitive array of values element by element, from data or authored, and an array holding or held by an object with data whole (swamp-club#3826)", () => {
+  const schemas: ArgumentSchemas = {
+    methods: {
+      exec: {
+        arguments: z.object({
+          name: z.string(),
+          command: z.array(z.string()).meta({ sensitive: true }),
+          authored: z.array(z.string()).meta({ sensitive: true }),
+          nested: z.object({ list: z.array(z.string()) }).meta({
+            sensitive: true,
+          }),
+          headers: z.array(z.object({ value: z.string() })).meta({
+            sensitive: true,
+          }),
+        }),
+      },
+    },
+  };
+  const data = Definition.create({
+    name: "shown",
+    methods: {
+      exec: {
+        arguments: {
+          name: INPUT_VALUE,
+          command: ["curl", "-H", `Bearer ${INPUT_VALUE}`],
+          authored: ["curl", "--verbose"],
+          nested: { list: [INPUT_VALUE] },
+          headers: [{ value: INPUT_VALUE }],
+        },
+      },
+    },
+  }).toData();
+  const provenance = ProvenanceMap.authored()
+    .withWholeData("methods.exec.arguments.name")
+    .withWholeData("methods.exec.arguments.command")
+    .withWholeData("methods.exec.arguments.nested")
+    .withWholeData("methods.exec.arguments.headers");
+  const shown = maskSensitiveArgumentsForDisplay(
+    schemas,
+    data,
+    "exec",
+    provenance,
+  );
+  // Array indexes are not data, so only the length of an array shows.
+  assertEquals(shown.methods?.exec.arguments, {
+    name: INPUT_VALUE,
+    command: ["***", "***", "***"],
+    authored: ["***", "***"],
+    nested: "***",
+    headers: "***",
+  });
+});
+
 Deno.test("persistEvaluatedDefinition, findPlaintextSensitiveArguments and maskSensitiveArgumentsForDisplay: a sensitive record whose keys came from an input beside an expression the operator typed into it is masked at the record, and nothing of it reaches the file, the metadata or the refusal (swamp-club#3681)", () => {
   const sensitive = z.string().meta({ sensitive: true });
   const schemas: ArgumentSchemas = {
