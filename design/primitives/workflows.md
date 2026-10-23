@@ -3222,6 +3222,14 @@ otherwise waits for `swamp run doctor` (`verifyIndexes`), or for a read of
 that run. An index of another schema version is rebuilt from every record
 (`YamlWorkflowRunRepository`).
 
+Run retention and `swamp run gc` keep the index. Once a pass has removed a
+workflow's records, it drops their entries in the index queue, each only while
+its record is still gone, and removes the index once no record is left. A
+discarded index would make the next read parse every surviving record while
+the dashboard's reads wait in the same queue (swamp-club#3856). A pass that
+stops between removing records and updating the index leaves the count
+differing, and the next read drops those entries with a stat per record.
+
 Run search and run summary read each workflow's index as a
 `RunIndexSnapshot` (`src/domain/workflows/run_index_snapshot.ts`), an immutable,
 newest-first view of its runs. A time window is a binary search over the
