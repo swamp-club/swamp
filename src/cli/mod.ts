@@ -2239,7 +2239,7 @@ Exit codes, shared by every command:
 
     0    success
     1    error
-    2    unknown command or missing argument
+    2    unknown command or subcommand, or too many arguments
     75   temporary failure, such as lock contention or a temporary sign-in
          block; retry with backoff
     130  interrupted (Ctrl+C)

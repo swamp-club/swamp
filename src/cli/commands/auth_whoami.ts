@@ -37,8 +37,9 @@ export const authWhoamiCommand = new Command()
       "serverUrl is the swamp-club site you are signed in to " +
       "(SWAMP_CLUB_URL, set with 'swamp auth login --club'). The 'swamp serve' " +
       "orchestrator that --server, SWAMP_SERVE_URL and SWAMP_SERVER_URL route " +
-      "commands to is a different server, reported as effectiveServeUrl " +
-      "(Serve: in log output) when one is set.",
+      "commands to is a different server; whoami reports it as " +
+      "effectiveServeUrl (Serve: in log output) when SWAMP_SERVE_URL or " +
+      "SWAMP_SERVER_URL is set.",
   )
   .example("Show current identity", "swamp auth whoami")
   .example("Show current identity (alias)", "swamp auth status")

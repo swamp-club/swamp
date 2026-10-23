@@ -71,8 +71,8 @@ Deno.test("help wording: every --force says whether it is the --yes alias", () =
     }
   }
   assertEquals(unclear, []);
-  // The walk reached the tree: the 13 plain aliases alone exceed this.
-  assertEquals(seen > 20, true, `only ${seen} --force options found`);
+  // The walk reached the tree: the plain --yes aliases alone number 13.
+  assertEquals(seen >= 13, true, `only ${seen} --force options found`);
 });
 
 Deno.test("help wording: every --model option outside the model tree says the spelling is kept", () => {
@@ -103,6 +103,11 @@ Deno.test("help wording: the root states the --json error envelope and shared ex
   assertStringIncludes(
     ROOT_DESCRIPTION,
     '{ "error": "<message>", "code": "<error_code>" }',
+  );
+  // A missing argument exits 1 on most commands, so exit 2 must not claim it.
+  assertStringIncludes(
+    ROOT_DESCRIPTION,
+    "2    unknown command or subcommand, or too many arguments",
   );
   for (const code of ["0 ", "1 ", "2 ", "75 ", "130 "]) {
     assertStringIncludes(ROOT_DESCRIPTION, `\n    ${code}`);

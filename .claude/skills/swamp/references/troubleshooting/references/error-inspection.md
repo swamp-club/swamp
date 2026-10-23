@@ -69,7 +69,7 @@ adds codes of its own lists them in its help.
 | ----- | ------------------------------------------------------------------------- |
 | `0`   | Success                                                                   |
 | `1`   | Error (validation, missing config, doctor fail)                           |
-| `2`   | Unknown command or missing argument                                       |
+| `2`   | Unknown command or subcommand, or too many arguments                      |
 | `75`  | Temporary failure (lock contention, temporary sign-in block): retry later |
 | `130` | Interrupted (Ctrl+C)                                                      |
 

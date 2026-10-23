@@ -338,7 +338,7 @@ export const extensionPushCommand = new Command()
     "-y, --yes",
     "Skip confirmation prompts; the summary records any warnings this waived",
   )
-  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
+  .option("-f, --force", "Skip confirmation prompts (alias for --yes)")
   .option(
     "--dry-run",
     "Build the archive and run the registry checks read-only, without pushing",

@@ -178,7 +178,7 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     .option("-y, --yes", "Skip confirmation prompt when overwriting")
     .option(
       "-f, --force",
-      "Skip confirmation prompt (alias for --yes)",
+      "Skip confirmation prompt when overwriting (alias for --yes)",
     )
     .option(
       "--refresh-from <command:string>",
