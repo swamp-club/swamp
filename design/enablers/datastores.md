@@ -3800,7 +3800,11 @@ from `#writeContent` and `#removeRecord`, every overwrite and removal path:
   the content is only decided by reading it. Any write, truncation,
   replacement or `utime` changes the stat, so a file another process changed
   is read as before. A reset clears the table, a removal forgets its row, and
-  a platform without inode numbers (Windows) records nothing.
+  a platform without inode numbers records nothing. Nor does Windows, where
+  Deno reports an NTFS file id only as a number that loses its low bits past
+  2^53 (and SQLite cannot read such a number back): there the guard neither
+  records nor looks up a written file, so a row an older release wrote is
+  never read (swamp-club#3788).
 - **At-risk parts** are the file's parts the storage does not hold: absent,
   or at the wrong size on a storage that reads sizes. In a replay (a section
   that began with a reset, or a recovery) on such a storage, parts held at the

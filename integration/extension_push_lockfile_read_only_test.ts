@@ -198,10 +198,11 @@ Deno.test("push lockfile: a package.json project without a lock gets none", asyn
  * A one-package npm registry on a free localhost port, so the module graph
  * read resolves a real npm import, and writes a lock unless told not to,
  * without the network. `fn` gets the environment that points deno at it,
- * with a fresh DENO_DIR so nothing it caches outlives the test.
+ * with a fresh DENO_DIR so nothing it caches outlives the test, and the
+ * deno.lock a project mapping `lockpkg` to `^1.0.0` resolves to.
  */
 async function withLockRegistry(
-  fn: (env: Record<string, string>) => Promise<void>,
+  fn: (env: Record<string, string>, currentLock: string) => Promise<void>,
 ): Promise<void> {
   const encoder = new TextEncoder();
   const entry = (path: string, text: string) => {
@@ -248,12 +249,26 @@ async function withLockRegistry(
     if (url.pathname === "/lockpkg.tgz") return new Response(tarball);
     return new Response("not found", { status: 404 });
   });
+  const origin = `http://127.0.0.1:${server.addr.port}`;
+  // As deno install writes it; deno info writes none on Windows.
+  const currentLock = JSON.stringify(
+    {
+      version: "5",
+      specifiers: { "npm:lockpkg@1": "1.0.0" },
+      npm: {
+        "lockpkg@1.0.0": { integrity, tarball: `${origin}/lockpkg.tgz` },
+      },
+      workspace: { dependencies: ["npm:lockpkg@1"] },
+    },
+    null,
+    2,
+  ) + "\n";
   const denoDir = await Deno.makeTempDir({ prefix: "swamp-lock-deno-dir-" });
   try {
     await fn({
       DENO_DIR: denoDir,
-      NPM_CONFIG_REGISTRY: `http://127.0.0.1:${server.addr.port}/`,
-    });
+      NPM_CONFIG_REGISTRY: `${origin}/`,
+    }, currentLock);
   } finally {
     await server.shutdown();
     await Deno.remove(denoDir, { recursive: true }).catch((error) => {
@@ -327,18 +342,10 @@ async function writeLockExtension(
   return manifestPath;
 }
 
-/** Writes the lock the project resolves to, as `deno install` would. */
-async function writeCurrentLock(
-  dir: string,
-  env: Record<string, string>,
-): Promise<string> {
-  await runDeno([
-    "info",
-    "--config",
-    join(dir, "deno.json"),
-    join(dir, "extensions", "models", "m.ts"),
-  ], env);
-  return await Deno.readTextFile(join(dir, "deno.lock"));
+/** Writes `lock`, the lock the project resolves to, and returns it. */
+async function writeCurrentLock(dir: string, lock: string): Promise<string> {
+  await Deno.writeTextFile(join(dir, "deno.lock"), lock);
+  return lock;
 }
 
 /**
@@ -393,10 +400,10 @@ for (const check of [true, false]) {
   });
 
   Deno.test(`fmt lockfile: ${command} leaves a current deno.lock byte-for-byte unchanged`, async () => {
-    await withLockRegistry(async (env) => {
+    await withLockRegistry(async (env, currentLock) => {
       await withProject({}, async (dir) => {
         const manifestPath = await writeLockExtension(dir, "^1.0.0");
-        const lock = await writeCurrentLock(dir, env);
+        const lock = await writeCurrentLock(dir, currentLock);
         const data = await fmtExtension(dir, manifestPath, env, check);
         assertEquals(data.passed, true);
         assertEquals(data.staleLockfiles, []);
@@ -406,10 +413,10 @@ for (const check of [true, false]) {
   });
 
   Deno.test(`fmt lockfile: ${command} leaves a stale deno.lock unchanged and reports it`, async () => {
-    await withLockRegistry(async (env) => {
+    await withLockRegistry(async (env, currentLock) => {
       await withProject({}, async (dir) => {
         const manifestPath = await writeLockExtension(dir, "^1.0.0");
-        const lock = await writeCurrentLock(dir, env);
+        const lock = await writeCurrentLock(dir, currentLock);
         // deno.json moves the specifier on; the lock still records ^1.0.0.
         await writeLockExtension(dir, "~1.0.0");
         const data = await fmtExtension(dir, manifestPath, env, check);

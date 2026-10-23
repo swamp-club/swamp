@@ -336,7 +336,11 @@ Deno.test("extension quality: a missing local module prints its compilation erro
     const log = render("log", events, repo);
     assert(log.failed);
     assertStringIncludes(log.output, "Bundle compilation failed:");
-    assertStringIncludes(log.output, join("extensions", "models", "model.ts"));
+    // LogTape quotes the path, escaping a Windows separator.
+    assertStringIncludes(
+      log.output,
+      JSON.stringify(join("extensions", "models", "model.ts")),
+    );
     assertStringIncludes(log.output, "gone.ts");
 
     const json = render("json", events, repo);

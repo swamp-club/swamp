@@ -405,7 +405,7 @@ async function rewriteByHand(env: V3Env, content: Uint8Array): Promise<void> {
 Deno.test({
   name:
     "read model guard: an ordinary catch-up reads no file it wrote that is still as written, and reads one changed since (swamp-club#3617)",
-  // Without inode numbers nothing is recorded, and every file is read.
+  // On Windows nothing is recorded, and every file is read.
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withV3Env(async (env) => {
@@ -512,6 +512,53 @@ Deno.test("read model guard: a file torn after a reboot though its stat still sh
     boot = "boot-id:2";
     await using(reader(), (model) => model.catchUp(signal()));
     assertEquals(await Deno.readFile(fileOf(env, K)), V1);
+  });
+});
+
+Deno.test("read model guard: on Windows no written file is recorded or looked up, so a row holding an NTFS file id past 2^53 never fails a catch-up (swamp-club#3788)", async () => {
+  await withV3Env(async (env) => {
+    const v1 = await env.chunkStore.write(SOLO_NAMESPACE, V1, signal());
+    await putK(env, 1, v1);
+    const storage = new StatSpyStorage(env.storage.inner);
+    const catchUp = () =>
+      using(
+        open(env, storage, { os: "windows" }),
+        (model) => model.catchUp(signal()),
+      );
+    await catchUp();
+    assertEquals(stateRows(env, "SELECT * FROM written_files"), []);
+    // A release before swamp-club#3788 recorded the file with its NTFS id,
+    // which SQLite cannot read back as a number.
+    const info = await Deno.lstat(fileOf(env, K));
+    const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
+    try {
+      db.prepare(
+        "INSERT INTO written_files (namespace, record_key, blob, size, ino, dev, mtime, ctime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        "",
+        K.toString(),
+        JSON.stringify(v1.toJSON()),
+        info.size,
+        9570149209554324,
+        info.dev,
+        info.mtime!.getTime(),
+        info.ctime?.getTime() ?? null,
+      );
+    } finally {
+      db.close();
+    }
+    // An overwrite, then a removal, each guard the file the row names.
+    const v2 = await env.chunkStore.write(SOLO_NAMESPACE, V2, signal());
+    await putK(env, 2, v2);
+    await catchUp();
+    assertEquals(await Deno.readFile(fileOf(env, K)), V2);
+    assertEquals(
+      stateRows(env, "SELECT record_key FROM written_files"),
+      [{ record_key: K.toString() }],
+    );
+    await removeK(env, 3);
+    await catchUp();
+    await assertRejects(() => Deno.stat(fileOf(env, K)), Deno.errors.NotFound);
   });
 });
 

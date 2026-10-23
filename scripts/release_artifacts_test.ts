@@ -154,8 +154,11 @@ cp "$FIXTURE_ROOT/store/\u0024{url#https://artifacts.swamp-club.com/}" "$output"
         const result = await new Deno.Command(bash, {
           args: [
             "-c",
-            'umask "$1"; shift; exec bash "$@"',
+            // Git for Windows' bash.exe puts its own bin directories, which
+            // hold a real curl, ahead of the PATH it is given.
+            'PATH="$1:$PATH"; umask "$2"; shift 2; exec bash "$@"',
             "release-test",
+            bashPath(bin),
             umask,
             bashPath(join(repo, "scripts", script)),
             ...args.map(bashPath),
