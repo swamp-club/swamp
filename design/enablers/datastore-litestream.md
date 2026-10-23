@@ -739,8 +739,12 @@ child in the supervisor's process group. Litestream starts with
 
 - Beside `commits.db`, in `.commits.db-replication/`, only non-secret shared
   files: `supervisor.lock`, `presence.json` (the pidfile: pids, uid, hostname,
-  lineage fence), `replace-<pid>` marks, `use.lock` and `lineage.json`. The
-  directory and the pidfile are trusted only when this user owns them.
+  the supervisor's process identity, lineage fence), `replace-<pid>` marks,
+  `use.lock` and `lineage.json`. The directory and the pidfile are trusted
+  only when this user owns them. A sidecar is this machine's by the
+  supervisor's process identity (`sameKernel`: boot id and pid namespace),
+  never by the hostname, which a DHCP renewal can change under a live
+  sidecar (swamp-club#3801); a record without one is judged by hostname.
 - In `/tmp/swamp-<uid>/<hash>/`, created 0700 and checked before every use:
   the Litestream config and the control socket. A socket another user owns is
   refused before it is connected to.
@@ -884,8 +888,85 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
 - `confirmed.json`, created once, after the lineage's first head.
 
 **The current state** is the highest lineage under the current replica root
-that is started, confirmed and has a head. Records under another root, or
-that do not parse, are ignored.
+that is started, confirmed and has a head. Records that do not parse are
+ignored.
+
+A lineage is under the current root when its recorded root matches
+(`ReplicaRoot.matches`, swamp-club#3801). The root is still written in full
+(`s3:<endpoint>:<bucket>:<path>`), but an S3 root matches any endpoint
+spelling of its bucket and path: the endpoint is how a checkout reaches the
+bucket, not which replica it is, and the records live in that bucket, so
+another S3 service never sees them. Two checkouts that spell one endpoint
+differently (a trailing slash, the default explicit or implicit, a proxy)
+share one lineage chain. A lineage under a root that does not match is
+history while a lineage of this root was started after it, and ignored. One
+started above every lineage of this root, or when none was, would decide
+the state: readers and writers alike are refused with
+`datastore_v3_replica_root_mismatch`, naming both roots, rather than reading
+an empty datastore or starting a lineage beside it.
+
+A lineage's start also records `follows`, the current lineage the writer's
+copy was made current to, and `chained`, so a lineage this swamp began with
+nothing to follow is never read as an older swamp's. The lineages form a
+chain: one this swamp started continues the one it follows; one a swamp
+before swamp-club#3801 started (no `chained`) continues the highest
+complete lineage below it under its exact root spelling, the only ones it
+could restore. Collection removes a lineage below the current one unless an
+older swamp's ancestor of the current lineage, under another spelling,
+superseded it: that ancestor never saw it, so its commits may be nowhere
+else (a fork left by older swamps, or an older swamp writing beside an
+upgraded one during a rollout). Such a lineage is kept, and
+`lineage/<fence>/kept.json` records it, so every later collection keeps it
+too, after the chain that showed the fork is collected. A warning names
+them once, for an operator to recover from and remove by hand; while they
+stay, chunk collection defers, so their chunks stay too. A checkout that
+only changed its endpoint spelling under an older swamp leaves the same
+records and is kept the same way: it costs storage, never commits. An
+older swamp still collects lineages of its own spelling below its current
+one, kept or not, as it always did.
+
+#### Recovering kept replication lineages
+
+`swamp doctor datastores` reports kept lineages on every run (the
+`v3_kept_lineages` check, and `v3KeptLineagesFinding` in `--json`): each
+one's fence, replica root, holder and start time. While any remain,
+`swamp datastore gc` refuses chunk collection on every run and names them.
+There is no repair command; an operator resolves them by hand:
+
+1. **Restore a kept lineage to a scratch file.** Use the Litestream swamp
+   pins (`~/.swamp/litestream/<version>/litestream`) with a config naming the
+   lineage's replica path, `<prefix>/_litestream/<fence>` in the bucket, and
+   the bucket's `region`, `endpoint` and `force-path-style` as the datastore
+   uses them:
+
+   ```yaml
+   dbs:
+     - path: "/tmp/kept-<fence>.db"
+       replica:
+         type: s3
+         bucket: "<bucket>"
+         path: "<prefix>/_litestream/<fence>"
+         endpoint: "<endpoint>"
+   ```
+
+   then `litestream restore -config kept.yml -o /tmp/kept-<fence>.db
+   /tmp/kept-<fence>.db`.
+2. **Tell whether it holds commits the current state lacks.** The checkout's
+   own copy is `.swamp/_datastore_v3_copies/<key>/commits.db`, current after
+   any command. Commits are named by `(namespace, partition, txn_id)` in the
+   `commits` table: any row in the kept lineage's file whose triple is
+   missing from the copy is a commit only that lineage holds. None missing
+   means nothing is lost: go to step 4.
+3. **Recover what is missing.** Each missing row's `body` is the commit's
+   operations. Re-run the work that produced them in a checkout of the
+   current state (rerun the method or workflow, or re-put the data), rather
+   than copying rows between databases: the current lineage's sequence
+   numbers and fences differ.
+4. **Remove the lineage.** Delete its records under the datastore's control
+   plane, `_control/lineage/<fence>/` (`started.json`, `confirmed.json`,
+   every `head-*.json` and `kept.json`), then its replica path
+   `<prefix>/_litestream/<fence>/`. Once no kept lineage remains, the next
+   collection runs.
 
 > **Decision: head, then confirmation, then the lease check.** A writer's
 > end of command is: sync, publish the head, publish the confirmation (the

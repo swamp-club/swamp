@@ -108,6 +108,38 @@ export class V3ReplicationUnavailableError extends UserError {
   }
 }
 
+/** Error code for a datastore whose newest lineage is under another replica. */
+export const V3_REPLICA_ROOT_MISMATCH_CODE =
+  "datastore_v3_replica_root_mismatch";
+
+/**
+ * Thrown when the datastore's newest replication lineage was started under
+ * another replica root than this checkout's (swamp-club#3801): another
+ * bucket or path recorded in this datastore's control plane. Starting a
+ * lineage beside it would fork the datastore, and reading past it would
+ * show an empty one, so the command stops before either.
+ */
+export class V3ReplicaRootMismatchError extends UserError {
+  constructor(
+    datastorePath: string,
+    lineageFence: string,
+    recordedRoot: string,
+    ownRoot: string,
+  ) {
+    super(
+      `Replication lineage ${lineageFence} of the v3 datastore at ` +
+        `${datastorePath} was started under replica root ${recordedRoot}, ` +
+        `but this checkout replicates under ${ownRoot}. swamp does not start ` +
+        `a second lineage beside it: check that this checkout's datastore ` +
+        `names the same bucket and prefix as the checkout that wrote it (the ` +
+        `S3 endpoint need not match). ` +
+        `Nothing was changed.`,
+      V3_REPLICA_ROOT_MISMATCH_CODE,
+    );
+    this.name = "V3ReplicaRootMismatchError";
+  }
+}
+
 /** What Litestream's `POST /sync` with `wait` answers. */
 export interface LitestreamSyncResponse {
   readonly status?: unknown;

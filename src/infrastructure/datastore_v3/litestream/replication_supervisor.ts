@@ -48,6 +48,7 @@ import {
   writePresence,
 } from "./replication_files.ts";
 import { SUPERVISOR_MARKER } from "./litestream_processes.ts";
+import { localProcess } from "../process_identity.ts";
 import {
   type LitestreamReplicaType,
   parseLitestreamReplicaType,
@@ -229,6 +230,9 @@ async function superviseHeld(
     supervisorPid: Deno.pid,
     uid: Deno.uid(),
     hostname: Deno.hostname(),
+    // Its owner is judged by this, not the hostname, which may change while
+    // it runs (swamp-club#3801).
+    process: (await localProcess()).identity,
     lineageFence: options.lineageFence,
     replicaPath: options.replicaPath,
   };

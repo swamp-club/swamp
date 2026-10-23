@@ -34,7 +34,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import type { CommandContext } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { checkUnmigratedNamespaceData } from "../resolve_datastore.ts";
 import {
   formatCommandTarget,
@@ -309,8 +309,10 @@ export const workflowApprovalsCommand = withRemoteOptions(
     return;
   }
 
-  const { repoDir, repoContext, datastoreConfig, datastoreResolver } =
-    await requireInitializedRepoUnlocked({
+  // It only reads: it never takes the v3 writer lease, which would start a
+  // replication lineage on a bucket (swamp-club#3801).
+  const { repoDir, repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
@@ -356,6 +358,7 @@ export const workflowApprovalsCommand = withRemoteOptions(
   renderApprovals(cliCtx, pending, expired);
 
   if (pending.length === 0) {
+    const datastoreConfig = datastoreResolver.config();
     const unmigrated = await checkUnmigratedNamespaceData(datastoreConfig);
     if (unmigrated.length > 0) {
       cliCtx.logger.warn(

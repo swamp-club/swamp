@@ -158,7 +158,7 @@ export function resolveV3ReplicaPaths(
       datastoreType,
     );
     return {
-      root: replicaRootOf(replicaSettingFromTarget(target)),
+      root: replicaRootOf(replicaSettingFromTarget(target)).value,
       store: provider.replicaPaths(),
     };
   } catch (error) {

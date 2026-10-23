@@ -90,9 +90,12 @@ Deno.test("replicaRootOf: distinguishes every replica", () => {
 // A lineage continues only under the root it recorded, so these strings
 // must not change (swamp-club#3507): a changed root restarts every lineage.
 Deno.test("replicaRootOf: file and s3 roots keep their recorded form", () => {
-  assertEquals(replicaRootOf({ type: "file", path: "/a" }), "file:/a");
   assertEquals(
-    replicaRootOf({ type: "s3", bucket: "b", path: "p" }),
+    replicaRootOf({ type: "file", path: "/a" }).value,
+    "file:/a",
+  );
+  assertEquals(
+    replicaRootOf({ type: "s3", bucket: "b", path: "p" }).value,
     "s3::b:p",
   );
   assertEquals(
@@ -102,7 +105,7 @@ Deno.test("replicaRootOf: file and s3 roots keep their recorded form", () => {
       path: "p",
       endpoint: "http://e",
       region: "r",
-    }),
+    }).value,
     "s3:http://e:b:p",
   );
   assertEquals(
@@ -112,11 +115,11 @@ Deno.test("replicaRootOf: file and s3 roots keep their recorded form", () => {
       path: "p",
       endpoint: "http://e",
       forcePathStyle: false,
-    }),
+    }).value,
     "s3:http://e:b:p",
   );
   assertEquals(
-    replicaRootOf({ type: "gcs", bucket: "g", path: "p" }),
+    replicaRootOf({ type: "gcs", bucket: "g", path: "p" }).value,
     "gcs:g:p",
   );
 });

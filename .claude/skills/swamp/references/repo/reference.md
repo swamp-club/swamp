@@ -286,6 +286,14 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
   `v3_content`) with the way out for each. If the checkout's content cannot be
   inspected at all (e.g. a read-only `.swamp/` state directory), `v3_content`
   fails and the command exits 1.
+- A refusal with `datastore_v3_replica_root_mismatch` names two replica roots:
+  this checkout's datastore names another bucket or prefix than the checkout
+  that wrote the newest lineage (the S3 endpoint spelling need not match). Fix
+  the checkout's datastore config; nothing was changed. A failing
+  `v3_kept_lineages` check, or `swamp datastore gc` refusing because lineages
+  are kept, means older swamps forked the datastore across endpoint spellings:
+  the listed lineages may hold commits the current state lacks, and chunk
+  collection waits until an operator recovers and removes them by hand.
 - A refusal with `datastore_format_mismatch` or
   `datastore_format_marker_invalid` saying a crash may have lost the format
   marker: run `swamp doctor datastores --repair` (preview), then add `-y` to

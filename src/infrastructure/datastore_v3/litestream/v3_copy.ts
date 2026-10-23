@@ -51,11 +51,15 @@ import {
   decideChunkCollection,
   decideLocalCopy,
   type HighWaterMark,
+  lineagesKeptForFork,
+  type LineageStarted,
   mayContinueLineage,
   newestStartedFence,
+  outrankingForeignLineage,
   type PublishedLineage,
   restartLineage,
 } from "../../../domain/datastore_v3/published_lineage.ts";
+import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 import {
   decideLineage,
   replicaPathFor,
@@ -67,6 +71,7 @@ import {
 } from "../../../domain/datastore/replica_path_store.ts";
 import {
   V3ChunkCollectionDeferredError,
+  V3ReplicaRootMismatchError,
   V3ReplicationError,
   V3ReplicationUnavailableError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
@@ -226,11 +231,9 @@ export async function makeV3CopyCurrent(
   const paths = await copyPaths(copy);
   const registry = lineageRegistryFor(copy.datastorePath);
   // The cheap check, without any lock: a current copy stops here.
-  const first = decideLocalCopy(
-    await localState(paths),
-    await registry.read(root),
-    root,
-  );
+  const published = await registry.read(root);
+  refuseForeignLineage(copy, published, root);
+  const first = decideLocalCopy(await localState(paths), published, root);
   if (first.kind === "none") {
     // A bucket datastore has no shared commits.db to seed from.
     return options.mode === "write" &&
@@ -258,7 +261,9 @@ export async function makeV3CopyCurrent(
     }
     // Another process may have restored while this one waited.
     const local = await localState(paths);
-    const decision = decideLocalCopy(local, await registry.read(root), root);
+    const lineagesNow = await registry.read(root);
+    refuseForeignLineage(copy, lineagesNow, root);
+    const decision = decideLocalCopy(local, lineagesNow, root);
     if (decision.kind === "none" || decision.kind === "current") return {};
     const neverRestored = copyNeverRestored(local);
     try {
@@ -346,7 +351,7 @@ export async function makeV3CopyCurrent(
     const readModelMoved = cursor > 0 &&
       (before === undefined || txnAt(target, cursor) !== before);
     await writeCopyState(paths, {
-      replicaRoot: root,
+      replicaRoot: root.value,
       lineageFence: decision.lineage.fence,
       txid: decision.lineage.head.txid,
     });
@@ -513,6 +518,28 @@ function commitsIn(path: string): number {
   } finally {
     db?.close();
   }
+}
+
+/**
+ * Refuses a datastore whose newest lineage another replica root started
+ * (swamp-club#3801): reading past it would show an empty datastore, and
+ * writing would start a lineage beside it.
+ *
+ * @throws V3ReplicaRootMismatchError
+ */
+function refuseForeignLineage(
+  copy: V3Copy,
+  lineages: readonly PublishedLineage[],
+  root: ReplicaRoot,
+): void {
+  const foreign = outrankingForeignLineage(lineages, root);
+  if (foreign === undefined) return;
+  throw new V3ReplicaRootMismatchError(
+    copy.datastorePath,
+    padFence(foreign.fence),
+    foreign.replicaRoot,
+    root.value,
+  );
 }
 
 /**
@@ -705,13 +732,19 @@ export async function prepareV3WriterLineage(
       const paths = await copyPaths(copy);
       const registry = lineageRegistryFor(copy.datastorePath);
       const previous = await readLineage(paths);
-      const claim = async () => {
+      // The start names the current lineage the copy was made current to,
+      // which this one continues (swamp-club#3801): collection then knows
+      // its chain from a fork a swamp before matching left.
+      const claim = async (published: readonly PublishedLineage[]) => {
+        const follows = currentLineage(published, root)?.fence;
         if (
           await registry.start({
             fence,
             holder: holderName(),
-            replicaRoot: root,
+            replicaRoot: root.value,
             startedAt: new Date().toISOString(),
+            ...(follows !== undefined && follows < fence ? { follows } : {}),
+            chained: true,
           })
         ) {
           return;
@@ -720,26 +753,27 @@ export async function prepareV3WriterLineage(
         // kept. Another root's at the same fence names another replica path.
         const started = await registry.started(fence);
         if (
-          previous?.lineageFence !== fence || previous.replicaRoot !== root ||
-          typeof started !== "object" || started.replicaRoot !== root
+          previous?.lineageFence !== fence ||
+          !root.matches(previous.replicaRoot) ||
+          typeof started !== "object" || !root.matches(started.replicaRoot)
         ) {
           throw new Error(
             `replication lineage ${padFence(fence)} was already claimed` +
-              (typeof started === "object" && started.replicaRoot !== root
+              (typeof started === "object" && !root.matches(started.replicaRoot)
                 ? " under another replica root"
                 : "; the writer lease's records were recreated"),
           );
         }
       };
       if (
-        previous !== undefined && previous.replicaRoot === root &&
+        previous !== undefined && root.matches(previous.replicaRoot) &&
         previous.lineageFence === fence && previous.lastFence === fence
       ) {
         // This hold's own lineage, begun at its fence after any restore: its
         // start is only read, and claimed again only when it is missing.
         const started = await registry.started(fence);
-        if (typeof started !== "object" || started.replicaRoot !== root) {
-          await claim();
+        if (typeof started !== "object" || !root.matches(started.replicaRoot)) {
+          await claim(await registry.read(root));
         }
         return;
       }
@@ -764,18 +798,19 @@ export async function prepareV3WriterLineage(
         );
       }
       // Never below a lineage a newer lease started: readers would follow
-      // that one, and this writer's commits would reach none of them.
-      const newest = newestStartedFence(
-        lineages ?? await registry.read(root),
-        root,
-      );
+      // that one, and this writer's commits would reach none of them. Nor
+      // beside one another replica root started (swamp-club#3801).
+      lineages ??= await registry.read(root);
+      refuseForeignLineage(copy, lineages, root);
+      const newest = newestStartedFence(lineages, root);
       if (newest !== undefined && newest > fence) {
         throw new V3LineageOutrankedError(fence, newest);
       }
-      await claim();
+      await claim(lineages);
       await writeLineage(paths, restartLineage(previous, root, fence));
     });
   } catch (error) {
+    if (error instanceof V3ReplicaRootMismatchError) throw error;
     throw new V3ReplicationError(
       `the replication lineage of this writer could not be recorded: ${
         messageOf(error)
@@ -857,7 +892,7 @@ export async function publishV3Head(
     // checkout that publishes late, on its lineage or an older one, must not
     // make the copy look behind what it holds.
     const next = {
-      replicaRoot: root,
+      replicaRoot: root.value,
       lineageFence: head.lineageFence,
       txid: head.txid,
     };
@@ -907,11 +942,55 @@ export async function assertV3ChunksCollectable(copy: V3Copy): Promise<void> {
     root,
   );
   if (decision.kind === "defer") {
+    // Kept lineages wait for an operator, not for a later lineage: said on
+    // every deferral, with what to do (swamp-club#3801).
+    const kept = await v3KeptLineages(copy.datastorePath);
+    if (kept.length > 0) {
+      throw new V3ChunkCollectionDeferredError(
+        copy.datastorePath,
+        `${kept.length} replication lineage(s) (${
+          kept.map((lineage) => padFence(lineage.fence)).join(", ")
+        }) are kept because they may hold commits the current lineage lacks`,
+        "once they are recovered and removed by hand: `swamp doctor " +
+          "datastores` lists them and says how",
+      );
+    }
     throw new V3ChunkCollectionDeferredError(
       copy.datastorePath,
       decision.reason,
     );
   }
+}
+
+/** A replication lineage collection keeps for an operator (swamp-club#3801). */
+export interface V3KeptLineage {
+  readonly fence: number;
+  readonly replicaRoot: string;
+  readonly holder: string;
+  readonly startedAt: string;
+}
+
+/**
+ * The lineages collection keeps because they may hold commits the current
+ * lineage lacks, lowest fence first: those `lineage/<fence>/kept.json`
+ * records whose lineage still has its start. Read-only.
+ */
+export async function v3KeptLineages(
+  datastorePath: string,
+): Promise<V3KeptLineage[]> {
+  const registry = lineageRegistryFor(datastorePath);
+  const kept: V3KeptLineage[] = [];
+  for (const fence of [...await registry.kept()].sort((a, b) => a - b)) {
+    const started = await registry.started(fence);
+    if (typeof started !== "object") continue;
+    kept.push({
+      fence,
+      replicaRoot: started.replicaRoot,
+      holder: started.holder,
+      startedAt: started.startedAt,
+    });
+  }
+  return kept;
 }
 
 /**
@@ -938,7 +1017,8 @@ export async function collectV3Lineages(
   // A store bound to another root would remove paths this registry never
   // recorded: the replica was set somewhere other than the provider's
   // target.
-  const replicaPaths = options.replicaPaths?.root === root
+  const replicaPaths = options.replicaPaths !== undefined &&
+      root.matches(options.replicaPaths.root)
     ? options.replicaPaths.store
     : undefined;
   if (options.replicaPaths !== undefined && replicaPaths === undefined) {
@@ -953,21 +1033,60 @@ export async function collectV3Lineages(
     if (currentLineage(lineages, root)?.fence !== current) return;
     const own = await readLineage(paths);
     const abandoned = (own?.previousLineages ?? [])
-      .filter((old) => old.replicaRoot === root)
+      .filter((old) => root.matches(old.replicaRoot))
       .map((old) => old.fence);
+    // A read fetches only the starts the current state needs: a lineage
+    // another replica root started, or whose start does not parse, is left
+    // alone, records included.
+    const starts = new Map<number, LineageStarted>();
+    const candidates: number[] = [];
     for (
       const fence of collectableLineages(lineages, abandoned, root, current)
     ) {
-      // A read fetches only the starts the current state needs: a lineage
-      // another replica root started, or whose start does not parse, is
-      // left alone, records included.
       const started = await registry.started(fence);
       if (
         started === "unreadable" ||
-        (started !== undefined && started.replicaRoot !== root)
+        (started !== undefined && !root.matches(started.replicaRoot))
       ) {
         continue;
       }
+      if (started !== undefined) starts.set(fence, started);
+      candidates.push(fence);
+    }
+    // The current lineage's chain, so lineages it may lack are kept, never
+    // collected over (lineagesKeptForFork). A lineage a swamp before
+    // swamp-club#3801 started continues one below it already read.
+    for (
+      let at: number | undefined = current;
+      at !== undefined && !starts.has(at);
+    ) {
+      const started = await registry.started(at);
+      if (typeof started !== "object" || !root.matches(started.replicaRoot)) {
+        break;
+      }
+      starts.set(at, started);
+      at = started.chained === true ? started.follows : undefined;
+    }
+    const marked = await registry.kept();
+    const kept = lineagesKeptForFork(starts, current, {
+      complete: await registry.completeFences(),
+      marked,
+    });
+    for (const fence of kept) {
+      if (!marked.has(fence)) await registry.keep(fence);
+    }
+    // Said once, when a collection first keeps them; later ones keep them
+    // quietly.
+    if ([...kept].some((fence) => !marked.has(fence))) {
+      logger
+        .warn`The v3 datastore at ${copy.datastorePath} may hold commits outside its current replication lineage ${
+        padFence(current)
+      }: replication lineages ${
+        [...kept].sort((a, b) => a - b).map(padFence).join(", ")
+      } were written under different spellings of its S3 endpoint, at least one by a swamp before swamp-club#3801 that did not see the others. They are kept, never collected. If one checkout only changed its endpoint spelling, nothing is missing. Otherwise recover what you need from them; then remove their _control/lineage/ records and _litestream/ paths`;
+    }
+    for (const fence of candidates) {
+      if (kept.has(fence)) continue;
       // One lineage that cannot be removed now (its old sidecar may still
       // be writing there) never stops the others; the next first
       // confirmation tries again.
@@ -986,7 +1105,7 @@ export async function collectV3Lineages(
       await writeLineage(paths, {
         ...own,
         previousLineages: own.previousLineages.filter((old) =>
-          old.replicaRoot === root && !collected.has(old.fence) &&
+          root.matches(old.replicaRoot) && !collected.has(old.fence) &&
           old.fence >= current
         ),
       });

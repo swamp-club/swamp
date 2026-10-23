@@ -117,6 +117,43 @@ export interface V3ContentSummary {
   }>;
 }
 
+/**
+ * A replication lineage that collection keeps because it may hold commits
+ * the current lineage lacks (swamp-club#3801).
+ */
+export interface V3KeptLineageFinding {
+  fence: number;
+  replicaRoot: string;
+  holder: string;
+  startedAt: string;
+}
+
+/** Where the manual recovery of kept lineages is written down. */
+export const KEPT_LINEAGES_RECOVERY_DOC =
+  'design/enablers/datastore-litestream.md, "Recovering kept replication lineages"';
+
+/** The finding for kept lineages, or the pass when there are none. */
+export function keptLineagesFindingMessage(
+  kept: ReadonlyArray<V3KeptLineageFinding>,
+): string {
+  if (kept.length === 0) {
+    return "No replication lineages are kept for recovery";
+  }
+  const listed = kept.map((lineage) =>
+    `${
+      String(lineage.fence).padStart(12, "0")
+    } (root ${lineage.replicaRoot}, ` +
+    `started by ${lineage.holder} at ${lineage.startedAt})`
+  ).join("; ");
+  return `${kept.length} replication lineage(s) are kept because they may ` +
+    `hold commits the current lineage lacks: ${listed}. They were written ` +
+    `under another spelling of the datastore's S3 endpoint by a swamp ` +
+    `before swamp-club#3801 that did not see the others. Chunk collection ` +
+    `is deferred while they exist, so the bucket's storage is not ` +
+    `reclaimed. Recover any commits you need from them, then remove them ` +
+    `as ${KEPT_LINEAGES_RECOVERY_DOC} describes.`;
+}
+
 /** Outcome of a `doctor datastores` scan. */
 export interface DoctorDatastoresData {
   datastoreType: string;
@@ -129,6 +166,8 @@ export interface DoctorDatastoresData {
   retentionFinding?: RetentionCheckSummary;
   /** Present when the v3 content check found something (swamp-club#3617). */
   v3ContentFinding?: V3ContentSummary;
+  /** Present when lineages are kept for recovery (swamp-club#3801). */
+  v3KeptLineagesFinding?: V3KeptLineageFinding[];
 }
 
 /** Options for a `doctor datastores` scan. */
@@ -183,6 +222,14 @@ export interface DoctorDatastoresDeps {
    * given only on a v3 datastore. Read-only, from checkout-local state.
    */
   checkV3Filter?: (config: DatastoreConfig) => Promise<string | undefined>;
+  /**
+   * The replication lineages collection keeps for recovery
+   * (swamp-club#3801); given only on a v3 datastore. Read-only, from the
+   * datastore's lineage records.
+   */
+  checkV3KeptLineages?: (
+    config: DatastoreConfig,
+  ) => Promise<V3KeptLineageFinding[]>;
 }
 
 /** Whether the v3 content check found nothing. */
@@ -290,6 +337,7 @@ export async function* doctorDatastores(
       let catalogCompletenessFinding: CatalogCompletenessSummary | undefined;
       let retentionFinding: RetentionCheckSummary | undefined;
       let v3ContentFinding: V3ContentSummary | undefined;
+      let v3KeptLineagesFinding: V3KeptLineageFinding[] | undefined;
 
       // Health check
       const { healthy, message } = await deps.checkHealth(config);
@@ -491,6 +539,28 @@ export async function* doctorDatastores(
         }
       }
 
+      // Kept replication lineages (swamp-club#3801): reported on every run,
+      // since chunk collection waits on them until an operator acts.
+      if (deps.checkV3KeptLineages && !v3FilterRefused) {
+        let kept: V3KeptLineageFinding[] | undefined;
+        let failure: string | undefined;
+        try {
+          kept = await deps.checkV3KeptLineages(config);
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        if (kept !== undefined && kept.length > 0) {
+          v3KeptLineagesFinding = kept;
+        }
+        healthFindings.push({
+          check: "v3_kept_lineages",
+          passed: kept !== undefined && kept.length === 0,
+          message: kept === undefined
+            ? `Could not read this v3 datastore's replication lineages: ${failure}`
+            : keptLineagesFindingMessage(kept),
+        });
+      }
+
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
@@ -515,6 +585,7 @@ export async function* doctorDatastores(
           catalogCompletenessFinding,
           ...(retentionFinding ? { retentionFinding } : {}),
           ...(v3ContentFinding ? { v3ContentFinding } : {}),
+          ...(v3KeptLineagesFinding ? { v3KeptLineagesFinding } : {}),
         },
       };
     })(),

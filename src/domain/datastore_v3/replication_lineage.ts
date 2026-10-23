@@ -41,6 +41,7 @@
 
 import { join } from "@std/path/posix";
 import { padFence } from "./writer_lease.ts";
+import type { ReplicaRoot } from "./replica_root.ts";
 
 /** What a copy of `commits.db` records about its replication lineage. */
 export interface ReplicationLineage {
@@ -101,7 +102,7 @@ export type LineageDecision =
  */
 export function decideLineage(
   previous: ReplicationLineage | undefined,
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
   fence: number,
 ): LineageDecision {
   // Validates the fence: an invalid one never reaches a record.
@@ -110,14 +111,14 @@ export function decideLineage(
     return {
       kind: "new",
       lineage: {
-        replicaRoot,
+        replicaRoot: replicaRoot.value,
         lineageFence: fence,
         lastFence: fence,
         previousLineages: [],
       },
     };
   }
-  if (previous.replicaRoot === replicaRoot) {
+  if (replicaRoot.matches(previous.replicaRoot)) {
     if (fence === previous.lastFence) {
       return { kind: "continue", lineage: previous };
     }
@@ -125,18 +126,19 @@ export function decideLineage(
       return { kind: "continue", lineage: { ...previous, lastFence: fence } };
     }
   }
-  const used = (root: string, at: number) =>
-    (previous.replicaRoot === root && previous.lineageFence === at) ||
+  const used = (at: number) =>
+    (replicaRoot.matches(previous.replicaRoot) &&
+      previous.lineageFence === at) ||
     previous.previousLineages.some((old) =>
-      old.replicaRoot === root && old.fence === at
+      replicaRoot.matches(old.replicaRoot) && old.fence === at
     );
-  if (used(replicaRoot, fence)) {
+  if (used(fence)) {
     return { kind: "conflict", lineage: previous };
   }
   return {
     kind: "restart",
     lineage: {
-      replicaRoot,
+      replicaRoot: replicaRoot.value,
       lineageFence: fence,
       lastFence: fence,
       previousLineages: [...previous.previousLineages, {

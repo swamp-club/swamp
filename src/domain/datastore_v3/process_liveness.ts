@@ -35,6 +35,13 @@
  * the same hostname in the root namespace then names nothing. Only where no
  * boot id exists (Windows) do the host and pid alone decide, as before.
  *
+ * The hostname stays part of this rule: VMs restored from one memory
+ * snapshot share a boot id, and only their hostnames tell them apart, so
+ * ignoring it could judge another machine's live writer gone. Questions
+ * about this machine's own files, which other checks also guard (a
+ * Litestream sidecar's lock and command line), use {@link sameKernel},
+ * which survives a hostname change (swamp-club#3801).
+ *
  * On this kernel, a pid that is absent, a zombie, or started at another
  * time than the record says is `gone`; any other present pid is `alive`.
  * When either side has no start time (the **start time is unreadable**:
@@ -99,6 +106,17 @@ export interface LocalProcess {
    * one cannot be placed on this kernel: false only on Windows.
    */
   readonly bootIdRequired: boolean;
+  /**
+   * Whether the platform has pid namespaces (Linux), so a host identity
+   * without one is a namespace that could not be read. Unset, it is assumed
+   * to: the hostname then decides whenever a namespace is missing.
+   */
+  readonly pidNamespaces?: boolean;
+  /**
+   * This machine's hostname now, which a record without an identity is
+   * judged by. It may change while the process runs.
+   */
+  readonly hostname?: () => string;
 }
 
 /** Decides whether the writer `recorded` names is still running. */
@@ -139,6 +157,43 @@ function unjudgeable(
   }
   if (recorded.bootId !== local.identity.bootId) return true;
   return local.bootIdRequired && recorded.bootId === undefined;
+}
+
+/**
+ * Whether `recorded` was written on this kernel and pid namespace, whatever
+ * the hostname was then (swamp-club#3801): the same boot id and pid
+ * namespace. A DHCP renewal renames a machine under a running process, so a
+ * file this machine keeps for itself (a Litestream sidecar's presence) is
+ * judged by this, never by the hostname. A container sharing the host's
+ * boot id is another namespace. Only when neither side names a namespace on
+ * a platform that has them (it could not be read) does the hostname decide
+ * alongside the boot id. Not for judging another writer gone: see
+ * {@link judgeRecordedProcess}.
+ */
+export function sameKernel(
+  recorded: ProcessIdentity,
+  local: LocalProcess,
+): boolean {
+  const here = local.identity;
+  if (recorded.bootId !== undefined && here.bootId !== undefined) {
+    if (recorded.bootId !== here.bootId) return false;
+    const namespace = pidNamespaceOf(recorded.host);
+    const ours = pidNamespaceOf(here.host);
+    if (namespace !== undefined || ours !== undefined) {
+      return namespace === ours;
+    }
+    // Neither names a namespace: none exist here, or they could not be read.
+    return local.pidNamespaces === false || recorded.host === here.host;
+  }
+  if (recorded.host !== here.host) return false;
+  if (recorded.bootId !== here.bootId) return false;
+  return !local.bootIdRequired;
+}
+
+/** The pid namespace a host identity names (`<hostname>#<namespace>`). */
+function pidNamespaceOf(host: string): string | undefined {
+  const at = host.lastIndexOf("#");
+  return at === -1 ? undefined : host.slice(at + 1);
 }
 
 /**

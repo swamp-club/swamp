@@ -52,6 +52,10 @@ import {
   parseLocalCopyState,
   serializeLineageRecord,
 } from "../../../domain/datastore_v3/published_lineage.ts";
+import {
+  parseProcessIdentity,
+  type ProcessIdentity,
+} from "../../../domain/datastore_v3/process_liveness.ts";
 import { atomicWriteTextFile } from "../../persistence/atomic_write.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
@@ -224,7 +228,13 @@ export interface PresenceRecord {
   /** Set once the supervisor has started Litestream. */
   readonly litestreamPid?: number;
   readonly uid: number | null;
+  /** For display, and to judge a record without `process`. */
   readonly hostname: string;
+  /**
+   * The supervisor's process identity, by which its owner is judged
+   * (swamp-club#3801). Undefined in a record from an older swamp.
+   */
+  readonly process?: ProcessIdentity;
   readonly lineageFence: number;
   readonly replicaPath: string;
 }
@@ -277,6 +287,7 @@ function parsePresence(value: unknown): PresenceRecord | undefined {
   ) {
     return undefined;
   }
+  const process = parseProcessIdentity(r.process);
   return {
     supervisorPid: r.supervisorPid as number,
     ...(r.litestreamPid !== undefined
@@ -284,6 +295,7 @@ function parsePresence(value: unknown): PresenceRecord | undefined {
       : {}),
     uid: r.uid as number | null,
     hostname: r.hostname,
+    ...(process !== undefined ? { process } : {}),
     lineageFence: r.lineageFence as number,
     replicaPath: r.replicaPath,
   };

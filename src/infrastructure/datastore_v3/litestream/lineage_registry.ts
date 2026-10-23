@@ -24,7 +24,10 @@
  * - `lineage/<fence>/started.json`, created once;
  * - `lineage/<fence>/confirmed.json`, created once;
  * - `lineage/<fence>/head-<writer fence>.json`, rewritten by that writer;
- *   a read takes the highest writer's, so a head never goes backwards.
+ *   a read takes the highest writer's, so a head never goes backwards;
+ * - `lineage/<fence>/kept.json`, created once collection decided the
+ *   lineage may hold commits the current state lacks (swamp-club#3801), so
+ *   every later collection keeps it too.
  *
  * Creates use `putIfAbsent`, so of two writers only one can claim a
  * lineage or confirm it. A read lists `lineage/` once and fetches only the
@@ -47,11 +50,12 @@ import {
   serializeLineageRecord,
 } from "../../../domain/datastore_v3/published_lineage.ts";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
+import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 
 /** The control-plane prefix every lineage record is under. */
 export const LINEAGE_PREFIX = "lineage/";
 
-type RecordName = "started" | "confirmed";
+type RecordName = "started" | "confirmed" | "kept";
 
 const KEY_PATTERN =
   /^lineage\/(\d{12})\/(started|confirmed|head-(\d{12}))\.json$/;
@@ -115,7 +119,7 @@ export class LineageRegistry {
    * lineage's head is its highest writer's that parses.
    */
   async read(
-    replicaRoot: string,
+    replicaRoot: ReplicaRoot,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<PublishedLineage[]> {
     const listed = await this.#list();
@@ -142,14 +146,24 @@ export class LineageRegistry {
     for (const fence of fences) {
       if (!listed.get(fence)!.started) continue;
       const entry = await started(fence);
-      if (entry.started?.replicaRoot === replicaRoot) break;
+      if (
+        entry.started !== undefined &&
+        replicaRoot.matches(entry.started.replicaRoot)
+      ) {
+        break;
+      }
     }
     // The current lineage: the newest started and confirmed under this root.
     for (const fence of fences) {
       const has = listed.get(fence)!;
       if (!has.started || !has.confirmed || has.heads.length === 0) continue;
       const entry = await started(fence);
-      if (entry.started?.replicaRoot !== replicaRoot) continue;
+      if (
+        entry.started === undefined ||
+        !replicaRoot.matches(entry.started.replicaRoot)
+      ) {
+        continue;
+      }
       const confirmed = parseLineageConfirmed(
         await this.#get(keyOf(fence, "confirmed"), options.signal),
       );
@@ -231,6 +245,38 @@ export class LineageRegistry {
   }
 
   /**
+   * Records that collection keeps lineage `fence` (swamp-club#3801). It
+   * stays kept in every later collection, whatever the chain then shows.
+   */
+  async keep(fence: number): Promise<void> {
+    await this.store.putIfAbsent(keyOf(fence, "kept"), encode("{}"));
+  }
+
+  /**
+   * The fences whose lineage was started, confirmed and has a head, as
+   * listed: the lineages a writer could have restored from.
+   */
+  async completeFences(): Promise<Set<number>> {
+    const complete = new Set<number>();
+    for (const [fence, entry] of await this.#list()) {
+      if (entry.started && entry.confirmed && entry.heads.length > 0) {
+        complete.add(fence);
+      }
+    }
+    return complete;
+  }
+
+  /** The fences a collection recorded as kept. */
+  async kept(): Promise<Set<number>> {
+    const kept = new Set<number>();
+    for (const key of await this.store.list(LINEAGE_PREFIX)) {
+      const match = /^lineage\/(\d{12})\/kept\.json$/.exec(key);
+      if (match !== null) kept.add(Number(match[1]));
+    }
+    return kept;
+  }
+
+  /**
    * Every fence with any key under `lineage/<fence>/`, whether or not the
    * key is a record this registry reads. Lineage collection leaves the
    * replica path of each alone (swamp-club#3531).
@@ -253,7 +299,9 @@ export class LineageRegistry {
     for (const writer of (await this.#list()).get(fence)?.heads ?? []) {
       await this.store.delete(headKeyOf(fence, writer));
     }
-    for (const name of ["confirmed", "started"] as const) {
+    // A kept lineage is removed only by hand, or by a swamp before
+    // swamp-club#3801; its record goes with it.
+    for (const name of ["kept", "confirmed", "started"] as const) {
       await this.store.delete(keyOf(fence, name));
     }
   }

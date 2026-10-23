@@ -4991,7 +4991,11 @@ may lag the datastore's. An inspection that throws (a read-only state
 directory, where SQLite cannot create the WAL's shared-memory file) is a
 failed `v3_content` check, "Could not inspect this v3 checkout's content",
 while the other checks still report, so `doctor datastores` exits 1 in that
-v3 checkout.
+v3 checkout. Its `v3_kept_lineages` check (swamp-club#3801) lists, on every
+run, the replication lineages collection keeps because they may hold commits
+the current lineage lacks (JSON key `v3KeptLineagesFinding`), and fails while
+any remain: chunk collection waits on them. `datastore-litestream.md`,
+"Recovering kept replication lineages", is the manual way out.
 
 **Run artifacts.** On v3 a data save reports its content's checksum, and the
 `DataArtifactRef`s built from it record `sha256`. A streamed version reports
@@ -5474,7 +5478,15 @@ process's start time (`/proc/<pid>/stat` field 22 on Linux, `kern.proc`'s
   either side on Linux and macOS (a failed read, an image without `cat`):
   only Windows, which has no boot id, judges by hostname and pid, as
   before, so two Windows machines with one hostname on one datastore behave
-  as they did. On a bucket datastore this is the normal case;
+  as they did. On a bucket datastore this is the normal case. The hostname
+  stays in this rule: VMs restored from one memory snapshot share a boot
+  id, and only their hostnames tell them apart. A file this machine keeps
+  for itself (a sidecar's `presence.json`, guarded by its lock and command
+  line too) is judged by `sameKernel` instead (swamp-club#3801): the boot
+  id and pid namespace, whatever the hostname, so a DHCP renewal that
+  renames the machine never makes its own sidecar look foreign. A process
+  recognises its own records by pid and its unchanged in-process identity,
+  so a renamed `serve` keeps them;
 - on this kernel, a pid that is absent, a zombie, or started at another
   time than recorded is **gone**, as is this process's own pid in a record
   whose token is not this process's;

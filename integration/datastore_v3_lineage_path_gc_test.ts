@@ -120,7 +120,7 @@ const bucket = (): V3ReplicaSetting => ({
 
 /** The remote's replica paths, bound to the bucket replica's root. */
 function bound(remote: InMemoryRemote): V3ReplicaPaths {
-  return { root: replicaRootOf(bucket()), store: remote.replicaPaths!() };
+  return { root: replicaRootOf(bucket()).value, store: remote.replicaPaths!() };
 }
 
 function seededRemote() {

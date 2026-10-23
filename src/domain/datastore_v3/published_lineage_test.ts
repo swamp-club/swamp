@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ReplicaRoot } from "./replica_root.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   collectableLineages,
@@ -27,8 +28,10 @@ import {
   decideChunkCollection,
   decideLocalCopy,
   type LineageHead,
+  lineagesKeptForFork,
   mayContinueLineage,
   normalizeTxid,
+  outrankingForeignLineage,
   parseLineageConfirmed,
   parseLineageHead,
   parseLineageStarted,
@@ -103,12 +106,12 @@ Deno.test("currentLineage: the highest confirmed lineage under the root", () => 
     published(9),
     published(11, { confirmed: 1, root: "file:/other" }),
   ];
-  assertEquals(currentLineage(lineages, ROOT)?.fence, 7);
+  assertEquals(currentLineage(lineages, ReplicaRoot.of(ROOT))?.fence, 7);
 });
 
 Deno.test("currentLineage: nothing confirmed is no current state", () => {
-  assertEquals(currentLineage([published(3)], ROOT), undefined);
-  assertEquals(currentLineage([], ROOT), undefined);
+  assertEquals(currentLineage([published(3)], ReplicaRoot.of(ROOT)), undefined);
+  assertEquals(currentLineage([], ReplicaRoot.of(ROOT)), undefined);
 });
 
 Deno.test("copyNeverRestored: a missing copy, or one no restore or writer recorded, never held the state", () => {
@@ -124,16 +127,19 @@ Deno.test("copyNeverRestored: a restored copy, or a writer's own, held the state
 });
 
 Deno.test("decideLocalCopy: nothing published leaves the copy as it is", () => {
-  assertEquals(decideLocalCopy(undefined, [published(3)], ROOT), {
-    kind: "none",
-  });
+  assertEquals(
+    decideLocalCopy(undefined, [published(3)], ReplicaRoot.of(ROOT)),
+    {
+      kind: "none",
+    },
+  );
 });
 
 Deno.test("decideLocalCopy: a missing copy restores the current lineage at its head", () => {
   const decision = decideLocalCopy(
     undefined,
     [published(3, { confirmed: 2, head: 5 })],
-    ROOT,
+    ReplicaRoot.of(ROOT),
   );
   assertEquals(decision.kind, "missing");
   if (decision.kind === "missing") {
@@ -144,9 +150,15 @@ Deno.test("decideLocalCopy: a missing copy restores the current lineage at its h
 Deno.test("decideLocalCopy: a copy at the head is current and downloads nothing", () => {
   const lineages = [published(3, { confirmed: 2, head: 5 })];
   const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
-  assertEquals(decideLocalCopy({ copy }, lineages, ROOT), { kind: "current" });
+  assertEquals(decideLocalCopy({ copy }, lineages, ReplicaRoot.of(ROOT)), {
+    kind: "current",
+  });
   assertEquals(
-    decideLocalCopy({ copy: { ...copy, txid: txid(9) } }, lineages, ROOT),
+    decideLocalCopy(
+      { copy: { ...copy, txid: txid(9) } },
+      lineages,
+      ReplicaRoot.of(ROOT),
+    ),
     { kind: "current" },
   );
 });
@@ -155,7 +167,7 @@ Deno.test("decideLocalCopy: a copy below the head is behind", () => {
   const decision = decideLocalCopy(
     { copy: { replicaRoot: ROOT, lineageFence: 3, txid: txid(4) } },
     [published(3, { confirmed: 2, head: 5 })],
-    ROOT,
+    ReplicaRoot.of(ROOT),
   );
   assertEquals(decision.kind, "behind");
 });
@@ -176,7 +188,11 @@ Deno.test("decideLocalCopy: a copy of another lineage or root is foreign", () =>
     ]
   ) {
     assertEquals(
-      decideLocalCopy({ ...(copy ? { copy } : {}) }, lineages, ROOT).kind,
+      decideLocalCopy(
+        { ...(copy ? { copy } : {}) },
+        lineages,
+        ReplicaRoot.of(ROOT),
+      ).kind,
       "foreign",
     );
   }
@@ -185,16 +201,23 @@ Deno.test("decideLocalCopy: a copy of another lineage or root is foreign", () =>
 Deno.test("decideLocalCopy: a writer's own newest pending lineage is current", () => {
   const lineages = [published(3, { confirmed: 2, head: 5 }), published(8)];
   const copy = { replicaRoot: ROOT, lineageFence: 3, txid: txid(5) };
-  assertEquals(decideLocalCopy({ copy, lineage: own(8, 9) }, lineages, ROOT), {
-    kind: "current",
-  });
+  assertEquals(
+    decideLocalCopy(
+      { copy, lineage: own(8, 9) },
+      lineages,
+      ReplicaRoot.of(ROOT),
+    ),
+    {
+      kind: "current",
+    },
+  );
   // A fenced writer published a later head on the old lineage since: it
   // covers nothing acknowledged, and the copy stays current.
   assertEquals(
     decideLocalCopy(
       { copy: { ...copy, txid: txid(4) }, lineage: own(8, 9) },
       [published(3, { confirmed: 2, head: 7 }), published(8)],
-      ROOT,
+      ReplicaRoot.of(ROOT),
     ),
     { kind: "current" },
   );
@@ -204,7 +227,7 @@ Deno.test("decideLocalCopy: a writer's own newest pending lineage is current", (
     decideLocalCopy(
       { copy: { ...copy, txid: txid(4) }, lineage: own(8, 9) },
       [...lineages, published(10)],
-      ROOT,
+      ReplicaRoot.of(ROOT),
     ).kind,
     "behind",
   );
@@ -217,9 +240,13 @@ Deno.test("currentLineage: a confirmed lineage without a head is not the current
     published(2, { confirmed: 1, head: 3 }),
     published(4, { confirmed: 3 }),
   ];
-  assertEquals(currentLineage(lineages, ROOT)?.fence, 2);
+  assertEquals(currentLineage(lineages, ReplicaRoot.of(ROOT))?.fence, 2);
   assertEquals(
-    decideLocalCopy(undefined, [published(4, { confirmed: 3 })], ROOT),
+    decideLocalCopy(
+      undefined,
+      [published(4, { confirmed: 3 })],
+      ReplicaRoot.of(ROOT),
+    ),
     {
       kind: "none",
     },
@@ -228,30 +255,45 @@ Deno.test("currentLineage: a confirmed lineage without a head is not the current
 
 Deno.test("mayContinueLineage: only a published lineage nothing started after", () => {
   const lineages = [published(3, { confirmed: 1, head: 1 }), published(5)];
-  assertEquals(mayContinueLineage(own(5, 6), lineages, ROOT), true);
-  assertEquals(mayContinueLineage(own(3, 4), lineages, ROOT), false);
+  assertEquals(
+    mayContinueLineage(own(5, 6), lineages, ReplicaRoot.of(ROOT)),
+    true,
+  );
+  assertEquals(
+    mayContinueLineage(own(3, 4), lineages, ReplicaRoot.of(ROOT)),
+    false,
+  );
   // Recorded by a recovery hold, never published.
-  assertEquals(mayContinueLineage(own(7), lineages, ROOT), false);
-  assertEquals(mayContinueLineage(undefined, lineages, ROOT), false);
+  assertEquals(
+    mayContinueLineage(own(7), lineages, ReplicaRoot.of(ROOT)),
+    false,
+  );
+  assertEquals(
+    mayContinueLineage(undefined, lineages, ReplicaRoot.of(ROOT)),
+    false,
+  );
   assertEquals(
     mayContinueLineage(
       { ...own(5), replicaRoot: "file:/other" },
       lineages,
-      ROOT,
+      ReplicaRoot.of(ROOT),
     ),
     false,
   );
 });
 
 Deno.test("restartLineage: keeps the replaced lineage for collection", () => {
-  assertEquals(restartLineage(own(3, 4), ROOT, 9), {
+  assertEquals(restartLineage(own(3, 4), ReplicaRoot.of(ROOT), 9), {
     replicaRoot: ROOT,
     lineageFence: 9,
     lastFence: 9,
     previousLineages: [{ replicaRoot: ROOT, fence: 3 }],
   });
-  assertEquals(restartLineage(undefined, ROOT, 2).previousLineages, []);
-  assertThrows(() => restartLineage(undefined, ROOT, 0));
+  assertEquals(
+    restartLineage(undefined, ReplicaRoot.of(ROOT), 2).previousLineages,
+    [],
+  );
+  assertThrows(() => restartLineage(undefined, ReplicaRoot.of(ROOT), 0));
 });
 
 Deno.test("collectableLineages: below the current one, under the root only", () => {
@@ -262,7 +304,10 @@ Deno.test("collectableLineages: below the current one, under the root only", () 
     published(6, { confirmed: 1 }),
     published(8),
   ];
-  assertEquals(collectableLineages(lineages, [1, 6, 7], ROOT, 6), [1, 2, 4]);
+  assertEquals(
+    collectableLineages(lineages, [1, 6, 7], ReplicaRoot.of(ROOT), 6),
+    [1, 2, 4],
+  );
 });
 
 Deno.test("compareTxid and normalizeTxid: numeric order across renderings", () => {
@@ -329,20 +374,23 @@ Deno.test("copyStateAdvances: only a newer lineage, or a newer TXID on the same 
 Deno.test("decideChunkCollection: only from the current lineage's head, with nothing else restorable", () => {
   const copy = { replicaRoot: ROOT, lineageFence: 7, txid: txid(4) };
   const current = published(7, { confirmed: 1, head: 4 });
-  assertEquals(decideChunkCollection(copy, [current], ROOT).kind, "collect");
+  assertEquals(
+    decideChunkCollection(copy, [current], ReplicaRoot.of(ROOT)).kind,
+    "collect",
+  );
   // Another root's lineage is never restored here.
   assertEquals(
     decideChunkCollection(
       copy,
       [published(3, { confirmed: 1, head: 9, root: "file:/other" }), current],
-      ROOT,
+      ReplicaRoot.of(ROOT),
     ).kind,
     "collect",
   );
   const deferred = (
     held: typeof copy | undefined,
     lineages: PublishedLineage[],
-  ) => decideChunkCollection(held, lineages, ROOT).kind;
+  ) => decideChunkCollection(held, lineages, ReplicaRoot.of(ROOT)).kind;
   assertEquals(deferred(copy, []), "defer");
   assertEquals(deferred(copy, [published(7)]), "defer");
   assertEquals(deferred(undefined, [current]), "defer");
@@ -356,10 +404,235 @@ Deno.test("decideChunkCollection: only from the current lineage's head, with not
   );
   assertEquals(deferred(copy, [current, published(9)]), "defer");
   assertEquals(deferred(copy, [{ fence: 5 }, current]), "defer");
-  const unreadable = decideChunkCollection(copy, [{ fence: 5 }, current], ROOT);
+  const unreadable = decideChunkCollection(
+    copy,
+    [{ fence: 5 }, current],
+    ReplicaRoot.of(ROOT),
+  );
   assertEquals(
     unreadable.kind === "defer" &&
       unreadable.reason.includes("_control/lineage/000000000005/"),
     true,
   );
+});
+
+const S3_OWN = ReplicaRoot.s3("http://localhost:47441", "bucket", "prefix");
+const S3_OTHER_SPELLING = "s3:http://localhost:47411/:bucket:prefix";
+
+Deno.test("currentLineage: a lineage another spelling of the S3 endpoint started is this replica's (swamp-club#3801)", () => {
+  const lineages = [
+    published(3, { confirmed: 1, head: 1, root: S3_OTHER_SPELLING }),
+  ];
+  assertEquals(currentLineage(lineages, S3_OWN)?.fence, 3);
+  assertEquals(
+    decideLocalCopy(undefined, lineages, S3_OWN),
+    { kind: "missing", lineage: currentLineage(lineages, S3_OWN)! },
+  );
+  assertEquals(
+    currentLineage(lineages, ReplicaRoot.s3(undefined, "bucket", "other")),
+    undefined,
+  );
+});
+
+Deno.test("outrankingForeignLineage: only a lineage under another root that would decide the state (swamp-club#3801)", () => {
+  const foreign = "s3:http://localhost:47441:other:prefix";
+  // Nothing published: nothing to refuse.
+  assertEquals(outrankingForeignLineage([], S3_OWN), undefined);
+  // Another spelling of this replica's endpoint is not foreign.
+  assertEquals(
+    outrankingForeignLineage(
+      [published(4, { confirmed: 1, head: 1, root: S3_OTHER_SPELLING })],
+      S3_OWN,
+    ),
+    undefined,
+  );
+  // Under another root, with none under this one: refused.
+  assertEquals(
+    outrankingForeignLineage(
+      [published(2, { confirmed: 1, head: 1, root: foreign })],
+      S3_OWN,
+    )?.fence,
+    2,
+  );
+  // Above this replica's newest start, even unconfirmed: a writer may be
+  // about to confirm it. The highest one is named.
+  assertEquals(
+    outrankingForeignLineage(
+      [
+        published(9, { root: foreign }),
+        published(7, { root: foreign }),
+        published(5, { confirmed: 1, head: 1, root: S3_OTHER_SPELLING }),
+      ],
+      S3_OWN,
+    )?.fence,
+    9,
+  );
+  // Below a lineage this replica started later: history, ignored.
+  assertEquals(
+    outrankingForeignLineage(
+      [
+        published(6, { root: S3_OWN.value }),
+        published(5, { confirmed: 1, head: 1, root: foreign }),
+      ],
+      S3_OWN,
+    ),
+    undefined,
+  );
+  // A lineage whose start was not read names no root: never refused.
+  assertEquals(
+    outrankingForeignLineage([{ fence: 8 }], S3_OWN),
+    undefined,
+  );
+});
+
+const SPELLED = "s3::bucket:prefix";
+const PROXIED = "s3:http://proxy:1:bucket:prefix";
+
+/** A start a swamp before swamp-club#3801 wrote, or this one (`chain`). */
+function startOf(
+  fence: number,
+  replicaRoot: string,
+  chain?: { follows?: number },
+) {
+  return {
+    fence,
+    holder: "h",
+    replicaRoot,
+    startedAt: AT,
+    ...(chain?.follows !== undefined ? { follows: chain.follows } : {}),
+    ...(chain !== undefined ? { chained: true as const } : {}),
+  };
+}
+
+/** What collection at `current` keeps; every listed lineage is complete. */
+function keptOf(
+  list: ReturnType<typeof startOf>[],
+  current: number,
+  options: { incomplete?: number[]; marked?: number[] } = {},
+): Set<number> {
+  return lineagesKeptForFork(
+    new Map(list.map((s) => [s.fence, s])),
+    current,
+    {
+      complete: new Set(
+        list.map((s) => s.fence).filter((fence) =>
+          !options.incomplete?.includes(fence)
+        ),
+      ),
+      marked: new Set(options.marked ?? []),
+    },
+  );
+}
+
+Deno.test("lineagesKeptForFork: one history is collected whatever the spellings, a fenced writer's lineage included (swamp-club#3801)", () => {
+  assertEquals(
+    keptOf([
+      startOf(1, SPELLED),
+      startOf(2, SPELLED),
+      startOf(5, PROXIED, { follows: 2 }),
+      startOf(6, SPELLED, { follows: 5 }),
+    ], 6),
+    new Set(),
+  );
+  // Lineage 8's writer was fenced before 9 began, from 7.
+  assertEquals(
+    keptOf([
+      startOf(7, SPELLED, {}),
+      startOf(8, SPELLED, { follows: 7 }),
+      startOf(9, PROXIED, { follows: 7 }),
+    ], 9),
+    new Set(),
+  );
+});
+
+Deno.test("lineagesKeptForFork: a fork older swamps left keeps the side the current state lacks, in every round (swamp-club#3801)", () => {
+  const fork = [startOf(3, SPELLED), startOf(4, PROXIED)];
+  const first = keptOf([...fork, startOf(6, PROXIED, { follows: 4 })], 6);
+  assertEquals(first, new Set([3]));
+  // The next round: 4 was collected, so only the record shows 3's fork.
+  assertEquals(
+    keptOf(
+      [
+        startOf(3, SPELLED),
+        startOf(6, PROXIED, { follows: 4 }),
+        startOf(8, SPELLED, { follows: 6 }),
+      ],
+      8,
+      { marked: [...first] },
+    ),
+    new Set([3]),
+  );
+});
+
+Deno.test("lineagesKeptForFork: an upgraded checkout's lineage an older swamp superseded without seeing it is kept (swamp-club#3801)", () => {
+  assertEquals(
+    keptOf([
+      startOf(1, SPELLED),
+      startOf(2, SPELLED),
+      startOf(3, SPELLED),
+      // The upgraded checkout continued 3 through its proxy.
+      startOf(5, PROXIED, { follows: 3 }),
+      // The older swamp, blind to 5, continued its own 3.
+      startOf(6, SPELLED),
+      startOf(7, PROXIED, { follows: 6 }),
+    ], 7),
+    new Set([5]),
+  );
+});
+
+Deno.test("lineagesKeptForFork: an older swamp continues only a complete lineage of its spelling (swamp-club#3801)", () => {
+  // 2 was never confirmed, so 3 (an older swamp's) began from nothing and
+  // never held 1's commits.
+  assertEquals(
+    keptOf(
+      [
+        startOf(1, PROXIED),
+        startOf(2, SPELLED, { follows: 1 }),
+        startOf(3, SPELLED),
+        startOf(4, SPELLED, { follows: 3 }),
+      ],
+      4,
+      { incomplete: [2] },
+    ),
+    new Set([1]),
+  );
+});
+
+Deno.test("lineagesKeptForFork: a first lineage this swamp began with nothing to follow is not an older swamp's (swamp-club#3801)", () => {
+  assertEquals(
+    keptOf(
+      [
+        // Never confirmed; a checkout through the proxy began again.
+        startOf(1, SPELLED, {}),
+        startOf(2, PROXIED, {}),
+        startOf(3, PROXIED, { follows: 2 }),
+      ],
+      3,
+      { incomplete: [1] },
+    ),
+    new Set(),
+  );
+});
+
+Deno.test("lineagesKeptForFork: one checkout that changed its spelling under an older swamp is kept too, costing storage, never commits", () => {
+  assertEquals(
+    keptOf([
+      startOf(3, SPELLED),
+      startOf(5, PROXIED),
+      startOf(6, PROXIED, { follows: 5 }),
+    ], 6),
+    new Set([3]),
+  );
+});
+
+Deno.test("parseLineageStarted: reads a lower follows fence, and drops one that is not", () => {
+  const base = { fence: 5, holder: "h", replicaRoot: ROOT, startedAt: AT };
+  const read = (record: Record<string, unknown>) =>
+    parseLineageStarted(
+      JSON.parse(serializeLineageRecord(record as typeof base)),
+    );
+  assertEquals(read({ ...base, follows: 3 })?.follows, 3);
+  assertEquals(read({ ...base, follows: 5 })?.follows, undefined);
+  assertEquals(read({ ...base, follows: "3" })?.follows, undefined);
+  assertEquals(read(base), base);
 });

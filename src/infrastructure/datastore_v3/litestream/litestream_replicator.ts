@@ -71,6 +71,7 @@ import {
   isMarkedForReplacement,
   litestreamReplicaPath,
   markForReplacement,
+  type PresenceRecord,
   readLineage,
   readPresence,
   renderLitestreamConfig,
@@ -79,6 +80,11 @@ import {
   writeLineage,
 } from "./replication_files.ts";
 import { replicaRootOf, type V3ReplicaSetting } from "./replica_setting.ts";
+import {
+  type LocalProcess,
+  sameKernel,
+} from "../../../domain/datastore_v3/process_liveness.ts";
+import { hostnameOf, localProcess } from "../process_identity.ts";
 import { supervisorArgs, touchUseLock } from "./replication_supervisor.ts";
 
 /** How long each part of finding a sidecar may take. */
@@ -313,7 +319,7 @@ export class LitestreamReplicator {
     const root = replicaRootOf(request.replica);
     const recorded = await readLineage(paths);
     if (
-      recorded !== undefined && recorded.replicaRoot === root &&
+      recorded !== undefined && root.matches(recorded.replicaRoot) &&
       recorded.lastFence === request.fence
     ) {
       return recorded;
@@ -453,7 +459,7 @@ export class LitestreamReplicator {
         const record = read.record;
         supervisorPid = record.supervisorPid;
         const processes = this.deps.processes;
-        const otherOwner = record.hostname !== Deno.hostname() ||
+        const otherOwner = !isOwnHost(record, await localProcess()) ||
           record.uid !== Deno.uid();
         const supervisorVerified = !otherOwner && !free &&
           isSupervisorFor(
@@ -673,7 +679,7 @@ export class LitestreamReplicator {
       if (!await this.#supervisorLockFree(paths)) {
         const record = read.kind === "found" ? read.record : undefined;
         if (
-          record === undefined || record.hostname !== Deno.hostname() ||
+          record === undefined || !isOwnHost(record, await localProcess()) ||
           record.uid !== Deno.uid() ||
           !isSupervisorFor(
             await processes.commandLine(record.supervisorPid),
@@ -700,7 +706,7 @@ export class LitestreamReplicator {
         }
       } else if (
         read.kind === "found" && read.record.litestreamPid !== undefined &&
-        read.record.hostname === Deno.hostname() &&
+        isOwnHost(read.record, await localProcess()) &&
         read.record.uid === Deno.uid() &&
         processes.isAlive(read.record.litestreamPid) &&
         isLitestreamFor(
@@ -882,4 +888,21 @@ class SharedHandle {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Whether the sidecar `record` names runs on this machine, which its pids
+ * are then verified on: by the supervisor's process identity, whatever the
+ * hostname is now (swamp-club#3801). A record without an identity, or one
+ * either side has no boot id for, by its hostname, as before.
+ */
+function isOwnHost(record: PresenceRecord, local: LocalProcess): boolean {
+  const process = record.process;
+  if (
+    process !== undefined && process.bootId !== undefined &&
+    local.identity.bootId !== undefined
+  ) {
+    return sameKernel(process, local);
+  }
+  return record.hostname === hostnameOf(local);
 }

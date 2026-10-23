@@ -29,6 +29,7 @@
  */
 
 import { UserError } from "../../../domain/errors.ts";
+import { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 
 /** The internal variable that turns replication on, for tests only. */
 export const V3_REPLICA_ENV = "SWAMP_V3_REPLICA";
@@ -98,18 +99,19 @@ export function parseV3ReplicaSetting(raw: string): V3ReplicaSetting {
 
 /**
  * The replica's identity, which a lineage records: a lineage continues only
- * under the same root.
+ * under a root that matches it. An S3 root matches any endpoint spelling of
+ * its bucket and path (swamp-club#3801).
  */
-export function replicaRootOf(setting: V3ReplicaSetting): string {
+export function replicaRootOf(setting: V3ReplicaSetting): ReplicaRoot {
   // Addressing style does not move the replica, so `forcePathStyle` is not
   // part of it.
   switch (setting.type) {
     case "file":
-      return `file:${setting.path}`;
+      return ReplicaRoot.of(`file:${setting.path}`);
     case "s3":
-      return `s3:${setting.endpoint ?? ""}:${setting.bucket}:${setting.path}`;
+      return ReplicaRoot.s3(setting.endpoint, setting.bucket, setting.path);
     case "gcs":
-      return `gcs:${setting.bucket}:${setting.path}`;
+      return ReplicaRoot.of(`gcs:${setting.bucket}:${setting.path}`);
   }
 }
 
