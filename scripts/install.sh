@@ -124,6 +124,15 @@ main() {
   indent "$dest/$bin" --version
   echo
 
+  # An earlier install elsewhere on PATH would keep running the old version.
+  local resolved
+  resolved="$(command -v "$bin" 2>/dev/null || true)"
+  if [ -n "$resolved" ] && ! [ "$resolved" -ef "$dest/$bin" ]; then
+    warn "'$resolved' comes before '$dest/$bin' on PATH, so '$bin' runs that copy."
+    warn "Remove it, or put '$dest' earlier on PATH."
+    echo
+  fi
+
   info "By using Swamp you agree to its software license and extension"
   info "registry terms."
   info ""
@@ -463,9 +472,25 @@ install_bin() {
     symlink_to_system_path "$dest" "$bin"
   elif [ -n "${SWAMP_HOME:-}" ] &&
     [ "$(dirname "$dest")" = "$(swamp_home_bin_dir)" ] &&
-    ! echo "$PATH" | tr ':' '\n' | grep -qx "$(dirname "$dest")"; then
+    ! dir_on_path "$(dirname "$dest")"; then
     symlink_to_system_path "$dest" "$bin"
   fi
+}
+
+# Whether a PATH entry names the same directory, under any spelling (such as
+# macOS `/tmp` for `/private/tmp`).
+dir_on_path() {
+  local dir entry rest
+  dir="$1"
+  rest="$PATH:"
+  while [ -n "$rest" ]; do
+    entry="${rest%%:*}"
+    rest="${rest#*:}"
+    if [ -n "$entry" ] && [ "$entry" -ef "$dir" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # The default destination when SWAMP_HOME is set: `$SWAMP_HOME/bin`, made
@@ -474,7 +499,7 @@ swamp_home_bin_dir() {
   local home
   home="${SWAMP_HOME%/}"
   case "$home" in
-    /*) ;;
+    /* | "") ;;
     *) home="$PWD/$home" ;;
   esac
   echo "$home/bin"

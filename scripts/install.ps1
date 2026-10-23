@@ -533,6 +533,12 @@ function Main {
         if (Test-Path $installedBinary) {
             Write-Success "Installation complete: $installedBinary"
 
+            # An earlier install elsewhere on PATH would keep running the old version.
+            $resolved = Get-Command $BinExe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($resolved -and $resolved.Source -ne $installedBinary) {
+                Write-Warn "'$($resolved.Source)' comes before '$installedBinary' on PATH, so '$BinName' runs that copy. Remove it, or put '$Destination' earlier on PATH."
+            }
+
             try {
                 $versionOutput = & $installedBinary --version 2>&1
                 Write-Info "Version: $versionOutput"
