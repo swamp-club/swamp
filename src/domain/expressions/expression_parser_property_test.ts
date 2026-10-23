@@ -25,10 +25,12 @@ import {
   extractExpressions,
   extractInputReferencesFromCel,
   replaceExpressions,
+  replaceExpressionsTracked,
   stripExpressionFields,
   transformHyphenatedModelRefs,
   valueContainsExpression,
 } from "./expression_parser.ts";
+import { ProvenanceMap } from "./provenance_map.ts";
 
 const LOWER = "abcdefghijklmnopqrstuvwxyz".split("");
 
@@ -81,6 +83,56 @@ const arbLiteral = fc.stringOf(
   fc.constantFrom(..."abc XYZ019.,_-!".split("")),
   { maxLength: 10 },
 );
+
+Deno.test("replaceExpressionsTracked: a refused splice preserves its source and provenance beside successful substitutions", () => {
+  fc.assert(
+    fc.property(
+      arbLiteral,
+      arbLiteral,
+      arbLiteral,
+      (prefix, middle, suffix) => {
+        const raw = "${{ inputs.secret }}";
+        const ok = "${{ inputs.plain }}";
+        const data = `${prefix}${ok}${middle}${raw}${suffix}`;
+        const failures: string[] = [];
+        const result = replaceExpressionsTracked(
+          { whole: raw, text: data, literal: raw },
+          new Map([[raw, "refused"], [ok, "resolved"]]),
+          ProvenanceMap.authored().graft("literal", ProvenanceMap.data()),
+          () => ({ map: ProvenanceMap.data() }),
+          undefined,
+          {
+            whole: () => {
+              throw new Error("refused");
+            },
+            embedded: (text) => {
+              if (text === "refused") throw new Error("refused");
+              return text;
+            },
+          },
+          (expression) => {
+            failures.push(expression);
+          },
+        );
+        assertEquals(result.data, {
+          whole: raw,
+          text: `${prefix}resolved${middle}${raw}${suffix}`,
+          literal: raw,
+        });
+        assertEquals(failures, [raw, raw]);
+        assertEquals(
+          result.provenance,
+          ProvenanceMap.authored()
+            .graft("literal", ProvenanceMap.data())
+            .withRanges("text", [[
+              prefix.length,
+              prefix.length + "resolved".length,
+            ]]),
+        );
+      },
+    ),
+  );
+});
 
 /** JSON-ish trees with arbitrary string leaves (expressions included by
  * chance) — `undefined`, floats, and unsafe keys excluded so structural
