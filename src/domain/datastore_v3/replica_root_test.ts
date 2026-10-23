@@ -84,3 +84,14 @@ Deno.test("ReplicaRoot.of: matches only its own root", () => {
   assert(!own.matches("s3::g:p"));
   assert(!ReplicaRoot.of("file:/a").matches("file:/b"));
 });
+
+Deno.test("ReplicaRoot.s3: a path holding colons can make a foreign root match, as documented (swamp-club#3801)", () => {
+  // Bucket "x", path "bucket:pre/fix" ends in this bucket and path: the
+  // root format cannot tell them apart. Bucket names hold no colons, so only
+  // a path with colons recorded in this datastore's own control plane can.
+  assert(
+    ReplicaRoot.s3(undefined, "bucket", "pre/fix").matches(
+      "s3:http://e:x:bucket:pre/fix",
+    ),
+  );
+});

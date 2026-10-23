@@ -64,6 +64,12 @@ export interface LineageStarted {
   /** The replica the lineage replicates under (`replicaRootOf`). */
   readonly replicaRoot: string;
   readonly startedAt: string;
+  /**
+   * The current lineage the writer's copy held when it began this one: the
+   * state it continues (swamp-club#3801). Undefined when there was none, and
+   * in a lineage a swamp before it started.
+   */
+  readonly follows?: number;
 }
 
 /** That a lineage's first sync was confirmed. */
@@ -348,6 +354,45 @@ export function collectableLineages(
 }
 
 /**
+ * The lineages below `current` that garbage collection keeps because the
+ * datastore forked before swamp-club#3801 (empty when it did not). A swamp
+ * before it never continued a lineage started under another spelling of
+ * the S3 endpoint, so lineages it started (no `follows`) under two or more
+ * spellings are separate histories, each holding commits the other lacks.
+ * Matching every spelling now makes only the highest of them current; the
+ * others' commits stay in their lineages, which are kept for an operator to
+ * recover, unless the current lineage continues them (its `follows` chain).
+ *
+ * `starts` holds every start read: the lineages collection would remove,
+ * and the current lineage's `follows` chain. A lineage whose start was not
+ * read is not judged here.
+ */
+export function lineagesKeptForFork(
+  starts: ReadonlyMap<number, LineageStarted>,
+  current: number,
+): Set<number> {
+  const legacy = [...starts.values()].filter((started) =>
+    started.follows === undefined
+  );
+  if (new Set(legacy.map((started) => started.replicaRoot)).size < 2) {
+    return new Set();
+  }
+  const chain = new Set<number>();
+  for (
+    let at = starts.get(current)?.follows;
+    at !== undefined && !chain.has(at);
+    at = starts.get(at)?.follows
+  ) {
+    chain.add(at);
+  }
+  return new Set(
+    legacy
+      .filter((started) => started.fence < current && !chain.has(started.fence))
+      .map((started) => started.fence),
+  );
+}
+
+/**
  * Whether a head this copy published moves its `copy.json` forward from
  * `held` to `next` (swamp-club#3491). Never backwards: a fenced process in
  * the checkout that publishes late, on its lineage or an older one, must
@@ -495,11 +540,17 @@ export function parseLineageStarted(
   ) {
     return undefined;
   }
+  // A predecessor that is not a lower fence is not one: the lineage reads
+  // as one a swamp before it started, which collection keeps when forked.
+  const follows = isFence(r.follows) && r.follows < r.fence
+    ? r.follows
+    : undefined;
   return {
     fence: r.fence,
     holder: r.holder,
     replicaRoot: r.replicaRoot,
     startedAt: r.startedAt,
+    ...(follows !== undefined ? { follows } : {}),
   };
 }
 

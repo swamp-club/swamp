@@ -99,7 +99,7 @@ async function withCopy(
 async function publish(
   env: Env,
   fence: number,
-  options: { confirmed?: boolean; root?: string } = {},
+  options: { confirmed?: boolean; root?: string; follows?: number } = {},
 ): Promise<void> {
   const registry = lineageRegistryFor(env.copy.datastorePath);
   await registry.start({
@@ -107,6 +107,7 @@ async function publish(
     holder: "test",
     replicaRoot: options.root ?? env.root,
     startedAt: AT,
+    ...(options.follows !== undefined ? { follows: options.follows } : {}),
   });
   if (options.confirmed === true) {
     await registry.publishHead({
@@ -783,5 +784,70 @@ Deno.test({
       }
       assertEquals(await exists(env.copy.commitsDb), false);
     }, { setting: S3_PROXIED });
+  },
+});
+
+/** BUCKET_REPLICA's bucket and path, reached through a proxy. */
+const PROXIED_BUCKET_ROOT = "s3:http://proxy:47441:bucket:team/root";
+
+Deno.test({
+  name:
+    "prepareV3WriterLineage: a new lineage's start names the current lineage it continues (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true, root: PROXIED_BUCKET_ROOT });
+      await prepareV3WriterLineage(env.copy, 5, { restored: true });
+      assertEquals((await startOf(env, 5))?.follows, 3);
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: lineages a fork before swamp-club#3801 left under two endpoint spellings are kept, never collected over (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      // Two spellings that never saw each other: each its own history.
+      await publish(env, 1, { confirmed: true });
+      await publish(env, 2, { confirmed: true, root: PROXIED_BUCKET_ROOT });
+      await publish(env, 3, { confirmed: true });
+      await publish(env, 4, { confirmed: true, root: PROXIED_BUCKET_ROOT });
+      // The first lineage after the fix continued the highest of them.
+      await publish(env, 6, { confirmed: true, follows: 4 });
+      const { store, removed } = recordingStore();
+      await collectV3Lineages(env.copy, 6, {
+        replicaPaths: { root: env.root, store },
+      });
+      assertEquals(removed, ["000000000004"], "only the chain is collected");
+      for (const fence of [1, 2, 3]) {
+        assert(await startOf(env, fence) !== undefined, `${fence} is kept`);
+      }
+    }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "collectV3Lineages: with one history, lineages of every endpoint spelling below the current one are collected (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 1, { confirmed: true });
+      await publish(env, 5, {
+        confirmed: true,
+        root: PROXIED_BUCKET_ROOT,
+        follows: 1,
+      });
+      await publish(env, 6, { confirmed: true, follows: 5 });
+      const { store, removed } = recordingStore();
+      await collectV3Lineages(env.copy, 6, {
+        replicaPaths: { root: env.root, store },
+      });
+      assertEquals(removed, ["000000000001", "000000000005"]);
+      assertEquals(await startOf(env, 1), undefined);
+      assertEquals(await startOf(env, 5), undefined);
+    }, { setting: BUCKET_REPLICA });
   },
 });

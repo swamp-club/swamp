@@ -131,7 +131,8 @@ export class V3ReplicaRootMismatchError extends UserError {
         `${datastorePath} was started under replica root ${recordedRoot}, ` +
         `but this checkout replicates under ${ownRoot}. swamp does not start ` +
         `a second lineage beside it: check that this checkout's datastore ` +
-        `names the same bucket and prefix as the checkout that wrote it. ` +
+        `names the same bucket and prefix as the checkout that wrote it (the ` +
+        `S3 endpoint need not match). ` +
         `Nothing was changed.`,
       V3_REPLICA_ROOT_MISMATCH_CODE,
     );

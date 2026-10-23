@@ -28,6 +28,7 @@ import {
   decideChunkCollection,
   decideLocalCopy,
   type LineageHead,
+  lineagesKeptForFork,
   mayContinueLineage,
   normalizeTxid,
   outrankingForeignLineage,
@@ -482,4 +483,61 @@ Deno.test("outrankingForeignLineage: only a lineage under another root that woul
     outrankingForeignLineage([{ fence: 8 }], S3_OWN),
     undefined,
   );
+});
+
+Deno.test("lineagesKeptForFork: keeps lineages a swamp before swamp-club#3801 left under two spellings, unless the current chain continues them", () => {
+  const a = "s3::bucket:prefix";
+  const b = "s3:http://proxy:1:bucket:prefix";
+  const start = (fence: number, replicaRoot: string, follows?: number) => ({
+    fence,
+    holder: "h",
+    replicaRoot,
+    startedAt: AT,
+    ...(follows !== undefined ? { follows } : {}),
+  });
+  const starts = (...list: ReturnType<typeof start>[]) =>
+    new Map(list.map((s) => [s.fence, s]));
+  // One history: nothing kept, whatever the spellings of later lineages.
+  assertEquals(
+    lineagesKeptForFork(
+      starts(start(1, a), start(2, a), start(5, b, 2), start(6, a, 5)),
+      6,
+    ),
+    new Set(),
+  );
+  // Forked: only what the current lineage's chain continues may go.
+  assertEquals(
+    lineagesKeptForFork(
+      starts(
+        start(1, a),
+        start(2, b),
+        start(3, a),
+        start(4, b),
+        start(5, a, 4),
+        start(6, b, 5),
+      ),
+      6,
+    ),
+    new Set([1, 2, 3]),
+  );
+  // A chain that loops on a malformed record still ends.
+  assertEquals(
+    lineagesKeptForFork(
+      starts(start(1, a), start(2, b), start(3, a, 3), start(4, a, 3)),
+      4,
+    ),
+    new Set([1, 2]),
+  );
+});
+
+Deno.test("parseLineageStarted: reads a lower follows fence, and drops one that is not", () => {
+  const base = { fence: 5, holder: "h", replicaRoot: ROOT, startedAt: AT };
+  const read = (record: Record<string, unknown>) =>
+    parseLineageStarted(
+      JSON.parse(serializeLineageRecord(record as typeof base)),
+    );
+  assertEquals(read({ ...base, follows: 3 })?.follows, 3);
+  assertEquals(read({ ...base, follows: 5 })?.follows, undefined);
+  assertEquals(read({ ...base, follows: "3" })?.follows, undefined);
+  assertEquals(read(base), base);
 });

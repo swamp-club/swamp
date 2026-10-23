@@ -905,6 +905,16 @@ the state: readers and writers alike are refused with
 `datastore_v3_replica_root_mismatch`, naming both roots, rather than reading
 an empty datastore or starting a lineage beside it.
 
+A lineage's start also records `follows`, the current lineage the writer's
+copy was made current to, so the lineages form a chain. A swamp before this
+never continued a lineage of another endpoint spelling, so its lineages
+(no `follows`) under two or more spellings are a **fork**: separate
+histories, each with commits the other lacks. Once every spelling matches,
+the highest of them is current; collection removes only what the current
+lineage's chain continues and keeps the other fork lineages, records and
+paths, with a warning naming them, for an operator to recover by hand.
+While they stay, chunk collection defers, so their chunks stay too.
+
 > **Decision: head, then confirmation, then the lease check.** A writer's
 > end of command is: sync, publish the head, publish the confirmation (the
 > first time), check the lease, acknowledge. A model-based property test

@@ -51,6 +51,8 @@ import {
   decideChunkCollection,
   decideLocalCopy,
   type HighWaterMark,
+  lineagesKeptForFork,
+  type LineageStarted,
   mayContinueLineage,
   newestStartedFence,
   outrankingForeignLineage,
@@ -730,13 +732,18 @@ export async function prepareV3WriterLineage(
       const paths = await copyPaths(copy);
       const registry = lineageRegistryFor(copy.datastorePath);
       const previous = await readLineage(paths);
-      const claim = async () => {
+      // The start names the current lineage the copy was made current to,
+      // which this one continues (swamp-club#3801): collection then knows
+      // its chain from a fork a swamp before matching left.
+      const claim = async (published: readonly PublishedLineage[]) => {
+        const follows = currentLineage(published, root)?.fence;
         if (
           await registry.start({
             fence,
             holder: holderName(),
             replicaRoot: root.value,
             startedAt: new Date().toISOString(),
+            ...(follows !== undefined && follows < fence ? { follows } : {}),
           })
         ) {
           return;
@@ -765,7 +772,7 @@ export async function prepareV3WriterLineage(
         // start is only read, and claimed again only when it is missing.
         const started = await registry.started(fence);
         if (typeof started !== "object" || !root.matches(started.replicaRoot)) {
-          await claim();
+          await claim(await registry.read(root));
         }
         return;
       }
@@ -798,7 +805,7 @@ export async function prepareV3WriterLineage(
       if (newest !== undefined && newest > fence) {
         throw new V3LineageOutrankedError(fence, newest);
       }
-      await claim();
+      await claim(lineages);
       await writeLineage(paths, restartLineage(previous, root, fence));
     });
   } catch (error) {
@@ -983,12 +990,14 @@ export async function collectV3Lineages(
     const abandoned = (own?.previousLineages ?? [])
       .filter((old) => root.matches(old.replicaRoot))
       .map((old) => old.fence);
+    // A read fetches only the starts the current state needs: a lineage
+    // another replica root started, or whose start does not parse, is left
+    // alone, records included.
+    const starts = new Map<number, LineageStarted>();
+    const candidates: number[] = [];
     for (
       const fence of collectableLineages(lineages, abandoned, root, current)
     ) {
-      // A read fetches only the starts the current state needs: a lineage
-      // another replica root started, or whose start does not parse, is
-      // left alone, records included.
       const started = await registry.started(fence);
       if (
         started === "unreadable" ||
@@ -996,6 +1005,31 @@ export async function collectV3Lineages(
       ) {
         continue;
       }
+      if (started !== undefined) starts.set(fence, started);
+      candidates.push(fence);
+    }
+    // The current lineage's chain, so a fork left by a swamp before
+    // swamp-club#3801 is kept, never collected over (lineagesKeptForFork).
+    for (
+      let at: number | undefined = current;
+      at !== undefined && !starts.has(at);
+    ) {
+      const started = await registry.started(at);
+      if (typeof started !== "object") break;
+      starts.set(at, started);
+      at = started.follows;
+    }
+    const kept = lineagesKeptForFork(starts, current);
+    if (kept.size > 0) {
+      logger
+        .warn`The v3 datastore at ${copy.datastorePath} forked before swamp-club#3801: replication lineages ${
+        [...kept].sort((a, b) => a - b).map(padFence).join(", ")
+      } hold commits another endpoint spelling's checkouts never saw, and replication lineage ${
+        padFence(current)
+      } does not continue them. They are kept, never collected; recover what you need from them, then remove their _control/lineage/ records and _litestream/ paths`;
+    }
+    for (const fence of candidates) {
+      if (kept.has(fence)) continue;
       // One lineage that cannot be removed now (its old sidecar may still
       // be writing there) never stops the others; the next first
       // confirmation tries again.

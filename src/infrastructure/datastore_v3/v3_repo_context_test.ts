@@ -372,20 +372,12 @@ Deno.test("holdV3Writer: a hostname change while the writer runs still removes i
     await holdV3Writer(config, repoDir);
     const sidecar = join(datastorePath, "_control", "writer.checkout.json");
     // As if the machine was renamed after the record was written (a DHCP
-    // renewal on macOS): the record names the old hostname, on this boot.
+    // renewal on macOS): the record names the old hostname. The process
+    // identity it recorded is the one this process still holds.
     const record = JSON.parse(await Deno.readTextFile(sidecar));
-    const at = record.process.host.indexOf("#");
     await Deno.writeTextFile(
       sidecar,
-      JSON.stringify({
-        ...record,
-        hostname: "Previous-Name.local",
-        process: {
-          ...record.process,
-          host: "Previous-Name.local" +
-            (at === -1 ? "" : record.process.host.slice(at)),
-        },
-      }),
+      JSON.stringify({ ...record, hostname: "Previous-Name.local" }),
     );
     v3DatastoreFor(repoDir, config);
     await closeV3Datastores();

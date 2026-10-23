@@ -35,13 +35,12 @@
  * the same hostname in the root namespace then names nothing. Only where no
  * boot id exists (Windows) do the host and pid alone decide, as before.
  *
- * Where both sides have the same boot id, the hostname does not decide
- * (swamp-club#3801): it changes under a running process (a DHCP renewal
- * on macOS), and a record of this very kernel must not turn unjudgeable.
- * The boot id names the kernel, and on Linux the pid namespace names where
- * a pid lives in it, so a container sharing the host's boot id is still
- * another namespace. Only when a Linux namespace could not be read on
- * either side does the hostname decide alongside the boot id, as before.
+ * The hostname stays part of this rule: VMs restored from one memory
+ * snapshot share a boot id, and only their hostnames tell them apart, so
+ * ignoring it could judge another machine's live writer gone. Questions
+ * about this machine's own files, which other checks also guard (a
+ * Litestream sidecar's lock and command line), use {@link sameKernel},
+ * which survives a hostname change (swamp-club#3801).
  *
  * On this kernel, a pid that is absent, a zombie, or started at another
  * time than the record says is `gone`; any other present pid is `alive`.
@@ -153,13 +152,23 @@ function unjudgeable(
   recorded: ProcessIdentity | undefined,
   local: LocalProcess,
 ): boolean {
-  return recorded === undefined || !sameKernel(recorded, local);
+  if (recorded === undefined || recorded.host !== local.identity.host) {
+    return true;
+  }
+  if (recorded.bootId !== local.identity.bootId) return true;
+  return local.bootIdRequired && recorded.bootId === undefined;
 }
 
 /**
- * Whether `recorded` was written on this kernel and pid namespace, by the
- * rule {@link judgeRecordedProcess} judges pids by: the same boot id and
- * pid namespace, never the hostname where those decide (swamp-club#3801).
+ * Whether `recorded` was written on this kernel and pid namespace, whatever
+ * the hostname was then (swamp-club#3801): the same boot id and pid
+ * namespace. A DHCP renewal renames a machine under a running process, so a
+ * file this machine keeps for itself (a Litestream sidecar's presence) is
+ * judged by this, never by the hostname. A container sharing the host's
+ * boot id is another namespace. Only when neither side names a namespace on
+ * a platform that has them (it could not be read) does the hostname decide
+ * alongside the boot id. Not for judging another writer gone: see
+ * {@link judgeRecordedProcess}.
  */
 export function sameKernel(
   recorded: ProcessIdentity,

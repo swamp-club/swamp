@@ -113,6 +113,8 @@ unless --force is set. In --json mode, outputs the value directly.`,
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
+  // The read-only context has no sync service to hand over; the vault sync
+  // takes none for a read.
   const { flush } = await acquireVaultSync(
     datastoreResolver.config(),
     undefined,

@@ -23,6 +23,7 @@ import {
   judgeRecordedProcess,
   type ProcessIdentity,
   type ProcessProbe,
+  sameKernel,
 } from "./process_liveness.ts";
 
 const arbIdentity: fc.Arbitrary<ProcessIdentity> = fc.record({
@@ -73,17 +74,34 @@ Deno.test("judgeRecordedProcess: a record not written on this kernel is never ju
           identity: c.here,
           probe: () => c.probe,
           bootIdRequired: c.bootIdRequired,
-          ...(c.pidNamespaces !== undefined
-            ? { pidNamespaces: c.pidNamespaces }
-            : {}),
         },
       );
-      // One boot id on both sides: the kernel and the namespace decide; the
-      // hostname only where neither names a namespace on a platform that
-      // has them. Otherwise the host and boot id decide, and where the
-      // platform has boot ids, none on both sides places nothing.
+      // Where the platform has boot ids, none on both sides places nothing.
+      const sameKernel = c.recorded !== undefined &&
+        c.recorded.host === c.here.host &&
+        c.recorded.bootId === c.here.bootId &&
+        (!c.bootIdRequired || c.here.bootId !== undefined);
+      if (!sameKernel) assert(verdict === "unknown", `got ${verdict}`);
+      else assert(verdict !== "unknown", "a same-kernel record is judged");
+    }),
+  );
+});
+
+Deno.test("sameKernel: the boot id and pid namespace decide, the hostname only where neither names a namespace (swamp-club#3801)", () => {
+  fc.assert(
+    fc.property(arbCase, (c) => {
+      fc.pre(c.recorded !== undefined);
+      const actual = sameKernel(c.recorded!, {
+        pid: 1,
+        identity: c.here,
+        probe: () => c.probe,
+        bootIdRequired: c.bootIdRequired,
+        ...(c.pidNamespaces !== undefined
+          ? { pidNamespaces: c.pidNamespaces }
+          : {}),
+      });
       const r = c.recorded;
-      const sameKernel = r !== undefined &&
+      const expected = r !== undefined &&
         (r.bootId !== undefined && c.here.bootId !== undefined
           ? r.bootId === c.here.bootId &&
             (namespaceOf(r.host) !== undefined ||
@@ -92,8 +110,7 @@ Deno.test("judgeRecordedProcess: a record not written on this kernel is never ju
               : c.pidNamespaces === false || r.host === c.here.host)
           : r.host === c.here.host && r.bootId === c.here.bootId &&
             !c.bootIdRequired);
-      if (!sameKernel) assert(verdict === "unknown", `got ${verdict}`);
-      else assert(verdict !== "unknown", "a same-kernel record is judged");
+      assert(actual === expected, `got ${actual}`);
     }),
   );
 });
