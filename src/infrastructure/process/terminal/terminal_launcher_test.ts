@@ -113,20 +113,21 @@ function makeLauncher(options: {
   return h;
 }
 
-Deno.test("SystemTerminalLauncher.open: on macOS opens Terminal.app with launch.command", async () => {
+Deno.test("SystemTerminalLauncher.open: on macOS opens launch.command with the default application", async () => {
+  const ws = "/home/u/Work spaces/R&D;project";
   const h = makeLauncher({ os: "darwin" });
-  const outcome = await h.launcher.open(SPEC, WS);
-  const script = join(startDir(WS), "launch.command");
+  const outcome = await h.launcher.open(SPEC, ws);
+  const script = join(startDir(ws), "launch.command");
   assertEquals(outcome, {
     method: "macos_terminal",
     opened: true,
-    command: copyCommand(SPEC, WS, "darwin"),
+    command: copyCommand(SPEC, ws, "darwin"),
   });
   assertEquals(h.spawned.length, 1);
   assertEquals(h.spawned[0].command, "open");
-  assertEquals(h.spawned[0].args.slice(0, 2), ["-a", "Terminal"]);
-  assertPathEquals(h.spawned[0].args[2], script);
-  assertPathEquals(h.spawned[0].cwd, WS);
+  assertEquals(h.spawned[0].args.length, 1);
+  assertPathEquals(h.spawned[0].args[0], script);
+  assertPathEquals(h.spawned[0].cwd, ws);
   assertEquals(h.scripts.length, 1);
   assertPathEquals(h.scripts[0].path, script);
 });
