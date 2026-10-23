@@ -258,9 +258,14 @@ inputs match required method/workflow arguments.
 6. No cyclic job dependencies
 7. No cyclic step dependencies within jobs
 8. Step inputs match required arguments — for `behavior` tasks, checks that all
-   required method arguments are provided in the step's `inputs:` block. For
-   `workflow` tasks, checks that all required workflow inputs are provided.
-   Dynamic CEL references (`${{ ... }}`) in behavior/workflow names are skipped.
+   required method arguments are provided in the step's `inputs:` block. An
+   argument is required when the method's arguments fail to parse without it, so
+   optional, defaulted and `.catch()` fields, and a `z.preprocess` that turns a
+   missing value into a valid one, may be omitted. Deciding this parses the
+   arguments, so their refinements and transforms run during validation — keep
+   them free of side effects. For `workflow` tasks, checks that all required
+   workflow inputs are provided. Dynamic CEL references (`${{ ... }}`) in
+   behavior/workflow names are skipped.
 
 ```bash
 swamp workflow validate my-workflow --json

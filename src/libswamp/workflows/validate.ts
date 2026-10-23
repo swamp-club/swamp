@@ -45,7 +45,7 @@ import {
 } from "../../domain/models/data_writer.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
-import { zodToJsonSchema } from "../types/schema_helpers.ts";
+import { requiredArgumentNames } from "../../domain/models/required_arguments.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { type BrokenWorkflow, listBrokenWorkflows } from "./broken_workflow.ts";
@@ -166,13 +166,11 @@ function createModelMethodResolver(
         return { status: "method_not_found", modelType: modelType.normalized };
       }
 
-      // Extract required fields from the method's Zod argument schema: what
-      // the step supplies is what the schema accepts, a transform's input
-      // keys, not the keys it produces (swamp-club#3681).
-      const jsonSchema = zodToJsonSchema(method.arguments, { io: "input" }) as {
-        required?: string[];
-      };
-      const requiredArgs = jsonSchema.required ?? [];
+      // What the step must supply is what the method's arguments fail to
+      // parse without: a transform's input keys, not the keys it produces
+      // (swamp-club#3681), decided by parsing rather than by the JSON Schema
+      // a given Zod version renders (swamp-club#3873).
+      const requiredArgs = await requiredArgumentNames(method.arguments);
 
       // Arguments the definition already supplies — runtime merges these as
       // fallbacks under step-level inputs (see DefaultMethodExecutionService).
@@ -226,21 +224,12 @@ async function resolveByType(
     return { status: "method_not_found", modelType: type.normalized };
   }
 
-  // What the step supplies is what each schema accepts (swamp-club#3681).
-  const methodSchema = zodToJsonSchema(method.arguments, { io: "input" }) as {
-    required?: string[];
-  };
-  const methodRequired = methodSchema.required ?? [];
-
-  const globalRequired: string[] = [];
-  if (modelDef.globalArguments) {
-    const globalSchema = zodToJsonSchema(modelDef.globalArguments, {
-      io: "input",
-    }) as {
-      required?: string[];
-    };
-    globalRequired.push(...(globalSchema.required ?? []));
-  }
+  // What the step supplies is what each schema fails to parse without
+  // (swamp-club#3681, swamp-club#3873).
+  const methodRequired = await requiredArgumentNames(method.arguments);
+  const globalRequired = modelDef.globalArguments
+    ? await requiredArgumentNames(modelDef.globalArguments)
+    : [];
 
   const requiredArgs = Array.from(
     new Set([...methodRequired, ...globalRequired]),

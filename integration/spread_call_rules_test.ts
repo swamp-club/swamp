@@ -375,13 +375,6 @@ const PINNED: ReadonlyArray<
     ],
   },
   {
-    file: "src/libswamp/workflows/validate.ts",
-    reason: "required keys of one schema",
-    calls: [
-      "globalRequired.push(...(globalSchema.required ?? []))",
-    ],
-  },
-  {
     file: "src/presentation/output/access_token_output.ts",
     reason: "tokens of one account",
     calls: [

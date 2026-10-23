@@ -632,3 +632,121 @@ Deno.test("createWorkflowValidateDeps: a step supplying what a method's transfor
     }
   }
 });
+
+Deno.test("createWorkflowValidateDeps: a step may omit a preprocess argument that accepts a missing value, and is told only what the arguments cannot parse without (swamp-club#3873)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const modelType = ModelType.create(
+      `@test-3873/flagged-${crypto.randomUUID().slice(0, 8)}`,
+    );
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.10.23.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        run: {
+          description: "Takes a name and an optional flag",
+          arguments: z.object({
+            name: z.string(),
+            flag: z.preprocess((v) => v === true || v === "true", z.boolean()),
+          }),
+          execute: () => Promise.resolve({}),
+        },
+      },
+    });
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(
+      modelType,
+      Definition.create({ name: "flagged", type: modelType.normalized }),
+    );
+    const deps = createWorkflowValidateDeps(
+      {} as WorkflowRepository,
+      new YamlDefinitionRepository(dir),
+    );
+    const stepInputs = async (inputs: Record<string, unknown>) => {
+      const results = await deps.validate(Workflow.create({
+        name: "wf",
+        jobs: [
+          Job.create({
+            name: "job1",
+            steps: [
+              Step.create({
+                name: "step1",
+                task: StepTask.model("flagged", "run", inputs),
+              }),
+            ],
+          }),
+        ],
+      }));
+      return results.find((r) => r.name.includes("Step inputs"));
+    };
+
+    const withoutFlag = await stepInputs({ name: "n" });
+    assertEquals(withoutFlag?.passed, true, withoutFlag?.error);
+    const withoutName = await stepInputs({ flag: true });
+    assertEquals(withoutName?.passed, false);
+    assertEquals(withoutName?.error, "Missing required inputs: name");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("createWorkflowValidateDeps: a type-referenced step's global arguments are required by what they fail to parse without (swamp-club#3873)", async () => {
+  const modelType = ModelType.create(
+    `@test-3873/globals-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type: modelType,
+    version: "2026.10.23.1",
+    globalArguments: z.object({
+      region: z.string(),
+      verbose: z.preprocess((v) => v === true, z.boolean()),
+    }),
+    resources: {},
+    methods: {
+      run: {
+        description: "Takes nothing of its own",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  const deps = createWorkflowValidateDeps(
+    {} as WorkflowRepository,
+    {} as YamlDefinitionRepository,
+  );
+  const stepInputs = async (globalArgs: Record<string, unknown>) => {
+    const results = await deps.validate(Workflow.create({
+      name: "wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.directExecution(
+                modelType.normalized,
+                "inline",
+                "run",
+                {},
+                globalArgs,
+              ),
+            }),
+          ],
+        }),
+      ],
+    }));
+    return results.find((r) => r.name.includes("Step inputs"));
+  };
+
+  const withoutVerbose = await stepInputs({ region: "us-east-1" });
+  assertEquals(withoutVerbose?.passed, true, withoutVerbose?.error);
+  const withoutRegion = await stepInputs({ verbose: true });
+  assertEquals(withoutRegion?.passed, false);
+  assertEquals(withoutRegion?.error, "Missing required inputs: region");
+});
