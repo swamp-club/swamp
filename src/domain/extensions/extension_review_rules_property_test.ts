@@ -187,6 +187,26 @@ Deno.test("credentials-sensitive-field property: the sensitive marker suppresses
   );
 });
 
+Deno.test("credentials-sensitive-field property: a wrapped .meta object is marked whatever its description holds", () => {
+  fc.assert(
+    fc.property(fc.string(), fc.boolean(), (description, marked) => {
+      const content = `import { z } from "npm:zod@4";
+export const GlobalArgs = z.object({
+  apiKey: z.string().meta({
+${marked ? "    sensitive: true,\n" : ""}    description:
+      ${JSON.stringify(description)},
+  }),
+});
+`;
+      assertEquals(
+        sensitiveFindingCount(content),
+        marked ? 0 : 1,
+        `description ${JSON.stringify(description)}, marked ${marked}`,
+      );
+    }),
+  );
+});
+
 Deno.test("credentials-sensitive-field property: never throws on any input", () => {
   fc.assert(
     fc.property(fc.string(), (content) => {
