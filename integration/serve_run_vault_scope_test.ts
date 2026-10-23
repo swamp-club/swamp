@@ -514,7 +514,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve run vault scope: a read grant revoked after the write fails the writing step's own read-back",
+    "serve run vault scope: a revoked read grant allows stored write-back but refuses the next expression read",
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
@@ -527,13 +527,17 @@ Deno.test({
         f,
         workflowOf("mint-readback", [
           step("mint", StepTask.model("minter", "mint")),
+          step("read", StepTask.model("creds-reader", "read"), "mint"),
         ]),
         BOT,
       );
       const mint = stepOf(run, "main", "mint");
-      assertEquals(mint.status, "failed");
+      assertEquals(mint.status, "succeeded");
+      const read = stepOf(run, "main", "read");
+      assertEquals(read.status, "failed");
+      assertEquals(f.seen, []);
       assertStringIncludes(
-        mint.error ?? "",
+        read.error ?? "",
         "Reading vault 'outputs' is refused",
       );
     }, { grants: outputsGrants() }),

@@ -44,6 +44,7 @@ import {
 /**
  * Where a registry may be created outside tests:
  * - the run's record of sensitive values, which every run creates once;
+ * - independent nested invocations, through SecretBagRegistry.independent;
  * - a worker rebuilding a dispatched bag, which is that worker's whole run;
  * - the evaluation service's fallback for callers with no run context (the
  *   validate pre-flight checks).
@@ -51,6 +52,7 @@ import {
 const REGISTRY_CREATORS = [
   "src/domain/expressions/expression_evaluation_service.ts",
   "src/domain/secrets/run_sensitive_values.ts",
+  "src/domain/vaults/secret_bag_registry.ts",
   "src/domain/vaults/vault_secret_bag.ts",
 ];
 

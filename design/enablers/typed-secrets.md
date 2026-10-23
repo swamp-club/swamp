@@ -274,7 +274,7 @@ and other refusing destinations check them before delivery:
 | `child` | Child workflow references | Refuses secrets | No load before lookup or invocation. |
 | `deferred` | Deferred targets, `inputs` and `globalArgs` | Targets refuse; records issue into the step's bag | Records load at method delivery. |
 | `assert-message` | Assert message interpolation | Masked | Masks references without loading, including literal sentinel text. |
-| `runtime` | Runtime expression helpers | The caller's explicit destination | Issue sentinels or refuse; no inline load. |
+| `runtime` | Runtime expression helpers | The caller's explicit destination | Routing issues sentinels or refuses; the generic trusted-consumer helper can load inline. |
 | `delivery` | Method argument parsing and local/remote delivery | Trusted consumer | Loads per attempt; remote delivery remains unchanged until Phase 5. |
 
 ### 3.4 Existence check

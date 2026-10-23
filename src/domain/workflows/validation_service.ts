@@ -272,7 +272,9 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
-    results.push(...this.validateSecretUsage(workflow));
+    for (const result of this.validateSecretUsage(workflow)) {
+      results.push(result);
+    }
 
     // 17. Reserved tag keys the workflow, its steps and nested workflows supply
     for (const result of await this.validateReservedTags(workflow)) {

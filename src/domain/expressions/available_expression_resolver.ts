@@ -25,7 +25,9 @@ import {
   type SpliceSanitizer,
   type TrackedSplice,
 } from "./expression_parser.ts";
-import type { SplicePair } from "./splice_pair.ts";
+import { sensitiveSpliceSanitizer, type SplicePair } from "./splice_pair.ts";
+import { sensitiveValuesOf } from "./sensitive_context.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   type AuthoredExpressions,
   containsRuntimeExpression,
@@ -95,7 +97,15 @@ export function resolveAvailableExpressions(
     skipPath,
   );
   if (values.size === 0) return data;
-  return replaceExpressions(data, values, skipPath);
+  const registry = sensitiveValuesOf(context)?.sentinels;
+  return replaceExpressions(
+    data,
+    values,
+    skipPath,
+    registry
+      ? sensitiveSpliceSanitizer(new VaultSecretBag(registry))
+      : undefined,
+  );
 }
 
 /**
@@ -122,12 +132,16 @@ export function resolveAvailableExpressionsTracked(
     skipPath,
   );
   if (values.size === 0) return { data, provenance };
+  const registry = sensitiveValuesOf(context)?.sentinels;
   return replaceExpressionsTracked(
     data,
     values,
     provenance,
     (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
     skipPath,
+    registry
+      ? sensitiveSpliceSanitizer(new VaultSecretBag(registry))
+      : undefined,
   );
 }
 

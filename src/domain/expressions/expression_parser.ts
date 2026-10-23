@@ -193,13 +193,14 @@ function extractExpressionsRecursive(
 
 /**
  * Rewrites an evaluated result as it is spliced at `path`: `whole` receives a
- * whole-field result, `embedded` the text a result renders to inside a larger
- * string. Only spliced results pass through it, never the authored text
+ * whole-field result; `embedded` receives rendered text and the original value
+ * so policies can distinguish containers from strings. Only spliced results
+ * pass through it, never the authored text
  * around them.
  */
 export interface SpliceSanitizer {
   whole(value: unknown, path: string): unknown;
-  embedded(text: string, path: string): string;
+  embedded(text: string, path: string, value?: unknown): string;
   /** The real value of a sentinel this sanitizer writes, for provenance. */
   resolve?: SentinelResolver;
 }
@@ -253,7 +254,7 @@ function replaceExpressionsRecursive(
       const rendered = typeof value === "object"
         ? JSON.stringify(value, null, 2)
         : String(value);
-      return sanitizer ? sanitizer.embedded(rendered, path) : rendered;
+      return sanitizer ? sanitizer.embedded(rendered, path, value) : rendered;
     });
   } else if (Array.isArray(data)) {
     return data.map((item, index) =>
@@ -400,7 +401,7 @@ function replaceTracked(
         ? JSON.stringify(value, null, 2)
         : String(value);
       const text = state.sanitizer
-        ? state.sanitizer.embedded(rendered, path)
+        ? state.sanitizer.embedded(rendered, path, value)
         : rendered;
       const origin = state.originOf(span.raw);
       for (

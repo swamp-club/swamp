@@ -30,8 +30,7 @@
  * answers existence itself and counts every value it hands out, so a load
  * is a load and a check costs nothing. The internal option is turned on by
  * passing the run its sensitive values over a typed registry, as only tests
- * may; every scenario also runs with the option off and asserts today's
- * behavior.
+ * may. Every scenario uses default production construction.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -68,7 +67,7 @@ import {
   writeClass,
 } from "./typed_workflow_harness.ts";
 
-Deno.test("typed workflow passes: a guard whose result holds a secret refuses before any load, from a tagged field, a vault.get and a model.method result; with the option off it decides on plaintext", async () => {
+Deno.test("typed workflow passes: a guard whose result holds a secret refuses before any load, from a tagged field, a vault.get and a model.method result", async () => {
   const guards = () =>
     Workflow.create({
       name: "guard-refuses",
@@ -369,7 +368,7 @@ Deno.test("typed workflow passes: a step name resolved at run start keeps the se
   });
 });
 
-Deno.test("typed workflow passes: a later step reads steps.<name>.outputs through the adapter, so every canary class is delivered exactly with one load each at delivery and none before, a plain sibling stays text, and a guard comparing the tagged field refuses; with the option off the outputs are read eagerly (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: a later step reads steps.<name>.outputs through the adapter, so every canary class is delivered exactly with one load each at delivery and none before, a plain sibling stays text, and a guard comparing the tagged field refuses (typed-secrets 4.2)", async () => {
   const workflow = (f: Fixture) =>
     Workflow.create({
       name: "live-outputs",
@@ -417,7 +416,7 @@ Deno.test("typed workflow passes: a later step reads steps.<name>.outputs throug
   });
 });
 
-Deno.test("typed workflow passes: a step output whose vault the run's access refuses fails the step that reads any field of the record before the result is used, with zero loads; with the option off the eager read-back is refused instead (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: a step output whose vault the run's access refuses fails the step that reads any field of the record before the result is used, with zero loads (typed-secrets 4.2)", async () => {
   const workflow = () =>
     Workflow.create({
       name: "denied-outputs",
@@ -462,7 +461,7 @@ Deno.test("typed workflow passes: a step output whose vault the run's access ref
   });
 });
 
-Deno.test("typed workflow passes: outputs reconstructed from the run record on resume read through the adapter: the resumed step delivers the exact canary with one load and no read at resume, a vaults list narrowed before the resume refuses the read before use, and a tag the writer could not have stored refuses with secret_reference_invalid; with the option off the resume reads the outputs eagerly (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: outputs reconstructed from the run record on resume read through the adapter: the resumed step delivers the exact canary with one load and no read at resume, a vaults list narrowed before the resume refuses the read before use, and a tag the writer could not have stored refuses with secret_reference_invalid (typed-secrets 4.2)", async () => {
   const NAME = "resume-outputs";
   const workflow = () =>
     Workflow.create({
@@ -565,7 +564,7 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
   });
 });
 
-Deno.test("typed workflow passes: a parent reads a child workflow's outputs through the adapter, so the tagged field is delivered exactly with one load and a guard comparing it refuses; with the option off it is read eagerly (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: a parent reads a child workflow's outputs through the adapter, so the tagged field is delivered exactly with one load and a guard comparing it refuses (typed-secrets 4.2)", async () => {
   const child = () =>
     Workflow.create({
       name: "child-outputs",
@@ -608,7 +607,7 @@ Deno.test("typed workflow passes: a parent reads a child workflow's outputs thro
   });
 });
 
-Deno.test("typed workflow passes: a child input deferred from the parent that joins a vault.get with a parent step's tagged output delivers both once, the parent's outputs viewed through their persisted sources; with the option off the captured plaintext is delivered (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: a child input deferred from the parent that joins a vault.get with a parent step's tagged output delivers both once, the parent's outputs viewed through their persisted sources (typed-secrets 4.2)", async () => {
   const child = () =>
     Workflow.create({
       name: "child-deferred",
@@ -655,7 +654,7 @@ Deno.test("typed workflow passes: a child input deferred from the parent that jo
   });
 });
 
-Deno.test("typed workflow passes: model.<name>.resource of a record a step wrote earlier in the run reads as a Secret through the model map view and is delivered once, instead of refusing; with the option off it holds plaintext (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: model.<name>.resource of a record a step wrote earlier in the run reads as a Secret through the model map view and is delivered once, instead of refusing (typed-secrets 4.2)", async () => {
   const workflow = () =>
     Workflow.create({
       name: "model-map-live",
@@ -681,7 +680,7 @@ Deno.test("typed workflow passes: model.<name>.resource of a record a step wrote
   });
 });
 
-Deno.test("typed workflow passes: a child step name repeated across jobs: the parent reads the later job's outputs, with the option on and off (typed-secrets 4.2)", async () => {
+Deno.test("typed workflow passes: a child step name repeated across jobs: the parent reads the later job's outputs (typed-secrets 4.2)", async () => {
   const classes = (f: Fixture) =>
     f.canaries.filter((c) => c.unique).slice(0, 2).map((c) => c.class);
   const child = (f: Fixture) => {

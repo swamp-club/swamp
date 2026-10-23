@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { secretOccurrencesOf } from "../vaults/secret_occurrences.ts";
+import { SECRET_OPERATION_UNSUPPORTED, SecretRefusedError } from "./errors.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   replaceExpressions,
@@ -82,9 +84,22 @@ function isUnder(path: string, root: string): boolean {
 export function sensitiveSpliceSanitizer(
   bag: VaultSecretBag,
 ): SpliceSanitizer {
+  const secrets = secretOccurrencesOf(bag.registry);
   return {
     whole: (value) => value,
-    embedded: (text) => text,
+    embedded: (text, path, value) => {
+      if (
+        value !== null && typeof value === "object" &&
+        secrets.occurrencesIn(text).length > 0
+      ) {
+        throw new SecretRefusedError(
+          SECRET_OPERATION_UNSUPPORTED,
+          "interpolating a container holding a secret into text",
+          path || "template",
+        );
+      }
+      return text;
+    },
     resolve: sentinelStandInOf(bag.registry),
   };
 }

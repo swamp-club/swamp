@@ -768,7 +768,6 @@ export class ExpressionEvaluationService {
     secretBag: VaultSecretBag,
     foreignText: ForeignTextRule = "fail",
   ): Promise<SplicePair<T>> {
-    const sensitiveValues = sensitiveValuesOf(context);
     const origins = new Map<string, SpliceOrigin>();
     const values = await this.evaluateDataValues(
       pair.raw,
@@ -777,13 +776,12 @@ export class ExpressionEvaluationService {
       pair.rawProvenance,
       origins,
       foreignText,
+      secretBag,
     );
     if (values.size === 0) return pair;
     return pair.splice(
       values,
-      sensitiveValues
-        ? sensitiveSpliceSanitizer(secretBag)
-        : { whole: (value) => value, embedded: (text) => text },
+      sensitiveSpliceSanitizer(secretBag),
       undefined,
       (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
     );
@@ -807,9 +805,23 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     authored: AuthoredExpressions,
   ): Promise<unknown> {
-    const values = await this.evaluateDataValues(data, context, authored);
+    const bag = bagFor(context);
+    const values = await this.evaluateDataValues(
+      data,
+      context,
+      authored,
+      undefined,
+      undefined,
+      undefined,
+      bag,
+    );
     if (values.size === 0) return data;
-    return replaceExpressions(data, values);
+    return replaceExpressions(
+      data,
+      values,
+      undefined,
+      sensitiveSpliceSanitizer(bag),
+    );
   }
 
   /**
@@ -824,6 +836,7 @@ export class ExpressionEvaluationService {
     authored: AuthoredExpressions,
     foreignText: ForeignTextRule = "fail",
   ): Promise<TrackedSplice> {
+    const bag = bagFor(context);
     const origins = new Map<string, SpliceOrigin>();
     const values = await this.evaluateDataValues(
       data,
@@ -832,6 +845,7 @@ export class ExpressionEvaluationService {
       provenance,
       origins,
       foreignText,
+      bag,
     );
     if (values.size === 0) return { data, provenance };
     return replaceExpressionsTracked(
@@ -839,6 +853,8 @@ export class ExpressionEvaluationService {
       values,
       provenance,
       (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
+      undefined,
+      sensitiveSpliceSanitizer(bag),
     );
   }
 
@@ -849,6 +865,7 @@ export class ExpressionEvaluationService {
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     origins?: Map<string, SpliceOrigin>,
     foreignText: ForeignTextRule = "fail",
+    secretBag?: VaultSecretBag,
   ): Promise<Map<string, unknown>> {
     const expressions = partitionAuthoredAt(
       extractExpressions(data),
@@ -865,7 +882,7 @@ export class ExpressionEvaluationService {
     // registry; the same typed evaluator handles every entry point.
     const passEvaluator = await this.passEvaluatorFor(
       sensitiveValuesOf(context),
-      { location: expressions[0].path },
+      { location: expressions[0].path, secretBag },
     );
 
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
@@ -966,6 +983,7 @@ export class ExpressionEvaluationService {
       inputs?: ProvenanceMap;
     } = {},
   ): Promise<EvaluatedDefinition> {
+    secretBag ??= new VaultSecretBag(sensitiveValues.sentinels);
     const definitionData = definition.toData();
     const definitionProvenance = provenance.definition ?? AUTHORED_DEFINITION;
     const authoredExpressions = collectAuthoredExpressions(
@@ -1042,11 +1060,7 @@ export class ExpressionEvaluationService {
       ),
       ctx,
       passEvaluator,
-      secretBag
-        ? sensitiveSpliceSanitizer(
-          secretBag,
-        )
-        : undefined,
+      sensitiveSpliceSanitizer(secretBag),
       definitionData,
       definitionProvenance,
     );
@@ -1437,12 +1451,7 @@ export class ExpressionEvaluationService {
     // A runtime expression can also read a sensitive data value
     // (`env.X + data.latest(...)`), so its result is sanitized as it is
     // spliced into an argument, like the definition pass does.
-    const sensitiveValues = sensitiveValuesOf(expressionContext);
-    const sanitizer = sensitiveValues
-      ? sensitiveSpliceSanitizer(
-        secretBag,
-      )
-      : undefined;
+    const sanitizer = sensitiveSpliceSanitizer(secretBag);
     const failedExpressions = new Map<string, Error>();
     const resolvedDefinition = await this.resolveRuntimeInExpressions(
       definitionData,
@@ -1663,6 +1672,7 @@ export class ExpressionEvaluationService {
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     pass: RuntimePassOptions = {},
   ): Promise<unknown> {
+    sanitizer ??= sensitiveSpliceSanitizer(secretBag);
     const records = new Map(
       (context.deferredExpressions ?? []).map((
         record,

@@ -632,13 +632,20 @@ export class WorkflowExpressionEvaluator {
  * per path: the same expression in a task input keeps its value.
  */
 function stepNameSanitizer(values: RunSensitiveValues): SpliceSanitizer {
+  const sanitizer = sensitiveSpliceSanitizer(
+    new VaultSecretBag(values.sentinels),
+  );
   return {
     whole: (value, path) =>
       isStepNamePath(path) && typeof value === "string"
         ? values.withPlaceholders(value)
         : value,
-    embedded: (text, path) =>
-      isStepNamePath(path) ? values.withPlaceholders(text) : text,
+    embedded: (text, path, value) => {
+      const rendered = sanitizer.embedded(text, path, value);
+      return isStepNamePath(path)
+        ? values.withPlaceholders(rendered)
+        : rendered;
+    },
   };
 }
 
