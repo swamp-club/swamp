@@ -1180,6 +1180,29 @@ Deno.test("default validation: a global that reads a model with no data yet stay
     assertEquals(f.checked.length, checksBefore + 1);
     assertEquals(f.checked.at(-1)!.globalArgs.token, expression);
     assertEquals(f.checked.at(-1)!.globalArgs.region, "us-east-1");
+
+    // The recommended data.latest form of the same gap degrades the same
+    // way: the lookup finds no record, and the select on it stays as text.
+    const viaData = "${{ data.latest('upstream', 'main').attributes.id }}";
+    const latest = await f.save(Definition.create({
+      name: "downstream-latest",
+      type: f.type.normalized,
+      globalArguments: { token: viaData },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const latestResult = await deps.validateModel(latest, f.model, f.type);
+    assertEquals(
+      latestResult.results.find((r) => r.name === "Check argument delivery"),
+      undefined,
+      JSON.stringify(latestResult.results),
+    );
+    assertEquals(
+      latestResult.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(latestResult.results),
+    );
+    assertEquals(f.checked.length, checksBefore + 2);
+    assertEquals(f.checked.at(-1)!.globalArgs.token, viaData);
   });
 });
 

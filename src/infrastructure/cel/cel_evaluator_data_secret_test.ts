@@ -33,6 +33,7 @@ import {
 } from "@std/assert";
 import {
   InvalidExpressionError,
+  MissingModelDataError,
   SECRET_OPERATION_UNSUPPORTED,
   SECRET_REFERENCE_INVALID,
   SecretRefusedError,
@@ -268,6 +269,17 @@ Deno.test("CelEvaluator data secrets: data.version, findBySpec and findByTag ada
     assert(f.bag.registry.issuedEntryOf(result), expression);
   }
   assertEquals(await f.evaluate("data.latest('db', 'missing')"), null);
+  // A non-optional select on the missing record is upstream data not
+  // produced yet, told apart from an invalid expression by its class.
+  const missing = await assertRejects(
+    () => f.evaluate("data.latest('db', 'missing').attributes.password"),
+    MissingModelDataError,
+  );
+  assertStringIncludes(missing.message, "found no data record");
+  await assertRejects(
+    () => f.evaluate("data.latest('db', 'main').attributes.nope"),
+    InvalidExpressionError,
+  );
   // No tag: reference-looking text stays text, and nothing needs a scope.
   const unscoped = { secretBag: f.bag };
   assertEquals(

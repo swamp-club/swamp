@@ -19,7 +19,10 @@
 
 import { Environment, Optional } from "cel-js";
 import { getLogger } from "@logtape/logtape";
-import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  InvalidExpressionError,
+  MissingModelDataError,
+} from "../../domain/expressions/errors.ts";
 import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
 import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
 import {
@@ -1523,11 +1526,16 @@ export class CelEvaluator {
         expression,
       );
     }
-    return new InvalidExpressionError(
-      this.explainMissedLookups(
-        error instanceof Error ? error.message : String(error),
-        wrappedContext,
-      ),
+    const message = error instanceof Error ? error.message : String(error);
+    const explained = this.explainMissedLookups(message, wrappedContext);
+    // A select on a lookup that found no record is upstream data not
+    // produced yet, which validation tolerates as it tolerates an absent
+    // binding; any other failure is the expression's own.
+    const Failure = explained === message
+      ? InvalidExpressionError
+      : MissingModelDataError;
+    return new Failure(
+      explained,
       expression,
       undefined,
       error instanceof Error ? error : undefined,

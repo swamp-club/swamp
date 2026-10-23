@@ -89,14 +89,23 @@ export class UnboundExpressionError extends InvalidExpressionError {
 }
 
 /**
- * A model reference whose resource or file data does not exist yet. Like an
- * absent binding, it is a gap a later run fills rather than an invalid
- * expression, so validation leaves the expression as its stored text.
+ * Upstream data that does not exist yet: a model reference with no resource
+ * or file data, or a non-optional select on a data lookup that found no
+ * record. Like an absent binding, it is a gap a later run fills, so
+ * validation leaves the expression as its stored text.
  */
-export class MissingModelDataError extends ExpressionError {
-  constructor(message: string, expression: string, path: string) {
-    super(message, expression, path);
+export class MissingModelDataError extends InvalidExpressionError {
+  constructor(
+    message: string,
+    expression: string,
+    path?: string,
+    cause?: Error,
+  ) {
+    super(message, expression, path, cause);
     this.name = "MissingModelDataError";
+    // The gap is not an invalid expression, so the message carries no such
+    // prefix: it names the model or lookup that has no data.
+    this.message = message;
   }
 }
 
