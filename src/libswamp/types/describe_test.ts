@@ -254,3 +254,77 @@ Deno.test("typeDescribe: Zod v3 method arguments surface upgrade diagnostic", as
   assertStringIncludes(args.message as string, "Zod v3");
   assertStringIncludes(args.message as string, "Upgrade to Zod v4");
 });
+
+Deno.test("typeDescribe: an installed extension's name suggests the type it provides instead of a registry search (swamp-club#3819)", async () => {
+  const asked: string[] = [];
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(undefined),
+    typesProvidedByExtension: (name) => {
+      asked.push(name);
+      return ["@swamp/vercel/deployments/deployments"];
+    },
+  });
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(
+      createLibSwampContext(),
+      deps,
+      ModelType.create("@swamp/vercel/deployments"),
+    ),
+  );
+
+  const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
+  assertEquals(last.error.code, "not_found");
+  assertEquals(asked, ["@swamp/vercel/deployments"]);
+  assertStringIncludes(
+    last.error.message,
+    "not found: @swamp/vercel/deployments\n\n" +
+      "Did you mean @swamp/vercel/deployments/deployments? " +
+      "(provided by installed extension @swamp/vercel/deployments)",
+  );
+  assertEquals(last.error.message.includes("swamp extension search"), false);
+  assertEquals(last.error.message.includes("swamp extension pull"), false);
+});
+
+Deno.test("typeDescribe: an installed extension with several types lists them all, also when typed without @ (swamp-club#3819)", async () => {
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(undefined),
+    typesProvidedByExtension: (name) =>
+      name === "@swamp/aws/ec2"
+        ? ["@swamp/aws/ec2/instance", "@swamp/aws/ec2/vpc"]
+        : [],
+  });
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(
+      createLibSwampContext(),
+      deps,
+      ModelType.create("swamp/aws/ec2"),
+    ),
+  );
+
+  const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
+  assertStringIncludes(
+    last.error.message,
+    "Did you mean one of these types provided by installed extension @swamp/aws/ec2?\n" +
+      "  @swamp/aws/ec2/instance\n" +
+      "  @swamp/aws/ec2/vpc",
+  );
+  assertEquals(last.error.message.includes("swamp extension search"), false);
+});
+
+Deno.test("typeDescribe: a name no installed extension matches keeps the registry hint (swamp-club#3819)", async () => {
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(undefined),
+    typesProvidedByExtension: () => [],
+  });
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(
+      createLibSwampContext(),
+      deps,
+      ModelType.create("@swamp/gcp/oauth2"),
+    ),
+  );
+
+  const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
+  assertStringIncludes(last.error.message, "swamp extension search gcp/oauth2");
+  assertEquals(last.error.message.includes("Did you mean"), false);
+});

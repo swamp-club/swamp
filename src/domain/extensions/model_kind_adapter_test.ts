@@ -1212,3 +1212,34 @@ Deno.test("modelKindAdapter.updateSourceFingerprint: updates an extension type's
     modelRegistry.invalidateType(type);
   }
 });
+
+Deno.test("modelKindAdapter.registerLazy: the lazy type names the extension of its catalog row (swamp-club#3819)", () => {
+  const id = crypto.randomUUID();
+  const extensionName = `@test/provider-${id}/models-ext`;
+  const named = `@test/provider-${id}/models-ext/thing`;
+  const unnamed = `@test/provider-${id}/models-ext/local`;
+  const row = (type: string, extension_name: string) => ({
+    type_normalized: type,
+    kind: "model" as const,
+    bundle_path: `/repo/.swamp/bundles/${id}.js`,
+    source_path: `/repo/.swamp/pulled-extensions/${id}.ts`,
+    version: "2026.01.01.1",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+    extension_name,
+  });
+  try {
+    modelKindAdapter.registerLazy(row(named, extensionName));
+    modelKindAdapter.registerLazy(row(unnamed, ""));
+    assertEquals(
+      modelRegistry.typesProvidedByExtension(extensionName).map((t) =>
+        t.normalized
+      ),
+      [named],
+    );
+  } finally {
+    modelRegistry.invalidateType(named);
+    modelRegistry.invalidateType(unnamed);
+  }
+});

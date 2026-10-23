@@ -915,6 +915,13 @@ Deno.test("reloadPulledExtensions: catalogues an uncatalogued pulled extension a
         "noop v2",
         "the registered definition must be the new version",
       );
+      assertEquals(
+        modelRegistry.typesProvidedByExtension(extName).map((t) =>
+          t.normalized
+        ),
+        [typeId],
+        "the reloaded type names the extension that provides it (swamp-club#3819)",
+      );
     } finally {
       modelRegistry.clearLoadersForTesting();
       modelRegistry.invalidateType(typeId);

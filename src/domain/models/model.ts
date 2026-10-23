@@ -1000,9 +1000,28 @@ export interface LazyModelEntry {
   sourcePath: string;
   version: string;
   sourceFingerprint?: string;
+  /**
+   * Full scoped name of the extension that provides this type (e.g.
+   * `@swamp/aws/ec2`), from its bundle catalog row. Undefined when the
+   * row has none.
+   */
+  extensionName?: string;
 }
 
 const registryLogger = getLogger(["swamp", "models", "registry"]);
+
+/**
+ * An extension name in {@link ModelType} normalized form with the `@`
+ * prefix, or undefined when it is not a valid type-shaped name.
+ */
+function normalizedExtensionName(name: string): string | undefined {
+  try {
+    const normalized = ModelType.create(name).normalized;
+    return normalized.startsWith("@") ? normalized : `@${normalized}`;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Registry of all known model definitions.
@@ -1019,6 +1038,12 @@ const registryLogger = getLogger(["swamp", "models", "registry"]);
 export class ModelRegistry {
   private models = new Map<string, ModelDefinition>();
   private lazyTypes = new Map<string, LazyModelEntry>();
+  /**
+   * Normalized name of the extension that provides each type, from the
+   * bundle catalog's lazy entries. Kept when a lazy type is imported, as
+   * the loaded definition's own `extensionName` is derived from its path.
+   */
+  private providingExtensions = new Map<string, string>();
   private internalTypes = new Set<string>();
   private builtInTypes = new Set<string>();
   private extensionLoader: (() => Promise<void>) | null = null;
@@ -1129,6 +1154,10 @@ export class ModelRegistry {
     const key = entry.type.normalized;
     if (this.models.has(key) || this.lazyTypes.has(key)) return;
     this.lazyTypes.set(key, entry);
+    const provider = entry.extensionName === undefined
+      ? undefined
+      : normalizedExtensionName(entry.extensionName);
+    if (provider !== undefined) this.providingExtensions.set(key, provider);
   }
 
   /**
@@ -1211,6 +1240,7 @@ export class ModelRegistry {
     const key = modelType.normalized;
     this.models.delete(key);
     this.lazyTypes.delete(key);
+    this.providingExtensions.delete(key);
     this.typeLoadPromises.delete(key);
     this.extensionsAttached.delete(key);
     this.extensionAttachWarned.delete(key);
@@ -1683,6 +1713,25 @@ export class ModelRegistry {
    */
   publicTypes(): ModelType[] {
     return this.types().filter((t) => !this.internalTypes.has(t.normalized));
+  }
+
+  /**
+   * Returns the public types an installed extension provides, sorted by
+   * normalized type. Answers from the extension names the bundle catalog
+   * gave {@link registerLazy}, which stay known once a type is imported;
+   * nothing is imported here. Both names are compared in {@link ModelType}
+   * normalized form, so `swamp/aws/ec2` matches the extension
+   * `@swamp/aws/ec2`.
+   */
+  typesProvidedByExtension(extensionName: string): ModelType[] {
+    const wanted = normalizedExtensionName(extensionName);
+    if (wanted === undefined) return [];
+    return this.types()
+      .filter((t) =>
+        !this.internalTypes.has(t.normalized) &&
+        this.providingExtensions.get(t.normalized) === wanted
+      )
+      .sort((a, b) => a.normalized.localeCompare(b.normalized));
   }
 
   /**

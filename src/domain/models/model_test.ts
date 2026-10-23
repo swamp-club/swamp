@@ -474,6 +474,67 @@ Deno.test("ModelRegistry.publicTypes excludes internal models", () => {
   assertEquals(publicTypes[0].normalized, "swamp/echo");
 });
 
+Deno.test("ModelRegistry.typesProvidedByExtension: lists loaded and lazy types of that extension only, sorted (swamp-club#3819)", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy({
+    ...createLazyEntry("@swamp/vercel/deployments/zeta"),
+    extensionName: "@swamp/vercel/deployments",
+  });
+  // An imported type keeps the extension its catalog row named.
+  registry.promoteFromLazy(createTestModel("@swamp/vercel/deployments/zeta"));
+  registry.registerLazy({
+    ...createLazyEntry("@swamp/vercel/deployments/deployments"),
+    extensionName: "@swamp/vercel/deployments",
+  });
+  registry.registerLazy({
+    ...createLazyEntry("@swamp/vercel/projects/projects"),
+    extensionName: "@swamp/vercel/projects",
+  });
+  registry.registerLazy(createLazyEntry("@swamp/vercel/deployments/local"));
+  registry.register(createTestModel("swamp/echo"));
+
+  assertEquals(
+    registry.typesProvidedByExtension("@swamp/vercel/deployments").map((t) =>
+      t.normalized
+    ),
+    [
+      "@swamp/vercel/deployments/deployments",
+      "@swamp/vercel/deployments/zeta",
+    ],
+  );
+  assertEquals(registry.typesProvidedByExtension("@swamp/vercel"), []);
+
+  registry.invalidateType("@swamp/vercel/deployments/zeta");
+  assertEquals(
+    registry.typesProvidedByExtension("@swamp/vercel/deployments").map((t) =>
+      t.normalized
+    ),
+    ["@swamp/vercel/deployments/deployments"],
+  );
+});
+
+Deno.test("ModelRegistry.typesProvidedByExtension: matches any spelling of the name and skips internal types (swamp-club#3819)", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy({
+    ...createLazyEntry("@swamp/aws/ec2/instance"),
+    extensionName: "@swamp/aws/ec2",
+  });
+  registry.registerLazy({
+    ...createLazyEntry("@swamp/aws/ec2/hidden"),
+    extensionName: "@swamp/aws/ec2",
+  });
+  registry.markInternal("@swamp/aws/ec2/hidden");
+
+  for (
+    const spelling of ["@swamp/aws/ec2", "swamp/aws/ec2", "@Swamp/AWS.EC2"]
+  ) {
+    assertEquals(
+      registry.typesProvidedByExtension(spelling).map((t) => t.normalized),
+      ["@swamp/aws/ec2/instance"],
+    );
+  }
+});
+
 Deno.test("ModelRegistry.isInternal returns true for internal types", () => {
   const registry = new ModelRegistry();
   registry.register(createTestModel("swamp/echo"));
