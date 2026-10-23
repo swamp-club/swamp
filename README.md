@@ -40,7 +40,8 @@ irm https://swamp-club.com/install.ps1 | iex
 
 The Windows installer puts swamp in `C:\Program Files\swamp` and adds it to the
 system PATH when run as administrator, and otherwise in `%LOCALAPPDATA%\swamp`
-with the user PATH.
+with the user PATH. When `SWAMP_HOME` is set, both installers use
+`$SWAMP_HOME/bin` instead (pass `-d` / `-Destination` to choose another folder).
 
 ### Quick Start
 
