@@ -1317,7 +1317,7 @@ function suspendedEventFor(
       // and the run view show it.
       prompt: run.mask(
         stepRun?.approvalPrompt ??
-        (taskData?.type === "manual_approval" ? taskData.prompt : ""),
+          (taskData?.type === "manual_approval" ? taskData.prompt : ""),
       ),
       timeout: gateTimeoutSeconds(stepRun, definitionSteps),
     };
