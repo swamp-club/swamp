@@ -65,6 +65,27 @@ Deno.test("requiredArgumentNames: a field that throws on a missing value is requ
   assertEquals(await required(schema), ["lower", "name"]);
 });
 
+Deno.test("requiredArgumentNames: a field that coerces or preprocesses a missing value into an invalid one is required", async () => {
+  const schema = z.object({
+    port: z.coerce.number().int(),
+    when: z.coerce.date(),
+    label: z.preprocess((v) => v ?? "", z.string().min(1)),
+    mode: z.preprocess((v) => String(v), z.enum(["fast", "slow"])),
+  });
+  assertEquals(await required(schema), ["label", "mode", "port", "when"]);
+});
+
+Deno.test("requiredArgumentNames: a field named like an Object method is judged as absent, not as its inherited value", async () => {
+  // Zod 4 requires an object's z.any() key to be present; an inherited
+  // toString would otherwise pass for one.
+  const schema = z.object({
+    constructor: z.string(),
+    toString: z.any(),
+    valueOf: z.string().optional(),
+  });
+  assertEquals(await required(schema), ["constructor", "toString"]);
+});
+
 Deno.test("requiredArgumentNames: .catch() around a transform is not required (swamp-club#3873)", async () => {
   const schema = z.object({
     name: z.string(),
@@ -116,7 +137,49 @@ Deno.test("requiredArgumentNames: a preprocess around an object reports the obje
   assertEquals(await required(schema), ["a"]);
 });
 
-Deno.test("requiredArgumentNames: a throwing field is isolated inside a refined object, an intersection and a pipe", async () => {
+Deno.test("requiredArgumentNames: a preprocess's fields are judged against what it makes of an empty input", async () => {
+  const schema = z.preprocess(
+    (v) => ({ region: "us-east-1", ...(v as Record<string, unknown>) }),
+    z.object({ region: z.string(), name: z.string() }),
+  );
+  assertEquals(await required(schema), ["name"]);
+});
+
+Deno.test("requiredArgumentNames: a preprocess around a transform-then-pipe reports none of the keys the pipe produces (swamp-club#3681)", async () => {
+  const schema = z.preprocess(
+    (v) => v,
+    z.object({ name: z.string().optional() })
+      .transform((o) => ({ id: o.name }))
+      .pipe(z.object({ id: z.string() })),
+  );
+  assertEquals(await required(schema), []);
+});
+
+Deno.test("requiredArgumentNames: a preprocess that throws on an empty input leaves its fields judged as absent", async () => {
+  const schema = z.preprocess(
+    (v) => ({
+      ...(v as Record<string, unknown>),
+      x: (v as { a: string }).a.trim(),
+    }),
+    z.object({ a: z.string(), x: z.string().optional() }),
+  );
+  assertEquals(await required(schema), ["a"]);
+});
+
+Deno.test("requiredArgumentNames: optional, default and readonly around the arguments object report its required fields", async () => {
+  const inner = z.object({ a: z.string(), b: z.string().optional() });
+  for (
+    const schema of [
+      inner.optional(),
+      inner.default({ a: "x" }),
+      inner.readonly(),
+    ]
+  ) {
+    assertEquals(await required(schema), ["a"]);
+  }
+});
+
+Deno.test("requiredArgumentNames: a throwing field and its siblings are judged alike inside a refined object, an intersection, a transform and a preprocess", async () => {
   const fields = {
     name: z.string(),
     lower: throwsOnMissing,
@@ -183,7 +246,7 @@ Deno.test("requiredArgumentNames: a union reports nothing, even when a member th
   assertEquals(await required(throwing), []);
 });
 
-Deno.test("requiredArgumentNames: a discriminated union reports nothing, since its issue is over the whole input", async () => {
+Deno.test("requiredArgumentNames: a discriminated union reports nothing, as it has no fields of its own", async () => {
   const schema = z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("x"), a: z.string() }),
     z.object({ kind: z.literal("y") }),

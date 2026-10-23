@@ -28,6 +28,7 @@ type FieldKind =
   | "default"
   | "catch"
   | "preprocessToValue"
+  | "coerceNumber"
   | "throwsOnMissing";
 
 /** Each kind's field, a value it accepts, and whether a step must supply it. */
@@ -51,6 +52,11 @@ const KINDS: Record<
     field: () => z.preprocess((v) => v === true || v === "true", z.boolean()),
     value: true,
     required: false,
+  },
+  coerceNumber: {
+    field: () => z.coerce.number(),
+    value: "8080",
+    required: true,
   },
   throwsOnMissing: {
     field: () => z.preprocess((v) => (v as string).toLowerCase(), z.string()),
