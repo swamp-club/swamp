@@ -88,11 +88,15 @@ function createSpySpinner(): { spinner: Spinner; calls: SpinnerCall[] } {
   return { spinner, calls };
 }
 
+// The update pre-flight probes the binary's directory; a missing directory is
+// not a permission problem, so these tests never touch a real install dir.
+const missingBinaryPath = "/nonexistent-swamp-update-test/bin/swamp";
+
 // --- Spinner integration with update flow ---
 
 Deno.test("update flow starts and stops spinner around service.update()", async () => {
   const checker = createMockChecker(redirectUrl);
-  const service = new UpdateService(checker, currentVersion, "/bin/swamp");
+  const service = new UpdateService(checker, currentVersion, missingBinaryPath);
   const { spinner, calls } = createSpySpinner();
 
   spinner.start("Updating swamp...");
@@ -106,7 +110,7 @@ Deno.test("update flow starts and stops spinner around service.update()", async 
 
 Deno.test("check flow starts and stops spinner around service.check()", async () => {
   const checker = createMockChecker(null);
-  const service = new UpdateService(checker, currentVersion, "/bin/swamp");
+  const service = new UpdateService(checker, currentVersion, missingBinaryPath);
   const { spinner, calls } = createSpySpinner();
 
   spinner.start("Checking for updates...");
@@ -123,7 +127,7 @@ Deno.test("check flow starts and stops spinner around service.check()", async ()
 
 Deno.test("spinner.stop() is called even when service throws", async () => {
   const checker = createMockChecker(null, { throwOnCheck: true });
-  const service = new UpdateService(checker, currentVersion, "/bin/swamp");
+  const service = new UpdateService(checker, currentVersion, missingBinaryPath);
   const { spinner, calls } = createSpySpinner();
 
   spinner.start("Checking for updates...");

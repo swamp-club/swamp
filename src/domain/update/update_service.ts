@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, isAbsolute, join, relative } from "@std/path";
+import { dirname, isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import type { Platform } from "./platform.ts";
 import type { DownloadOptions } from "./download_progress.ts";
 import { validateRedirectUrl } from "./integrity.ts";
@@ -104,18 +104,24 @@ export function parseVersionFromRedirectUrl(url: string): string | null {
 export interface PermissionDeniedFacts {
   os: typeof Deno.build.os;
   binaryPath: string;
+  /**
+   * Whether the binary's directory accepts new files. When it does, the
+   * binary itself is protected (an immutable flag, a sticky directory).
+   */
+  dirWritable: boolean;
   /** The user's home directory; undefined when HOME is unset. */
   homeDir?: string;
   /** Owner of the binary's directory; null when it cannot be read. */
   dirOwnerUid: number | null;
   currentUid: number | null;
-  /** The user's login name; undefined when USER is unset. */
+  /** The invoking user's login name (SUDO_USER, else USER). */
   userName?: string;
 }
 
 function isWithin(parent: string, child: string): boolean {
   const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${SEPARATOR}`) && !isAbsolute(rel));
 }
 
 /**
@@ -130,6 +136,17 @@ export function permissionDeniedMessage(facts: PermissionDeniedFacts): string {
   }
   const dir = dirname(facts.binaryPath);
   const { dirOwnerUid, currentUid, homeDir } = facts;
+  // Neither sudo nor an ownership change helps in the next two cases
+  if (facts.dirWritable) {
+    return `${prefix} The binary is protected against replacement even ` +
+      `though ${dir} accepts new files — check it for an immutable flag ` +
+      `(chflags or chattr).`;
+  }
+  if (currentUid === 0) {
+    return `${prefix} ${dir} does not accept new files even as root — ` +
+      `check it for an immutable flag (chflags or chattr) or a read-only ` +
+      `mount.`;
+  }
   const underHome = homeDir !== undefined && homeDir !== "" &&
     isWithin(homeDir, dir);
   if (
@@ -151,15 +168,19 @@ export function permissionDeniedMessage(facts: PermissionDeniedFacts): string {
 }
 
 /**
- * The warning after an update run as root into a directory a non-root user
+ * The warning after `sudo swamp update` into a directory the invoking user
  * owns: the new binary is now root-owned there, and sudo was not needed.
  */
 export function needlessRootUpdateWarning(
   binaryPath: string,
   currentUid: number | null,
+  sudoUid: number | null,
   dirOwnerUid: number | null,
 ): string | undefined {
-  if (currentUid !== 0 || dirOwnerUid === null || dirOwnerUid === 0) {
+  if (
+    currentUid !== 0 || sudoUid === null || sudoUid === 0 ||
+    dirOwnerUid !== sudoUid
+  ) {
     return undefined;
   }
   return `Updated ${binaryPath} as root, so it is now owned by root, but ` +
@@ -176,6 +197,13 @@ function currentUid(): number | null {
   }
 }
 
+/** The uid of the user who ran sudo; null outside sudo. */
+function sudoUid(): number | null {
+  const value = Deno.env.get("SUDO_UID");
+  if (value === undefined || !/^\d+$/.test(value)) return null;
+  return Number(value);
+}
+
 async function directoryOwnerUid(binaryPath: string): Promise<number | null> {
   try {
     return (await Deno.stat(dirname(binaryPath))).uid;
@@ -184,20 +212,40 @@ async function directoryOwnerUid(binaryPath: string): Promise<number | null> {
   }
 }
 
+/** Whether a new file can be created beside `binaryPath`. */
+async function directoryAcceptsFiles(binaryPath: string): Promise<boolean> {
+  const probeFile = join(
+    dirname(binaryPath),
+    `.swamp.tmp.${crypto.randomUUID()}`,
+  );
+  try {
+    await Deno.writeTextFile(probeFile, "");
+  } catch {
+    return false;
+  }
+  await Deno.remove(probeFile).catch(() => {
+    // An abandoned probe is swept by the next update
+  });
+  return true;
+}
+
 /**
  * The permission-denied message for `binaryPath`, from the live directory
- * owner, user and home directory.
+ * owner, user and home directory. `dirWritable` skips the directory probe
+ * when the caller has just run it.
  */
 export async function describePermissionDenied(
   binaryPath: string,
+  dirWritable?: boolean,
 ): Promise<string> {
   return permissionDeniedMessage({
     os: Deno.build.os,
     binaryPath,
+    dirWritable: dirWritable ?? await directoryAcceptsFiles(binaryPath),
     homeDir: Deno.env.get("HOME"),
     dirOwnerUid: await directoryOwnerUid(binaryPath),
     currentUid: currentUid(),
-    userName: Deno.env.get("USER"),
+    userName: Deno.env.get("SUDO_USER") ?? Deno.env.get("USER"),
   });
 }
 
@@ -280,7 +328,7 @@ export class UpdateService {
     } catch (error) {
       if (error instanceof Deno.errors.PermissionDenied) {
         throw markErrorPaths(
-          new UserError(await describePermissionDenied(this.binaryPath)),
+          new UserError(await describePermissionDenied(this.binaryPath, false)),
           [this.binaryPath],
         );
       }
@@ -338,6 +386,7 @@ export class UpdateService {
       needlessRootUpdateWarning(
         this.binaryPath,
         currentUid(),
+        sudoUid(),
         await directoryOwnerUid(this.binaryPath),
       ),
     ].filter((warning) => warning !== undefined);

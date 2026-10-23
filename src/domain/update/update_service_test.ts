@@ -483,6 +483,7 @@ Deno.test("update proceeds when binary does not exist yet", async () => {
 const posixFacts = {
   os: "darwin" as const,
   binaryPath: "/Users/alice/.local/bin/swamp",
+  dirWritable: false,
   homeDir: "/Users/alice",
   currentUid: 501,
   userName: "alice",
@@ -491,6 +492,7 @@ const posixFacts = {
 Deno.test("permissionDeniedMessage: Windows suggests running as Administrator", () => {
   const message = permissionDeniedMessage({
     os: "windows",
+    dirWritable: false,
     binaryPath: "C:\\swamp\\swamp.exe",
     dirOwnerUid: null,
     currentUid: null,
@@ -577,35 +579,91 @@ Deno.test("permissionDeniedMessage: a sibling of HOME with a shared prefix is no
   assertStringIncludes(message, "Re-run with: sudo swamp update");
 });
 
+Deno.test("permissionDeniedMessage: a writable directory means the binary itself is protected", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    dirWritable: true,
+    dirOwnerUid: 501,
+  });
+  assertStringIncludes(message, "protected against replacement");
+  assertStringIncludes(message, "immutable flag");
+  assert(!message.includes("sudo swamp update"));
+  assert(!message.includes("sudo chown"));
+  assert(!message.includes("chmod"));
+});
+
+Deno.test("permissionDeniedMessage: root denied gives neither sudo nor chown advice", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    binaryPath: "/usr/local/bin/swamp",
+    currentUid: 0,
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "even as root");
+  assert(!message.includes("sudo swamp update"));
+  assert(!message.includes("sudo chown"));
+});
+
+Deno.test("permissionDeniedMessage: a HOME subdirectory whose name starts with .. is under HOME", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    binaryPath: "/Users/alice/..tools/swamp",
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "sudo chown alice /Users/alice/..tools");
+});
+
 // --- needlessRootUpdateWarning tests ---
 
-Deno.test("needlessRootUpdateWarning: root updating into a user-owned directory warns", () => {
+Deno.test("needlessRootUpdateWarning: sudo into the invoking user's own directory warns", () => {
   const warning = needlessRootUpdateWarning(
     "/Users/alice/.local/bin/swamp",
     0,
+    501,
     501,
   );
   assertStringIncludes(warning ?? "", "owned by uid 501");
   assertStringIncludes(warning ?? "", "run swamp update without sudo");
 });
 
+Deno.test("needlessRootUpdateWarning: sudo into a directory another user owns does not warn", () => {
+  // e.g. a Homebrew prefix owned by a dedicated user: sudo was needed
+  assertEquals(
+    needlessRootUpdateWarning(
+      "/home/linuxbrew/.linuxbrew/bin/swamp",
+      0,
+      501,
+      1002,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("needlessRootUpdateWarning: root without sudo does not warn", () => {
+  // A root scheduler has no SUDO_UID
+  assertEquals(
+    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 0, null, 501),
+    undefined,
+  );
+});
+
 Deno.test("needlessRootUpdateWarning: root updating into a root-owned directory does not warn", () => {
   assertEquals(
-    needlessRootUpdateWarning("/usr/local/bin/swamp", 0, 0),
+    needlessRootUpdateWarning("/usr/local/bin/swamp", 0, 501, 0),
     undefined,
   );
 });
 
 Deno.test("needlessRootUpdateWarning: a non-root update does not warn", () => {
   assertEquals(
-    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 501, 501),
+    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 501, null, 501),
     undefined,
   );
 });
 
 Deno.test("needlessRootUpdateWarning: an unreadable directory owner does not warn", () => {
   assertEquals(
-    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 0, null),
+    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 0, 501, null),
     undefined,
   );
 });

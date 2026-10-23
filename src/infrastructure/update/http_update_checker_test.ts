@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertInstanceOf,
   assertNotEquals,
@@ -1224,7 +1225,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "replaceBinary: permission denied on the rename gives the shared permission message",
+    "replaceBinary: permission denied on a rename into a writable directory says the binary is protected",
   // The Windows strategy has its own tests above
   ignore: Deno.build.os === "windows",
   fn: async () => {
@@ -1250,11 +1251,9 @@ Deno.test({
         error.message,
         `Cannot update ${targetPath}: permission denied.`,
       );
-      // The test user owns the directory: the shared builder's chmod hint,
-      // not the old unconditional sudo hint
-      if (Deno.uid() !== 0) {
-        assertStringIncludes(error.message, `chmod u+w ${root}`);
-      }
+      // The directory accepts new files, so neither sudo nor chmod helps
+      assertStringIncludes(error.message, "protected against replacement");
+      assert(!error.message.includes("sudo swamp update"));
       assertEquals(await Deno.readTextFile(targetPath), "old binary");
     } finally {
       await Deno.remove(root, { recursive: true }).catch(() => {});
