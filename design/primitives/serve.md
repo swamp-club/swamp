@@ -1587,13 +1587,15 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   approvals listing per connected dashboard. Concurrent reloads join the read
   in flight; a completed decision, cancellation or resume starts a fresh read
   and retires older replies. Disconnecting or replacing the socket clears the
-  listing, including when reauthentication changes the principal. Expiration
-  appears when the next server listing reports it, updating the badge and page
-  together (`packages/dashboard/src/client/useApprovals.ts`). An approved but
-  still suspended run (`awaitingResume` on `workflow.run.search`) shows a
-  Resume action and the equivalent `swamp workflow resume` command. Resume
-  sends `workflow.resume`, then a `cancel` carrying the request id, which
-  detaches the dashboard from the serve-driven run without cancelling it
+  listing, including when reauthentication changes the principal. A page
+  entered later shows only a listing read after it opened. Expiration appears
+  when the next server listing reports it, updating the badge and any page
+  that has loaded together (`packages/dashboard/src/client/useApprovals.ts`).
+  An approved but still suspended run (`awaitingResume` on
+  `workflow.run.search`) shows a Resume action and the equivalent
+  `swamp workflow resume` command. Resume sends `workflow.resume`, then a
+  `cancel` carrying the request id, which detaches the dashboard from the
+  serve-driven run without cancelling it
   (`packages/dashboard/src/client/stream.ts`). A run suspended on a nested
   workflow run has no gate of its own: its detail page names the nested run it
   waits on, and Resume appears once that run finished (`awaitingResume` is

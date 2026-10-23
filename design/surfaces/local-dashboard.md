@@ -161,12 +161,14 @@ to `model.output.search`, so the request does not change as the clock moves.
 The sidebar, overview and Approvals page share one approvals request owner.
 Entering either page or retrying a read joins an in-flight listing. A completed
 decision, cancellation or resume starts a fresh listing so an earlier reply
-cannot restore stale gates. A page shows only a listing that settled after it
-opened: until then it shows the loading state, and a failed entry read shows
-the error and its retry rather than the listing retained from before. All consumers see the same data and refresh state;
-expiration becomes visible when the next listing reports it. Each socket gets
-a new dashboard lifetime, so reconnects and principal changes discard the
-previous listing (`packages/dashboard/src/client/approvals_request.ts`).
+cannot restore stale gates. All consumers share one read and its refresh
+state, but a page shows only a listing that settled after it opened: until
+then it shows the loading state while the badge keeps the retained listing,
+and a failed entry read shows the error and its retry rather than the listing
+retained from before. Expiration becomes visible when the next listing reports
+it. Each socket gets a new dashboard lifetime, so reconnects and principal
+changes discard the previous listing
+(`packages/dashboard/src/client/approvals_request.ts`).
 
 A preset's window still moves, so a counted run eventually leaves it. Serve's
 run summary reports `oldestStartedAt`, the start of the oldest counted run, and
