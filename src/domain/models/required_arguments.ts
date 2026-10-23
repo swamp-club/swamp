@@ -46,12 +46,26 @@ function getSchemaDef(schema: z.ZodTypeAny): ZodDef | undefined {
  * preprocess that turns a missing value into a valid one, are not required.
  * A field whose parse throws on a missing value is.
  *
+ * Deciding this runs the schema's own refinements, transforms and
+ * preprocesses against a missing value, as the runtime parse does.
+ *
  * Returns an empty list for a value that is not a Zod v4 schema.
  */
 export async function requiredArgumentNames(
   schema: z.ZodTypeAny,
 ): Promise<string[]> {
-  if (!getSchemaDef(schema)) return [];
+  const def = getSchemaDef(schema);
+  if (!def) return [];
+  const accepting = acceptingSide(def);
+  if (accepting) return await requiredArgumentNames(accepting);
+  if (def.type === "intersection") {
+    return [
+      ...new Set([
+        ...(def.left ? await requiredArgumentNames(def.left) : []),
+        ...(def.right ? await requiredArgumentNames(def.right) : []),
+      ]),
+    ];
+  }
   try {
     return missingKeys(await probe(schema));
   } catch {
@@ -61,16 +75,29 @@ export async function requiredArgumentNames(
   }
 }
 
+/**
+ * The side of a pipe that takes the step's arguments, when that is its input
+ * side. Its output side is fed what the input side produces, and names keys
+ * a step never supplies (swamp-club#3681). A pipe whose input is a transform
+ * (how `z.preprocess` is built) has no keys of its own on that side, so it
+ * is judged whole.
+ */
+function acceptingSide(def: ZodDef): z.ZodTypeAny | undefined {
+  if (def.type !== "pipe" || !def.in) return undefined;
+  return getSchemaDef(def.in)?.type === "transform" ? undefined : def.in;
+}
+
 /** Parses an empty arguments object, reporting each issue's input. */
 function probe(schema: z.ZodTypeAny) {
   return schema.safeParseAsync({}, { reportInput: true });
 }
 
 /**
- * The keys a failed probe names. A custom issue whose input is defined is
- * a refinement on an enclosing value — a cross-field rule such as "a or b"
- * that a step supplying either satisfies — so it is left to the runtime
- * parse. A custom issue over a missing value (a `z.custom` field) counts.
+ * The keys a failed probe names: those with an issue over a missing value.
+ * An issue whose input is defined comes from a check on an enclosing value
+ * — a cross-field rule such as "a or b", whatever issue code it raises —
+ * which a step supplying either satisfies, so it is left to the runtime
+ * parse.
  */
 function missingKeys(
   result: Awaited<ReturnType<typeof probe>>,
@@ -80,7 +107,7 @@ function missingKeys(
   for (const issue of result.error.issues) {
     const key = issue.path[0];
     if (typeof key !== "string") continue;
-    if (issue.code === "custom" && issue.input !== undefined) continue;
+    if (issue.input !== undefined) continue;
     keys.add(key);
   }
   return [...keys];
@@ -105,7 +132,7 @@ async function isolatedRequiredNames(
 
 /**
  * The object shapes whose fields reach the top level of the arguments: an
- * object, both sides of an intersection, and the input side of a pipe — or
+ * object, both sides of an intersection, and a pipe's accepting side — or
  * its output side when the input is a transform, as in `z.preprocess`.
  * Anything else (a union, a lazy schema) has no fields to isolate, and the
  * runtime parse reports what it throws.
@@ -123,10 +150,7 @@ function reachableShapes(
         ...(def.right ? reachableShapes(def.right) : []),
       ];
     case "pipe": {
-      if (!def.in) return [];
-      const side = getSchemaDef(def.in)?.type === "transform"
-        ? def.out
-        : def.in;
+      const side = acceptingSide(def) ?? def.out;
       return side ? reachableShapes(side) : [];
     }
     default:

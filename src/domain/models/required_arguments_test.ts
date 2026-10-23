@@ -95,6 +95,19 @@ Deno.test("requiredArgumentNames: a transform-then-pipe reports the keys it acce
   assertEquals(await required(schema), ["raw"]);
 });
 
+Deno.test("requiredArgumentNames: a transform-then-pipe whose input keys are optional reports none of the keys it produces (swamp-club#3681)", async () => {
+  const derived = z.object({
+    raw: z.string().optional(),
+    token: z.string().optional(),
+  }).transform((o) => ({ token: o.token ?? o.raw }))
+    .pipe(z.object({ token: z.string() }));
+  const renamed = z.object({ name: z.string().optional() })
+    .transform((o) => ({ id: o.name }))
+    .pipe(z.object({ id: z.string() }));
+  assertEquals(await required(derived), []);
+  assertEquals(await required(renamed), []);
+});
+
 Deno.test("requiredArgumentNames: a preprocess around an object reports the object's keys", async () => {
   const schema = z.preprocess(
     (v) => v,
@@ -131,6 +144,24 @@ Deno.test("requiredArgumentNames: a cross-field refine over optional fields repo
   assertEquals(await required(schema), []);
 });
 
+Deno.test("requiredArgumentNames: a cross-field superRefine reports nothing, whatever issue code it raises", async () => {
+  const schema = z.object({
+    a: z.string().optional(),
+    b: z.string().optional(),
+  }).superRefine((o, ctx) => {
+    if (o.a === undefined && o.b === undefined) {
+      ctx.addIssue({
+        code: "invalid_type",
+        expected: "string",
+        path: ["a"],
+        input: o,
+        message: "a or b",
+      });
+    }
+  });
+  assertEquals(await required(schema), []);
+});
+
 Deno.test("requiredArgumentNames: an async refinement is parsed, not taken for a throw", async () => {
   const schema = z.object({
     name: z.string(),
@@ -152,12 +183,12 @@ Deno.test("requiredArgumentNames: a union reports nothing, even when a member th
   assertEquals(await required(throwing), []);
 });
 
-Deno.test("requiredArgumentNames: a discriminated union reports its discriminator", async () => {
+Deno.test("requiredArgumentNames: a discriminated union reports nothing, since its issue is over the whole input", async () => {
   const schema = z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("x"), a: z.string() }),
     z.object({ kind: z.literal("y") }),
   ]);
-  assertEquals(await required(schema), ["kind"]);
+  assertEquals(await required(schema), []);
 });
 
 Deno.test("requiredArgumentNames: a record reports nothing", async () => {

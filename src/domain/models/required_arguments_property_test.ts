@@ -59,7 +59,13 @@ const KINDS: Record<
   },
 };
 
-type Wrapper = "none" | "refine" | "transform" | "intersection";
+type Wrapper = "none" | "refine" | "transform" | "pipe" | "intersection";
+
+/**
+ * A key only the pipe wrapper's output side requires. Generated keys start
+ * lowercase, so it never collides with one.
+ */
+const OUTPUT_ONLY = "OUTPUT_ONLY";
 
 const arbFields = fc.dictionary(
   fc.stringMatching(/^[a-z][a-zA-Z0-9]{0,7}$/),
@@ -70,6 +76,7 @@ const arbWrapper = fc.constantFrom<Wrapper>(
   "none",
   "refine",
   "transform",
+  "pipe",
   "intersection",
 );
 
@@ -87,6 +94,13 @@ function buildSchema(
       return z.object(shape(keys)).refine(() => true);
     case "transform":
       return z.object(shape(keys)).transform((o) => o);
+    case "pipe":
+      // The output side requires a key the transform never produces, so
+      // it fails whenever the input side passes: only the input side may
+      // decide what a step supplies.
+      return z.object(shape(keys)).transform((o) => o).pipe(
+        z.object({ [OUTPUT_ONLY]: z.string() }),
+      );
     case "intersection": {
       const half = Math.ceil(keys.length / 2);
       return z.object(shape(keys.slice(0, half))).and(

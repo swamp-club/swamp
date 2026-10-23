@@ -261,9 +261,11 @@ inputs match required method/workflow arguments.
    required method arguments are provided in the step's `inputs:` block. An
    argument is required when the method's arguments fail to parse without it, so
    optional, defaulted and `.catch()` fields, and a `z.preprocess` that turns a
-   missing value into a valid one, may be omitted. For `workflow` tasks, checks
-   that all required workflow inputs are provided. Dynamic CEL references
-   (`${{ ... }}`) in behavior/workflow names are skipped.
+   missing value into a valid one, may be omitted. Deciding this parses the
+   arguments, so their refinements and transforms run during validation — keep
+   them free of side effects. For `workflow` tasks, checks that all required
+   workflow inputs are provided. Dynamic CEL references (`${{ ... }}`) in
+   behavior/workflow names are skipped.
 
 ```bash
 swamp workflow validate my-workflow --json
