@@ -71,6 +71,42 @@ Deno.test("buildDependencyAuditRecord: keys an installed import by the version t
   ]);
 });
 
+Deno.test("buildDependencyAuditRecord: records each installed copy under one declared range (swamp-club#3793)", () => {
+  const record = buildDependencyAuditRecord([
+    {
+      specifier: spec("ms", "^2.1.0", {
+        importedAs: "ms",
+        installedVersion: "2.1.3",
+      }),
+      shipped: { version: "2.1.3", from: "installed" },
+    },
+    {
+      specifier: spec("ms", "^2.1.0", {
+        importedAs: "ms",
+        installedVersion: "2.1.2",
+        sourceFile: "models/b.ts",
+      }),
+      shipped: { version: "2.1.2", from: "installed" },
+    },
+  ]);
+  assertEquals(record.dependencies, [
+    {
+      registry: "npm",
+      name: "ms",
+      spec: "2.1.2",
+      version: "2.1.2",
+      from: "installed",
+    },
+    {
+      registry: "npm",
+      name: "ms",
+      spec: "2.1.3",
+      version: "2.1.3",
+      from: "installed",
+    },
+  ]);
+});
+
 Deno.test("buildDependencyAuditRecord: sorts by registry, name and spec, unpinned first, and keeps one entry per key", () => {
   const shipped: ShippedDependency[] = [
     {
