@@ -130,7 +130,6 @@ for (const route of routes) {
               dependsOn: after("write"),
             }),
           ]),
-          true,
         );
         await assertRefused(f, run, route.path);
       });
@@ -139,7 +138,7 @@ for (const route of routes) {
 }
 
 Deno.test("typed inline destinations: a guard skips every routing destination without a vault check or load", async () => {
-  for (const typed of [true, false]) {
+  {
     await withFixture(async (f) => {
       for (const route of routes) {
         const step = route.step(TOKEN, f);
@@ -147,7 +146,6 @@ Deno.test("typed inline destinations: a guard skips every routing destination wi
           workflow([
             Step.fromData({ ...step.toData(), guard: "${{ true }}" }),
           ]),
-          typed,
         );
         assertEquals(run.skipped.get("route"), true);
         assertEquals(run.status, "succeeded");
@@ -160,7 +158,7 @@ Deno.test("typed inline destinations: a guard skips every routing destination wi
 });
 
 Deno.test("typed inline destinations: child targets refuse before invoking the child; the legacy target still loads and invokes", async () => {
-  for (const typed of [true, false]) {
+  {
     await withFixture(async (f) => {
       f.rotate(TOKEN_KEY, "child");
       const parent = workflow([Step.create({
@@ -168,13 +166,9 @@ Deno.test("typed inline destinations: child targets refuse before invoking the c
         task: StepTask.workflow(TOKEN),
       })]);
       const child = workflow([consume("use", { note: "child ran" })], "child");
-      const run = await f.run(parent, typed, [child]);
-      if (typed) {
+      const run = await f.run(parent, [child]);
+      {
         await assertRefused(f, run, "task.workflowIdOrName");
-      } else {
-        assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-        assertEquals(f.loads, [TOKEN_KEY]);
-        assertEquals(f.received, [{ note: "child ran" }]);
       }
     });
   }
@@ -191,13 +185,13 @@ Deno.test("typed inline destinations: resumed and replayed routes refuse reconst
         dependsOn: after("gate"),
       }),
     ]);
-    const start = await f.run(parent, true);
+    const start = await f.run(parent);
     assertEquals(start.status, "suspended");
     assertEquals(f.loads, []);
     await f.approve(parent.name, start.runId!);
     await assertRefused(
       f,
-      await f.resume(parent.name, start.runId!, true),
+      await f.resume(parent.name, start.runId!),
       "task.workflowIdOrName",
     );
 
@@ -208,10 +202,10 @@ Deno.test("typed inline destinations: resumed and replayed routes refuse reconst
       name: "route",
       task: StepTask.model("writer", PASSWORD),
     })], "cached-route");
-    await assertRefused(f, await f.run(cached, true), "task.methodName");
+    await assertRefused(f, await f.run(cached), "task.methodName");
     await assertRefused(
       f,
-      await f.replay(cached.name, true),
+      await f.replay(cached.name),
       "task.methodName",
     );
   });
@@ -219,7 +213,7 @@ Deno.test("typed inline destinations: resumed and replayed routes refuse reconst
 
 Deno.test("typed inline destinations: whole-field input and global argument records deliver secrets only at the method boundary", async () => {
   for (const field of ["inputs", "globalArgs"] as const) {
-    for (const typed of [true, false]) {
+    {
       await withFixture(async (f) => {
         let resolutions = 0;
         f.hooks.directTypeResolver = (
@@ -230,7 +224,7 @@ Deno.test("typed inline destinations: whole-field input and global argument reco
           globalArgs,
         ) => {
           resolutions++;
-          if (typed) assertEquals(f.loads, []);
+          assertEquals(f.loads, []);
           return Promise.resolve({
             definition: Definition.create({
               name,
@@ -260,12 +254,11 @@ Deno.test("typed inline destinations: whole-field input and global argument reco
               dependsOn: after("write"),
             }),
           ]),
-          typed,
         );
         assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
         assertEquals(f.received, [{ password: quotes(f) }]);
         assertEquals(resolutions, field === "globalArgs" ? 1 : 0);
-        if (typed) assertEquals(f.loads.length, 1);
+        assertEquals(f.loads.length, 1);
         await assertNothingLeaked(f, run);
       });
     }
@@ -273,7 +266,7 @@ Deno.test("typed inline destinations: whole-field input and global argument reco
 });
 
 Deno.test("typed inline destinations: plain env and deferred scalar targets retain their behavior", async () => {
-  for (const typed of [true, false]) {
+  {
     await withFixture(async (f) => {
       await withMockedEnv({ SWAMP_3734_TARGET: "writer" }, async () => {
         const run = await f.run(
@@ -293,7 +286,6 @@ Deno.test("typed inline destinations: plain env and deferred scalar targets reta
               dependsOn: after("plain"),
             }),
           ]),
-          typed,
           [],
           { target: "writer" },
         );
@@ -313,7 +305,6 @@ Deno.test("typed inline destinations: an assert message already reduced to a sen
         name: "message",
         task: StepTask.assert("false", `already=${PASSWORD}`),
       })]),
-      true,
     );
     assertEquals(run.asserts.get("message"), {
       passed: false,

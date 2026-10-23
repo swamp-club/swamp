@@ -131,11 +131,6 @@ const PINNED: readonly { site: string; row: string }[] = [
   },
   {
     "site":
-      "src/domain/expressions/expression_evaluation_service.ts: ExpressionEvaluationService.legacyPass -> evaluator.evaluateAsync",
-    "row": "pass",
-  },
-  {
-    "site":
       "src/domain/expressions/expression_evaluation_service.ts: ExpressionEvaluationService.passEvaluatorFor -> evaluator.evaluateAsync",
     "row": "pass",
   },
@@ -147,11 +142,6 @@ const PINNED: readonly { site: string; row: string }[] = [
   {
     "site":
       "src/domain/expressions/expression_evaluation_service.ts: ExpressionEvaluationService.resolveRuntimeData -> evaluator.evaluateAsync",
-    "row": "pass",
-  },
-  {
-    "site":
-      "src/domain/expressions/expression_evaluation_service.ts: ExpressionEvaluationService.resolveRuntimeData -> this.celEvaluator.evaluateAsync",
     "row": "pass",
   },
   {
@@ -201,11 +191,6 @@ const PINNED: readonly { site: string; row: string }[] = [
   },
   {
     "site":
-      "src/domain/workflows/execution_service.ts: WorkflowExecutionService.runStepInSpan -> this.expressionEvaluator.resolveAllExpressionsInData",
-    "row": "assert-message",
-  },
-  {
-    "site":
       "src/domain/workflows/execution_service.ts: WorkflowExecutionService.runWorkflowStep -> this.expressionEvaluator.resolveRuntimeExpressionsInData",
     "row": "child",
   },
@@ -233,11 +218,6 @@ const PINNED: readonly { site: string; row: string }[] = [
     "site":
       "src/domain/workflows/trigger_input_resolver.ts: TriggerInputResolver.resolveString -> this.celEvaluator.evaluateAsync (x2)",
     "row": "pass",
-  },
-  {
-    "site":
-      "src/libswamp/models/validate.ts: createModelValidateDeps -> expressionService.resolveRuntimeExpressionsInData",
-    "row": "validation",
   },
   {
     "site":

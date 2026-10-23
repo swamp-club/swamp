@@ -18454,7 +18454,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "DefaultStepExecutor: a step's bag holds only the sensitive values spliced into it (swamp-club#2171)",
+    "DefaultStepExecutor: plain input equal to a recorded secret is delivered without issuing a sentinel (swamp-club#2171)",
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
@@ -18530,7 +18530,7 @@ Deno.test({
         catalogStore.close();
       }
     });
-    assertEquals(shipped, [["mine-s3cret"]]);
+    assertEquals(shipped, [[]]);
   },
 });
 

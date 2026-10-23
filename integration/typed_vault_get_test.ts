@@ -75,7 +75,7 @@ function run(service: VaultService) {
     secretBag: bag,
     vault: { service, redactor, location: "methods.run.arguments.token" },
   };
-  const evaluator = new CelEvaluator({ typedSecrets: true });
+  const evaluator = new CelEvaluator();
   return {
     registry,
     bag,

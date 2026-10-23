@@ -20,10 +20,7 @@
 import { Environment, Optional } from "cel-js";
 import { getLogger } from "@logtape/logtape";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
-import {
-  extractExpressions,
-  transformHyphenatedModelRefs,
-} from "../../domain/expressions/expression_parser.ts";
+import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
 import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
 import {
   literal,
@@ -36,6 +33,7 @@ import {
 import {
   assertDirectVaultCalls,
   CelVaultNamespace,
+  isMissingRunBinding,
   prepareCheckedVaultCalls,
   type VaultEvaluationScope,
 } from "./cel_vault_namespace.ts";
@@ -46,6 +44,7 @@ import {
   SECRET_DESTINATION_REFUSED,
   SECRET_OPERATION_UNSUPPORTED,
   SecretRefusedError,
+  UnboundExpressionError,
 } from "../../domain/expressions/errors.ts";
 import type { DataReadOptions } from "../../domain/expressions/model_resolver.ts";
 import type { QueryView } from "../../domain/data/query_view.ts";
@@ -601,22 +600,6 @@ export async function prepareExpressionsIn(
   }
 }
 
-/**
- * The internal environment's options. Internal: only tests set them until
- * typed-secrets Phase 4 turns the path on for every entry point
- * (design/enablers/typed-secrets.md Section 10.3).
- */
-export interface CelEvaluatorOptions {
-  /**
-   * The `Secret` value: its type, the allowed set and every refusal the
-   * inventory yields, the fault context, the container rule and the boundary
-   * conversion. Off, the environment is exactly what it was before them: a
-   * custom binary overload marks every use of its operator maybe-async
-   * (fact 4), so nothing is registered.
-   */
-  readonly typedSecrets?: boolean;
-}
-
 /** What one evaluation runs with. */
 export interface EvaluationScope {
   /**
@@ -627,6 +610,8 @@ export interface EvaluationScope {
   readonly secretBag?: VaultSecretBag;
   /** Required for direct typed vault calls; checks use the run's services. */
   readonly vault?: VaultEvaluationScope;
+  /** Built only when a direct vault call or sensitive-field read needs it. */
+  readonly getVault?: () => Promise<VaultEvaluationScope>;
   /**
    * What becomes of a `Secret` in the result. `release`, the default, issues
    * its sentinel into the bag. `refuse` is the predicate destination of a
@@ -660,10 +645,8 @@ export interface EvaluationScope {
  * Builds the internal environment: the extension baseline plus swamp's
  * namespace types and their receiver methods.
  */
-export function createInternalCelEnvironment(
-  options: CelEvaluatorOptions = {},
-): Environment {
-  return buildInternalEnvironment(options.typedSecrets ? "evaluate" : "off");
+export function createInternalCelEnvironment(): Environment {
+  return buildInternalEnvironment("evaluate");
 }
 
 /**
@@ -676,7 +659,7 @@ export function createInternalCelEnvironment(
  * variable of the receiver type, so a check accepts the allowed set and
  * rejects any other operation on a `vault.get` result.
  */
-type SecretMode = "off" | "evaluate" | "check";
+type SecretMode = "evaluate" | "check";
 
 /**
  * The type-check environment of the static misuse diagnostics
@@ -1062,20 +1045,8 @@ const PREDICATE_RESULT =
 export class CelEvaluator {
   private readonly env: Environment;
   private readonly warnedPatterns = new Set<string>();
-  private readonly typedSecrets: boolean;
-
-  constructor(options: CelEvaluatorOptions = {}) {
-    this.typedSecrets = options.typedSecrets === true;
-    this.env = createInternalCelEnvironment(options);
-  }
-
-  /**
-   * Whether this evaluator runs with typed secrets: what a delegate that
-   * answers it a record must know, since only the typed environment adapts
-   * one (design/enablers/typed-secrets.md Section 4.5 item 4).
-   */
-  get isTyped(): boolean {
-    return this.typedSecrets;
+  constructor() {
+    this.env = createInternalCelEnvironment();
   }
 
   /**
@@ -1092,53 +1063,7 @@ export class CelEvaluator {
     context: Record<string, unknown>,
     scope: EvaluationScope = {},
   ): unknown {
-    if (this.typedSecrets) {
-      return this.evaluateWithSecrets(expression, context, scope);
-    }
-    // Wrap file/data namespace objects in registered types so cel-js can
-    // resolve receiver methods instead of treating them as maps. Hoisted out
-    // of the try so the catch can read back which data lookups missed.
-    const wrappedContext = this.wrapNamespaces(context);
-    try {
-      // Transform hyphenated model names to bracket notation before evaluation
-      const transformedExpr = transformHyphenatedModelRefs(expression);
-
-      // Warn about deprecated model.*.resource / model.*.file patterns
-      this.warnDeprecatedPatterns(transformedExpr);
-
-      const rawResult = this.env.evaluate(transformedExpr, wrappedContext);
-      const result = unwrapOptional(rawResult);
-
-      // Detect unresolved Promises from async CEL functions (data.latest,
-      // data.findByTag, data.findBySpec, data.query).  These functions are
-      // async but the sync evaluate path cannot await them, so the raw
-      // Promise leaks through.  Catch it here — before coerceBigInts
-      // silently converts the Promise to {} — and throw a clear error.
-      if (result instanceof Promise) {
-        // Suppress the dangling rejection — the async operation is still
-        // in flight but we are about to throw synchronously.  Without
-        // this, the eventual rejection surfaces as an unhandled promise
-        // rejection in the runtime.
-        result.catch(() => {});
-
-        throw unresolvedPromiseError(expression);
-      }
-
-      return coerceBigInts(result);
-    } catch (error) {
-      // Re-throw InvalidExpressionError directly to avoid double-wrapping
-      // (the Promise detection above already throws this type).
-      if (error instanceof InvalidExpressionError) throw error;
-      throw new InvalidExpressionError(
-        this.explainMissedLookups(
-          error instanceof Error ? error.message : String(error),
-          wrappedContext,
-        ),
-        expression,
-        undefined,
-        error instanceof Error ? error : undefined,
-      );
-    }
+    return this.evaluateWithSecrets(expression, context, scope);
   }
 
   /**
@@ -1158,34 +1083,7 @@ export class CelEvaluator {
     context: Record<string, unknown>,
     scope: EvaluationScope = {},
   ): Promise<unknown> {
-    if (this.typedSecrets) {
-      return await this.evaluateWithSecretsAsync(expression, context, scope);
-    }
-    const wrappedContext = this.wrapNamespaces(context);
-    try {
-      // Prepare what the expression reads synchronously first: the
-      // definitions behind the model names it passes to data accessors
-      // (swamp-club#3029), and the content it reads through the model map
-      // and file.contents (swamp-club#3179).
-      await prepareExpressionContext(expression, context);
-      const transformedExpr = transformHyphenatedModelRefs(expression);
-      this.warnDeprecatedPatterns(transformedExpr);
-      const rawResult = await this.env.evaluate(
-        transformedExpr,
-        wrappedContext,
-      );
-      return coerceBigInts(unwrapOptional(rawResult));
-    } catch (error) {
-      throw new InvalidExpressionError(
-        this.explainMissedLookups(
-          error instanceof Error ? error.message : String(error),
-          wrappedContext,
-        ),
-        expression,
-        undefined,
-        error instanceof Error ? error : undefined,
-      );
-    }
+    return await this.evaluateWithSecretsAsync(expression, context, scope);
   }
 
   /**
@@ -1302,7 +1200,6 @@ export class CelEvaluator {
     scope: EvaluationScope = {},
   ): Promise<EvaluationScope> {
     await prepareExpressionsIn(content, context);
-    if (!this.typedSecrets) return scope;
     const authorized = new Set(scope.authorizedReferences ?? []);
     const denied = new Map(scope.deniedReferences ?? []);
     let changed = false;
@@ -1323,17 +1220,18 @@ export class CelEvaluator {
         const key = sensitiveReferenceKey(reference);
         if (authorized.has(key) || denied.has(key)) continue;
         changed = true;
-        if (scope.vault === undefined) {
-          denied.set(
-            key,
-            new Error(
-              "a record with sensitive fields requires the run's vault check scope",
-            ),
-          );
-          continue;
-        }
         try {
-          await scope.vault.service.authorizeRead(
+          const vault = scope.vault ?? await scope.getVault?.();
+          if (vault === undefined) {
+            denied.set(
+              key,
+              new Error(
+                "a record with sensitive fields requires the run's vault check scope",
+              ),
+            );
+            continue;
+          }
+          await vault.service.authorizeRead(
             reference.vaultName,
             reference.key,
           );
@@ -1365,6 +1263,11 @@ export class CelEvaluator {
         // start external work. Every direct call is checked, even in dead branches.
         const analysis = analyzeVaultCalls(expression);
         assertDirectVaultCalls(analysis, expression);
+        if (analysis.calls.length > 0 && scope.vault === undefined) {
+          checking = true;
+          scope = { ...scope, vault: await scope.getVault?.() };
+          checking = false;
+        }
         if (analysis.calls.length > 0 && (!scope.secretBag || !scope.vault)) {
           throw new InvalidExpressionError(
             "vault.get requires the run's secret bag and vault check scope",
@@ -1441,7 +1344,13 @@ export class CelEvaluator {
     wrappedContext: Record<string, unknown>,
   ): Promise<void> {
     if (faults.sensitiveReferences.size === 0) return;
-    if (scope.vault === undefined) {
+    let vault: VaultEvaluationScope | undefined;
+    try {
+      vault = scope.vault ?? await scope.getVault?.();
+    } catch (error) {
+      throw this.evaluationError(error, expression, wrappedContext);
+    }
+    if (vault === undefined) {
       throw new InvalidExpressionError(
         "a record with sensitive fields requires the run's vault check scope",
         expression,
@@ -1449,7 +1358,7 @@ export class CelEvaluator {
     }
     for (const reference of faults.sensitiveReferences.values()) {
       try {
-        await scope.vault.service.authorizeRead(
+        await vault.service.authorizeRead(
           reference.vaultName,
           reference.key,
         );
@@ -1608,6 +1517,12 @@ export class CelEvaluator {
     expression: string,
     wrappedContext: Record<string, unknown>,
   ): InvalidExpressionError {
+    if (isMissingRunBinding(error)) {
+      return new UnboundExpressionError(
+        `A run input or environment binding is missing in ${expression}`,
+        expression,
+      );
+    }
     return new InvalidExpressionError(
       this.explainMissedLookups(
         error instanceof Error ? error.message : String(error),
@@ -1631,11 +1546,9 @@ export class CelEvaluator {
     try {
       // Attempt to parse the expression — ParseResult is callable, not a
       // success/error union.  If parse() doesn't throw, the syntax is valid.
-      if (this.typedSecrets) {
-        const analysis = analyzeVaultCalls(expression);
-        assertDirectVaultCalls(analysis, expression);
-        this.env.parse(analysis.source.text);
-      } else this.env.parse(transformHyphenatedModelRefs(expression));
+      const analysis = analyzeVaultCalls(expression);
+      assertDirectVaultCalls(analysis, expression);
+      this.env.parse(analysis.source.text);
       return { valid: true };
     } catch (error) {
       return {

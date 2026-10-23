@@ -359,10 +359,10 @@ devSecret: ${{ vault.get(dev-vault, apiKey) }}
 In `vault.get(vault_name, key)`, `vault_name` names a configured vault and
 `key` is the secret's identifier in that vault.
 
-`vault.get` is not a CEL function. A regex matches it and substitutes it before
-CEL evaluation (`resolveVaultExpressions` in
-`src/domain/expressions/model_resolver.ts`). Each match is checked and replaced
-with a sentinel string that stands for its vault and key; no value is read.
+`vault.get` is a CEL function that returns a reference-only `Secret`. AST-based
+normalization preserves bare-token vault/key names. Every direct call is checked
+before evaluation, including calls in unselected branches. A result leaves CEL
+as a sentinel in the run's bag; neither the CEL value nor that bag holds plaintext.
 The check (`checkSecretReference`) authorizes a read under the run's vault
 access, then asks the provider's `has()` where it has one, or makes one probe
 read whose value goes only to the run's redactor: a missing or unreadable key
@@ -733,8 +733,7 @@ execution time when any occurrence sits there. A secret used more than once in
 different quote contexts is therefore one quoted word at every double-quoted
 use. PowerShell reads the context from quote characters alone.
 
-Under typed secrets (design/enablers/typed-secrets.md Section 7.2, behind an
-internal option until Phase 4), a value read through data inside a here-document
+Under typed secrets (design/enablers/typed-secrets.md Section 7.2), a value read through data inside a here-document
 with a quoted delimiter, or inside PowerShell single quotes, is refused before
 the step loads anything instead of being pasted into the command with a warning,
 and a secret in an environment variable name or in `workingDir` is refused the
@@ -888,52 +887,33 @@ that carry it, to review against their specs' sensitive fields.
 
 ### Values Read Through Expressions
 
-A sensitive value that a CEL expression reads through `data.latest()`,
-`steps.<name>.outputs` or `model.<name>.resource` is plaintext inside the
-expression, so guards, `size()`, comparisons and `inputs.x.y` reads see the real
-value. It never reaches a spawned command line or a file swamp writes in
-plaintext.
+An own-namespace tagged field read through any expression accessor is a `Secret`,
+including `data.latest`, version/set/query reads, `model.<name>.resource` and
+live, reconstructed or child step outputs. The adapter checks tags and references
+and authorizes reads before using the result. Foreign-namespace references stay
+inert. No accessor loads a plaintext secret into CEL.
 
-Each run keeps a `RunSensitiveValues` record, created with the run's redactor
-and passed explicitly to the three places that resolve sensitive fields for
-expressions. It records every resolved value with the vault and key it came from
-and forwards it to the redactor. Callers that only validate or show history pass
-a discarding record.
+A secret can be passed, concatenated with text or another secret, tested against
+`null`, and observed with `type` (which exposes only `Secret`). Comparisons to
+other values, size/conversion/string operations, map keys, container-to-text
+interpolation and container comparisons in an expression that reads a secret
+refuse with `secret_operation_unsupported`. See the full
+[compatibility table](../enablers/typed-secrets.md#101-what-changes-for-users).
 
-Where an expression's result is spliced into a step's arguments, it is spliced
-twice: into a raw copy (expression contexts, coercion, routing) and into the
-copy that executes, where recorded values inside the spliced result become
-sentinels from the step's own `VaultSecretBag`. Authored text around a splice is
-never examined. The bag is a view of the run's sentinel registry, so any
-sentinel the run issued resolves through it, while it issues only the values
-spliced into that step. A `vault.get()` entry holds its reference and no value:
-the step's delivery loads it into a delivery view of the bag
-(`VaultSecretBag.withLoaded`), once per attempt, and that view is what the
-method, its pre-flight checks and the shell see as `context.vaultSecrets`.
-Remote dispatch ships the entries the attempt has values for and the ones the
-step's arguments reference, nothing from other steps. A step placed on a remote
-worker ships its bag and unresolved args with the dispatch, and the worker
-delivers the values the same way (see
-[remote execution](../enablers/remote-execution.md#security-and-trust)).
+Each run's `SecretBagRegistry` identifies the sentinels issued for its references.
+Only delivery loads the current value, once per reference per attempt, into a
+`VaultSecretBag.withLoaded` view for the trusted method, pre-flight check or shell.
+Checks receive sentinels in method arguments and values in `context.globalArgs`,
+with the loaded bag as `context.vaultSecrets`. Literal-sensitive arguments and
+loaded values still register with the output redactor. Remote dispatch retains
+its existing plaintext transport until Phase 5.
 
-In a `command/shell` step the sentinel becomes an environment-variable
-reference, placed per occurrence by a shell context scanner:
-
-| Context                                   | Written as                         |
-| ----------------------------------------- | ---------------------------------- |
-| Unquoted                                  | `"${__SWAMP_VAULT_N}"`             |
-| Double quotes, unquoted-delimiter heredoc | `${__SWAMP_VAULT_N}`               |
-| Single quotes                             | `'"${__SWAMP_VAULT_N}"'` break-out |
-| `$'...'`                                  | `'"${__SWAMP_VAULT_N}"$'`          |
-| Quoted-delimiter heredoc                  | the value, with a warning          |
-
-On PowerShell a single-quoted value stays in place, with the same warning (a `sensitive_value_in_command_line` event, rendered in log and JSON modes). An
-unquoted value no longer word-splits or globs, as with `vault.get()`. The
-break-out keeps the value out of swamp's own `sh -c` argv; a program the command
-starts (`sh -c`, `ssh`) still receives it in its own. `vault.get()` sentinels
-keep their own forms (see Shell Quoting), also placed per occurrence. Values
-shorter than three characters are not recorded, as with the redactor, so they
-are not protected this way.
+Shell `run` uses environment-variable placement. A data-origin secret in a
+quoted-delimiter here-document or PowerShell single quotes refuses before load
+with `secret_destination_refused`; `workingDir` and environment keys also refuse.
+POSIX unquoted, double-quoted and single-quoted placements retain their quoting
+strategies. A NUL in a delivered environment value refuses before launch. Empty
+and short values receive the same reference protection as longer values.
 
 Everything written to disk holds the vault reference in place of the value:
 evaluated definition and workflow caches, the per-run evaluated workflow, run
@@ -947,8 +927,7 @@ version-1 reader, which would run it as the value. Only
 listed entries are ever restored, so reference-shaped text that arrives as data
 stays inert. An evaluated definition also lists in `maskedPaths` the sensitive
 arguments it wrote as `***` (swamp-club#3681), so a behavior replay refuses them even
-under a later version of the type that no longer marks the field. `--last-evaluated` restores them into the same two copies a fresh
-run builds, and a resume restores a stored run before merging caller-supplied
+under a later version of the type that no longer marks the field. `--last-evaluated` restores only the listed references as unloaded sentinels, and a resume restores a stored run before merging caller-supplied
 inputs, never the reserved `_token-secrets` vault. A cache written before this
 format is refused under `--last-evaluated` when it read data or step outputs.
 So is a cache whose sensitive argument holds a resolved value with no reference,

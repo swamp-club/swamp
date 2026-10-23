@@ -33,6 +33,11 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  createModelEvaluateDeps,
+  modelEvaluate,
+} from "../src/libswamp/models/evaluate.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { Principal } from "../src/domain/access/principal.ts";
@@ -514,7 +519,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve run vault scope: a read grant revoked after the write fails the writing step's own read-back",
+    "serve run vault scope: a revoked read grant allows stored write-back but refuses the next expression read",
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
@@ -527,13 +532,17 @@ Deno.test({
         f,
         workflowOf("mint-readback", [
           step("mint", StepTask.model("minter", "mint")),
+          step("read", StepTask.model("creds-reader", "read"), "mint"),
         ]),
         BOT,
       );
       const mint = stepOf(run, "main", "mint");
-      assertEquals(mint.status, "failed");
+      assertEquals(mint.status, "succeeded");
+      const read = stepOf(run, "main", "read");
+      assertEquals(read.status, "failed");
+      assertEquals(f.seen, []);
       assertStringIncludes(
-        mint.error ?? "",
+        read.error ?? "",
         "Reading vault 'outputs' is refused",
       );
     }, { grants: outputsGrants() }),
@@ -789,5 +798,73 @@ Deno.test({
         SECRETS.erp,
         SECRETS.roomcontrol,
       ]);
+    }),
+});
+
+Deno.test({
+  name:
+    "serve method runs preserve secret refusal codes for vault containers and sensitive data operations",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      const unscoped = {
+        ...f.ctx,
+        authConfig: { ...f.ctx.authConfig, mode: "none" as const },
+      };
+      const minted = await runMethodAs(f, "minter", "mint", null, {}, unscoped);
+      assertEquals(methodError(minted), undefined);
+      for (
+        const [name, value] of [
+          [
+            "embedded",
+            "prefix:${{ {'token': vault.get('roomcontrol', 'password')} }}",
+          ],
+          [
+            "data-operation",
+            "${{ size(data.latest('minter', 'main').attributes.token) }}",
+          ],
+          ["self-container", "prefix-${{ self.globalArguments.rec }}"],
+        ]
+      ) {
+        await saveDefinition(f, name, {
+          globalArguments: {
+            rec: "${{ data.latest('minter', 'main').attributes }}",
+          },
+          methods: { read: { arguments: { value } } },
+        });
+        const evaluated = await collect(
+          modelEvaluate(
+            createLibSwampContext(),
+            createModelEvaluateDeps(f.repo.repoDir),
+            { modelIdOrName: name },
+          ),
+        );
+        assertEquals(evaluated.some((event) => event.kind === "error"), false);
+        for (const lastEvaluated of [false, true]) {
+          const frames = await runMethodAs(
+            f,
+            name,
+            "read",
+            null,
+            {},
+            unscoped,
+            { lastEvaluated },
+          );
+          const codes = frames.flatMap((frame) => {
+            if (frame.type === "error") return [frame.error?.code];
+            const event = frame.payload ?? (frame as {
+              event?: { kind?: string; error?: { code?: string } };
+            }).event;
+            if (event?.kind !== "error") return [];
+            return [(event.error as { code?: string } | undefined)?.code];
+          });
+          assertEquals(
+            codes,
+            ["secret_operation_unsupported"],
+            JSON.stringify(frames),
+          );
+          assertEquals(f.seen, []);
+        }
+      }
     }),
 });

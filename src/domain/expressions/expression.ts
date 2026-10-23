@@ -31,6 +31,8 @@ export interface ExpressionLocation {
   start?: number;
   /** Offset just past the expression's closing `}}`. */
   end?: number;
+  /** Whether this result is rendered inside text rather than used whole. */
+  embedded?: boolean;
 }
 
 /**

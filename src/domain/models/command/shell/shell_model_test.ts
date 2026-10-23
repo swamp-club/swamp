@@ -1776,7 +1776,7 @@ posixOnlyTest(
 );
 
 posixOnlyTest(
-  "shellModel.methods.execute: a data-read secret in a quoted heredoc warns that it is in the command line (swamp-club#2171)",
+  "shellModel.methods.execute: a data-read secret in a quoted heredoc refuses before launching (swamp-club#2171)",
   async () => {
     const vaultSecrets = new VaultSecretBag(new SecretBagRegistry());
     const sentinel = vaultSecrets.addDataSecret("data-s3cret", REF);
@@ -1787,13 +1787,13 @@ posixOnlyTest(
       onEvent: (event) =>
         events.push(event as { type: string; message: string }),
     });
-    await shellModel.methods.execute.execute({ run: "placeholder" }, context);
-    const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, "data-s3cret");
-    assertEquals(events.map((e) => e.type), [
-      "sensitive_value_in_command_line",
-    ]);
-    assertStringIncludes(events[0].message, "command line");
+    await assertRejects(
+      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
+      Error,
+      "secret_destination_refused",
+    );
+    assertEquals(getResults().length, 0);
+    assertEquals(events, []);
   },
 );
 
@@ -1821,7 +1821,7 @@ posixOnlyTest(
 
 /** A typed run and its issuing bag. */
 function typedRun(): { registry: SecretBagRegistry; bag: VaultSecretBag } {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   return { registry, bag: new VaultSecretBag(registry) };
 }
 
@@ -1997,29 +1997,6 @@ Deno.test("shellModel.methods.execute: in a typed run a NUL in an authored envir
   assertEquals(error.message.includes("a\u0000b"), false);
   assertEquals(getResults(), []);
 });
-
-posixOnlyTest(
-  "shellModel.methods.execute: option off, a NUL in a loaded secret takes the launch failure path as today: exit code -1 and a written result",
-  async () => {
-    const bag = new VaultSecretBag(new SecretBagRegistry());
-    const sentinel = bag.addSecret(REF, "methods.execute.arguments.run");
-    const vaultSecrets = bag.withLoaded(
-      new Map([[sentinel, "nul\u0000inside"]]),
-    );
-    const { context, getResults } = createTestContext({
-      vaultSecrets,
-      unresolvedMethodArgs: { run: `echo ${sentinel}` },
-    });
-    await assertRejects(
-      () => shellModel.methods.execute.execute({ run: "placeholder" }, context),
-      Error,
-      "Command exited with code -1",
-    );
-    const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.exitCode, -1);
-    assertStringIncludes(String(attrs?.stderr), "nul byte");
-  },
-);
 
 Deno.test("shellModel.methods.execute: a sentinel no load filled fails the step before the lock hand-off, with no result written", async () => {
   const bag = new VaultSecretBag(new SecretBagRegistry());

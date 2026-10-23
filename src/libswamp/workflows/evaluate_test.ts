@@ -46,7 +46,6 @@ function passOver(
     Promise.resolve(evaluate(expression, context)),
 ): WorkflowEvaluateDeps["passEvaluatorFor"] {
   const pass: PassEvaluator = {
-    typed: false,
     evaluate,
     evaluateAsync,
     validate: () => ({ valid: true }),

@@ -402,13 +402,13 @@ Deno.test(
 );
 
 Deno.test(
-  "sensitive data: a multi-line secret inside an embedded object stays valid JSON",
+  "sensitive data: a container holding a secret refuses text interpolation before shell delivery",
   posix,
   async () => {
     await withRepo(async (repoDir) => {
       const pem = '-----BEGIN KEY-----\nabc"def\n-----END KEY-----';
       const type = registerWriter(pem);
-      const { status, errors } = await runWorkflow(
+      const { status, errors, events } = await runWorkflow(
         repoDir,
         flow("json", type, [
           shellStep(
@@ -420,8 +420,14 @@ Deno.test(
           ),
         ]),
       );
-      assertEquals(status, "succeeded", errors.join("\n"));
-      assertStringIncludes(await shellStdout(repoDir, "json"), "JSON_OK");
+      assertEquals(status, "failed", errors.join("\n"));
+      assertStringIncludes(errors.join("\n"), "secret_operation_unsupported");
+      assertEquals(
+        events.some((event) =>
+          event.kind === "method_executing" && event.stepId === "json"
+        ),
+        false,
+      );
       assertEquals(await filesHolding(repoDir, "BEGIN KEY"), []);
     });
   },
@@ -522,7 +528,7 @@ Deno.test(
 );
 
 Deno.test(
-  "sensitive data: derived reads and mixed runtime expressions see real values",
+  "sensitive data: concatenation with a runtime binding delivers the value",
   posix,
   async () => {
     await withRepo(async (repoDir) => {
@@ -533,7 +539,6 @@ Deno.test(
           shellStep(
             "derived",
             `echo STEP=derived; ` +
-              `echo LEN=\${{ size(${TOKEN}) }}; ` +
               `${
                 checkValue(`"\${{ env["HOME"] + "/" + ${TOKEN} }}"`, "MIXED")
                   .replace(`-eq ${SECRET.length}`, `-gt ${SECRET.length}`)
@@ -544,7 +549,6 @@ Deno.test(
       );
       assertEquals(status, "succeeded", errors.join("\n"));
       const stdout = await shellStdout(repoDir, "derived");
-      assertStringIncludes(stdout, `LEN=${SECRET.length}`);
       assertStringIncludes(stdout, "MIXED_OK");
       assertEquals(stdout.includes("***"), false, stdout);
       assertEquals(await filesHolding(repoDir, SECRET), []);
@@ -864,7 +868,7 @@ async function expressionWarnings(fn: () => Promise<void>): Promise<string[]> {
 }
 
 Deno.test(
-  "sensitive data: a stored reference whose vault key is gone fails naming the vault read, only where it is used (swamp-club#3806)",
+  "sensitive data: a stored reference whose vault key is gone fails at global argument delivery (swamp-club#3806)",
   async () => {
     await withRepo(async (repoDir) => {
       const writer = registerWriter();
@@ -897,22 +901,24 @@ Deno.test(
       });
       assertEquals(read?.status, "failed");
       const failure = JSON.stringify(read?.events);
-      assertStringIncludes(failure, "Could not read globalArguments.ticket");
+      assertStringIncludes(failure, "Failed to load secret");
       assertStringIncludes(failure, "vault 'secrets'");
       assertStringIncludes(failure, "not found");
       assertEquals(failure.includes("Unresolved expression"), false);
-      assert(
+      assertEquals(
         warnings.some((w) => w.includes("Could not read sensitive field")),
-        warnings.join("\n"),
+        false,
       );
       assertEquals(
         warnings.filter((w) => w.includes("data content")),
         [],
       );
 
-      // A method that never reads the field still runs.
+      // Every method receives global arguments, so an unused argument also
+      // fails at delivery rather than silently passing reference text.
       const skipped = await runWorkflow(repoDir, step("skip"));
-      assertEquals(skipped.status, "succeeded", skipped.errors.join("\n"));
+      assertEquals(skipped.status, "failed");
+      assertStringIncludes(skipped.errors.join("\n"), "Failed to load secret");
     });
   },
 );
@@ -931,7 +937,7 @@ Deno.test(
       );
       assertEquals(result.status, "failed");
       const failure = JSON.stringify(result.events);
-      assertStringIncludes(failure, "Could not read methodArguments.run");
+      assertStringIncludes(failure, "Failed to load secret");
       assertStringIncludes(failure, "not found");
       assertEquals(await shellStdout(repoDir, "unread"), "");
     });

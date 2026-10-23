@@ -1,19 +1,16 @@
 ---
 audience: maintainer
 enables: [behaviors, workflows, vaults, serve]
-last-verified: 2026-10-23 @ issue-3734
+last-verified: 2026-10-23 @ issue-3735
 ---
 
 # Typed Secrets for Expressions
 
-**Status:** implementation plan. Phases 0, 1 and 2 have shipped
-(swamp-club#3510, swamp-club#3511, swamp-club#3512, swamp-club#3551,
-swamp-club#3557, swamp-club#3558, swamp-club#3562), and Phases 3.1 to 4.2
-(swamp-club#3619, swamp-club#3625, swamp-club#3626, swamp-club#3627,
-swamp-club#3628, swamp-club#3730, swamp-club#3731) behind the internal
-option. This revision replaces the earlier engine-2 plan, and
-[Why this design](#why-this-design) says what changed. Until Phase 4 ships,
-[expressions](./expressions.md) describes current behavior.
+**Status:** Phases 0–4 are implemented. Every internal expression entry point
+uses typed secrets; there is no rollout option. Phase 5, remote reference
+transport, remains separate. The phase descriptions below record the staged
+implementation; Phase 4.6 supersedes their references to the internal option.
+[Expressions](./expressions.md) describes the default behavior.
 
 ## Outcome
 
@@ -267,54 +264,18 @@ Swamp loads a secret only when it delivers it:
 - `readResource` keeps resolving tagged fields itself.
 - Until Phase 5, the orchestrator loads a remote step's bag before dispatch.
 
-Some code resolves sentinels inline today, through
-`resolveRuntimeExpressionsInData` and `resolveAllExpressionsInData`, which call
-`VaultSecretBag.resolveDeep`. Phase 2 turns each of these into a load under the
-same rules. Phase 4.5 removes those loads at typed routing destinations. The
-option-off path keeps its behavior until the 4.6 release flip:
+Runtime expression helpers issue sentinels without loading them. Routing
+and other refusing destinations check them before delivery:
 
-| Inventory key | Inline resolution | Destination (Section 7.1) | Loading contract |
+| Inventory key | Resolution site | Destination (Section 7.1) | Loading contract |
 | --- | --- | --- | --- |
-| `validation` | Pre-flight checks in `swamp behavior validate` (`src/libswamp/models/validate.ts`) | Trusted consumer | Loads at delivery. In a typed run, through the shared refuse-then-load step (Phase 3.5). |
-| `routing` | Placement and task selectors (`execution_service.ts`) | Refuses secrets | Typed: no load, including references issued by earlier passes. Legacy: inline load. |
-| `child` | Child workflow references (`execution_service.ts`) | Refuses secrets | Typed: no load before lookup or invocation. Legacy: inline load. |
-| `deferred` | Deferred targets, `inputs` and `globalArgs` (`resolveRecordExpression`, `resolveScalarExpression`) | Targets refuse; records issue into the step's bag | Typed: no inline load. Records load at method delivery. |
-| `assert-message` | Assert message interpolation (`execution_service.ts`) | Masked | Typed: masks references without loading, including messages already reduced to literal sentinel text. Legacy: loads then redacts. |
-| `runtime` | `resolveRuntimeExpressionsInData`, composed by `resolveAllExpressionsInData` | The caller's explicit destination | Typed routing options refuse before the loader. Legacy and trusted validation callers retain inline loading. |
-| `delivery` | Method argument parsing and local/remote delivery (`method_execution_service.ts`) | Trusted consumer | Loads per attempt; remote delivery remains unchanged until Phase 5. |
-
-Phase 4.5 deletes `resolveVaultExpressionsInDefinition` and
-`resolveVaultExpressionsInData`; neither had a production caller.
-
-A new inline caller of `resolveDeep`, or a new direct `evaluateAsync` caller
-outside the passes in Section 5, needs a row here. The fitness rule in
-`integration/inline_secret_resolution_rules_test.ts` pins calls by file,
-containing function or method, receiver and multiplicity, including calls of
-the runtime wrappers. Each maps to a row above or explicitly to a Section 5
-pass or the bag's own recursion. Another call in an already-pinned method
-changes the set. The scanner parses TypeScript, so comments and declarations
-are excluded and multiline and computed calls are included.
-
-A load calls `VaultService.get(vault, key, "expression:vault-resolve")` inside
-the run's ambient `RunVaultAccess`. The principal's grants and the workflow's
-`vaults:` list both apply. A sentinel is not a grant. The reserved
-`_token-secrets` vault answers to that access as it did to the eager read: serve
-refuses it to a principal that is not an access admin before any provider call,
-and only rehydration refuses it by name. A load reads through the vault service
-the existence check asked, the evaluator's, so a refresh hook refreshes on load
-as it did on the eager read. One attempt is one call of the method execution
-service; a retry is a new attempt and loads again. The loaded values are
-resolved into a copy of the step's definition: the object the caller passed
-keeps its sentinels, so a second delivery of the same instance loads again and
-starts from them, as a freshly evaluated definition does. Each loaded value is
-registered with the run's `SecretRedactor`.
-
-A load failure fails the step before any check or method runs. The error names
-the vault, the key and the authored location, never a value. Vault refresh keeps
-its configured fallback to a stale value. Refresh diagnostics never include the
-refresh command's stdout or stderr, or an arbitrary cause.
-
-A step that a guard skips loads nothing.
+| `validation` | Checks in `swamp behavior validate` | Trusted consumer | The shared refuse-then-load step loads once before checks. |
+| `routing` | Placement and task selectors | Refuses secrets | No load, including references issued by earlier passes. |
+| `child` | Child workflow references | Refuses secrets | No load before lookup or invocation. |
+| `deferred` | Deferred targets, `inputs` and `globalArgs` | Targets refuse; records issue into the step's bag | Records load at method delivery. |
+| `assert-message` | Assert message interpolation | Masked | Masks references without loading, including literal sentinel text. |
+| `runtime` | Runtime expression helpers | The caller's explicit destination | Routing issues sentinels or refuses; the generic trusted-consumer helper can load inline. |
+| `delivery` | Method argument parsing and local/remote delivery | Trusted consumer | Loads per attempt; remote delivery remains unchanged until Phase 5. |
 
 ### 3.4 Existence check
 
@@ -328,14 +289,7 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   would run, as `resolveVaultArg` does today, and with today's rules for which
   arguments it accepts. An argument that fails to evaluate fails the expression,
   as today. Each resulting reference is checked.
-- **Sensitive-field references.** Today the accessor resolves every tagged field
-  of a record it returns, and re-throws only an access denial; a missing key or
-  an unavailable vault leaves the reference text in place
-  (`ModelResolver.resolveRecordVaultRefs`). Each field is read on its own, and
-  a failed read is recorded on the run's `RunSensitiveValues` with the vault,
-  key and provider error, so on the untyped path the refusal warning and the
-  argument's error name that read rather than reporting data content or an
-  unresolved expression (swamp-club#3806). The check keeps exactly that. The
+- **Sensitive-field references.** Stored readers never load values. The
   accessor adapter records the references in each record it returns, and after
   evaluation, before the result is used, each is authorized under the run's
   `RunVaultAccess` with no provider call. A missing key fails only if the
@@ -348,10 +302,9 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   boundary conversion of the result, which adapts records the expression
   returned without selecting into them, the evaluator authorizes each distinct
   reference through `VaultService.authorizeRead`, sequentially and uncached,
-  and a denial fails the evaluation as the read-time denial does with the
-  option off. A typed evaluation with no vault scope fails closed; with a
-  scope but no ambient `RunVaultAccess` the check passes, as the option-off
-  read does outside a run. On the asynchronous path release precedes
+  and a denial fails the evaluation. An evaluation with no vault scope fails
+  closed; with a scope but no ambient `RunVaultAccess` the check passes, as
+  a read does outside a run. On the asynchronous path release precedes
   authorization, so a denial leaves the value-less entries release issued in
   the run's registry; nothing delivers them, and a load authorizes again. The
   synchronous `evaluate` fails closed on any recorded reference, naming
@@ -379,9 +332,7 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
   error and before release issues a sentinel; a denied record the expression
   never reads costs nothing. A record whose tag does not parse is left for
   the evaluation to refuse. Each pass evaluator carries its own authorized
-  and denied sets, so one pass never authorizes for another. With the
-  option off the accessors still read tagged fields, and that read authorizes
-  each reference under the run's `RunVaultAccess` and re-throws a denial.
+  and denied sets, so one pass never authorizes for another.
 - **How, for `vault.get`.** Every check authorizes `read` on the vault and key
   under the run's `RunVaultAccess`, as a load would, so a grant revoked mid-run
   fails the next check. It then asks the provider:
@@ -660,8 +611,8 @@ refuse a list element, so the handler walks the list and refuses with
 `secret_destination_refused`, because a lookup key cannot use the stand-in that
 a data-name suffix gets. The test proves the inventory is complete, and its
 production half (Phase 3.1) proves that `getDefinitions()` on the internal
-environment, with the option on, holds exactly the function refusals the
-inventory yields for it, and with the option off what it held before.
+environment holds exactly the function refusals the inventory yields for it;
+the extension environment retains its separate definitions.
 `getDefinitions()` lists no operators, so the operator refusals are proven
 through the evaluator. The query view's half (typed-secrets 4.3) proves the
 same for the view's environment of Section 6.2, built from the query service's
@@ -706,16 +657,13 @@ Phase 3.5 binds each such call as dyn, so the planner's ternary rule (Section
 value is unchanged.
 The receiver creates a `Secret`, records a Secret read for the container rule,
 and performs no provider I/O. Its types and refusal signatures are registered
-only with the internal option enabled.
+in every internal expression environment.
 
 The AST records feed static extraction, model/workflow validation, foreign-root
 attribution, vault removal checks and the dispatch allowlist; parse-only
-`freeRoots` uses the same normalization. Until production rollout, an option-off
-compatibility filter retains exactly the calls accepted by `findVaultGetCalls`,
-including malformed-call attribution and the legacy resolver's treatment of
-shadowed names. New typed syntax therefore cannot widen remote authorization.
-`resolveVaultExpressions` and its matcher remain the production execution path;
-typed evaluation bypasses that replacement path.
+`freeRoots` uses the same normalization. The compatibility filter in
+`vault_reference_extractor.ts` retains the dispatch allowlist's existing syntax
+contract; the AST evaluator is the only internal execution path.
 
 ### 4.5 Effectful functions
 
@@ -792,9 +740,8 @@ splices the results into text, and leaves the rest for a later pass. `vault` and
   and runtime passes, `forEach` expansion and step names, guards, asserts,
   `swamp behavior evaluate`, `swamp workflow evaluate` and validation. From
   Phase 4.1 the workflow passes select their evaluator through one seam,
-  `ExpressionEvaluationService.passEvaluatorFor`: the legacy evaluator for an
-  untyped registry, or the typed evaluator bound to the pass's issuing bag,
-  the vault check scope and, for a predicate, the predicate destination.
+  `ExpressionEvaluationService.passEvaluatorFor`, bound to the pass's issuing
+  bag, lazy vault scope and, for a predicate, the predicate destination.
 - The runtime pass of a delivery (`resolveRuntimeExpressionsInDefinition` with
   its `methodName`: a behavior run, a workflow step, `context.runModel` and the
   pre-flight delivery of `swamp behavior validate`) resolves the runtime
@@ -869,13 +816,12 @@ untagged leaf inside it is refused too. The refusal names the accessor, the
 model, the record id, the version and the field path, never the data name,
 which a vary suffix can fill from a resolved secret, and never a value.
 Reference-looking text outside a tagged path stays ordinary text.
-On the typed path a workflow step keeps the records it wrote as stored, their
+A workflow step keeps the records it wrote as stored, their
 tags intact (`fromResourceHandle` reads no vault), so the model map view
 adapts them like any other record (typed-secrets 4.2).
 
 Phase 3.3 (swamp-club#3626) ships the adapter for `data.latest`,
-`data.version`, `findBySpec`, `findByTag` and `model.<name>.resource` behind
-the internal option (`src/infrastructure/cel/sensitive_record_adapter.ts`,
+`data.version`, `findBySpec`, `findByTag` and `model.<name>.resource` (`src/infrastructure/cel/sensitive_record_adapter.ts`,
 applied in the typed environment's accessor handlers and in the typed
 bindings, so a namespace instance built earlier is adapted all the same). A
 `Secret` it creates leaves CEL as a value-less data-origin entry of the run's
@@ -1011,7 +957,7 @@ At the execution boundary the method execution service does three things:
    excluded. The merge of item 1, built before the resolution wrote values
    into the global arguments and with the values validation parsed laid under
    its non-secret globals, is what the checks and the method receive as
-   `unresolvedMethodArgs`, with or without the option, so a shell `run`
+   `unresolvedMethodArgs`, so a shell `run`
    authored under `globalArguments` keeps its sentinels for the placement
    fill (before swamp-club#3627 that merge was built from the resolved
    definition, and such a `run` reached the command line as plaintext). The
@@ -1068,14 +1014,13 @@ sentinel in `run` becomes a double-quoted environment-variable reference,
 loaded value goes in the child environment. Generated names must not collide
 with authored environment keys.
 
-Today two cases paste a value into the command, with a warning event. One is a
+Two cases that previously pasted a value into the command are refused. One is a
 data-origin value inside a here-document with a quoted delimiter. The other is a
 data-origin value inside PowerShell single quotes (`resolveForPowerShell`). Both
-become refusals: the shell behavior's `refuseSecretDestinations` hook plans the
+are refused: the shell behavior's `refuseSecretDestinations` hook plans the
 placement from references alone (`planShellPlacement`,
 `planPowerShellPlacement`) and refuses before the load; the fill after the
-load (`resolveForShell`, `resolveForPowerShell`) is the same plan with values,
-and still pastes with the warning when the option is off. A `vault.get` inside
+load (`resolveForShell`, `resolveForPowerShell`) uses the same placement plan. A `vault.get` inside
 single quotes keeps today's behavior on both shells: the reference stays
 literal and a warning is emitted. A `vault.get` inside a here-document with a
 quoted delimiter also stays literal, with no warning, as before.
@@ -1110,30 +1055,32 @@ Placement uses the existing quote-context scanner: `resolveForShell`,
 
 ### 8.1 Persisted form
 
-The persisted form is unchanged by this design: `sensitiveFormat` (version 2
-since the masks of swamp-club#3681; a reader refuses a format newer than its
-own) and its `writtenReferences` list. Each entry names a path, an occurrence, a vault and
+The persisted form carries `sensitiveFormat` (version 3 since reliable reference
+origins in swamp-club#3735; a reader refuses a format newer than its own) and its
+`writtenReferences` list. Each entry names a path, an occurrence, a vault and
 key, an encoding and a data-origin flag
 (`src/domain/secrets/persisted_sensitive_form.ts`).
 
 What changes is where entries come from. `toPersistedForm` replaces each
 sentinel with its reference text, `${{ vault.get('v', 'k') }}`, and takes the
-entry from the run's bag registry. A typed run records no value, so the value
-search finds nothing (typed-secrets 4.4); it stays for the plaintext the legacy
-data reads still bring into CEL, and as defence in depth writes a value any
-path still records as its reference whatever the registry, until 4.6 deletes
-it.
+entry from the run's bag registry. No value search is performed: plain data
+equal to a secret remains plain data.
 Every caller passes the registry, including run records
 (`WorkflowRun.toPersistedData`) and direct execution (`direct_execution.ts`),
 and only sentinels with a prefix the registry issued are looked up. Text with
 any other prefix is data and is written as it is, as Section 3.2 says. A
 sentinel with one of the run's prefixes and an unknown index fails the write.
-Rehydration on a typed registry (`rehydrateReferences`) issues a sentinel in a
+Rehydration (`rehydrateReferences`) issues a sentinel in a
 bag of the run's registry for each entry, with the entry's encoding and origin
 (`VaultSecretBag.addWrittenReference`), and reads no vault; reference text that
 no entry names stays inert data, and a path through a prototype touches
-nothing. The untyped `rehydratePersistedForm`, which reads each value from the
-vault, is the legacy branch 4.6 deletes.
+nothing. Restoring a cache or run never loads a value.
+
+Versions 1 and 2 could mark data-derived plaintext as `dataOrigin: false`.
+Their default reader restored every written reference as data, regardless of
+that flag. Replay and resume preserve that historical origin for these files,
+including files without a format marker. Version 3 trusts the recorded flag.
+The next write records the corrected origins in version 3.
 
 New writes produce `raw` entries. Entries in existing files keep their encoding
 through rehoming and persist back as they were read, and delivery applies it:
@@ -1141,19 +1088,14 @@ through rehoming and persist back as they were read, and delivery applies it:
 the schema at the trusted boundary coerces where a scalar is expected and
 refuses when the vault now holds something else. Delivery cannot restore a
 scalar itself, because the sentinel may have flowed from the written position
-into a text field. The untyped rehydrate keeps restoring the scalar, or failing
-when the vault now holds something else, as before. Number and boolean entries
-do not ship to a worker as scalars until Phase 5 carries references. A
-`number` or `boolean` entry a typed run restores and then persists at an
-embedded position (the sentinel flowed into a text field) keeps that encoding
-there; the untyped rehydrate restores a scalar only at a whole leaf and leaves
-such reference text in place, which matters only while the option is test-only.
+into a text field. Number and boolean entries do not ship to a worker as
+scalars until Phase 5 carries references. An entry restored and then persisted
+at an embedded position keeps its original encoding.
 
 A persisted copy carries its provenance in its own coordinates: the evaluated
 definition cache's `persistedProvenance` (since swamp-club#3681), the evaluated
 workflow cache's `persistedProvenance` and the run record's
-`persistedInputsProvenance` (typed-secrets 4.4, both optional and written on
-the untyped path too), each exact wherever a sentinel became a reference
+`persistedInputsProvenance` (typed-secrets 4.4, both optional), each exact wherever a sentinel became a reference
 (`sentinelReferenceTextOf`) and with every written reference marked data
 (`withWrittenReferenceRanges`). A typed replay aligns it back onto the sentinel
 copy exactly; one of a cache that holds references and a map in value
@@ -1162,9 +1104,9 @@ resume of such a run record marks each input string holding a reference whole
 data and continues. Deferred bindings holding a reference are whole data in
 their own map on a typed resume.
 
-Current binaries write and read this format. No reader guard has to ship first,
-and the format version does not change: the provenance fields are optional, and
-an older reader ignores them.
+The provenance fields remain optional. The version 3 marker distinguishes
+reliable origins from the older flags; older binaries refuse new files through
+the existing newer-format guard.
 
 ### 8.2 Durable state and current values
 
@@ -1229,7 +1171,7 @@ delivery instead of an expression.
 
 | Expression or value                                                                                                       | Today                                                         | After                                                                             |
 | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `==`, `size`, `type`, a conversion or a string function on a `vault.get` result                                           | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
+| `==`, `size`, a conversion or a string function on a `vault.get` result                                           | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
 | The same operations on a tagged sensitive field                                                                           | Work on plaintext                                             | `secret_operation_unsupported`                                                    |
 | A container that holds a secret, interpolated into text                                                                   | Delivered inside the JSON text                                | `secret_operation_unsupported`                                                    |
 | A secret in a task selector, placement value, path, `workingDir`, environment key, or `model.method` model or method name | Used as plaintext                                             | `secret_destination_refused`                                                      |
@@ -1247,35 +1189,55 @@ delivery instead of an expression.
 | A pre-flight check reading a tagged data field in its method arguments                                                    | Can see the plaintext                                         | A sentinel, as for a `vault.get` value. The value is in `context.vaultSecrets`.   |
 | Delivering a tagged data field whose vault key is missing or whose vault is down                                          | The reference text is delivered                               | The load fails the step with `secret_reference_unavailable` or the provider error |
 
+`type(Secret)` remains an allowed type-name observation, returning `Type<Secret>`;
+it reveals no value. Plain-value expressions retain their CEL behavior.
+
 The extension API does not change (Section 6.3). `context.vaultSecrets` holds
 the loaded bag.
 
 ### 10.2 Diagnostics
 
 `swamp behavior validate` and `swamp workflow validate` report static misuse.
-That covers a type error on a `vault.get` result, and a container comparison in
-an expression that calls `vault.get`. Findings name the file, the expression
+That covers a type error on a `vault.get` result, a container comparison in
+an expression that calls `vault.get`, and interpolation of a literal container
+holding a secret into surrounding text. Whole-field containers remain allowed.
+Findings name the file, the expression
 location and the code, never a value. Dynamic misuse fails at run time with the
 same codes. No new doctor command is needed. Phase 3.5 reports them from
 `swamp behavior validate` as the `Secret usage` validation, each finding naming
 the definition file, the authored path with the call's line and column, and the
-code (`secret_diagnostics.ts`, Section 4.3 item 4), behind the internal option.
+code (`secret_diagnostics.ts`, Section 4.3 item 4). Phase 4.6 also wires
+workflow validation and diagnoses indirect vault access with no checks selected.
 
 ### 10.3 Release
 
-Phases 3 and 4 are built behind an internal option that only tests set. The
-release that ends Phase 4 turns the new path on for every entry point and
-removes the option. Turning it on waits for swamp-club#3635, which reserves the
-`_swamp.` tag prefix so that only the vaulting step writes
-`_swamp.sensitiveFields`: the accessor adapter trusts own-namespace tags. A
-catalog pull already stores only the pulled namespace's rows
-(swamp-club#3636), so a foreign export cannot pose as the reader's own
-namespace. The query view of Section 6.2 shipped in Phase 4.3
-(swamp-club#3732), so `data.query` reads tagged fields as Secrets on the typed
-path and authorizes what the expression receives. Its release notes carry the
-table in Section 10.1. The Phase 2
-release notes say that a provider without `has` gets one probe read at
-evaluation as well as its load at delivery. Phases 2 and 5 ship on their own.
+Phase 4.6 (swamp-club#3735) makes typed secrets the default for behavior and
+workflow evaluate, validate, run, resume and replay, including their shared serve
+entry points. It removes the option, the regex vault substitution path,
+expression-facing plaintext reads, value-search persistence and eager replay.
+The compatibility table above is the release note for these behavior changes.
+No repository marker or migration command is required. The reserved tag and
+namespace gates (swamp-club#3635 and #3636) and Phase 4.3 query view are in place.
+
+Behavior evaluation remains a partial evaluation. A refused CEL operation or
+container interpolation keeps its authored expression, so `evaluate --all`
+continues through the repository. A run refuses when its selected method uses
+that expression. Passing the same container as a structured argument remains
+allowed, including when another method interpolates it into text.
+
+A behavior replay rechecks authored CEL expressions still present in its cache,
+using the cached global arguments and recorded provenance. It checks globals
+and the selected method only. Already evaluated values stay frozen, and text
+from data or an authored `literal()` stays literal. A pending refusal fails
+before delivery unless an explicit method-argument override replaces it.
+
+Validation reports indirect vault use even without pre-flight checks. A check
+receives global arguments after delivery, method arguments as sentinels and the
+loaded `context.vaultSecrets`. Only absent input/environment bindings stay
+unevaluated; other failures stop delivery and produce one delivery finding.
+Static findings carry `code` and `location` in JSON. Plain expressions initialize
+no vault scope. Providers without `has` still perform one probe per reference at
+evaluation plus a load at delivery. Remote transport remains the Phase 5 baseline.
 
 ## 11. Delivery phases
 
@@ -1709,6 +1671,23 @@ expression-facing plaintext resolution of tagged fields.
 child, cross-namespace, set-read and projected data. A step that a guard skips
 makes no vault read. Resume loads current values and reruns no completed step.
 
+### Phase 4.6: default entry points
+
+The default constructors use typed evaluation and reference-only registries.
+`passEvaluatorFor` binds the shared evaluator to a run and a lazy vault scope.
+All expression readers keep stored records for the adapter; persistence writes
+only issued sentinels as references. Resume/replay restore unloaded references,
+including historical raw/json/number/boolean entries, retaining format and
+provenance checks. Literal-sensitive argument masks and trusted consumer reads
+remain in place.
+
+The default integration suites exercise behavior/check delivery, workflow passes,
+inline destinations, query sets/projections, cross-namespace and child outputs,
+resume/replay rotation and authorization. The compatibility corpus covers the
+expression operations with plain controls. Compiled-binary journeys and full
+prohibited-sink scans belong to the swamp-uat companion; #697 remains baseline
+coverage. Public manual and release publication are tracked separately.
+
 ### Phase 5: remote references
 
 Implement Section 9. Update [remote-execution](./remote-execution.md), and the
@@ -1778,24 +1757,24 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Pinned cel-js behavior (Section 4.2)          | `src/infrastructure/cel/cel_js_pins/`, `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                                                                                                        |
 | The `Secret` value (Section 3.1)              | `src/infrastructure/cel/secret_value.ts`, `secret_fault_context.ts` (the fault context)                                                                                                                                                                                                                                                                               |
 | Refusals and the container rule (Section 4.3) | `src/infrastructure/cel/cel_js_secret_refusal_inventory.ts`, `secret_registrations.ts`, `container_comparison.ts`, `query_view.ts` (the query view's environment and per-row rule), `integration/cel_secret_refusal_coverage_rules_test.ts`                                                                                                                                                                                            |
-| Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`typedSecrets`, `EvaluationScope` with `secretResult` and `authorizedReferences`, `prepareSynchronousReads`), `sensitive_record_adapter.ts` (`synchronousSensitiveReferences`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
-| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`passEvaluatorFor`: the registry selects the typed evaluator, bound to the pass's bag, scope and destination; `PassEvaluator.prepare`; the deferred-binding rebind keeps a step context's sources), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `expression_references.ts` (`stepTargets`, the steps an expression reads), `deferred_expression.ts` (a typed capture carries each step's `sources`), `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
+| Boundary conversion (Section 3.2)             | `src/infrastructure/cel/secret_boundary.ts`, `cel_evaluator.ts` (`EvaluationScope` with `secretResult` and `authorizedReferences`, `prepareSynchronousReads`), `sensitive_record_adapter.ts` (`synchronousSensitiveReferences`), `integration/cel_secret_boundary_rules_test.ts`                                                                                                                                                                                                                  |
+| Expression passes and templates               | `src/domain/expressions/expression_evaluation_service.ts` (`passEvaluatorFor`: the shared evaluator, bound to the pass's bag, scope and destination; `PassEvaluator.prepare`; the deferred-binding rebind keeps a step context's sources), `available_expression_resolver.ts`, `definition_expression_pass.ts`, `expression_parser.ts`, `expression_scanner.ts`, `expression_references.ts` (`stepTargets`, the steps an expression reads), `deferred_expression.ts` (a typed capture carries each step's `sources`), `src/domain/workflows/expression_evaluators.ts`, `model_resolver.ts` (`vaultEvaluationScope`) |
 | Static misuse diagnostics (Section 10.2)      | `src/infrastructure/cel/secret_diagnostics.ts` (`diagnoseSecretMisuse`), `cel_evaluator.ts` (`createSecretCheckEnvironment`), `src/domain/models/validation_service.ts` (`diagnoseSecretMisuse`, `deliverCheckArguments`), `src/libswamp/models/validate.ts` |
-| Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (`resolveVaultExpressions`, option off)                                                                                                                                                                                                                                                                |
+| Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (stored expression readers)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
 | Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts` (`stepsView` for step outputs), `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace` and `readsSoloNamespace`), `src/domain/data/namespace.ts` (`isForeignToReader`), `src/domain/expressions/step_output_sources.ts` (a step context's output sources and their persisted form), `src/domain/workflows/step_output_resolver.ts` (sources beside the flat outputs), `integration/typed_data_secrets_test.ts` |
 | Destination policy (Sections 6.3, 7.1)        | `src/domain/models/secret_destinations.ts` (`refuseSecretsInRefusingFields`, `refuseSecretDestinations`, `assertNoSensitiveRefuseConflict`, `SecretDestinationRefusedError`), `zod_field_metadata.ts` (`findFieldsWhere`), `src/domain/vaults/secret_occurrences.ts` (`SecretOccurrences`), `integration/typed_secret_destinations_test.ts` |
-| Sentinels and shell placement | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`, `typedSecrets`), `vault_secret_bag.ts` (`addDataReference`, `planShellPlacement`, `planPowerShellPlacement`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts` (`refuseShellSecretDestinations`), `shell_strategy.ts` (`planSecrets`) |
+| Sentinels and shell placement | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`), `vault_secret_bag.ts` (`addDataReference`, `planShellPlacement`, `planPowerShellPlacement`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts` (`refuseShellSecretDestinations`), `shell_strategy.ts` (`planSecrets`) |
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
 | Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |
 | Inline destinations (Sections 3.3, 7.1) | `src/domain/expressions/expression_evaluation_service.ts` (`refuseRoutingSecrets`, explicit pass and runtime destinations), `src/domain/workflows/execution_service.ts` (placement, selectors and child targets), `integration/typed_inline_destinations_test.ts`, `integration/inline_secret_resolution_rules_test.ts` |
-| Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts` (`toPersistedForm`, `rehydrateReferences`, the legacy `rehydratePersistedForm`), `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/vaults/secret_bag_registry.ts` (`SecretEncoding`, `jsonEscaped`, `restoreScalar`), `vault_secret_bag.ts` (`addWrittenReference`, encoding-aware delivery), `src/domain/expressions/persisted_evaluation.ts` (`replayProvenance`, `withWrittenReferenceRanges`), `provenance_map.ts` (`sentinelReferenceTextOf`), `src/domain/workflows/persisted_workflow.ts` (`persistedProvenance`, `rehydrateRunReferences`), `workflow_run.ts` (`persistedInputsProvenance`, `mask`), `integration/typed_persistence_seams_test.ts` |
+| Sensitive values and persisted form | `src/domain/secrets/run_sensitive_values.ts` (sentinel-derived masks and stand-ins), `persisted_sensitive_form.ts` (`toPersistedForm`, `rehydrateReferences`), `secret_redactor.ts` (`maskSentinelsOf`), `src/domain/vaults/secret_bag_registry.ts` (`SecretEncoding`, `jsonEscaped`, `restoreScalar`), `vault_secret_bag.ts` (`addWrittenReference`, encoding-aware delivery), `src/domain/expressions/persisted_evaluation.ts` (`replayProvenance`, `withWrittenReferenceRanges`), `provenance_map.ts` (`sentinelReferenceTextOf`), `src/domain/workflows/persisted_workflow.ts` (`persistedProvenance`, `rehydrateRunReferences`), `workflow_run.ts` (`persistedInputsProvenance`, `mask`), `integration/typed_persistence_seams_test.ts` |
 | Sensitive fields and schema metadata          | `src/domain/models/data_writer.ts`, `zod_field_metadata.ts`, `sensitive_output_vault.ts`, `src/domain/data/data_record_mapper.ts`, `src/domain/workflows/step_output_resolver.ts`                                                                                                                                                                                     |
 | Queries (Section 6.2)                         | `src/domain/data/query_view.ts` (the `QueryView` port, `QueryViewRefusal`), `data_query_service.ts` (`DataQueryOptions.view`, `createQueryEnvironment`), `src/infrastructure/cel/query_view.ts` (`expressionQueryView`, `queryViewEnvironment`), `src/infrastructure/cel/cel_evaluator.ts` (the typed `data.query` handlers), `integration/typed_data_secrets_test.ts`                                                                                                                                                                                                                                                                                                                               |
 | Method boundary and checks | `src/domain/models/method_execution_service.ts` (`deliverStepSecrets`, `unresolvedArgumentsOf`), `method_context.ts`, `model.ts` (`refuseSecretDestinations`, `SecretDestinationArgs`), `model_output.ts` (`executionErrorFrom`) |
 | Nested invocations and triggers               | `src/domain/models/model_invocation_service.ts` (an independent registry per invocation, `SecretBagRegistry.independent`), `src/domain/workflows/trigger_input_resolver.ts` (no bag, no vault: a typed evaluator refuses a `Secret` result) |
-| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination; in a typed run the records a step wrote are kept as stored and each step context carries its output sources, and `resume` takes a sensitive-value record as `run` does, restoring a stored run's references as references on a typed registry), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts` (every pass through `passEvaluatorFor`, the `createSensitiveValues` seam), `integration/typed_workflow_passes_test.ts` and `typed_workflow_harness.ts` |
+| Workflow execution and forEach                | `src/domain/workflows/execution_service.ts` (every pass through `passEvaluatorFor`; guards and asserts under the predicate destination; in a typed run the records a step wrote are kept as stored and each step context carries its output sources, and `resume` takes a sensitive-value record as `run` does, restoring a stored run's references as references on a typed registry), `model_method_result.ts` (the stored record `model.method` returns in a typed run, by data name; `isJsonMediaType` in `src/domain/data/content_type.ts`), `for_each_expansion_service.ts` (`ForEachEvaluator.prepare`, a refusal fails expansion), `expression_evaluators.ts` (`stepNameSanitizer`: a step name the run-start pass resolves keeps the identifier stand-in), `persisted_workflow.ts` (`forEachNameWithoutSecrets`), `src/domain/secrets/run_sensitive_values.ts` (`withForEachStandIns`), `src/libswamp/workflows/evaluate.ts` (every pass through `passEvaluatorFor`), `integration/typed_workflow_passes_test.ts` and `typed_workflow_harness.ts` |
 | Remote execution                              | `src/domain/remote/protocol.ts`, `src/serve/dispatch_service.ts`, `src/serve/data_plane.ts`, `src/worker/remote_method_context.ts`, `src/worker/exec_dispatch.ts` (the bundle's resource specs for `readResource`)                                                                                                                                                                                                                                    |
 | Sink inventory and canaries                   | `integration/secret_sink_inventory.json`, `secret_sink_inventory_rules_test.ts`, `canary_values.ts`, `secret_canary_boundaries_test.ts`                                                                                                                                                                                                                               |
 | Remote baseline                               | `integration/remote_secrets_baseline_harness.ts`, `remote_secrets_baseline_*_test.ts`                                                                                                                                                                                                                                                                                 |

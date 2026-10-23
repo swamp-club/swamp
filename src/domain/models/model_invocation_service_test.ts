@@ -1251,7 +1251,7 @@ Deno.test("ModelInvocationService: a nested invocation runs on an independent re
   for (const typed of [true, false, undefined]) {
     const callerRegistry = typed === undefined
       ? undefined
-      : new SecretBagRegistry({ typedSecrets: typed });
+      : new SecretBagRegistry();
     const callerBag = callerRegistry && new VaultSecretBag(callerRegistry);
     const callerSentinel = callerBag?.addSecret(
       { vaultName: "v", key: "k" },
@@ -1326,7 +1326,6 @@ Deno.test("ModelInvocationService: a nested invocation runs on an independent re
     const nested = seen[0];
     assertEquals(seen[1], nested);
     assertEquals(delivered?.vaultSecrets?.registry, nested);
-    assertEquals(nested.typedSecrets, typed === true, String(typed));
     if (callerRegistry) {
       assertEquals(nested === callerRegistry, false);
       assertEquals(nested.isEmpty, true);

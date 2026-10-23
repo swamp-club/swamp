@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { z } from "zod";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -33,8 +34,8 @@ import {
   type ModelEvaluateEvent,
   type ModelEvaluateItemData,
 } from "./evaluate.ts";
-import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
-import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
+
+import type { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
@@ -285,10 +286,12 @@ Deno.test("modelEvaluate: shows sensitive values masked and caches them as vault
       Promise.resolve({ definition: evaluated, type: modelType }),
     // Evaluation read the secret through data.latest, which records it.
     evaluateDefinition: (_definition, type, sensitiveValues) => {
-      sensitiveValues.addSecret("Pl41n-s3cret", {
-        vaultName: "prod",
-        key: "api-token",
-      });
+      const sentinel = new VaultSecretBag(sensitiveValues.sentinels)
+        .addDataReference(
+          { vaultName: "prod", key: "api-token" },
+          "globalArguments.token",
+        );
+      evaluated.setGlobalArgument("token", `Bearer ${sentinel}`);
       return Promise.resolve({
         definition: evaluated,
         type,
@@ -340,12 +343,16 @@ Deno.test("modelEvaluate: --all writes sensitive values outside arguments as ref
   const saved: Definition[] = [];
   const deps = makeDeps({
     evaluateAllDefinitions: (sensitiveValues) => {
-      sensitiveValues.addSecret("Pl41n-s3cret", {
-        vaultName: "prod",
-        key: "db-password",
-      });
+      const sentinel = new VaultSecretBag(sensitiveValues.sentinels)
+        .addDataReference({ vaultName: "prod", key: "db-password" }, "inputs");
       return Promise.resolve([{
-        definition: evaluated,
+        definition: Definition.fromData({
+          ...evaluated.toData(),
+          inputs: {
+            type: "object",
+            properties: { password: { type: "string", default: sentinel } },
+          },
+        }),
         sourceDefinition: source,
         type: modelType,
         hadExpressions: true,
@@ -407,14 +414,13 @@ Deno.test("modelEvaluate all with include saves and reports only accepted models
   assertEquals(saved, ["keep"]);
 });
 
-Deno.test("modelEvaluate: the evaluation's sensitive values come from createSensitiveValues, for one model and for all", async () => {
+Deno.test("modelEvaluate: each evaluation creates an independent registry, for one model and for all", async () => {
   const definition = Definition.create({
     id: "00000000-0000-4000-8000-000000000002",
     name: "typed-eval",
     version: 1,
   });
   const type = ModelType.create("aws/ec2");
-  const registry = new SecretBagRegistry({ typedSecrets: true });
   const seen: SecretBagRegistry[] = [];
   const deps: ModelEvaluateDeps = {
     lookupDefinition: () => Promise.resolve({ definition, type }),
@@ -439,7 +445,6 @@ Deno.test("modelEvaluate: the evaluation's sensitive values come from createSens
     lookupModelDefinition: () => Promise.resolve(undefined),
     saveEvaluatedDefinition: () => Promise.resolve(),
     getEvaluatedPath: () => "/tmp/evaluated.yaml",
-    createSensitiveValues: () => new RunSensitiveValues(undefined, registry),
   };
   await collect<ModelEvaluateEvent>(
     modelEvaluate(createLibSwampContext(), deps, {
@@ -449,26 +454,9 @@ Deno.test("modelEvaluate: the evaluation's sensitive values come from createSens
   await collect<ModelEvaluateEvent>(
     modelEvaluate(createLibSwampContext(), deps, {}),
   );
-  assertEquals(seen, [registry, registry]);
-  // Without the factory the values are untyped, as the CLI's are.
-  const plain: SecretBagRegistry[] = [];
-  await collect<ModelEvaluateEvent>(
-    modelEvaluate(createLibSwampContext(), {
-      ...deps,
-      createSensitiveValues: undefined,
-      evaluateDefinition: (def, t, sensitiveValues) => {
-        plain.push(sensitiveValues.sentinels);
-        return Promise.resolve({
-          definition: def,
-          type: t,
-          hadExpressions: false,
-          authoredExpressions: new Set<string>(),
-        });
-      },
-    }, { modelIdOrName: "typed-eval" }),
-  );
-  assertEquals(plain.length, 1);
-  assertEquals(plain[0].typedSecrets, false);
+  assertEquals(seen.length, 2);
+  assertEquals(seen[0] === seen[1], false);
+  assertEquals(seen.every((registry) => registry.isEmpty), true);
 });
 
 Deno.test("modelEvaluate: masks a literal under a sensitive argument with the type's schemas and keeps an unresolved inputs expression; an unknown type masks nothing (swamp-club#3681)", async () => {

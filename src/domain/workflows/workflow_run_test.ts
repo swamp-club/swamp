@@ -2792,12 +2792,16 @@ Deno.test("WorkflowRun.toPersistedData: writes references at value positions onl
   const values = new RunSensitiveValues();
   values.addSecret("true", { vaultName: "v", key: "flag" });
   values.addSecret("Pl41n-s3cret", { vaultName: "v", key: "tok" });
+  const sentinel = new VaultSecretBag(values.sentinels).addDataReference({
+    vaultName: "v",
+    key: "tok",
+  }, "inputs");
   run.attachSensitiveValues(values);
-  run.captureInputs({ token: "Bearer Pl41n-s3cret", enabled: true });
+  run.captureInputs({ token: `Bearer ${sentinel}`, enabled: true });
   run.start();
   const step = run.getJob("main")!.getStep("s")!;
   step.start();
-  step.fail("rejected Pl41n-s3cret");
+  step.fail(`rejected ${sentinel}`);
 
   const persisted = run.toPersistedData();
   const text = JSON.stringify(persisted);
@@ -2806,7 +2810,7 @@ Deno.test("WorkflowRun.toPersistedData: writes references at value positions onl
     persisted.inputs?.token,
     "Bearer ${{ vault.get('v', 'tok') }}",
   );
-  assertEquals(persisted.inputs?.enabled, "${{ vault.get('v', 'flag') }}");
+  assertEquals(persisted.inputs?.enabled, true);
   // Structural fields are never rewritten, even when they equal a secret.
   assertEquals(persisted.id, run.id);
   assertEquals(persisted.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
@@ -2814,7 +2818,6 @@ Deno.test("WorkflowRun.toPersistedData: writes references at value positions onl
     (persisted.writtenReferences ?? []).map((r) => r.path.join(".")).sort(),
     [
       "failureReason",
-      "inputs.enabled",
       "inputs.token",
       "jobs.0.steps.0.error",
     ],
@@ -3495,7 +3498,7 @@ Deno.test("WorkflowRun.toPersistedData: a typed run writes its inputs map in the
   const run = WorkflowRun.create(workflow);
   const values = new RunSensitiveValues(
     undefined,
-    new SecretBagRegistry({ typedSecrets: true }),
+    new SecretBagRegistry(),
   );
   const bag = new VaultSecretBag(values.sentinels);
   const a = bag.addSecret({ vaultName: "v", key: "a" }, "inputs.token");

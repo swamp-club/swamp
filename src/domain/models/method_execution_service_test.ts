@@ -3981,7 +3981,6 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
       context.modelId,
       "remote-def",
       repo,
-      new RunSensitiveValues(),
     );
     assertEquals(record.ownerType, "model-method");
     assertEquals(record.attributes, { value: "remote" });
@@ -5661,7 +5660,7 @@ function destinationModel(
 
 /** A typed run that issued one vault.get() reference to key `token`. */
 function typedToken(): { bag: VaultSecretBag; sentinel: string } {
-  const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets: true }));
+  const bag = new VaultSecretBag(new SecretBagRegistry());
   return {
     bag,
     sentinel: bag.addSecret(
@@ -5805,33 +5804,6 @@ Deno.test("executeWorkflow: the method hook receives the merged arguments before
   assertEquals(refusing.seen.method, []);
 });
 
-Deno.test("executeWorkflow: option off, a secret in a refusing field is delivered as today", async () => {
-  const service = new DefaultMethodExecutionService();
-  const { model, seen } = destinationModel();
-  const bag = new VaultSecretBag(new SecretBagRegistry());
-  const sentinel = bag.addSecret(
-    { vaultName: "v", key: "token" },
-    "methods.create.arguments.workingDir",
-  );
-  const definition = Definition.create({
-    name: "d",
-    globalArguments: {},
-    methods: { create: { arguments: { workingDir: sentinel } } },
-  });
-  const { loader, reads } = mockLoader({ token: "s3cret-value" });
-  const { context } = createTestContext({
-    modelType: model.type,
-    methodName: "create",
-    vaultSecrets: bag,
-  });
-  await service.executeWorkflow(definition, model, "create", context, {
-    secretLoader: loader,
-  });
-  assertEquals(reads, ["token"]);
-  assertEquals(seen.hook, []);
-  assertEquals(seen.method, [{ workingDir: "s3cret-value" }]);
-});
-
 Deno.test("executeWorkflow: a failed method's output record holds its error with values and sentinels masked", async () => {
   const service = new DefaultMethodExecutionService();
   const saved: ModelOutput[] = [];
@@ -5845,7 +5817,7 @@ Deno.test("executeWorkflow: a failed method's output record holds its error with
   // The run's loader registers each value it loads; this mock loader does
   // not take a redactor, so the value is registered here.
   redactor.addSecret("s3cret-value");
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   // The run's sensitive values attach the redactor to the typed registry.
   new RunSensitiveValues(redactor, registry);
   const bag = new VaultSecretBag(registry);
@@ -5894,7 +5866,7 @@ Deno.test("executeWorkflow: a failed method's output record holds its error with
   assertEquals(failed?.error?.message.includes("s3cret-value"), false);
 });
 
-Deno.test("executeWorkflow: the checks and the method receive the global arguments in unresolvedMethodArgs with their sentinels, as the shell needs, with the option on or off", async () => {
+Deno.test("executeWorkflow: the checks and the method receive the global arguments in unresolvedMethodArgs with their sentinels, as the shell needs", async () => {
   const service = new DefaultMethodExecutionService();
   const seen: {
     method?: Record<string, unknown>;
@@ -5934,8 +5906,8 @@ Deno.test("executeWorkflow: the checks and the method receive the global argumen
       },
     },
   };
-  for (const typedSecrets of [true, false]) {
-    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+  {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
     const sentinel = bag.addSecret(
       { vaultName: "v", key: "token" },
       "globalArguments.command",
@@ -5956,22 +5928,20 @@ Deno.test("executeWorkflow: the checks and the method receive the global argumen
       secretLoader: loader,
     });
     // The merge is built before the boundary writes values into the global
-    // arguments, in either mode (swamp-club#3627): option off, a shell run
-    // under globalArguments used to reach the command line as plaintext.
+    // arguments, including a shell run under globalArguments (swamp-club#3627).
     const expected = `echo ${sentinel}`;
     for (const merge of [seen.method, seen.check]) {
-      assertEquals(merge?.command, expected, `typed ${typedSecrets}`);
-      // A global that holds no secret carries what validation parsed, in
-      // either mode: the default the author left out, the coerced number.
-      assertEquals(merge?.retries, 3, `typed ${typedSecrets}`);
-      assertEquals(merge?.port, 8080, `typed ${typedSecrets}`);
+      assertEquals(merge?.command, expected);
+      // A non-secret global carries its parsed defaults and coerced numbers.
+      assertEquals(merge?.retries, 3);
+      assertEquals(merge?.port, 8080);
     }
     // The method's validated arguments hold the value either way.
     assertEquals(seen.args?.command, "echo s3cret-value");
   }
 });
 
-Deno.test("executeWorkflow: delivering one Definition instance twice keeps the caller's sentinels, so the second attempt loads again and the merge the shell fills from still holds them, with the option on or off", async () => {
+Deno.test("executeWorkflow: delivering one Definition instance twice keeps the caller's sentinels, so the second attempt loads again and the merge the shell fills from still holds them", async () => {
   const service = new DefaultMethodExecutionService();
   const seen: {
     method?: Record<string, unknown>;
@@ -6003,8 +5973,8 @@ Deno.test("executeWorkflow: delivering one Definition instance twice keeps the c
       },
     },
   };
-  for (const typedSecrets of [true, false]) {
-    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+  {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
     const sentinel = bag.addSecret(
       { vaultName: "v", key: "token" },
       "globalArguments.command",
@@ -6017,7 +5987,7 @@ Deno.test("executeWorkflow: delivering one Definition instance twice keeps the c
     });
     const { loader, reads } = mockLoader({ token: "s3cret-value" });
     for (const attempt of [1, 2]) {
-      const where = `typed ${typedSecrets}, attempt ${attempt}`;
+      const where = `attempt ${attempt}`;
       const { context } = createTestContext({
         modelType: model.type,
         methodName: "create",
@@ -6097,7 +6067,7 @@ Deno.test("executeWorkflow: in a typed run an env authored as a JSON string with
   assertEquals(directError.destination, "an environment variable name");
 });
 
-Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a global while its siblings are parsed, and leaves out a global whose value reads as an expression, with the option on or off", async () => {
+Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a global while its siblings are parsed, and leaves out a global whose value reads as an expression", async () => {
   const service = new DefaultMethodExecutionService();
   /** The merge the method received, one per mode. */
   const seen: Record<string, unknown>[] = [];
@@ -6123,8 +6093,8 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
       },
     },
   };
-  for (const [index, typedSecrets] of [true, false].entries()) {
-    const bag = new VaultSecretBag(new SecretBagRegistry({ typedSecrets }));
+  {
+    const bag = new VaultSecretBag(new SecretBagRegistry());
     const sentinel = bag.addSecret({ vaultName: "v", key: "token" }, "loc");
     const shaped = bag.addSecret({ vaultName: "v", key: "shaped" }, "loc2");
     const definition = Definition.create({
@@ -6149,12 +6119,11 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
     await service.executeWorkflow(definition, model, "create", context, {
       secretLoader: loader,
     });
-    const merge = seen[index];
-    assertEquals(seen.length, index + 1, `typed ${typedSecrets}`);
+    const merge = seen[0];
+    assertEquals(seen.length, 1);
     assertEquals(
       merge?.config,
       { token: sentinel, retries: 5, verbose: false },
-      `typed ${typedSecrets}`,
     );
     assertEquals(Object.hasOwn(merge ?? {}, "shaped"), false);
   }
@@ -6162,8 +6131,8 @@ Deno.test("executeWorkflow: the merge keeps a sentinel leaf authored inside a gl
 
 // ---------- deliverStepSecrets: the shared refuse-then-load step ----------
 
-function deliveryFixture(typed: boolean) {
-  const registry = new SecretBagRegistry({ typedSecrets: typed });
+function deliveryFixture() {
+  const registry = new SecretBagRegistry();
   const bag = new VaultSecretBag(registry);
   const sentinel = bag.addSecret(
     { vaultName: "v", key: "k" },
@@ -6195,7 +6164,7 @@ function deliveryFixture(typed: boolean) {
 }
 
 Deno.test("deliverStepSecrets: builds the sentinel merge, loads once for the attempt, and leaves the step's own bag unloaded", async () => {
-  const { bag, sentinel, loads, loader, model } = deliveryFixture(true);
+  const { bag, sentinel, loads, loader, model } = deliveryFixture();
   const definition = Definition.create({
     name: "d",
     globalArguments: { region: "us-east-1", templated: "${{ inputs.x }}" },
@@ -6234,9 +6203,9 @@ Deno.test("deliverStepSecrets: builds the sentinel merge, loads once for the att
   assertEquals(loads, ["v/k", "v/k"]);
 });
 
-Deno.test("deliverStepSecrets: a typed run refuses a secret at a refusing destination before any load; an untyped run does not refuse", async () => {
-  for (const typed of [true, false]) {
-    const { bag, sentinel, loads, loader, model } = deliveryFixture(typed);
+Deno.test("deliverStepSecrets: refuses a secret at a refusing destination before any load", async () => {
+  {
+    const { bag, sentinel, loads, loader, model } = deliveryFixture();
     const definition = Definition.create({
       name: "d",
       globalArguments: { region: sentinel },
@@ -6253,22 +6222,13 @@ Deno.test("deliverStepSecrets: a typed run refuses a secret at a refusing destin
         secretLoader: loader,
         localPlacement: true,
       });
-    if (typed) {
-      await assertRejects(deliver, SecretDestinationRefusedError);
-      assertEquals(loads, []);
-    } else {
-      const delivery = await deliver();
-      assertEquals(loads, ["v/k"]);
-      assertEquals(
-        delivery.vaultSecrets?.resolveRaw(sentinel),
-        "hunter2-value",
-      );
-    }
+    await assertRejects(deliver, SecretDestinationRefusedError);
+    assertEquals(loads, []);
   }
 });
 
 Deno.test("deliverStepSecrets: with no method named only the global arguments are checked, and a step with no secret delivers its own bag untouched", async () => {
-  const { bag, sentinel, loads, loader, model } = deliveryFixture(true);
+  const { bag, sentinel, loads, loader, model } = deliveryFixture();
   const modelDef = model(true);
   // A secret in a refusing global argument is refused even with no method.
   await assertRejects(
@@ -6314,7 +6274,7 @@ Deno.test("deliverStepSecrets: with no method named only the global arguments ar
     method: modelDef.methods.run,
     methodName: "run",
     vaultSecrets: new VaultSecretBag(
-      new SecretBagRegistry({ typedSecrets: true }),
+      new SecretBagRegistry(),
     ),
     secretLoader: loader,
     localPlacement: true,

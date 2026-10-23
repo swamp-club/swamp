@@ -45,6 +45,12 @@ import {
   reservedWorkflowTags,
 } from "./reserved_workflow_tags.ts";
 
+import {
+  containsExpression,
+  extractExpressions,
+} from "../expressions/expression_parser.ts";
+import type { SecretMisuseFinding } from "../models/validation_service.ts";
+
 /**
  * Value object representing the result of a single validation.
  */
@@ -54,6 +60,8 @@ export class WorkflowValidationResult {
     readonly passed: boolean,
     readonly warning: boolean,
     readonly error?: string,
+    readonly code?: string,
+    readonly location?: string,
   ) {}
 
   static pass(name: string): WorkflowValidationResult {
@@ -64,8 +72,19 @@ export class WorkflowValidationResult {
     return new WorkflowValidationResult(name, true, true, message);
   }
 
-  static fail(name: string, error: string): WorkflowValidationResult {
-    return new WorkflowValidationResult(name, false, false, error);
+  static fail(
+    name: string,
+    error: string,
+    diagnostic?: { code: string; location: string },
+  ): WorkflowValidationResult {
+    return new WorkflowValidationResult(
+      name,
+      false,
+      false,
+      error,
+      diagnostic?.code,
+      diagnostic?.location,
+    );
   }
 
   equals(other: WorkflowValidationResult): boolean {
@@ -73,7 +92,8 @@ export class WorkflowValidationResult {
       this.name === other.name &&
       this.passed === other.passed &&
       this.warning === other.warning &&
-      this.error === other.error
+      this.error === other.error &&
+      this.code === other.code && this.location === other.location
     );
   }
 }
@@ -175,6 +195,12 @@ export class DefaultWorkflowValidationService
     private readonly sensitiveOutputVaults?: SensitiveOutputVaultResolver,
     /** The stored definition a step names, for its reserved tag keys. */
     private readonly findDefinition?: ReservedTagLookups["findDefinition"],
+    private readonly diagnoseSecrets?: (
+      expression: string,
+      location: string,
+      workflow: Workflow,
+      embedded?: boolean,
+    ) => readonly SecretMisuseFinding[],
   ) {}
 
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
@@ -247,12 +273,54 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
+    for (const result of this.validateSecretUsage(workflow)) {
+      results.push(result);
+    }
+
     // 17. Reserved tag keys the workflow, its steps and nested workflows supply
     for (const result of await this.validateReservedTags(workflow)) {
       results.push(result);
     }
 
     return results;
+  }
+
+  private validateSecretUsage(workflow: Workflow): WorkflowValidationResult[] {
+    if (!this.diagnoseSecrets) return [];
+    const expressions: {
+      celExpression: string;
+      path: string;
+      embedded?: boolean;
+    }[] = extractExpressions(workflow.toData());
+    for (const [jobIndex, job] of workflow.jobs.entries()) {
+      for (const [stepIndex, step] of job.steps.entries()) {
+        const path = `jobs[${jobIndex}].steps[${stepIndex}]`;
+        if (step.guard && !containsExpression(step.guard)) {
+          expressions.push({
+            celExpression: step.guard,
+            path: `${path}.guard`,
+          });
+        }
+        const task = step.task.toData();
+        if (task.type === "assert" && !containsExpression(task.expr)) {
+          expressions.push({
+            celExpression: task.expr,
+            path: `${path}.task.expr`,
+          });
+        }
+      }
+    }
+    return expressions.flatMap(({ celExpression, path, embedded }) =>
+      this.diagnoseSecrets!(celExpression, path, workflow, embedded).map((
+        finding,
+      ) =>
+        WorkflowValidationResult.fail(
+          "Secret usage",
+          `${finding.code} at "${finding.location}": ${finding.reason}`,
+          finding,
+        )
+      )
+    );
   }
 
   /**

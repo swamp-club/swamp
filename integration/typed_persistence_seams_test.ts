@@ -21,7 +21,7 @@
  * The persistence seams of typed secrets, end to end (design/enablers/
  * typed-secrets.md Sections 8.1, 8.2 and the Persistence row of 12.1,
  * typed-secrets 4.4): a run that suspends and resumes, and a replay of its
- * cache, with the option on and off. Every seam round-trips through
+ * cache. Every seam round-trips through
  * writtenReferences, the run index holds reference text, the output
  * records and the catalog hold neither a value nor a sentinel, a record
  * written with the json, number and boolean encodings of an untyped run
@@ -45,8 +45,7 @@ import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
 import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import { vaultReferenceText } from "../src/domain/secrets/run_sensitive_values.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../src/domain/secrets/persisted_sensitive_form.ts";
-import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
-import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
+
 import {
   createWorkflowEvaluateDeps,
   workflowEvaluate,
@@ -161,15 +160,15 @@ async function assertCatalogClean(f: Fixture): Promise<void> {
   assertEquals(text.includes(SENTINEL_MARK), false, "catalog sentinel");
 }
 
-Deno.test("typed persistence: a suspended child run's record, caches and index hold references and the persisted maps; the typed resume restores references, loads the rotated values once each at delivery and reruns no completed step; the untyped resume delivers the same", async () => {
-  for (const typed of [true, false]) {
+Deno.test("typed persistence: a suspended child run's record, caches and index hold references and the persisted maps; the typed resume restores references, loads the rotated values once each at delivery and reruns no completed step", async () => {
+  {
     await withFixture(async (f) => {
       await f.seed();
-      const run = await f.run(parent(), typed, [child()]);
+      const run = await f.run(parent(), [child()]);
       assertEquals(run.status, "suspended", [...run.errors].join("\n"));
       const childRunId = nestedRunId(run);
       // Nothing delivered yet: a typed run loaded nothing to get here.
-      if (typed) assertEquals(f.loads, []);
+      assertEquals(f.loads, []);
 
       const storedKey = await f.storedKey("c-quotes");
       const secretRef = vaultReferenceText({
@@ -191,7 +190,7 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
       // value search records the plaintext it found with no origin.
       assertEquals(
         written.filter(([path]) => path.startsWith("inputs")),
-        [["inputs.secret", storedKey, typed]],
+        [["inputs.secret", storedKey, true]],
       );
       assertEquals(
         data.jobs[0].steps[0].approvalPrompt,
@@ -236,7 +235,7 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
       f.forbidden.push(rotatedSecret, rotatedToken);
       await f.approve(CHILD, childRunId);
       const before = f.loads.length;
-      const resumed = await f.resume(CHILD, childRunId, typed);
+      const resumed = await f.resume(CHILD, childRunId);
       assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
       // The remaining step delivered the current values, once each; the
       // approved gate did not run again.
@@ -244,13 +243,11 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
         password: rotatedSecret,
         note: rotatedToken,
       }]);
-      if (typed) {
+      {
         assertEquals(
           f.loads.slice(before).sort(),
           [storedKey, TOKEN_KEY].sort(),
         );
-      } else {
-        assert(f.loads.length - before >= 2);
       }
       // The record is written back as it was read, references in place.
       const again = await stored(f, CHILD, childRunId);
@@ -260,13 +257,13 @@ Deno.test("typed persistence: a suspended child run's record, caches and index h
         data.jobs[0].steps[0].approvalPrompt,
       );
       assert(again.data.persistedInputsProvenance);
-      if (typed) await assertNothingLeaked(f, resumed, { allowed: [FOREIGN] });
+      await assertNothingLeaked(f, resumed, { allowed: [FOREIGN] });
       await assertCatalogClean(f);
     });
   }
 });
 
-Deno.test("typed persistence: a typed replay of the evaluated cache reads nothing to restore and the child it calls delivers the rotated values once each; the untyped replay delivers the same", async () => {
+Deno.test("typed persistence: a typed replay of the evaluated cache reads nothing to restore and the child it calls delivers the rotated values once each", async () => {
   // The data read the parent hands the child is deferred to the call step,
   // and a child cache whose inputs held a secret withholds its inputs and is
   // never replayed, so the replay that reaches a delivery end to end is the
@@ -305,10 +302,10 @@ Deno.test("typed persistence: a typed replay of the evaluated cache reads nothin
         ],
       })],
     });
-  for (const typed of [true, false]) {
+  {
     await withFixture(async (f) => {
       await f.seed();
-      const first = await f.run(caller(), typed, [callee()]);
+      const first = await f.run(caller(), [callee()]);
       assertEquals(first.status, "succeeded", [...first.errors].join("\n"));
       assertEquals(f.received, [{ password: quotes(f), note: f.token }]);
       const cache = await new YamlEvaluatedWorkflowRepository(f.repoDir)
@@ -328,13 +325,13 @@ Deno.test("typed persistence: a typed replay of the evaluated cache reads nothin
       f.forbidden.push(rotatedSecret, rotatedToken);
       f.received.length = 0;
       const before = f.loads.length;
-      const replay = await f.replay(CALLER, typed);
+      const replay = await f.replay(CALLER);
       assertEquals(replay.status, "succeeded", [...replay.errors].join("\n"));
       assertEquals(f.received, [{
         password: rotatedSecret,
         note: rotatedToken,
       }]);
-      if (typed) {
+      {
         // One load per reference, at the child's delivery: nothing was read
         // to restore the parent's cache.
         assertEquals(
@@ -377,7 +374,7 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
         ],
       })],
     });
-  for (const typed of [true, false]) {
+  {
     await withFixture(async (f) => {
       // A digit string long enough never to occur by chance in an id, a
       // timestamp or a duration, so its absence from every file is a real
@@ -394,7 +391,7 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
       f.forbidden.push(port, 'p"w');
       // Run with plain inputs, then rewrite the suspended record as an
       // untyped run that read secrets would have written it.
-      const run = await f.run(workflow(), false, [], {
+      const run = await f.run(workflow(), [], {
         port: "x",
         body: "y",
         on: "z",
@@ -437,11 +434,11 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
             dataOrigin: true,
           },
         ];
-        data.sensitiveFormat = SENSITIVE_FORMAT_VERSION;
+        data.sensitiveFormat = 2;
         delete data.persistedInputsProvenance;
       });
       await f.approve(NAME, run.runId);
-      const resumed = await f.resume(NAME, run.runId, typed);
+      const resumed = await f.resume(NAME, run.runId);
       assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
       // The number and boolean deliver their text, the json entry the escaped form.
       assertEquals(f.received, [{
@@ -456,22 +453,23 @@ Deno.test("typed persistence: a record an untyped run wrote with json, number an
       const encodings = (data.writtenReferences ?? [])
         .filter((w) => w.path[0] === "inputs")
         .map((w) => [w.path[1], w.encoding, w.dataOrigin]).sort();
-      // A typed resume writes each entry back as it was read; the untyped
-      // value search records the plaintext it found with no origin.
+      // Legacy references retain the old reader's data origin, even where
+      // the value search recorded false. The next write upgrades the format.
+      assertEquals(data.sensitiveFormat, SENSITIVE_FORMAT_VERSION);
       assertEquals(encodings, [
-        ["body", "json", false],
-        ["on", "boolean", typed],
-        ["port", "number", false],
+        ["body", "json", true],
+        ["on", "boolean", true],
+        ["port", "number", true],
       ]);
       for (const value of [port, 'p"w']) {
         assertEquals(await f.filesHolding(value), [], `files hold ${value}`);
       }
-      if (typed) await assertNothingLeaked(f, resumed, { allowed: [FOREIGN] });
+      await assertNothingLeaked(f, resumed, { allowed: [FOREIGN] });
     });
   }
 });
 
-Deno.test("typed persistence: swamp workflow evaluate over a typed registry expands a forEach over tagged records and writes its cache from registry entries with zero loads and no probe; the untyped evaluate writes the same references", async () => {
+Deno.test("typed persistence: swamp workflow evaluate over a typed registry expands a forEach over tagged records and writes its cache from registry entries with zero loads and no probe", async () => {
   const NAME = "persist-evaluate";
   const workflow = () =>
     Workflow.create({
@@ -495,20 +493,13 @@ Deno.test("typed persistence: swamp workflow evaluate over a typed registry expa
     await f.seed();
     const workflowRepo = new YamlWorkflowRepository(f.repoDir);
     await workflowRepo.save(workflow());
-    const evaluate = async (typed: boolean) => {
+    const evaluate = async () => {
       const deps = createWorkflowEvaluateDeps(f.repoDir, workflowRepo);
       const events = await collect(workflowEvaluate(
         createLibSwampContext(),
-        typed
-          ? {
-            ...deps,
-            createSensitiveValues: () =>
-              new RunSensitiveValues(
-                undefined,
-                new SecretBagRegistry({ typedSecrets: true }),
-              ),
-          }
-          : deps,
+        {
+          ...deps,
+        },
         { workflowIdOrName: NAME, inputs: {} },
       ));
       assertEquals(events.some((e) => e.kind === "error"), false);
@@ -517,7 +508,7 @@ Deno.test("typed persistence: swamp workflow evaluate over a typed registry expa
       assert(cache);
       return { events, cache };
     };
-    const typed = await evaluate(true);
+    const typed = await evaluate();
     // The data-origin references are authorized, not probed, and nothing
     // is delivered: no load and no check.
     assertEquals(f.loads, []);
@@ -530,19 +521,5 @@ Deno.test("typed persistence: swamp workflow evaluate over a typed registry expa
       assertEquals(JSON.stringify(typed.events).includes(value), false);
     }
     assertEquals(await f.filesHolding(SENTINEL_MARK), []);
-
-    // The untyped evaluate reads no vault either: it carries the stored
-    // reference text into the same positions as data, so both caches hold
-    // the same text, and only the typed one records it as written
-    // references a replay restores.
-    const untyped = await evaluate(false);
-    assertEquals(
-      untyped.cache.workflow.toData().jobs,
-      typed.cache.workflow.toData().jobs,
-    );
-    assertEquals(untyped.cache.writtenReferences, []);
-    for (const value of f.forbidden) {
-      assertEquals(await f.filesHolding(value), [], `files hold ${value}`);
-    }
   });
 });

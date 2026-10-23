@@ -439,7 +439,7 @@ Deno.test("createWorkflowValidateDeps: fails a step whose stored definition hold
     );
 
     const deps = createWorkflowValidateDeps(
-      {} as WorkflowRepository,
+      { getPath: () => "workflows/test.yaml" } as unknown as WorkflowRepository,
       new YamlDefinitionRepository(dir),
     );
     const results = await deps.validate(Workflow.create({
@@ -509,7 +509,7 @@ Deno.test("createWorkflowValidateDeps: predicts sensitive-output vaults with the
       }),
     );
     const deps = createWorkflowValidateDeps(
-      {} as WorkflowRepository,
+      { getPath: () => "workflows/test.yaml" } as unknown as WorkflowRepository,
       new YamlDefinitionRepository(dir),
       undefined,
       () =>
@@ -598,7 +598,7 @@ Deno.test("createWorkflowValidateDeps: a step supplying what a method's transfor
       Definition.create({ name: "piped", type: modelType.normalized }),
     );
     const deps = createWorkflowValidateDeps(
-      {} as WorkflowRepository,
+      { getPath: () => "workflows/test.yaml" } as unknown as WorkflowRepository,
       new YamlDefinitionRepository(dir),
     );
     const stepInputs = async (inputs: Record<string, unknown>) => {
@@ -631,4 +631,68 @@ Deno.test("createWorkflowValidateDeps: a step supplying what a method's transfor
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path and code in JSON, including raw guards and asserts", async () => {
+  const workflow = Workflow.create({
+    name: "misuse",
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({
+          name: "guarded",
+          guard: "vault.get('prod', 'key') == 'x'",
+          task: StepTask.manualApproval("wait"),
+        }),
+        Step.create({
+          name: "asserted",
+          task: StepTask.assert(
+            "size(vault.get('prod', 'key')) == 2",
+            "length",
+          ),
+        }),
+        Step.create({
+          name: "aliased",
+          task: StepTask.manualApproval("${{ dyn(vault).get('prod', 'key') }}"),
+        }),
+        Step.create({
+          name: "interpolated",
+          task: StepTask.model("consumer", "run", {
+            env: { TOKEN: "prefix:${{ {'token': vault.get('prod', 'key')} }}" },
+          }),
+        }),
+      ],
+    })],
+  });
+  const deps = createWorkflowValidateDeps({
+    ...({} as WorkflowRepository),
+    findByName: () => Promise.resolve(workflow),
+    getPath: () => "workflows/misuse.yaml",
+  });
+  const events = await collect(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "misuse",
+    }),
+  );
+  const text = JSON.stringify(events);
+  assertStringIncludes(text, "secret_operation_unsupported");
+  assertStringIncludes(text, "invalid_expression");
+  assertStringIncludes(
+    text,
+    "workflows/misuse.yaml jobs[0].steps[0].guard:1:1",
+  );
+  assertStringIncludes(text, "jobs[0].steps[1].task.expr:1:");
+  const findings = (await deps.validate(workflow)).filter((r) =>
+    r.name === "Secret usage"
+  );
+  assertEquals(findings.length, 4);
+  assertStringIncludes(text, "jobs[0].steps[3].task.inputs.env.TOKEN:");
+  assertStringIncludes(
+    text,
+    "interpolating a container holding a secret into text",
+  );
+  assertEquals(
+    findings.every((r) => r.code !== undefined && r.location !== undefined),
+    true,
+  );
 });

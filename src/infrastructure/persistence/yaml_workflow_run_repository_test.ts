@@ -3829,7 +3829,7 @@ Deno.test("save: the run index holds a typed run's inputs and failure reason as 
     const run = WorkflowRun.create(workflow);
     const values = new RunSensitiveValues(
       undefined,
-      new SecretBagRegistry({ typedSecrets: true }),
+      new SecretBagRegistry(),
     );
     const sentinel = new VaultSecretBag(values.sentinels).addSecret(
       { vaultName: "v", key: "k" },
@@ -3869,7 +3869,7 @@ Deno.test("YamlWorkflowRunRepository.save: on v3, the staged record of a typed r
     const run = WorkflowRun.create(workflow);
     const values = new RunSensitiveValues(
       undefined,
-      new SecretBagRegistry({ typedSecrets: true }),
+      new SecretBagRegistry(),
     );
     const sentinel = new VaultSecretBag(values.sentinels).addSecret(
       { vaultName: "v", key: "k" },

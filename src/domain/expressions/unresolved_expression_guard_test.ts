@@ -23,7 +23,11 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { InvalidExpressionError, UnresolvedExpressionError } from "./errors.ts";
+import {
+  InvalidExpressionError,
+  SecretRefusedError,
+  UnresolvedExpressionError,
+} from "./errors.ts";
 import { assertMethodArgumentsEvaluated } from "./unresolved_expression_guard.ts";
 
 const FAILED_RAW = "${{ data.latest('producer', 'log').nope }}";
@@ -98,4 +102,19 @@ Deno.test("assertMethodArgumentsEvaluated: passes when nothing failed", () => {
     { run: `cat ${FAILED_RAW}` },
     new Map(),
   );
+});
+
+Deno.test("assertMethodArgumentsEvaluated: preserves a pending secret refusal and permits overrides", () => {
+  const cause = new SecretRefusedError(
+    "secret_operation_unsupported",
+    "size(Secret)",
+    "size(data.latest('producer', 'log').token)",
+  );
+  const failed = new Map([[FAILED_RAW, cause]]);
+  const error = assertThrows(
+    () => assertMethodArgumentsEvaluated("run", { token: FAILED_RAW }, failed),
+    SecretRefusedError,
+  );
+  assertEquals(error, cause);
+  assertMethodArgumentsEvaluated("run", { token: "override" }, failed);
 });

@@ -77,7 +77,7 @@ const REFUSED = [
 ];
 
 Deno.test("CelEvaluator typed secrets: no refusal carries a canary, in any form, whatever the operands hold", () => {
-  const evaluator = new CelEvaluator({ typedSecrets: true });
+  const evaluator = new CelEvaluator();
   const canaries = generateCanaries().filter((canary) => canary.unique);
   assert(canaries.length > 0);
   for (const canary of canaries) {
@@ -109,7 +109,7 @@ Deno.test("CelEvaluator typed secrets: no refusal carries a canary, in any form,
 });
 
 Deno.test("CelEvaluator typed secrets: a released composition carries its text parts and a sentinel, never the entry's value", () => {
-  const evaluator = new CelEvaluator({ typedSecrets: true });
+  const evaluator = new CelEvaluator();
   for (const canary of generateCanaries().filter((c) => c.unique)) {
     const bag = new VaultSecretBag(new SecretBagRegistry());
     const secret = bag.addDataSecret(canary.value, {

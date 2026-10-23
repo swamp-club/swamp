@@ -225,13 +225,14 @@ Deno.test("evaluated cache: an input-fed sensitive argument is written as the ma
 
       const replayValues = new RunSensitiveValues();
       const stepBag = new VaultSecretBag(replayValues.sentinels);
-      const restored = await rehydrateEvaluatedDefinition(
-        cached,
-        () => Promise.resolve(VAULT_VALUE),
-        replayValues,
-        stepBag,
+      const restored = await rehydrateEvaluatedDefinition(cached, stepBag);
+      assertEquals(
+        stepBag.registry.issuedEntryOf(
+          restored.definition.globalArguments.token as string,
+        )?.reference,
+        SOURCE,
       );
-      assertEquals(restored.definition.globalArguments.token, VAULT_VALUE);
+      assertEquals(replayValues.list(), []);
       assertEquals(restored.definition.globalArguments.apiKey, "***");
 
       // A write that skips persistEvaluatedDefinition is refused at the

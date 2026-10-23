@@ -177,7 +177,7 @@ function fixture() {
     model: { web: modelData, "uuid-1": modelData },
     inputs: { item: "x" },
   };
-  const evaluator = new CelEvaluator({ typedSecrets: true });
+  const evaluator = new CelEvaluator();
   return {
     evaluator,
     bag,
@@ -607,32 +607,6 @@ Deno.test("CelEvaluator data secrets: a model indexed by name and by id reads on
   });
 });
 
-Deno.test("CelEvaluator: with typed secrets off, the same reads return the stored reference text, read with the default options, and issue nothing", async () => {
-  const f = fixture();
-  const off = new CelEvaluator();
-  assertEquals(
-    await off.evaluateAsync(
-      "data.latest('db', 'main').attributes.password",
-      f.context,
-      f.scope,
-    ),
-    REF_A,
-  );
-  assertEquals(f.calls, [{
-    accessor: "latest",
-    args: ["db", "main", undefined],
-  }]);
-  assertEquals(
-    off.evaluate(
-      "model.web.resource.creds.main.attributes.password",
-      f.context,
-      f.scope,
-    ),
-    REF_A,
-  );
-  assertEquals(f.bag.registry.isEmpty, true);
-});
-
 Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged references of the model-map records an expression reads, so the synchronous evaluate accepts them, and fails closed on anything it did not authorize (typed-secrets 4.1)", async () => {
   const f = fixture();
   const name = "${{ model.web.resource.creds.main.attributes.user }}-x";
@@ -733,10 +707,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
       f.context,
       f.scope,
     ),
-    f.scope,
-  );
-  assertEquals(
-    await new CelEvaluator().prepareSynchronousReads(name, f.context, f.scope),
     f.scope,
   );
 });
@@ -958,15 +928,6 @@ Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources w
     ),
     f.scope,
   );
-  // Typed secrets off: the stored reference text, as today.
-  assertEquals(
-    await new CelEvaluator().evaluateAsync(
-      "steps.seed.outputs.password",
-      context,
-      {},
-    ),
-    REF_A,
-  );
 });
 
 Deno.test("CelEvaluator data secrets: data.query passes the typed environment's view to its delegate, adapts the records it answers for no select or an empty one, and leaves a projection as the view answered it (typed-secrets 4.3)", async () => {
@@ -1051,18 +1012,4 @@ Deno.test("CelEvaluator data secrets: the view data.query hands its delegate is 
   );
   assertEquals(seen.length, 2);
   assert(seen.every((view) => view !== undefined));
-
-  const off = new CelEvaluator();
-  assertEquals(
-    await off.evaluateAsync("data.query('x', 'y')", probe("security")),
-    [REF_A],
-  );
-  assertEquals(seen.at(-1), undefined);
-  assertEquals(
-    (await off.evaluateAsync(
-      "data.query('main')",
-      f.context,
-    ) as DataRecord[])[0].attributes.password,
-    REF_A,
-  );
 });

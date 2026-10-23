@@ -228,7 +228,7 @@ async function executeCommand(
       // The method boundary applies this policy before the load; a typed
       // caller that reaches the method another way meets it here, so the
       // command line is safe however the shell is reached.
-      if (secretBag.registry.typedSecrets) {
+      {
         // The authored env, with its sentinels, read as validation reads it;
         // `args.env` already holds the values.
         const authored = coerceMethodArgs(
@@ -267,7 +267,7 @@ async function executeCommand(
       envNames = resolved.envNames;
     }
   }
-  if (secretBag?.registry.typedSecrets) {
+  if (secretBag) {
     assertNoNulInEnvironment(shellEnv, envNames, secretBag.registry);
   }
 

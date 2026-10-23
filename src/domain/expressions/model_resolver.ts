@@ -16,7 +16,6 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-
 import { getLogger } from "@logtape/logtape";
 import type { ModelOutput } from "../models/model_output.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -40,11 +39,6 @@ import {
 } from "../data/data_access_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
 import { localContentPath } from "../data/data_record_mapper.ts";
-import {
-  parseSensitiveFieldsTag,
-  recordSensitiveVaultRefsUnread,
-  resolveSensitiveVaultRefsLeavingUnread,
-} from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { isUuid } from "../models/model_lookup.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
@@ -52,12 +46,6 @@ import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import { markModelWording, wordedText } from "../behavior_wording.ts";
-import { freeRoots } from "./cel_grammar.ts";
-import {
-  findVaultGetCalls,
-  isDynamicVaultArgument,
-} from "./vault_reference_extractor.ts";
-import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { extractOwnNamespaceDataModelNames } from "./dependency_extractor.ts";
 import { analyzeExpression } from "./expression_references.ts";
 import {
@@ -67,32 +55,8 @@ import {
 import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_refresh.ts";
 import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
 import { attachSensitiveValues } from "./sensitive_context.ts";
-import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import {
-  checkSecretReference,
-  type ProbeRedactor,
-} from "../vaults/secret_reference_check.ts";
+import type { ProbeRedactor } from "../vaults/secret_reference_check.ts";
 import { SecretLoader } from "../vaults/secret_loader.ts";
-
-/**
- * Minimal CEL evaluator interface for resolving dynamic vault.get()
- * arguments. Defined in the domain layer so ModelResolver does not
- * depend on the infrastructure CelEvaluator directly.
- */
-export interface CelArgEvaluator {
-  evaluate(expression: string, context: Record<string, unknown>): unknown;
-}
-
-/**
- * Options for CEL-evaluating bare-token vault.get() arguments at runtime.
- * When provided, unquoted arguments that are syntactically valid CEL
- * (e.g. `inputs.vaultName`) are evaluated against the context before the
- * vault lookup. Quoted arguments are always used verbatim.
- */
-export interface VaultArgCelOptions {
-  celEvaluator: CelArgEvaluator;
-  context: ExpressionContext;
-}
 
 /**
  * Builds env context from Deno environment variables.
@@ -931,9 +895,8 @@ export class ModelResolver {
             );
           }
           // Only the changed items are replaced: records a step merged in
-          // after the getter fired (execution_service: with resolved
-          // sensitive values on the untyped path, as stored references on
-          // the typed one, which the model map view adapts) were written
+          // after the getter fired (as stored references the model map
+          // view adapts) were written
           // locally, so they are never changed by prepare and are kept.
           for (
             const [spec, instances] of Object.entries(fresh.resource ?? {})
@@ -978,7 +941,6 @@ export class ModelResolver {
     context.data = this.buildDataNamespace(
       ownNamespace,
       coordsMap,
-      sensitiveValues,
       false,
       readSet,
     );
@@ -1034,7 +996,6 @@ export class ModelResolver {
     context.data = this.buildDataNamespace(
       ownNamespace,
       new Map(),
-      sensitiveValues,
       true,
     );
     context.workers = this.buildWorkersNamespace();
@@ -1070,46 +1031,6 @@ export class ModelResolver {
       }`;
     }
     if (!fileExists(record.path)) record.path = "";
-  }
-
-  /**
-   * Resolves vault references in a data record's attributes, limited to the
-   * fields the record's schema marked sensitive. A reference whose vault
-   * cannot be read stays as stored, and the failure is recorded as unread in
-   * the run's sensitive-value record (swamp-club#3806). Every resolved value
-   * is recorded there too, which also forwards it to the run redactor.
-   */
-  private async resolveRecordVaultRefs(
-    record: DataRecord | null,
-    tags: Record<string, string> | undefined,
-    sensitiveValues: RunSensitiveValues,
-  ): Promise<void> {
-    if (!record || !tags) return;
-    if (Object.keys(record.attributes).length === 0) return;
-    const sensitiveFields = parseSensitiveFieldsTag(tags);
-    if (!sensitiveFields) return;
-    let vaultService: VaultService;
-    try {
-      vaultService = await this.getVaultService();
-    } catch (error) {
-      // A refusal by the run's vault access fails the read like every
-      // other vault path (swamp-club#2676); it is never mistaken for an
-      // unavailable vault.
-      if (error instanceof VaultAccessDeniedError) throw error;
-      await recordSensitiveVaultRefsUnread(
-        record.attributes,
-        sensitiveFields,
-        error,
-        sensitiveValues,
-      );
-      return;
-    }
-    await resolveSensitiveVaultRefsLeavingUnread(
-      record.attributes,
-      sensitiveFields,
-      vaultService,
-      sensitiveValues,
-    );
   }
 
   /**
@@ -1249,7 +1170,6 @@ export class ModelResolver {
   private buildDataNamespace(
     ownNamespace: Namespace,
     coordsMap: ModelCoordinatesMap,
-    sensitiveValues: RunSensitiveValues,
     lookUpIdentities = false,
     readSet?: ReadSetState,
   ): DataNamespace {
@@ -1348,14 +1268,13 @@ export class ModelResolver {
       latest: async (
         rawModelName: string,
         dataName: string,
-        options?: DataReadOptions,
+        _options?: DataReadOptions,
       ): Promise<DataRecord | null> => {
         if (!this.dataRepo) return null;
         const ns = routeNamespace(rawModelName, ownNamespace);
         // A stored read returns the record's references as written and
         // reads no vault; the typed expression path authorizes them itself
         // (typed-secrets 3.3).
-        const resolveSensitive = options?.sensitiveFields !== "stored";
 
         if (!ns.isWildcard) {
           // A namespaced name is never read through the caller's own
@@ -1421,13 +1340,6 @@ export class ModelResolver {
                   undefined,
                   ns.modelName,
                 );
-                if (resolveSensitive) {
-                  await this.resolveRecordVaultRefs(
-                    record,
-                    data.tags,
-                    sensitiveValues,
-                  );
-                }
                 // Content was ensured above, so the path only needs to name
                 // a present file; it is not requested a second time.
                 if (record?.path && (!available || !fileExists(record.path))) {
@@ -1460,13 +1372,6 @@ export class ModelResolver {
             // readers return it: its tags and values are that namespace's to
             // write, and must not choose which of this repository's secrets
             // are read (swamp-club#3306).
-            if (resolveSensitive && record?.namespace === ownNamespace) {
-              await this.resolveRecordVaultRefs(
-                record,
-                record.tags,
-                sensitiveValues,
-              );
-            }
             await this.materializePath(record);
             return record;
           }
@@ -1834,96 +1739,6 @@ export class ModelResolver {
   }
 
   /**
-   * Replaces each vault.get() call in a CEL string with a sentinel token
-   * that stands for its reference, issued from `secretBag`. No value is
-   * read: a load at delivery reads it (see {@link secretLoader}).
-   *
-   * Before a call is replaced, its reference is checked
-   * ({@link checkSecretReference}), so a missing or unreadable key fails
-   * here, where the eager read used to fail it, whichever branch of the
-   * expression would run.
-   *
-   * When `celOptions` is provided, unquoted (bare-token) arguments are
-   * CEL-evaluated against the supplied context before the check. This
-   * enables `vault.get(inputs.vaultName, inputs.secretKey)` where the
-   * argument values are determined at runtime. Quoted arguments are always
-   * used verbatim. A simple bare token (e.g. `my-vault`) is a literal
-   * name and is used verbatim too; see `isDynamicVaultArgument`.
-   *
-   * @param value - The string that may contain vault expressions
-   * @param secretBag - The bag the sentinels are issued from
-   * @param options.location - Where the author wrote the expression
-   * @param options.redactor - The run's redactor, for a probe's value
-   * @param options.celOptions - CEL evaluator and context for dynamic arguments
-   * @returns The string with vault.get() calls replaced by sentinel tokens wrapped as CEL strings
-   */
-  async resolveVaultExpressions(
-    value: string,
-    secretBag: VaultSecretBag,
-    options: {
-      location: string;
-      redactor?: SecretRedactor;
-      celOptions?: VaultArgCelOptions;
-    },
-  ): Promise<string> {
-    // Only calls written as code are resolved; see findVaultGetCalls.
-    const matches = findVaultGetCalls(value);
-
-    if (matches.length === 0) {
-      assertNoUnresolvedVault(value, value);
-      return value;
-    }
-
-    // Get vault service (lazy initialization if needed)
-    const vaultService = await this.getVaultService();
-
-    let resolvedValue = "";
-    let last = 0;
-    for (const match of matches) {
-      // Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
-      //         [4]=quote2, [5]=quoted key,   [6]=unquoted key
-      const fullMatch = match[0];
-      const rawVaultName = match[2] ?? match[3];
-      const rawSecretKey = match[5] ?? match[6];
-      const vaultNameIsQuoted = match[2] !== undefined;
-      const secretKeyIsQuoted = match[5] !== undefined;
-
-      const vaultName = this.resolveVaultArg(
-        rawVaultName,
-        vaultNameIsQuoted,
-        "vault name",
-        fullMatch,
-        options.celOptions,
-      );
-      const secretKey = this.resolveVaultArg(
-        rawSecretKey,
-        secretKeyIsQuoted,
-        "secret key",
-        fullMatch,
-        options.celOptions,
-      );
-
-      const reference = { vaultName, key: secretKey };
-      await checkSecretReference(vaultService, reference, {
-        registry: secretBag.registry,
-        redactor: options.redactor,
-        call: fullMatch,
-        location: options.location,
-      });
-      // The reference goes into the bag, the sentinel token into the CEL
-      // expression. Replace by position, so the same text inside a string
-      // is untouched.
-      const sentinel = secretBag.addSecret(reference, options.location);
-      resolvedValue += value.slice(last, match.index) + `"${sentinel}"`;
-      last = match.index + fullMatch.length;
-    }
-    resolvedValue += value.slice(last);
-
-    assertNoUnresolvedVault(resolvedValue, value);
-    return resolvedValue;
-  }
-
-  /**
    * A loader that reads vault.get() values at delivery through this
    * resolver's vault service, the one its existence checks ask, so a refresh
    * hook refreshes on load as it did on the eager read.
@@ -1950,62 +1765,5 @@ export class ModelResolver {
       redactor: redactor ?? { addSecret() {} },
       location,
     };
-  }
-
-  /**
-   * Resolves a single vault.get() argument. Quoted arguments are always
-   * returned verbatim. Bare-token arguments are CEL-evaluated when
-   * `celOptions` is provided and the argument is a CEL computation, such as
-   * `inputs.?key.orValue('fallback')`. Simple bare tokens
-   * (e.g. `my-vault`) are used verbatim for backwards
-   * compatibility.
-   */
-  private resolveVaultArg(
-    raw: string,
-    isQuoted: boolean,
-    argLabel: string,
-    fullMatch: string,
-    celOptions?: VaultArgCelOptions,
-  ): string {
-    if (isQuoted || !celOptions) {
-      return raw;
-    }
-
-    // A literal name (my-vault, myvault) is used verbatim.
-    if (!isDynamicVaultArgument(raw)) {
-      return raw;
-    }
-
-    const { celEvaluator, context } = celOptions;
-
-    try {
-      const result = celEvaluator.evaluate(raw, context);
-      if (typeof result !== "string") {
-        throw new Error(
-          `vault.get() ${argLabel} must resolve to a string, ` +
-            `got ${typeof result}: ${JSON.stringify(result)}`,
-        );
-      }
-      return result;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Failed to resolve dynamic ${argLabel} in ${fullMatch}: ${msg}`,
-      );
-    }
-  }
-}
-
-/**
- * Throws when an expression still reads the `vault` namespace after its
- * `vault.get(vaultName, secretKey)` calls were resolved: a form such as
- * `cel.bind(v, vault, v.get(...))` that only a direct call resolves. Without
- * this, evaluation fails with an unrelated overload error.
- */
-function assertNoUnresolvedVault(resolved: string, original: string): void {
-  if (freeRoots(resolved)?.has("vault")) {
-    throw new UserError(
-      `Unsupported vault expression "${original}". Call vault.get(vaultName, secretKey) directly.`,
-    );
   }
 }

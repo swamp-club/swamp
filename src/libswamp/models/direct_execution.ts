@@ -473,9 +473,7 @@ export async function resolveOrCreateDefinition(
   // data becomes the vault reference it came from. Those references are
   // swamp's own text, so they are vouched for alongside the authored set.
   const persisted = sensitiveValues
-    ? toPersistedForm(routed.globalArguments, sensitiveValues, {
-      applies: () => true,
-    })
+    ? toPersistedForm(routed.globalArguments, sensitiveValues)
     : { data: routed.globalArguments, writtenReferences: [] };
   const persistedGlobal = persisted.data;
   const vouched: AuthoredExpressions = authoredExpressions === "unrestricted"
