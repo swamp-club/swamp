@@ -527,7 +527,8 @@ export function homeDirectoryIsSet(): boolean {
  *
  * This directory stores operational data like installed binaries and
  * downloaded source code. Distinct from the XDG config directory which
- * stores identity and auth configuration.
+ * stores identity and auth configuration. Agent skill directories are not
+ * under it: they stay in the user's home directory (see GLOBAL_SKILL_DIRS).
  *
  * @returns The absolute path to the swamp data directory
  * @throws Error if neither SWAMP_HOME nor HOME/USERPROFILE is set

@@ -91,7 +91,10 @@ runtime data:
   `SWAMP_HOME` alone moves it to `$SWAMP_HOME/config`). `~/.swamp/` (or
   `SWAMP_HOME`) holds installed binaries and downloaded source
   (`src/infrastructure/persistence/paths.ts`, `getSwampDataDir`,
-  `getSwampConfigDir`). `swamp serve daemon enable` pins both in the service
+  `getSwampConfigDir`). Global skills are not swamp's files: they stay in each
+  agent's own skill directory under the user's home directory
+  (`GLOBAL_SKILL_DIRS` in `src/domain/repo/skill_dirs.ts`) whatever
+  `SWAMP_HOME` says, because that is where the agent reads them. `swamp serve daemon enable` pins both in the service
   definition so the daemon reads the enabling user's credentials, and
   `swamp worker daemon enable` pins the config dir for the same reason.
 
