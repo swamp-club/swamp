@@ -1211,6 +1211,12 @@ The compatibility table above is the release note for these behavior changes.
 No repository marker or migration command is required. The reserved tag and
 namespace gates (swamp-club#3635 and #3636) and Phase 4.3 query view are in place.
 
+Behavior evaluation remains a partial evaluation. A refused CEL operation or
+container interpolation keeps its authored expression, so `evaluate --all`
+continues through the repository. A run refuses when its selected method uses
+that expression. Passing the same container as a structured argument remains
+allowed, including when another method interpolates it into text.
+
 Validation reports indirect vault use even without pre-flight checks. A check
 receives global arguments after delivery, method arguments as sentinels and the
 loaded `context.vaultSecrets`. Only absent input/environment bindings stay

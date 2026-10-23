@@ -71,6 +71,7 @@ import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts
 import fc from "fast-check";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { findVaultGetCalls } from "./vault_reference_extractor.ts";
+import { assertMethodArgumentsEvaluated } from "./unresolved_expression_guard.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -627,6 +628,98 @@ Deno.test("evaluateDefinition: self.globalArguments in a method argument sees th
       result.failedExpressions!.has("${{ inputs.host.nope }}"),
       true,
     );
+  });
+});
+
+Deno.test("evaluateDefinition: container interpolation and CEL refusals stay pending without blocking whole-field uses", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    for (const shape of ["record", "array"]) {
+      const values = new RunSensitiveValues();
+      const bag = new VaultSecretBag(values.sentinels);
+      const secret = bag.addDataReference(REF, "inputs.value");
+      const value = shape === "record" ? { token: secret } : [secret];
+      const raw = "${{ inputs.value }}";
+      const size = shape === "record"
+        ? "${{ size(inputs.value.token) }}"
+        : "${{ size(inputs.value[0]) }}";
+      const definition = Definition.create({
+        name: "pending-secret",
+        inputs: { properties: { value: {} } },
+        globalArguments: { whole: raw, text: `before ${raw} after`, size },
+        methods: {
+          whole: { arguments: { value: raw } },
+          text: { arguments: { value: `before ${raw} ` + "${{ 1 + 1 }}" } },
+          size: { arguments: { value: size } },
+          copied: { arguments: { value: "${{ self.globalArguments.text }}" } },
+          plain: { arguments: { value: "${{ 1 + 1 }}" } },
+        },
+      });
+      const result = await service.evaluateDefinition(
+        definition,
+        ModelType.create("test/model"),
+        values,
+        { value },
+        undefined,
+        bag,
+      );
+      const failed = result.failedExpressions!;
+      for (const expression of [raw, size]) {
+        assertStringIncludes(
+          failed.get(expression)!.message,
+          "secret_operation_unsupported",
+        );
+      }
+      for (const copy of [result.definition, result.sanitizedDefinition!]) {
+        assertEquals(copy.globalArguments.text, `before ${raw} after`);
+        assertEquals(copy.globalArguments.size, size);
+        assertEquals(copy.getMethodArguments("text").value, `before ${raw} 2`);
+        assertEquals(
+          copy.getMethodArguments("copied").value,
+          `before ${raw} after`,
+        );
+        // A whole-field occurrence of the same raw still carries a container.
+        const whole = copy.getMethodArguments("whole").value;
+        assertEquals(Array.isArray(whole), shape === "array");
+        const leaf = Array.isArray(whole)
+          ? whole[0]
+          : (whole as Record<string, unknown>).token;
+        assertEquals(
+          bag.registry.issuedEntryOf(leaf as string)?.reference,
+          REF,
+        );
+        for (const method of ["whole", "plain"]) {
+          assertMethodArgumentsEvaluated(
+            method,
+            copy.getMethodArguments(method),
+            failed,
+          );
+        }
+        for (const method of ["text", "size", "copied"]) {
+          assertThrows(
+            () =>
+              assertMethodArgumentsEvaluated(
+                method,
+                copy.getMethodArguments(method),
+                failed,
+              ),
+            Error,
+            "secret_operation_unsupported",
+          );
+        }
+      }
+      assertEquals(
+        result.provenance!.overlapsData(
+          "methods.text.arguments.value",
+          7,
+          7 + raw.length,
+        ),
+        false,
+      );
+    }
   });
 });
 

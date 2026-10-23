@@ -62,6 +62,7 @@ import { LOAD_PURPOSE } from "../src/domain/vaults/secret_loader.ts";
 import { PROBE_PURPOSE } from "../src/domain/vaults/secret_reference_check.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import {
+  createModelMethodRunDeps,
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "../src/serve/deps.ts";
@@ -69,8 +70,11 @@ import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   createModelEvaluateDeps,
+  isModelEvaluateAllData,
   modelEvaluate,
 } from "../src/libswamp/models/evaluate.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
+import { Data } from "../src/domain/data/data.ts";
 import {
   createWorkflowEvaluateDeps,
   workflowEvaluate,
@@ -783,6 +787,157 @@ Deno.test("load at delivery: swamp behavior evaluate and swamp workflow evaluate
         assertEquals(await auditedReads(repoDir), { loads: [], probes: [] });
       } finally {
         modelRegistry.invalidateType(type);
+      }
+    },
+  );
+});
+
+Deno.test("load at delivery: evaluate keeps secret refusals pending for single and all definitions, and only the consuming method fails", async () => {
+  await withFixture(
+    { withExistence: true, secrets: { token: "s3cret-value" } },
+    async ({ repoDir, vault }) => {
+      const type = ModelType.create(
+        `@test/evaluate-refusals-${crypto.randomUUID()}`,
+      );
+      const deliveries: unknown[] = [];
+      const method = {
+        description: "Record delivery",
+        arguments: z.object({ value: z.unknown() }),
+        execute: (args: unknown) => {
+          deliveries.push(args);
+          return Promise.resolve({ dataHandles: [] });
+        },
+      };
+      modelRegistry.register({
+        type,
+        version: "2026.10.23.1",
+        methods: { text: method, size: method, whole: method, plain: method },
+      });
+      const { repoContext } = await requireInitializedRepoUnlocked({
+        repoDir,
+        outputMode: "log",
+      });
+      try {
+        const producer = Definition.create({ name: "holder" });
+        await repoContext.definitionRepo.save(type, producer);
+        await repoContext.unifiedDataRepo.save(
+          type,
+          producer.id,
+          Data.create({
+            name: "creds",
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 5,
+            tags: {
+              type: "resource",
+              modelName: producer.name,
+              "_swamp.sensitiveFields": JSON.stringify(["token"]),
+            },
+            ownerDefinition: {
+              ownerType: "model-method",
+              ownerRef: `${type.normalized}:${producer.id}`,
+            },
+          }),
+          new TextEncoder().encode(
+            JSON.stringify({ token: ref("token"), label: "public" }),
+          ),
+        );
+        const attributes = "data.latest('holder', 'creds').attributes";
+        const whole = `\${{ ${attributes} }}`;
+        const text = `before ${whole} after`;
+        const size = `\${{ size(${attributes}.token) }}`;
+        const refusing = Definition.create({
+          name: "refusing",
+          methods: {
+            text: { arguments: { value: text } },
+            size: { arguments: { value: size } },
+            whole: { arguments: { value: whole } },
+            plain: { arguments: { value: "${{ 'still' + ' works' }}" } },
+          },
+        });
+        const independent = Definition.create({
+          name: "independent",
+          methods: { plain: { arguments: { value: "${{ 1 + 1 }}" } } },
+        });
+        for (const definition of [refusing, independent]) {
+          await repoContext.definitionRepo.save(type, definition);
+        }
+        const evalDeps = createModelEvaluateDeps(
+          repoDir,
+          undefined,
+          repoContext.unifiedDataRepo,
+          repoContext.catalogStore,
+          repoContext.definitionRepo,
+        );
+        for (const input of [{ modelIdOrName: refusing.name }, {}]) {
+          const events = await collect(
+            modelEvaluate(createLibSwampContext(), evalDeps, input),
+          );
+          const completed = events.find((event) => event.kind === "completed");
+          assertExists(completed);
+          assertEquals(events.some((event) => event.kind === "error"), false);
+          if (isModelEvaluateAllData(completed.data)) {
+            assertEquals(completed.data.items.map((item) => item.name).sort(), [
+              "holder",
+              "independent",
+              "refusing",
+            ]);
+            const cachedOther = await repoContext.evaluatedDefinitionRepo
+              .findByName(type, independent.name);
+            assertEquals(cachedOther?.getMethodArguments("plain"), {
+              value: 2,
+            });
+          }
+          const cached = await repoContext.evaluatedDefinitionRepo.findByName(
+            type,
+            refusing.name,
+          );
+          assertExists(cached);
+          assertEquals(cached.getMethodArguments("text"), { value: text });
+          assertEquals(cached.getMethodArguments("size"), { value: size });
+          assertEquals(cached.getMethodArguments("whole"), {
+            value: { token: ref("token"), label: "public" },
+          });
+        }
+        assertEquals(
+          vault.getOperations().filter((op) => op.method === "get"),
+          [],
+        );
+        const runDeps = await createModelMethodRunDeps(repoDir, repoContext, {
+          defaultVault: VAULT,
+        });
+        const run = (methodName: string) =>
+          collect(modelMethodRun(createLibSwampContext(), runDeps, {
+            modelIdOrName: refusing.name,
+            methodName,
+            inputs: {},
+            lastEvaluated: false,
+          }));
+        for (const methodName of ["text", "size"]) {
+          const events = await run(methodName);
+          const errors = events.filter((event) => event.kind === "error");
+          assertEquals(errors.length, 1);
+          assertStringIncludes(
+            errors[0].error.message,
+            "secret_operation_unsupported",
+          );
+          assertEquals(deliveries, []);
+        }
+        assertEquals(
+          vault.getOperations().filter((op) => op.method === "get"),
+          [],
+        );
+        for (const methodName of ["plain", "whole"]) {
+          const events = await run(methodName);
+          assertEquals(events.filter((event) => event.kind === "error"), []);
+        }
+        assertEquals(deliveries, [
+          { value: "still works" },
+          { value: { token: "s3cret-value", label: "public" } },
+        ]);
+      } finally {
+        modelRegistry.invalidateType(type);
+        repoContext.catalogStore.close();
       }
     },
   );
