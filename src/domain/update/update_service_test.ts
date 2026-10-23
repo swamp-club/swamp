@@ -17,10 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import { join } from "@std/path";
 import {
   isDevBuild,
+  needlessRootUpdateWarning,
   parseVersionFromRedirectUrl,
+  permissionDeniedMessage,
   type UpdateChecker,
   UpdateService,
 } from "./update_service.ts";
@@ -58,6 +66,10 @@ function createMockChecker(
 }
 
 const platform = Platform.from("darwin", "aarch64");
+
+// The update pre-flight probes the binary's directory; a missing directory is
+// not a permission problem, so these tests never touch a real install dir.
+const missingBinaryPath = "/nonexistent-swamp-update-test/bin/swamp";
 
 // --- isDevBuild tests ---
 
@@ -104,7 +116,7 @@ Deno.test("check returns up_to_date when no redirect", async () => {
   const service = new UpdateService(
     createMockChecker(null),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.check(platform);
@@ -120,7 +132,7 @@ Deno.test("check returns up_to_date when versions match", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.check(platform);
@@ -133,7 +145,7 @@ Deno.test("check returns update_available when versions differ", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.check(platform);
@@ -148,7 +160,7 @@ Deno.test("check includes warning for dev build", async () => {
   const service = new UpdateService(
     createMockChecker(null),
     "20260206.200442.0-sha.",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.check(platform);
@@ -161,7 +173,7 @@ Deno.test("check has no warning for release build", async () => {
   const service = new UpdateService(
     createMockChecker(null),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.check(platform);
@@ -176,7 +188,7 @@ Deno.test("update returns up_to_date when already current", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.update(platform);
@@ -194,7 +206,7 @@ Deno.test("update returns updated when new version available", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl, calls),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.update(platform);
@@ -213,7 +225,7 @@ Deno.test("update includes warning for dev build", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260206.200442.0-sha.",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.update(platform);
@@ -230,7 +242,7 @@ Deno.test("check rejects redirect to untrusted host", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   await assertRejects(
@@ -246,7 +258,7 @@ Deno.test("update rejects redirect to untrusted host", async () => {
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   await assertRejects(
@@ -270,7 +282,7 @@ Deno.test("update fetches checksum and passes it to downloadAndInstall", async (
   const service = new UpdateService(
     createMockChecker(redirectUrl, calls, expectedHash),
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const result = await service.update(platform);
@@ -301,7 +313,7 @@ Deno.test("update passes the signal to every checker call and the options to the
   const service = new UpdateService(
     checker,
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
   const controller = new AbortController();
   const onProgress = () => {};
@@ -334,7 +346,7 @@ Deno.test("update stops before the checksum fetch once the signal is aborted", a
   const service = new UpdateService(
     checker,
     "20260207.123456.0-sha.abc12345",
-    "/usr/local/bin/swamp",
+    missingBinaryPath,
   );
 
   const error = await assertRejects(() =>
@@ -348,35 +360,91 @@ Deno.test("update stops before the checksum fetch once the signal is aborted", a
 
 // --- Pre-flight permission check tests ---
 
+// chmod mode bits are POSIX-only, and root ignores them.
+const modeBitsIgnored = Deno.build.os === "windows" || Deno.uid() === 0;
+
 Deno.test({
-  name: "update rejects with UserError when binary path is not writable",
-  // chmod mode bits are POSIX-only; on Windows the write-permission check
-  // probes directory writability instead (tested via Windows CI).
-  ignore: Deno.build.os === "windows",
+  name:
+    "update replaces a read-only binary when its directory is writable (swamp-club#3817)",
+  ignore: modeBitsIgnored,
   fn: async () => {
     const tempDir = await Deno.makeTempDir();
-    const readOnlyFile = `${tempDir}/swamp`;
-    await Deno.writeTextFile(readOnlyFile, "binary");
-    await Deno.chmod(readOnlyFile, 0o444);
+    try {
+      const readOnlyFile = join(tempDir, "swamp");
+      await Deno.writeTextFile(readOnlyFile, "binary");
+      await Deno.chmod(readOnlyFile, 0o555);
+      const calls: MockCheckerCalls = {
+        downloadUrls: [],
+        checksumUrls: [],
+        expectedChecksums: [],
+      };
+      const redirectUrl =
+        "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+      const service = new UpdateService(
+        createMockChecker(redirectUrl, calls),
+        "20260207.123456.0-sha.abc12345",
+        readOnlyFile,
+      );
 
-    const redirectUrl =
-      "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
-    const service = new UpdateService(
-      createMockChecker(redirectUrl),
-      "20260207.123456.0-sha.abc12345",
-      readOnlyFile,
-    );
+      const result = await service.update(platform);
 
-    const error = await assertRejects(
-      () => service.update(platform),
-      UserError,
-    );
-    assertStringIncludes(error.message, "permission denied");
-    assertStringIncludes(error.message, "sudo swamp update");
+      assertEquals(result.status, "updated");
+      assertEquals(calls.downloadUrls, [redirectUrl]);
+      // The write probe leaves nothing behind
+      const entries = [];
+      for await (const entry of Deno.readDir(tempDir)) entries.push(entry.name);
+      assertEquals(entries, ["swamp"]);
+    } finally {
+      await Deno.chmod(join(tempDir, "swamp"), 0o644).catch(() => {});
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
 
-    // Cleanup
-    await Deno.chmod(readOnlyFile, 0o644);
-    await Deno.remove(tempDir, { recursive: true });
+Deno.test({
+  name:
+    "update rejects with UserError before downloading when the binary's directory is not writable",
+  ignore: modeBitsIgnored,
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir();
+    const binDir = join(tempDir, "bin");
+    try {
+      await Deno.mkdir(binDir);
+      const binaryPath = join(binDir, "swamp");
+      await Deno.writeTextFile(binaryPath, "binary");
+      await Deno.chmod(binDir, 0o555);
+      const calls: MockCheckerCalls = {
+        downloadUrls: [],
+        checksumUrls: [],
+        expectedChecksums: [],
+      };
+      const redirectUrl =
+        "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+      const service = new UpdateService(
+        createMockChecker(redirectUrl, calls),
+        "20260207.123456.0-sha.abc12345",
+        binaryPath,
+      );
+
+      const error = await assertRejects(
+        () => service.update(platform),
+        UserError,
+      );
+
+      assertStringIncludes(
+        error.message,
+        `Cannot update ${binaryPath}: permission denied.`,
+      );
+      // The test user owns the directory, so the hint is chmod, not sudo
+      assertStringIncludes(error.message, `chmod u+w ${binDir}`);
+      assert(!error.message.includes("sudo swamp update"));
+      assert(!error.message.includes("sudo chown"));
+      assertEquals(calls.checksumUrls, []);
+      assertEquals(calls.downloadUrls, []);
+    } finally {
+      await Deno.chmod(binDir, 0o755).catch(() => {});
+      await Deno.remove(tempDir, { recursive: true });
+    }
   },
 });
 
@@ -408,4 +476,194 @@ Deno.test("update proceeds when binary does not exist yet", async () => {
 
   const result = await service.update(platform);
   assertEquals(result.status, "up_to_date");
+});
+
+// --- permissionDeniedMessage tests ---
+
+const posixFacts = {
+  os: "darwin" as const,
+  binaryPath: "/Users/alice/.local/bin/swamp",
+  dirWritable: false,
+  homeDir: "/Users/alice",
+  currentUid: 501,
+  userName: "alice",
+};
+
+Deno.test("permissionDeniedMessage: Windows suggests running as Administrator", () => {
+  const message = permissionDeniedMessage({
+    os: "windows",
+    dirWritable: false,
+    binaryPath: "C:\\swamp\\swamp.exe",
+    dirOwnerUid: null,
+    currentUid: null,
+  });
+  assertEquals(
+    message,
+    "Cannot update C:\\swamp\\swamp.exe: permission denied. Try running the terminal as Administrator.",
+  );
+});
+
+Deno.test("permissionDeniedMessage: a root-owned system directory suggests sudo swamp update", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    binaryPath: "/usr/local/bin/swamp",
+    dirOwnerUid: 0,
+  });
+  assertEquals(
+    message,
+    "Cannot update /usr/local/bin/swamp: permission denied. Re-run with: sudo swamp update",
+  );
+});
+
+Deno.test("permissionDeniedMessage: a root-owned directory under HOME gives the chown fix, not sudo swamp update", () => {
+  const message = permissionDeniedMessage({ ...posixFacts, dirOwnerUid: 0 });
+  assertStringIncludes(
+    message,
+    "Cannot update /Users/alice/.local/bin/swamp: permission denied.",
+  );
+  assertStringIncludes(message, "owned by another user (uid 0)");
+  assertStringIncludes(message, "sudo chown alice /Users/alice/.local/bin");
+  assertStringIncludes(message, "run swamp update without sudo");
+  assert(!message.includes("sudo swamp update"));
+});
+
+Deno.test("permissionDeniedMessage: a directory the user owns gives the chmod fix", () => {
+  const message = permissionDeniedMessage({ ...posixFacts, dirOwnerUid: 501 });
+  assertStringIncludes(message, "is owned by you but is not writable");
+  assertStringIncludes(message, "chmod u+w /Users/alice/.local/bin");
+  assert(!message.includes("sudo swamp update"));
+  assert(!message.includes("sudo chown"));
+});
+
+Deno.test("permissionDeniedMessage: a directory another non-root user owns gives the chown fix", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    os: "linux",
+    binaryPath: "/opt/tools/bin/swamp",
+    dirOwnerUid: 1002,
+  });
+  assertStringIncludes(message, "/opt/tools/bin is owned by another user");
+  assertStringIncludes(message, "sudo chown alice /opt/tools/bin");
+  assert(!message.includes("sudo swamp update"));
+});
+
+Deno.test("permissionDeniedMessage: HOME unset treats a root-owned directory as a system location", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    homeDir: undefined,
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "Re-run with: sudo swamp update");
+});
+
+Deno.test("permissionDeniedMessage: an unreadable directory owner falls back to sudo swamp update", () => {
+  const message = permissionDeniedMessage({ ...posixFacts, dirOwnerUid: null });
+  assertStringIncludes(message, "Re-run with: sudo swamp update");
+});
+
+Deno.test("permissionDeniedMessage: USER unset names the user with whoami", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    userName: undefined,
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "sudo chown $(whoami) /Users/alice/.local/bin");
+});
+
+Deno.test("permissionDeniedMessage: a sibling of HOME with a shared prefix is not under HOME", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    binaryPath: "/Users/alice2/bin/swamp",
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "Re-run with: sudo swamp update");
+});
+
+Deno.test("permissionDeniedMessage: a writable directory means the binary itself is protected", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    dirWritable: true,
+    dirOwnerUid: 501,
+  });
+  assertStringIncludes(message, "protected against replacement");
+  assertStringIncludes(message, "immutable flag");
+  assert(!message.includes("sudo swamp update"));
+  assert(!message.includes("sudo chown"));
+  assert(!message.includes("chmod"));
+});
+
+Deno.test("permissionDeniedMessage: root denied gives neither sudo nor chown advice", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    binaryPath: "/usr/local/bin/swamp",
+    currentUid: 0,
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "even as root");
+  assert(!message.includes("sudo swamp update"));
+  assert(!message.includes("sudo chown"));
+});
+
+Deno.test("permissionDeniedMessage: a HOME subdirectory whose name starts with .. is under HOME", () => {
+  const message = permissionDeniedMessage({
+    ...posixFacts,
+    binaryPath: "/Users/alice/..tools/swamp",
+    dirOwnerUid: 0,
+  });
+  assertStringIncludes(message, "sudo chown alice /Users/alice/..tools");
+});
+
+// --- needlessRootUpdateWarning tests ---
+
+Deno.test("needlessRootUpdateWarning: sudo into the invoking user's own directory warns", () => {
+  const warning = needlessRootUpdateWarning(
+    "/Users/alice/.local/bin/swamp",
+    0,
+    501,
+    501,
+  );
+  assertStringIncludes(warning ?? "", "owned by uid 501");
+  assertStringIncludes(warning ?? "", "run swamp update without sudo");
+});
+
+Deno.test("needlessRootUpdateWarning: sudo into a directory another user owns does not warn", () => {
+  // e.g. a Homebrew prefix owned by a dedicated user: sudo was needed
+  assertEquals(
+    needlessRootUpdateWarning(
+      "/home/linuxbrew/.linuxbrew/bin/swamp",
+      0,
+      501,
+      1002,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("needlessRootUpdateWarning: root without sudo does not warn", () => {
+  // A root scheduler has no SUDO_UID
+  assertEquals(
+    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 0, null, 501),
+    undefined,
+  );
+});
+
+Deno.test("needlessRootUpdateWarning: root updating into a root-owned directory does not warn", () => {
+  assertEquals(
+    needlessRootUpdateWarning("/usr/local/bin/swamp", 0, 501, 0),
+    undefined,
+  );
+});
+
+Deno.test("needlessRootUpdateWarning: a non-root update does not warn", () => {
+  assertEquals(
+    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 501, null, 501),
+    undefined,
+  );
+});
+
+Deno.test("needlessRootUpdateWarning: an unreadable directory owner does not warn", () => {
+  assertEquals(
+    needlessRootUpdateWarning("/Users/alice/.local/bin/swamp", 0, 501, null),
+    undefined,
+  );
 });

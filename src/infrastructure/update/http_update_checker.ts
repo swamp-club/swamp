@@ -20,7 +20,10 @@
 import { dirname, join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { Platform } from "../../domain/update/platform.ts";
-import type { UpdateChecker } from "../../domain/update/update_service.ts";
+import {
+  describePermissionDenied,
+  type UpdateChecker,
+} from "../../domain/update/update_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   checksumUrlFromTarballUrl,
@@ -131,13 +134,6 @@ async function removeQuarantine(path: string): Promise<void> {
   }
 }
 
-function permissionDeniedMessage(targetPath: string): string {
-  if (Deno.build.os === "windows") {
-    return `Cannot update ${targetPath}: permission denied. Try running the terminal as Administrator.`;
-  }
-  return `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`;
-}
-
 /**
  * Best-effort cleanup of a stale `.old` binary left by a previous update.
  * Exported so the CLI startup path can call it on Windows.
@@ -167,8 +163,10 @@ export async function cleanupStaleBinary(binaryPath: string): Promise<void> {
  *
  * POSIX fallback: if rename fails with EXDEV (cross-filesystem), copy to
  * a temp file in the target directory (same filesystem), then rename.
+ *
+ * Exported so tests can drive it through `ops`.
  */
-async function replaceBinary(
+export async function replaceBinary(
   sourcePath: string,
   targetPath: string,
   ops: BinaryFileOps = denoFileOps,
@@ -187,7 +185,7 @@ async function replaceBinary(
     await ops.rename(sourcePath, targetPath);
   } catch (error) {
     if (error instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(permissionDeniedMessage(targetPath));
+      throw new UserError(await describePermissionDenied(targetPath));
     }
     // EXDEV: source and target on different filesystems — rename won't work.
     // Copy to a temp file in the target directory, then atomic rename.
@@ -206,7 +204,7 @@ async function replaceBinary(
           // Best-effort cleanup
         }
         if (innerError instanceof Deno.errors.PermissionDenied) {
-          throw new UserError(permissionDeniedMessage(targetPath));
+          throw new UserError(await describePermissionDenied(targetPath));
         }
         throw innerError;
       }
@@ -257,7 +255,7 @@ export async function replaceBinaryWindows(
   } catch (stageError) {
     await removeTmp();
     if (stageError instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(permissionDeniedMessage(targetPath));
+      throw new UserError(await describePermissionDenied(targetPath));
     }
     throw stageError;
   }
@@ -274,7 +272,7 @@ export async function replaceBinaryWindows(
     } else {
       await removeTmp();
       if (error instanceof Deno.errors.PermissionDenied) {
-        throw new UserError(permissionDeniedMessage(targetPath));
+        throw new UserError(await describePermissionDenied(targetPath));
       }
       throw error;
     }
@@ -293,7 +291,7 @@ export async function replaceBinaryWindows(
     }
     await removeTmp();
     if (renameError instanceof Deno.errors.PermissionDenied) {
-      throw new UserError(permissionDeniedMessage(targetPath));
+      throw new UserError(await describePermissionDenied(targetPath));
     }
     throw renameError;
   }
