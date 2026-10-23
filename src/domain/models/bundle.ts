@@ -1014,10 +1014,11 @@ async function configZodTarget(
 /**
  * The path to give deno info for `entryPoint`. Below a node_modules, deno
  * info reports what a root imports by real path while naming the root as
- * given, so an entry point reached through a symlink above a node_modules
- * (macOS /var) would be read in two spellings and its own modules taken
- * for installed packages (swamp-club#3794). Such an entry point is read by
- * its real path; any other is read as given.
+ * given, so an entry point reached through a symlink (macOS /var) would be
+ * read in two spellings and its own modules taken for installed packages
+ * (swamp-club#3794). An entry point whose real path differs from the one
+ * given and has a node_modules segment is read by its real path; any other
+ * is read as given.
  */
 export async function denoInfoEntryPoint(entryPoint: string): Promise<string> {
   const real = await Deno.realPath(entryPoint).catch(() => entryPoint);
