@@ -333,9 +333,15 @@ Deno.test("runWorker: a stable cache directory keeps the machine id across resta
 
 Deno.test("releaseWorkerCacheDir: removes the worker's own cache once no dispatch is running (swamp-club#3854)", async () => {
   const cacheDir = await Deno.makeTempDir({ prefix: "swamp-worker-test-" });
-  await Deno.mkdir(join(cacheDir, "bundles"));
-  await releaseWorkerCacheDir(cacheDir, 0);
-  assertEquals(await exists(cacheDir), false);
+  try {
+    await Deno.mkdir(join(cacheDir, "bundles"));
+    await releaseWorkerCacheDir(cacheDir, 0);
+    assertEquals(await exists(cacheDir), false);
+  } finally {
+    await Deno.remove(cacheDir, { recursive: true }).catch((error) => {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    });
+  }
 });
 
 Deno.test("releaseWorkerCacheDir: keeps the cache while a dispatch is still running from it (swamp-club#3854)", async () => {

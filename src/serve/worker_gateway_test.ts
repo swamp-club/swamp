@@ -633,11 +633,54 @@ Deno.test("WorkerGateway: close waits for a disconnect being recorded and stops 
 
   const closing = h.gateway.close().then(() => order.push("closed"));
   assertEquals(h.gateway.pendingGraceWindows, 0);
-  // A full turn: every microtask close() could settle on has run.
+  // A full turn, so every microtask close() could settle on has run;
+  // waitFor cannot assert that something has not happened yet.
   await new Promise((r) => setTimeout(r, 0));
   held.resolve();
   await closing;
   assertEquals(order, ["disconnect written", "closed"]);
+});
+
+Deno.test("WorkerGateway: close does not wait on an enrollment probe, and the probe's late result records nothing (swamp-club#3854)", async () => {
+  const probe = Promise.withResolvers<void>();
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probe.promise;
+      return { ok: true };
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  // Resolves with the probe still outstanding: shutdown is not held by it.
+  await h.gateway.close();
+  probe.resolve();
+  // A full turn for the verify to resume; nothing it could record is awaited.
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(
+    h.transitions.filter((t) => t.methodName === "set_status").length,
+    0,
+  );
+  assertEquals(h.gateway.workers()[0].status, "unverified");
+});
+
+Deno.test("WorkerGateway: close gives up at its deadline on a write that never settles (swamp-club#3854)", async () => {
+  const held = Promise.withResolvers<void>();
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    runModelMethod: async (input) => {
+      if (input.inputs.status === "disconnected") await held.promise;
+    },
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  dropSocket();
+  try {
+    await h.gateway.close(10);
+  } finally {
+    held.resolve();
+  }
 });
 
 Deno.test("WorkerGateway: a restarted process on the same machine re-enrolls after a disconnect", async () => {

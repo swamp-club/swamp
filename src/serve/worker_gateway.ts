@@ -116,6 +116,9 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
+/** How long close() waits for queued transitions before shutdown moves on. */
+export const GATEWAY_CLOSE_DEADLINE_MS = 10_000;
+
 /**
  * Splits a presented enrollment credential of the form `<name>.<secret>`.
  * The name half addresses the token aggregate; the secret half is compared
@@ -353,8 +356,8 @@ export class WorkerGateway {
   ) => Promise<EnrollmentToken | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
-  /** Enrollment verifies in flight: each enqueues a transition when done. */
-  readonly #verifies = new Set<Promise<void>>();
+  /** Set by close(): no verify starts, and one in flight records nothing. */
+  #closing = false;
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -388,12 +391,15 @@ export class WorkerGateway {
   }
 
   /**
-   * Shuts the gateway down: its timers are cleared so no transition starts
-   * later, and the verifies and transitions already under way are awaited,
-   * so a worker status recorded during shutdown is written before the
-   * process exits (swamp-club#3854).
+   * Shuts the gateway down: its timers are cleared and no enrollment verify
+   * starts or records a result, so no transition begins later, and the
+   * transitions already queued are awaited, so a worker status recorded
+   * during shutdown is written before the process exits (swamp-club#3854).
+   * The wait is bounded by `deadlineMs`, so a write that never settles does
+   * not hold up the rest of shutdown.
    */
-  async close(): Promise<void> {
+  async close(deadlineMs: number = GATEWAY_CLOSE_DEADLINE_MS): Promise<void> {
+    this.#closing = true;
     this.dispose();
     for (const entry of this.#workers.values()) {
       if (entry.graceTimer !== undefined) {
@@ -405,8 +411,24 @@ export class WorkerGateway {
         entry.expiryTimer = undefined;
       }
     }
-    await Promise.allSettled(this.#verifies);
-    await this.#transitions.settled();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<"expired">((resolve) => {
+      deadline = setTimeout(() => resolve("expired"), deadlineMs);
+    });
+    try {
+      const outcome = await Promise.race([
+        this.#transitions.settled().then(() => "settled" as const),
+        expired,
+      ]);
+      if (outcome === "expired") {
+        logger.warn(
+          "Shutting down with {count} worker status write(s) still pending after {ms}ms",
+          { count: this.#transitions.pending, ms: deadlineMs },
+        );
+      }
+    } finally {
+      clearTimeout(deadline);
+    }
   }
 
   /**
@@ -1202,13 +1224,13 @@ export class WorkerGateway {
    */
   #startEnrollmentVerify(workerName: string): void {
     const entry = this.#workers.get(workerName);
-    if (!entry) return;
+    if (!entry || this.#closing) return;
     if (entry.verifying) {
       entry.verifyAgain = true;
       return;
     }
     entry.verifying = true;
-    const verify = this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
+    this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
       logger.error(
         "Enrollment verify failed unexpectedly for {worker}: {error}",
         {
@@ -1217,7 +1239,6 @@ export class WorkerGateway {
         },
       );
     }).finally(() => {
-      this.#verifies.delete(verify);
       entry.verifying = false;
       if (!entry.verifyAgain) return;
       entry.verifyAgain = false;
@@ -1229,7 +1250,6 @@ export class WorkerGateway {
         this.#startEnrollmentVerify(workerName);
       }
     });
-    this.#verifies.add(verify);
   }
 
   async #runEnrollmentVerify(workerName: string): Promise<void> {
@@ -1241,7 +1261,7 @@ export class WorkerGateway {
     try {
       const probeResult = await verifyWorker(workerName);
       const entry = this.#workers.get(workerName);
-      if (!entry || entry.channel === null) return;
+      if (!entry || entry.channel === null || this.#closing) return;
       if (probeResult.ok) {
         if (entry.status !== "draining") {
           await this.#recordTransition("verify_passed", async () => {
@@ -1279,7 +1299,7 @@ export class WorkerGateway {
       }
     } catch (error) {
       const entry = this.#workers.get(workerName);
-      if (!entry || entry.channel === null) return;
+      if (!entry || entry.channel === null || this.#closing) return;
       const reason = error instanceof Error ? error.message : String(error);
       await this.#recordTransition("verify_failed", async () => {
         entry.verifyFailureReason = reason;

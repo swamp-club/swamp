@@ -88,6 +88,11 @@ export class TransitionTail {
     return next;
   }
 
+  /** Transitions enqueued and not yet settled. */
+  get pending(): number {
+    return this.#pending;
+  }
+
   /**
    * Resolves once every transition enqueued, including any enqueued while
    * waiting, has settled (swamp-club#3854).

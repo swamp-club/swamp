@@ -759,8 +759,8 @@ Deno.test("handleMessage cancel refused for lack of a run grant is silent and au
 function sendAuditGatedRequest(
   failOpen: boolean,
   durableStalled: boolean,
-): MockSocket {
-  using ctx = {
+): { mock: MockSocket } & Disposable {
+  const ctx = {
     ...makeCtx(modeTokenConfig, []),
     instanceId: "inst-1",
     auditEmitter: { emit: () => {}, durableStalled },
@@ -778,7 +778,9 @@ function sendAuditGatedRequest(
     })),
     testPrincipal,
   );
-  return mock;
+  // The caller disposes it once the test ends, so the handler still
+  // running has its repo dir until then.
+  return { mock, [Symbol.dispose]: () => ctx[Symbol.dispose]() };
 }
 
 function auditUnavailableSent(mock: MockSocket): boolean {
@@ -789,17 +791,20 @@ function auditUnavailableSent(mock: MockSocket): boolean {
 }
 
 Deno.test("handleMessage rejects requests in fail-secure mode while a durable audit write is stalled", () => {
-  const mock = sendAuditGatedRequest(false, true);
+  using sent = sendAuditGatedRequest(false, true);
+  const mock = sent.mock;
   assertEquals(auditUnavailableSent(mock), true);
 });
 
 Deno.test("handleMessage does not reject for a stalled durable audit write in fail-open mode", () => {
-  const mock = sendAuditGatedRequest(true, true);
+  using sent = sendAuditGatedRequest(true, true);
+  const mock = sent.mock;
   assertEquals(auditUnavailableSent(mock), false);
 });
 
 Deno.test("handleMessage does not reject in fail-secure mode when no durable audit write is stalled", () => {
-  const mock = sendAuditGatedRequest(false, false);
+  using sent = sendAuditGatedRequest(false, false);
+  const mock = sent.mock;
   assertEquals(auditUnavailableSent(mock), false);
 });
 
