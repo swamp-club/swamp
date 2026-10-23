@@ -25,6 +25,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { walk } from "@std/fs";
 import {
   V3ChunkCollectionDeferredError,
   V3ReplicaRootMismatchError,
@@ -52,14 +53,17 @@ import {
   modelCommit,
 } from "../../../domain/datastore_v3/v3_test_helpers.ts";
 import { SqliteCommitStore } from "../sqlite_commit_store.ts";
+import { v3ControlPlaneAt } from "../v3_datastore_binding.ts";
 import {
   assertV3ChunksCollectable,
   collectV3Lineages,
   lineageRegistryFor,
   makeV3CopyCurrent,
   prepareV3WriterLineage,
+  pruneV3Heads,
   publishV3Head,
   recordV3LeaseFence,
+  V3_HEAD_PRUNE_EVERY,
   type V3Copy,
   v3KeptLineages,
   V3LineageOutrankedError,
@@ -954,5 +958,61 @@ Deno.test({
       assertEquals(await v3KeptLineages(env.copy.datastorePath), []);
       assertEquals([...await registry.kept()], []);
     }, { setting: BUCKET_REPLICA });
+  },
+});
+
+Deno.test({
+  name:
+    "pruneV3Heads: prunes a lineage's heads only on every 16th writer fence, keeping the newest below its own (swamp-club#3803)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await publish(env, 3, { confirmed: true });
+      const registry = lineageRegistryFor(env.copy.datastorePath);
+      for (const writer of [4, 5, 15, V3_HEAD_PRUNE_EVERY]) {
+        await registry.publishHead({
+          fence: 3,
+          txid: "0000000000000002",
+          writerFence: writer,
+          mark: { cursor: 0 },
+          publishedAt: AT,
+        });
+      }
+      const heads = async () =>
+        (await v3ControlPlaneAt(env.copy.datastorePath).list(
+          "lineage/000000000003/",
+        )).filter((key) => key.includes("/head-")).length;
+      // Writer 15 is not a 16th fence: nothing goes.
+      await pruneV3Heads(env.copy, 3, 15);
+      assertEquals(await heads(), 5);
+      // Writer 16 keeps its own head and writer 15's.
+      await pruneV3Heads(env.copy, 3, V3_HEAD_PRUNE_EVERY);
+      assertEquals(await heads(), 2);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "pruneV3Heads: a lineage it cannot prune leaves the publish alone (swamp-club#3803)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      // No head of writer 32 was published: nothing to prune, no error.
+      await publish(env, 3, { confirmed: true });
+      await pruneV3Heads(env.copy, 3, 2 * V3_HEAD_PRUNE_EVERY);
+      // A control plane that refuses the list: the prune fails quietly.
+      let lineageDir: string | undefined;
+      for await (const entry of walk(env.copy.datastorePath)) {
+        if (entry.name === "started.json") lineageDir = dirname(entry.path);
+      }
+      assert(lineageDir !== undefined);
+      await Deno.chmod(lineageDir, 0o000);
+      try {
+        await pruneV3Heads(env.copy, 3, 2 * V3_HEAD_PRUNE_EVERY);
+      } finally {
+        await Deno.chmod(lineageDir, 0o755);
+      }
+    });
   },
 });

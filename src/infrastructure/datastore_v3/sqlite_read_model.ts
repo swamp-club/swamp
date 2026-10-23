@@ -93,6 +93,8 @@ import {
   decideFile,
   finalKeyStates,
   type KeyChange,
+  type NetReplayPlan,
+  NetReplayPlanner,
 } from "../../domain/datastore_v3/materialisation.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
@@ -102,6 +104,7 @@ import {
   type LiveRecord,
   type ReadModel,
   ReadModelApplyError,
+  ReadModelBusyError,
   ReadModelIncompleteError,
   type UnreadableRecord,
   unreadableRecordAdvice,
@@ -124,6 +127,8 @@ import {
   satisfiesAccess,
 } from "../../domain/datastore_v3/file_access.ts";
 import { currentBootIdentity } from "./boot_identity.ts";
+import { CatchUpStats } from "./catch_up_stats.ts";
+import { withSpan } from "../tracing/tracer.ts";
 import {
   type AppliedRecord,
   type FileOwnership,
@@ -326,6 +331,12 @@ export interface SqliteReadModelOptions {
    * recorded ({@link WrittenFile}); `Deno.build.os` by default. For tests.
    */
   readonly os?: typeof Deno.build.os;
+  /**
+   * False makes a catch-up from the start of the feed replay every commit in
+   * full, as a recovery does; a net replay by default (swamp-club#3803).
+   * Tests compare the two.
+   */
+  readonly netReplay?: boolean;
 }
 
 /** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
@@ -359,6 +370,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #syncDirectory: (dir: string) => Promise<void>;
   readonly #syncFile: (path: string) => Promise<void>;
   readonly #atRiskCopyBytes: number;
+  readonly #netReplay: boolean;
   readonly #checkout: ReadModelCheckout | undefined;
   /** The reserved namespaces whose skipped commits were warned about. */
   readonly #warnedReserved = new Set<string>();
@@ -380,6 +392,10 @@ export class SqliteReadModel implements ReadModel {
   #pageInFlight: Promise<void> | undefined;
   /** The boot of the current exclusive section; undefined when unnamed. */
   #boot: string | undefined;
+  /** What the running catch-up did, for its span (swamp-club#3803). */
+  #stats: CatchUpStats | undefined;
+  /** The running catch-up's net replay, if it is one (swamp-club#3803). */
+  #net: NetReplayPlan | undefined;
   readonly #paths = new PathCache();
   #queue: Promise<unknown> = Promise.resolve();
   #closed = false;
@@ -422,6 +438,7 @@ export class SqliteReadModel implements ReadModel {
     this.#syncFile = options.syncFile ?? syncExistingFile;
     this.#atRiskCopyBytes = options.atRiskCopyBytes ??
       DEFAULT_AT_RISK_COPY_BYTES;
+    this.#netReplay = options.netReplay ?? true;
   }
 
   /** Opens the read model, creating its state directory and files when absent. */
@@ -444,10 +461,75 @@ export class SqliteReadModel implements ReadModel {
   }
 
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
-    return this.#exclusive(async () => {
-      await this.#retryAtRiskCopies(signal);
-      return await this.#catchUpFeed(signal);
-    }, signal);
+    return this.#exclusive(
+      () =>
+        this.#counted("swamp.datastore.v3.readmodel.catchup", async () => {
+          await this.#retryAtRiskCopies(signal);
+          return await this.#catchUpFeed(signal, { net: true });
+        }),
+      signal,
+    );
+  }
+
+  /** Runs `fn`, timing it as `phase` of the running catch-up, if any. */
+  #time<T>(phase: string, fn: () => Promise<T>): Promise<T> {
+    return this.#stats === undefined ? fn() : this.#stats.time(phase, fn);
+  }
+
+  #timeSync<T>(phase: string, fn: () => T): T {
+    return this.#stats === undefined ? fn() : this.#stats.timeSync(phase, fn);
+  }
+
+  /**
+   * Runs `fn` in a span named `name` that carries what it applied and
+   * fetched (swamp-club#3803).
+   */
+  #counted<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    return withSpan(name, {}, async (span) => {
+      const stats = new CatchUpStats();
+      this.#stats = stats;
+      try {
+        return await fn();
+      } finally {
+        this.#stats = undefined;
+        span.setAttributes(stats.attributes());
+      }
+    });
+  }
+
+  /**
+   * For a reader of a checkout another process writes (swamp-club#3803),
+   * which reads the files as they are rather than replay older commits over
+   * that writer's newer ones: resolves false at once while the index is
+   * complete, as before. Otherwise a catch-up is in progress or was cut
+   * short, and the files may be anywhere between two commits, so it waits
+   * for the read model's lock (`read_model.lock`, the OS lock every
+   * catch-up holds, released when its process ends however it ends) up to
+   * `lockWaitMs`, then catches up itself if the index is still incomplete,
+   * and resolves true.
+   *
+   * @throws ReadModelBusyError when the lock is not free within `lockWaitMs`
+   */
+  catchUpUnlessComplete(
+    signal: AbortSignal,
+    lockWaitMs: number,
+  ): Promise<boolean> {
+    if (this.#state.isComplete()) return Promise.resolve(false);
+    return this.#exclusive(
+      async () => {
+        if (this.#state.isComplete()) return false;
+        await this.#counted(
+          "swamp.datastore.v3.readmodel.catchup",
+          async () => {
+            await this.#retryAtRiskCopies(signal);
+            return await this.#catchUpFeed(signal, { net: true });
+          },
+        );
+        return true;
+      },
+      signal,
+      lockWaitMs,
+    );
   }
 
   /**
@@ -503,19 +585,114 @@ export class SqliteReadModel implements ReadModel {
     }, options.signal);
   }
 
-  /** Applies the feed past the cursor; runs inside {@link #exclusive}. */
-  async #catchUpFeed(signal: AbortSignal): Promise<CatchUpResult> {
+  /**
+   * Applies the feed past the cursor; runs inside {@link #exclusive}. With
+   * `net`, a catch-up from the start of the feed is a net replay
+   * ({@link #planNetReplay}); a recovery never is, since it replays over
+   * files already there.
+   */
+  async #catchUpFeed(
+    signal: AbortSignal,
+    options: { readonly net?: boolean } = {},
+  ): Promise<CatchUpResult> {
+    if (
+      options.net === true && this.#netReplay && this.#state.cursor() === 0
+    ) {
+      this.#net = await this.#planNetReplay(signal);
+    }
+    try {
+      return await this.#catchUpFeedNow(signal);
+    } finally {
+      this.#net = undefined;
+    }
+  }
+
+  /**
+   * The first pass of a net replay (swamp-club#3803): reads the feed once,
+   * up to its end now, and plans which writes and removals the replay may
+   * leave off disk ({@link NetReplayPlanner}). The keys it leaves alone are
+   * the ones {@link #target} would: unprojected or refused. Undefined when
+   * the feed starts below a compaction point, which loads the base instead.
+   */
+  #planNetReplay(signal: AbortSignal): Promise<NetReplayPlan | undefined> {
+    return withSpan(
+      "swamp.datastore.v3.readmodel.net_plan",
+      {},
+      async (span) => {
+        const planner = new NetReplayPlanner((namespace, key) =>
+          unprojectedReason(namespace, key, this.#checkout) !== undefined ||
+          refusedKeyReason(
+              RecordKey.create(key),
+              this.#cacheRoot(namespace),
+              this.#stateDir,
+            ) !== undefined
+        );
+        let cursor = 0;
+        let commits = 0;
+        for (;;) {
+          signal.throwIfAborted();
+          let page;
+          try {
+            page = await this.#commitStore.changesSince(cursor, this.#pageSize);
+          } catch (error) {
+            if (error instanceof CommitsCompactedError) return undefined;
+            throw error;
+          }
+          for (const change of page) {
+            planner.add({
+              namespace: change.commit.namespace,
+              partition: change.commit.partition.toString(),
+              position: change.cursor,
+              changes: finalKeyStates(change.commit),
+            });
+            cursor = change.cursor;
+            commits++;
+          }
+          if (page.length < this.#pageSize) break;
+        }
+        const absent = new Set<string>();
+        for (const { namespace, segment } of planner.directories()) {
+          try {
+            await Deno.lstat(join(this.#cacheRoot(namespace), segment));
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+            absent.add(`${namespace}\0${segment}`);
+          }
+        }
+        const plan = planner.finish((namespace, segment) =>
+          absent.has(`${namespace}\0${segment}`)
+        );
+        span.setAttributes({
+          "swamp.datastore.v3.commits": commits,
+          "swamp.datastore.v3.bound": plan.bound,
+          "swamp.datastore.v3.writes_replaceable": plan.replaceable,
+          "swamp.datastore.v3.writes_kept_for_prefix": plan.keptForPrefix,
+          "swamp.datastore.v3.writes_kept_for_directory": plan.keptForDirectory,
+        });
+        return plan;
+      },
+    );
+  }
+
+  async #catchUpFeedNow(signal: AbortSignal): Promise<CatchUpResult> {
     let applied = 0;
     for (;;) {
       signal.throwIfAborted();
       let page;
       try {
-        page = await this.#commitStore.changesSince(
-          this.#state.cursor(),
-          this.#pageSize,
+        page = await this.#time(
+          "feed",
+          () =>
+            this.#commitStore.changesSince(
+              this.#state.cursor(),
+              this.#pageSize,
+            ),
         );
       } catch (error) {
         if (!(error instanceof CommitsCompactedError)) throw error;
+        // The base reconciles files with the state, which a net replay's
+        // skipped writes leave ahead of them: the rest replays in full.
+        this.#net = undefined;
         await this.#loadBase(signal);
         continue;
       }
@@ -618,31 +795,44 @@ export class SqliteReadModel implements ReadModel {
     partition: PartitionKey,
     signal: AbortSignal,
   ): Promise<CatchUpResult> {
-    return this.#exclusive(async () => {
-      await this.#retryAtRiskCopies(signal);
-      let applied = 0;
-      for (;;) {
-        signal.throwIfAborted();
-        const from = this.#state.appliedSeq(namespace, partition.toString()) +
-          1;
-        let page;
-        try {
-          page = await this.#commitStore.readPartition(
-            namespace,
-            partition,
-            from,
-            this.#pageSize,
-          );
-        } catch (error) {
-          if (!(error instanceof CommitsCompactedError)) throw error;
-          await this.#loadBase(signal);
-          continue;
-        }
-        applied += await this.#applyPage(page, false, signal);
-        if (page.length < this.#pageSize) break;
+    return this.#exclusive(
+      () =>
+        this.#counted(
+          "swamp.datastore.v3.readmodel.catchup_partition",
+          () => this.#catchUpPartition(namespace, partition, signal),
+        ),
+      signal,
+    );
+  }
+
+  async #catchUpPartition(
+    namespace: string,
+    partition: PartitionKey,
+    signal: AbortSignal,
+  ): Promise<CatchUpResult> {
+    await this.#retryAtRiskCopies(signal);
+    let applied = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      const from = this.#state.appliedSeq(namespace, partition.toString()) +
+        1;
+      let page;
+      try {
+        page = await this.#commitStore.readPartition(
+          namespace,
+          partition,
+          from,
+          this.#pageSize,
+        );
+      } catch (error) {
+        if (!(error instanceof CommitsCompactedError)) throw error;
+        await this.#loadBase(signal);
+        continue;
       }
-      return { applied, cursor: this.#state.cursor() };
-    }, signal);
+      applied += await this.#applyPage(page, false, signal);
+      if (page.length < this.#pageSize) break;
+    }
+    return { applied, cursor: this.#state.cursor() };
   }
 
   liveRecords(
@@ -750,7 +940,11 @@ export class SqliteReadModel implements ReadModel {
    * checking the files written unsynced in an earlier boot and resetting
    * the state if the catalog was rebuilt.
    */
-  #exclusive<T>(body: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  #exclusive<T>(
+    body: () => Promise<T>,
+    signal?: AbortSignal,
+    lockWaitMs?: number,
+  ): Promise<T> {
     if (this.#closed) return Promise.reject(closedError());
     const run = this.#queue.then(async () => {
       await Deno.mkdir(this.#stateDir, { recursive: true });
@@ -760,7 +954,16 @@ export class SqliteReadModel implements ReadModel {
         create: true,
       });
       try {
-        await lock.lock(true);
+        if (lockWaitMs === undefined) {
+          await lock.lock(true);
+        } else {
+          const until = Date.now() + lockWaitMs;
+          while (!await lock.tryLock(true)) {
+            signal?.throwIfAborted();
+            if (Date.now() >= until) throw new ReadModelBusyError(lockWaitMs);
+            await new Promise((done) => setTimeout(done, 50));
+          }
+        }
         // Another process may have changed the tree since the last section.
         this.#paths.clear();
         this.#guarded.clear();
@@ -1065,6 +1268,7 @@ export class SqliteReadModel implements ReadModel {
     if (page.length === 0) return 0;
     const batch = this.#writeBatch();
     this.#state.beginBatch();
+    this.#catalog.beginBatch();
     // Set only once the batch is open, so the finally below always clears it.
     const settled = Promise.withResolvers<void>();
     this.#pageInFlight = settled.promise;
@@ -1078,17 +1282,27 @@ export class SqliteReadModel implements ReadModel {
       } catch (error) {
         try {
           await batch.barrier();
+          this.#catalog.commitBatch();
           this.#state.commitBatch();
         } catch {
           // The page rolls back below; the apply failure is the one to report.
         }
         throw error;
       }
-      await batch.barrier();
+      await this.#time("barrier", () => batch.barrier());
+      // The page's catalog actions in one transaction (swamp-club#3803),
+      // after its files and before its state: a crash between them leaves
+      // the catalog ahead, and the page is applied again.
+      this.#timeSync("catalog", () => this.#catalog.commitBatch());
       this.#state.commitBatch();
+      if (this.#stats !== undefined) {
+        this.#stats.pages++;
+        this.#stats.commits += applied;
+      }
       return applied;
     } finally {
       batch.discard();
+      this.#catalog.rollbackBatch();
       this.#state.rollbackBatch();
       this.#pageInFlight = undefined;
       settled.resolve();
@@ -1146,25 +1360,32 @@ export class SqliteReadModel implements ReadModel {
         );
         if (file !== undefined) files.set(key, file);
       }
-      const projection: CatalogProjection = projectCatalog(
-        commit.ops,
-        (name) => this.#state.liveVersions(namespace, partition, name),
-      );
-      this.#catalog.apply(namespace, commit.partition, projection.actions);
-      this.#state.recordApplied({
-        namespace,
-        partition,
-        seq: commit.seq,
-        cursor,
-        records,
-        live: projection.live,
-        files,
-        unsynced: this.#boot === undefined
-          ? undefined
-          : { keys: touched, boot: this.#boot },
-        decided: touched,
-        unreadable,
+      const projection: CatalogProjection = this.#timeSync("catalog", () => {
+        const projection = projectCatalog(
+          commit.ops,
+          (name) => this.#state.liveVersions(namespace, partition, name),
+        );
+        this.#catalog.apply(namespace, commit.partition, projection.actions);
+        for (const action of projection.actions) {
+          this.#stats?.bump(`catalog_${action.kind.replaceAll("-", "_")}`);
+        }
+        return projection;
       });
+      this.#timeSync("state", () =>
+        this.#state.recordApplied({
+          namespace,
+          partition,
+          seq: commit.seq,
+          cursor,
+          records,
+          live: projection.live,
+          files,
+          unsynced: this.#boot === undefined
+            ? undefined
+            : { keys: touched, boot: this.#boot },
+          decided: touched,
+          unreadable,
+        }));
       for (const record of unreadable.values()) warnUnreadable(record);
       return true;
     } catch (error) {
@@ -1210,12 +1431,13 @@ export class SqliteReadModel implements ReadModel {
     unreadable: Map<string, StoredUnreadableRecord>,
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
-    const path = await this.#target(
-      commit.namespace,
-      change.key,
-      change.put !== null,
-      `commit ${commit.seq} of ${commit.partition.toString()}`,
-    );
+    const path = await this.#time("target", () =>
+      this.#target(
+        commit.namespace,
+        change.key,
+        change.put !== null,
+        `commit ${commit.seq} of ${commit.partition.toString()}`,
+      ));
     if (path === undefined) return undefined;
 
     const owner = commit.partition.toString();
@@ -1229,6 +1451,11 @@ export class SqliteReadModel implements ReadModel {
     touched.add(key);
     const source = { partition: owner, seq: commit.seq };
     if (decision.kind === "remove" || change.put === null) {
+      // Nothing of the key is on disk in a net replay (swamp-club#3803).
+      if (this.#net?.skipsRemoval(commit.namespace, key, position) === true) {
+        this.#stats?.bump("removals_skipped");
+        return decision.kind === "remove" ? decision.next : undefined;
+      }
       await this.#removeRecord(
         commit.namespace,
         key,
@@ -1242,6 +1469,19 @@ export class SqliteReadModel implements ReadModel {
     const blob = "blob" in change.put.content
       ? change.put.content.blob
       : undefined;
+    // A later change of the key in a net replay replaces this content before
+    // anything reads it (swamp-club#3803): its chunks are never fetched, so
+    // one unreadable is never recorded, and a later decision forgets it in a
+    // full replay anyway.
+    if (
+      blob?.legacyKey === undefined &&
+      this.#net?.skipsWrite(commit.namespace, key, position) === true
+    ) {
+      this.#paths.takeAbsent(path);
+      this.#stats?.bump("writes_skipped");
+      if (blob !== undefined) this.#stats?.bump("chunked_writes_skipped");
+      return decision.next;
+    }
     if (blob?.legacyKey !== undefined) {
       throw new ReadModelApplyError(
         commit.namespace,
@@ -1467,7 +1707,15 @@ export class SqliteReadModel implements ReadModel {
    * repeats the load. The touched keys and names make a retry against a
    * newer base reconcile what an earlier attempt wrote.
    */
-  async #loadBase(signal: AbortSignal): Promise<void> {
+  #loadBase(signal: AbortSignal): Promise<void> {
+    return withSpan(
+      "swamp.datastore.v3.readmodel.load_base",
+      {},
+      () => this.#loadBaseNow(signal),
+    );
+  }
+
+  async #loadBaseNow(signal: AbortSignal): Promise<void> {
     let point: number | undefined;
     for (let staged = false; !staged;) {
       this.#state.beginLoad();
@@ -1631,7 +1879,21 @@ export class SqliteReadModel implements ReadModel {
    * file's own directory would do nothing once the cleanup has removed it.
    * The file is guarded first ({@link #guardExisting}).
    */
-  async #removeRecord(
+  #removeRecord(
+    namespace: string,
+    key: string,
+    path: string,
+    batch: DurableWriteBatch,
+    signal: AbortSignal,
+    source: ChangeSource,
+  ): Promise<void> {
+    return this.#time(
+      "remove",
+      () => this.#removeRecordNow(namespace, key, path, batch, signal, source),
+    );
+  }
+
+  async #removeRecordNow(
     namespace: string,
     key: string,
     path: string,
@@ -1651,6 +1913,7 @@ export class SqliteReadModel implements ReadModel {
     const root = this.#cacheRoot(namespace);
     await removeRecordFile(path, batch);
     this.#state.forgetWrittenFile(namespace, key);
+    this.#stats?.noteRemoved(namespace, key);
     await cleanupEmptyParentDirs(path, root);
     this.#paths.clear();
     if (!batch.syncs) return;
@@ -1702,15 +1965,16 @@ export class SqliteReadModel implements ReadModel {
     };
     let wrongAccess = false;
     if (
-      await this.#guardExisting(
-        namespace,
-        key,
-        path,
-        intended,
-        signal,
-        source,
-        false,
-      )
+      await this.#time("guard", () =>
+        this.#guardExisting(
+          namespace,
+          key,
+          path,
+          intended,
+          signal,
+          source,
+          false,
+        ))
     ) {
       wrongAccess = content.access !== undefined &&
         !await hasAccess(path, content.access);
@@ -1722,12 +1986,17 @@ export class SqliteReadModel implements ReadModel {
     const root = this.#cacheRoot(namespace);
     const absentDirectories = this.#paths.takeAbsent(path);
     const written: { info?: Deno.FileInfo } = {};
+    const stats = this.#stats;
+    const started = performance.now();
     try {
+      const bytes = "inline" in content
+        ? decodeBase64(content.inline)
+        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal);
       await batch.write(
         path,
-        "inline" in content
-          ? decodeBase64(content.inline)
-          : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal),
+        stats === undefined || bytes instanceof Uint8Array
+          ? bytes
+          : stats.count(bytes),
         signal,
         {
           absentDirectories,
@@ -1768,11 +2037,18 @@ export class SqliteReadModel implements ReadModel {
         return;
       }
       throw error;
+    } finally {
+      if (stats !== undefined) stats.contentMs += performance.now() - started;
     }
+    stats?.noteWritten(namespace, key, intended?.size ?? 0);
     // It holds the chunks' content now: never hashed again this section.
     this.#guarded.add(path);
     if (intended !== undefined && written.info !== undefined) {
-      await this.#noteWritten(namespace, key, path, intended, written.info);
+      const info = written.info;
+      await this.#time(
+        "note",
+        () => this.#noteWritten(namespace, key, path, intended, info),
+      );
     }
     // The write made every directory above the file, up to the root, and
     // the ones it created are real directories under their parents.

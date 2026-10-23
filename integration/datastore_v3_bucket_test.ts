@@ -44,6 +44,12 @@ import {
   type InMemoryRemote,
 } from "../packages/testing/in_memory_remote.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withSpan } from "../src/infrastructure/tracing/tracer.ts";
+import {
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
 import {
   requireInitializedRepo,
@@ -1015,6 +1021,95 @@ Deno.test({
         const keys = [...bucket.remote.controlPlaneRecords().keys()];
         assert(keys.some((key) => key.startsWith("_control/writer/")));
         assert(keys.some((key) => key.startsWith("_control/lineage/")));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: a first clone's restore and catch-up are named spans, with what they listed, restored and fetched (swamp-club#3803)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const first = join(root, "first");
+      await initRepo(first);
+      assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+      const second = join(root, "second");
+      await cloneRepo(first, second);
+      await withSidecar(root, async () => {
+        await writeIn(first, 2);
+        await withCapturedSpans(async (spans) => {
+          await withSpan("test.clone", {}, async () => {
+            assertEquals(await restoredCommits(second), 2);
+          });
+          const clone = findSpan(spans, "test.clone");
+          const ensure = findSpan(spans, "swamp.datastore.v3.copy.ensure");
+          assert(isChildOf(ensure, clone));
+          const refresh = findSpan(spans, "swamp.datastore.v3.copy.refresh");
+          assert(isChildOf(refresh, ensure));
+          assertEquals(refresh.attributes["swamp.datastore.v3.restored"], true);
+          assertEquals(
+            refresh.attributes["swamp.datastore.v3.exact_txid"],
+            true,
+          );
+          assert(
+            isChildOf(
+              findSpan(spans, "swamp.datastore.v3.marker.confirm"),
+              refresh,
+            ),
+          );
+          // Read once without the restore lock and once under it.
+          const reads = spans.filter((span) =>
+            span.name === "swamp.datastore.v3.lineage.read"
+          );
+          assertEquals(reads.length, 2);
+          for (const read of reads) {
+            assert(isChildOf(read, refresh));
+            assert(
+              (read.attributes["swamp.datastore.v3.keys_listed"] as number) > 0,
+            );
+            assert((read.attributes["swamp.datastore.v3.gets"] as number) > 0);
+          }
+          const restore = findSpan(spans, "swamp.datastore.v3.restore");
+          assert(isChildOf(restore, refresh));
+          for (
+            const name of [
+              "swamp.datastore.v3.litestream.binary",
+              "swamp.datastore.v3.restore.attempt",
+              "swamp.datastore.v3.restore.integrity_check",
+              "swamp.datastore.v3.restore.truncate",
+              "swamp.datastore.v3.restore.install",
+            ]
+          ) {
+            assert(isChildOf(findSpan(spans, name), restore), name);
+          }
+          assertEquals(
+            findSpan(spans, "swamp.datastore.v3.restore.attempt")
+              .attributes["swamp.datastore.v3.restore_outcome"],
+            "ok",
+          );
+          // The catch-up that materialises the restored commits.
+          const catchUps = spans.filter((span) =>
+            span.name === "swamp.datastore.v3.readmodel.catchup" &&
+            (span.attributes["swamp.datastore.v3.commits"] as number) > 0
+          );
+          assertEquals(catchUps.length, 1);
+          const catchUp = catchUps[0];
+          assertEquals(catchUp.attributes["swamp.datastore.v3.commits"], 2);
+          assertEquals(
+            catchUp.attributes["swamp.datastore.v3.files_written"],
+            2,
+          );
+          assertEquals(
+            catchUp.attributes["swamp.datastore.v3.chunks_fetched"],
+            2,
+          );
+          assertEquals(
+            catchUp.attributes["swamp.datastore.v3.chunk_bytes"],
+            2 * 256 * 1024,
+          );
+        });
       });
     });
   },

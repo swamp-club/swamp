@@ -185,9 +185,12 @@ async function exists(path: string): Promise<boolean> {
 async function gatedBinary(
   request: Extract<MachineRequest, { kind: "init" }>,
 ): Promise<string> {
-  const step = /v3_copy\.ts/.test(new Error().stack ?? "")
-    ? "restore"
-    : "sidecar";
+  // Deep enough to reach v3_copy.ts through the restore's spans.
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = 100;
+  const stack = new Error().stack ?? "";
+  Error.stackTraceLimit = limit;
+  const step = /v3_copy\.ts/.test(stack) ? "restore" : "sidecar";
   const gate = join(
     dirname(request.datastorePath),
     `${request.hostname}-gate-${step}`,

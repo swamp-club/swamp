@@ -269,6 +269,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  // swamp-club#3803: a reader that waited too long for another process's
+  // catch-up gets the temporary-failure exit code.
+  "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -1009,7 +1012,7 @@ Deno.test("datastore v3: a bucket datastore's marker is confirmed before every l
     join(SRC_DIR, "infrastructure", "datastore_v3", "litestream", "v3_copy.ts"),
   );
   const current = copy.slice(
-    copy.indexOf("export async function makeV3CopyCurrent("),
+    copy.indexOf("async function makeV3CopyCurrentNow("),
     copy.indexOf("async function dropSharedOutboxEntries("),
   );
   assert(

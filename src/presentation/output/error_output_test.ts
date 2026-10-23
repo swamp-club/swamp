@@ -65,6 +65,7 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
+import { ReadModelBusyError } from "../../domain/datastore_v3/read_model.ts";
 import {
   flushAuthGateWarning,
   renderAuthGateWarning,
@@ -1125,6 +1126,10 @@ Deno.test("exitCodeForError: returns 75 for a commit that could not reach the st
     ),
     75,
   );
+});
+
+Deno.test("exitCodeForError: returns 75 for a reader that waited too long for another process's catch-up (swamp-club#3803)", () => {
+  assertEquals(exitCodeForError(new ReadModelBusyError(60_000)), 75);
 });
 
 Deno.test("exitCodeForError: returns 1 for a run a checkpoint partly committed, since a retry would start another run (swamp-club#3802)", () => {

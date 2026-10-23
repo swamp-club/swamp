@@ -3503,7 +3503,37 @@ fixed order:
 Commits are applied a page at a time (`pageSize`, 500 by default): each
 commit's state transaction is a savepoint in one transaction for the page,
 which commits after the page's files are written. An apply error at commit k
-keeps the commits before it, and the error is rethrown.
+keeps the commits before it, and the error is rethrown. The page's catalog
+actions are held and applied in one catalog transaction after its files and
+before its state (swamp-club#3803); a crash between the two leaves the catalog
+ahead, and the page is applied again. A removed version recomputes its
+group's latest flags in one SQL statement, from the group's maxima, rather
+than reading the group's rows.
+
+**Net replay (swamp-club#3803).** A catch-up from the start of the feed (a
+first clone, a restore, a rebuild after a reset) reads the feed once first, up
+to a bound fixed then, and runs `decideFile` over each key's changes to find
+the content still on disk at the end (`NetReplayPlanner` in
+`materialisation.ts`). The replay then leaves off disk a write a later change
+up to the bound replaces or removes, and a removal of a file it never wrote.
+Ownership, the record index, catalog actions and the cursor are recorded as
+in a full replay, and the path checks run for every change. A key skips writes
+only when its top directory was absent before the catch-up and no other key
+the first pass read is its path prefix or lies under it, so its file can never
+decide another key's file and directory conflict. A recovery, a partition
+catch-up and the rest of a catch-up that meets a compacted base replay in
+full, and so does one resumed after a crash: from the bound on, every file is
+where a full replay leaves it. On the dogfood repos a clone wrote 13.7k files
+instead of 40-48k.
+
+**Readers of a checkout another process writes.** A reader skips catch-up
+there, since the writer's files are newer than the commits it would replay,
+but only once the read model is complete. Until then a catch-up is running or
+was cut short and the files may be between two commits, so the reader waits
+for `read_model.lock`, the OS lock every catch-up holds and a crashed process
+releases, up to the lock timeout, then finishes the catch-up if the read model
+is still incomplete. A wait that runs out fails with
+`datastore_v3_read_model_busy` (exit 75) and reads nothing.
 
 Each effect is idempotent, so catching up again from the unchanged cursor
 redoes the effects of a crash anywhere. That is not always a repair on its

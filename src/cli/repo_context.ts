@@ -840,23 +840,28 @@ export async function resolveDatastoreForRepo(
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
 
-  const datastoreConfig = await resolveDatastoreConfig(
-    marker,
-    undefined,
-    repoPath.value,
+  const datastoreConfig = await withSpan(
+    "swamp.repo.datastore.config",
+    {},
+    () => resolveDatastoreConfig(marker, undefined, repoPath.value),
   );
 
   // Before any caller locks, pulls, pushes or writes: refuse a datastore
   // marked with a format this binary cannot read (swamp-club#3189).
-  const engine = await ensureSupportedDatastoreFormat(
-    repoPath.value,
-    datastoreConfig,
+  const engine = await withSpan(
+    "swamp.repo.datastore.format",
+    {},
+    () => ensureSupportedDatastoreFormat(repoPath.value, datastoreConfig),
   );
   // A checkout that joins a v3 datastore through .swamp.yaml while its
   // .swamp holds records is refused before anything leases, catches up or
   // writes, as setup refuses it (swamp-club#3690).
   if (engine === "v3") {
-    await assertV3CheckoutJoinable(repoPath.value, datastoreConfig.namespace);
+    await withSpan(
+      "swamp.datastore.v3.join_check",
+      {},
+      () => assertV3CheckoutJoinable(repoPath.value, datastoreConfig.namespace),
+    );
   }
 
   return { repoDir: repoPath.value, datastoreConfig, marker, engine };
@@ -949,14 +954,19 @@ export async function requireInitializedRepoReadOnly(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const { repoDir, datastoreConfig, marker, engine } =
-    await resolveDatastoreForRepo(
-      options.repoDir,
-    );
+  const { repoDir, datastoreConfig, marker, engine } = await withSpan(
+    "swamp.repo.datastore.resolve",
+    {},
+    () => resolveDatastoreForRepo(options.repoDir),
+  );
   // A v3 datastore's location: the filesystem datastore, or a bucket
   // datastore's local root (swamp-club#3534).
   const v3 = engine === "v3"
-    ? await v3DatastoreConfigOf(repoDir, datastoreConfig)
+    ? await withSpan(
+      "swamp.datastore.v3.bind",
+      {},
+      () => v3DatastoreConfigOf(repoDir, datastoreConfig),
+    )
     : undefined;
 
   const repoPath = RepoPath.create(repoDir);

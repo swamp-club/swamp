@@ -51,6 +51,7 @@ import {
 } from "../../../domain/datastore_v3/published_lineage.ts";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
+import { withSpan } from "../../tracing/tracer.ts";
 
 /** The control-plane prefix every lineage record is under. */
 export const LINEAGE_PREFIX = "lineage/";
@@ -88,9 +89,11 @@ interface Listed {
 export class LineageRegistry {
   constructor(private readonly store: WritableDatastoreControlPlaneStore) {}
 
-  async #list(): Promise<Map<number, Listed>> {
+  async #list(counts?: { listed: number }): Promise<Map<number, Listed>> {
     const listed = new Map<number, Listed>();
-    for (const key of await this.store.list(LINEAGE_PREFIX)) {
+    const keys = await this.store.list(LINEAGE_PREFIX);
+    if (counts !== undefined) counts.listed = keys.length;
+    for (const key of keys) {
       const match = KEY_PATTERN.exec(key);
       if (match === null) continue;
       const fence = Number(match[1]);
@@ -116,13 +119,36 @@ export class LineageRegistry {
    * The lineages the rules need, newest first: every fence with a record,
    * with the start, confirmation and head fetched for the current lineage
    * under `replicaRoot`, and the start of the newest one started. A
-   * lineage's head is its highest writer's that parses.
+   * lineage's head is its highest writer's that parses. Its span counts
+   * the keys listed and the records fetched (swamp-club#3803).
    */
-  async read(
+  read(
     replicaRoot: ReplicaRoot,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<PublishedLineage[]> {
-    const listed = await this.#list();
+    return withSpan("swamp.datastore.v3.lineage.read", {}, async (span) => {
+      const counts = { listed: 0, gets: 0 };
+      try {
+        return await this.#read(replicaRoot, options, counts);
+      } finally {
+        span.setAttributes({
+          "swamp.datastore.v3.keys_listed": counts.listed,
+          "swamp.datastore.v3.gets": counts.gets,
+        });
+      }
+    });
+  }
+
+  async #read(
+    replicaRoot: ReplicaRoot,
+    options: { readonly signal?: AbortSignal },
+    counts: { listed: number; gets: number },
+  ): Promise<PublishedLineage[]> {
+    const get = (key: string) => {
+      counts.gets++;
+      return this.#get(key, options.signal);
+    };
+    const listed = await this.#list(counts);
     const fences = [...listed.keys()].sort((a, b) => b - a);
     const found = new Map<number, {
       started?: LineageStarted;
@@ -134,7 +160,7 @@ export class LineageRegistry {
       found.set(fence, entry);
       if (entry.started === undefined && listed.get(fence)!.started) {
         const record = parseLineageStarted(
-          await this.#get(keyOf(fence, "started"), options.signal),
+          await get(keyOf(fence, "started")),
         );
         if (record !== undefined && record.fence === fence) {
           entry.started = record;
@@ -165,18 +191,39 @@ export class LineageRegistry {
         continue;
       }
       const confirmed = parseLineageConfirmed(
-        await this.#get(keyOf(fence, "confirmed"), options.signal),
+        await get(keyOf(fence, "confirmed")),
       );
       if (confirmed === undefined || confirmed.fence !== fence) continue;
       entry.confirmed = confirmed;
-      for (const writer of has.heads) {
-        const head = parseLineageHead(
-          await this.#get(headKeyOf(fence, writer), options.signal),
-        );
-        if (head?.fence === fence && head.writerFence === writer) {
-          entry.head = head;
+      // A writer prunes the heads below its own (swamp-club#3803): a head
+      // listed above the one found that is gone now means a newer writer
+      // published and pruned since the list, so the lineage is listed again
+      // rather than read at a lower head, or as headless.
+      let heads = has.heads;
+      for (let relist = 0;; relist++) {
+        let missingAbove = false;
+        let head: LineageHead | undefined;
+        for (const writer of heads) {
+          const data = await this.store.get(
+            headKeyOf(fence, writer),
+            options.signal ? { signal: options.signal } : undefined,
+          );
+          counts.gets++;
+          if (data === null) {
+            missingAbove = true;
+            continue;
+          }
+          const parsed = parseLineageHead(decodeJson(data));
+          if (parsed?.fence === fence && parsed.writerFence === writer) {
+            head = parsed;
+            break;
+          }
+        }
+        if (!missingAbove || relist >= MAX_RELISTS) {
+          if (head !== undefined) entry.head = head;
           break;
         }
+        heads = await this.#headsOf(fence);
       }
       if (entry.head === undefined) continue;
       break;
@@ -306,6 +353,61 @@ export class LineageRegistry {
     }
   }
 
+  /** The writers whose heads `fence` holds, highest first. */
+  async #headsOf(fence: number): Promise<number[]> {
+    const heads: number[] = [];
+    for (const key of await this.store.list(lineagePrefixOf(fence))) {
+      const match = KEY_PATTERN.exec(key);
+      if (match?.[3] !== undefined && Number(match[1]) === fence) {
+        heads.push(Number(match[3]));
+      }
+    }
+    return heads.sort((a, b) => b - a);
+  }
+
+  /**
+   * Removes the heads of the lineage at `fence` that writers below
+   * `writerFence` published, once `writerFence`'s own head is there
+   * (swamp-club#3803). A read takes the highest writer's head, so a lower
+   * one is never read once a higher one parses; without this, every writing
+   * command leaves one more behind for every read to list. The lineage's
+   * start and confirmation stay, so it stays complete for the lineage rules.
+   *
+   * The newest head below `writerFence`'s stays as well: a swamp before this
+   * one, which does not list a lineage again, may have listed the heads just
+   * before `writerFence` published, and reads the highest it listed first.
+   * The rest go in batches of {@link PRUNE_BATCH} at a time, in any order: a
+   * read that finds a listed head missing above the one it found lists the
+   * lineage again (see {@link read}), and finds `writerFence`'s head, which
+   * this never removes. At most `limit` heads, and no batch is started once
+   * `deadlineMs` has passed; a call still running then is left to finish on
+   * its own, since a delete can be repeated. Resolves with how many it
+   * removed.
+   */
+  async pruneHeads(
+    fence: number,
+    writerFence: number,
+    options: { readonly limit?: number; readonly deadlineMs?: number } = {},
+  ): Promise<number> {
+    const until = Date.now() + (options.deadlineMs ?? PRUNE_DEADLINE_MS);
+    const heads = await withinDeadline(this.#headsOf(fence), until);
+    if (!heads.includes(writerFence)) return 0;
+    const lower = heads.filter((writer) => writer < writerFence).slice(1)
+      .reverse().slice(0, options.limit ?? MAX_PRUNED_HEADS);
+    let removed = 0;
+    for (let start = 0; start < lower.length; start += PRUNE_BATCH) {
+      const batch = lower.slice(start, start + PRUNE_BATCH);
+      await withinDeadline(
+        Promise.all(
+          batch.map((writer) => this.store.delete(headKeyOf(fence, writer))),
+        ),
+        until,
+      );
+      removed += batch.length;
+    }
+    return removed;
+  }
+
   async #get(key: string, signal?: AbortSignal): Promise<unknown> {
     const data = await this.store.get(key, signal ? { signal } : undefined);
     if (data === null) return undefined;
@@ -314,6 +416,62 @@ export class LineageRegistry {
     } catch {
       return undefined;
     }
+  }
+}
+
+/** Lists of a lineage a read makes when its listed heads are gone. */
+const MAX_RELISTS = 3;
+
+/** Heads one prune removes, so a long backlog spreads over writers. */
+const MAX_PRUNED_HEADS = 64;
+
+/**
+ * Heads one prune deletes at once: a prune costs a writer about one list and
+ * one round trip per batch (swamp-club#3803).
+ */
+const PRUNE_BATCH = 16;
+
+/** How long one prune may keep a writer's publish waiting. */
+const PRUNE_DEADLINE_MS = 5_000;
+
+/** A prune's deadline passed: what remains is left for a later writer. */
+export class PruneDeadlineError extends Error {
+  constructor() {
+    super("Pruning the lineage heads ran out of time");
+    this.name = "PruneDeadlineError";
+  }
+}
+
+/**
+ * `work`, or a {@link PruneDeadlineError} once `until` passes. The store's
+ * calls take no signal, so work still running then is not cancelled: its
+ * outcome is handled here and goes unread, and a delete may still be in
+ * flight when the process exits. That is harmless for a best-effort prune:
+ * a delete can be repeated, and a later writer prunes what is left.
+ */
+function withinDeadline<T>(work: Promise<T>, until: number): Promise<T> {
+  const left = until - Date.now();
+  if (left <= 0) {
+    work.catch(() => {});
+    return Promise.reject(new PruneDeadlineError());
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new PruneDeadlineError()), left);
+  });
+  work.catch(() => {});
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
+function lineagePrefixOf(fence: number): string {
+  return `${LINEAGE_PREFIX}${padFence(fence)}/`;
+}
+
+function decodeJson(data: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder().decode(data));
+  } catch {
+    return undefined;
   }
 }
 

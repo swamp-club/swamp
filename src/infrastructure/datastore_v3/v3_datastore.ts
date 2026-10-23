@@ -580,6 +580,13 @@ export interface V3Datastore {
   /** Applies every commit this checkout has not applied yet. */
   catchUp(signal?: AbortSignal): Promise<void>;
   /**
+   * For a reader of a checkout another process writes (swamp-club#3803):
+   * nothing while the read model is complete; otherwise waits up to
+   * `lockWaitMs` for the catch-up in progress and catches up if the read
+   * model is still incomplete. See {@link SqliteReadModel.catchUpUnlessComplete}.
+   */
+  catchUpUnlessComplete(lockWaitMs: number): Promise<void>;
+  /**
    * Records that this process took the writer lease at `fence`: notes the
    * fence in the outbox, raises the commit store's writer fence and records
    * the fence in the outbox's chain (swamp-club#3490, swamp-club#3586). The
@@ -911,20 +918,14 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     namespace,
     writer,
     async catchUp(signal) {
-      try {
-        await readModel.catchUp(signal ?? lifetime.signal);
-      } catch (error) {
-        // Cut off from the storage, the catch-up changed nothing past what
-        // it applied, and the next one finishes it (swamp-club#3802).
-        if (
-          error instanceof ReadModelApplyError &&
-          !(error instanceof CheckoutCopyAtRiskError) &&
-          isNetworkFailure(error)
-        ) {
-          throw new ReadModelCatchUpUnreachableError(error);
-        }
-        throw error;
-      }
+      await unreachableAsCatchUpError(() =>
+        readModel.catchUp(signal ?? lifetime.signal)
+      );
+    },
+    async catchUpUnlessComplete(lockWaitMs) {
+      await unreachableAsCatchUpError(() =>
+        readModel.catchUpUnlessComplete(lifetime.signal, lockWaitMs)
+      );
     },
     async raiseWriterFence(fence) {
       // Noted first: a writer killed, or failing, before the record leaves
@@ -1602,5 +1603,28 @@ async function absentDirectories(dir: string): Promise<string[]> {
     }
     missing.push(current);
     if (dirname(current) === current) return missing;
+  }
+}
+
+/**
+ * Runs a catch-up, reporting one the storage cut off as
+ * {@link ReadModelCatchUpUnreachableError}: it changed nothing past what it
+ * applied, and the next one finishes it (swamp-club#3802). A reader that
+ * finishes another process's catch-up (swamp-club#3803) fails the same way.
+ */
+export async function unreachableAsCatchUpError<T>(
+  catchUp: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await catchUp();
+  } catch (error) {
+    if (
+      error instanceof ReadModelApplyError &&
+      !(error instanceof CheckoutCopyAtRiskError) &&
+      isNetworkFailure(error)
+    ) {
+      throw new ReadModelCatchUpUnreachableError(error);
+    }
+    throw error;
   }
 }

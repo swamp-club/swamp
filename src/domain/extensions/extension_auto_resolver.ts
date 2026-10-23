@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { withSpan } from "../../infrastructure/tracing/tracer.ts";
 import { CalVer } from "../models/calver.ts";
 import { ModelType } from "../models/model_type.ts";
 import { type ModelDefinition, modelRegistry } from "../models/model.ts";
@@ -830,7 +831,13 @@ export async function resolveDatastoreType(
   if (!resolver) return false;
   if (!type.startsWith("@")) return false;
 
-  return await resolver.resolve(type);
+  // Named: a fresh checkout installs its datastore extension here, on v2
+  // and v3 alike (swamp-club#3803).
+  return await withSpan(
+    "swamp.extension.auto_resolve",
+    { "swamp.extension.type": type },
+    () => resolver.resolve(type),
+  );
 }
 
 /**

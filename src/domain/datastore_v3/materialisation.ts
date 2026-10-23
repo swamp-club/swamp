@@ -169,3 +169,193 @@ export function lexicalConflict(
   }
   return hasPresentFileUnder(key) ? "directory" : undefined;
 }
+
+/** What the first pass of a net replay reads of one commit. */
+export interface NetReplayCommit {
+  readonly namespace: string;
+  /** The commit's partition, the owner its puts give a file. */
+  readonly partition: string;
+  /** The commit's feed position. */
+  readonly position: number;
+  /** The commit's {@link finalKeyStates}. */
+  readonly changes: readonly KeyChange[];
+}
+
+/** What a net replay may leave off disk, and what its first pass found. */
+export interface NetReplayPlan {
+  /** The last feed position the plan read: nothing past it is skipped. */
+  readonly bound: number;
+  /**
+   * Whether the replay may leave the write of `key` at `position` off disk:
+   * a later change up to the bound replaces or removes its content.
+   */
+  skipsWrite(namespace: string, key: string, position: number): boolean;
+  /**
+   * Whether the replay may leave out the removal of `key` at `position`: no
+   * write of it was on disk, since each one was replaced or removed again.
+   */
+  skipsRemoval(namespace: string, key: string, position: number): boolean;
+  /** Writes up to the bound whose content a later change replaces or removes. */
+  readonly replaceable: number;
+  /** Of those, the ones kept because another key is its path prefix or under it. */
+  readonly keptForPrefix: number;
+  /** Of those, the ones kept because its directory was there before. */
+  readonly keptForDirectory: number;
+}
+
+/**
+ * Plans a net replay (swamp-club#3803): a catch-up from an empty checkout
+ * that writes only the content still on disk at the end of the feed, instead
+ * of every put a later commit replaces or removes. It runs the replay's own
+ * rules ({@link decideFile} over each key's changes in feed order, from no
+ * ownership) to find each key's final file, and lets a key skip its other
+ * writes, and every removal, only when:
+ *
+ * - the replay materialises it (`ignored` names the keys it leaves alone);
+ * - its first segment's directory was absent before the catch-up
+ *   (`directoryAbsent`), so no file of it was on disk to begin with;
+ * - no other key the plan reads is its path prefix, or lies under it, so its
+ *   file can never decide another key's file and directory conflict. Keys
+ *   are compared case-folded and composed (NFC), as a case-insensitive or
+ *   normalising filesystem (macOS, Windows) compares the paths, and two keys
+ *   that differ only so are each other's prefix.
+ *
+ * Everything else replays in full. At the bound every key's file is where a
+ * full replay leaves it, so later commits apply as they would anyway.
+ */
+export class NetReplayPlanner {
+  /** Each key's ownership as the replay would record it, by namespace and key. */
+  readonly #ownership = new Map<string, FileOwnership>();
+  /** The positions each key was written at. */
+  readonly #writes = new Map<string, number[]>();
+  /** Each namespace's keys, for the prefix rule. */
+  readonly #keys = new Map<string, Set<string>>();
+  #bound = 0;
+
+  constructor(
+    readonly ignored: (namespace: string, key: string) => boolean,
+  ) {}
+
+  /** Reads one commit, in feed order. */
+  add(commit: NetReplayCommit): void {
+    this.#bound = Math.max(this.#bound, commit.position);
+    for (const change of commit.changes) {
+      const key = change.key.toString();
+      if (this.ignored(commit.namespace, key)) continue;
+      const keys = this.#keys.get(commit.namespace) ?? new Set<string>();
+      keys.add(key);
+      this.#keys.set(commit.namespace, keys);
+      const id = idOf(commit.namespace, key);
+      const decision = decideFile(
+        this.#ownership.get(id),
+        commit.partition,
+        commit.position,
+        change.put !== null,
+      );
+      if (decision.kind === "keep") continue;
+      if (decision.next !== undefined) this.#ownership.set(id, decision.next);
+      if (decision.kind === "write") {
+        const writes = this.#writes.get(id) ?? [];
+        writes.push(commit.position);
+        this.#writes.set(id, writes);
+      }
+    }
+  }
+
+  /** Each namespace and first segment the plan's keys are under. */
+  directories(): { namespace: string; segment: string }[] {
+    const found: { namespace: string; segment: string }[] = [];
+    for (const [namespace, keys] of this.#keys) {
+      const segments = new Set([...keys].map((key) => key.split("/")[0]));
+      for (const segment of segments) found.push({ namespace, segment });
+    }
+    return found;
+  }
+
+  /**
+   * The plan, given which of {@link directories} were absent before the
+   * catch-up.
+   */
+  finish(
+    directoryAbsent: (namespace: string, segment: string) => boolean,
+  ): NetReplayPlan {
+    const prefixed = new Set<string>();
+    for (const [namespace, keys] of this.#keys) {
+      // Each folded spelling, with the keys spelt so.
+      const folded = new Map<string, string[]>();
+      for (const key of keys) {
+        const spelling = foldKey(key);
+        folded.set(spelling, [...(folded.get(spelling) ?? []), key]);
+      }
+      for (const same of folded.values()) {
+        if (same.length < 2) continue;
+        for (const key of same) prefixed.add(idOf(namespace, key));
+      }
+      for (const key of keys) {
+        const segments = foldKey(key).split("/");
+        for (let i = 1; i < segments.length; i++) {
+          const prefixes = folded.get(segments.slice(0, i).join("/"));
+          if (prefixes === undefined) continue;
+          for (const prefix of prefixes) prefixed.add(idOf(namespace, prefix));
+          prefixed.add(idOf(namespace, key));
+        }
+      }
+    }
+    const eligible = new Set<string>();
+    const skipped = new Set<string>();
+    let replaceable = 0;
+    let keptForPrefix = 0;
+    let keptForDirectory = 0;
+    for (const [id, writes] of this.#writes) {
+      const own = this.#ownership.get(id);
+      const final = own?.present === true ? own.mark : undefined;
+      const replaced = writes.filter((position) => position !== final);
+      replaceable += replaced.length;
+      const [namespace, key] = splitId(id);
+      if (prefixed.has(id)) {
+        keptForPrefix += replaced.length;
+        continue;
+      }
+      if (!directoryAbsent(namespace, key.split("/")[0])) {
+        keptForDirectory += replaced.length;
+        continue;
+      }
+      eligible.add(id);
+      for (const position of replaced) skipped.add(`${id}\0${position}`);
+    }
+    // A key only ever removed is eligible as well: nothing of it is on disk.
+    for (const [namespace, keys] of this.#keys) {
+      for (const key of keys) {
+        const id = idOf(namespace, key);
+        if (this.#writes.has(id) || prefixed.has(id)) continue;
+        if (directoryAbsent(namespace, key.split("/")[0])) eligible.add(id);
+      }
+    }
+    const bound = this.#bound;
+    return {
+      bound,
+      skipsWrite: (namespace, key, position) =>
+        position <= bound &&
+        skipped.has(`${idOf(namespace, key)}\0${position}`),
+      skipsRemoval: (namespace, key, position) =>
+        position <= bound && eligible.has(idOf(namespace, key)),
+      replaceable,
+      keptForPrefix,
+      keptForDirectory,
+    };
+  }
+}
+
+/** A key as a case-insensitive, normalising filesystem compares it. */
+function foldKey(key: string): string {
+  return key.normalize("NFC").toLowerCase();
+}
+
+function idOf(namespace: string, key: string): string {
+  return `${namespace}\0${key}`;
+}
+
+function splitId(id: string): [string, string] {
+  const at = id.indexOf("\0");
+  return [id.slice(0, at), id.slice(at + 1)];
+}

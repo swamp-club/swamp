@@ -247,6 +247,29 @@ export class ReadModelIncompleteError extends Error {
 }
 
 /**
+ * Error code for a reader that waited too long for another process's
+ * catch-up of the checkout (swamp-club#3803): a temporary failure, so it
+ * exits 75 (EX_TEMPFAIL) as lock contention does.
+ */
+export const READ_MODEL_BUSY_CODE = "datastore_v3_read_model_busy";
+
+/**
+ * Another process held the read model's lock for longer than a reader waits
+ * for a catch-up in progress. Nothing was read.
+ */
+export class ReadModelBusyError extends UserError {
+  constructor(waitedMs: number) {
+    super(
+      `Another swamp process is still bringing this checkout's files up to date with the v3 datastore, and it did not finish within ${
+        Math.round(waitedMs / 1000)
+      }s. Nothing was read. Run the command again once it has finished.`,
+      READ_MODEL_BUSY_CODE,
+    );
+    this.name = "ReadModelBusyError";
+  }
+}
+
+/**
  * The read side of the commit log for one checkout.
  *
  * The catch-ups take an `AbortSignal`. An abort stops between commits, or
@@ -255,6 +278,10 @@ export class ReadModelIncompleteError extends Error {
  * not abortable: the OS lock has no abort hook.
  */
 export interface ReadModel {
+  // Until a catch-up completes, the files may lag the state: a net replay
+  // (swamp-club#3803) records puts a later commit replaces without writing
+  // them. Read a checkout's files only after a catch-up, or once the read
+  // model is complete.
   /**
    * Applies every commit that landed after the stored cursor, in landing
    * order, a page of commits at a time, advancing the cursor after each

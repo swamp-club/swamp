@@ -23,6 +23,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { Op } from "../../domain/datastore_v3/op.ts";
 import {
+  blobPut,
   dataKey,
   deleteVersion,
   MemoryStorage,
@@ -35,6 +36,8 @@ import {
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
+import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
+import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
@@ -49,6 +52,7 @@ import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 interface Env {
   readonly repoDir: string;
   readonly store: SqliteCommitStore;
+  readonly chunkStore: ChunkStore;
   open(overrides?: Partial<SqliteReadModelOptions>): SqliteReadModel;
   /** Appends a fixture-model commit in `namespace`. */
   append(seq: number, namespace: string, ops: readonly Op[]): Promise<void>;
@@ -67,6 +71,7 @@ async function withEnv(fn: (env: Env) => Promise<void>): Promise<void> {
   const env: Env = {
     repoDir,
     store,
+    chunkStore,
     open: (overrides = {}) =>
       SqliteReadModel.open({
         commitStore: store,
@@ -468,3 +473,103 @@ Deno.test("SqliteReadModel: the reboot check leaves a removal it listed for a ke
     }
   });
 });
+
+for (const net of [true, false]) {
+  Deno.test(
+    `SqliteReadModel.catchUp: its span counts the commits, files and chunks it applied, in a ${
+      net ? "net" : "full"
+    } replay (swamp-club#3803)`,
+    async () => {
+      await withEnv(async (env) => {
+        const blob = await env.chunkStore.write(
+          SOLO_NAMESPACE,
+          new Uint8Array(20_000).fill(3),
+          signal(),
+        );
+        await env.append(1, "", [
+          await blobPut("a", 1, blob),
+          versionOp("a", 1),
+        ]);
+        await env.append(2, "", [await savePut("b", 1), versionOp("b", 1)]);
+        await env.append(3, "", [deleteVersion("a", 1)]);
+        // A checkout that already holds data replays in full.
+        if (!net) {
+          await writeLocal(
+            join(v3CacheRoot(env.repoDir, ""), "data", "local"),
+            "x",
+          );
+        }
+        const readModel = env.open();
+        try {
+          await withCapturedSpans(async (spans) => {
+            await readModel.catchUp(signal());
+            const span = findSpan(
+              spans,
+              "swamp.datastore.v3.readmodel.catchup",
+            );
+            const plan = findSpan(
+              spans,
+              "swamp.datastore.v3.readmodel.net_plan",
+            );
+            assertEquals(span.attributes["swamp.datastore.v3.commits"], 3);
+            assertEquals(span.attributes["swamp.datastore.v3.pages"], 1);
+            assertEquals(
+              plan.attributes["swamp.datastore.v3.writes_replaceable"],
+              1,
+            );
+            if (net) {
+              // a@1, which commit 3 removes, is never fetched nor written.
+              assertEquals(
+                span.attributes["swamp.datastore.v3.files_written"],
+                1,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.chunks_fetched"],
+                0,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.writes_skipped"],
+                1,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.chunked_writes_skipped"],
+                1,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.removals_skipped"],
+                1,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.superseded_bytes"],
+                0,
+              );
+            } else {
+              assertEquals(
+                plan.attributes["swamp.datastore.v3.writes_kept_for_directory"],
+                1,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.files_written"],
+                2,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.chunks_fetched"],
+                1,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.chunk_bytes"],
+                20_000,
+              );
+              assertEquals(
+                span.attributes["swamp.datastore.v3.superseded_bytes"],
+                20_000,
+              );
+            }
+          });
+        } finally {
+          await readModel.close();
+        }
+      });
+    },
+  );
+}

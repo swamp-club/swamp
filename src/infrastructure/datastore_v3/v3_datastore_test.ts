@@ -50,9 +50,14 @@ import {
   openV3Datastore,
   referencedChunksOf,
   restoreV3FormatMarker,
+  unreachableAsCatchUpError,
   V3_CHECKOUT_FILTER_CHANGED_CODE,
   v3CheckoutFilterRefusal,
 } from "./v3_datastore.ts";
+import {
+  ReadModelApplyError,
+  ReadModelCatchUpUnreachableError,
+} from "../../domain/datastore_v3/read_model.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 import { writerAliveFrom } from "./commit_outbox_recovery.ts";
@@ -1561,3 +1566,19 @@ for (const old of [true, false]) {
     });
   });
 }
+
+Deno.test("unreachableAsCatchUpError: a catch-up the storage cut off fails with the catch-up code, whichever catch-up it is, and any other failure as it is (swamp-club#3802, swamp-club#3803)", async () => {
+  const cutOff = new ReadModelApplyError("", "p", 1, "error reading a body", {
+    cause: new Deno.errors.ConnectionReset("reset by peer"),
+  });
+  await assertRejects(
+    () => unreachableAsCatchUpError(() => Promise.reject(cutOff)),
+    ReadModelCatchUpUnreachableError,
+  );
+  const other = new ReadModelApplyError("", "p", 1, "a refused key");
+  const thrown = await assertRejects(() =>
+    unreachableAsCatchUpError(() => Promise.reject(other))
+  );
+  assertEquals(thrown, other);
+  assertEquals(await unreachableAsCatchUpError(() => Promise.resolve(3)), 3);
+});
