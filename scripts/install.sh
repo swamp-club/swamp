@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# shellcheck shell=sh disable=SC3043
+# shellcheck shell=sh disable=SC3043,SC3013
 set -eu
 ARTIFACT_ORIGIN="${SWAMP_ARTIFACTS_URL:-https://artifacts.swamp-club.com}"
 case "$ARTIFACT_ORIGIN" in
@@ -41,6 +41,9 @@ print_usage() {
 
 	    # Installs the latest release for all users under \`/usr/local/bin\`
 	    sudo $program
+
+	    # Installs the latest release into \`\$SWAMP_HOME/bin\`
+	    SWAMP_HOME=/opt/swamp $program
 
 	    # Installs an old release into a temp directory
 	    $program -V 20250214.193652.0-sha.0f9972a53 -d /tmp
@@ -121,6 +124,15 @@ main() {
   indent "$dest/$bin" --version
   echo
 
+  # An earlier install elsewhere on PATH would keep running the old version.
+  local resolved
+  resolved="$(command -v "$bin" 2>/dev/null || true)"
+  if [ -n "$resolved" ] && ! [ "$resolved" -ef "$dest/$bin" ]; then
+    warn "'$resolved' comes before '$dest/$bin' on PATH, so '$bin' runs that copy."
+    warn "Remove it, or put '$dest' earlier on PATH."
+    echo
+  fi
+
   info "By using Swamp you agree to its software license and extension"
   info "registry terms."
   info ""
@@ -172,7 +184,9 @@ parse_cli_args() {
   esac
   plat="$os_type-$cpu_type"
 
-  if [ "$(id -u)" -eq 0 ]; then
+  if [ -n "${SWAMP_HOME:-}" ]; then
+    dest="$(swamp_home_bin_dir)"
+  elif [ "$(id -u)" -eq 0 ]; then
     dest="/usr/local/bin"
   else
     if echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin\$"; then
@@ -456,7 +470,39 @@ install_bin() {
 
   if [ "$(dirname "$dest")" = "$HOME/.$bin/bin" ]; then
     symlink_to_system_path "$dest" "$bin"
+  elif [ -n "${SWAMP_HOME:-}" ] &&
+    [ "$(dirname "$dest")" = "$(swamp_home_bin_dir)" ] &&
+    ! dir_on_path "$(dirname "$dest")"; then
+    symlink_to_system_path "$dest" "$bin"
   fi
+}
+
+# Whether a PATH entry names the same directory, under any spelling (such as
+# macOS `/tmp` for `/private/tmp`).
+dir_on_path() {
+  local dir entry rest
+  dir="$1"
+  rest="$PATH:"
+  while [ -n "$rest" ]; do
+    entry="${rest%%:*}"
+    rest="${rest#*:}"
+    if [ -n "$entry" ] && [ "$entry" -ef "$dir" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The default destination when SWAMP_HOME is set: `$SWAMP_HOME/bin`, made
+# absolute so the system path symlink points at the installed binary.
+swamp_home_bin_dir() {
+  local home
+  home="${SWAMP_HOME%/}"
+  case "$home" in
+    /* | "") ;;
+    *) home="$PWD/$home" ;;
+  esac
+  echo "$home/bin"
 }
 
 check_dynamic_linker() {
@@ -484,7 +530,9 @@ symlink_to_system_path() {
   dest="$1"
   bin="$2"
 
-  need_cmd sudo
+  if [ "$(id -u)" -ne 0 ]; then
+    need_cmd sudo
+  fi
 
   local system_path=/usr/local/bin
   local prompt="[sudo required to link $bin under $system_path]"
@@ -495,7 +543,11 @@ symlink_to_system_path() {
   fi
 
   info "Symlinking '$dest' to $system_path/$bin"
-  sudo -p "$prompt" ln -snf "$dest" "$system_path/$bin"
+  if [ "$(id -u)" -eq 0 ]; then
+    ln -snf "$dest" "$system_path/$bin"
+  else
+    sudo -p "$prompt" ln -snf "$dest" "$system_path/$bin"
+  fi
 }
 
 trap_exit() {
