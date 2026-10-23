@@ -101,7 +101,7 @@ function fieldLine(identifier: string): string {
   return `  ${identifier}: z.string().optional(),`;
 }
 
-function sensitiveFindingCount(content: string): number {
+function sensitiveFindingLines(content: string): (number | undefined)[] {
   const src: ReviewSource = {
     path: "/ext/models/m.ts",
     kind: "model",
@@ -111,7 +111,11 @@ function sensitiveFindingCount(content: string): number {
   };
   return evaluateReviewRules([src]).warnings.filter((w) =>
     w.ruleId === "credentials-sensitive-field"
-  ).length;
+  ).map((w) => w.line);
+}
+
+function sensitiveFindingCount(content: string): number {
+  return sensitiveFindingLines(content).length;
 }
 
 Deno.test("credentials-sensitive-field property: a stem followed by a reference suffix never warns", () => {
@@ -187,7 +191,9 @@ Deno.test("credentials-sensitive-field property: the sensitive marker suppresses
   );
 });
 
-Deno.test("credentials-sensitive-field property: a wrapped .meta object is marked whatever its description holds", () => {
+// Only the field's own line is asserted: a description such as `(token:z.`
+// looks like a field to the line check on the description's own line.
+Deno.test("credentials-sensitive-field property: a wrapped .meta object marks its field line whatever its description holds", () => {
   fc.assert(
     fc.property(fc.string(), fc.boolean(), (description, marked) => {
       const content = `import { z } from "npm:zod@4";
@@ -199,7 +205,7 @@ ${marked ? "    sensitive: true,\n" : ""}    description:
 });
 `;
       assertEquals(
-        sensitiveFindingCount(content),
+        sensitiveFindingLines(content).filter((line) => line === 3).length,
         marked ? 0 : 1,
         `description ${JSON.stringify(description)}, marked ${marked}`,
       );

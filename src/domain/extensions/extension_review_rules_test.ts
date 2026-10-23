@@ -1036,6 +1036,21 @@ export const GlobalArgs = Base.extend({ password: z.string(), apiKey: z.string()
   assertEquals(findings[0].line, 3);
 });
 
+Deno.test("credentials-sensitive-field: a destructured or shorthand name on the field line does not hide a continuation marker", () => {
+  const destructured = schemaModule(
+    `  apiKey: z.string().transform(({ token }) => token)
+    .meta({ sensitive: true }),`,
+  );
+  const shorthand = `import { z } from "npm:zod@4";
+const apiKey = "";
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ apiKey, password: z.string()
+  .meta({ sensitive: true }) });
+`;
+  assertEquals(sensitiveFindings(destructured), []);
+  assertEquals(sensitiveFindings(shorthand), []);
+});
+
 Deno.test("credentials-sensitive-field: a wrapped register entry is marked", () => {
   const content = schemaModule(
     `  apiKey: z.string().register(z.globalRegistry, {

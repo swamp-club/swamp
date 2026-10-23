@@ -400,8 +400,13 @@ function parsedSensitiveFields(
   if (!program) return null;
   const lineIndex = new LineIndex(source.content);
   const marked = new Map<number, boolean>();
-  walkRuntimeNodes(program, ({ node }) => {
+  walkRuntimeNodes(program, ({ node, parent }) => {
     if (!FIELD_NODES.has(node.type)) return;
+    // A destructured name (`({ token }) => token`) or a shorthand property
+    // (`{ apiKey }`) declares no schema here.
+    if (parent?.node.type === "ObjectPattern" || node.shorthand === true) {
+      return;
+    }
     const name = fieldName(node);
     if (name === undefined || !namesSecretValue(name)) return;
     const isDeclarator = node.type === "VariableDeclarator";
