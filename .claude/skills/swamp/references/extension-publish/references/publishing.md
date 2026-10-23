@@ -1065,7 +1065,7 @@ swamp extension quality manifest.yaml --json
 
 Scores the extension against the 10 client-earnable Swamp Club quality factors
 (README, LICENSE, JSDoc coverage, repository URL, manifest completeness,
-slow-type diagnostics, etc.) and prints per-factor results with remediation
+supported platform list, etc.) and prints per-factor results with remediation
 hints. A bundle failure prints each compilation error as push does
 (`compilationErrors` in `--json`). It runs the same gates push runs; when one
 fails (safety, fmt/lint, collectives, upgrade chain, dependency trust, review

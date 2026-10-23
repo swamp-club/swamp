@@ -136,8 +136,9 @@ MIT — see LICENSE for details.
 
 ## Entrypoint skeleton — JSDoc-annotated TypeScript
 
-Earns `symbols-docs` (≥80% JSDoc coverage), `fast-check` (explicit return types,
-no private-type leaks), and the module-level doc signal for `has-readme`.
+Earns `symbols-docs` (≥80% JSDoc coverage) and the module-level doc signal for
+`has-readme`. (`fast-check` is deprecated and always earned; exporting a zod
+schema and its `z.infer` type as below is fine.)
 
 ```ts
 /**
@@ -182,8 +183,6 @@ Rules this example demonstrates:
 - **Every export has a JSDoc comment** — hits the 80% threshold easily.
 - **Explicit return types on every exported function** (`: Args`,
   `: Promise<Result>`).
-- **All public types are themselves exported** (`Args`, `Result`, `argsSchema`)
-  — so nothing exposed through the API refers to a private type.
 - **Module-level `@module` block at the top** — satisfies module-doc detection.
 - **Inline `npm:zod@4` specifier**, not bare `"zod"`. The scorer and
   `swamp extension quality` run in a hermetic sandbox that strips the repo's
@@ -198,10 +197,6 @@ Rules this example demonstrates:
 Run from the extension's directory before invoking `swamp extension push`:
 
 ```sh
-# Verify types and catch slow-type issues.
-~/.swamp/deno/deno doc --lint behaviors/my-behavior.ts
-# Exit status 0 + no output means clean.
-
 # See extracted doc structure — confirms exports are well-shaped.
 ~/.swamp/deno/deno doc --json behaviors/my-behavior.ts | jq '.nodes | keys'
 
@@ -210,9 +205,6 @@ Run from the extension's directory before invoking `swamp extension push`:
 ~/.swamp/deno/deno lint
 ```
 
-Any diagnostic from `deno doc --lint` costs the `fast-check` point. Fix each one
-before pushing.
-
 ## Common mistakes and their fixes
 
 | Mistake                                                          | Consequence                                                        | Fix                                                                                                                                                                                                              |
@@ -220,7 +212,6 @@ before pushing.
 | README in repo root but not in `additionalFiles:`                | `has-readme` 0/2, `readme-example` 0/1, `rich-readme` 0/1 = -4 pts | Add `README.md` to `additionalFiles:` in the manifest. For per-extension-subdir layouts, set `paths.base: manifest` so the README beside the manifest resolves with a bare basename (default mode is unchanged). |
 | LICENSE file in repo but not in `additionalFiles:`               | `license-file` 0/1 = -1 pt                                         | Add the LICENSE file to `additionalFiles:`. Same `paths.base: manifest` opt-in available if your LICENSE sits alongside a per-directory manifest.                                                                |
 | No `license:`, or a `LicenseRef-` / non-SPDX value               | `has-license` 0/1 = -1 pt                                          | Declare an SPDX expression, e.g. `license: MIT`. Optional — nothing is refused.                                                                                                                                  |
-| Missing return type on one exported function                     | `fast-check` 0/1 = -1 pt                                           | Add explicit `: ReturnType` annotation                                                                                                                                                                           |
 | Description set to `"TODO"`                                      | technically passes, wastes the signal                              | Write a real one-sentence description                                                                                                                                                                            |
 | `repository:` URL is HTTP not HTTPS                              | `repository-verified` 0/2 = -2 pts                                 | Switch to `https://`                                                                                                                                                                                             |
 | `repository:` on self-hosted GitLab or Gitea                     | `repository-verified` 0/2 = -2 pts                                 | Private extension: ask Swamp Club to mark the collective for private source hosting. Public extension: use a public mirror on github.com or gitlab.com                                                           |
