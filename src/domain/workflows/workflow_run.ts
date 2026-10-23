@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  type DataPath,
   type RunSensitiveValues,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
@@ -244,30 +243,6 @@ export const JobRunSchema = z.object({
  * Type representing job run data.
  */
 export type JobRunData = z.infer<typeof JobRunSchema>;
-
-/**
- * Whether a path in a run record carries a value that can hold a sensitive
- * value read through an expression, rather than structure: inputs, deferred
- * expression binding values, a step's approval prompt, error and assert
- * text, and the failure reason derived from them.
- */
-function isRunValuePath(path: DataPath): boolean {
-  if (path[0] === "inputs" || path[0] === "failureReason") return true;
-  if (path[0] === "deferredExpressions" && path[2] === "bindings") return true;
-  if (path[0] === "jobs" && path[2] === "steps") {
-    const field = path[4];
-    if (
-      field === "error" || field === "errorCode" || field === "approvalPrompt"
-    ) return true;
-    if (
-      field === "assertResult" &&
-      (path[5] === "message" || path[5] === "error")
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
 
 /**
  * The principal that triggered a serve run and the memberships captured at
@@ -1513,9 +1488,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       persistedInputsProvenance: _staleMap,
       ...rest
     } = data;
-    const form = toPersistedForm(rest, this._sensitiveValues, {
-      applies: isRunValuePath,
-    });
+    const form = toPersistedForm(rest, this._sensitiveValues);
     const inputReferences = form.writtenReferences
       .filter((reference) => reference.path[0] === "inputs")
       .map((reference) => ({ ...reference, path: reference.path.slice(1) }));

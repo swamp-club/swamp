@@ -39,11 +39,9 @@ import { quoteShellWord } from "../shell_word.ts";
 import {
   type DataPath,
   definedEntry,
-  rehydratePersistedForm,
   rehydrateReferences,
   type RunSensitiveValues,
   toPersistedForm,
-  type VaultReader,
   type WrittenReference,
 } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -163,11 +161,6 @@ export interface PersistedEvaluatedWorkflow {
   persistedProvenance?: ProvenanceMap;
 }
 
-function dotted(path: DataPath): string {
-  return path.map((p) => typeof p === "number" ? `[${p}]` : `.${p}`).join("")
-    .replace(/^\./, "");
-}
-
 /**
  * A forEach step name with every recorded sensitive value, and in a typed
  * run every sentinel the run issued, replaced by `sensitive-<index>`, the
@@ -238,23 +231,13 @@ function withTagPlaceholders(
   return value;
 }
 
-/** Whether a path sits inside one of the identifier maps. */
-function underIdentifierMap(path: DataPath): boolean {
-  for (let length = 1; length < path.length; length++) {
-    if (isIdentifierMapPath(path.slice(0, length))) return true;
-  }
-  return false;
-}
-
 /**
  * Builds what to write for an evaluated workflow: sentinels in the overlay's
- * sanitized task fields become vault references, recorded values at every
- * position the source held an expression and in deferred bindings do too,
- * and tags and labels carry placeholders.
+ * sanitized task fields and deferred bindings become vault references;
+ * tags and labels carry placeholders.
  */
 export function persistEvaluatedWorkflow(
   evaluated: Workflow,
-  source: Workflow,
   overlay: SanitizedTaskOverlay | undefined,
   deferredExpressions: readonly DeferredExpression[],
   values: RunSensitiveValues,
@@ -266,29 +249,7 @@ export function persistEvaluatedWorkflow(
     ...(withTagPlaceholders(base, values) as WorkflowInput),
     deferredExpressions: [...deferredExpressions],
   };
-  const sourcePaths = extractExpressions(source.toData()).map((e) => e.path);
-  const form = toPersistedForm(file, values, {
-    applies: (path) => {
-      if (path[0] === "deferredExpressions" && path[2] === "bindings") {
-        return true;
-      }
-      if (underIdentifierMap(path)) return false;
-      // A step's task arguments, target and platform carry values wherever
-      // the step sits, including steps forEach expansion added.
-      if (
-        path[0] === "jobs" && path[2] === "steps" &&
-        ((path[4] === "task" &&
-          (path[5] === "inputs" || path[5] === "globalArgs")) ||
-          path[4] === "target" || path[4] === "platform")
-      ) {
-        return true;
-      }
-      const at = dotted(path);
-      return sourcePaths.some((p) =>
-        at === p || at.startsWith(`${p}.`) || at.startsWith(`${p}[`)
-      );
-    },
-  });
+  const form = toPersistedForm(file, values);
   const { deferredExpressions: deferred, ...workflowData } = form.data;
   return {
     workflow: Workflow.fromData(workflowData as WorkflowInput),
@@ -327,12 +288,8 @@ export function persistEvaluatedWorkflow(
  * exactly onto that copy and returned as `provenance`; a cache with
  * references and a value-coordinate map only is refused, and one with no
  * map replays as authored (see `replayProvenance`).
- *
- * In an untyped run the legacy branch restores the workflow with real
- * values, and an overlay whose sanitized task fields carry data-origin
- * sentinels, as a fresh untyped evaluation would produce.
  */
-export async function rehydrateEvaluatedWorkflow(
+export function rehydrateEvaluatedWorkflow(
   cached: {
     workflow: Workflow;
     deferredExpressions: readonly DeferredExpression[];
@@ -342,15 +299,14 @@ export async function rehydrateEvaluatedWorkflow(
     /** Where data sits in the raw copy, as the cache stores it. */
     provenance?: ProvenanceMap;
   },
-  read: VaultReader,
   values: RunSensitiveValues,
-): Promise<{
+): {
   workflow: Workflow;
   sanitizedTasks?: SanitizedTaskOverlay;
   deferredExpressions: DeferredExpression[];
   /** Set in a typed run: the map of the restored copy, aligned onto it. */
   provenance?: ProvenanceMap;
-}> {
+} {
   if (cached.writtenReferences.length === 0) {
     return {
       workflow: cached.workflow,
@@ -358,7 +314,7 @@ export async function rehydrateEvaluatedWorkflow(
     };
   }
   const bag = new VaultSecretBag(values.sentinels);
-  if (values.sentinels.typedSecrets) {
+  {
     const persisted = cached.workflow.toData();
     const restored = rehydrateReferences(
       { ...persisted, deferredExpressions: [...cached.deferredExpressions] },
@@ -386,33 +342,6 @@ export async function rehydrateEvaluatedWorkflow(
       ),
     };
   }
-  const file = {
-    ...cached.workflow.toData(),
-    deferredExpressions: [...cached.deferredExpressions],
-  };
-  const { raw, sanitized } = await rehydratePersistedForm(
-    file,
-    cached.writtenReferences,
-    read,
-    values,
-    bag,
-    // A fresh run's overlay sanitizes only step task arguments.
-    (path) =>
-      path[0] === "jobs" && path[2] === "steps" && path[4] === "task" &&
-      (path[5] === "inputs" || path[5] === "globalArgs"),
-  );
-  const { deferredExpressions, ...rawWorkflow } = raw;
-  const { deferredExpressions: _unused, ...sanitizedWorkflow } = sanitized;
-  const workflow = Workflow.fromData(rawWorkflow as WorkflowInput);
-  return {
-    workflow,
-    sanitizedTasks: SanitizedTaskOverlay.fromSanitizedData(
-      bag,
-      sanitizedWorkflow as WorkflowInput,
-      workflow,
-    ),
-    deferredExpressions,
-  };
 }
 
 /** A written entry's path below `depth`, spelled as provenance maps spell it. */

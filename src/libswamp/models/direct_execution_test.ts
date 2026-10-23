@@ -27,6 +27,7 @@ import {
   routeInputsBySchema,
 } from "./direct_execution.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { RunSensitiveValues } from "../../domain/secrets/mod.ts";
@@ -835,7 +836,10 @@ Deno.test("resolveOrCreateDefinition: reuses a definition whose sensitive global
   );
   const resolvedType = ModelType.create("test/model");
   const values = new RunSensitiveValues();
-  values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
+  const sentinel = new VaultSecretBag(values.sentinels).addDataReference({
+    vaultName: "prod",
+    key: "api-token",
+  }, "inputs.token");
   const existingDef = Definition.create({
     name: "auto-model",
     type: "test/model",
@@ -854,7 +858,7 @@ Deno.test("resolveOrCreateDefinition: reuses a definition whose sensitive global
     "test/model",
     "auto-model",
     "run",
-    { token: "Pl41n-s3cret", id: "abc" },
+    { token: sentinel, id: "abc" },
     resolvedType,
     modelDef,
     undefined,
@@ -865,7 +869,7 @@ Deno.test("resolveOrCreateDefinition: reuses a definition whose sensitive global
 
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.definition.globalArguments.token, "Pl41n-s3cret");
+    assertEquals(result.definition.globalArguments.token, sentinel);
   }
 });
 
@@ -1484,7 +1488,10 @@ Deno.test("resolveOrCreateDefinition: stores a data-read secret as its vault ref
   );
   const resolvedType = ModelType.create("test/model");
   const values = new RunSensitiveValues();
-  values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
+  const sentinel = new VaultSecretBag(values.sentinels).addDataReference({
+    vaultName: "prod",
+    key: "api-token",
+  }, "inputs.token");
   const reference = "${{ vault.get('prod', 'api-token') }}";
   const store: { definition?: Definition } = {};
   const deps = {
@@ -1507,7 +1514,7 @@ Deno.test("resolveOrCreateDefinition: stores a data-read secret as its vault ref
       "test/model",
       "auto-model",
       "run",
-      { token: "Pl41n-s3cret", region: "eu", id: "abc" },
+      { token: sentinel, region: "eu", id: "abc" },
       resolvedType,
       modelDef,
       undefined,
@@ -1524,13 +1531,13 @@ Deno.test("resolveOrCreateDefinition: stores a data-read secret as its vault ref
     token: reference,
     region: "eu",
   });
-  assertEquals(created.definition.globalArguments.token, "Pl41n-s3cret");
+  assertEquals(created.definition.globalArguments.token, sentinel);
 
   const reused = await resolve();
   assertEquals(reused.ok, true);
   if (!reused.ok) return;
   assertEquals(reused.globalArgsUpdated, false);
-  assertEquals(reused.definition.globalArguments.token, "Pl41n-s3cret");
+  assertEquals(reused.definition.globalArguments.token, sentinel);
   assertEquals(store.definition?.globalArguments.token, reference);
 });
 

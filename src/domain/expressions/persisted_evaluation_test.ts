@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { z } from "zod";
 import { Definition } from "../definitions/definition.ts";
 import {
@@ -659,15 +659,20 @@ Deno.test("persistEvaluatedDefinition: sentinels become references and tags plac
 });
 
 Deno.test("persistEvaluatedDefinition: deferred binding values are written as references", () => {
+  const values = recorded();
+  const token = new VaultSecretBag(values.sentinels).addDataReference(
+    SOURCE,
+    "bindings",
+  );
   const persisted = persistEvaluatedDefinition(
     Definition.create({ name: "consumer" }),
     [{
       id: "11111111-1111-4111-8111-111111111111",
       expression: "${{ inputs.token }}",
-      bindings: { inputs: { token: SECRET } },
+      bindings: { inputs: { token } },
     }],
     Definition.create({ name: "consumer" }),
-    recorded(),
+    values,
     NO_SCHEMAS,
   );
   assertEquals(persisted.deferredExpressions[0].bindings, {
@@ -691,20 +696,23 @@ Deno.test("rehydrateEvaluatedDefinition: restores the raw and executed copies of
   );
   const values = new RunSensitiveValues();
   const stepBag = new VaultSecretBag(values.sentinels);
-  const restored = await rehydrateEvaluatedDefinition(
-    persisted,
-    () => Promise.resolve(SECRET),
-    values,
-    stepBag,
+  const restored = await rehydrateEvaluatedDefinition(persisted, stepBag);
+  assertEquals(restored.definition, restored.executedDefinition);
+  assertEquals(
+    JSON.stringify(restored.definition.toData()).includes(SECRET),
+    false,
   );
-  assertEquals(restored.definition.globalArguments, {
-    token: `Bearer ${SECRET}`,
-  });
-  const executedToken = restored.executedDefinition.globalArguments
-    .token as string;
-  assertEquals(executedToken.includes(SECRET), false);
-  assertEquals(stepBag.resolveRaw(executedToken), `Bearer ${SECRET}`);
-  assertEquals(values.list().map((e) => e.value), [SECRET]);
+  assertEquals(values.list(), []);
+  assertEquals(
+    persistEvaluatedDefinition(
+      restored.definition,
+      [],
+      restored.definition,
+      values,
+      NO_SCHEMAS,
+    ).definition.globalArguments,
+    persisted.definition.globalArguments,
+  );
 });
 
 Deno.test("mayHoldPlaintextSensitiveValues: only unmarked caches that read data or step outputs", () => {
@@ -1804,7 +1812,7 @@ Deno.test("persistEvaluatedDefinition, findPlaintextSensitiveArguments and maskS
 function typedStep(): { values: RunSensitiveValues; bag: VaultSecretBag } {
   const values = new RunSensitiveValues(
     undefined,
-    new SecretBagRegistry({ typedSecrets: true }),
+    new SecretBagRegistry(),
   );
   return { values, bag: new VaultSecretBag(values.sentinels) };
 }
@@ -1849,16 +1857,8 @@ Deno.test("rehydrateEvaluatedDefinition: a typed replay restores one sentinel co
   const { persisted } = typedCache();
   assertEquals(persisted.writtenReferences.length, 3);
   const { values, bag } = typedStep();
-  let reads = 0;
-  const restored = await rehydrateEvaluatedDefinition(
-    persisted,
-    () => {
-      reads++;
-      return Promise.resolve(SECRET);
-    },
-    values,
-    bag,
-  );
+  const reads = 0;
+  const restored = await rehydrateEvaluatedDefinition(persisted, bag);
   assertEquals(reads, 0);
   assertEquals(values.isEmpty, true);
   assertEquals(restored.definition, restored.executedDefinition);
@@ -1918,52 +1918,35 @@ Deno.test("rehydrateEvaluatedDefinition: a typed replay refuses a cache with ref
     "globalArguments.token",
     [[7, 20]],
   );
-  const error = await assertRejects(
+  const error = assertThrows(
     () =>
-      rehydrateEvaluatedDefinition(
-        { ...persisted, persistedProvenance: undefined, provenance: valueMap },
-        () => Promise.resolve(SECRET),
-        typedStep().values,
-        typedStep().bag,
-      ),
+      rehydrateEvaluatedDefinition({
+        ...persisted,
+        persistedProvenance: undefined,
+        provenance: valueMap,
+      }, typedStep().bag),
     UserError,
     "not replayed with references",
   );
   assertStringIncludes(error.message, "--last-evaluated");
   // No map at all: authored, as a cache from before provenance replays.
-  const unmapped = await rehydrateEvaluatedDefinition(
-    { ...persisted, persistedProvenance: undefined, provenance: undefined },
-    () => Promise.resolve(SECRET),
-    typedStep().values,
-    typedStep().bag,
-  );
+  const unmapped = await rehydrateEvaluatedDefinition({
+    ...persisted,
+    persistedProvenance: undefined,
+    provenance: undefined,
+  }, typedStep().bag);
   assertEquals(unmapped.provenance?.isAuthored, true);
   // A value-coordinate map with no references needs no realignment.
-  const plain = await rehydrateEvaluatedDefinition(
-    {
-      definition: Definition.create({
-        name: "plain",
-        globalArguments: { a: "x" },
-      }),
-      deferredExpressions: [],
-      writtenReferences: [],
-      provenance: valueMap,
-    },
-    () => Promise.resolve(SECRET),
-    typedStep().values,
-    typedStep().bag,
-  );
+  const plain = await rehydrateEvaluatedDefinition({
+    definition: Definition.create({
+      name: "plain",
+      globalArguments: { a: "x" },
+    }),
+    deferredExpressions: [],
+    writtenReferences: [],
+    provenance: valueMap,
+  }, typedStep().bag);
   assertEquals(plain.provenance, valueMap);
-  // The untyped branch is what it was: values restored, no map returned.
-  const untypedValues = new RunSensitiveValues();
-  const untyped = await rehydrateEvaluatedDefinition(
-    persisted,
-    () => Promise.resolve(SECRET),
-    untypedValues,
-    new VaultSecretBag(untypedValues.sentinels),
-  );
-  assertEquals(untyped.provenance, undefined);
-  assertEquals(untypedValues.isEmpty, false);
 });
 
 Deno.test("withWrittenReferenceRanges: marks each written reference's range as data, keeps other ranges and whole-data paths, and skips a path that is not a string", () => {
@@ -2007,8 +1990,9 @@ Deno.test("withWrittenReferenceRanges: marks each written reference's range as d
 
 Deno.test("persistEvaluatedDefinition: two recorded values in one sensitive argument, joined by authored text, are written as their references and replay (untyped write)", () => {
   const values = new RunSensitiveValues();
-  const user = "Us3r-n4me-value";
-  const pass = "P4ss-w0rd-value";
+  const bag = new VaultSecretBag(values.sentinels);
+  const user = bag.addDataReference({ vaultName: "prod", key: "user" }, "args");
+  const pass = bag.addDataReference({ vaultName: "prod", key: "pass" }, "args");
   values.addSecret(user, { vaultName: "prod", key: "user" });
   values.addSecret(pass, { vaultName: "prod", key: "pass" });
   const definition = Definition.create({

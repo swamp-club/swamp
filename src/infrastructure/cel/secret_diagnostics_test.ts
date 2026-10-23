@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { SECRET_OPERATION_UNSUPPORTED } from "../../domain/expressions/errors.ts";
 import {
   CONTAINER_COMPARISON_REASON,
@@ -156,8 +156,6 @@ Deno.test("diagnoseSecretMisuse: text without a direct vault.get call, an alias,
       "inputs.x == 'x'",
       "size(data.latest('m', 'd').attributes.password)",
       "data.latest('m', 'd').attributes.password == 'x'",
-      "dyn(vault).get('v', 'k') == 'x'",
-      "cel.bind(v, vault, v.get('v', 'k')) == 'x'",
       "vault.get('v', 'k'",
       "not cel at all {{",
     ]
@@ -198,4 +196,26 @@ Deno.test("diagnoseSecretMisuse: a ternary with a Secret branch is an escape, as
       .length,
     1,
   );
+});
+
+Deno.test("diagnoseSecretMisuse: indirect vault use is a static error without a direct call", () => {
+  for (
+    const expression of [
+      "dyn(vault).get('v', 'k')",
+      "cel.bind(v, vault, v.get('v', 'k'))",
+      "vault.get",
+    ]
+  ) {
+    const findings = diagnoseSecretMisuse(
+      expression,
+      "methods.run.arguments.token",
+    );
+    assertEquals(findings.length, 1, expression);
+    assertEquals(findings[0].code, "invalid_expression");
+    assertStringIncludes(
+      findings[0].location,
+      "methods.run.arguments.token:1:",
+    );
+    assertStringIncludes(findings[0].reason, "directly");
+  }
 });

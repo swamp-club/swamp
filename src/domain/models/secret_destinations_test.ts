@@ -48,7 +48,7 @@ function issued(): {
   sentinel: string;
   data: string;
 } {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const bag = new VaultSecretBag(registry);
   return {
     registry,
@@ -365,7 +365,7 @@ Deno.test("refuseSecretDestinations: the method hook sees the merged arguments a
     "originOf",
   ]);
   // Nothing issued: nothing to refuse, and the hook is not called.
-  run(true, new SecretBagRegistry({ typedSecrets: true }));
+  run(true, new SecretBagRegistry());
   assertEquals(seen.length, 1);
   // A hook refusal propagates as it is.
   const refusingModel = stageModel(() => {

@@ -319,7 +319,7 @@ Deno.test("production half: with typed secrets on, the internal environment defi
   ].sort();
   assertEquals(expected.length, 97);
   const secretBearing = definedFunctions(
-    createInternalCelEnvironment({ typedSecrets: true }),
+    createInternalCelEnvironment(),
   ).filter((signature) => {
     const parsed = parseSignature(signature);
     // cel-js registers type(Secret) itself when the type is registered.
@@ -366,21 +366,13 @@ Deno.test("production half: the query service's base environment defines no Secr
   );
 });
 
-Deno.test("production half: with typed secrets off, the internal environment defines what it defined before them", () => {
-  const baseline = createExtensionCelEnvironment().getDefinitions();
-  const off = createInternalCelEnvironment().getDefinitions();
+Deno.test("production half: extension CEL defines no Secret", () => {
   assertEquals(
-    definedFunctions(createInternalCelEnvironment()),
-    [
-      ...baseline.functions.map((fn) => fn.signature),
-      ...INTERNAL_FUNCTION_SIGNATURES,
-      // cel-js defines type(T) for every type an environment registers.
-      ...SWAMP_NAMESPACE_TYPES.map((type) => `type(${type}): type`),
-    ].sort(),
+    JSON.stringify(createExtensionCelEnvironment().getDefinitions()).includes(
+      SECRET_TYPE_NAME,
+    ),
+    false,
   );
-  assertEquals(off.variables, baseline.variables);
-  const everything = JSON.stringify(off);
-  assertEquals(everything.includes(SECRET_TYPE_NAME), false);
 });
 
 Deno.test("EQUALITY_TYPES equals the type names cel-js uses in its own definitions", () => {

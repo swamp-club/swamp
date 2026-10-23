@@ -50,10 +50,7 @@ import type { ExpressionLocation } from "../expressions/expression.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import { sensitiveValuesOf } from "../expressions/sensitive_context.ts";
 import type { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
-import {
-  isDefinitionArgumentPath,
-  sensitiveSpliceSanitizer,
-} from "../expressions/splice_pair.ts";
+import { sensitiveSpliceSanitizer } from "../expressions/splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import type { Step } from "./step.ts";
 import type {
@@ -344,9 +341,6 @@ export class SanitizedTaskOverlay {
     };
   }
 }
-
-const TASK_ARGUMENT_PATH =
-  /^jobs\[\d+\]\.steps\[\d+\]\.task\.(?:inputs|globalArgs)(?:$|[.[])/;
 
 /** A field of a step's task, with its job and step positions. */
 const TASK_FIELD_PATH = /^jobs\[(\d+)\]\.steps\[(\d+)\]\.task\.(.+)$/;
@@ -708,9 +702,7 @@ function sanitizeTasks(
     originOf,
     skipPath,
     sensitiveSpliceSanitizer(
-      sensitiveValues,
       bag,
-      (path) => TASK_ARGUMENT_PATH.test(path),
     ),
   );
   if (bag.isEmpty) return undefined;
@@ -806,9 +798,7 @@ export class DefinitionExpressionEvaluator {
       this.celEvaluator,
       secretBag && sensitiveValues
         ? sensitiveSpliceSanitizer(
-          sensitiveValues,
           secretBag,
-          isDefinitionArgumentPath,
         )
         : undefined,
       sanitizedBase.toData(),

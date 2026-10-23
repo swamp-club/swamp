@@ -148,7 +148,7 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
     // In a typed run the redactor masks the run's sentinels too, so logs,
     // streamed output and errors share one implementation with the masks
     // below (design/enablers/typed-secrets.md Section 7.1).
-    if (sentinels.typedSecrets) redactor?.maskSentinelsOf(sentinels);
+    redactor?.maskSentinelsOf(sentinels);
   }
 
   /**
@@ -167,7 +167,7 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
    * loads nothing.
    */
   private get derivesFromSentinels(): boolean {
-    return this.sentinels.typedSecrets && !this.sentinels.isEmpty;
+    return (!this.sentinels.isEmpty);
   }
 
   /**

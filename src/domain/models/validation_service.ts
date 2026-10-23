@@ -453,6 +453,10 @@ export interface ExpressionPathError {
   expression: string;
   /** The error message */
   error: string;
+  /** Stable diagnostic code, separate from the display text. */
+  code?: string;
+  /** Authored file/path and source location. */
+  location?: string;
   /** Optional suggestion for fixing the error */
   suggestion?: string;
   /**
@@ -724,7 +728,12 @@ export class DefaultModelValidationService implements ModelValidationService {
     const results = await Promise.all(validations);
 
     // Run pre-flight checks if context provided and model has checks
-    if (modelDef.checks && checkContext) {
+    if (
+      modelDef.checks && checkContext &&
+      !results.some((result) =>
+        result.name === "Secret usage" && !result.passed
+      )
+    ) {
       const checkResults = await this.runCheckValidations(
         upgrade.definition,
         modelDef,
@@ -858,6 +867,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       for (const finding of diagnose(celExpression, path)) {
         errors.push({
           expression: raw,
+          code: finding.code,
+          location: finding.location,
           error: `${finding.code} at "${finding.location}": ${finding.reason}`,
         });
       }
@@ -919,9 +930,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         resolvedGlobalArgs = delivered.globalArgs;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return applicable.map(([name]) =>
-          ValidationResult.fail(`Check: ${name}`, message)
-        );
+        return [ValidationResult.fail("Check argument delivery", message)];
       }
     } else if (checkContext.resolveRuntimeExpressions) {
       try {

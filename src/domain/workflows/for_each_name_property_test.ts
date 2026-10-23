@@ -44,7 +44,7 @@ Deno.test("forEachNameWithoutSecrets: property: sentinels become the index, othe
       otherSentinel,
       fc.nat({ max: 50 }),
       (parts, other, index) => {
-        const registry = new SecretBagRegistry({ typedSecrets: true });
+        const registry = new SecretBagRegistry();
         const values = new RunSensitiveValues(undefined, registry);
         const bag = new VaultSecretBag(registry);
         let name = "";
@@ -75,7 +75,7 @@ Deno.test("forEachNameWithoutSecrets: property: a sentinel and a recorded value 
       plainText,
       fc.nat({ max: 50 }),
       (before, secret, after, index) => {
-        const typedRegistry = new SecretBagRegistry({ typedSecrets: true });
+        const typedRegistry = new SecretBagRegistry();
         const typed = new RunSensitiveValues(undefined, typedRegistry);
         const sentinel = new VaultSecretBag(typedRegistry).addSecret(
           { vaultName: "v", key: "k" },

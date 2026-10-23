@@ -89,7 +89,7 @@ Deno.test("typed workflow passes: a guard whose result holds a secret refuses be
     });
   await withFixture(async (f) => {
     await f.seed();
-    const run = await f.run(guards(), true);
+    const run = await f.run(guards());
     // A refused guard fails its step, as any guard failure does, and a
     // failed guard is never an allowed failure, so the run fails.
     assertEquals(run.status, "failed");
@@ -108,19 +108,6 @@ Deno.test("typed workflow passes: a guard whose result holds a secret refuses be
     // The vault.get guard cost one existence check, answered by has().
     assertEquals(f.checks, [TOKEN_KEY]);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    await f.seed();
-    const run = await f.run(guards(), false);
-    // Today a tagged field is read eagerly and the guard decides on its
-    // plaintext truthiness; a model.method result answers parsed content;
-    // and a guard binds no vault, so the vault.get guard fails as an
-    // unknown name.
-    assertEquals(run.skipped.has("by-data"), true);
-    assertEquals(run.skipped.has("by-method"), true);
-    assertEquals(run.errors.has("by-vault"), true);
-    assert(f.loads.length >= 1);
-    assertEquals(f.checks, []);
   });
 });
 
@@ -142,7 +129,7 @@ Deno.test("typed workflow passes: a guard comparing a secret to null passes with
     });
   await withFixture(async (f) => {
     await f.seed();
-    const run = await f.run(workflow(), true);
+    const run = await f.run(workflow());
     assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
     assertEquals(run.skipped.get("skipped"), true);
     assertEquals(run.errors.size, 0);
@@ -152,15 +139,6 @@ Deno.test("typed workflow passes: a guard comparing a secret to null passes with
     assertEquals(f.loads.length, 2);
     assertEquals(f.loads.includes(TOKEN_KEY), true);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    await f.seed();
-    const run = await f.run(workflow(), false);
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    assertEquals(run.skipped.get("skipped"), true);
-    assertEquals(f.received, [{ password: quotes(f), note: f.token }]);
-    // The option-off path reads the tagged field eagerly in each guard.
-    assert(f.loads.length > 2);
   });
 });
 
@@ -189,7 +167,7 @@ Deno.test("typed workflow passes: an assert predicate holding a secret is refuse
     });
   await withFixture(async (f) => {
     await f.seed();
-    const run = await f.run(seeded(), true);
+    const run = await f.run(seeded());
     // The refused predicate fails its step and the run; the failed
     // assertion with a masked message is an allowed failure.
     assertEquals(run.status, "failed");
@@ -204,19 +182,6 @@ Deno.test("typed workflow passes: an assert predicate holding a secret is refuse
     assertEquals(run.errors.get("message"), "token=*** vault=*** plain=p");
     assertEquals(f.loads, []);
     assertEquals(f.checks, [TOKEN_KEY]);
-    await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    await f.seed();
-    const run = await f.run(seeded(), false);
-    // Today the predicate decides on plaintext truthiness, and the message
-    // loads both values and the redactor masks them.
-    assertEquals(run.asserts.get("predicate")?.passed, true);
-    assertEquals(
-      run.asserts.get("message")?.message,
-      "token=*** vault=*** plain=p",
-    );
-    assert(f.loads.length >= 2);
     await assertNothingLeaked(f, run);
   });
 });
@@ -256,7 +221,7 @@ Deno.test("typed workflow passes: forEach over tagged records binds each item as
     f.canaries.map((_, index) => `use-sensitive-${index}-`);
   await withFixture(async (f) => {
     await f.seed();
-    const run = await f.run(workflow(), true);
+    const run = await f.run(workflow());
     // The refused comparisons fail their steps and the run; every delivery
     // step completed.
     assertEquals(run.status, "failed");
@@ -292,34 +257,6 @@ Deno.test("typed workflow passes: forEach over tagged records binds each item as
       assertStringIncludes(error, "secret_operation_unsupported");
     }
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    await f.seed();
-    const run = await f.run(workflow(), false);
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    const byHost = new Map(f.received.map((r) => [r.note, r.password]));
-    // Today a tagged field of a findBySpec record is the stored reference
-    // text (design Section 10.1), delivered as text with no load; the typed
-    // path above delivers every class exactly.
-    for (const canary of f.canaries) {
-      assertStringIncludes(
-        byHost.get(canary.class) ?? "",
-        "vault.get('prod', '",
-        `untyped: ${canary.class}`,
-      );
-    }
-    assertEquals(f.loads, []);
-    // No value reached a name: none was read.
-    const names = run.events.flatMap((e) =>
-      e.kind === "step_completed" && e.stepId.startsWith("use-")
-        ? [e.stepId]
-        : []
-    );
-    for (const canary of f.canaries.filter((c) => c.unique)) {
-      assertEquals(names.some((n) => n.includes(canary.value)), false);
-    }
-    // The guard compares reference text today, so no iteration is refused.
-    assertEquals(run.errors.size, 0);
   });
 });
 
@@ -371,7 +308,7 @@ Deno.test("typed workflow passes: a child workflow binds a parent sentinel as a 
     });
   await withFixture(async (f) => {
     await f.seed();
-    const run = await f.run(parent(), true, [child()]);
+    const run = await f.run(parent(), [child()]);
     assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
     assertStringIncludes(
       run.errors.get("compare") ?? "",
@@ -380,20 +317,6 @@ Deno.test("typed workflow passes: a child workflow binds a parent sentinel as a 
     assertEquals(f.received, [{ password: quotes(f), note: f.token }]);
     assertEquals(f.loads.length, 2);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    await f.seed();
-    const run = await f.run(parent(), false, [child()]);
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    // Today the parent's sentinel is text in the child's guard, so the
-    // comparison is simply false and the step runs. The two steps have no
-    // dependency, so their payloads arrive in either order.
-    assertEquals(run.errors.has("compare"), false);
-    assertEquals(f.received.length, 2);
-    assertEquals(
-      f.received.filter((r) => r.password !== undefined),
-      [{ password: quotes(f), note: f.token }],
-    );
   });
 });
 
@@ -435,21 +358,13 @@ Deno.test("typed workflow passes: a step name resolved at run start keeps the se
     const standIn = `sensitive-${VAULT}.${
       encodeURIComponent(key).replaceAll(".", "%2E")
     }`;
-    const run = await f.run(workflow(), true);
+    const run = await f.run(workflow());
     assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
     assertEquals([...templatesOf(run)], [`p-${standIn}`]);
     assertEquals(plainNamesOf(run), [`q-${standIn}`]);
     assertEquals(f.received.length, f.canaries.length + 1);
     // The stand-in is taken from the sentinel: nothing is read for a name.
     assertEquals(f.loads, []);
-    await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    await f.seed();
-    const run = await f.run(workflow(), false);
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    assertEquals(templatesOf(run).size, 1);
-    assertEquals(plainNamesOf(run).length, 1);
     await assertNothingLeaked(f, run);
   });
 });
@@ -477,7 +392,7 @@ Deno.test("typed workflow passes: a later step reads steps.<name>.outputs throug
       })],
     });
   await withFixture(async (f) => {
-    const run = await f.run(workflow(f), true);
+    const run = await f.run(workflow(f));
     // The refused guard fails its step and the run; every delivery ran.
     assertEquals(run.status, "failed");
     assertEquals([...run.errors.keys()], ["compare"]);
@@ -499,24 +414,6 @@ Deno.test("typed workflow passes: a later step reads steps.<name>.outputs throug
     assertEquals(f.loads.length, f.canaries.length);
     assertEquals(f.checks, []);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    const run = await f.run(workflow(f), false);
-    // Today the completing write step resolves its record eagerly, the
-    // guard compares the plaintext and is false, so the guarded step runs
-    // too, and the deliveries match.
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    assertEquals(run.skipped.size, 0);
-    assertEquals(f.received.length, f.canaries.length + 1);
-    const delivered = byHost(f);
-    for (const canary of f.canaries) {
-      assertEquals(
-        delivered.get(canary.class),
-        canary.value,
-        `untyped: ${canary.class}`,
-      );
-    }
-    assert(f.loads.length >= f.canaries.length);
   });
 });
 
@@ -554,7 +451,7 @@ Deno.test("typed workflow passes: a step output whose vault the run's access ref
   await withFixture(async (f) => {
     const run = await runWithVaultAccess(
       readsRefusedAfterWrite(f),
-      () => f.run(workflow(), true),
+      () => f.run(workflow()),
     );
     assertEquals(run.status, "failed");
     assertEquals([...run.errors.keys()], ["use"]);
@@ -562,17 +459,6 @@ Deno.test("typed workflow passes: a step output whose vault the run's access ref
     assertEquals(f.received, []);
     assertEquals(f.loads, []);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    const run = await runWithVaultAccess(
-      readsRefusedAfterWrite(f),
-      () => f.run(workflow(), false),
-    );
-    // Today the record is resolved eagerly when the write step completes,
-    // and the refusal lands there.
-    assertEquals(run.status, "failed");
-    assertEquals(f.received, []);
-    assertEquals(f.loads, []);
   });
 });
 
@@ -595,19 +481,18 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
   /** Runs to the approval, approves it in the record, and hands back the ids. */
   const suspend = async (
     f: Fixture,
-    typed: boolean,
   ): Promise<{ runId: string; workflow: Workflow }> => {
     const wf = workflow();
-    const run = await f.run(wf, typed);
+    const run = await f.run(wf);
     assertEquals(run.status, "suspended", [...run.errors].join("\n"));
     assert(run.runId);
     await f.approve(NAME, run.runId);
     return { runId: run.runId, workflow: wf };
   };
   await withFixture(async (f) => {
-    const { runId } = await suspend(f, true);
+    const { runId } = await suspend(f);
     assertEquals(f.loads, []);
-    const resumed = await f.resume(NAME, runId, true);
+    const resumed = await f.resume(NAME, runId);
     assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
     assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
     // The resume read the record back as stored; the one load is the
@@ -617,7 +502,7 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
     await assertNothingLeaked(f, resumed);
   });
   await withFixture(async (f) => {
-    const { runId, workflow: wf } = await suspend(f, true);
+    const { runId, workflow: wf } = await suspend(f);
     // An edit to the workflow narrows a suspended run (resumeVaultAccess).
     await f.saveWorkflow(
       Workflow.fromData(
@@ -626,7 +511,7 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
         >[0],
       ),
     );
-    const resumed = await f.resume(NAME, runId, true);
+    const resumed = await f.resume(NAME, runId);
     assertEquals(resumed.status, "failed");
     assertEquals([...resumed.errors.keys()], ["use"]);
     assertStringIncludes(resumed.errors.get("use")!, "refused");
@@ -634,7 +519,7 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
     assertEquals(f.loads, []);
   });
   await withFixture(async (f) => {
-    const { runId } = await suspend(f, true);
+    const { runId } = await suspend(f);
     // The run record's tag names a plain field, which the writer could not
     // have stored: the resumed read refuses, naming no value.
     await f.editRun(NAME, runId, (data) => {
@@ -666,7 +551,7 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
       }
       assertEquals(tagged, 1);
     });
-    const resumed = await f.resume(NAME, runId, true);
+    const resumed = await f.resume(NAME, runId);
     assertEquals(resumed.status, "failed");
     assertEquals([...resumed.errors.keys()], ["use"]);
     assertStringIncludes(
@@ -677,13 +562,6 @@ Deno.test("typed workflow passes: outputs reconstructed from the run record on r
     assertEquals(f.received, []);
     assertEquals(f.loads, []);
     await assertNothingLeaked(f, resumed);
-  });
-  await withFixture(async (f) => {
-    const { runId } = await suspend(f, false);
-    const resumed = await f.resume(NAME, runId, false);
-    assertEquals(resumed.status, "succeeded", [...resumed.errors].join("\n"));
-    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
-    assert(f.loads.length >= 1);
   });
 });
 
@@ -716,7 +594,7 @@ Deno.test("typed workflow passes: a parent reads a child workflow's outputs thro
       })],
     });
   await withFixture(async (f) => {
-    const run = await f.run(parent(), true, [child()]);
+    const run = await f.run(parent(), [child()]);
     assertEquals(run.status, "failed");
     assertEquals([...run.errors.keys()], ["compare"]);
     assertStringIncludes(
@@ -727,19 +605,6 @@ Deno.test("typed workflow passes: a parent reads a child workflow's outputs thro
     assertEquals(f.loads.length, 1);
     assertEquals(f.checks, []);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    const run = await f.run(parent(), false, [child()]);
-    // Today the outputs are read eagerly, the guard compares the plaintext
-    // and is false, so the guarded step runs too.
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    assertEquals(run.skipped.size, 0);
-    assertEquals(f.received.length, 2);
-    assertEquals(
-      f.received.filter((r) => r.password !== undefined),
-      [{ password: quotes(f), note: "main" }],
-    );
-    assert(f.loads.length >= 1);
   });
 });
 
@@ -779,7 +644,7 @@ Deno.test("typed workflow passes: a child input deferred from the parent that jo
       })],
     });
   await withFixture(async (f) => {
-    const run = await f.run(parent(), true, [child()]);
+    const run = await f.run(parent(), [child()]);
     assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
     assertEquals(f.received, [{ password: `${f.token}:${quotes(f)}` }]);
     // One load each at the child's delivery; the vault.get cost one
@@ -787,11 +652,6 @@ Deno.test("typed workflow passes: a child input deferred from the parent that jo
     assertEquals(f.loads.length, 2);
     assertEquals(f.checks, [TOKEN_KEY]);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    const run = await f.run(parent(), false, [child()]);
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    assertEquals(f.received, [{ password: `${f.token}:${quotes(f)}` }]);
   });
 });
 
@@ -812,18 +672,12 @@ Deno.test("typed workflow passes: model.<name>.resource of a record a step wrote
       })],
     });
   await withFixture(async (f) => {
-    const run = await f.run(workflow(), true);
+    const run = await f.run(workflow());
     assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
     assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
     assertEquals(f.loads.length, 1);
     assertEquals(f.checks, []);
     await assertNothingLeaked(f, run);
-  });
-  await withFixture(async (f) => {
-    const run = await f.run(workflow(), false);
-    assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
-    assertEquals(f.received, [{ password: quotes(f), note: "main" }]);
-    assert(f.loads.length >= 1);
   });
 });
 
@@ -870,14 +724,14 @@ Deno.test("typed workflow passes: a child step name repeated across jobs: the pa
         ],
       })],
     });
-  for (const typed of [true, false]) {
+  {
     await withFixture(async (f) => {
       const [, second] = classes(f);
-      const run = await f.run(parent(), typed, [child(f)]);
+      const run = await f.run(parent(), [child(f)]);
       assertEquals(run.status, "succeeded", [...run.errors].join("\n"));
       const expected = f.canaries.find((c) => c.class === second)!;
       assertEquals(f.received, [{ password: expected.value, note: second }]);
-      if (typed) {
+      {
         assertEquals(f.loads.length, 1);
         await assertNothingLeaked(f, run);
       }

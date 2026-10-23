@@ -39,7 +39,7 @@ Deno.test("resolveRuntimeExpressionsInData: nested issued references always refu
       fc.array(fc.boolean(), { maxLength: 12 }),
       fc.boolean(),
       async (plain, surrounding, layers, inKey) => {
-        const registry = new SecretBagRegistry({ typedSecrets: true });
+        const registry = new SecretBagRegistry();
         const bag = new VaultSecretBag(registry);
         const sentinel = bag.addSecret({
           vaultName: "never-read",

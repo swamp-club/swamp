@@ -21,7 +21,7 @@ import { z } from "zod";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { matchSingleExpression } from "./expression_scanner.ts";
 import { ProvenanceMapDataSchema } from "./provenance_map.ts";
-import { sensitiveValuesOf } from "./sensitive_context.ts";
+
 import {
   StepOutputSourcesSchema,
   toPersistedStepContexts,
@@ -137,13 +137,9 @@ export function captureDeferredBindings(
   omit: readonly string[] = [],
 ): DeferredExpression["bindings"] {
   const { inputs, self, run, workflowRunId } = context;
-  // In a typed run each step context's output sources travel with the copy
-  // as plain data, so the record's evaluator can view a parent's outputs
-  // through the adapter (typed-secrets 4.2); the untyped copy is what it
-  // always was.
-  const steps = sensitiveValuesOf(context)?.sentinels.typedSecrets
-    ? toPersistedStepContexts(context.steps)
-    : context.steps;
+  // Each step context's output sources travel with the copy as plain data,
+  // so the record's evaluator can adapt a parent's stored outputs.
+  const steps = toPersistedStepContexts(context.steps);
   // Copy at the call boundary: later step results must not change this scope.
   const bindings = JSON.parse(
     JSON.stringify({ inputs, self, run, workflowRunId, steps }),

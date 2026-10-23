@@ -275,15 +275,6 @@ export interface ModelMethodRunDeps {
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
   createEvaluationService: () => ExpressionEvaluationService;
-  /**
-   * The run's sensitive values, with the registry that carries the internal
-   * typed-secrets option. Only tests set a typed one
-   * (design/enablers/typed-secrets.md Section 10.3): the evaluation passes,
-   * the persisted evaluated cache, the method boundary's destination policy
-   * and the redactor's masks all follow the registry. The CLI and serve
-   * pass nothing, and the run's values are untyped.
-   */
-  createSensitiveValues?: (redactor: RunLog["redactor"]) => RunSensitiveValues;
   loadEvaluatedDefinition: (
     type: ModelType,
     name: string,
@@ -745,8 +736,7 @@ export async function* modelMethodRun(
             // Every sensitive value this run resolves for an expression is
             // recorded here and forwarded to the run's redactor. The registry
             // it carries is the run's typed-secrets switch (typed-secrets 3.5).
-            const sensitiveValues = deps.createSensitiveValues?.(redactor) ??
-              new RunSensitiveValues(redactor);
+            const sensitiveValues = new RunSensitiveValues(redactor);
             if (runLog.runId) {
               runLogger = getRunLogger(
                 definition.name,
@@ -923,33 +913,19 @@ export async function* modelMethodRun(
                   };
                   return;
                 }
-                // Sensitive values are cached as vault references. A typed run
-                // restores them as references the delivery loads, reading no
-                // vault here (typed-secrets 4.4); an untyped run restores real
-                // values into evaluatedDefinition and sentinels into the
-                // executed copy, exactly as a fresh evaluation would.
-                const typedReplay = sensitiveValues.sentinels.typedSecrets;
-                const vaultService =
-                  !typedReplay && (lastEval.writtenReferences ?? []).length > 0
-                    ? await deps.createVaultService()
-                    : undefined;
-                const restored = await rehydrateEvaluatedDefinition(
-                  {
-                    definition: lastEval.definition,
-                    deferredExpressions: lastEval.deferredExpressions ?? [],
-                    writtenReferences: lastEval.writtenReferences ?? [],
-                    ...(lastEval.persistedProvenance instanceof ProvenanceMap
-                      ? { persistedProvenance: lastEval.persistedProvenance }
-                      : {}),
-                    ...(lastEval.provenance instanceof ProvenanceMap
-                      ? { provenance: lastEval.provenance }
-                      : {}),
-                  },
-                  (vaultName, key) =>
-                    vaultService!.get(vaultName, key, "evaluated-cache:replay"),
-                  sensitiveValues,
-                  stepSecretBag,
-                );
+                // Restore cached references without reading the vault. Delivery
+                // loads their current values under the current grants.
+                const restored = await rehydrateEvaluatedDefinition({
+                  definition: lastEval.definition,
+                  deferredExpressions: lastEval.deferredExpressions ?? [],
+                  writtenReferences: lastEval.writtenReferences ?? [],
+                  ...(lastEval.persistedProvenance instanceof ProvenanceMap
+                    ? { persistedProvenance: lastEval.persistedProvenance }
+                    : {}),
+                  ...(lastEval.provenance instanceof ProvenanceMap
+                    ? { provenance: lastEval.provenance }
+                    : {}),
+                }, stepSecretBag);
                 evaluatedDefinition = restored.definition;
                 executedDefinition = restored.executedDefinition;
                 deferredExpressions = restored.deferredExpressions;

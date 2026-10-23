@@ -46,8 +46,7 @@ import {
  * typed evaluator a `vault.get` in a trigger input is refused before any
  * work, and a result that holds a `Secret` is refused with
  * `secret_destination_refused`, so no sentinel is ever persisted as orphan
- * run-input text. The legacy evaluator has no `vault` root to bind, so a
- * reference there fails as an unknown name.
+ * run-input text.
  */
 export class TriggerInputResolver {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}

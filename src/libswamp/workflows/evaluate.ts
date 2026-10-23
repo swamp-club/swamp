@@ -180,22 +180,14 @@ export interface WorkflowEvaluateDeps {
   /**
    * The evaluator the evaluation's passes run with, selected through the
    * one seam the run paths use (`ExpressionEvaluationService.passEvaluatorFor`,
-   * typed-secrets 4.4): the legacy evaluator for an untyped registry, or
-   * the typed evaluator bound to a bag of the registry, so a data read
+   * typed-secrets 4.4), bound to a bag of the registry, so a data read
    * returns a reference and a Secret leaves as a sentinel the cache writes
    * as its reference, with no load.
    */
   passEvaluatorFor: (
     sensitiveValues: RunSensitiveValues,
     options: PassEvaluatorOptions,
-  ) => Promise<PassEvaluator>;
-  /**
-   * The evaluation's sensitive values, with the registry that carries the
-   * internal typed-secrets option. Only tests set a typed one
-   * (design/enablers/typed-secrets.md Section 10.3); the CLI and serve pass
-   * nothing, and the evaluation is untyped.
-   */
-  createSensitiveValues?: () => RunSensitiveValues;
+  ) => PassEvaluator | Promise<PassEvaluator>;
   saveEvaluatedWorkflow: (
     workflow: Workflow,
     /** Where data sits in the workflow's raw copy (swamp-club#3205). */
@@ -361,8 +353,7 @@ async function evaluateWorkflowInternal(
   }
 
   // Build expression context with inputs
-  const sensitiveValues = deps.createSensitiveValues?.() ??
-    new RunSensitiveValues();
+  const sensitiveValues = new RunSensitiveValues();
   const context = await deps.buildExpressionContext(
     requiresModelNamespace(workflowData),
     sensitiveValues,
@@ -678,7 +669,6 @@ async function evaluateWorkflowInternal(
   // Sensitive values are written as the vault references they came from.
   const persisted = persistEvaluatedWorkflow(
     workflowToSave,
-    workflow,
     undefined,
     [],
     sensitiveValues,
@@ -686,8 +676,8 @@ async function evaluateWorkflowInternal(
   );
   await deps.saveEvaluatedWorkflow(
     persisted.workflow,
-    // In raw-copy coordinates, which the untyped rehydrate restores exactly;
-    // the typed replay aligns from the persisted map.
+    // Raw-copy coordinates are retained for readers; replay aligns from
+    // the persisted-coordinate map.
     expandedProvenance,
     authoredExpressions,
     persisted.writtenReferences,

@@ -77,7 +77,7 @@ Deno.test("refuseSecretsInRefusingFields: a sentinel under a refusing path alway
       arbText,
       fc.boolean(),
       (args, pick, before, after, dataOrigin) => {
-        const registry = new SecretBagRegistry({ typedSecrets: true });
+        const registry = new SecretBagRegistry();
         const bag = new VaultSecretBag(registry);
         const sentinel = dataOrigin
           ? bag.addDataReference(REF, "db/main.password")
@@ -121,7 +121,7 @@ Deno.test("refuseSecretsInRefusingFields: sentinel-shaped text the run did not i
       fc.hexaString({ minLength: 32, maxLength: 32 }),
       fc.nat({ max: 99 }),
       (args, pick, prefix, n) => {
-        const registry = new SecretBagRegistry({ typedSecrets: true });
+        const registry = new SecretBagRegistry();
         new VaultSecretBag(registry).addSecret(REF, "loc");
         const slots = slotsOf(args);
         const target = structuredClone(args);

@@ -178,7 +178,7 @@ Deno.test("RunSensitiveValues.sentinels: one registry per run, shared by every b
 });
 
 Deno.test("RunSensitiveValues: in a typed run, masks and stand-ins derive from registered sentinels without any value (typed-secrets 3.4)", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const redactor = new SecretRedactor();
   const values = new RunSensitiveValues(redactor, registry);
   const bag = new VaultSecretBag(registry);
@@ -222,23 +222,8 @@ Deno.test("RunSensitiveValues: in a typed run, masks and stand-ins derive from r
   assertEquals(redactor.redact(`log ${vault}`), "log ***");
 });
 
-Deno.test("RunSensitiveValues: an untyped run keeps a sentinel as text and derives nothing from it", () => {
-  const registry = new SecretBagRegistry();
-  const redactor = new SecretRedactor();
-  const values = new RunSensitiveValues(redactor, registry);
-  const sentinel = new VaultSecretBag(registry).addSecret(
-    { vaultName: "v", key: "k" },
-    "loc",
-  );
-  assertEquals(values.masked(`x ${sentinel}`), `x ${sentinel}`);
-  assertEquals(values.withPlaceholders(`x ${sentinel}`), `x ${sentinel}`);
-  assertEquals(values.tagsWithPlaceholders({ t: sentinel }), { t: sentinel });
-  assertEquals(redactor.hasSecrets, false);
-  assertEquals(redactor.redact(`x ${sentinel}`), `x ${sentinel}`);
-});
-
 Deno.test("RunSensitiveValues.withPlaceholders: a sentinel a worker rebuilt has no reference and becomes the mask", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const sentinel = `__SWAMP_VSEC_${"0".repeat(32)}_0__`;
   registry.register({ sentinel, value: "shipped", dataOrigin: true });
   const values = new RunSensitiveValues(undefined, registry);
@@ -247,7 +232,7 @@ Deno.test("RunSensitiveValues.withPlaceholders: a sentinel a worker rebuilt has 
 });
 
 Deno.test("RunSensitiveValues: recorded values and registered sentinels are replaced together", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const values = new RunSensitiveValues(undefined, registry);
   values.addSecret("hunter2-long", { vaultName: "v", key: "old" });
   const sentinel = new VaultSecretBag(registry).addSecret(
@@ -268,7 +253,7 @@ Deno.test("RunSensitiveValues.probeRedactor: answers the run's redactor, or unde
 });
 
 Deno.test("RunSensitiveValues.withForEachStandIns: replaces every sentinel the run issued with the iteration index, and nothing in an untyped run (typed-secrets 4.1)", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const values = new RunSensitiveValues(undefined, registry);
   const bag = new VaultSecretBag(registry);
   const vault = bag.addSecret({ vaultName: "prod", key: "A" }, "in");
@@ -279,12 +264,6 @@ Deno.test("RunSensitiveValues.withForEachStandIns: replaces every sentinel the r
     `n-sensitive-7-sensitive-7-${other}-plain`,
   );
   assertEquals(values.withForEachStandIns("n-plain", 7), "n-plain");
-  const untyped = new RunSensitiveValues(undefined, new SecretBagRegistry());
-  const text = new VaultSecretBag(untyped.sentinels).addSecret(
-    { vaultName: "prod", key: "A" },
-    "in",
-  );
-  assertEquals(untyped.withForEachStandIns(`n-${text}`, 1), `n-${text}`);
 });
 
 Deno.test("RunSensitiveValues.unreadReferenceFor: finds a recorded failed read by its exact stored text", () => {

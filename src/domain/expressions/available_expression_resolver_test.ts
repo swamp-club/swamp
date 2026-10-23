@@ -211,7 +211,7 @@ Deno.test("resolveAvailableExpressions: refuses substituted expressions before c
   assertEquals(calls, 0);
 });
 
-Deno.test("resolveAvailableExpressionsPair: evaluates once and sanitizes only the second copy (swamp-club#2171)", () => {
+Deno.test("resolveAvailableExpressionsPair: evaluates once and keeps plain values in both copies (swamp-club#2171)", () => {
   const { evaluate, calls } = makeEvaluator();
   const values = new RunSensitiveValues();
   values.addSecret("Pl41n-s3cret", { vaultName: "prod", key: "api-token" });
@@ -224,7 +224,7 @@ Deno.test("resolveAvailableExpressionsPair: evaluates once and sanitizes only th
     { self: { item: "Pl41n-s3cret" } },
     evaluate,
     "unrestricted",
-    sensitiveSpliceSanitizer(values, bag),
+    sensitiveSpliceSanitizer(bag),
   );
   // Each expression is evaluated once for both copies; one that cannot be
   // resolved yet is left as written in both.
@@ -233,7 +233,7 @@ Deno.test("resolveAvailableExpressionsPair: evaluates once and sanitizes only th
     run: "echo Pl41n-s3cret s3",
     keep: "${{ steps.a.outputs.x }}",
   });
-  assertEquals(pair.sanitized.run.includes("Pl41n-s3cret"), false);
+  assertEquals(pair.sanitized, pair.raw);
   assertEquals(pair.sanitized.keep, "${{ steps.a.outputs.x }}");
   assertEquals(bag.resolveDeep(pair.sanitized), pair.raw);
 });
