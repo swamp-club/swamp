@@ -40,6 +40,7 @@ import {
   type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { RunnerBootstrapParamsSchema } from "./runner_protocol.ts";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { context, trace } from "@opentelemetry/api";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import {
@@ -179,18 +180,24 @@ Deno.test("registerDispatchHandler: a dispatch whose runner cannot be spawned st
     dataPlaneUrl: "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
-    runnerCommand: { cmd: "/nonexistent/swamp-runner", args: [] },
+    runnerCommand: { cmd: "swamp-runner", args: [] },
     onDispatch: (event) => events.push(event),
   });
 
-  let failed = false;
-  try {
-    await orchestrator.call(WorkerMethod.dispatch, dispatchParams(), {
-      timeoutMs: 5_000,
-    });
-  } catch {
-    failed = true;
-  }
+  // The mock's spawn() throws, as a missing runner binary does.
+  const { result: failed } = await withMockedCommand(
+    () => ({ stdout: "", code: 0 }),
+    async () => {
+      try {
+        await orchestrator.call(WorkerMethod.dispatch, dispatchParams(), {
+          timeoutMs: 5_000,
+        });
+        return false;
+      } catch {
+        return true;
+      }
+    },
+  );
   assertEquals(failed, true);
   assertEquals(events.map((e) => e.kind), [
     "dispatch_started",
@@ -345,6 +352,30 @@ Deno.test("buildRunnerBootstrapParams: omits caCerts when the worker has none", 
     });
     assertEquals("caCerts" in bootstrap, false);
   }
+});
+
+Deno.test("buildRunnerBootstrapParams: carries the supervisor's scratch dir, and omits it when there is none (swamp-club#3854)", () => {
+  const dispatch = DispatchParamsSchema.parse(dispatchParams());
+  const options = {
+    sessionCredential: () => "session-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+  };
+  const bootstrap = buildRunnerBootstrapParams(
+    dispatch,
+    undefined,
+    options,
+    "/tmp/swamp-dispatch-scratch",
+  );
+  assertEquals(
+    RunnerBootstrapParamsSchema.parse(bootstrap).scratchDirPath,
+    "/tmp/swamp-dispatch-scratch",
+  );
+  assertEquals(
+    "scratchDirPath" in
+      buildRunnerBootstrapParams(dispatch, undefined, options),
+    false,
+  );
 });
 
 Deno.test("buildRunnerBootstrapParams: prefers the per-dispatch credential", () => {

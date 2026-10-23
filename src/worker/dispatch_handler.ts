@@ -220,11 +220,13 @@ export function buildRunnerBootstrapParams(
     DispatchHandlerOptions,
     "sessionCredential" | "dataPlaneUrl" | "cacheDirPath" | "caCerts"
   >,
+  scratchDirPath?: string,
 ): RunnerBootstrapParams {
   return {
     sessionCredential: dispatchCredential ?? options.sessionCredential(),
     dataPlaneUrl: options.dataPlaneUrl,
     cacheDirPath: options.cacheDirPath,
+    ...(scratchDirPath !== undefined ? { scratchDirPath } : {}),
     dispatch: params,
     ...(options.caCerts?.length ? { caCerts: options.caCerts } : {}),
   };
@@ -313,6 +315,13 @@ async function handleDispatch(
   let started: WorkerDispatchEvent | undefined;
   let finished = false;
   const start = performance.now();
+  // The runner's scratch directory is the supervisor's: a runner killed
+  // after a cancel never reaches its own cleanup (swamp-club#3854).
+  const scratchDir = await Deno.makeTempDir({
+    prefix: `swamp-dispatch-${
+      DispatchParamsSchema.parse(rawParams).dispatchId.slice(0, 8)
+    }-`,
+  });
   try {
     return await runDispatch(rawParams, ctx, {
       ...options,
@@ -321,7 +330,7 @@ async function handleDispatch(
         else finished = true;
         options.onDispatch?.(event);
       },
-    });
+    }, scratchDir);
   } catch (error) {
     // A dispatch that fails before its runner reports (the spawn, the
     // bootstrap frame) still finishes, so the worker's count of running
@@ -338,6 +347,8 @@ async function handleDispatch(
       });
     }
     throw error;
+  } finally {
+    await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
   }
 }
 
@@ -345,6 +356,7 @@ async function runDispatch(
   rawParams: unknown,
   ctx: RpcHandlerContext,
   options: DispatchHandlerOptions,
+  scratchDir: string,
 ): Promise<DispatchResult> {
   const params = DispatchParamsSchema.parse(rawParams);
   const execution = params.execution;
@@ -382,6 +394,7 @@ async function runDispatch(
     params,
     dispatchCredential,
     options,
+    scratchDir,
   );
 
   const runnerCmd = options.runnerCommand ?? deriveRunnerCommand();

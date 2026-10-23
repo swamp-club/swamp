@@ -249,7 +249,7 @@ async function startOrchestrator(repoDir: string): Promise<Orchestrator> {
       await server.shutdown();
       // The disconnects the closed sockets recorded are written before the
       // test removes the repo (swamp-club#3854).
-      await gateway.close();
+      await gateway.settled();
     },
   };
 }

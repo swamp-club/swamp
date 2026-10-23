@@ -116,12 +116,6 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
-/** How long close() waits for queued transitions before shutdown moves on. */
-export const GATEWAY_CLOSE_DEADLINE_MS = 10_000;
-
-/** A retryable refusal: the worker enrolls again with the next serve. */
-const SHUTTING_DOWN_CODE = "orchestrator_shutting_down";
-
 /**
  * Splits a presented enrollment credential of the form `<name>.<secret>`.
  * The name half addresses the token aggregate; the secret half is compared
@@ -359,8 +353,6 @@ export class WorkerGateway {
   ) => Promise<EnrollmentToken | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   readonly #transitions = new TransitionTail("gateway");
-  /** Set by close(): no verify starts, and one in flight records nothing. */
-  #closing = false;
 
   constructor(options: WorkerGatewayOptions) {
     this.#options = options;
@@ -394,57 +386,13 @@ export class WorkerGateway {
   }
 
   /**
-   * Shuts the gateway down (swamp-club#3854). Every connected worker is
-   * removed, its socket closed and its disconnect queued, so the socket
-   * closing later opens no grace window; timers are cleared and no
-   * enrollment verify starts or records a result, so no transition begins
-   * later. The transitions queued are then awaited, so the workers' status
-   * is written before serve stops its datastore. The wait is bounded by
-   * `deadlineMs`, so a write that never settles does not hold up the rest
-   * of shutdown.
+   * Resolves once every transition queued so far has settled, including
+   * ones queued while waiting: a test awaits it after closing the server's
+   * sockets, so the disconnects they record are written before it removes
+   * the repo (swamp-club#3854).
    */
-  async close(deadlineMs: number = GATEWAY_CLOSE_DEADLINE_MS): Promise<void> {
-    this.#closing = true;
-    this.dispose();
-    for (const entry of [...this.#workers.values()]) {
-      if (entry.channel === null) {
-        // In its grace window: the disconnect is already recorded.
-        if (entry.graceTimer !== undefined) {
-          clearTimeout(entry.graceTimer);
-          entry.graceTimer = undefined;
-        }
-        if (entry.expiryTimer !== undefined) {
-          clearTimeout(entry.expiryTimer);
-          entry.expiryTimer = undefined;
-        }
-        continue;
-      }
-      const name = entry.name;
-      this.#removeWorker(entry, "serve shutting down");
-      // #recordDisconnected logs its own failures, so this never rejects.
-      this.#recordTransition(
-        "worker_disconnected",
-        () => this.#recordDisconnected(name),
-      ).catch(() => {});
-    }
-    let deadline: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<"expired">((resolve) => {
-      deadline = setTimeout(() => resolve("expired"), deadlineMs);
-    });
-    try {
-      const outcome = await Promise.race([
-        this.#transitions.settled().then(() => "settled" as const),
-        expired,
-      ]);
-      if (outcome === "expired") {
-        logger.warn(
-          "Shutting down with {count} worker status write(s) still pending after {ms}ms",
-          { count: this.#transitions.pending, ms: deadlineMs },
-        );
-      }
-    } finally {
-      clearTimeout(deadline);
-    }
+  async settled(): Promise<void> {
+    await this.#transitions.settled();
   }
 
   /**
@@ -814,14 +762,6 @@ export class WorkerGateway {
           "control socket closed before enrollment began",
         );
       }
-      // Shutting down: a worker that reconnects, or whose enrollment was
-      // queued, records nothing (swamp-club#3854).
-      if (this.#closing) {
-        throw new RpcError({
-          code: SHUTTING_DOWN_CODE,
-          message: "The orchestrator is shutting down",
-        });
-      }
       // Redeem validates state, expiry, the secret, and allowance — and
       // appends a binding on first enrollment or re-auths a known machine.
       // Must happen before the already-connected check because the worker
@@ -966,14 +906,6 @@ export class WorkerGateway {
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;
       entry.tokenCreatedAt = tokenCreatedAt;
-      // close() began while the token was redeemed: the worker stays out of
-      // the pool it has already disconnected.
-      if (this.#closing) {
-        throw new RpcError({
-          code: SHUTTING_DOWN_CODE,
-          message: "The orchestrator is shutting down",
-        });
-      }
       this.#workers.set(workerName, entry);
       state.workerName = workerName;
 
@@ -1067,8 +999,7 @@ export class WorkerGateway {
   #handleSocketClosed(state: SocketState): void {
     state.channel.close("control socket closed");
     const name = state.workerName;
-    // close() already disconnected and recorded every worker.
-    if (name === null || this.#closing) {
+    if (name === null) {
       return;
     }
     const entry = this.#workers.get(name);
@@ -1257,7 +1188,7 @@ export class WorkerGateway {
    */
   #startEnrollmentVerify(workerName: string): void {
     const entry = this.#workers.get(workerName);
-    if (!entry || this.#closing) return;
+    if (!entry) return;
     if (entry.verifying) {
       entry.verifyAgain = true;
       return;
@@ -1294,7 +1225,7 @@ export class WorkerGateway {
     try {
       const probeResult = await verifyWorker(workerName);
       const entry = this.#workers.get(workerName);
-      if (!entry || entry.channel === null || this.#closing) return;
+      if (!entry || entry.channel === null) return;
       if (probeResult.ok) {
         if (entry.status !== "draining") {
           await this.#recordTransition("verify_passed", async () => {
@@ -1332,7 +1263,7 @@ export class WorkerGateway {
       }
     } catch (error) {
       const entry = this.#workers.get(workerName);
-      if (!entry || entry.channel === null || this.#closing) return;
+      if (!entry || entry.channel === null) return;
       const reason = error instanceof Error ? error.message : String(error);
       await this.#recordTransition("verify_failed", async () => {
         entry.verifyFailureReason = reason;

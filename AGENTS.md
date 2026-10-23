@@ -251,7 +251,7 @@ changes that aren't tied to a single building block:
 - Every temp dir a test creates is removed when the test ends, pass or fail: a
   helper that hands one out returns a `Disposable` the caller declares with
   `using`, or the test removes it in a `finally`. Wait for background writers (a
-  worker, a serve gateway's `close()`) before removing a repo dir. Tests that
+  worker, a serve gateway's `settled()`) before removing a repo dir. Tests that
   replicate pass a `privateRoot`, never the real `/tmp/swamp-<uid>`.
   `verify-build` runs the suite under a fresh `TMPDIR` and fails on anything
   left in it.

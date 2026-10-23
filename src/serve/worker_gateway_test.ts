@@ -615,11 +615,11 @@ Deno.test("WorkerGateway: disconnect starts the grace window; reconnect cancels 
   await new Promise((r) => setTimeout(r, 250));
 });
 
-Deno.test("WorkerGateway: close waits for a disconnect being recorded and stops the grace window (swamp-club#3854)", async () => {
+Deno.test("WorkerGateway: settled waits for the disconnect a closed socket is recording (swamp-club#3854)", async () => {
   const held = Promise.withResolvers<void>();
   const order: string[] = [];
   const h = createHarness({
-    graceWindowMs: 60_000,
+    graceWindowMs: 20,
     runModelMethod: async (input) => {
       if (input.inputs.status !== "disconnected") return;
       await held.promise;
@@ -629,129 +629,15 @@ Deno.test("WorkerGateway: close waits for a disconnect being recorded and stops 
   const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
   await enroll(workerChannel);
   dropSocket();
-  assertEquals(h.gateway.pendingGraceWindows, 1);
 
-  const closing = h.gateway.close().then(() => order.push("closed"));
-  assertEquals(h.gateway.pendingGraceWindows, 0);
-  // A full turn, so every microtask close() could settle on has run;
+  const settling = h.gateway.settled().then(() => order.push("settled"));
+  // A full turn, so every microtask settled() could resolve on has run;
   // waitFor cannot assert that something has not happened yet.
   await new Promise((r) => setTimeout(r, 0));
   held.resolve();
-  await closing;
-  assertEquals(order, ["disconnect written", "closed"]);
-});
-
-Deno.test("WorkerGateway: close does not wait on an enrollment probe, and the probe's late result records nothing (swamp-club#3854)", async () => {
-  const probe = Promise.withResolvers<void>();
-  const h = createHarness({
-    verifyOnEnroll: true,
-    verifyWorker: async () => {
-      await probe.promise;
-      return { ok: true };
-    },
-  });
-  const { workerChannel } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel);
-
-  // Resolves with the probe still outstanding: shutdown is not held by it.
-  await h.gateway.close();
-  probe.resolve();
-  // A full turn for the verify to resume; nothing it could record is awaited.
-  await new Promise((r) => setTimeout(r, 0));
-  assertEquals(
-    h.transitions.filter((t) => t.inputs.status === "idle").length,
-    0,
-  );
-});
-
-Deno.test("WorkerGateway: close disconnects a connected worker and records it before resolving, and its socket closing later opens no grace window (swamp-club#3854)", async () => {
-  const h = createHarness({ graceWindowMs: 60_000 });
-  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
-  const result = await enroll(workerChannel);
-
-  await h.gateway.close();
-  assertEquals(h.transitions.at(-1)?.inputs.status, "disconnected");
-  assertEquals(h.gateway.workers().length, 0);
-  assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
-  // The socket's own close event, arriving after shutdown began.
-  dropSocket();
-  assertEquals(h.gateway.pendingGraceWindows, 0);
-  assertEquals(h.disconnected.length, 0);
-});
-
-Deno.test("WorkerGateway: a worker that reconnects after close is refused before its token is redeemed (swamp-club#3854)", async () => {
-  const h = createHarness({ graceWindowMs: 60_000 });
-  const first = connectWorkerSocket(h.gateway);
-  await enroll(first.workerChannel);
-  await h.gateway.close();
-  const recorded = h.transitions.length;
-
-  const second = connectWorkerSocket(h.gateway);
-  const refusal = await assertRejects(
-    () => enroll(second.workerChannel),
-    RpcError,
-  );
-  assertEquals(refusal.code, "orchestrator_shutting_down");
-  assertEquals(h.transitions.length, recorded);
-  assertEquals(h.gateway.workers().length, 0);
-  second.dropSocket();
-  assertEquals(h.gateway.pendingGraceWindows, 0);
-  assertEquals(h.transitions.length, recorded);
-});
-
-Deno.test("WorkerGateway: an enrollment queued when close begins records nothing (swamp-club#3854)", async () => {
-  const held = Promise.withResolvers<void>();
-  const h = createHarness({
-    graceWindowMs: 60_000,
-    runModelMethod: async (input) => {
-      if (input.inputs.status === "disconnected") await held.promise;
-      h.transitions.push(input);
-    },
-  });
-  const first = connectWorkerSocket(h.gateway);
-  await enroll(first.workerChannel);
-  // Its disconnect write holds the tail, so the next enrollment queues.
-  first.dropSocket();
-  const second = connectWorkerSocket(h.gateway);
-  const enrolling = enroll(second.workerChannel, {
-    ...enrollParams,
-    instanceUuid: "uuid-2",
-  });
-  const closing = h.gateway.close();
-  held.resolve();
-  const refusal = await assertRejects(() => enrolling, RpcError);
-  assertEquals(refusal.code, "orchestrator_shutting_down");
-  await closing;
-  assertEquals(
-    h.transitions.filter((t) => t.methodName === "redeem").length,
-    1,
-  );
-  // Only the first worker, in its grace window: the second never joined.
-  assertEquals(h.gateway.workers().map((w) => w.connected), [false]);
-  assertEquals(h.gateway.pendingGraceWindows, 0);
-});
-
-Deno.test("WorkerGateway: close gives up at its deadline on a write that never settles (swamp-club#3854)", async () => {
-  const held = Promise.withResolvers<void>();
-  let written = false;
-  const h = createHarness({
-    graceWindowMs: 60_000,
-    runModelMethod: async (input) => {
-      if (input.inputs.status !== "disconnected") return;
-      await held.promise;
-      written = true;
-    },
-  });
-  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel);
-  dropSocket();
-  try {
-    await h.gateway.close(10);
-    // The deadline ended the wait, not the write.
-    assertEquals(written, false);
-  } finally {
-    held.resolve();
-  }
+  await settling;
+  assertEquals(order, ["disconnect written", "settled"]);
+  await waitFor(() => h.graceExpired.length === 1, "grace window expiry");
 });
 
 Deno.test("WorkerGateway: a restarted process on the same machine re-enrolls after a disconnect", async () => {

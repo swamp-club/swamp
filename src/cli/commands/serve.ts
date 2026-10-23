@@ -7150,7 +7150,7 @@ export const serveCommand = new Command()
       }
       // Stop revalidation before the gateway it cuts workers off from.
       await workerTokenRevalidationService.dispose();
-      await workerGateway.close();
+      workerGateway.dispose();
       if (collectiveRefreshService) {
         await collectiveRefreshService.dispose();
       }
