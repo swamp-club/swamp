@@ -2900,8 +2900,9 @@ and run only if either failed.
 Each step has a name, a description, and a task: a method to run or a
 nested workflow to invoke. Steps use the same dependency logic as jobs.
 
-When a step calls a mutating method (`create`, `update`, `delete`, `action`),
-the behavior's pre-flight checks run first. If any check fails, the step fails
+When a step calls a method that is not a read or list kind (`get`, `read`,
+`describe`, `show`, `list`, `search`, `find`, or a declared `kind`), the
+behavior's pre-flight checks run first. If any check fails, the step fails
 without running the method. Set `allowFailure: true` on the step to let the
 workflow continue past a pre-flight failure.
 

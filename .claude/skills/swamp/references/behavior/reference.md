@@ -153,12 +153,28 @@ swamp behavior create @user/my-api api-client \
   --json
 ```
 
-Dot notation creates nested objects:
+How a `--global-arg` value is typed (same parser as `--input`):
+
+- `key=value` passes a string.
+- `key:json=<json>` passes the JSON-parsed value: `'tags:json=["a","b"]'`.
+- `key=@path` passes the file's contents verbatim, trailing newline included.
+  `\@` gives a literal `@`; a scoped name such as `@scope/name` passes through.
+- At create, a string in a **top-level** field is coerced to the type the type's
+  `globalArguments` schema declares: numeric strings for numbers, `true`/`false`
+  for booleans, JSON text for arrays, objects and records. So `appId=480`
+  against `z.number()` is stored as `480`.
+
+Dot notation creates nested objects, and nested values are not coerced:
 
 ```bash
 --global-arg config.db.host=localhost --global-arg config.db.port=5432
 # → globalArguments: { config: { db: { host: "localhost", port: "5432" } } }
+--global-arg config.db.port:json=5432
+# → globalArguments: { config: { db: { port: 5432 } } }
 ```
+
+When the schema declares a nested field as a number or boolean, pass it with
+`:json`; the plain form is refused (`expected number, received string`).
 
 > **Warning:** Omitting `--global-arg` creates an instance with empty
 > `globalArguments`. There is no inheritance from sibling instances or schema
@@ -489,9 +505,10 @@ run, including replay; its value is never cached.
 to access a specific version, or see the **swamp-data** skill for version
 history and cleanup.
 
-Pre-flight checks run automatically before mutating methods (`create`, `update`,
-`delete`, `action`). Read-only methods (`sync`, `get`, etc.) do not trigger
-checks.
+Pre-flight checks run automatically before every method except read and list
+methods (`get`, `read`, `describe`, `show`, `list`, `search`, `find`, or a
+method that declares `kind: "read"` or `kind: "list"`). Any other name,
+including `sync`, runs checks.
 
 **Environment variable warnings** are emitted before execution if the behavior
 definition uses `${{ env.* }}` expressions. When you see these warnings in the

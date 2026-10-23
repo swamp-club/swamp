@@ -737,7 +737,8 @@ const GlobalArgsSchema = z.object({
 ## CheckDefinition API
 
 Pre-flight checks are defined in the behavior's `checks` field and run
-automatically before mutating methods (`create`, `update`, `delete`, `action`).
+automatically before every method except read and list methods (see
+[checks.md](checks.md) for how a method's kind is decided).
 
 ### execute Signature
 

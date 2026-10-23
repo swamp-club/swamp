@@ -78,26 +78,14 @@ remediation names that failure (`docAnalysisError`) instead of asking for JSDoc;
 fix the failure first. `has-readme` likewise stops offering a module-level JSDoc
 in place of a README until `deno doc` can analyse the source.
 
-### `fast-check` (1 pt)
+### `fast-check` (1 pt, deprecated)
 
-Earned when `deno doc --lint <entrypoints>` produces zero slow-type diagnostics.
-Slow-type diagnostic codes include:
-
-- `missing-return-type`
-- `missing-explicit-type`
-- `private-type-ref`
-- `unsupported-ambient-module`
-- `unsupported-complex-reference`
-- `unsupported-default-export-expr`
-- `unsupported-destructuring`
-- `unsupported-global-module`
-- `unsupported-require`
-- `unsupported-ts-export-assignment`
-- `unsupported-ts-instantiation-expression`
-- `unsupported-ts-namespace-export`
-- `unsupported-using-stmt`
-
-A single diagnostic of any of these codes costs the whole point.
+Always earned. The factor is deprecated: neither `swamp extension quality` nor
+the Swamp Club scorer evaluates slow types any more, and the CLI prints a
+deprecation note beside it. `deno doc --lint` diagnostics such as
+`missing-explicit-type` on an exported zod schema or `private-type-ref` on a
+`z.infer` type do not cost a point, so there is no need to rewrite public types
+to silence them.
 
 ### `description` (1 pt)
 
@@ -326,7 +314,7 @@ Factor results:
 | readme-example      | 1/1    | README contains a usage code block           |
 | rich-readme         | 1/1    | README is 1.2k chars with 3 code blocks      |
 | symbols-docs        | 1/1    | All 8 exports documented (100%)              |
-| fast-check          | 1/1    | Explicit return types, no private-type leaks |
+| fast-check          | 1/1    | Deprecated; always earned                    |
 | description         | 1/1    | Non-empty                                    |
 | platforms-one       | 1/1    | 2 platforms listed                           |
 | platforms-two       | 1/1    | 2 platforms listed                           |

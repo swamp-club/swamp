@@ -1,8 +1,19 @@
 # Pre-flight Checks Reference
 
-Pre-flight checks run automatically before any mutating method (`create`,
-`update`, `delete`, `action`). They validate conditions before execution —
-avoiding half-completed operations.
+Pre-flight checks run automatically before every method except read and list
+methods. They validate conditions before execution — avoiding half-completed
+operations.
+
+A method's kind is its declared `kind` when set, otherwise inferred from its
+name:
+
+- `get`, `read`, `describe`, `show` → read: no checks.
+- `list`, `search`, `find` → list: no checks.
+- Any other name (`create`, `update`, `delete`, `sync`, `resolve`, `deploy`, …)
+  → checks run.
+
+Set `kind: "read"` or `kind: "list"` on a method to skip checks for a read-only
+method with another name; a declared `kind` overrides the name.
 
 ## CheckDefinition Interface
 
@@ -65,13 +76,18 @@ Use labels to categorize checks for selective skipping:
 
 ## appliesTo Scoping
 
-If `appliesTo` is omitted, the check runs before all mutating methods. To scope
-a check to specific methods:
+If `appliesTo` is omitted, the check runs before every method that runs checks
+(see the top of this page). To scope a check to specific methods, list their
+names — any method name works, not just `create`/`update`/`delete`:
 
 ```typescript
 appliesTo: ["create"],           // only on create
 appliesTo: ["create", "update"], // on create and update, not delete
+appliesTo: ["resolve"],          // a custom method name
 ```
+
+Naming a read or list method in `appliesTo` has no effect: checks never run
+before those.
 
 ## Skipping Checks
 
