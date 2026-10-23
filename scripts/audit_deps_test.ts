@@ -23,7 +23,12 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
-import { fetchVulnDetails, formatVuln } from "./audit_deps.ts";
+import {
+  ACCEPTED_ADVISORIES,
+  fetchVulnDetails,
+  formatVuln,
+  isAcceptedAdvisory,
+} from "./audit_deps.ts";
 
 /** Captures console.warn output for the duration of `run`. */
 async function captureWarnings<T>(
@@ -194,4 +199,63 @@ Deno.test("fetchVulnDetails: runs exactly `concurrency` lookups at once", async 
   assertEquals(result.size, ids.length);
   assertEquals(calls.length, ids.length);
   assert(new Set(calls.map((c) => c.url)).size === ids.length);
+});
+
+const ZOD_ADVISORY = { id: "GHSA-mrhx-c7xc-m3w5", aliases: ["CVE-2023-54404"] };
+
+Deno.test("isAcceptedAdvisory: accepts the listed advisory on the listed version before its review date", () => {
+  const accepted = isAcceptedAdvisory(
+    { name: "zod", version: "4.4.3" },
+    ZOD_ADVISORY,
+    "2026-10-23",
+  );
+  assertEquals(accepted?.id, "GHSA-mrhx-c7xc-m3w5");
+});
+
+Deno.test("isAcceptedAdvisory: matches an accepted id given as an alias", () => {
+  const accepted = isAcceptedAdvisory(
+    { name: "zod", version: "4.4.3" },
+    { id: "OSV-0000", aliases: ["GHSA-mrhx-c7xc-m3w5"] },
+    "2026-10-23",
+  );
+  assertEquals(accepted?.package, "zod");
+});
+
+Deno.test("isAcceptedAdvisory: another version, package or advisory still fails", () => {
+  const today = "2026-10-23";
+  assertEquals(
+    isAcceptedAdvisory({ name: "zod", version: "4.4.4" }, ZOD_ADVISORY, today),
+    undefined,
+  );
+  assertEquals(
+    isAcceptedAdvisory({ name: "zed", version: "4.4.3" }, ZOD_ADVISORY, today),
+    undefined,
+  );
+  assertEquals(
+    isAcceptedAdvisory(
+      { name: "zod", version: "4.4.3" },
+      { id: "GHSA-0000-0000-0000" },
+      today,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("isAcceptedAdvisory: lapses on its review date", () => {
+  const [{ reviewBy }] = ACCEPTED_ADVISORIES;
+  assertEquals(
+    isAcceptedAdvisory({ name: "zod", version: "4.4.3" }, ZOD_ADVISORY, reviewBy),
+    undefined,
+  );
+});
+
+Deno.test("ACCEPTED_ADVISORIES: every entry names a reason and a review date", () => {
+  for (const advisory of ACCEPTED_ADVISORIES) {
+    assert(advisory.reason.length > 0, `${advisory.id} has no reason`);
+    assert(
+      /^\d{4}-\d{2}-\d{2}$/.test(advisory.reviewBy),
+      `${advisory.id} review date is not YYYY-MM-DD`,
+    );
+    assert(advisory.versions.length > 0, `${advisory.id} names no version`);
+  }
 });
