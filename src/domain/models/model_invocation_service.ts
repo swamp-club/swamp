@@ -324,6 +324,7 @@ export class ModelInvocationService {
     const redactor = callerContext.redactor ?? this.#deps.commonDeps.redactor;
     let childDefinition: Definition;
     let secretBag: VaultSecretBag;
+    let sensitiveValues: RunSensitiveValues;
     try {
       const resolved = await this.#resolveExpressions(
         definition,
@@ -340,6 +341,7 @@ export class ModelInvocationService {
       );
       childDefinition = resolved.definition;
       secretBag = resolved.secretBag;
+      sensitiveValues = resolved.sensitiveValues;
     } catch (error) {
       return {
         ok: false,
@@ -396,7 +398,10 @@ export class ModelInvocationService {
         modelDef,
         methodName,
         childContext,
-        { secretLoader: this.#deps.evaluationService.secretLoader(redactor) },
+        {
+          secretLoader: this.#deps.evaluationService.secretLoader(redactor),
+          unreadReferences: sensitiveValues,
+        },
       );
 
       return { ok: true, resources: result.dataHandles ?? [] };
@@ -428,7 +433,11 @@ export class ModelInvocationService {
     routedMethodArgs: Record<string, unknown>,
     redactor: MethodContext["redactor"],
     registry?: SecretBagRegistry,
-  ): Promise<{ definition: Definition; secretBag: VaultSecretBag }> {
+  ): Promise<{
+    definition: Definition;
+    secretBag: VaultSecretBag;
+    sensitiveValues: RunSensitiveValues;
+  }> {
     const evaluationService = this.#deps.evaluationService;
     const authoredExpressions = collectAuthoredExpressions(definition.toData());
     const sensitiveValues = new RunSensitiveValues(redactor, registry);
@@ -547,6 +556,7 @@ export class ModelInvocationService {
     return {
       definition: resolvedDefinition,
       secretBag: runtimeResult.secretBag,
+      sensitiveValues,
     };
   }
 

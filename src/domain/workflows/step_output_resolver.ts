@@ -22,6 +22,7 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretSink } from "../secrets/mod.ts";
 import {
   parseSensitiveFieldsTag,
+  recordSensitiveVaultRefsUnread,
   resolveSensitiveVaultRefs,
 } from "../models/data_writer.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
@@ -391,19 +392,30 @@ export function createDataRepositoryAttributeReader(
     if (options.getVaultService && Object.keys(parsed).length > 0) {
       const sensitiveFields = parseSensitiveFieldsTag(ref.tags);
       if (sensitiveFields) {
+        let vaultService: VaultService | undefined;
         try {
-          await resolveSensitiveVaultRefs(
-            parsed,
-            sensitiveFields,
-            await options.getVaultService(),
-            options.sensitiveValues,
-          );
+          vaultService = await options.getVaultService();
         } catch (error) {
           // A refusal by the run's vault access fails the read like every
           // other vault path (swamp-club#2676); it is never mistaken for an
           // unavailable vault.
           if (error instanceof VaultAccessDeniedError) throw error;
-          // Vault unavailable — leave refs unresolved
+          // The vault cannot be built: its refs stay as stored and are
+          // recorded as unread (swamp-club#3806).
+          await recordSensitiveVaultRefsUnread(
+            parsed,
+            sensitiveFields,
+            error,
+            options.sensitiveValues,
+          );
+        }
+        if (vaultService) {
+          await resolveSensitiveVaultRefs(
+            parsed,
+            sensitiveFields,
+            vaultService,
+            options.sensitiveValues,
+          );
         }
       }
     }

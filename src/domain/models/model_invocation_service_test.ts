@@ -27,7 +27,10 @@ import type {
   RunModelResult,
 } from "./model.ts";
 import { defineModel, modelRegistry } from "./model.ts";
-import type { MethodExecutionService } from "./method_execution_service.ts";
+import type {
+  MethodDeliveryOptions,
+  MethodExecutionService,
+} from "./method_execution_service.ts";
 import type { CommonMethodContextDeps } from "./method_context.ts";
 import {
   ModelInvocationService,
@@ -1390,4 +1393,82 @@ Deno.test("ModelInvocationService: a nested invocation's runtime pass is scoped 
   );
   assertEquals(result.ok, true);
   assertEquals(seenMethod, "greet");
+});
+
+Deno.test("ModelInvocationService: a nested invocation hands its run's unread references to the delivery (swamp-club#3806)", async () => {
+  const reference = "${{ vault.get('infra', 'ticket-key') }}";
+  let runSensitiveValues:
+    | Parameters<Evaluator["buildRuntimeContext"]>[1]
+    | undefined;
+  const evaluator: Evaluator = {
+    hasDefinitionExpressions: () => false,
+    evaluateDefinition: () => {
+      throw new Error("no expressions to evaluate");
+    },
+    buildRuntimeContext: (_definition, sensitiveValues) => {
+      runSensitiveValues = sensitiveValues;
+      sensitiveValues.recordUnread({
+        vaultName: "infra",
+        key: "ticket-key",
+        text: reference,
+        fieldPath: "ticket",
+        reason: "op: command not found",
+      });
+      return Promise.resolve({} as RuntimeContext);
+    },
+    resolveRuntimeExpressionsInDefinition: (
+      definition,
+      _redactor,
+      _context,
+      _authored,
+      options,
+    ) => Promise.resolve({ definition, secretBag: options!.secretBag! }),
+    secretLoader: () =>
+      new SecretLoader(() => Promise.resolve(new VaultService())),
+  };
+  const targetDef = Definition.create({
+    name: "unread-target",
+    type: "test/provenance-target",
+    globalArguments: {},
+  });
+  let delivered: MethodDeliveryOptions | undefined;
+  const svc = new ModelInvocationService({
+    executionService: {
+      execute: () => Promise.resolve({ dataHandles: [] }),
+      executeWorkflow: (_definition, _modelDef, _method, _context, options) => {
+        delivered = options;
+        return Promise.resolve({ dataHandles: [] });
+      },
+    },
+    commonDeps: {
+      dataRepository: {
+        findAllForModel: () => Promise.resolve([]),
+        getContent: () => Promise.resolve(null),
+      },
+      definitionRepository: {
+        findByNameGlobal: (name: string) =>
+          Promise.resolve(
+            name === "unread-target"
+              ? { definition: targetDef, type: PROVENANCE_TARGET_TYPE }
+              : null,
+          ),
+        findById: () => Promise.resolve(null),
+      },
+      createCelEnvironment: () =>
+        ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+    } as unknown as CommonMethodContextDeps,
+    evaluationService: evaluator,
+    repoDir: "/tmp/test-repo",
+  });
+
+  const result = await svc.invoke(
+    { definition: "unread-target", method: "greet" },
+    makeStubContext(),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(delivered?.unreadReferences, runSensitiveValues);
+  assertEquals(
+    delivered?.unreadReferences?.unreadReferenceFor(reference)?.reason,
+    "op: command not found",
+  );
 });

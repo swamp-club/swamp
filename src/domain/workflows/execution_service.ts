@@ -2974,7 +2974,7 @@ export class DefaultStepExecutor implements StepExecutor {
             : undefined,
         },
       ),
-      { secretLoader },
+      { secretLoader, unreadReferences: ctx.sensitiveValues },
     );
   }
 

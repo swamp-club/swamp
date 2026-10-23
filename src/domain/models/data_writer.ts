@@ -54,7 +54,10 @@ import {
   type WordedText,
   wordedText,
 } from "../behavior_wording.ts";
-import { currentVaultAccess } from "../vaults/run_vault_access.ts";
+import {
+  currentVaultAccess,
+  VaultAccessDeniedError,
+} from "../vaults/run_vault_access.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 import {
   overriddenSpecVaultName,
@@ -1502,6 +1505,11 @@ async function walkAndResolve(
  * walks the entire object tree, this function targets only the paths that were
  * written by {@link processSensitiveResourceData}, preventing untrusted data in
  * non-sensitive fields from being resolved as vault references.
+ *
+ * Each reference is read on its own: one that fails stays as its reference
+ * text, the failure goes to `redactor.recordUnread` and the debug log with the
+ * vault, key and provider error, and the remaining references are still read
+ * (swamp-club#3806). A refusal by the run's vault access is rethrown.
  */
 export async function resolveSensitiveVaultRefs(
   data: Record<string, unknown>,
@@ -1509,14 +1517,56 @@ export async function resolveSensitiveVaultRefs(
   vaultService: VaultService,
   redactor?: SecretSink,
 ): Promise<void> {
+  await resolveSensitiveLocations(
+    data,
+    sensitiveFields,
+    (vaultName, key) =>
+      vaultService.get(vaultName, key, "data-writer:vault-ref-resolve"),
+    redactor,
+  );
+}
+
+/**
+ * Records every reference at a record's tagged sensitive locations as unread
+ * with `error`, for a read whose vault service could not be built at all. The
+ * references stay as stored, as {@link resolveSensitiveVaultRefs} leaves a
+ * reference whose read fails.
+ */
+export async function recordSensitiveVaultRefsUnread(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*",
+  error: unknown,
+  redactor?: SecretSink,
+): Promise<void> {
+  await resolveSensitiveLocations(data, sensitiveFields, () => {
+    throw error;
+  }, redactor);
+}
+
+/** Reads the secret a stored reference names. */
+type VaultRead = (vaultName: string, key: string) => Promise<string>;
+
+async function resolveSensitiveLocations(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*",
+  read: VaultRead,
+  redactor?: SecretSink,
+): Promise<void> {
   if (sensitiveFields === SENSITIVE_FIELDS_ALL) {
-    await walkAndResolve(data, vaultService, redactor);
+    // Every own key is a location by its own name, a dotted one included.
+    for (const key of Object.keys(data)) {
+      data[key] = await resolveValueAtPath(data[key], key, read, redactor);
+    }
     return;
   }
-
   for (const fieldPath of sensitiveFields) {
     const value = getNestedValue(data, fieldPath);
-    const resolved = await resolveValueAtPath(value, vaultService, redactor);
+    const resolved = await resolveValueAtPath(
+      value,
+      fieldPath,
+      read,
+      redactor,
+    );
     if (resolved !== value) {
       if (fieldPath.includes(".")) {
         setNestedValue(data, fieldPath, resolved);
@@ -1580,18 +1630,31 @@ export function sensitiveVaultReferences(
 
 async function resolveValueAtPath(
   value: unknown,
-  vaultService: VaultService,
+  fieldPath: string,
+  read: VaultRead,
   redactor?: SecretSink,
 ): Promise<unknown> {
   if (typeof value === "string") {
     const match = VAULT_REF_REGEX.exec(value);
     if (match) {
       const [, vaultName, key] = match;
-      const resolved = await vaultService.get(
-        vaultName,
-        key,
-        "data-writer:vault-ref-resolve",
-      );
+      let resolved: string;
+      try {
+        resolved = await read(vaultName, key);
+      } catch (error) {
+        if (error instanceof VaultAccessDeniedError) throw error;
+        const reason = error instanceof Error ? error.message : String(error);
+        logger
+          .debug`Could not read sensitive field ${fieldPath} from vault ${vaultName} (key ${key}): ${reason}`;
+        redactor?.recordUnread?.({
+          text: value,
+          vaultName,
+          key,
+          fieldPath,
+          reason,
+        });
+        return value;
+      }
       redactor?.addSecret(resolved, { vaultName, key });
       return resolved;
     }
@@ -1600,7 +1663,12 @@ async function resolveValueAtPath(
 
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      value[i] = await resolveValueAtPath(value[i], vaultService, redactor);
+      value[i] = await resolveValueAtPath(
+        value[i],
+        `${fieldPath}.${i}`,
+        read,
+        redactor,
+      );
     }
     return value;
   }
@@ -1610,7 +1678,8 @@ async function resolveValueAtPath(
     for (const key of Object.keys(record)) {
       record[key] = await resolveValueAtPath(
         record[key],
-        vaultService,
+        `${fieldPath}.${key}`,
+        read,
         redactor,
       );
     }
