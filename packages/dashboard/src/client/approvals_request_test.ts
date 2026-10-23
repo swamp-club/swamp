@@ -23,7 +23,11 @@ import {
   expiredApprovals,
   pendingApprovals,
 } from "./approvals.ts";
-import { createApprovalsRequest } from "./approvals_request.ts";
+import {
+  type ApprovalsRequest,
+  createApprovalsRequest,
+  sinceMark,
+} from "./approvals_request.ts";
 import { loadState } from "./load_state.ts";
 import { RequestError } from "./stream.ts";
 
@@ -96,6 +100,8 @@ Deno.test("createApprovalsRequest: initial denial preserves error info and permi
     loading: false,
     error: "Denied",
     errorInfo: { code: "unauthorized" },
+    replies: 0,
+    failures: 1,
   });
   assertEquals(loadState(owner.getSnapshot()), "error");
   const retry = owner.reload();
@@ -246,4 +252,79 @@ Deno.test("createApprovalsRequest: a synchronous transport error does not wedge 
   fail = false;
   assertStrictEquals(await owner.reload(), empty);
   owner.stop();
+});
+
+/** What a page mounted now would record, as usePageApprovals does. */
+function markOf(owner: ApprovalsRequest) {
+  const { replies, failures } = owner.getSnapshot();
+  return { replies, failures };
+}
+
+Deno.test("sinceMark: a failed read after a page mounts shows its error, not the retained listing", async () => {
+  const { owner, replies } = controlled();
+  const initial = owner.start();
+  replies[0].resolve(pending);
+  await initial;
+  const mark = markOf(owner);
+  const entry = owner.reload();
+  assertEquals(loadState(sinceMark(owner.getSnapshot(), mark)), "loading");
+  replies[1].reject(new RequestError("Offline", "unavailable"));
+  assertEquals(await entry, null);
+  // The owner keeps the listing for views that saw it load.
+  assertStrictEquals(owner.getSnapshot().data, pending);
+  const page = sinceMark(owner.getSnapshot(), mark);
+  assertEquals(page.data, null);
+  assertEquals(page.error, "Offline");
+  assertEquals(page.errorInfo, { code: "unavailable" });
+  assertEquals(loadState(page), "error");
+  const retry = owner.reload();
+  replies[2].resolve(empty);
+  await retry;
+  assertStrictEquals(sinceMark(owner.getSnapshot(), mark).data, empty);
+  owner.stop();
+});
+
+Deno.test("sinceMark: a page entered while a decision's refresh is in flight offers no gate until it lands", async () => {
+  const { owner, replies } = controlled();
+  const initial = owner.start();
+  replies[0].resolve(pending);
+  await initial;
+  const decided = owner.refresh();
+  // The page that decided unmounted; another mounts and joins the refresh.
+  const mark = markOf(owner);
+  const entry = owner.reload();
+  assertEquals(replies.length, 2);
+  assertStrictEquals(owner.getSnapshot().data, pending);
+  assertEquals(pendingApprovals(sinceMark(owner.getSnapshot(), mark).data), []);
+  assertEquals(loadState(sinceMark(owner.getSnapshot(), mark)), "loading");
+  replies[1].resolve(empty);
+  await decided;
+  await entry;
+  assertStrictEquals(sinceMark(owner.getSnapshot(), mark).data, empty);
+  owner.stop();
+});
+
+Deno.test("sinceMark: a failure before a page mounts is not that page's error", async () => {
+  const { owner, replies } = controlled();
+  const initial = owner.start();
+  replies[0].reject(new Error("Offline"));
+  await initial;
+  const page = sinceMark(owner.getSnapshot(), markOf(owner));
+  assertEquals(page.error, null);
+  assertEquals(page.errorInfo, null);
+  assertEquals(loadState(page), "loading");
+  owner.stop();
+});
+
+Deno.test("createApprovalsRequest: stop keeps the reply and failure counts", async () => {
+  const { owner, replies } = controlled();
+  const initial = owner.start();
+  replies[0].resolve(pending);
+  await initial;
+  const failed = owner.reload();
+  replies[1].reject(new Error("Offline"));
+  await failed;
+  owner.stop();
+  assertEquals(markOf(owner), { replies: 1, failures: 1 });
+  assertEquals(owner.getSnapshot().data, null);
 });

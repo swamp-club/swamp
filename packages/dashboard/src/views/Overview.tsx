@@ -20,7 +20,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider.tsx";
 import { useRequest } from "../client/useRequest.ts";
-import type { SharedApprovals } from "../client/useApprovals.ts";
+import {
+  type SharedApprovals,
+  usePageApprovals,
+} from "../client/useApprovals.ts";
 import { extractArray } from "../client/extract.ts";
 import { type ApprovalInfo, pendingApprovals } from "../client/approvals.ts";
 import { useDecidedGates } from "../client/useDecidedGates.ts";
@@ -87,7 +90,7 @@ interface OverviewProps {
 }
 
 export function Overview(
-  { health, healthDenied, onOpenRun, approvalsRequest }: OverviewProps,
+  { health, healthDenied, onOpenRun, approvalsRequest: shared }: OverviewProps,
 ) {
   const healthState = healthViewState(health, healthDenied);
   const queuedFires = totalQueued(health?.scheduling?.schedules ?? []);
@@ -95,13 +98,12 @@ export function Overview(
 
   const runsReq = useRequest("workflow.run.search", { limit: 500 });
   const { data: runsData, refetch: refetchRuns } = runsReq;
+  const approvalsRequest = usePageApprovals(shared);
   const {
     data: approvalsData,
     refetch: refetchApprovals,
     refresh: refreshApprovals,
   } = approvalsRequest;
-  // Refresh on route entry, sharing the owner's initial read if still pending.
-  useEffect(() => refetchApprovals(), [refetchApprovals]);
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
   const approvals = pendingApprovals(approvalsData);

@@ -26,6 +26,31 @@ export interface ApprovalsSnapshot {
   loading: boolean;
   error: string | null;
   errorInfo: RequestErrorInfo | null;
+  /** Replies and failures applied so far. Neither ever decreases. */
+  replies: number;
+  failures: number;
+}
+
+/** The counts a page saw when it mounted. */
+export type ApprovalsMark = Pick<ApprovalsSnapshot, "replies" | "failures">;
+
+/**
+ * The listing as a page that mounted at `mark` sees it: only what settled
+ * since, as with a request the page owned. A listing retained from before
+ * is neither shown nor actionable, and neither is an earlier failure.
+ */
+export function sinceMark(
+  snapshot: ApprovalsSnapshot,
+  mark: ApprovalsMark,
+): ApprovalsSnapshot {
+  const replied = snapshot.replies > mark.replies;
+  const failed = snapshot.failures > mark.failures;
+  return {
+    ...snapshot,
+    data: replied ? snapshot.data : null,
+    error: failed ? snapshot.error : null,
+    errorInfo: failed ? snapshot.errorInfo : null,
+  };
 }
 
 /** One dashboard's listing; consumers observe the same snapshot and read. */
@@ -40,11 +65,12 @@ export interface ApprovalsRequest {
   refresh(): Promise<ApprovalsReply | null>;
 }
 
-const emptySnapshot = (): ApprovalsSnapshot => ({
+const emptySnapshot = (mark: ApprovalsMark): ApprovalsSnapshot => ({
   data: null,
   loading: true,
   error: null,
   errorInfo: null,
+  ...mark,
 });
 
 export function createApprovalsRequest(
@@ -52,7 +78,7 @@ export function createApprovalsRequest(
 ): ApprovalsRequest {
   const runner = createRequestRunner();
   const listeners = new Set<() => void>();
-  let snapshot = emptySnapshot();
+  let snapshot = emptySnapshot({ replies: 0, failures: 0 });
   let active = false;
   let revision = 0;
   const publish = (next: ApprovalsSnapshot) => {
@@ -70,13 +96,21 @@ export function createApprovalsRequest(
     };
     const apply = {
       result: (data: ApprovalsReply) =>
-        publish({ data, loading: false, error: null, errorInfo: null }),
+        publish({
+          ...snapshot,
+          data,
+          loading: false,
+          error: null,
+          errorInfo: null,
+          replies: snapshot.replies + 1,
+        }),
       error: (error: unknown) =>
         publish({
           ...snapshot,
           loading: false,
           error: error instanceof Error ? error.message : String(error),
           errorInfo: requestErrorInfo(error),
+          failures: snapshot.failures + 1,
         }),
     };
     const settled = join
@@ -104,7 +138,9 @@ export function createApprovalsRequest(
       active = false;
       revision++;
       runner.invalidate();
-      publish(emptySnapshot());
+      // The counts carry over: a page's mark must stay comparable.
+      const { replies, failures } = snapshot;
+      publish(emptySnapshot({ replies, failures }));
     },
     reload: () => read(true),
     refresh: () => read(false),

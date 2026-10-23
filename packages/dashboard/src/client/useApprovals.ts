@@ -20,8 +20,10 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { ApprovalsReply } from "./approvals.ts";
 import {
+  type ApprovalsMark,
   type ApprovalsSnapshot,
   createApprovalsRequest,
+  sinceMark,
 } from "./approvals_request.ts";
 import { useSwamp } from "./SwampProvider.tsx";
 
@@ -50,4 +52,20 @@ export function useApprovals(): SharedApprovals {
     owner.refresh().catch(() => {});
   }, [owner]);
   return { ...snapshot, refetch, refresh };
+}
+
+/**
+ * A page's view of the shared listing. It reads on entry and, as a request
+ * the page owned would, shows only what settled after it mounted: a listing
+ * retained from before entry could still offer a gate that was decided or
+ * expired since, without an error or a way to retry.
+ */
+export function usePageApprovals(shared: SharedApprovals): SharedApprovals {
+  const [mark] = useState<ApprovalsMark>(() => ({
+    replies: shared.replies,
+    failures: shared.failures,
+  }));
+  const { refetch } = shared;
+  useEffect(() => refetch(), [refetch]);
+  return { ...shared, ...sinceMark(shared, mark) };
 }

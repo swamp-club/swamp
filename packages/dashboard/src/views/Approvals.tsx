@@ -21,14 +21,16 @@ import {
   type MouseEvent,
   type ReactNode,
   useCallback,
-  useEffect,
   useId,
   useMemo,
   useState,
 } from "react";
 import { useSwamp } from "../client/SwampProvider.tsx";
 import { useRequest } from "../client/useRequest.ts";
-import type { SharedApprovals } from "../client/useApprovals.ts";
+import {
+  type SharedApprovals,
+  usePageApprovals,
+} from "../client/useApprovals.ts";
 import { extractObject } from "../client/extract.ts";
 import {
   activeRunIds,
@@ -113,13 +115,15 @@ const HISTORY_SLOTS = 12;
 /** A wait longer than this reads as overdue. */
 const LONG_WAIT_MS = 60 * 60 * 1000;
 
-export function Approvals({ health, approvalsRequest }: ApprovalsProps) {
+export function Approvals(
+  { health, approvalsRequest: shared }: ApprovalsProps,
+) {
   const { request } = useSwamp();
   const catalog = useWorkflowCatalog(health ?? null);
   const [filter, setFilter] = useWorkflowFilter();
 
+  const approvalsRequest = usePageApprovals(shared);
   const { data, refetch, refresh: refreshApprovals } = approvalsRequest;
-  useEffect(() => refetch(), [refetch]);
   const { decided, hold } = useDecidedGates(data);
   // Every suspended run, page by page: a single capped page would drop
   // runs awaiting resume once there are more than the cap.
