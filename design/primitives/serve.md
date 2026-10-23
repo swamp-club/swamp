@@ -1,6 +1,6 @@
 ---
 audience: operator, maintainer
-last-verified: 2026-10-06 @ 5db66975
+last-verified: 2026-10-23 @ 268af553
 ---
 
 # Serve
@@ -1583,7 +1583,14 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   drawer opened from a top-bar menu button.
 
   The dashboard is a complete approval surface. Approve and reject address the
-  gate's run by `runId`. An approved but still suspended run (`awaitingResume`
+  gate's run by `runId`. The sidebar, overview and Approvals page share one
+  approvals listing per connected dashboard. Concurrent reloads join the read
+  in flight; a completed decision, cancellation or resume starts a fresh read
+  and retires older replies. Disconnecting or replacing the socket clears the
+  listing, including when reauthentication changes the principal. Expiration
+  appears when the next server listing reports it, updating the badge and page
+  together (`packages/dashboard/src/client/useApprovals.ts`).
+  An approved but still suspended run (`awaitingResume`
   on `workflow.run.search`) shows a Resume action and the equivalent
   `swamp workflow resume` command. Resume sends `workflow.resume`, then a
   `cancel` carrying the request id, which detaches the dashboard from the

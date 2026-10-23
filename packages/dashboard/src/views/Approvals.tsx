@@ -21,12 +21,14 @@ import {
   type MouseEvent,
   type ReactNode,
   useCallback,
+  useEffect,
   useId,
   useMemo,
   useState,
 } from "react";
 import { useSwamp } from "../client/SwampProvider.tsx";
 import { useRequest } from "../client/useRequest.ts";
+import type { SharedApprovals } from "../client/useApprovals.ts";
 import { extractObject } from "../client/extract.ts";
 import {
   activeRunIds,
@@ -99,8 +101,7 @@ import "../styles/mini-dag.css";
 interface ApprovalsProps {
   /** Serve's live health snapshot; its active runs are runs serve drives. */
   health?: HealthSnapshot | null;
-  /** Called after a gate decision or resume, so the sidebar count refreshes. */
-  onApprovalsChanged?: () => void;
+  approvalsRequest: SharedApprovals;
 }
 
 /** A suspended run as the run search lists it. */
@@ -112,13 +113,14 @@ const HISTORY_SLOTS = 12;
 /** A wait longer than this reads as overdue. */
 const LONG_WAIT_MS = 60 * 60 * 1000;
 
-export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
+export function Approvals({ health, approvalsRequest }: ApprovalsProps) {
   const { request } = useSwamp();
   const catalog = useWorkflowCatalog(health ?? null);
   const [filter, setFilter] = useWorkflowFilter();
 
-  const approvalsRequest = useRequest("workflow.approvals");
-  const { data, refetch } = approvalsRequest;
+  const { data, refetch, refresh: refreshApprovals, readFresh } =
+    approvalsRequest;
+  useEffect(() => refetch(), [refetch]);
   const { decided, hold } = useDecidedGates(data);
   // Every suspended run, page by page: a single capped page would drop
   // runs awaiting resume once there are more than the cap.
@@ -156,11 +158,10 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   );
 
   const refresh = useCallback(() => {
-    refetch();
+    refreshApprovals();
     refetchSuspended();
     refetchWaits();
-    onApprovalsChanged?.();
-  }, [refetch, refetchSuspended, refetchWaits, onApprovalsChanged]);
+  }, [refreshApprovals, refetchSuspended, refetchWaits]);
 
   const [error, setError] = useState<string | null>(null);
   // Held here, not by the row: the refetch removes the cancelled run's row.
@@ -198,6 +199,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
       reasonText: string,
     ): Promise<boolean> => {
       let landed = false;
+      let reconciled = false;
       setError(null);
       setNotice(null);
       markDeciding(a, decision);
@@ -226,21 +228,35 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
         const message = err instanceof Error ? err.message : String(err);
         // Only a refusal from serve can mean the gate was already decided;
         // a lost connection leaves the gate as it was.
-        const stillListed = err instanceof RequestError
-          ? await request("workflow.approvals").then(
-            (fresh) =>
-              pendingApprovals(fresh).some((g) => gateKey(g) === gateKey(a)),
-            () => true,
-          )
-          : true;
+        let stillListed = true;
+        if (err instanceof RequestError) {
+          const fresh = await readFresh();
+          reconciled = true;
+          if (fresh !== null) {
+            stillListed = pendingApprovals(fresh).some((g) =>
+              gateKey(g) === gateKey(a)
+            );
+          }
+        }
         if (stillListed) setError(refusalMessage(decision, message, true));
         else setNotice(refusalMessage(decision, message, false));
       }
       markDeciding(a, null);
-      refresh();
+      // Reconciliation already updated the shared listing, including the badge.
+      if (!reconciled) refreshApprovals();
+      refetchSuspended();
+      refetchWaits();
       return landed;
     },
-    [request, refresh, markDeciding, hold],
+    [
+      request,
+      refreshApprovals,
+      readFresh,
+      refetchSuspended,
+      refetchWaits,
+      markDeciding,
+      hold,
+    ],
   );
 
   // Longest wait first in every list: the oldest gate is the most urgent.
@@ -425,7 +441,11 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
             <EmptyState
               title="Couldn't load approvals"
               action={
-                <button type="button" className="btn-sm" onClick={refresh}>
+                <button
+                  type="button"
+                  className="btn-sm"
+                  onClick={refetchGatesAndRuns}
+                >
                   Try again
                 </button>
               }

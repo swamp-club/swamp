@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-13 @ 1bb4f396
+last-verified: 2026-10-23 @ 268af553
 ---
 
 # Local dashboard
@@ -157,6 +157,14 @@ There is no client-side request timeout: a read serve never answers holds the
 page's live reads until it answers or the socket closes, which rejects it. A
 preset time range is sent as a duration (`since: "7d"`) to the run queries and
 to `model.output.search`, so the request does not change as the clock moves.
+
+The sidebar, overview and Approvals page share one approvals request owner.
+Entering either page or retrying a read joins an in-flight listing. A completed
+decision, cancellation or resume starts a fresh listing so an earlier reply
+cannot restore stale gates. All consumers see the same data and refresh state;
+expiration becomes visible when the next listing reports it. Each socket gets
+a new dashboard lifetime, so reconnects and principal changes discard the
+previous listing (`packages/dashboard/src/client/approvals_request.ts`).
 
 A preset's window still moves, so a counted run eventually leaves it. Serve's
 run summary reports `oldestStartedAt`, the start of the oldest counted run, and

@@ -47,6 +47,8 @@ import {
 
 interface SwampContextValue {
   connected: boolean;
+  /** Every opened socket gets a new lifetime, even across batched reconnects. */
+  connectionGeneration: number;
   token: string | null;
   sessionReady: boolean;
   authMode: AuthInfo["mode"] | null;
@@ -113,6 +115,7 @@ async function gunzipFrame(data: ArrayBuffer): Promise<string> {
 
 export function SwampProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
+  const [connectionGeneration, setConnectionGeneration] = useState(0);
   const [token, setToken] = useState<string | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [authMode, setAuthMode] = useState<AuthInfo["mode"] | null>(null);
@@ -269,6 +272,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       fetchAuthInfo,
       onOpen: (ws) => {
         socketRef.current = ws;
+        setConnectionGeneration((generation) => generation + 1);
         setConnected(true);
       },
       onMessage: handleFrame,
@@ -393,6 +397,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
     <SwampContext.Provider
       value={{
         connected,
+        connectionGeneration,
         token,
         sessionReady,
         authMode,
