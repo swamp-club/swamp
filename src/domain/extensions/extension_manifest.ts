@@ -118,14 +118,16 @@ const ExtensionManifestSchemaV1 = z.object({
     message: "License must be an SPDX expression, e.g. MIT",
   }).optional(),
   visibility: PublishVisibilitySchema,
-  repository: z.string().url().refine(
+  // The control-character check runs before url(), which strips tabs and
+  // newlines from the value it passes on.
+  repository: z.string().refine(
     // deno-lint-ignore no-control-regex
     (u) => !/[\x00-\x1f]/.test(u),
     {
       message:
         "Repository URL must not contain ASCII control characters (tabs, newlines, etc.)",
     },
-  ).optional(),
+  ).url().optional(),
   paths: PathsConfigSchema.optional(),
   workflows: z.array(safePathString).optional(),
   models: z.array(safePathString).optional(),
