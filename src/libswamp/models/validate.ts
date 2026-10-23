@@ -63,7 +63,10 @@ import {
   unresolvedArgumentsOf,
 } from "../../domain/models/method_execution_service.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
-import { UnboundExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  MissingModelDataError,
+  UnboundExpressionError,
+} from "../../domain/expressions/errors.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
@@ -378,9 +381,9 @@ async function deliverCheckArguments(
   for (const error of evaluated.failedExpressions?.values() ?? []) {
     if (!isEvaluationFailure(error)) throw error;
   }
-  // What validate simply cannot evaluate, an input with no default or an
-  // environment variable unset here, is left as its stored text for the
-  // checks, one expression at a time: the
+  // What validate simply cannot evaluate, an input with no default, an
+  // environment variable unset here or upstream data not produced yet, is
+  // left as its stored text for the checks, one expression at a time: the
   // pass goes on, so a refused secret or a denied, missing or unreadable
   // reference beside it fails the checks here as it would fail the run,
   // whatever the key order.
@@ -420,15 +423,15 @@ async function deliverCheckArguments(
 }
 
 /**
- * Whether an error of the runtime pass is the evaluator failing to evaluate
- * an expression with what validate can bind, which leaves that expression
- * as its stored text, rather than a reference check, a refusal or a load
- * failing, which fails the checks. The evaluator wraps a denied
- * sensitive-field authorization in its own error class, so the cause is
- * read: a denial fails the checks as it fails the run.
+ * Whether an error of the pass is a gap a later run fills, which leaves that
+ * expression as its stored text: an input with no default, an environment
+ * variable unset here, or a model whose resource or file data has not been
+ * produced yet. Anything else, a reference check, a refusal, a load failing
+ * or an invalid expression, fails the checks as it would fail the run.
  */
 function isEvaluationFailure(error: unknown): boolean {
-  return error instanceof UnboundExpressionError;
+  return error instanceof UnboundExpressionError ||
+    error instanceof MissingModelDataError;
 }
 
 /** Converts raw validation results to the presentation format. */

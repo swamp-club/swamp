@@ -287,11 +287,17 @@ export class DefaultWorkflowValidationService
 
   private validateSecretUsage(workflow: Workflow): WorkflowValidationResult[] {
     if (!this.diagnoseSecrets) return [];
+    // A description is prose a run never evaluates, so text documenting the
+    // syntax there is not diagnosed.
     const expressions: {
       celExpression: string;
       path: string;
       embedded?: boolean;
-    }[] = extractExpressions(workflow.toData());
+    }[] = extractExpressions(
+      workflow.toData(),
+      "",
+      (path) => path === "description" || path.endsWith(".description"),
+    );
     for (const [jobIndex, job] of workflow.jobs.entries()) {
       for (const [stepIndex, step] of job.steps.entries()) {
         const path = `jobs[${jobIndex}].steps[${stepIndex}]`;

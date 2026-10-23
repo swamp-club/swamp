@@ -1139,6 +1139,50 @@ Deno.test("default validation: tagged data reaches check delivery and only missi
   });
 });
 
+Deno.test("default validation: a global that reads a model with no data yet stays as its stored text and the checks still run", async () => {
+  await withFixture(async (f) => {
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    // The upstream definition exists but has never run, so it has no
+    // resource data: the gap a later run fills, not an invalid expression.
+    await f.save(Definition.create({
+      name: "upstream",
+      type: f.type.normalized,
+      globalArguments: {},
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const expression =
+      "${{ model.upstream.resource.state.main.attributes.id }}";
+    const downstream = await f.save(Definition.create({
+      name: "downstream",
+      type: f.type.normalized,
+      globalArguments: { token: expression, region: "us-east-1" },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const checksBefore = f.checked.length;
+    const result = await deps.validateModel(downstream, f.model, f.type);
+    assertEquals(
+      result.results.find((r) => r.name === "Check argument delivery"),
+      undefined,
+      JSON.stringify(result.results),
+    );
+    assertEquals(
+      result.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(result.results),
+    );
+    assertEquals(f.checked.length, checksBefore + 1);
+    assertEquals(f.checked.at(-1)!.globalArgs.token, expression);
+    assertEquals(f.checked.at(-1)!.globalArgs.region, "us-east-1");
+  });
+});
+
 Deno.test({
   name:
     "typed local behavior: legacy evaluate then replay caches retain data origin and refuse a quoted heredoc",

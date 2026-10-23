@@ -24,7 +24,7 @@ import type {
   CelExpressionValidator,
 } from "./cel_runtime.ts";
 import { extractDependencies } from "./dependency_extractor.ts";
-import { ExpressionError } from "./errors.ts";
+import { MissingModelDataError } from "./errors.ts";
 import type { ExpressionLocation } from "./expression.ts";
 import {
   replaceExpressionsTracked,
@@ -190,7 +190,11 @@ export async function evaluateDefinitionExpressions(
         failedExpressions.set(
           expr.raw,
           markModelWording(
-            new ExpressionError(worded.text, expr.celExpression, expr.path),
+            new MissingModelDataError(
+              worded.text,
+              expr.celExpression,
+              expr.path,
+            ),
             worded.modelText,
           ),
         );

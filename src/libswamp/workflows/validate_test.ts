@@ -889,6 +889,39 @@ Deno.test("createWorkflowValidateDeps: a type-referenced step's global arguments
   assertEquals(withoutRegion?.error, "Missing required inputs: region");
 });
 
+Deno.test("createWorkflowValidateDeps: description prose that documents the expression syntax is not diagnosed as secret usage", async () => {
+  const workflow = Workflow.create({
+    name: "documented",
+    description:
+      "Reads ${{ vault }} secrets; see ${{ dyn(vault).get('p', 'k') }}",
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({
+          name: "wait",
+          description: "Compare with ${{ vault.get('prod', 'key') == 'x' }}",
+          task: StepTask.manualApproval("wait"),
+        }),
+        Step.create({
+          name: "misused",
+          task: StepTask.manualApproval("${{ dyn(vault).get('prod', 'key') }}"),
+        }),
+      ],
+    })],
+  });
+  const deps = createWorkflowValidateDeps({
+    ...({} as WorkflowRepository),
+    findByName: () => Promise.resolve(workflow),
+    getPath: () => "workflows/documented.yaml",
+  });
+  const findings = (await deps.validate(workflow)).filter((r) =>
+    r.name === "Secret usage"
+  );
+  // Only the step argument the run evaluates is diagnosed.
+  assertEquals(findings.length, 1);
+  assertStringIncludes(findings[0].error ?? "", "jobs[0].steps[1]");
+});
+
 Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path and code in JSON, including raw guards and asserts", async () => {
   const workflow = Workflow.create({
     name: "misuse",

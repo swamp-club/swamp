@@ -89,6 +89,18 @@ export class UnboundExpressionError extends InvalidExpressionError {
 }
 
 /**
+ * A model reference whose resource or file data does not exist yet. Like an
+ * absent binding, it is a gap a later run fills rather than an invalid
+ * expression, so validation leaves the expression as its stored text.
+ */
+export class MissingModelDataError extends ExpressionError {
+  constructor(message: string, expression: string, path: string) {
+    super(message, expression, path);
+    this.name = "MissingModelDataError";
+  }
+}
+
+/**
  * Error thrown when a method is about to run with an argument that still holds
  * an expression whose evaluation failed. Carries the original evaluation error
  * as its cause so the CEL message (and its caret) reaches the user.

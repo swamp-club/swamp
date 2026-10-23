@@ -688,8 +688,14 @@ export class ExpressionEvaluationService {
     let vault: ReturnType<ModelResolver["vaultEvaluationScope"]> | undefined;
     return {
       secretBag,
+      // A rejected scope is not kept: the next read in the pass asks again,
+      // so a transient failure building the vault service fails one read.
       getVault: () =>
-        vault ??= this.modelResolver.vaultEvaluationScope(location, redactor),
+        vault ??= this.modelResolver.vaultEvaluationScope(location, redactor)
+          .catch((error) => {
+            vault = undefined;
+            throw error;
+          }),
     };
   }
 

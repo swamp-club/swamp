@@ -55,6 +55,7 @@ import {
 import { ProvenanceMap } from "./provenance_map.ts";
 import {
   InvalidExpressionError,
+  MissingModelDataError,
   SECRET_DESTINATION_REFUSED,
   SecretRefusedError,
 } from "./errors.ts";
@@ -573,6 +574,16 @@ Deno.test("evaluateDefinition: records failed expressions with their reason and 
     assertStringIncludes(
       failed.get("${{ model.ghost.resource.state.main.attributes }}")!.message,
       "Behavior ghost has no resource data",
+    );
+    // Validation tells this gap from an invalid expression by its class.
+    assertEquals(
+      failed.get("${{ model.ghost.resource.state.main.attributes }}") instanceof
+        MissingModelDataError,
+      true,
+    );
+    assertEquals(
+      failed.get("${{ 1 + 'a' }}") instanceof MissingModelDataError,
+      false,
     );
 
     // Evaluation stays lenient: failures keep their raw text.
