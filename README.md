@@ -42,6 +42,9 @@ The Windows installer puts swamp in `C:\Program Files\swamp` and adds it to the
 system PATH when run as administrator, and otherwise in `%LOCALAPPDATA%\swamp`
 with the user PATH. When `SWAMP_HOME` is set, both installers use
 `$SWAMP_HOME/bin` instead (pass `-d` / `-Destination` to choose another folder).
+If your organisation only lets programs run from certain folders, see
+[Swamp Home Directory](#swamp-home-directory) to keep swamp and everything it
+downloads in one of them.
 
 ### Quick Start
 
@@ -391,6 +394,74 @@ swamp behavior search
 
 Priority order (highest to lowest): `--repo-dir` flag → `SWAMP_REPO_DIR` env var
 → current working directory.
+
+## Swamp Home Directory
+
+Besides the repository, swamp keeps per-user files in its home directory:
+`.swamp` under `HOME`, or under `USERPROFILE` when `HOME` is not set (on Windows
+usually `C:\Users\<you>\.swamp`). It holds:
+
+- `deno/` — the Deno runtime swamp unpacks and runs
+- `deno-cache/` — Deno's cache, where building an extension downloads esbuild
+  and npm packages
+- `litestream/` — the Litestream binary, for datastores that use it
+- `repos/` — local caches of remote datastores
+- `workspaces/`, `source/` and `log/` — workspaces, fetched source and
+  autoupdate logs
+
+Set `SWAMP_HOME` to move all of it to another directory (used as given, with no
+`.swamp` added). Setting `SWAMP_HOME` also moves the config directory, which
+holds your login and telemetry, to `$SWAMP_HOME/config`; `SWAMP_CONFIG_DIR`
+still takes priority if set. Nothing is moved for you: log in again after
+setting it, and copy the old `.swamp` directory across first if you want to keep
+workspaces and caches.
+
+When `SWAMP_HOME` is set, the installers put swamp itself in `$SWAMP_HOME/bin`
+too, unless you pass a destination. `install.sh` links it into `/usr/local/bin`
+when `$SWAMP_HOME/bin` is not on your `PATH`:
+
+```bash
+export SWAMP_HOME=/opt/swamp-home
+curl -fsSL https://swamp-club.com/install.sh | sh
+swamp auth login
+```
+
+### Windows: running swamp from an allowed folder
+
+Application control policies (AppLocker, WDAC, endpoint protection) often block
+programs in your user profile with a message like _"An unauthorized application
+was blocked"_ naming `deno.exe`, `esbuild-win32-x64.exe` or `litestream.exe`
+under `C:\Users\<you>\.swamp`. Those are the programs swamp unpacks and
+downloads into its home directory. To keep swamp and everything it runs in a
+folder the policy allows — `C:\Sources\Repo` in this example — run in
+PowerShell:
+
+```powershell
+# 1. Point swamp's home directory into the allowed folder. Saving it as a User
+#    environment variable makes every new terminal use it; the second line
+#    applies it to this one, so the installer in step 3 sees it.
+[Environment]::SetEnvironmentVariable("SWAMP_HOME", "C:\Sources\Repo\.swamp", "User")
+$env:SWAMP_HOME = "C:\Sources\Repo\.swamp"
+
+# 2. Optional: keep existing workspaces and caches by copying the old home
+#    directory across. Do this before step 3 creates the new one.
+Copy-Item -Recurse "$env:USERPROFILE\.swamp" "C:\Sources\Repo\.swamp"
+
+# 3. Install swamp. With SWAMP_HOME set, the installer puts swamp.exe in
+#    C:\Sources\Repo\.swamp\bin and adds that folder to your PATH.
+irm https://swamp-club.com/install.ps1 | iex
+
+# 4. Log in again: your login now lives in C:\Sources\Repo\.swamp\config
+swamp auth login
+```
+
+New terminals pick up both the PATH and `SWAMP_HOME` changes. After your first
+`swamp extension pull`, `C:\Sources\Repo\.swamp` contains `bin`, `deno` and
+`deno-cache`, and nothing new appears under `C:\Users\<you>\.swamp`. To undo,
+remove the variable with
+`[Environment]::SetEnvironmentVariable("SWAMP_HOME", $null, "User")`; swamp then
+uses the default home directory again. `swamp.exe` stays in
+`C:\Sources\Repo\.swamp\bin` on your PATH until you reinstall or remove it.
 
 ## Log Level
 
