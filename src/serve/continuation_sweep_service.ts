@@ -73,9 +73,9 @@ export async function sweepContinuations(
     isStopping?: () => boolean;
     /**
      * Aborts the listing of a workflow's suspended runs: a rebuild or repair
-     * of its run index stops between records and writes no index, and the
-     * pass stops waiting for the listing at once, even one queued behind
-     * another reader of the index (swamp-club#3472).
+     * of its run index stops between records and writes no index once no
+     * other reader needs it. The pass stops waiting for the listing at once,
+     * even one queued behind another reader of the index (swamp-club#3472).
      */
     signal?: AbortSignal;
     /** The clock deadlines and backoffs are read against, for tests. */

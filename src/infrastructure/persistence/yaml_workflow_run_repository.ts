@@ -134,11 +134,13 @@ interface ValidatedIndex {
 
 /**
  * Repairs that have not yet acquired their index queue, with the queue tail
- * each follows. An intervening queued writer closes the cohort. Once a pass starts,
- * its cohort is closed: a later reader may have seen an invalidation that the
- * pass already missed. Later readers share the next queued pass instead.
+ * each follows. An intervening queued writer closes the cohort. Once a pass
+ * starts, its cohort is closed: a later reader may have seen an invalidation
+ * that the pass already missed. Later readers share the next queued pass instead.
  * Both paths identify the data, including when two repository instances use
  * different record stores with the same repo-local index (swamp-club#3857).
+ * Repair must depend only on these paths, not per-instance configuration:
+ * repository instances with the same paths share the first instance's work.
  */
 const pendingIndexRepairs = new Map<
   string,

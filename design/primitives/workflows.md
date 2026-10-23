@@ -3296,15 +3296,15 @@ the index is then read, a cost the warm-up pays only once at startup. Shutdown
 aborts the warm-up before it drains runs, and waits for it after the drain. The
 warm-up passes its abort signal into each read. Its rebuild or repair stops
 between records once no other reader needs it. Shutdown does not wait for the
-read in flight to end, though (swamp-club#3468): a plain read of an intact
-index, a load a request started, or a repair queued behind another reader does
-not watch that signal. The warm-up stops waiting for it at once and leaves it
-to finish in the background. The continuation sweep reads each workflow's
-index too, to list its suspended runs, and shutdown disposes it after the
-drain. Disposing aborts the sweep's own signal, which reaches that read in the
+read in flight to end, though (swamp-club#3468): filesystem reads already
+underway and shared work another reader needs may continue. The warm-up races
+its signal against each dependency's promise and stops waiting at once, even
+if the dependency cannot be cancelled. The continuation sweep reads each
+workflow's index too, to list its suspended runs, and shutdown disposes it after
+the drain. Disposing aborts the sweep's own signal, which reaches that read in the
 same way (swamp-club#3472): its rebuild or repair stops between records once no
-other reader needs it, and the pass stops waiting at once, even for a read queued
-behind a request's rebuild. A run continuation the pass already started is
+other reader needs it, and the pass stops waiting at once, even for a read
+queued behind a request's rebuild. A run continuation the pass already started is
 still awaited, so the claim it took is released while the instance is live.
 The run search and run summary handlers pass no signal to their reads, but
 shutdown does not wait for those reads.

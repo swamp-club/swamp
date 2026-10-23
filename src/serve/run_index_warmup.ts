@@ -49,13 +49,14 @@ export interface RunIndexWarmupDeps {
  * (swamp-club#3443). One workflow at a time, so requests that arrive
  * meanwhile interleave with it; a request for a workflow it is loading
  * waits on that load rather than starting another. Stopping the warm-up
- * releases its wait without cancelling a request sharing the load. A workflow whose index cannot be read is left to
- * the request that needs it, as is one with more runs than the cache keeps.
+ * releases its wait without cancelling a request sharing the load. A workflow
+ * whose index cannot be read is left to the request that needs it, as is one
+ * with more runs than the cache keeps.
  *
- * Stopping does not wait for the load in flight (swamp-club#3468): a plain
- * read of the index, a load a request started, or a repair queued behind
- * another reader does not watch the warm-up's signal, and would hold
- * shutdown for as long as it takes.
+ * Stopping does not wait for the load in flight (swamp-club#3468): filesystem
+ * reads already underway and shared work another reader needs may continue.
+ * The warm-up races its own signal against each dependency's promise so even
+ * an uncancellable dependency cannot hold shutdown for as long as it takes.
  */
 export class RunIndexWarmup {
   readonly #deps: RunIndexWarmupDeps;
