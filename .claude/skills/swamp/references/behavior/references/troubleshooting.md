@@ -194,6 +194,23 @@ Put such text in a method argument instead, where it passes through unchanged.
 2. **Use a workflow** that runs behaviors in the correct order — dependencies
    are resolved automatically within a workflow run.
 
+### "Could not read globalArguments.<field>: it holds the stored reference of sensitive field …"
+
+**Symptom**:
+`Error: Could not read globalArguments.ticket: it holds the stored reference of sensitive field ticket, whose vault could not be read (vault 'infra', key '…': <provider error>)`,
+preceded by a `Could not read sensitive field … from vault …` warning. The same
+error names `methodArguments.<field>` when a method argument reads the field.
+
+**Cause**: The argument reads a sensitive field of another behavior's data
+(`data.latest(...)`, `steps.<name>.outputs`), which is stored as a
+`vault.get(...)` reference, and that vault read failed. The provider error at
+the end says why: the key is missing, the vault's CLI is not on `PATH` (e.g.
+`op`), or its authentication timed out. A method that never reads the field
+still runs.
+
+**Solutions**: Fix the vault the error names — sign in, put its CLI on `PATH`,
+or rerun the producing behavior to store the value again — then rerun.
+
 ### "Expression in methods.<method>.arguments.<field> could not be evaluated"
 
 **Symptom**:

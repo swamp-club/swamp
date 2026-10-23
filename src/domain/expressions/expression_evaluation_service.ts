@@ -88,7 +88,11 @@ import {
 } from "./cel_string_lexer.ts";
 import { analyzeVaultCalls } from "./vault_call_syntax.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
-import type { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
+import type {
+  RunSensitiveValues,
+  SecretRedactor,
+  UnreadReferenceLookup,
+} from "../secrets/mod.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import type { ProbeRedactor } from "../vaults/secret_reference_check.ts";
@@ -395,6 +399,7 @@ function reportsRefusal(
 export function partitionAuthored(
   expressions: ExpressionLocation[],
   authored: AuthoredExpressions,
+  unread?: UnreadReferenceLookup,
 ): ExpressionLocation[] {
   if (authored === "unrestricted") {
     return expressions;
@@ -406,10 +411,30 @@ export function partitionAuthored(
       continue;
     }
     if (!reportsRefusal(expr, authored)) continue;
+    if (warnedUnread(expr, unread)) continue;
     getLogger(["swamp", "expressions"])
       .warn`Refusing to evaluate expression at ${expr.path}: it was not written in the definition or workflow source, so it arrived as data content. Left as literal text. Raw: ${expr.raw}`;
   }
   return allowed;
+}
+
+/**
+ * Warns that a refused expression is the stored reference of a sensitive
+ * field whose vault read failed in this run, naming the vault, key and
+ * provider error, in place of the data-content warning: swamp wrote that
+ * reference, and the unreadable vault is why it is still text
+ * (swamp-club#3806). The text is refused either way. False when `expr` is
+ * not such a reference.
+ */
+function warnedUnread(
+  expr: ExpressionLocation,
+  unread: UnreadReferenceLookup | undefined,
+): boolean {
+  const reference = unread?.unreadReferenceFor(expr.raw);
+  if (!reference) return false;
+  getLogger(["swamp", "expressions"])
+    .warn`Could not read sensitive field ${reference.fieldPath} at ${expr.path} from vault ${reference.vaultName} (key ${reference.key}): ${reference.reason}. Left as its stored reference.`;
+  return true;
 }
 
 /**
@@ -422,14 +447,17 @@ export function partitionAuthoredAt(
   expressions: ExpressionLocation[],
   authored: AuthoredExpressions,
   provenance: ProvenanceMap,
+  unread?: UnreadReferenceLookup,
 ): ExpressionLocation[] {
-  const allowed = partitionAuthored(expressions, authored);
+  const allowed = partitionAuthored(expressions, authored, unread);
   if (provenance.isAuthored) return allowed;
   return allowed.filter((expr) => {
     const inData = expr.start === undefined || expr.end === undefined
       ? provenance.hasDataAtOrBelow(expr.path)
       : provenance.overlapsData(expr.path, expr.start, expr.end);
-    if (inData && reportsRefusal(expr, authored)) {
+    if (
+      inData && reportsRefusal(expr, authored) && !warnedUnread(expr, unread)
+    ) {
       getLogger(["swamp", "expressions"])
         .warn`Refusing to evaluate expression at ${expr.path}: it sits in data content, not in the definition or workflow source. Left as literal text. Raw: ${expr.raw}`;
     }
@@ -817,6 +845,7 @@ export class ExpressionEvaluationService {
       extractExpressions(data),
       authored,
       provenance,
+      sensitiveValuesOf(context),
     );
     if (expressions.length === 0) {
       return new Map();
@@ -1053,6 +1082,7 @@ export class ExpressionEvaluationService {
         extractExpressions(data),
         authored,
         provenance,
+        sensitiveValuesOf(context),
       )
     ) {
       if (
@@ -1383,6 +1413,7 @@ export class ExpressionEvaluationService {
       ),
       authored,
       provenance,
+      sensitiveValuesOf(expressionContext),
     );
 
     logger.debug(
@@ -1476,6 +1507,7 @@ export class ExpressionEvaluationService {
       ),
       authored,
       provenance,
+      sensitiveValuesOf(expressionContext),
     );
 
     if (runtimeExpressions.length === 0) {

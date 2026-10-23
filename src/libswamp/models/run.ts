@@ -1395,6 +1395,7 @@ export async function* modelMethodRun(
                     {
                       secretLoader: evaluationService.secretLoader(redactor),
                       onArgumentsValidated: saveEvaluation,
+                      unreadReferences: sensitiveValues,
                     },
                   ),
               );

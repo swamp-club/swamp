@@ -2350,6 +2350,129 @@ Deno.test("execute - Proxy throws for an unresolved swamp expression in globalAr
   );
 });
 
+/** A run that could not read the `ticket` field's vault (swamp-club#3806). */
+function unreadTicket(): { unread: RunSensitiveValues; reference: string } {
+  const key = crypto.randomUUID();
+  const reference = `\${{ vault.get('infra', '${key}') }}`;
+  const unread = new RunSensitiveValues();
+  unread.recordUnread({
+    vaultName: "infra",
+    key,
+    text: reference,
+    fieldPath: "ticket",
+    reason: "op: command not found",
+  });
+  return { unread, reference };
+}
+
+/** A model whose `run` method reads `globalArgs.ticket` when `read` is set. */
+function ticketModel(calls: unknown[]): ModelDefinition {
+  return {
+    type: ModelType.create("test/unread-ticket"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({
+          read: z.boolean().optional(),
+          token: z.string().optional(),
+        }),
+        execute: (args: { read?: boolean; token?: string }, context) => {
+          calls.push(args.read ? context.globalArgs.ticket : args.token);
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+}
+
+Deno.test("executeWorkflow - a global argument holding an unreadable stored reference fails naming the vault read (swamp-club#3806)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { unread, reference } = unreadTicket();
+  const calls: unknown[] = [];
+  const model = ticketModel(calls);
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { ticket: reference },
+    methods: { run: { arguments: { read: true } } },
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(definition, model, "run", context, {
+        unreadReferences: unread,
+      }),
+    Error,
+    "Could not read globalArguments.ticket",
+  );
+  assertStringIncludes(error.message, "vault 'infra'");
+  assertStringIncludes(error.message, "op: command not found");
+  assertEquals(error.message.includes("Unresolved expression"), false);
+  assertEquals(calls, []);
+});
+
+Deno.test("executeWorkflow - a method that never reads the unreadable global argument still runs (swamp-club#3806)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { unread, reference } = unreadTicket();
+  const calls: unknown[] = [];
+  const model = ticketModel(calls);
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { ticket: reference },
+    methods: { run: { arguments: { token: "plain" } } },
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  await service.executeWorkflow(definition, model, "run", context, {
+    unreadReferences: unread,
+  });
+  assertEquals(calls, ["plain"]);
+});
+
+Deno.test("executeWorkflow - a method argument holding an unreadable stored reference fails before the method runs (swamp-club#3806)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { unread, reference } = unreadTicket();
+  const calls: unknown[] = [];
+  const model = ticketModel(calls);
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    methods: { run: { arguments: { token: `Bearer ${reference}` } } },
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  const error = await assertRejects(
+    () =>
+      service.executeWorkflow(definition, model, "run", context, {
+        unreadReferences: unread,
+      }),
+    Error,
+    "Could not read methodArguments.token",
+  );
+  assertStringIncludes(error.message, "op: command not found");
+  assertEquals(calls, []);
+});
+
+Deno.test("executeWorkflow - without the run's record an unreadable stored reference keeps the unresolved-expression error (swamp-club#3806)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const { reference } = unreadTicket();
+  const calls: unknown[] = [];
+  const model = ticketModel(calls);
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { ticket: reference },
+    methods: { run: { arguments: { read: true } } },
+  });
+  const { context } = createTestContext({ modelType: model.type });
+
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "run", context),
+    Error,
+    "Unresolved expression in globalArguments.ticket",
+  );
+});
+
 Deno.test("execute - another templating system's ${{ }} text in globalArgs reaches the method as written (swamp-club#2491)", async () => {
   const service = new DefaultMethodExecutionService();
 

@@ -321,7 +321,11 @@ guard `vault.get('prod', 'MISSING') != null`. An existence check keeps it.
 - **Sensitive-field references.** Today the accessor resolves every tagged field
   of a record it returns, and re-throws only an access denial; a missing key or
   an unavailable vault leaves the reference text in place
-  (`ModelResolver.resolveRecordVaultRefs`). The check keeps exactly that. The
+  (`ModelResolver.resolveRecordVaultRefs`). Each field is read on its own, and
+  a failed read is recorded on the run's `RunSensitiveValues` with the vault,
+  key and provider error, so on the untyped path the refusal warning and the
+  argument's error name that read rather than reporting data content or an
+  unresolved expression (swamp-club#3806). The check keeps exactly that. The
   accessor adapter records the references in each record it returns, and after
   evaluation, before the result is used, each is authorized under the run's
   `RunVaultAccess` with no provider call. A missing key fails only if the

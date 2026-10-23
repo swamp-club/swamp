@@ -19,6 +19,7 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import {
+  describeUnreadReference,
   RunSensitiveValues,
   vaultReferenceText,
 } from "./run_sensitive_values.ts";
@@ -284,4 +285,53 @@ Deno.test("RunSensitiveValues.withForEachStandIns: replaces every sentinel the r
     "in",
   );
   assertEquals(untyped.withForEachStandIns(`n-${text}`, 1), `n-${text}`);
+});
+
+Deno.test("RunSensitiveValues.unreadReferenceFor: finds a recorded failed read by its exact stored text", () => {
+  const values = new RunSensitiveValues();
+  const text = vaultReferenceText(source);
+  values.recordUnread({ ...source, text, fieldPath: "ticket", reason: "down" });
+
+  assertEquals(values.unreadReferenceFor(text), {
+    ...source,
+    text,
+    fieldPath: "ticket",
+    reason: "down",
+  });
+  assertEquals(values.unreadReferenceFor(`${text} `), undefined);
+  assertEquals(
+    values.unreadReferenceFor(vaultReferenceText({ ...source, key: "other" })),
+    undefined,
+  );
+});
+
+Deno.test("RunSensitiveValues.unreadReferenceFor: masks a recorded value in the reason", () => {
+  const redactor = new SecretRedactor();
+  const values = new RunSensitiveValues(redactor);
+  const text = vaultReferenceText(source);
+  values.recordUnread({
+    ...source,
+    text,
+    fieldPath: "ticket",
+    reason: "provider echoed hunter2-secret",
+  });
+  // Registered after the failure, as a later read of the run would.
+  values.addSecret("hunter2-secret", { vaultName: "v", key: "k" });
+
+  assertEquals(
+    values.unreadReferenceFor(text)?.reason,
+    "provider echoed ***",
+  );
+});
+
+Deno.test("describeUnreadReference: names the vault, the key and the reason", () => {
+  assertEquals(
+    describeUnreadReference({
+      ...source,
+      text: vaultReferenceText(source),
+      fieldPath: "ticket",
+      reason: "op: command not found",
+    }),
+    "vault 'prod-vault', key 'db-password': op: command not found",
+  );
 });

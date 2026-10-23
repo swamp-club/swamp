@@ -35,6 +35,7 @@ import { join } from "@std/path";
 import { walk } from "@std/fs";
 import { z } from "zod";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import "../src/domain/models/models.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -793,6 +794,146 @@ Deno.test(
       assertEquals(commented.status, "succeeded", commented.errors.join("\n"));
       assertStringIncludes(await shellStdout(repoDir, "commented"), "ARGC=2");
       assertEquals(warnedSingleQuote(commented.events), false);
+    });
+  },
+);
+
+/**
+ * Registers a per-run model type whose global argument `ticket` reads the
+ * writer's sensitive token; `read` uses it, `skip` does not.
+ */
+function registerTicketReader(): string {
+  const type = ModelType.create(`test/ticket-reader-${crypto.randomUUID()}`);
+  modelRegistry.register({
+    type,
+    version: "2026.10.22.1",
+    globalArguments: z.object({ ticket: z.string() }),
+    methods: {
+      read: {
+        description: "Reads the ticket",
+        arguments: z.object({}),
+        execute: (_args, context) => {
+          const _ticket = context.globalArgs.ticket;
+          return Promise.resolve({});
+        },
+      },
+      skip: {
+        description: "Does not read the ticket",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  return type.normalized;
+}
+
+/** Deletes every secret the repo's local encryption vault holds. */
+async function deleteStoredSecrets(repoDir: string): Promise<void> {
+  for await (
+    const entry of walk(join(repoDir, ".swamp", "secrets"), {
+      includeDirs: false,
+      exts: [".enc"],
+    })
+  ) {
+    await Deno.remove(entry.path);
+  }
+}
+
+/** The warnings swamp's expression layer logs while `fn` runs. */
+async function expressionWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "expressions"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test(
+  "sensitive data: a stored reference whose vault key is gone fails naming the vault read, only where it is used (swamp-club#3806)",
+  async () => {
+    await withRepo(async (repoDir) => {
+      const writer = registerWriter();
+      await seed(repoDir, writer);
+      await deleteStoredSecrets(repoDir);
+      const readerType = registerTicketReader();
+      await new YamlDefinitionRepository(repoDir).save(
+        ModelType.create(readerType),
+        Definition.create({
+          name: "ticket-reader",
+          type: readerType,
+          globalArguments: { ticket: `\${{ ${TOKEN} }}` },
+        }),
+      );
+      const step = (method: string) =>
+        Workflow.create({
+          name: `ticket-${method}`,
+          jobs: [Job.create({
+            name: "main",
+            steps: [Step.create({
+              name: method,
+              task: StepTask.model("ticket-reader", method),
+            })],
+          })],
+        });
+
+      let read: Awaited<ReturnType<typeof runWorkflow>> | undefined;
+      const warnings = await expressionWarnings(async () => {
+        read = await runWorkflow(repoDir, step("read"));
+      });
+      assertEquals(read?.status, "failed");
+      const failure = JSON.stringify(read?.events);
+      assertStringIncludes(failure, "Could not read globalArguments.ticket");
+      assertStringIncludes(failure, "vault 'secrets'");
+      assertStringIncludes(failure, "not found");
+      assertEquals(failure.includes("Unresolved expression"), false);
+      assert(
+        warnings.some((w) => w.includes("Could not read sensitive field")),
+        warnings.join("\n"),
+      );
+      assertEquals(
+        warnings.filter((w) => w.includes("data content")),
+        [],
+      );
+
+      // A method that never reads the field still runs.
+      const skipped = await runWorkflow(repoDir, step("skip"));
+      assertEquals(skipped.status, "succeeded", skipped.errors.join("\n"));
+    });
+  },
+);
+
+Deno.test(
+  "sensitive data: a method argument holding a stored reference whose vault key is gone fails before the method runs (swamp-club#3806)",
+  posix,
+  async () => {
+    await withRepo(async (repoDir) => {
+      const writer = registerWriter();
+      await seed(repoDir, writer);
+      await deleteStoredSecrets(repoDir);
+      const result = await runWorkflow(
+        repoDir,
+        reader("unread", `echo STEP=unread \${{ ${TOKEN} }}`),
+      );
+      assertEquals(result.status, "failed");
+      const failure = JSON.stringify(result.events);
+      assertStringIncludes(failure, "Could not read methodArguments.run");
+      assertStringIncludes(failure, "not found");
+      assertEquals(await shellStdout(repoDir, "unread"), "");
     });
   },
 );
