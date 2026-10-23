@@ -37,8 +37,10 @@ import {
 import {
   buildRunnerBootstrapParams,
   registerDispatchHandler,
+  type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { RunnerBootstrapParamsSchema } from "./runner_protocol.ts";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { context, trace } from "@opentelemetry/api";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import {
@@ -167,6 +169,45 @@ Deno.test("buildRunnerEnvironment: trace headers overlay on top of snapshot", ()
   assertEquals(env["API_KEY"], "secret");
   // Only W3C trace headers reach the spawn env; other keys are dropped.
   assertEquals("LD_PRELOAD" in env, false);
+});
+
+Deno.test("registerDispatchHandler: a dispatch whose runner cannot be spawned still reports it finished (swamp-club#3854)", async () => {
+  const { worker, orchestrator } = channelPair();
+  const events: WorkerDispatchEvent[] = [];
+  registerDispatchHandler({
+    channel: worker,
+    sessionCredential: () => "test-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
+    runnerCommand: { cmd: "swamp-runner", args: [] },
+    onDispatch: (event) => events.push(event),
+  });
+
+  // The mock's spawn() throws, as a missing runner binary does.
+  const { result: failed } = await withMockedCommand(
+    () => ({ stdout: "", code: 0 }),
+    async () => {
+      try {
+        await orchestrator.call(WorkerMethod.dispatch, dispatchParams(), {
+          timeoutMs: 5_000,
+        });
+        return false;
+      } catch {
+        return true;
+      }
+    },
+  );
+  assertEquals(failed, true);
+  assertEquals(events.map((e) => e.kind), [
+    "dispatch_started",
+    "dispatch_finished",
+  ]);
+  const finished = events[1];
+  assertEquals(
+    finished.kind === "dispatch_finished" ? finished.status : undefined,
+    "error",
+  );
 });
 
 Deno.test("registerDispatchHandler: draining rejects with worker_draining", async () => {
@@ -311,6 +352,30 @@ Deno.test("buildRunnerBootstrapParams: omits caCerts when the worker has none", 
     });
     assertEquals("caCerts" in bootstrap, false);
   }
+});
+
+Deno.test("buildRunnerBootstrapParams: carries the supervisor's scratch dir, and omits it when there is none (swamp-club#3854)", () => {
+  const dispatch = DispatchParamsSchema.parse(dispatchParams());
+  const options = {
+    sessionCredential: () => "session-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+  };
+  const bootstrap = buildRunnerBootstrapParams(
+    dispatch,
+    undefined,
+    options,
+    "/tmp/swamp-dispatch-scratch",
+  );
+  assertEquals(
+    RunnerBootstrapParamsSchema.parse(bootstrap).scratchDirPath,
+    "/tmp/swamp-dispatch-scratch",
+  );
+  assertEquals(
+    "scratchDirPath" in
+      buildRunnerBootstrapParams(dispatch, undefined, options),
+    false,
+  );
 });
 
 Deno.test("buildRunnerBootstrapParams: prefers the per-dispatch credential", () => {

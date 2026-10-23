@@ -386,6 +386,16 @@ export class WorkerGateway {
   }
 
   /**
+   * Resolves once every transition queued so far has settled, including
+   * ones queued while waiting: a test awaits it after closing the server's
+   * sockets, so the disconnects they record are written before it removes
+   * the repo (swamp-club#3854).
+   */
+  async settled(): Promise<void> {
+    await this.#transitions.settled();
+  }
+
+  /**
    * Attach a control socket. Returns the per-socket state whose channel
    * consumes RPC frames; the caller feeds raw messages to `feed()` and must
    * call `closed()` from the socket's close handler. `close` lets the

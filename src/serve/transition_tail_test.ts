@@ -51,6 +51,40 @@ Deno.test("TransitionTail: runs transitions one at a time, in order, past a fail
   assertEquals(order, ["first", "failing", "last"]);
 });
 
+Deno.test("TransitionTail: settled waits for every transition, including one enqueued while waiting (swamp-club#3854)", async () => {
+  const tail = new TransitionTail("gateway");
+  const order: string[] = [];
+  const gate = Promise.withResolvers<void>();
+  let late: Promise<void> | undefined;
+
+  const first = tail.run("first", async () => {
+    await gate.promise;
+    order.push("first");
+    // Enqueued after settled() began waiting.
+    late = tail.run("late", () => {
+      order.push("late");
+      return Promise.resolve();
+    });
+  });
+  const settled = tail.settled().then(() => order.push("settled"));
+  gate.resolve();
+  await settled;
+  await first;
+  await late;
+  assertEquals(order, ["first", "late", "settled"]);
+});
+
+Deno.test("TransitionTail: settled resolves at once with nothing queued, and past a failure", async () => {
+  const tail = new TransitionTail("dispatch");
+  await tail.settled();
+  await assertRejects(
+    () => tail.run("failing", () => Promise.reject(new Error("boom"))),
+    Error,
+    "boom",
+  );
+  await tail.settled();
+});
+
 Deno.test("TransitionTail: each transition's span records its tail, operation and the transitions ahead of it (swamp-club#3755)", async () => {
   await withCapturedSpans(async (spans) => {
     const tail = new TransitionTail("gateway");

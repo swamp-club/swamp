@@ -102,13 +102,26 @@ jobs:
             # The Litestream sidecar's tests (swamp-club#3416) need the
             # pinned binary: fetched and hash-checked here, into this run's
             # own cache, and failing the step when it cannot be had.
+            # The tests run under a fresh TMPDIR that must be empty when they
+            # finish: a test that leaves a temp dir behind fails the step
+            # (swamp-club#3854). The path stays short for AF_UNIX sockets.
             run: |
               set -e
               LITESTREAM_DATA="/tmp/swamp-verify-build-${{ run.id }}-litestream"
               SWAMP_LITESTREAM_PATH="$(deno eval "import { LitestreamBinaryProvider } from './src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts'; console.log((await new LitestreamBinaryProvider({ dataDir: Deno.args[0] }).resolve()).path);" "$LITESTREAM_DATA")"
               test -x "$SWAMP_LITESTREAM_PATH"
               export SWAMP_LITESTREAM_PATH
-              deno task test
+              TEST_TMP="/tmp/swamp-verify-build-${{ run.id }}-tmp"
+              rm -rf "$TEST_TMP"
+              mkdir "$TEST_TMP"
+              TMPDIR="$TEST_TMP" deno task test
+              LEFT="$(ls -A "$TEST_TMP")"
+              if [ -n "$LEFT" ]; then
+                echo "Tests left these temp entries behind in $TEST_TMP; remove each when its test ends:" >&2
+                echo "$LEFT" >&2
+                exit 1
+              fi
+              rm -rf "$TEST_TMP"
             workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
 
   # ── Dependency Audit ─────────────────────────────────────────
@@ -186,6 +199,7 @@ jobs:
               CHECKOUT_DIR="/tmp/swamp-verify-build-${{ run.id }}"
               git worktree remove --force "$CHECKOUT_DIR" 2>/dev/null || true
               rm -rf "$CHECKOUT_DIR-litestream"
+              rm -rf "$CHECKOUT_DIR-tmp"
               git worktree prune
               # Remove ephemeral auto-definitions created for this run
               REPO_ROOT="$(git rev-parse --git-common-dir)/.."

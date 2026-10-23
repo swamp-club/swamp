@@ -167,7 +167,8 @@ export async function runDispatchRunner(
   let result: DispatchResult;
   let completionTrace: TraceCarrier | undefined;
 
-  const scratchDir = await Deno.makeTempDir({
+  const ownScratchDir = params.scratchDirPath === undefined;
+  const scratchDir = params.scratchDirPath ?? await Deno.makeTempDir({
     prefix: `swamp-dispatch-${dispatch.dispatchId.slice(0, 8)}-`,
   });
 
@@ -285,7 +286,9 @@ export async function runDispatchRunner(
     if (!options.retainRedactorUntilExit) {
       runFileSink.unregisterRedactor(redactorHandle);
     }
-    await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
+    if (ownScratchDir) {
+      await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
+    }
   }
 
   result.trace = completionTrace;

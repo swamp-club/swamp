@@ -64,6 +64,7 @@ import {
   v3KeptLineages,
   V3LineageOutrankedError,
 } from "./v3_copy.ts";
+import { setV3ReplicationForTesting, v3PrivateRoot } from "./v3_replication.ts";
 
 const AT = "2026-10-14T00:00:00.000Z";
 
@@ -92,6 +93,9 @@ async function withCopy(
     repoDir: join(dir, "repo"),
     commitsDb: join(dir, "repo", ".swamp", "copies", "commits.db"),
   };
+  // The copy's private dirs stay under the test dir, never the real
+  // /tmp/swamp-<uid> (swamp-club#3854).
+  setV3ReplicationForTesting({ privateRoot: join(dir, "priv") });
   try {
     const setting = options.setting ??
       { type: "file" as const, path: replica };
@@ -100,7 +104,12 @@ async function withCopy(
       () => fn({ copy, replica, root: replicaRootOf(setting).value, dir }),
     );
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    setV3ReplicationForTesting(undefined);
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 }
 
@@ -142,7 +151,7 @@ async function lineageOf(env: Env) {
 
 async function pathsOf(env: Env) {
   await Deno.mkdir(dirname(env.copy.commitsDb), { recursive: true });
-  const paths = await replicationPathsFor(env.copy.commitsDb);
+  const paths = await replicationPathsFor(env.copy.commitsDb, v3PrivateRoot());
   await ensureSharedDir(paths);
   return paths;
 }
@@ -735,6 +744,25 @@ Deno.test({
       } finally {
         await copy.close();
       }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "makeV3CopyCurrent: a seeded copy's private dir is under the replicator's private root (swamp-club#3854)",
+  ignore: !UNIX,
+  async fn() {
+    await withCopy(async (env) => {
+      await sharedWithOneCommit(env);
+      await makeV3CopyCurrent(env.copy, { mode: "write", lockWaitMs: 1_000 });
+      const own = await replicationPathsFor(
+        env.copy.commitsDb,
+        join(env.dir, "priv"),
+      );
+      assertEquals(await exists(own.privateDir), true);
+      const host = await replicationPathsFor(env.copy.commitsDb);
+      assertEquals(await exists(host.privateDir), false);
     });
   },
 });

@@ -106,7 +106,11 @@ import {
   v3ControlPlaneAt,
   v3ReplicaFor,
 } from "../v3_datastore_binding.ts";
-import { resolveV3LitestreamBinary, v3Replicator } from "./v3_replication.ts";
+import {
+  resolveV3LitestreamBinary,
+  v3PrivateRoot,
+  v3Replicator,
+} from "./v3_replication.ts";
 import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
@@ -160,7 +164,7 @@ export function lineageRegistryFor(datastorePath: string): LineageRegistry {
 /** The paths beside the copy, created and trusted only when this user's. */
 async function copyPaths(copy: V3Copy): Promise<ReplicationPaths> {
   await Deno.mkdir(dirname(copy.commitsDb), { recursive: true });
-  const paths = await replicationPathsFor(copy.commitsDb);
+  const paths = await replicationPathsFor(copy.commitsDb, v3PrivateRoot());
   if (await ensureSharedDir(paths) !== "own") {
     throw markErrorPaths(
       new UserError(

@@ -247,6 +247,24 @@ Deno.test("runDispatchRunner: releases the dispatch redactor when the dispatch f
   }
 });
 
+Deno.test("runDispatchRunner: leaves the scratch dir the supervisor made for the supervisor to remove (swamp-club#3854)", async () => {
+  const cacheDirPath = await Deno.makeTempDir({ prefix: "swamp-runner-test-" });
+  const scratchDirPath = await Deno.makeTempDir({
+    prefix: "swamp-runner-scratch-test-",
+  });
+  try {
+    const result = await runRunner({
+      ...bootstrapFor(cacheDirPath, "test/no-such-model", "secret-3854"),
+      scratchDirPath,
+    });
+    assertEquals(result?.status, "error");
+    assertEquals((await Deno.stat(scratchDirPath)).isDirectory, true);
+  } finally {
+    await Deno.remove(scratchDirPath, { recursive: true });
+    await Deno.remove(cacheDirPath, { recursive: true }).catch(() => {});
+  }
+});
+
 /** Registers a per-run model type whose `run` method throws `thrown`. */
 function throwingRunModel(thrown: Error): ModelType {
   const type = ModelType.create(`swamp/runner-test-${crypto.randomUUID()}`);

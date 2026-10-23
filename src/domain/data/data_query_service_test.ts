@@ -85,22 +85,38 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   };
 }
 
+/** Closes `catalog` and removes `dir`, its temp repo, when disposed. */
+function cleanupOnDispose(catalog: CatalogStore, dir: string): Disposable {
+  return {
+    [Symbol.dispose]() {
+      catalog.close();
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch (error) {
+        // Windows refuses while V8 still holds the SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
+}
+
 function setupTest(): {
   catalog: CatalogStore;
   service: DataQueryService;
   dir: string;
-} {
+} & Disposable {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
   catalog.markPopulated(); // Pre-mark to avoid backfill
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
-  return { catalog, service, dir };
+  return { catalog, service, dir, ...cleanupOnDispose(catalog, dir) };
 }
 
 Deno.test("DataQueryService: basic modelName filter", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ model_name: "ingest" }));
   catalog.upsert(
     makeRow({
@@ -118,7 +134,8 @@ Deno.test("DataQueryService: basic modelName filter", () => {
 });
 
 Deno.test("DataQueryService: compound predicate", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ model_name: "ingest", spec_name: "result" }));
   catalog.upsert(
     makeRow({
@@ -138,7 +155,8 @@ Deno.test("DataQueryService: compound predicate", () => {
 });
 
 Deno.test("DataQueryService: garbageCollection filters count and duration policies", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ data_name: "count", garbage_collection: "5" }));
   catalog.upsert(
     makeRow({
@@ -167,7 +185,8 @@ Deno.test("DataQueryService: garbageCollection filters count and duration polici
 });
 
 Deno.test("DataQueryService: specName equality filters through the SQL pushdown", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ spec_name: "result" }));
   catalog.upsert(
     makeRow({ data_name: "other", spec_name: "raw", id: "data-uuid-002" }),
@@ -210,7 +229,8 @@ function queryVersions(service: DataQueryService, predicate: string): string[] {
 }
 
 Deno.test("DataQueryService: lifecycle == active leaves out a deleted resource that the default query returns (swamp-club#3706)", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedLifecycleRows(catalog);
 
   assertEquals(queryVersions(service, "true"), [
@@ -232,7 +252,8 @@ Deno.test("DataQueryService: lifecycle == active leaves out a deleted resource t
 });
 
 Deno.test("DataQueryService: lifecycle pushdown returns the same rows as CEL evaluation (swamp-club#3706)", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedLifecycleRows(catalog);
 
   // `|| false` keeps the equality out of the top-level conjuncts, so the
@@ -262,7 +283,8 @@ Deno.test("DataQueryService: lifecycle pushdown returns the same rows as CEL eva
 });
 
 Deno.test("DataQueryService.specNameFallback: swaps name for specName and keeps scoping", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   assertEquals(
     service.specNameFallback(
       'workflowRunId == "run-1" && name == "classification"',
@@ -280,7 +302,8 @@ Deno.test("DataQueryService.specNameFallback: swaps name for specName and keeps 
 });
 
 Deno.test("DataQueryService: tag filter", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(
     makeRow({
       tags: '{"type":"resource","env":"prod"}',
@@ -301,7 +324,8 @@ Deno.test("DataQueryService: tag filter", () => {
 });
 
 Deno.test("DataQueryService: missing tag is lenient (no error)", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(
     makeRow({
       tags: '{"type":"resource"}',
@@ -315,7 +339,8 @@ Deno.test("DataQueryService: missing tag is lenient (no error)", () => {
 });
 
 Deno.test("DataQueryService: unknown root field produces error", () => {
-  const { service, catalog } = setupTest();
+  using t = setupTest();
+  const { service, catalog } = t;
   catalog.upsert(makeRow());
 
   assertThrows(
@@ -327,7 +352,8 @@ Deno.test("DataQueryService: unknown root field produces error", () => {
 });
 
 Deno.test("DataQueryService: limit stops early", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   for (let i = 0; i < 10; i++) {
     catalog.upsert(
       makeRow({
@@ -346,7 +372,8 @@ Deno.test("DataQueryService: limit stops early", () => {
 });
 
 Deno.test("DataQueryService: empty results", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ model_name: "ingest" }));
 
   const results = service.querySync(
@@ -357,7 +384,8 @@ Deno.test("DataQueryService: empty results", () => {
 });
 
 Deno.test("DataQueryService: boolean and numeric fields", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ streaming: 1, size: 1000 }));
   catalog.upsert(
     makeRow({
@@ -381,7 +409,8 @@ Deno.test("DataQueryService: boolean and numeric fields", () => {
 });
 
 Deno.test("DataQueryService: version filter", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ version: 1, data_name: "a", id: "u1" }));
   catalog.upsert(makeRow({ version: 5, data_name: "b", id: "u2" }));
 
@@ -392,7 +421,8 @@ Deno.test("DataQueryService: version filter", () => {
 });
 
 Deno.test("DataQueryService: OR predicate", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(
     makeRow({ spec_name: "result", data_name: "a", id: "u1" }),
   );
@@ -414,6 +444,7 @@ Deno.test("DataQueryService: attributes filter with content on disk", () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-attr-test-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   // Create data on disk so getContentSync can find it
@@ -470,6 +501,7 @@ Deno.test("DataQueryService: no-attributes predicate hydrates matched results", 
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-hydrate-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   const dataDir = join(
@@ -518,7 +550,8 @@ Deno.test("DataQueryService: no-attributes predicate hydrates matched results", 
 });
 
 Deno.test("DataQueryService: select projection skips hydration", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ content_type: "application/json" }));
 
   const results = service.querySync('modelName == "ingest"', {
@@ -533,6 +566,7 @@ Deno.test("DataQueryService: select loads attributes for map literal projection"
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-select-attr-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   const dataDir = join(
@@ -592,6 +626,7 @@ Deno.test("DataQueryService: select coerces CEL BigInt to number", () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-select-bigint-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   const dataDir = join(
@@ -655,6 +690,7 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   // Do NOT mark as populated
 
   // Create actual data on disk for backfill to find
@@ -710,6 +746,7 @@ Deno.test("DataQueryService: backfill preserves catalog rows the walk cannot see
   });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
 
   // Seed a row that represents data in the remote datastore but not on local
   // disk (e.g. lazy hydration — metadata not yet pulled).
@@ -770,6 +807,7 @@ Deno.test("DataQueryService: backfill stamps the repo namespace onto rebuilt row
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-ns-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   // Do NOT mark as populated — query must trigger a backfill from disk.
 
   const dataDir = join(
@@ -841,7 +879,8 @@ function seedVersions(catalog: CatalogStore): void {
 }
 
 Deno.test("DataQueryService: predicate without version or isLatest returns latest only", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedVersions(catalog);
 
   const results = service.querySync('modelName == "ingest"') as DataRecord[];
@@ -852,7 +891,8 @@ Deno.test("DataQueryService: predicate without version or isLatest returns lates
 });
 
 Deno.test("DataQueryService: predicate referencing version opts into history", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedVersions(catalog);
 
   const all = service.querySync("version >= 0") as DataRecord[];
@@ -871,7 +911,8 @@ Deno.test("DataQueryService: predicate referencing version opts into history", (
 });
 
 Deno.test("DataQueryService: isLatest in predicate composes with version filter", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedVersions(catalog);
 
   // "the latest row, but only if its version number is > 1"
@@ -884,7 +925,8 @@ Deno.test("DataQueryService: isLatest in predicate composes with version filter"
 });
 
 Deno.test("DataQueryService: string literal containing 'version' does not opt into history", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   // Two distinct data items so we can tell injection is working.
   catalog.upsert(
     makeRow({
@@ -912,7 +954,8 @@ Deno.test("DataQueryService: string literal containing 'version' does not opt in
 });
 
 Deno.test("DataQueryService: explicit isLatest == false returns non-latest versions", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedVersions(catalog);
 
   const results = service.querySync("isLatest == false") as DataRecord[];
@@ -922,7 +965,8 @@ Deno.test("DataQueryService: explicit isLatest == false returns non-latest versi
 });
 
 Deno.test("DataQueryService: select version projection with history opt-in", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedVersions(catalog);
 
   const versions = service.querySync("version >= 0", {
@@ -933,7 +977,8 @@ Deno.test("DataQueryService: select version projection with history opt-in", () 
 });
 
 Deno.test("DataQueryService: select version without history opt-in returns latest only", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedVersions(catalog);
 
   // Projection alone is NOT enough to opt into history.
@@ -1030,7 +1075,8 @@ Deno.test("DataQueryService: catalog backfill works with metadata-only files (no
 });
 
 Deno.test("DataQueryService: ns field is queryable for namespace filtering", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ namespace: "", model_name: "solo-model" }));
   catalog.upsert(
     makeRow({
@@ -1090,7 +1136,7 @@ function setupForeignTest(
   catalog: CatalogStore;
   service: DataQueryService;
   dataRepo: FileSystemUnifiedDataRepository;
-} {
+} & Disposable {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-foreign-" });
   const catalog = new CatalogStore(
     join(dir, ".swamp", "data", "_catalog.db"),
@@ -1111,6 +1157,7 @@ function setupForeignTest(
     catalog,
     service: new DataQueryService(catalog, dataRepo),
     dataRepo,
+    ...cleanupOnDispose(catalog, dir),
   };
 }
 
@@ -1130,10 +1177,11 @@ function foreignRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
 
 Deno.test("DataQueryService: foreign content fetcher hydrates attributes for foreign rows", async () => {
   const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
-  const { catalog, service } = setupForeignTest((namespace, relPath) => {
+  using t = setupForeignTest((namespace, relPath) => {
     fetchCalls.push({ namespace, relPath });
     return Promise.resolve(jsonBytes({ severity: "high", count: 42 }));
   });
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
 
   const results = await service.query(
@@ -1152,10 +1200,11 @@ Deno.test("DataQueryService: foreign content fetcher hydrates attributes for for
 
 Deno.test("DataQueryService: foreign content fetcher caches results across queries", async () => {
   let fetchCount = 0;
-  const { catalog, service } = setupForeignTest(() => {
+  using t = setupForeignTest(() => {
     fetchCount++;
     return Promise.resolve(jsonBytes({ cached: true }));
   });
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
 
   await service.query('ns == "security"', { loadAttributes: true });
@@ -1169,7 +1218,8 @@ Deno.test("DataQueryService: foreign content fetcher caches results across queri
 });
 
 Deno.test("DataQueryService: foreign content fetcher returns null gracefully", async () => {
-  const { catalog, service } = setupForeignTest(() => Promise.resolve(null));
+  using t = setupForeignTest(() => Promise.resolve(null));
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
 
   const results = await service.query(
@@ -1185,10 +1235,11 @@ Deno.test("DataQueryService: foreign content fetcher returns null gracefully", a
 
 Deno.test("DataQueryService: foreign content fetcher does not fire for own namespace", async () => {
   let fetched = false;
-  const { catalog, service } = setupForeignTest(() => {
+  using t = setupForeignTest(() => {
     fetched = true;
     return Promise.resolve(null);
   });
+  const { catalog, service } = t;
 
   // Own namespace is "" (solo mode)
   catalog.upsert(makeRow({
@@ -1211,10 +1262,11 @@ Deno.test("DataQueryService: foreign content fetcher does not fire for own names
 
 Deno.test("getLatestRecord: hydrates a foreign row's attributes through the fetcher (swamp-club#3306)", async () => {
   const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
-  const { catalog, service } = setupForeignTest((namespace, relPath) => {
+  using t = setupForeignTest((namespace, relPath) => {
     fetchCalls.push({ namespace, relPath });
     return Promise.resolve(jsonBytes({ content: "security" }));
   });
+  const { catalog, service } = t;
   const row = foreignRow();
   catalog.upsert(row);
 
@@ -1236,7 +1288,8 @@ Deno.test("getLatestRecord: hydrates a foreign row's attributes through the fetc
 });
 
 Deno.test("getLatestRecord: a foreign row reads empty attributes when the repository has no fetcher", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
 
   const record = await service.getLatestRecord(
@@ -1252,9 +1305,10 @@ Deno.test("getLatestRecord: a foreign row reads empty attributes when the reposi
 });
 
 Deno.test("DataQueryService: a select over a foreign row reads its fetched attributes (swamp-club#3306)", async () => {
-  const { catalog, service } = setupForeignTest(() =>
+  using t = setupForeignTest(() =>
     Promise.resolve(jsonBytes({ content: "security" }))
   );
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
 
   assertEquals(
@@ -1273,10 +1327,11 @@ Deno.test("DataQueryService: a select over a foreign row reads its fetched attri
 
 Deno.test("DataQueryService: a foreign row the include filter rejects is never fetched", async () => {
   const fetched: string[] = [];
-  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+  using t = setupForeignTest((_namespace, relPath) => {
     fetched.push(relPath);
     return Promise.resolve(jsonBytes({ ok: true }));
   });
+  const { catalog, service } = t;
   catalog.upsert(foreignRow({
     model_name: "visible",
     data_name: "shown",
@@ -1302,10 +1357,11 @@ Deno.test("DataQueryService: a foreign row the include filter rejects is never f
 
 Deno.test("DataQueryService: a select that reads no attributes fetches no foreign content", async () => {
   let fetchCount = 0;
-  const { catalog, service } = setupForeignTest(() => {
+  using t = setupForeignTest(() => {
     fetchCount++;
     return Promise.resolve(jsonBytes({ content: "security" }));
   });
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
 
   assertEquals(
@@ -1323,10 +1379,11 @@ Deno.test("DataQueryService: a select that reads no attributes fetches no foreig
 
 Deno.test("DataQueryService: a foreign row whose fields would leave its namespace's data tree is never fetched", async () => {
   const fetched: string[] = [];
-  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+  using t = setupForeignTest((_namespace, relPath) => {
     fetched.push(relPath);
     return Promise.resolve(jsonBytes({ leaked: true }));
   });
+  const { catalog, service } = t;
   const escapes: Array<Partial<CatalogRow>> = [
     { data_name: "../../../infra/data/x" },
     { data_name: ".." },
@@ -1379,12 +1436,13 @@ Deno.test("DataQueryService: a foreign row whose fields would leave its namespac
 
 Deno.test("DataQueryService: a failed foreign fetch is retried on the next read, a success is not", async () => {
   let calls = 0;
-  const { catalog, service } = setupForeignTest(() => {
+  using t = setupForeignTest(() => {
     calls++;
     if (calls === 1) return Promise.reject(new Error("remote unavailable"));
     if (calls === 2) return Promise.resolve(null);
     return Promise.resolve(jsonBytes({ ok: true }));
   });
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
   const read = async () =>
     (await service.getLatestRecord("scanner", "results", "security"))
@@ -1401,10 +1459,11 @@ Deno.test("DataQueryService: a failed foreign fetch is retried on the next read,
 
 Deno.test("DataQueryService: the foreign content cache drops its oldest body past the cap", async () => {
   const fetched: string[] = [];
-  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+  using t = setupForeignTest((_namespace, relPath) => {
     fetched.push(relPath);
     return Promise.resolve(jsonBytes({ relPath }));
   });
+  const { catalog, service } = t;
   // One more row than the cache holds.
   const count = 257;
   const name = (i: number) => `item-${String(i).padStart(3, "0")}`;
@@ -1717,7 +1776,8 @@ Deno.test("getLatestRecord: query() still triggers full backfill independently",
 });
 
 Deno.test("getLatestRecord: populated catalog returns null for missing data", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   // setupTest calls markPopulated — catalog is populated
 
   const record = await service.getLatestRecord("nonexistent", "missing");
@@ -1766,7 +1826,8 @@ Deno.test("getLatestRecord: namespace filtering works in scoped path", async () 
 });
 
 Deno.test("getLatestRecord: exact data name skips specName ambiguity check (swamp-club#1838)", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
 
   // Two data items with different names but the same specName "state"
   catalog.upsert(
@@ -1796,7 +1857,8 @@ Deno.test("getLatestRecord: exact data name skips specName ambiguity check (swam
 });
 
 Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
 
   // Data name "state" matches its own specName "state" — ambiguity check fires
   catalog.upsert(
@@ -1831,7 +1893,8 @@ Deno.test("getLatestRecord: dataName matching specName still throws on ambiguity
 // ---------------------------------------------------------------------------
 
 Deno.test("DataQueryService pushdown: isLatest pushdown returns same results as CEL-only", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ model_name: "a", is_latest: 1 }));
   catalog.upsert(
     makeRow({
@@ -1859,7 +1922,8 @@ Deno.test("DataQueryService pushdown: isLatest pushdown returns same results as 
 });
 
 Deno.test("DataQueryService pushdown: modelName equality narrows scan", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   for (let i = 0; i < 50; i++) {
     catalog.upsert(
       makeRow({
@@ -1881,7 +1945,8 @@ Deno.test("DataQueryService pushdown: modelName equality narrows scan", () => {
 });
 
 Deno.test("DataQueryService pushdown: compound modelName + specName", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ model_name: "m1", spec_name: "result" }));
   catalog.upsert(
     makeRow({
@@ -1910,7 +1975,8 @@ Deno.test("DataQueryService pushdown: compound modelName + specName", () => {
 });
 
 Deno.test("DataQueryService pushdown: version opt-in skips isLatest pushdown", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(
     makeRow({ model_name: "a", version: 1, is_latest: 0, id: "uuid-v1" }),
   );
@@ -1928,7 +1994,8 @@ Deno.test("DataQueryService pushdown: version opt-in skips isLatest pushdown", (
 });
 
 Deno.test("DataQueryService pushdown: OR predicate falls back to full scan", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ model_name: "a", id: "uuid-a" }));
   catalog.upsert(
     makeRow({ data_name: "d2", model_name: "b", id: "uuid-b" }),
@@ -1947,7 +2014,8 @@ Deno.test("DataQueryService pushdown: OR predicate falls back to full scan", () 
 });
 
 Deno.test("DataQueryService pushdown: limit interacts correctly with pushdown", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   for (let i = 0; i < 10; i++) {
     catalog.upsert(
       makeRow({
@@ -1969,6 +2037,7 @@ Deno.test("DataQueryService: content.field works as alias for attributes.field i
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-content-alias-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   const dataDir = join(
@@ -2023,6 +2092,7 @@ Deno.test("DataQueryService: content.field works in --select projection", () => 
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-content-select-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   const dataDir = join(
@@ -2077,6 +2147,7 @@ Deno.test("DataQueryService: content stays raw string for non-JSON records", () 
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-content-text-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
 
   const dataDir = join(
@@ -2149,6 +2220,7 @@ Deno.test("DataQueryService: a non-matching query preserves rows for models with
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-numeric-names-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   // Do NOT mark populated — the query must trigger a full backfill, which is
   // the destructive path.
 
@@ -2222,6 +2294,7 @@ Deno.test("DataQueryService: skips stale catalog rows with missing backing files
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-stale-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo, {
@@ -2354,6 +2427,7 @@ Deno.test("DataQueryService: filterStaleRows disabled preserves rows with missin
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-no-stale-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo, {
@@ -2388,6 +2462,7 @@ Deno.test("DataQueryService: filterStaleRows skips foreign namespace rows (no lo
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-foreign-stale-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
+  using _cleanup = cleanupOnDispose(catalog, dir);
   catalog.markPopulated();
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo, {
@@ -2653,7 +2728,7 @@ function setupLazyTest(
   service: DataQueryService;
   dataRepo: TracingDataRepository;
   writeBody: (name: string, body: unknown) => void;
-} {
+} & Disposable {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-lazy-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
   catalog.markPopulated();
@@ -2683,15 +2758,17 @@ function setupLazyTest(
     service: new DataQueryService(catalog, dataRepo),
     dataRepo,
     writeBody,
+    ...cleanupOnDispose(catalog, dir),
   };
 }
 
 Deno.test("DataQueryService: metadata-rejected rows do not read bodies", () => {
-  const { catalog, service, dataRepo } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "report-a", specName: "report", body: { value: 10 } },
     { name: "report-b", specName: "report", body: { value: 20 } },
     { name: "question", specName: "question", body: { value: 1 } },
   ]);
+  const { catalog, service, dataRepo } = t;
   dataRepo.unreadable.add("report-a");
 
   const results = service.querySync(
@@ -2706,10 +2783,11 @@ Deno.test("DataQueryService: metadata-rejected rows do not read bodies", () => {
 });
 
 Deno.test("DataQueryService: a lifecycle filter reads no body of a deleted row (swamp-club#3706)", () => {
-  const { catalog, service, dataRepo } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "live", specName: "server", body: { id: 1 } },
     { name: "gone", specName: "server", body: { id: 2, deletedAt: "now" } },
   ]);
+  const { catalog, service, dataRepo } = t;
   const gone = [...catalog.iterate()].find((r) => r.data_name === "gone")!;
   catalog.upsert({ ...gone, lifecycle: "deleted" });
   dataRepo.unreadable.add("gone");
@@ -2724,9 +2802,10 @@ Deno.test("DataQueryService: a lifecycle filter reads no body of a deleted row (
 });
 
 Deno.test("DataQueryService: unreadable body of a matching row fails the query", () => {
-  const { catalog, service, dataRepo } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "question", specName: "question", body: { value: 1 } },
   ]);
+  const { catalog, service, dataRepo } = t;
   dataRepo.unreadable.add("question");
 
   assertThrows(
@@ -2737,10 +2816,11 @@ Deno.test("DataQueryService: unreadable body of a matching row fails the query",
 });
 
 Deno.test("DataQueryService: CEL evaluation errors still skip the row", () => {
-  const { catalog, service } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "with-detail", specName: "result", body: { detail: { deep: 1 } } },
     { name: "without-detail", specName: "result", body: { value: 1 } },
   ]);
+  const { catalog, service } = t;
 
   const results = service.querySync(
     "attributes.detail.deep > 0",
@@ -2751,9 +2831,10 @@ Deno.test("DataQueryService: CEL evaluation errors still skip the row", () => {
 });
 
 Deno.test("DataQueryService: read error absorbed by CEL resurfaces for a matched row", () => {
-  const { catalog, service, dataRepo } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "report-a", specName: "report", body: { value: 10 } },
   ]);
+  const { catalog, service, dataRepo } = t;
   dataRepo.unreadable.add("report-a");
 
   assertThrows(
@@ -2764,10 +2845,11 @@ Deno.test("DataQueryService: read error absorbed by CEL resurfaces for a matched
 });
 
 Deno.test("DataQueryService: projection and loadAttributes read matched rows only", () => {
-  const { catalog, service, dataRepo } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "report-a", specName: "report", body: { value: 10 } },
     { name: "question", specName: "question", body: { value: 1 } },
   ]);
+  const { catalog, service, dataRepo } = t;
   dataRepo.unreadable.add("report-a");
 
   const projected = service.querySync('specName == "question"', {
@@ -2786,9 +2868,10 @@ Deno.test("DataQueryService: projection and loadAttributes read matched rows onl
 });
 
 Deno.test("DataQueryService: successive queries see rewritten bodies", () => {
-  const { catalog, service, writeBody } = setupLazyTest([
+  using t = setupLazyTest([
     { name: "question", specName: "question", body: { value: 1 } },
   ]);
+  const { catalog, service, writeBody } = t;
 
   assertEquals(service.querySync("attributes.value == 1").length, 1);
 
@@ -2816,7 +2899,8 @@ function expectedContentPath(dir: string, catalog: CatalogStore): string {
 }
 
 Deno.test("DataQueryService: records carry an empty path by default", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow());
 
   const results = service.querySync('modelName == "ingest"') as DataRecord[];
@@ -2826,7 +2910,8 @@ Deno.test("DataQueryService: records carry an empty path by default", () => {
 });
 
 Deno.test("DataQueryService: includeContentPath sets the local content path", () => {
-  const { catalog, service, dir } = setupTest();
+  using t = setupTest();
+  const { catalog, service, dir } = t;
   catalog.upsert(makeRow());
 
   const results = service.querySync('modelName == "ingest"', {
@@ -2838,7 +2923,8 @@ Deno.test("DataQueryService: includeContentPath sets the local content path", ()
 });
 
 Deno.test("DataQueryService: a select projection of path is empty unless opted in", () => {
-  const { catalog, service, dir } = setupTest();
+  using t = setupTest();
+  const { catalog, service, dir } = t;
   catalog.upsert(makeRow());
 
   const hidden = service.querySync('modelName == "ingest"', {
@@ -2855,7 +2941,8 @@ Deno.test("DataQueryService: a select projection of path is empty unless opted i
 });
 
 Deno.test("DataQueryService: getLatestRecord sets path only when requested", async () => {
-  const { catalog, service, dir } = setupTest();
+  using t = setupTest();
+  const { catalog, service, dir } = t;
   catalog.upsert(makeRow());
 
   const hidden = await service.getLatestRecord("ingest", "my-data");
@@ -2869,7 +2956,8 @@ Deno.test("DataQueryService: getLatestRecord sets path only when requested", asy
 });
 
 Deno.test("DataQueryService.latestDataNamesForSpec: returns data names newest first", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   const write = (name: string, createdAt: string, id: string) =>
     catalog.upsert(
       makeRow({
@@ -2893,7 +2981,8 @@ Deno.test("DataQueryService.latestDataNamesForSpec: returns data names newest fi
 });
 
 Deno.test("DataQueryService.latestDataNamesForSpec: scopes to the given namespace", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ data_name: "local", spec_name: "summary" }));
   catalog.upsert(
     makeRow({
@@ -2914,7 +3003,8 @@ Deno.test("DataQueryService.latestDataNamesForSpec: scopes to the given namespac
 });
 
 Deno.test("DataQueryService.latestDataNamesForSpec: returns no names for an unknown spec", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ spec_name: "result" }));
 
   assertEquals(service.latestDataNamesForSpec("ingest", "missing"), []);
@@ -2923,7 +3013,8 @@ Deno.test("DataQueryService.latestDataNamesForSpec: returns no names for an unkn
 });
 
 Deno.test("DataQueryService: include drops records before select projects them", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ content_type: "application/json" }));
   catalog.upsert(makeRow({
     content_type: "application/json",
@@ -2948,7 +3039,8 @@ Deno.test("DataQueryService: include drops records before select projects them",
 });
 
 Deno.test("DataQueryService: with include, the limit counts accepted records only", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({
     content_type: "application/json",
     model_id: "model-002",
@@ -3077,7 +3169,8 @@ function seedControlPlane(catalog: CatalogStore): void {
 const EXCLUDED = ["swamp/grant", "swamp/server-token"];
 
 Deno.test("DataQueryService: excludeModelTypes drops the types whatever the predicate says", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedControlPlane(catalog);
 
   const all = service.querySync("true", {
@@ -3100,7 +3193,8 @@ Deno.test("DataQueryService: excludeModelTypes drops the types whatever the pred
 });
 
 Deno.test("DataQueryService: excludeModelTypes applies before the limit and a projection", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedControlPlane(catalog);
 
   const limited = await service.query("true", {
@@ -3118,7 +3212,8 @@ Deno.test("DataQueryService: excludeModelTypes applies before the limit and a pr
 });
 
 Deno.test("DataQueryService: excludeModelTypes hides an excluded latest record and spec instance", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedControlPlane(catalog);
 
   assertEquals(
@@ -3166,7 +3261,8 @@ Deno.test("getLatestRecord: excludeModelTypes holds while a full backfill is in 
 });
 
 Deno.test("getLatestRecord: an excluded newer row does not hide a same-named record of another type", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({
     model_name: "shared",
     data_name: "main",
@@ -3189,7 +3285,8 @@ Deno.test("getLatestRecord: an excluded newer row does not hide a same-named rec
 });
 
 Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({
     model_name: "shared",
     data_name: "user-main",
@@ -3248,7 +3345,8 @@ const RETYPED_TO_BETA = {
 };
 
 Deno.test("checkSpecNameAmbiguity: the old-type row of a retyped model with the same data name is not a peer", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   upsertRetypedRows(catalog, "foo", ["foo"]);
 
   service.checkSpecNameAmbiguity(
@@ -3262,7 +3360,8 @@ Deno.test("checkSpecNameAmbiguity: the old-type row of a retyped model with the 
 });
 
 Deno.test("checkSpecNameAmbiguity: the old-type row of a retyped model under another data name is not a peer", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   upsertRetypedRows(catalog, "foo-x", ["foo"]);
 
   service.checkSpecNameAmbiguity(
@@ -3276,7 +3375,8 @@ Deno.test("checkSpecNameAmbiguity: the old-type row of a retyped model under ano
 });
 
 Deno.test("checkSpecNameAmbiguity: distinct data names under the resolved type still throw, naming only them", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   upsertRetypedRows(catalog, "foo", ["foo", "foo-y"]);
 
   assertThrows(
@@ -3295,7 +3395,8 @@ Deno.test("checkSpecNameAmbiguity: distinct data names under the resolved type s
 });
 
 Deno.test("checkSpecNameAmbiguity: a different spelling of the resolved type keeps its rows as peers", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   upsertRetypedRows(catalog, "foo", ["foo", "foo-y"]);
 
   assertThrows(
@@ -3311,7 +3412,8 @@ Deno.test("checkSpecNameAmbiguity: a different spelling of the resolved type kee
 });
 
 Deno.test("checkSpecNameAmbiguity: rows under another model id still count with a resolved identity", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   upsertRetypedRows(catalog, "foo", ["foo"]);
   catalog.upsert(makeRow({
     model_name: "m1",
@@ -3338,7 +3440,8 @@ Deno.test("checkSpecNameAmbiguity: rows under another model id still count with 
 });
 
 Deno.test("checkSpecNameAmbiguity: without a resolved identity the old-type row still counts", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   upsertRetypedRows(catalog, "foo", ["foo"]);
 
   assertThrows(
@@ -3391,7 +3494,8 @@ Deno.test("DataQueryService: every DataRecord field resolves to the row's value 
     stepName: "stepName",
     source: "source",
   };
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow());
 
   const [record] = service.querySync("true", {
@@ -3828,7 +3932,8 @@ function runIds(results: unknown[]): string[] {
 }
 
 Deno.test("DataQueryService.query: latestRun selects the resolved run, without include", async () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   const resolver = resolverOf({ deploy: "run-new" });
   const results = await service.query(
     'workflowRunId == latestRun("deploy") && name == "out"',
@@ -3840,7 +3945,8 @@ Deno.test("DataQueryService.query: latestRun selects the resolved run, without i
 });
 
 Deno.test("DataQueryService.query: latestRun is resolved once across include batches", async () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   for (let i = 0; i < 5; i++) {
     catalog.upsert(makeRow({
       id: `00000000-0000-1000-8000-0000000000b${i}`,
@@ -3871,7 +3977,8 @@ Deno.test("DataQueryService.query: latestRun is resolved once across include bat
 });
 
 Deno.test("DataQueryService.query: a workflow with no runs matches nothing with ==, inside an OR too, and everything with !=", async () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   const latestRunResolver = resolverOf({ deploy: null }).resolve;
   assertEquals(
     await service.query('workflowRunId == latestRun("deploy")', {
@@ -3900,6 +4007,7 @@ Deno.test("DataQueryService.query: a workflow with no runs matches nothing with 
 Deno.test("DataQueryService.query: latestRun without a resolver is a UserError, raised before backfill", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
   await assertRejects(
@@ -3912,7 +4020,8 @@ Deno.test("DataQueryService.query: latestRun without a resolver is a UserError, 
 });
 
 Deno.test("DataQueryService.querySync: latestRun is a UserError, not an empty result", () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   assertThrows(
     () => service.querySync('workflowRunId == latestRun("deploy")'),
     UserError,
@@ -3923,7 +4032,8 @@ Deno.test("DataQueryService.querySync: latestRun is a UserError, not an empty re
 });
 
 Deno.test("DataQueryService.query: latestRun may be called in select alone", async () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   const resolver = resolverOf({ deploy: "run-new" });
   const results = await service.query('workflowRunId == "run-old"', {
     select: 'latestRun("deploy")',
@@ -3934,7 +4044,8 @@ Deno.test("DataQueryService.query: latestRun may be called in select alone", asy
 });
 
 Deno.test("DataQueryService.query: concurrent queries keep their own latest runs", async () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   const predicate = 'workflowRunId == latestRun("deploy")';
   const [newer, older] = await Promise.all([
     service.query(predicate, {
@@ -3953,7 +4064,8 @@ Deno.test("DataQueryService.query: concurrent queries keep their own latest runs
 });
 
 Deno.test("DataQueryService.query: the resolver's error for an unknown workflow propagates", async () => {
-  const { catalog, service } = setupLatestRunTest();
+  using t = setupLatestRunTest();
+  const { catalog, service } = t;
   await assertRejects(
     () =>
       service.query('workflowRunId == latestRun("nope")', {
@@ -4403,7 +4515,8 @@ function writeStepVersions(catalog: CatalogStore, steps: string[]): void {
 }
 
 Deno.test("DataQueryService: implicit latest returns one version when workflow steps wrote the same name", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   writeStepVersions(catalog, ["s1", "s2"]);
 
   const results = service.querySync(
@@ -4414,7 +4527,8 @@ Deno.test("DataQueryService: implicit latest returns one version when workflow s
 });
 
 Deno.test("DataQueryService: three steps across jobs return only the newest version", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   writeStepVersions(catalog, ["s1", "s2", "s3"]);
 
   const results = service.querySync('modelName == "ingest"') as DataRecord[];
@@ -4423,7 +4537,8 @@ Deno.test("DataQueryService: three steps across jobs return only the newest vers
 });
 
 Deno.test("DataQueryService: history query reports older step versions as not latest", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   writeStepVersions(catalog, ["s1", "s2"]);
 
   const results = service.querySync(
@@ -4437,7 +4552,8 @@ Deno.test("DataQueryService: history query reports older step versions as not la
 });
 
 Deno.test("DataQueryService: latestPerStep returns each step's latest version", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   writeStepVersions(catalog, ["s1", "s2", "s1"]);
 
   const results = service.querySync('modelName == "ingest"', {
@@ -4451,7 +4567,8 @@ Deno.test("DataQueryService: latestPerStep returns each step's latest version", 
 });
 
 Deno.test("DataQueryService: latestPerStep with a history predicate returns every version", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   writeStepVersions(catalog, ["s1", "s2", "s1"]);
 
   const results = service.querySync('modelName == "ingest" && version >= 0', {
@@ -4462,7 +4579,8 @@ Deno.test("DataQueryService: latestPerStep with a history predicate returns ever
 });
 
 Deno.test("DataQueryService.latestDataNamesForSpec: lists a name once when several steps wrote it", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   writeStepVersions(catalog, ["s1", "s2"]);
 
   assertEquals(service.latestDataNamesForSpec("ingest", "result"), [
@@ -4870,11 +4988,18 @@ function setupModelTest(
   // modelName tag "ingest", and only NEW_ID is the current definition.
   catalog.upsert(makeRow({ model_id: OLD_ID, id: "old-data" }));
   catalog.upsert(makeRow({ model_id: NEW_ID, id: "new-data" }));
-  return { catalog, service, query, lookups };
+  return {
+    catalog,
+    service,
+    query,
+    lookups,
+    ...cleanupOnDispose(catalog, dir),
+  };
 }
 
 Deno.test("DataQueryService model(): matches the resolved definition, not every row tagged with its name", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   const byTag = await query('modelName == "ingest"') as DataRecord[];
   assertEquals(byTag.length, 2);
 
@@ -4889,7 +5014,8 @@ Deno.test("DataQueryService model(): matches the resolved definition, not every 
 });
 
 Deno.test("DataQueryService model(): matches data whose modelName tag differs or is empty", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   // Written before a model rename, and before the modelName tag existed.
   catalog.upsert(
     makeRow({ model_id: NEW_ID, data_name: "pre-rename", model_name: "old" }),
@@ -4907,7 +5033,8 @@ Deno.test("DataQueryService model(): matches data whose modelName tag differs or
 });
 
 Deno.test("DataQueryService model(): requires the definition's model type too", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   catalog.upsert(
     makeRow({ type_normalized: "other-type", model_id: NEW_ID, id: "x" }),
   );
@@ -4917,7 +5044,8 @@ Deno.test("DataQueryService model(): requires the definition's model type too", 
 });
 
 Deno.test("DataQueryService model(): an unknown model fails the query, before the catalog is read", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   catalog.invalidate();
   await assertRejects(
     () => query('model("missing") || model("ingest")'),
@@ -4929,17 +5057,19 @@ Deno.test("DataQueryService model(): an unknown model fails the query, before th
 });
 
 Deno.test("DataQueryService model(): resolves each distinct reference once", async () => {
-  const { catalog, query, lookups } = setupModelTest({
+  using t = setupModelTest({
     ingest: { modelType: "test-model", modelId: NEW_ID },
     x: { modelType: "test-model", modelId: OLD_ID },
   });
+  const { catalog, query, lookups } = t;
   await query('model("ingest") && (model("ingest") || !model("x"))');
   assertEquals(lookups, ["ingest", "x"]);
   catalog.close();
 });
 
 Deno.test("DataQueryService model(): an unknown field fails before any model lookup", async () => {
-  const { catalog, query, lookups } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query, lookups } = t;
   await assertRejects(
     () => query('model("ingest") && bogus == 1'),
     UserError,
@@ -4950,7 +5080,8 @@ Deno.test("DataQueryService model(): an unknown field fails before any model loo
 });
 
 Deno.test("DataQueryService model(): composes with include and limit", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   catalog.upsert(makeRow({ model_id: NEW_ID, data_name: "second" }));
   const results = await query('model("ingest")', {
     limit: 1,
@@ -4961,10 +5092,11 @@ Deno.test("DataQueryService model(): composes with include and limit", async () 
 });
 
 Deno.test("DataQueryService model(): concurrent queries keep their own resolutions", async () => {
-  const { catalog, service, query } = setupModelTest({
+  using t = setupModelTest({
     ingest: { modelType: "test-model", modelId: NEW_ID },
     old: { modelType: "test-model", modelId: OLD_ID },
   });
+  const { catalog, service, query } = t;
   const [a, b] = await Promise.all([
     query('model("ingest")'),
     query('model("old")'),
@@ -4980,7 +5112,8 @@ Deno.test("DataQueryService model(): concurrent queries keep their own resolutio
 });
 
 Deno.test("DataQueryService model(): querySync and a query without a resolver reject it", async () => {
-  const { catalog, service } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, service } = t;
   assertThrows(
     () => service.querySync('model("ingest")'),
     UserError,
@@ -4995,7 +5128,8 @@ Deno.test("DataQueryService model(): querySync and a query without a resolver re
 });
 
 Deno.test("DataQueryService model(): rejected in --select, malformed or not", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   for (const select of ['model("ingest")', "model(name)"]) {
     await assertRejects(
       () => query('name == "my-data"', { select }),
@@ -5038,14 +5172,23 @@ function setupRenameTest() {
   };
   const rename = (modelId: string, from: string, to: string) =>
     dataRepo.rename(type, modelId, from, to);
-  return { catalog, service, dataRepo, type, save, rename };
+  return {
+    catalog,
+    service,
+    dataRepo,
+    type,
+    save,
+    rename,
+    ...cleanupOnDispose(catalog, dir),
+  };
 }
 
 const names = (records: unknown) =>
   (records as DataRecord[]).map((r) => r.name);
 
 Deno.test("DataQueryService rename forwards: a latest read by the old name returns the renamed item", async () => {
-  const { catalog, service, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, save, rename } = t;
   const modelId = crypto.randomUUID();
   await save("old", modelId);
   await rename(modelId, "old", "new");
@@ -5059,7 +5202,8 @@ Deno.test("DataQueryService rename forwards: a latest read by the old name retur
 });
 
 Deno.test("DataQueryService rename forwards: follows a chain up to five hops", async () => {
-  const { catalog, service, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, save, rename } = t;
   const modelId = crypto.randomUUID();
   const chain = ["n0", "n1", "n2", "n3", "n4", "n5", "n6"];
   await save(chain[0], modelId);
@@ -5074,7 +5218,8 @@ Deno.test("DataQueryService rename forwards: follows a chain up to five hops", a
 });
 
 Deno.test("DataQueryService rename forwards: a forward with no rename marker on disk is not followed", async () => {
-  const { catalog, service, type, save } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, type, save } = t;
   const modelId = crypto.randomUUID();
   await save("new", modelId);
   // A forward left behind, e.g. after another machine deleted the old name
@@ -5100,7 +5245,8 @@ Deno.test("DataQueryService rename forwards: a forward with no rename marker on 
 });
 
 Deno.test("DataQueryService rename forwards: the old name written again is read as itself", async () => {
-  const { catalog, service, save, rename, type } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, save, rename, type } = t;
   const modelId = crypto.randomUUID();
   await save("old", modelId);
   await rename(modelId, "old", "new");
@@ -5120,7 +5266,8 @@ Deno.test("DataQueryService rename forwards: the old name written again is read 
 });
 
 Deno.test("DataQueryService rename forwards: only the renamed model's target row matches", async () => {
-  const { catalog, service, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, save, rename } = t;
   const renamedModel = crypto.randomUUID();
   const otherModel = crypto.randomUUID();
   await save("old", renamedModel);
@@ -5133,7 +5280,8 @@ Deno.test("DataQueryService rename forwards: only the renamed model's target row
 });
 
 Deno.test("DataQueryService rename forwards: versioned and non-equality name terms do not follow", async () => {
-  const { catalog, service, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, save, rename } = t;
   const modelId = crypto.randomUUID();
   await save("old", modelId);
   await rename(modelId, "old", "new");
@@ -5146,7 +5294,8 @@ Deno.test("DataQueryService rename forwards: versioned and non-equality name ter
 });
 
 Deno.test("DataQueryService rename forwards: an unreadable marker skips that model instead of failing the query", async () => {
-  const { catalog, service, dataRepo, type, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, dataRepo, type, save, rename } = t;
   const corruptModel = crypto.randomUUID();
   const otherModel = crypto.randomUUID();
   await save("old", corruptModel);
@@ -5164,7 +5313,8 @@ Deno.test("DataQueryService rename forwards: an unreadable marker skips that mod
 });
 
 Deno.test("DataQueryService rename forwards: --select sees the item's current name", async () => {
-  const { catalog, service, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, save, rename } = t;
   const modelId = crypto.randomUUID();
   await save("old", modelId);
   await rename(modelId, "old", "new");
@@ -5181,6 +5331,7 @@ Deno.test("DataQueryService rename forwards: backfill restores forwards from dis
     const catalog = new CatalogStore(
       join(dir, ".swamp", "data", "_catalog.db"),
     );
+    using _cleanup = cleanupOnDispose(catalog, dir);
     const dataRepo = new FileSystemUnifiedDataRepository(
       dir,
       undefined,
@@ -5230,7 +5381,8 @@ Deno.test("DataQueryService rename forwards: backfill restores forwards from dis
 });
 
 Deno.test("DataQueryService rename forwards: a model() scope reads no other model's markers", async () => {
-  const { catalog, service, dataRepo, type, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, dataRepo, type, save, rename } = t;
   const scoped = crypto.randomUUID();
   const other = crypto.randomUUID();
   await save("old", scoped);
@@ -5261,7 +5413,8 @@ Deno.test("DataQueryService rename forwards: a model() scope reads no other mode
 });
 
 Deno.test("DataQueryService rename forwards: a stale catalog row under the old name is not returned beside the forwarded item", async () => {
-  const { catalog, service, type, save, rename } = setupRenameTest();
+  using t = setupRenameTest();
+  const { catalog, service, type, save, rename } = t;
   const modelId = crypto.randomUUID();
   const original = await save("old", modelId);
   await rename(modelId, "old", "new");
@@ -5339,7 +5492,8 @@ function sortedNames(results: unknown[]): string[] {
 }
 
 Deno.test("DataQueryService: pushes modelType and modelId literal equalities down to SQL", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedModelIdentities(catalog);
   const filters = recordedFilters(catalog);
 
@@ -5354,7 +5508,8 @@ Deno.test("DataQueryService: pushes modelType and modelId literal equalities dow
 });
 
 Deno.test("DataQueryService: modelType and modelId pushdown matches the unpushed predicate", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedModelIdentities(catalog);
 
   const cases: Array<[string, string]> = [
@@ -5381,7 +5536,8 @@ Deno.test("DataQueryService: modelType and modelId pushdown matches the unpushed
 });
 
 Deno.test("DataQueryService: does not push modelId down from an OR branch", () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   seedModelIdentities(catalog);
   const filters = recordedFilters(catalog);
 
@@ -5495,7 +5651,8 @@ Deno.test("getLatestRecord: a failed download still returns the record", async (
 // ── behavior() and behaviorName (swamp-club#3410) ──────────────────────────
 
 Deno.test("DataQueryService behavior(): matches exactly what model() matches", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   for (
     const [modelForm, behaviorForm] of [
       ['model("ingest")', 'behavior("ingest")'],
@@ -5515,7 +5672,8 @@ Deno.test("DataQueryService behavior(): matches exactly what model() matches", a
 });
 
 Deno.test("DataQueryService behavior(): shares model()'s resolver, once per distinct reference", async () => {
-  const { catalog, query, lookups } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query, lookups } = t;
   await query('model("ingest") && behavior("ingest")');
   assertEquals(lookups, ["ingest"]);
   await assertRejects(
@@ -5527,7 +5685,8 @@ Deno.test("DataQueryService behavior(): shares model()'s resolver, once per dist
 });
 
 Deno.test("DataQueryService behaviorName: filters and projects as modelName, and never appears in a record", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   catalog.upsert(
     makeRow({ model_id: OLD_ID, id: "o", data_name: "o", model_name: "other" }),
   );
@@ -5547,7 +5706,8 @@ Deno.test("DataQueryService behaviorName: filters and projects as modelName, and
 });
 
 Deno.test("DataQueryService behavior(): refusals name the function as typed", async () => {
-  const { catalog, service, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, service, query } = t;
   await assertRejects(
     () => service.query('behavior("ingest")'),
     UserError,
@@ -5585,7 +5745,8 @@ Deno.test("DataQueryService behavior(): refusals name the function as typed", as
 });
 
 Deno.test("DataQueryService behavior(): pushes down to SQL as model() and behaviorName as modelName", async () => {
-  const { catalog, query } = setupModelTest();
+  using t = setupModelTest();
+  const { catalog, query } = t;
   const filters = recordedFilters(catalog);
   await query('model("ingest")');
   await query('behavior("ingest")');
@@ -5618,13 +5779,14 @@ function unreadableError(): UserError {
 
 Deno.test("getLatestRecord: a solo row read from a namespaced checkout is fetched through a fetcher that reads the solo namespace (swamp-club#3691)", async () => {
   const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
-  const { catalog, service } = setupForeignTest(
+  using t = setupForeignTest(
     soloReadingFetcher((namespace, relPath) => {
       fetchCalls.push({ namespace, relPath });
       return Promise.resolve(jsonBytes({ who: "solo" }));
     }),
     "alpha",
   );
+  const { catalog, service } = t;
   const row = foreignRow({ namespace: "" });
   catalog.upsert(row);
 
@@ -5642,10 +5804,11 @@ Deno.test("getLatestRecord: a solo row read from a namespaced checkout is fetche
 
 Deno.test("getLatestRecord: a solo row is never fetched through a fetcher that does not read the solo namespace (v2 sync fetchers)", async () => {
   let fetched = 0;
-  const { catalog, service } = setupForeignTest(() => {
+  using t = setupForeignTest(() => {
     fetched++;
     return Promise.resolve(jsonBytes({ who: "remote" }));
   }, "alpha");
+  const { catalog, service } = t;
   catalog.upsert(foreignRow({ namespace: "" }));
 
   await service.getLatestRecord("scanner", "results", "");
@@ -5658,10 +5821,11 @@ Deno.test("getLatestRecord: a solo row is never fetched through a fetcher that d
 });
 
 Deno.test("getLatestRecord and query: an unreadable foreign record fails the read instead of reading as empty (swamp-club#3691)", async () => {
-  const { catalog, service } = setupForeignTest(
+  using t = setupForeignTest(
     soloReadingFetcher(() => Promise.reject(unreadableError())),
     "alpha",
   );
+  const { catalog, service } = t;
   catalog.upsert(foreignRow({ namespace: "beta" }));
 
   const refused = async (read: () => Promise<unknown>) => {
@@ -5676,10 +5840,11 @@ Deno.test("getLatestRecord and query: an unreadable foreign record fails the rea
 });
 
 Deno.test("DataQueryService: select content reads a foreign row through the fetcher (swamp-club#3691)", async () => {
-  const { catalog, service } = setupForeignTest(
+  using t = setupForeignTest(
     soloReadingFetcher(() => Promise.resolve(jsonBytes({ who: "beta" }))),
     "alpha",
   );
+  const { catalog, service } = t;
   catalog.upsert(foreignRow({ namespace: "beta" }));
   catalog.upsert(foreignRow({
     namespace: "beta",
@@ -5706,13 +5871,14 @@ Deno.test("DataQueryService: select content reads a foreign row through the fetc
 
 Deno.test("DataQueryService: a foreign row's missing body leaves select content null and the row in the results (swamp-club#3691)", async () => {
   let calls = 0;
-  const { catalog, service } = setupForeignTest(
+  using t = setupForeignTest(
     soloReadingFetcher(() => {
       calls++;
       return Promise.resolve(null);
     }),
     "alpha",
   );
+  const { catalog, service } = t;
   catalog.upsert(foreignRow({ namespace: "beta" }));
 
   assertEquals(
@@ -5730,10 +5896,11 @@ Deno.test("DataQueryService: a foreign row's missing body leaves select content 
 
 Deno.test("DataQueryService: select content never fetches a foreign body through a v2 sync fetcher (swamp-club#3691)", async () => {
   let calls = 0;
-  const { catalog, service } = setupForeignTest(() => {
+  using t = setupForeignTest(() => {
     calls++;
     return Promise.resolve(new TextEncoder().encode("beta notes"));
   }, "alpha");
+  const { catalog, service } = t;
   catalog.upsert(foreignRow({
     namespace: "beta",
     data_name: "notes",
@@ -6032,7 +6199,7 @@ function setupWithContent(
     }
   >,
   options: { namespace?: string } = {},
-): { catalog: CatalogStore; service: DataQueryService } {
+): { catalog: CatalogStore; service: DataQueryService } & Disposable {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-view-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
   catalog.markPopulated();
@@ -6057,13 +6224,18 @@ function setupWithContent(
       ? undefined
       : createNamespace(options.namespace),
   );
-  return { catalog, service: new DataQueryService(catalog, dataRepo) };
+  return {
+    catalog,
+    service: new DataQueryService(catalog, dataRepo),
+    ...cleanupOnDispose(catalog, dir),
+  };
 }
 
 const text = (value: string) => new TextEncoder().encode(value);
 
 Deno.test("DataQueryService: a view's environment evaluates the predicate and the projection, including a history-opening predicate, latestPerStep and the latestRun and model clones", async () => {
-  const { catalog, service } = setupTest();
+  using t = setupTest();
+  const { catalog, service } = t;
   catalog.upsert(makeRow({ workflow_run_id: "run-1" }));
   const { view, seen } = fakeView();
   const count = (results: unknown) => (results as unknown[]).length;
@@ -6128,13 +6300,14 @@ Deno.test("DataQueryService: a view's environment evaluates the predicate and th
 });
 
 Deno.test("DataQueryService: a view sees the record at most once for the predicate and once for the projection, only when attributes or content are read, and records answered without a select or with an empty one stay as stored", () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     {
       name: "my-data",
       contentType: "application/json",
       bytes: text('{"kernel":"6.1.0"}'),
     },
   ]);
+  const { catalog, service } = t;
   const { view, seen } = fakeView();
   const raw = service.querySync('modelName == "ingest"', {
     view,
@@ -6196,7 +6369,7 @@ Deno.test("DataQueryService: a view sees the record at most once for the predica
 });
 
 Deno.test("DataQueryService: a refusal the view raises fails the query from the predicate, also beside an absorbed binary-content read, and from the projection, never a skipped row, a violation or a null", async () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     {
       name: "my-data",
       contentType: "application/json",
@@ -6208,6 +6381,7 @@ Deno.test("DataQueryService: a refusal the view raises fails the query from the 
       bytes: new Uint8Array([0, 255]),
     },
   ]);
+  const { catalog, service } = t;
   const { view } = fakeView((expression) => expression.includes("secret"));
   assertThrows(
     () => service.querySync("attributes.secret == 1", { view }),
@@ -6251,7 +6425,7 @@ Deno.test("DataQueryService: a refusal the view raises fails the query from the 
 });
 
 Deno.test("DataQueryService: under a view a content projection on a JSON record reads the viewed attributes on the sync and async paths, with a charset parameter too, while text and binary content stay as projected", async () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     { name: "plain", contentType: "application/json", bytes: text('{"a":1}') },
     {
       name: "charset",
@@ -6265,6 +6439,7 @@ Deno.test("DataQueryService: under a view a content projection on a JSON record 
       bytes: new Uint8Array([0, 255]),
     },
   ]);
+  const { catalog, service } = t;
   const { view } = fakeView();
   const expected: Record<string, unknown> = {
     plain: { a: 1, viewed: true },
@@ -6309,9 +6484,10 @@ Deno.test("DataQueryService: under a view a content projection on a JSON record 
 });
 
 Deno.test("DataQueryService: under a view a foreign-namespace JSON record the view answers as stored keeps today's projected content, null where its bytes are not on this host", async () => {
-  const { catalog, service } = setupForeignTest(() =>
+  using t = setupForeignTest(() =>
     Promise.resolve(jsonBytes({ content: "security" }))
   );
+  const { catalog, service } = t;
   catalog.upsert(foreignRow());
   const { view, seen } = fakeView();
   assertEquals(service.querySync('ns == "security"', { select: "content" }), [
@@ -6392,7 +6568,7 @@ async function assertReadsAsStored(
 }
 
 Deno.test("DataQueryService: under a view a legacy row stamped with the empty namespace in a namespaced repository, which the view answers as stored, keeps its JSON text and its raw predicate answers, while the repository's own row reads the viewed attributes", async () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     {
       name: "legacy",
       contentType: CHARSET_JSON,
@@ -6406,6 +6582,7 @@ Deno.test("DataQueryService: under a view a legacy row stamped with the empty na
       namespace: "infra",
     },
   ], { namespace: "infra" });
+  const { catalog, service } = t;
   const { view } = fakeView(undefined, { ownNamespace: "infra" });
   assertEquals(service.querySync('name == "legacy"', { select: "content" }), [
     '{"k":1}',
@@ -6436,10 +6613,11 @@ Deno.test("DataQueryService: under a view a legacy row stamped with the empty na
 });
 
 Deno.test("DataQueryService: under a view an own-namespace record the view answers as stored, as the adapter answers an untagged one, keeps its JSON text and its raw predicate answers, while an adapted sibling reads the viewed attributes", async () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     { name: "untagged", contentType: CHARSET_JSON, bytes: text('{"k":2}') },
     { name: "tagged", contentType: CHARSET_JSON, bytes: text('{"k":2}') },
   ]);
+  const { catalog, service } = t;
   const { view } = fakeView(undefined, {
     asStored: (record) => record.name === "untagged",
   });
@@ -6469,10 +6647,11 @@ Deno.test("DataQueryService: under a view an own-namespace record the view answe
 });
 
 Deno.test("DataQueryService: under a view a parametrized JSON record whose body does not parse keeps its text when the view answers it as stored, and the empty attributes the view holds when the view adapted it", async () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     { name: "stored", contentType: CHARSET_JSON, bytes: text("not json") },
     { name: "adapted", contentType: CHARSET_JSON, bytes: text("not json") },
   ]);
+  const { catalog, service } = t;
   const { view } = fakeView(undefined, {
     asStored: (record) => record.name === "stored",
   });
@@ -6511,9 +6690,10 @@ Deno.test("DataQueryService: under a view a parametrized JSON record whose body 
 });
 
 Deno.test("DataQueryService: under a view reading a text record's content in a predicate or a projection does not consult the view", async () => {
-  const { catalog, service } = setupWithContent([
+  using t = setupWithContent([
     { name: "notes", contentType: "text/plain", bytes: text("hello") },
   ]);
+  const { catalog, service } = t;
   const { view, seen } = fakeView();
   assertEquals(
     (service.querySync('content.contains("hello")', { view }) as DataRecord[])

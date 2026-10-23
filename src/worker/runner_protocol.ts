@@ -36,6 +36,12 @@ export const RunnerBootstrapParamsSchema = z.object({
   dataPlaneUrl: z.string().min(1),
   /** Path to the shared bundle cache directory. */
   cacheDirPath: z.string().min(1),
+  /**
+   * The dispatch's scratch directory, made by the supervisor and removed by
+   * it once the runner has exited, so a runner killed after a cancel leaves
+   * none behind (swamp-club#3854). Absent, the runner makes its own.
+   */
+  scratchDirPath: z.string().min(1).optional(),
   /** The full dispatch parameters from the orchestrator. */
   dispatch: DispatchParamsSchema,
   /**

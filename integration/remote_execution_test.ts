@@ -268,6 +268,9 @@ async function startOrchestrator(
     serverUrl: `ws://127.0.0.1:${port}`,
     shutdown: async () => {
       await server.shutdown();
+      // The disconnects the closed sockets recorded are written before the
+      // test removes the repo (swamp-club#3854).
+      await gateway.settled();
     },
     mintToken,
     runModelMethod,
@@ -293,7 +296,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 }
 

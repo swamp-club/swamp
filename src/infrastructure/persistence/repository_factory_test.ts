@@ -39,12 +39,25 @@ import { DefaultDatastorePathResolver } from "./default_datastore_path_resolver.
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 
-function tempRepoDir(): string {
-  return Deno.makeTempDirSync({ prefix: "swamp-factory-test-" });
+/** A temp repo directory, removed when disposed. */
+function tempRepoDir(): { path: string } & Disposable {
+  const path = Deno.makeTempDirSync({ prefix: "swamp-factory-test-" });
+  return {
+    path,
+    [Symbol.dispose]() {
+      try {
+        Deno.removeSync(path, { recursive: true });
+      } catch (error) {
+        // Windows refuses while V8 still holds the SQLite handle.
+        if (Deno.build.os !== "windows") throw error;
+      }
+    },
+  };
 }
 
 Deno.test("createRepositoryContext: resolves config namespace into the repository", () => {
-  const dir = tempRepoDir();
+  using temp = tempRepoDir();
+  const dir = temp.path;
   const ctx = createRepositoryContext({
     repoDir: dir,
     enableIndexing: false,
@@ -55,7 +68,8 @@ Deno.test("createRepositoryContext: resolves config namespace into the repositor
 });
 
 Deno.test("createRepositoryContext: defaults to SOLO_NAMESPACE when no namespace is configured", () => {
-  const dir = tempRepoDir();
+  using temp = tempRepoDir();
+  const dir = temp.path;
   const ctx = createRepositoryContext({
     repoDir: dir,
     enableIndexing: false,
@@ -65,7 +79,8 @@ Deno.test("createRepositoryContext: defaults to SOLO_NAMESPACE when no namespace
 });
 
 Deno.test("createRepositoryContext: rejects a malformed namespace slug", () => {
-  const dir = tempRepoDir();
+  using temp = tempRepoDir();
+  const dir = temp.path;
   assertThrows(
     () =>
       createRepositoryContext({
@@ -79,7 +94,8 @@ Deno.test("createRepositoryContext: rejects a malformed namespace slug", () => {
 });
 
 Deno.test("createUnifiedDataRepository: passes the namespace through to the repository", () => {
-  const dir = tempRepoDir();
+  using temp = tempRepoDir();
+  const dir = temp.path;
   const catalog = new CatalogStore(join(dir, "_catalog.db"));
   const repo = createUnifiedDataRepository(
     dir,
@@ -93,7 +109,8 @@ Deno.test("createUnifiedDataRepository: passes the namespace through to the repo
 });
 
 Deno.test("createUnifiedDataRepository: defaults to SOLO_NAMESPACE", () => {
-  const dir = tempRepoDir();
+  using temp = tempRepoDir();
+  const dir = temp.path;
   const catalog = new CatalogStore(join(dir, "_catalog.db"));
   const repo = createUnifiedDataRepository(dir, catalog);
   assertEquals(repo.namespace, SOLO_NAMESPACE);
@@ -479,7 +496,8 @@ Deno.test("writeCatalogExport: 100k rows benchmark", async () => {
 });
 
 Deno.test("createRepositoryContext: loads a repo already bound to a reserved namespace", () => {
-  const dir = tempRepoDir();
+  using temp = tempRepoDir();
+  const dir = temp.path;
   const ctx = createRepositoryContext({
     repoDir: dir,
     enableIndexing: false,

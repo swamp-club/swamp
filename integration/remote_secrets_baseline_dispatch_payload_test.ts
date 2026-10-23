@@ -525,7 +525,8 @@ Deno.test("remote secrets baseline: dispatch payload: the supervisor does not ch
   } catch (error) {
     failure = error;
   }
-  assertEquals(started, ["dispatch_started"]);
+  // The failed spawn still reports the dispatch finished (swamp-club#3854).
+  assertEquals(started, ["dispatch_started", "dispatch_finished"]);
   assert(failure instanceof Error);
   assertStringIncludes(failure.message, "Failed to spawn");
   peer.close("done");

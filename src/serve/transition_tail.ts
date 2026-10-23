@@ -87,4 +87,14 @@ export class TransitionTail {
     this.#tail = next.then(() => undefined, () => undefined);
     return next;
   }
+
+  /**
+   * Resolves once every transition enqueued, including any enqueued while
+   * waiting, has settled (swamp-club#3854).
+   */
+  async settled(): Promise<void> {
+    while (this.#pending > 0) {
+      await this.#tail;
+    }
+  }
 }

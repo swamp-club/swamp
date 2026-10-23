@@ -248,6 +248,13 @@ changes that aren't tied to a single building block:
   temp directory.
 - `withTempDir` cleanup uses an inline Windows-only `.catch(() => {})` to absorb
   EBUSY when V8 hasn't GC'd native handles — copy from any existing test file.
+- Every temp dir a test creates is removed when the test ends, pass or fail: a
+  helper that hands one out returns a `Disposable` the caller declares with
+  `using`, or the test removes it in a `finally`. Wait for background writers (a
+  worker, a serve gateway's `settled()`) before removing a repo dir. Tests that
+  replicate pass a `privateRoot`, never the real `/tmp/swamp-<uid>`.
+  `verify-build` runs the suite under a fresh `TMPDIR` and fails on anything
+  left in it.
 
 IMPORTANT: CLI command tests require logging initialization and model barrel
 imports before they can run. See `src/cli/commands/data_get_test.ts` for the
