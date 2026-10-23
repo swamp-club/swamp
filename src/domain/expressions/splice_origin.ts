@@ -23,8 +23,8 @@ import {
   extractExpressions,
   readSetMap,
   type SpliceOrigin,
-  valueContainsExpression,
 } from "./expression_parser.ts";
+import { scanExpressions } from "./expression_scanner.ts";
 import {
   indexPath,
   keyPath,
@@ -154,36 +154,56 @@ function modelNamespaceMap(
   const names = segments.length === 1
     ? [String(segments[0])]
     : Object.keys(model);
-  let map = ProvenanceMap.authored();
+  // Built in one pass: a withWholeData call per path copies the map each
+  // time, quadratic in the number of models the context binds.
+  const whole: string[] = [];
   for (const name of names) {
     const entry = model[name];
     if (entry === null || typeof entry !== "object") continue;
     for (const field of Object.keys(entry)) {
       if (MODEL_DEFINITION_FIELDS.has(field)) continue;
-      const path = segments.length === 1
-        ? keySegment(field)
-        : keyPath(keySegment(name), field);
-      map = map.withWholeData(path);
+      whole.push(
+        segments.length === 1
+          ? keySegment(field)
+          : keyPath(keySegment(name), field),
+      );
     }
   }
-  return map;
+  return ProvenanceMap.fromEntries(whole, []);
 }
 
-/** Raw text of every expression in `value` that does not overlap data. */
+/**
+ * Raw text of every expression in `value` that does not overlap data. A
+ * subtree that is data whole is skipped without reading it: nothing in it
+ * could be authored, and reading it would fire the loaders the model
+ * namespace puts on every behavior's resources and files.
+ */
 function authoredRawsIn(
   value: unknown,
   map: ProvenanceMap,
   into: Set<string>,
 ): void {
-  if (map.isWholeData || !valueContainsExpression(value)) return;
-  for (const expr of extractExpressions(value)) {
-    if (
-      expr.start !== undefined && expr.end !== undefined &&
-      !map.overlapsData(expr.path, expr.start, expr.end)
-    ) {
-      into.add(expr.raw);
+  if (map.isWholeData) return;
+  const visit = (node: unknown, path: string): void => {
+    if (typeof node === "string") {
+      for (const span of scanExpressions(node)) {
+        if (!map.overlapsData(path, span.start, span.end)) into.add(span.raw);
+      }
+    } else if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const itemPath = indexPath(path, i);
+        if (!map.isWholeDataAt(itemPath)) visit(node[i], itemPath);
+      }
+    } else if (node !== null && typeof node === "object") {
+      for (const key of Object.keys(node)) {
+        const childPath = keyPath(path, key);
+        if (!map.isWholeDataAt(childPath)) {
+          visit((node as Record<string, unknown>)[key], childPath);
+        }
+      }
     }
-  }
+  };
+  visit(value, "");
 }
 
 /**
@@ -215,22 +235,24 @@ export function spliceOrigin(
     "data",
   ]);
   let readsData = false;
+  const rootMaps = new Map<string, ProvenanceMap>();
   for (const root of roots) {
     if (!AUTHORED_ROOTS.has(root)) {
       // Every namespace outside the allow-list is data.
       readsData = true;
       continue;
     }
-    if (!bindingMapAt(context, root, []).isAuthored) readsData = true;
+    const map = bindingMapAt(context, root, []);
+    rootMaps.set(root, map);
+    if (!map.isAuthored) readsData = true;
   }
   if (!readsData) return AUTHORED_ORIGIN;
   const authoredRaws = new Set<string>(
     extractExpressions(celExpression).map((e) => e.raw),
   );
   const ctx = context as Record<string, unknown> | undefined;
-  for (const root of roots) {
-    if (!AUTHORED_ROOTS.has(root)) continue;
-    authoredRawsIn(ctx?.[root], bindingMapAt(context, root, []), authoredRaws);
+  for (const [root, map] of rootMaps) {
+    authoredRawsIn(ctx?.[root], map, authoredRaws);
   }
   return { map: readSetMap(value, authoredRaws), authoredRaws };
 }

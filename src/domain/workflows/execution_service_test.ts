@@ -132,6 +132,7 @@ import type { ExportResult } from "@opentelemetry/core";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { getTracer } from "../../infrastructure/tracing/mod.ts";
+import { SpanStatusCode } from "@opentelemetry/api";
 import {
   type SpanRecorder,
   withRecordedSpans,
@@ -6305,12 +6306,94 @@ Deno.test("run(): job, step and method spans nest under the run span", async () 
       assertStepsAndMethodsNest(recorder, deploy, "deploy", ["push"]);
       const [evaluate] = recorder.named("swamp.workflow.evaluate");
       assertEquals(evaluate.parentSpanId, spanIdOf(runSpan));
+      assertEquals(evaluate.attributes["workflow.expression_occurrences"], 0);
+      assertEquals(evaluate.attributes["workflow.expressions_distinct"], 0);
+      assertEquals(evaluate.attributes["workflow.cel_evaluations"], 0);
+      assertEquals(evaluate.attributes["workflow.model_keys"], 0);
+      assertEquals(evaluate.attributes["workflow.cel_duration_ms"], 0);
+      assertEquals(evaluate.attributes["workflow.provenance_duration_ms"], 0);
 
       const traceIds = new Set(
         recorder.ended.map((s) => s.spanContext().traceId),
       );
       assertEquals(traceIds.size, 1);
       assert(recorder.allEnded(), "every started span was ended");
+    });
+  });
+});
+
+Deno.test("run(): evaluation span distinguishes occurrences, attempts and distinct expressions", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "evaluation-counts",
+        description: "${{ inputs.value }}",
+        inputs: {
+          type: "object",
+          properties: { value: { type: "string", default: "ok" } },
+        },
+        jobs: [Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "first",
+              description: "${{ inputs.value }}",
+              task: StepTask.model("m", "run"),
+            }),
+            Step.create({
+              name: "second",
+              description: "${{ inputs.value }}",
+              task: StepTask.model("m", "run"),
+            }),
+          ],
+        })],
+      });
+      const { service } = await newTracedService(
+        tempDir,
+        [workflow],
+        new MethodSpanStepExecutor(),
+      );
+      assertEquals(
+        (await service.execute(workflow.name, { inputs: { value: "ok" } }))
+          .status,
+        "succeeded",
+      );
+      const [span] = recorder.named("swamp.workflow.evaluate");
+      assertEquals(span.attributes["workflow.expression_occurrences"], 3);
+      assertEquals(span.attributes["workflow.expressions_distinct"], 1);
+      assertEquals(span.attributes["workflow.cel_evaluations"], 3);
+      assertEquals(span.attributes["workflow.expressions_evaluated"], 1);
+      assertEquals(span.attributes["workflow.model_keys"], 0);
+      assertEquals(
+        typeof span.attributes["workflow.cel_duration_ms"],
+        "number",
+      );
+      assertEquals(
+        typeof span.attributes["workflow.provenance_duration_ms"],
+        "number",
+      );
+      assertEquals(recorder.allEnded(), true);
+    });
+  });
+});
+
+Deno.test("run(): a fatal evaluation error still closes its error span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "evaluation-error",
+        description: "${{ nonexistent.value }}",
+        jobs: [Job.create({ name: "main", steps: [modelStep("first")] })],
+      });
+      const { service } = await newTracedService(
+        tempDir,
+        [workflow],
+        new MethodSpanStepExecutor(),
+      );
+      await assertRejects(() => service.execute(workflow.name));
+      const [span] = recorder.named("swamp.workflow.evaluate");
+      assertEquals(span.status.code, SpanStatusCode.ERROR);
+      assertEquals(recorder.allEnded(), true);
     });
   });
 });

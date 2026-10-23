@@ -8668,6 +8668,16 @@ export class WorkflowExecutionService {
         "workflow.expressions_evaluated",
         result.expressionsEvaluated,
       );
+      evalSpan.setAttributes({
+        "workflow.expression_occurrences":
+          result.diagnostics.expressionOccurrences,
+        "workflow.expressions_distinct": result.diagnostics.distinctExpressions,
+        "workflow.cel_evaluations": result.diagnostics.celEvaluations,
+        "workflow.model_keys": result.diagnostics.modelKeys,
+        "workflow.cel_duration_ms": result.diagnostics.celDurationMs,
+        "workflow.provenance_duration_ms":
+          result.diagnostics.provenanceDurationMs,
+      });
       evalSpan.setStatus({ code: SpanStatusCode.OK });
       warnForeignTaskArguments(workflow.name, result.foreignTaskArguments);
       return result;

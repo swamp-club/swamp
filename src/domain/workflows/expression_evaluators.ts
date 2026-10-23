@@ -144,7 +144,9 @@ export function createTaskTargetDeferral(
  */
 export interface WorkflowEvaluationResult {
   workflow: Workflow;
+  /** Distinct successfully evaluated raw expressions (kept for compatibility). */
   expressionsEvaluated: number;
+  diagnostics: WorkflowEvaluationDiagnostics;
   /**
    * Per step of `workflow`, its task inputs and global arguments with
    * sensitive data values replaced by sentinels, where evaluation spliced
@@ -162,6 +164,22 @@ export interface WorkflowEvaluationResult {
    * the same way if it fails there.
    */
   foreignTaskArguments: ForeignTaskArgument[];
+}
+
+/** Invocation-local work counters; no expression text or values are recorded. */
+export interface WorkflowEvaluationDiagnostics {
+  /** Authored occurrences after the position gate, before runtime deferral. */
+  expressionOccurrences: number;
+  /** Distinct raw text among those occurrences, including deferred expressions. */
+  distinctExpressions: number;
+  /** evaluateAsync attempts, including handled foreign-text failures. */
+  celEvaluations: number;
+  /** Namespace keys, including both name and UUID aliases. */
+  modelKeys: number;
+  /** Time awaiting CEL, including handled failures. */
+  celDurationMs: number;
+  /** Time computing splice origins; excludes subsequent substitution. */
+  provenanceDurationMs: number;
 }
 
 /**
@@ -447,11 +465,20 @@ export class WorkflowExpressionEvaluator {
       authored,
       sourceProvenance,
     );
+    const diagnostics: WorkflowEvaluationDiagnostics = {
+      expressionOccurrences: expressions.length,
+      distinctExpressions: new Set(expressions.map((expr) => expr.raw)).size,
+      celEvaluations: 0,
+      modelKeys: Object.keys(context.model).length,
+      celDurationMs: 0,
+      provenanceDurationMs: 0,
+    };
 
     if (expressions.length === 0) {
       return {
         workflow,
         expressionsEvaluated: 0,
+        diagnostics,
         stepProvenance: StepProvenanceOverlay.fromWorkflowMaps(
           workflow,
           sourceProvenance,
@@ -548,6 +575,8 @@ export class WorkflowExpressionEvaluator {
       // one says nothing about the others: every root is checked, and the
       // error names the unlisted one.
       let value: unknown;
+      diagnostics.celEvaluations++;
+      const celStarted = performance.now();
       try {
         value = await this.celEvaluator.evaluateAsync(
           expr.celExpression,
@@ -567,9 +596,13 @@ export class WorkflowExpressionEvaluator {
         if (unlisted) throw unlisted;
         failedForeignPaths.add(expr.path);
         continue;
+      } finally {
+        diagnostics.celDurationMs += performance.now() - celStarted;
       }
       evaluatedValues.set(expr.raw, value);
+      const provenanceStarted = performance.now();
       origins.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
+      diagnostics.provenanceDurationMs += performance.now() - provenanceStarted;
     }
 
     // Foreign text no value will be spliced over: it failed above, or one of
@@ -614,6 +647,7 @@ export class WorkflowExpressionEvaluator {
     return {
       workflow: evaluated,
       expressionsEvaluated: evaluatedValues.size,
+      diagnostics,
       sanitizedTasks: sanitizedTasks?.overlay,
       stepProvenance: StepProvenanceOverlay.fromWorkflowMaps(
         evaluated,
