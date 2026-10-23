@@ -385,8 +385,23 @@ function carriesSensitiveMarker(value: AstNode): boolean {
 }
 
 /**
+ * True when `value` is a Zod schema expression: a chain of calls, member
+ * access and casts that starts at `z` (`z.string().meta({ ... })`,
+ * `z.optional(...)`).
+ */
+function isZodChain(value: AstNode | undefined): value is AstNode {
+  let current = unwrap(value);
+  while (current) {
+    if (isCall(current)) current = unwrap(child(current, "callee"));
+    else if (isMember(current)) current = unwrap(child(current, "object"));
+    else return current.type === "Identifier" && str(current, "name") === "z";
+  }
+  return false;
+}
+
+/**
  * Parses `source` and returns, for each line (1-based, split on `\n`) that
- * declares a secret-named field, whether every such field declared there
+ * declares a secret-named schema field, whether every such field declared there
  * carries `sensitive: true` (see {@link carriesSensitiveMarker}), so one
  * marked field never hides an unmarked one on its line. Null when the source
  * does not parse.
@@ -400,22 +415,23 @@ function parsedSensitiveFields(
   if (!program) return null;
   const lineIndex = new LineIndex(source.content);
   const marked = new Map<number, boolean>();
-  walkRuntimeNodes(program, ({ node, parent }) => {
+  walkRuntimeNodes(program, ({ node }) => {
     if (!FIELD_NODES.has(node.type)) return;
-    // A destructured name (`({ token }) => token`) or a shorthand property
-    // (`{ apiKey }`) declares no schema here.
-    if (parent?.node.type === "ObjectPattern" || node.shorthand === true) {
-      return;
-    }
     const name = fieldName(node);
     if (name === undefined || !namesSecretValue(name)) return;
     const isDeclarator = node.type === "VariableDeclarator";
     const start = child(node, isDeclarator ? "id" : "key")?.start;
     if (typeof start !== "number") return;
-    const line = lineIndex.position(start).line;
     const value = child(node, isDeclarator ? "init" : "value");
-    const fieldMarked = value !== undefined && carriesSensitiveMarker(value);
-    marked.set(line, (marked.get(line) ?? true) && fieldMarked);
+    // Only a schema declares a field. A destructured name, a shorthand or
+    // variable value, or a key in a callback's object literal is left to the
+    // line check, so it cannot cancel a marker on the field beside it.
+    if (!isZodChain(value)) return;
+    const line = lineIndex.position(start).line;
+    marked.set(
+      line,
+      (marked.get(line) ?? true) && carriesSensitiveMarker(value),
+    );
   });
   return marked;
 }

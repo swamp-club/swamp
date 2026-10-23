@@ -1051,6 +1051,47 @@ export const GlobalArgs = Base.extend({ apiKey, password: z.string()
   assertEquals(sensitiveFindings(shorthand), []);
 });
 
+Deno.test("credentials-sensitive-field: a secret-named key that is not a schema does not hide a continuation marker", () => {
+  const callbackObject = schemaModule(
+    `  credentials: z.string().transform((s) => ({ token: s }))
+    .meta({ sensitive: true }),`,
+  );
+  const callbackConst = schemaModule(
+    `  credentials: z.string().transform((v) => { const secret = v.trim(); return secret; })
+    .meta({ sensitive: true }),`,
+  );
+  const variableValue = `import { z } from "npm:zod@4";
+const apiKeySchema = z.string().meta({ sensitive: true });
+const Base = z.object({});
+export const GlobalArgs = Base.extend({ apiKey: apiKeySchema, password: z.string()
+  .meta({ sensitive: true }) });
+`;
+  const logicalValue = `import { z } from "npm:zod@4";
+const fallback = undefined;
+export const GlobalArgs = z.object({
+  apiKey: fallback ?? z.string()
+    .meta({ sensitive: true }),
+});
+`;
+  assertEquals(sensitiveFindings(callbackObject), []);
+  assertEquals(sensitiveFindings(callbackConst), []);
+  assertEquals(sensitiveFindings(variableValue), []);
+  assertEquals(sensitiveFindings(logicalValue), []);
+});
+
+Deno.test("credentials-sensitive-field: a class field with a wrapped marker is marked, and without one warns", () => {
+  const field = (entry: string) =>
+    `import { z } from "npm:zod@4";
+export class Args {
+  private apiKey = z.string().meta({
+${entry}    description: "The API key issued to the game owner.",
+  });
+}
+`;
+  assertEquals(sensitiveFindings(field("    sensitive: true,\n")), []);
+  assertEquals(sensitiveFindings(field("")).length, 1);
+});
+
 Deno.test("credentials-sensitive-field: a wrapped register entry is marked", () => {
   const content = schemaModule(
     `  apiKey: z.string().register(z.globalRegistry, {
