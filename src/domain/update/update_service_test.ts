@@ -700,8 +700,6 @@ Deno.test("permissionDeniedMessage: a HOME subdirectory whose name starts with .
   assertStringIncludes(message, "sudo chown alice /Users/alice/..tools");
 });
 
-// --- needlessRootUpdateWarning tests ---
-
 const stickyFacts = {
   ...posixFacts,
   binaryPath: "/opt/shared/swamp",
@@ -765,6 +763,23 @@ Deno.test("permissionDeniedMessage: a sticky directory with an unknown binary ow
   assertStringIncludes(message, "/opt/shared is a sticky directory");
   assert(!message.includes("sudo"));
 });
+
+Deno.test("permissionDeniedMessage: a sticky directory that refuses new files gives the directory-ownership fix", () => {
+  const message = permissionDeniedMessage({
+    ...stickyFacts,
+    dirWritable: false,
+  });
+  // Owning the binary would not let the user create files in /opt/shared
+  assertEquals(
+    stickyDirectoryBlocksReplace({ ...stickyFacts, dirWritable: false }),
+    false,
+  );
+  assertStringIncludes(message, "Re-run with: sudo swamp update");
+  assert(!message.includes("sticky"));
+  assert(!message.includes("sudo chown alice /opt/shared/swamp"));
+});
+
+// --- needlessRootUpdateWarning tests ---
 
 Deno.test("needlessRootUpdateWarning: sudo into the invoking user's own directory warns", () => {
   const warning = needlessRootUpdateWarning(

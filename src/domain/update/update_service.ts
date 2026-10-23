@@ -132,7 +132,9 @@ export function stickyDirectoryBlocksReplace(
   facts: PermissionDeniedFacts,
 ): boolean {
   const { binaryOwnerUid, currentUid, dirOwnerUid } = facts;
-  return facts.os !== "windows" && facts.dirSticky === true &&
+  // The sticky rule only matters once the directory accepts new files
+  return facts.os !== "windows" && facts.dirWritable &&
+    facts.dirSticky === true &&
     binaryOwnerUid !== undefined && binaryOwnerUid !== null &&
     currentUid !== null && currentUid !== 0 &&
     binaryOwnerUid !== currentUid && dirOwnerUid !== currentUid;
@@ -275,7 +277,8 @@ async function readBinaryOwnership(
   binaryPath: string,
 ): Promise<BinaryOwnership> {
   const dir = await Deno.stat(dirname(binaryPath)).catch(() => null);
-  // The sticky rule applies to the directory entry, so a symlink's own owner
+  // The sticky rule applies to the directory entry, so read a symlink's own
+  // owner (lstat), not its target's
   const binary = await Deno.lstat(binaryPath).catch(() => null);
   return {
     dirMode: dir?.mode ?? null,
