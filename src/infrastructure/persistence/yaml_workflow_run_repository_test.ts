@@ -3894,3 +3894,264 @@ Deno.test("YamlWorkflowRunRepository.save: on v3, the staged record of a typed r
     assertEquals(staged.writtenReferences?.length, 1);
   });
 });
+
+// --- Retention keeps the run index (swamp-club#3856) ---
+
+const RETENTION_CUTOFF = () => new Date(Date.now() - 86_400_000);
+
+/**
+ * A finished run whose record says it finished 400 days ago, with its file
+ * set back as far, so a retention cutoff of a day collects it.
+ */
+async function saveOldFinishedRun(
+  dir: string,
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  const run = await saveFinishedRun(repo, workflow);
+  const path = join(
+    runsDirOf(dir, workflow.id),
+    `workflow-run-${run.id}.yaml`,
+  );
+  const data = parseYaml(await Deno.readTextFile(path)) as Record<
+    string,
+    unknown
+  >;
+  const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
+  data.startedAt = old;
+  data.completedAt = old;
+  await Deno.writeTextFile(path, stringifyYaml(data));
+  await backdate(path, 400 * 86_400_000);
+  return run;
+}
+
+/** Saves `old` collectable runs, then `kept` recent finished runs. */
+async function saveRetentionHistory(
+  dir: string,
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+  old: number,
+  kept: number,
+): Promise<{ old: WorkflowRun[]; kept: WorkflowRun[] }> {
+  const oldRuns: WorkflowRun[] = [];
+  for (let i = 0; i < old; i++) {
+    oldRuns.push(await saveOldFinishedRun(dir, repo, workflow));
+  }
+  const keptRuns: WorkflowRun[] = [];
+  for (let i = 0; i < kept; i++) {
+    keptRuns.push(await saveFinishedRun(repo, workflow));
+  }
+  return { old: oldRuns, kept: keptRuns };
+}
+
+async function indexIds(indexDir: string): Promise<string[]> {
+  return Object.keys((await readRunIndex(indexDir))!.entries).sort();
+}
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: drops only the removed runs from the run index, so the next read parses no record (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "retention");
+    const indexDir = runsDirOf(dir, workflow.id);
+    const { old, kept } = await saveRetentionHistory(
+      dir,
+      repo,
+      workflow,
+      3,
+      27,
+    );
+    const [running] = await saveRunningRuns(repo, workflow, 1);
+
+    const result = await repo.deleteOlderThan(RETENTION_CUTOFF());
+
+    assertEquals(result.deletedRunIds.sort(), old.map((r) => r.id).sort());
+    const survivors = [...kept, running].map((r) => r.id).sort();
+    assertEquals(await indexIds(indexDir), survivors);
+    await withCapturedSpans(async (spans) => {
+      const [summaries, reads] = await countingRecordReads(() =>
+        repo.findAllSummariesFromIndex(workflow.id)
+      );
+      assertEquals(reads, 0);
+      assertEquals(summaries.map((s) => s.id).sort(), survivors);
+      assertEquals(
+        summaries.find((s) => s.id === running.id)?.status,
+        "running",
+      );
+      const [snapshot, snapshotReads] = await countingRecordReads(() =>
+        repo.runIndexSnapshot(workflow.id)
+      );
+      assertEquals(snapshotReads, 0);
+      assertEquals(snapshot.size, survivors.length);
+      assertEquals(
+        spans.filter((s) => s.name === "swamp.workflow_runs.index.rebuild")
+          .length,
+        0,
+      );
+    });
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the index entry of a run saved while it collects (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "concurrent");
+    const indexDir = runsDirOf(dir, workflow.id);
+    const { kept } = await saveRetentionHistory(dir, repo, workflow, 3, 5);
+    const fresh = WorkflowRun.create(workflow);
+    fresh.start();
+
+    await Promise.all([
+      repo.deleteOlderThan(RETENTION_CUTOFF()),
+      repo.save(workflow.id, fresh),
+    ]);
+
+    const expected = [...kept, fresh].map((r) => r.id).sort();
+    assertEquals(await indexIds(indexDir), expected);
+    assertEquals([...await repo.listRunIds()].sort(), expected);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the index entry of a removed run whose record is put back before the index is updated (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "put-back");
+    const indexDir = runsDirOf(dir, workflow.id);
+    const { old, kept } = await saveRetentionHistory(dir, repo, workflow, 3, 2);
+    const putBack = old[0];
+    const putBackPath = join(indexDir, `workflow-run-${putBack.id}.yaml`);
+    const content = await Deno.readTextFile(putBackPath);
+
+    // Hold the workflow's index queue so the index update waits until the
+    // record is back.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => release = resolve);
+    const held = withIndexQueue(indexDir, () => gate);
+    const collecting = repo.deleteOlderThan(RETENTION_CUTOFF());
+    try {
+      await waitFor(
+        async () => !(await pathExists(putBackPath)),
+        "the collected record to be removed",
+      );
+      await Deno.writeTextFile(putBackPath, content);
+    } finally {
+      release();
+    }
+    await held;
+    const result = await collecting;
+
+    assertEquals(result.deletedRunIds.sort(), old.map((r) => r.id).sort());
+    assertEquals(
+      await indexIds(indexDir),
+      [...kept, putBack].map((r) => r.id).sort(),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findAllSummariesFromIndex: records removed by an interrupted cleanup are dropped from the index without reading a record (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "interrupted");
+    const indexDir = runsDirOf(dir, workflow.id);
+    const { old, kept } = await saveRetentionHistory(dir, repo, workflow, 3, 5);
+    // The records went but the cleanup stopped before the index update.
+    for (const run of old) {
+      await Deno.remove(join(indexDir, `workflow-run-${run.id}.yaml`));
+    }
+
+    await withCapturedSpans(async (spans) => {
+      const [summaries, reads] = await countingRecordReads(() =>
+        repo.findAllSummariesFromIndex(workflow.id)
+      );
+      assertEquals(reads, 0);
+      assertEquals(
+        summaries.map((s) => s.id).sort(),
+        kept.map((r) => r.id).sort(),
+      );
+      const repair = findSpan(spans, "swamp.workflow_runs.index.repair");
+      assertEquals(repair.attributes["workflow_runs.records_read"], 0);
+      assertEquals(
+        spans.filter((s) => s.name === "swamp.workflow_runs.index.rebuild")
+          .length,
+        0,
+      );
+    });
+    assertEquals(await indexIds(indexDir), kept.map((r) => r.id).sort());
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the run index with the last run, even one listing a record already gone (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "emptied");
+    const indexDir = runsDirOf(dir, workflow.id);
+    const { old } = await saveRetentionHistory(dir, repo, workflow, 2, 0);
+    // An entry whose record went missing before the pass.
+    const orphan = await saveFinishedRun(repo, workflow);
+    await Deno.remove(join(indexDir, `workflow-run-${orphan.id}.yaml`));
+
+    const result = await repo.deleteOlderThan(RETENTION_CUTOFF());
+
+    assertEquals(result.deletedRunIds.sort(), old.map((r) => r.id).sort());
+    assertEquals(await pathExists(getIndexPath(indexDir)), false);
+    assertEquals(await pathExists(indexDir), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: deletes a run index of another schema version rather than updating it (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "old-schema");
+    const indexDir = runsDirOf(dir, workflow.id);
+    await saveRetentionHistory(dir, repo, workflow, 2, 2);
+    const index = await readRunIndex(indexDir);
+    await Deno.writeTextFile(
+      getIndexPath(indexDir),
+      JSON.stringify({
+        version: INDEX_SCHEMA_VERSION - 1,
+        entries: index!.entries,
+      }),
+    );
+
+    await repo.deleteOlderThan(RETENTION_CUTOFF());
+
+    assertEquals(await pathExists(getIndexPath(indexDir)), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: a dry run leaves the run index as it was (swamp-club#3856)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "dry-run");
+    const indexDir = runsDirOf(dir, workflow.id);
+    await saveRetentionHistory(dir, repo, workflow, 2, 2);
+    const before = await Deno.readTextFile(getIndexPath(indexDir));
+
+    const result = await repo.deleteOlderThan(RETENTION_CUTOFF(), {
+      dryRun: true,
+    });
+
+    assertEquals(result.deleted, 2);
+    assertEquals(await Deno.readTextFile(getIndexPath(indexDir)), before);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: with records in another datastore, removes a legacy index beside them and keeps the repo-local one (swamp-club#3856)", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflow = createWorkflowWithId(crypto.randomUUID(), "external");
+    const indexDir = localRunsDir(repoDir, workflow.id);
+    const recordsDir = join(storeDir, workflow.id);
+    const kept = await saveFinishedRun(repo, workflow);
+    const old = await saveFinishedRun(repo, workflow);
+    const oldPath = join(recordsDir, `workflow-run-${old.id}.yaml`);
+    await Deno.writeTextFile(oldPath, "");
+    await backdate(oldPath, 400 * 86_400_000);
+    const legacy = getIndexPath(recordsDir);
+    await Deno.writeTextFile(legacy, "{}");
+
+    const result = await repo.deleteOlderThan(RETENTION_CUTOFF());
+
+    assertEquals(result.deletedRunIds, [old.id]);
+    assertEquals(await pathExists(legacy), false);
+    assertEquals(await indexIds(indexDir), [kept.id]);
+  });
+});

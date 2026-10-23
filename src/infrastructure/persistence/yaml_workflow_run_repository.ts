@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { basename, join } from "@std/path";
+import { basename, join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
   signalChange,
@@ -1077,7 +1077,21 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     let deleted = 0;
     let bytesReclaimed = 0;
     const deletedRunIds: string[] = [];
-    const affectedDirs = new Set<string>();
+    // The run ids removed from each records directory, whose index entries
+    // are dropped once the scan is done (swamp-club#3856).
+    const removedRuns = new Map<
+      string,
+      { workflowId: WorkflowId; runIds: string[] }
+    >();
+    const noteRemoved = (
+      dir: string,
+      workflowId: WorkflowId,
+      runId: string,
+    ): void => {
+      const removed = removedRuns.get(dir);
+      if (removed) removed.runIds.push(runId);
+      else removedRuns.set(dir, { workflowId, runIds: [runId] });
+    };
     // Repo-local workflow dirs a log was removed from, each with one removed
     // log path, so the dirs left empty can be removed once their index is.
     const localLogDirs = new Map<string, string>();
@@ -1138,18 +1152,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                   options?.dryRun ?? false,
                   localLogDirs,
                 );
+                const fileRunId = runIdFromFileName(fileEntry.name);
                 if (!options?.dryRun) {
                   await cleanupEmptyParentDirs(yamlPath, this.baseDir);
-                  affectedDirs.add(dir);
-                  await this.stageRunRemoval(
-                    workflowId,
-                    runIdFromFileName(fileEntry.name),
-                    dir,
-                  );
+                  noteRemoved(dir, workflowId, fileRunId);
+                  await this.stageRunRemoval(workflowId, fileRunId, dir);
                 }
                 deleted++;
                 bytesReclaimed += fileBytes;
-                const fileRunId = runIdFromFileName(fileEntry.name);
                 if (isSinglePathSegment(fileRunId)) {
                   deletedRunIds.push(fileRunId);
                 }
@@ -1191,23 +1201,19 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 options?.dryRun ?? false,
                 localLogDirs,
               );
-              if (!options?.dryRun) {
-                await cleanupEmptyParentDirs(yamlPath, this.baseDir);
-                affectedDirs.add(dir);
-                await this.stageRunRemoval(
-                  workflowId,
-                  runIdFromFileName(fileEntry.name),
-                  dir,
-                );
-              }
-
-              deleted++;
-              bytesReclaimed += fileBytes;
               // Report the ID of the file actually deleted — its name, which
               // save() writes via getPath — not the body's `id`, which could
               // name a different (live) run. Only a single safe path segment
               // may name a snapshot directory.
               const runId = runIdFromFileName(fileEntry.name);
+              if (!options?.dryRun) {
+                await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+                noteRemoved(dir, workflowId, runId);
+                await this.stageRunRemoval(workflowId, runId, dir);
+              }
+
+              deleted++;
+              bytesReclaimed += fileBytes;
               if (isSinglePathSegment(runId)) deletedRunIds.push(runId);
             } catch (error) {
               if (error instanceof Deno.errors.NotFound) continue;
@@ -1236,12 +1242,17 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       );
     }
 
-    for (const dir of affectedDirs) {
-      await deleteRunIndex(dir);
-      const workflowId = basename(dir) as WorkflowId;
-      if (workflowId) {
-        await deleteRunIndex(this.getLocalIndexDir(workflowId));
-      }
+    // The index is kept and only the removed runs' entries are dropped: a
+    // discarded index makes the next read parse every surviving record
+    // (swamp-club#3856). A scan that threw above updates no index; the
+    // count check then sees the removed records and drops their entries
+    // with a stat per record.
+    for (const [dir, { workflowId, runIds }] of removedRuns) {
+      const indexDir = this.getLocalIndexDir(workflowId);
+      // An index beside records kept outside the repo predates the
+      // repo-local index (#1926); in the default layout it is this one.
+      if (resolve(dir) !== resolve(indexDir)) await deleteRunIndex(dir);
+      await this.dropRemovedIndexEntries(workflowId, dir, runIds);
     }
 
     for (const logPath of localLogDirs.values()) {
@@ -1928,6 +1939,59 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       } catch (error) {
         logger
           .warn`Failed to update run index, deleting for rebuild: ${error}`;
+        await deleteRunIndex(indexDir);
+      }
+    });
+  }
+
+  /**
+   * Drops the index entries of runs whose records retention removed, in the
+   * index queue, so the next read finds an index in step with the records
+   * instead of parsing every survivor to rebuild it (swamp-club#3856). An
+   * entry is dropped only while its record is still gone: a save or pull
+   * that put the record back keeps it. With no records left the index goes
+   * too, entries the pass did not remove included, so the emptied workflow
+   * directory can be removed. A missing index is left for the next read to
+   * build; one of another schema version, or that cannot be updated, is
+   * deleted for a rebuild, as {@link updateIndexEntry} does.
+   *
+   * Entries are looked up by the run id in each removed file's name, while
+   * a rebuild keys them by the id in the record's body. Where a hand-edited
+   * or corrupted record makes the two differ, an entry can be left behind
+   * or dropped for a record that remains; either way the index then lists
+   * a different number of runs than there are records, and the next read's
+   * repair corrects it with a stat per record (see {@link reconcileSuspects}).
+   */
+  private async dropRemovedIndexEntries(
+    workflowId: WorkflowId,
+    runsDir: string,
+    runIds: readonly string[],
+  ): Promise<void> {
+    const indexDir = this.getLocalIndexDir(workflowId);
+    this.runIndexCache.delete(workflowId);
+    await withIndexQueue(indexDir, async () => {
+      try {
+        const result = await readRunIndex(indexDir);
+        if (!result) return;
+        if (
+          result.version !== INDEX_SCHEMA_VERSION ||
+          countYamlRunFiles(await listDirEntries(runsDir)) === 0
+        ) {
+          await deleteRunIndex(indexDir);
+          return;
+        }
+        let changed = false;
+        for (const runId of runIds) {
+          if (!(runId in result.entries)) continue;
+          const path = join(runsDir, `workflow-run-${runId}.yaml`);
+          if (await statRecord(path) !== null) continue;
+          delete result.entries[runId];
+          changed = true;
+        }
+        if (changed) await writeRunIndex(indexDir, result.entries);
+      } catch (error) {
+        logger
+          .warn`Failed to drop removed runs from run index, deleting for rebuild: ${error}`;
         await deleteRunIndex(indexDir);
       }
     });
