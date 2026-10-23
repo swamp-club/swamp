@@ -945,6 +945,7 @@ export const modelKindAdapter: KindAdapter = {
       sourcePath: entry.source_path,
       version: entry.version,
       sourceFingerprint: entry.source_fingerprint,
+      extensionName: entry.extension_name || undefined,
     });
   },
 

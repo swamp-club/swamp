@@ -685,6 +685,7 @@ export async function reloadPulledExtensions(
               sourcePath: row.source_path,
               version: row.version,
               sourceFingerprint: row.source_fingerprint,
+              extensionName: row.extension_name || undefined,
             });
             await modelRegistry.ensureTypeLoaded(row.type_normalized);
             reloadedCount++;

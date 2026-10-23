@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ModelDefinition } from "../../domain/models/model.ts";
+import {
+  type ModelDefinition,
+  modelRegistry,
+} from "../../domain/models/model.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -56,12 +59,22 @@ export interface TypeDescribeDeps {
   resolveModelType: (
     type: ModelType,
   ) => Promise<ModelDefinition | undefined>;
+  /**
+   * The types an installed extension of this name provides, so a type not
+   * found that is an extension's name can point at them. Absent means no
+   * suggestion.
+   */
+  typesProvidedByExtension?: (extensionName: string) => string[];
 }
 
 /** Wires real infrastructure into TypeDescribeDeps. */
 export function createTypeDescribeDeps(): TypeDescribeDeps {
   return {
     resolveModelType: (type) => resolveModelType(type, null),
+    typesProvidedByExtension: (extensionName) =>
+      modelRegistry.typesProvidedByExtension(extensionName).map((t) =>
+        t.normalized
+      ),
   };
 }
 
@@ -79,15 +92,15 @@ export async function* typeDescribe(
 
       const definition = await deps.resolveModelType(modelType);
       if (!definition) {
-        const searchTerm = deriveSearchTerm(modelType.normalized);
         const installName = deriveInstallName(modelType.normalized);
+        const provided = deps.typesProvidedByExtension?.(installName) ?? [];
         yield {
           kind: "error",
           error: behaviorTypeNotFound(
             `${modelType.raw}\n\n` +
-              `This type may be available as an extension:\n` +
-              `  Search:  swamp extension search ${searchTerm}\n` +
-              `  Install: swamp extension pull ${installName}`,
+              (provided.length > 0
+                ? installedExtensionHint(installName, provided)
+                : registryHint(modelType.normalized, installName)),
           ),
         };
         return;
@@ -122,6 +135,30 @@ export async function* typeDescribe(
       };
     })(),
   );
+}
+
+/**
+ * Points a name that is an installed extension's, not a type's, at the
+ * types that extension provides (swamp-club#3819).
+ */
+function installedExtensionHint(
+  extensionName: string,
+  types: string[],
+): string {
+  if (types.length === 1) {
+    return `Did you mean ${
+      types[0]
+    }? (provided by installed extension ${extensionName})`;
+  }
+  return `Did you mean one of these types provided by installed extension ${extensionName}?\n` +
+    types.map((type) => `  ${type}`).join("\n");
+}
+
+/** Suggests finding the type in the extension registry. */
+function registryHint(normalized: string, installName: string): string {
+  return `This type may be available as an extension:\n` +
+    `  Search:  swamp extension search ${deriveSearchTerm(normalized)}\n` +
+    `  Install: swamp extension pull ${installName}`;
 }
 
 /**
