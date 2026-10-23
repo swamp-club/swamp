@@ -63,7 +63,10 @@ import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
-import { WorkflowExecutionService } from "../src/domain/workflows/execution_service.ts";
+import {
+  type DirectTypeResolver,
+  WorkflowExecutionService,
+} from "../src/domain/workflows/execution_service.ts";
 import type { WorkflowExecutionEvent } from "../src/domain/workflows/execution_events.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
@@ -126,7 +129,7 @@ export interface Fixture {
     edit: (data: Record<string, unknown>) => void,
   ) => Promise<void>;
   /** Called by the write methods once their record is written. */
-  hooks: { afterWrite?: () => void };
+  hooks: { afterWrite?: () => void; directTypeResolver?: DirectTypeResolver };
   /**
    * Writes one tagged record per canary class through a prior run of the
    * real writer, then clears the counters, so a scenario's loads and checks
@@ -191,14 +194,14 @@ export async function withFixture(
     }),
   });
   const received: Received[] = [];
-  const hooks: { afterWrite?: () => void } = {};
+  const hooks: Fixture["hooks"] = {};
   const type = ModelType.create(
     `test/typed-passes-${crypto.randomUUID().slice(0, 8)}`,
   );
   modelRegistry.register({
     type,
     version: "2026.10.21.1",
-    globalArguments: z.object({}),
+    globalArguments: z.object({ globalPassword: z.string().optional() }),
     resources: {
       creds: {
         description: "Credentials",
@@ -261,8 +264,13 @@ export async function withFixture(
           password: z.string().optional(),
           note: z.string().optional(),
         }),
-        execute: (args) => {
-          received.push({ ...(args as Received) });
+        execute: (args, context) => {
+          received.push({
+            ...(args as Received),
+            ...(context.globalArgs.globalPassword === undefined ? {} : {
+              password: context.globalArgs.globalPassword as string,
+            }),
+          });
           return Promise.resolve({ dataHandles: [] });
         },
       },
@@ -329,6 +337,7 @@ export async function withFixture(
           undefined,
           undefined,
           catalog,
+          hooks.directTypeResolver,
         );
         for await (const event of events(service)) {
           result.events.push(event);

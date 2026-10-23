@@ -35,6 +35,7 @@ import {
 } from "@std/assert";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
+import { SecretDestinationRefusedError } from "../models/secret_destinations.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   authoredConstantsProducing,
@@ -2550,17 +2551,43 @@ Deno.test("resolveAllExpressionsInData: an inline destination receives the loade
   });
 });
 
-Deno.test("resolveVaultExpressionsInDefinition: the deprecated seam loads the values its callers expect", async () => {
+Deno.test("resolveAllExpressionsInData: a typed routing destination refuses before loading and names the destination and authored location", async () => {
   await withTempDir(async (repoDir) => {
-    const { service, reads } = countingEvaluator(repoDir, { token: "s3cret" });
-    const resolved = await service.resolveVaultExpressionsInDefinition(
-      Definition.create({
-        name: "legacy-def",
-        globalArguments: { token: "${{ vault.get('v', 'token') }}" },
-      }),
+    const { service, reads, checks } = countingEvaluator(repoDir, {
+      token: "never-loaded",
+    });
+    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const context = attachSensitiveValues(
+      makeContext(),
+      new RunSensitiveValues(
+        undefined,
+        registry,
+      ),
     );
-    assertEquals(resolved.globalArguments.token, "s3cret");
-    assertEquals(reads, ["token"]);
+    const data = { labels: { pool: "p-${{ vault.get('v', 'token') }}" } };
+    const error = await assertRejects(
+      () =>
+        service.resolveAllExpressionsInData(
+          data,
+          context,
+          undefined,
+          collectAuthoredExpressions(data),
+          ProvenanceMap.authored(),
+          {
+            destination: "placement",
+            location: "deploy.placement",
+            secretBag: new VaultSecretBag(registry),
+          },
+        ),
+      SecretDestinationRefusedError,
+      "deploy.placement.labels.pool",
+    );
+    assertEquals(error.code, SECRET_DESTINATION_REFUSED);
+    assertEquals(error.destination, "placement");
+    assertEquals(error.message.includes("never-loaded"), false);
+    assertEquals(error.message.includes("__SWAMP_VSEC_"), false);
+    assertEquals(reads, []);
+    assertEquals(checks, ["token"]);
   });
 });
 
