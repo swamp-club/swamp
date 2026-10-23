@@ -959,15 +959,33 @@ plaintext, and neither replays; the error code is
 Workflow `--last-evaluated` replays the workflow cache and its pinned inputs,
 then evaluates each step's definition again; it does not replay the evaluated
 definition cache (swamp-club#3583). Its definition writes still mask sensitive
-arguments. The behavior replay check covers the global arguments and the
-replayed method's arguments; one that an `--input` override replaces after
-replay is not counted. A plain re-run writes the mask again, so the message
-points at what makes the run replayable: a vault reference. Authored text joined
+arguments and forwarded aliases. The behavior replay check covers the global
+arguments and the replayed method's arguments; one that an `--input` override
+replaces after replay is not counted. An `--input` whose name is a declared
+definition input does not replace the cached argument. The evaluated definition
+caches forwarded step inputs only when the method schema accepts them. If an
+argument is masked, forwarded copies of definition inputs are masked too,
+including inputs read without a declaration and computed input reads; other
+unknown keys are omitted. An input feeding a sensitive argument is therefore
+not saved beside it under an unmarked name. While no argument is masked, the
+accepted step inputs, including names shared with definition inputs and inputs
+to preprocessors, keep their executed values in the cache. A plain re-run writes
+the mask again, so the message points at what makes the run replayable: a vault
+reference. Method sensitivity also covers global values used as fallback method
+arguments; the mask records their actual global position. Authored text joined
 to a reference or a pending runtime expression stays as written. Resolved input
 or data text beside it masks the entire sensitive leaf, unless every resolved
 segment is a recorded vault reference, and expression-shaped input data is
 masked too. `${{ env.X }}` remains an expression in the cache and resolves at
-runtime on each run, including replay; its value is never cached. Inside a
+runtime on each run, including replay; its value is never cached. A value an
+operator types as a `swamp behavior run --input` is the run's data for this
+purpose, exactly as under `--literal-inputs`: joined to a vault reference in a
+sensitive argument it masks the leaf, and a record it supplies is masked whole.
+Only the expression occurrences the operator typed stay authored, so
+`--input key="${{ vault.get(...) }}"` still resolves, is cached as the
+reference, and replays. The cache carries the source definition's expressions
+and those an input contributed that the cache still holds; an input expression
+the evaluation consumed, such as a constant, is not written with it. Inside a
 sensitive container, leaves are checked one by one, except where object keys
 could be data: a sensitive object with any data under it, or an array holding
 such an object, is masked whole, and so is an object whose keys came from data
@@ -978,7 +996,33 @@ does not record every data key on its own, so an authored object holding a
 data-origin vault reference, or a fixed object shape supplied whole from data,
 is masked as well, and such a run is not replayed. `persistedProvenance` records
 data ranges in the saved text, alongside the raw replay provenance, so a written
-vault reference cannot exempt adjacent input text.
+vault reference cannot exempt adjacent input text. A deferred expression keeps
+only the captured roots it reads. When an argument is masked, captured scopes
+are omitted from the definition cache and recorded as masked too; behavior
+replay refuses that incomplete scope. Runtime-only deferred expressions retain
+their workflow metadata and can still replay when an override replaces the
+sensitive argument. Sensitive deferred arguments that capture non-vault values,
+in their leaves or their keys, are masked before those values reach disk. Inputs
+to preprocessors or pipelines with sensitive output fields, and the global
+arguments a schema with a transform may consume, are only potentially sensitive,
+and no transform runs
+during persistence to tell. Only data is masked at such a position, at the
+leaf: an authored literal is already the definition's own text on disk, and a
+vault reference names where the secret lives, so both stay, and a vault-only
+definition replays whatever transforms its type's schemas hold, in the replayed
+method, another method or a non-sensitive global (swamp-club#3681). Such a
+container is omitted whole only when its own keys came from data; run the
+behavior again without `--last-evaluated` in that case. An omitted argument
+record is written as an empty record, never as the mask, and recorded at its
+root without the key names. When an argument record is omitted, or an
+expression reads the inputs whole or with a computed key, the argument record
+the forwarded step inputs sit in is omitted the same way, since any of their
+names may feed the sensitive output. Ordinary masked method fields can still be
+replaced by fresh step inputs. Masking repeats until the repository guard agrees
+with the masked snapshot, including when a masked discriminator changes which
+union members are checked.
+The completed event and the method-summary report mask the same positions the
+cache masks, with a pipeline's raw inputs masked where they hold data.
 The cache is written once the method's arguments have passed their schema, so
 a run the schema refuses never replaces the last good evaluation.
 A parse the schema refuses registers what each issue at a sensitive position
@@ -1011,6 +1055,43 @@ described, and a throw withheld, the same way wherever arguments are parsed
 outside a run: `model validate` and the workflow step pre-check report them as
 failed validations, and `model create` and direct execution as their
 validation error.
+
+The redactor holds what the method can echo: each sensitive value, a sensitive
+number or bigint as it prints, and what the method receives once its schema has
+parsed the arguments, a transform's output and any object key the parse
+introduced included (swamp-club#3754). A parse that delivers a sensitive array
+or scalar in place of a record, or a value under a schema marked at its root,
+registers it too. Global arguments are parsed the same way, and what their
+parse delivers to the method's context, a transform's output included, is
+registered as a method argument's parse is; a delivery that is a scalar, null
+or an array is refused, naming its shape and never its value, and an instance
+is stored by its own properties. What a transform, codec, `.overwrite()` or
+`.catch()` enclosing a sensitive position delivers is registered whole, since
+its code may have moved the value under any key or into any container (a Map, a
+Set, an instance), less the text the arguments hold only at positions the
+schema leaves plain, which the schema itself declares no secret, so a region, a
+port or a year the transform passes through is not masked out of every log and
+resource. Only the values of such a whole are registered, not its keys: its
+code wrote them, and an identifier such as `headers` or `Authorization` would
+be masked in all unrelated output. The accepted residual is that a secret such
+code moves into an object key is not registered, and a constant it writes is; a
+key under a position the schema itself marks is registered when the parse
+introduced it and the schema does not declare it. A placed step ships its
+worker the secrets a local run registers for its global arguments, read against
+what their parse received, so a plain value is not masked there either. A
+refinement that rewrites the object it validates by reference is not guarded,
+and as stored, the input of a pipeline whose transform feeds a sensitive output
+is masked in the evaluated cache only: the definition's own text is authored,
+and the schema marks the output.
+The keys a sensitive record took from data are not registered: they are
+identifiers, often short and common words, and the redactor replaces every
+occurrence of what it holds, so registering them would corrupt unrelated output
+(a stored `production` would read `***uction`) and can make a data write refuse
+over colliding property names. Such a record is masked whole in the cache and
+the reports instead, and a method that echoes its keys shows them as written.
+A record an operator types as an input keeps its keys as data beside an
+expression typed into it, so it is masked at the record as under
+`--literal-inputs`.
 
 Tags, labels, forEach step names and data-name suffixes cannot hold a
 reference, since readers match them by exact string, so a sensitive value in
@@ -1054,6 +1135,11 @@ arguments. For a sensitive argument field, the framework:
    are scrubbed even if the extension behavior writes them there. The vault
    references swamp writes for the resource's own sensitive fields are left as
    written, since their keys can embed such a value through the instance name.
+   Redaction works node by node on the resource's JSON structure, so the stored
+   resource stays valid JSON (swamp-club#3754): a string or a key is masked as
+   text; a number, or an object or array, whose JSON text is itself a secret
+   becomes the string `"***"`; and a number that only contains a secret's
+   digits is kept.
 3. Shows the field as `"***"` in the generated method summary reports (Markdown
    and JSON).
 4. Passes the error a method throws through the run's redactor. A sensitive

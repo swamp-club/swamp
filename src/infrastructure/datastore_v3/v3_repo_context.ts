@@ -78,7 +78,7 @@ import {
   parseProcessIdentity,
   type ProcessIdentity,
 } from "../../domain/datastore_v3/process_liveness.ts";
-import { localProcess } from "./process_identity.ts";
+import { hostnameOf, localProcess } from "./process_identity.ts";
 import {
   acquireV3Replication,
   type ReplicationHandle,
@@ -803,8 +803,8 @@ async function removeOwnWriterCheckout(datastorePath: string): Promise<void> {
   try {
     const recorded = await readWriterCheckout(datastorePath);
     if (
-      recorded !== undefined && recorded.pid === Deno.pid &&
-      recorded.hostname === Deno.hostname() && recorded.fence === mine.fence
+      recorded !== undefined && recorded.fence === mine.fence &&
+      isThisProcess(recorded, await localProcess())
     ) {
       await Deno.remove(writerCheckoutPath(datastorePath));
     }
@@ -843,13 +843,14 @@ async function anotherProcessWritesCheckout(
   ) {
     return false;
   }
+  const local = await localProcess();
   // This process's own sidecar, known by the fence it wrote it with: never
   // judged by liveness, which may not place this process when its boot id
   // cannot be read.
-  if (isOwnWriterCheckout(datastorePath, recorded)) return false;
+  if (isOwnWriterCheckout(datastorePath, recorded, local)) return false;
   // Judged before the lease is read: a gone writer's sidecar costs no read
   // of the lease's records.
-  if (!mayBeAnotherWriter(recorded, await localProcess())) return false;
+  if (!mayBeAnotherWriter(recorded, local)) return false;
   const holder = await v3WriterLeaseHolder(datastorePath);
   if (holder === null) return false;
   return recorded.fence === undefined
@@ -861,10 +862,32 @@ async function anotherProcessWritesCheckout(
 function isOwnWriterCheckout(
   datastorePath: string,
   recorded: WriterCheckoutRecord,
+  local: LocalProcess,
 ): boolean {
   const mine = recordedCheckouts.get(resolve(datastorePath));
-  return mine !== undefined && recorded.pid === Deno.pid &&
-    recorded.hostname === Deno.hostname() && recorded.fence === mine.fence;
+  return mine !== undefined && recorded.fence === mine.fence &&
+    isThisProcess(recorded, local);
+}
+
+/**
+ * Whether `recorded` names this process: by its pid and identity, whatever
+ * the hostname is now (swamp-club#3801). A record without an identity, or
+ * one this kernel cannot place (its boot id unreadable), by its pid and
+ * hostname, as before.
+ */
+function isThisProcess(
+  recorded: WriterCheckoutRecord,
+  local: LocalProcess,
+): boolean {
+  if (recorded.pid !== local.pid) return false;
+  const verdict = recorded.process === undefined
+    ? "unknown"
+    : judgeRecordedProcess(
+      { pid: recorded.pid, process: recorded.process },
+      local,
+    );
+  if (verdict !== "unknown") return verdict === "alive";
+  return recorded.hostname === hostnameOf(local);
 }
 
 /**
@@ -878,7 +901,7 @@ function mayBeAnotherWriter(
 ): boolean {
   if (recorded.fence === undefined) {
     return !(recorded.pid === local.pid &&
-      recorded.hostname === Deno.hostname());
+      recorded.hostname === hostnameOf(local));
   }
   const verdict = judgeRecordedProcess(
     {

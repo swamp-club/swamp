@@ -317,9 +317,11 @@ export function bindV3BucketDatastore(
 ): V3DatastoreLocation {
   const known = locations.get(config);
   if (known !== undefined) return known;
+  // The local root stays keyed on the root as written, so no existing copy
+  // moves (swamp-club#3801).
   const ownRoot = replicaRootOf(
     assertV3BucketHost(provider, config.type, options.platform),
-  );
+  ).value;
   const replica = resolveV3ReplicaSetting(provider, config.type);
   const root = resolve(v3BucketLocalRoot(repoDir, ownRoot));
   const existing = bindings.get(root);

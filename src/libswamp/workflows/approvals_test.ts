@@ -90,6 +90,7 @@ function makeRun(overrides?: {
   stepName?: string;
   approvalTimeout?: number;
   forEachTemplate?: string;
+  initiatedBy?: string;
 }): WorkflowRun {
   const stepStatus = overrides?.stepStatus ?? "waiting_approval";
   const startedAt = overrides?.startedAt ?? new Date();
@@ -101,6 +102,7 @@ function makeRun(overrides?: {
     status: overrides?.status ?? "suspended",
     inputs,
     instanceId: overrides?.instanceId,
+    initiatedBy: overrides?.initiatedBy,
     parentRun: overrides?.parentRun
       ? { kind: "valid", ref: overrides.parentRun }
       : undefined,
@@ -235,6 +237,20 @@ Deno.test("workflowApprovals: includes run inputs in pending approval", async ()
       region: "us-west-2",
     });
   }
+});
+
+Deno.test("workflowApprovals: names who started the run when the run recorded it", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const started = makeRun({ id: "run-started", initiatedBy: "user:alice" });
+  const unrecorded = makeRun({ id: "run-unrecorded" });
+  const deps = makeDeps(
+    [wf],
+    new Map([[WF_ID as string, [started, unrecorded]]]),
+  );
+  const data = await completedData(deps);
+  const byRun = new Map(data.approvals.map((a) => [a.runId, a]));
+  assertEquals(byRun.get("run-started")?.initiatedBy, "user:alice");
+  assertEquals("initiatedBy" in byRun.get("run-unrecorded")!, false);
 });
 
 Deno.test("workflowApprovals: returns empty inputs when run has no inputs", async () => {

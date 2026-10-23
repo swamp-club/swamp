@@ -28,7 +28,7 @@ import {
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, isAbsolute, join } from "@std/path";
-import { stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import {
   getIndexPath,
@@ -38,6 +38,9 @@ import {
 } from "./workflow_run_index.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -3816,5 +3819,78 @@ Deno.test("findLatestByWorkflowId: a read the index answers opens no run read sp
       await repo.save(workflow.id, run);
       assertEquals(runReadSpans(spans).map((s) => s.name), []);
     });
+  });
+});
+
+Deno.test("save: the run index holds a typed run's inputs and failure reason as reference text, never a sentinel or a value (typed-secrets 4.4)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    const values = new RunSensitiveValues(
+      undefined,
+      new SecretBagRegistry({ typedSecrets: true }),
+    );
+    const sentinel = new VaultSecretBag(values.sentinels).addSecret(
+      { vaultName: "v", key: "k" },
+      "inputs.token",
+    );
+    run.attachSensitiveValues(values);
+    run.captureInputs({ token: `Bearer ${sentinel}` });
+    run.start();
+    const step = run.getJob("job1")!.getStep("step1")!;
+    step.start();
+    step.fail(`rejected ${sentinel}`);
+    run.getJob("job1")!.fail();
+    run.complete();
+    await repo.save(workflow.id, run);
+
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    const index = await readRunIndex(runsDir);
+    const entry = index!.entries[run.id]!;
+    const reference = "${{ vault.get('v', 'k') }}";
+    assertEquals(entry.inputs, { token: `Bearer ${reference}` });
+    assertEquals(entry.failureReason?.includes(reference), true);
+    const text = JSON.stringify(index);
+    assertEquals(text.includes("__SWAMP_VSEC_"), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: on v3, the staged record of a typed run is the persisted form, references in place and no sentinel or value (typed-secrets 4.4)", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, uow, batches } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    const values = new RunSensitiveValues(
+      undefined,
+      new SecretBagRegistry({ typedSecrets: true }),
+    );
+    const sentinel = new VaultSecretBag(values.sentinels).addSecret(
+      { vaultName: "v", key: "k" },
+      "inputs.token",
+    );
+    run.attachSensitiveValues(values);
+    run.captureInputs({ token: `Bearer ${sentinel}` });
+    run.start();
+    await runInUnitOfWork(uow, () => repo.save(workflow.id, run));
+    assertEquals(batches.length, 1);
+    const content = await contentOf(batches[0][0]);
+    assertEquals(
+      content,
+      await Deno.readTextFile(repo.getPath(workflow.id, run.id)),
+    );
+    assertEquals(content.includes("__SWAMP_VSEC_"), false);
+    const staged = parseYaml(content) as {
+      inputs?: Record<string, unknown>;
+      writtenReferences?: unknown[];
+    };
+    assertEquals(staged.inputs, { token: "Bearer ${{ vault.get('v', 'k') }}" });
+    assertEquals(staged.writtenReferences?.length, 1);
   });
 });

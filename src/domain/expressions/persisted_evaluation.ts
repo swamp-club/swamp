@@ -17,16 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { z } from "zod";
+import { z } from "zod";
 import { Definition, type DefinitionData } from "../definitions/definition.ts";
 import {
   findSensitiveValues,
+  hasSensitiveFields,
   holdsRuntimeExpression,
   isLiteralSecret,
 } from "../models/sensitive_field_extractor.ts";
 import {
+  isRecordSchema,
+  schemaTransformsValues,
+} from "../models/zod_type_coercion.ts";
+import {
   type DataPath,
   rehydratePersistedForm,
+  rehydrateReferences,
   type RunSensitiveValues,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
@@ -35,29 +41,50 @@ import {
   type WrittenReference,
 } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import type { DeferredExpression } from "./deferred_expression.ts";
+import {
+  type DeferredExpression,
+  deferredExpressionReference,
+} from "./deferred_expression.ts";
+import { expressionReferences, freeRoots } from "./cel_grammar.ts";
+import { matchSingleExpression } from "./expression_scanner.ts";
+import { UserError } from "../errors.ts";
 import { extractExpressions } from "./expression_parser.ts";
 import {
   alignProvenance,
   indexPath,
   keyPath,
   ProvenanceMap,
+  sentinelReferenceTextOf,
 } from "./provenance_map.ts";
 
 /**
  * A masked position in a cached definition, as the keys from the file root:
  * `["globalArguments", "apiKey"]`, `["methods", "run", "arguments", "token"]`.
+ * A removed captured scope is `["deferredExpressions", index, "bindings"]`.
  * The cache records these beside `writtenReferences`, so a replay refuses
  * them even under a later schema that no longer marks the field.
  */
 export type MaskedPath = readonly (string | number)[];
+
+/** Only argument positions and removed deferred scopes belong in cache metadata. */
+export const MaskedPathSchema = z.array(
+  z.union([z.string(), z.number().int().nonnegative()]),
+).refine((path) =>
+  (path[0] === "globalArguments" && (path.length === 1 ||
+    (path.length >= 2 && typeof path[1] === "string"))) ||
+  (path[0] === "methods" && path.length >= 3 &&
+    typeof path[1] === "string" && path[2] === "arguments" &&
+    (path.length === 3 || typeof path[3] === "string")) ||
+  (path[0] === "deferredExpressions" && path.length === 3 &&
+    typeof path[1] === "number" && path[2] === "bindings")
+);
 
 /** An evaluated definition as it is written to the evaluated cache. */
 export interface PersistedEvaluatedDefinition {
   definition: Definition;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
-  /** The positions whose literal value became the mask, for the cache. */
+  /** Positions replaced by the mask, an empty argument record, or an empty scope. */
   maskedPaths: MaskedPath[];
   /** The same positions spelled as arguments, `globalArguments.apiKey`. */
   maskedArguments: string[];
@@ -87,6 +114,10 @@ interface ArgumentSite {
   prefix: readonly (string | number)[];
   schema: z.ZodTypeAny;
   args: Record<string, unknown>;
+  /** Method arguments override global fallback values at the top-level key. */
+  methodKeys?: ReadonlySet<string>;
+  /** Raw global inputs have no known correspondence to sensitive outputs. */
+  opaque?: boolean;
 }
 
 function argumentSites(
@@ -101,15 +132,33 @@ function argumentSites(
       args: data.globalArguments,
     });
   }
-  for (const [name, method] of Object.entries(data.methods ?? {})) {
-    const schema = Object.hasOwn(schemas.methods, name)
-      ? schemas.methods[name].arguments
-      : undefined;
-    if (!schema || !method?.arguments) continue;
+  for (const [name, method] of Object.entries(schemas.methods)) {
+    const schema = method.arguments;
+    if (!schema) continue;
+    // Own properties only: a method a type names like an Object.prototype
+    // member (`toString`) must not read the prototype's function.
+    const args = (data.methods && Object.hasOwn(data.methods, name)
+      ? data.methods[name]?.arguments
+      : undefined) ?? {};
+    const usesGlobals = !isRecordSchema(schema);
+    if (
+      usesGlobals && hasSensitiveFields(schema) &&
+      (schemaTransformsValues(schema) ||
+        (schemas.globalArguments &&
+          schemaTransformsValues(schemas.globalArguments)))
+    ) {
+      sites.push({
+        prefix: ["globalArguments"],
+        schema,
+        args: data.globalArguments ?? {},
+        opaque: true,
+      });
+    }
     sites.push({
       prefix: ["methods", name, "arguments"],
       schema,
-      args: method.arguments,
+      args: usesGlobals ? { ...data.globalArguments, ...args } : args,
+      methodKeys: usesGlobals ? new Set(Object.keys(args)) : undefined,
     });
   }
   return sites;
@@ -201,6 +250,8 @@ interface PlaintextValue {
  * under it, and no expression still to be resolved at runtime in it. A
  * sensitive container is walked leaf by leaf. Pending expressions exempt
  * only authored text; a resolved input beside one is still sensitive data.
+ * Method schemas also cover globals used as fallback arguments, and the
+ * returned position names the global where that value actually lives.
  */
 function plaintextValues(
   schemas: ArgumentSchemas,
@@ -210,7 +261,11 @@ function plaintextValues(
   plaintextDataAt?: (path: MaskedPath) => boolean,
 ): PlaintextValue[] {
   const found = new Map<string, PlaintextValue>();
-  const isPlaintext = (value: unknown, path: MaskedPath): boolean => {
+  const isPlaintext = (
+    value: unknown,
+    path: MaskedPath,
+    conservative: boolean,
+  ): boolean => {
     if (value === undefined || value === null) return false;
     if (typeof value === "string" && value.trim() === "") return false;
     if (options.allowMask === true && value === SENSITIVE_ARGUMENT_MASK) {
@@ -221,6 +276,10 @@ function plaintextValues(
         provenancePath(path),
       )
     ) return true;
+    // At a position that is only potentially sensitive, a literal is the
+    // type's own text, already on disk in the source; only data is masked
+    // there (swamp-club#3681).
+    if (conservative) return false;
     return isLiteralSecret(value) &&
       !(typeof value === "string" && holdsRuntimeExpression(value));
   };
@@ -234,7 +293,17 @@ function plaintextValues(
     const replaced = options.method && ofMethod
       ? new Set<string | number>(options.method.replaced ?? [])
       : undefined;
-    for (const entry of findSensitiveValues(site.schema, site.args)) {
+    const entries = site.opaque
+      ? [{ keys: [], path: "", value: site.args, rawInput: true as const }]
+      : findSensitiveValues(site.schema, site.args, true);
+    for (const entry of entries) {
+      // A position that is only potentially sensitive — the raw inputs of a
+      // pipeline into a sensitive output, the globals a transforming schema
+      // may consume — holds the type's own text as well as data. Only data
+      // is masked there: an authored literal is already the definition's
+      // text on disk, and a reference names where the secret lives, so
+      // masking either would only cost the replay (swamp-club#3681).
+      const conservative = site.opaque || entry.rawInput === true;
       const wholeMap = options.provenance ?? persistedMap;
       // A sensitive value inside an object whose keys came from data (a
       // record of objects an input supplied) is reported at that object, as
@@ -255,10 +324,14 @@ function plaintextValues(
       // properties is recorded only as a data leaf under it), so a leaf mask
       // could leave a data key in the file, the metadata and the refusal
       // message. This fails closed: an authored object holding a
-      // data-origin vault reference is masked too and does not replay.
+      // data-origin vault reference is masked too and does not replay. A
+      // container at a conservative position is masked whole only when its
+      // own keys came from data.
       if (
         hasObjectKeys(entry.value) &&
-        wholeMap?.hasDataAtOrBelow(provenancePath(wholePath))
+        (conservative
+          ? wholeMap?.hasDataKeysAt(provenancePath(wholePath))
+          : wholeMap?.hasDataAtOrBelow(provenancePath(wholePath)))
       ) {
         if (!replaced?.has(entry.keys[0])) {
           found.set(JSON.stringify(wholePath), whole);
@@ -267,6 +340,7 @@ function plaintextValues(
       }
       visitLeaves(entry.value, entry.keys, entry.path, (keys, path, value) => {
         if (replaced?.has(keys[0])) return;
+        if (options.allowMask && value === SENSITIVE_ARGUMENT_MASK) return;
         const entry = { site, keys, path };
         // A leaf inside a container whose keys came from data (a record an
         // input or a data read supplied, whole or with an expression the
@@ -309,7 +383,7 @@ function plaintextValues(
           });
         if (
           plaintextDataAt?.(at) || unreferencedData ||
-          (!referenced(at) && isPlaintext(value, at))
+          (!referenced(at) && isPlaintext(value, at, conservative))
         ) {
           found.set(JSON.stringify(at), entry);
         }
@@ -329,6 +403,9 @@ function spelled(value: PlaintextValue): string {
 }
 
 function position({ site, keys }: PlaintextValue): MaskedPath {
+  if (keys.length && site.methodKeys && !site.methodKeys.has(String(keys[0]))) {
+    return ["globalArguments", ...keys];
+  }
   return [...site.prefix, ...keys];
 }
 
@@ -392,7 +469,7 @@ function spellPosition(path: MaskedPath): string {
       typeof key === "number" ? indexPath(parent, key) : keyPath(parent, key),
     "",
   );
-  return `${path.slice(0, structural).join(".")}.${rest}`;
+  return path.slice(0, structural).join(".") + (rest ? `.${rest}` : "");
 }
 
 /** Whether a recorded position is one the check covers. */
@@ -400,6 +477,7 @@ function recordedInScope(
   path: MaskedPath,
   options: PlaintextCheckOptions,
 ): boolean {
+  if (path[0] === "deferredExpressions") return true;
   if (path[0] === "globalArguments") return true;
   if (path[0] !== "methods" || path[2] !== "arguments") return false;
   if (!options.method) return true;
@@ -472,8 +550,18 @@ export function evaluatedCacheHoldsSensitiveArgumentsMessage(
   paths: readonly string[],
   command: "method" | "workflow",
 ): string {
+  if (
+    paths.some((path) =>
+      path === "globalArguments" || /^methods\..+\.arguments$/.test(path) ||
+      path.startsWith("deferredExpressions.")
+    )
+  ) {
+    return `The evaluated definition cached for "${name}" omits sensitive argument containers or captured bindings, so --last-evaluated cannot replay it. Run the ${command} without --last-evaluated to supply those values again. Removed positions: ${
+      paths.map((path) => `'${path}'`).join(", ")
+    }.`;
+  }
   const replaces = command === "method"
-    ? "or, for a method argument, pass it with --input, which replaces the cached one"
+    ? "or replace a cached method argument with --input only if its name is not a declared definition input"
     : "or set it as a step input, which replaces the cached method argument";
   return `The evaluated definition cached for "${name}" holds a value for ${
     sensitiveArgumentsSubject(paths)
@@ -510,6 +598,16 @@ function setAt(
   }
 }
 
+function isArgumentRoot(path: MaskedPath): boolean {
+  return (path[0] === "globalArguments" && path.length === 1) ||
+    (path[0] === "methods" && path[2] === "arguments" && path.length === 3);
+}
+
+/** Argument roots must remain records in the serialized Definition. */
+function maskAt(target: unknown, path: MaskedPath): void {
+  setAt(target, path, isArgumentRoot(path) ? {} : SENSITIVE_ARGUMENT_MASK);
+}
+
 /** Returns a masked copy and the sensitive positions it changed. */
 function maskSensitiveArguments(
   schemas: ArgumentSchemas,
@@ -519,16 +617,34 @@ function maskSensitiveArguments(
   plaintextDataAt: (path: MaskedPath) => boolean,
   inputProvenance: ProvenanceMap,
 ): { data: DefinitionData; values: PlaintextValue[] } {
-  const values = plaintextValues(
-    schemas,
-    data,
-    writtenReferences,
-    { provenance: inputProvenance, persistedProvenance: provenance },
-    plaintextDataAt,
-  );
-  const masked = values.length > 0 ? structuredClone(data) : data;
-  for (const value of values) {
-    setAt(masked, position(value), SENSITIVE_ARGUMENT_MASK);
+  const values: PlaintextValue[] = [];
+  let masked = data;
+  while (true) {
+    const next = plaintextValues(
+      schemas,
+      masked,
+      writtenReferences,
+      {
+        provenance: inputProvenance,
+        persistedProvenance: provenance,
+        allowMask: masked !== data,
+      },
+      plaintextDataAt,
+    );
+    // A position masked already can be found again: an argument root is
+    // written as an empty record, and a method site merges the globals it
+    // falls back to back into it, so only new positions continue the loop.
+    const fresh = next.filter((value) =>
+      !values.some((done) => samePath(position(done), position(value)))
+    );
+    if (!fresh.length) break;
+    if (masked === data) masked = structuredClone(data);
+    for (const value of fresh) {
+      maskAt(masked, position(value));
+      values.push(value);
+    }
+    // A masked discriminator can select more union branches. Continue until
+    // the repository's check of the masked copy has no new positions to mask.
   }
   return { data: masked, values };
 }
@@ -556,6 +672,37 @@ function samePath(left: MaskedPath, right: MaskedPath): boolean {
     left.every((part, i) => part === right[i]);
 }
 
+/**
+ * `map` with the range of every written reference in `data` marked as data,
+ * so a persisted-coordinate map is exact at each reference whatever rule
+ * aligned the rest of its string: a reference the value search wrote has no
+ * sentinel to align through, and two in one string would otherwise merge
+ * into one span. A path that is whole data stays so.
+ */
+export function withWrittenReferenceRanges(
+  map: ProvenanceMap,
+  data: unknown,
+  writtenReferences: readonly WrittenReference[],
+): ProvenanceMap {
+  const byPath = new Map<string, WrittenReference[]>();
+  for (const reference of writtenReferences) {
+    const spelled = provenancePath(reference.path);
+    const refs = byPath.get(spelled);
+    if (refs) refs.push(reference);
+    else byPath.set(spelled, [reference]);
+  }
+  let out = map;
+  for (const [spelled, refs] of byPath) {
+    const text = readAt(data, refs[0].path);
+    if (typeof text !== "string" || out.isWholeDataAt(spelled)) continue;
+    out = out.withRanges(spelled, [
+      ...out.rangesAt(spelled),
+      ...referenceRanges(text, refs),
+    ]);
+  }
+  return out;
+}
+
 function referenceRanges(
   text: string,
   references: readonly WrittenReference[],
@@ -569,6 +716,62 @@ function referenceRanges(
     }
     return [start, start + ref.length];
   }).filter(([start]) => start >= 0).sort((a, b) => a[0] - b[0]);
+}
+
+/** Keep only the captured roots an expression can read; services are rebuilt. */
+function neededBindings(record: DeferredExpression): DeferredExpression {
+  const span = matchSingleExpression(record.expression, { exact: true });
+  const roots = span ? freeRoots(span.inner) : undefined;
+  const bindings = Object.fromEntries(
+    Object.entries(record.bindings).filter(([key]) =>
+      !roots || key === "workflowRunId" || roots.has(key)
+    ),
+  );
+  const provenance = record.provenance
+    ? ProvenanceMap.fromData(record.provenance)
+    : undefined;
+  return {
+    ...record,
+    bindings,
+    provenance: provenance
+      ? ProvenanceMap.authored().graftAll(
+        Object.keys(bindings).map((key) =>
+          [
+            keyPath("", key),
+            provenance.subtree(keyPath("", key)),
+          ] as const
+        ),
+      ).toData()
+      : undefined,
+  };
+}
+
+/** Captured data objects can carry sensitive text in keys as well as leaves. */
+function hasCapturedPlaintext(
+  record: DeferredExpression,
+  values: RunSensitiveValues,
+): boolean {
+  const provenance = record.provenance
+    ? ProvenanceMap.fromData(record.provenance)
+    : ProvenanceMap.authored();
+  const visit = (value: unknown, path: string): boolean => {
+    if (!isContainer(value)) return hasUnreferencedData(value, values);
+    if (
+      !Array.isArray(value) && Object.keys(value).length &&
+      provenance.hasDataKeysAt(path)
+    ) return true;
+    return Object.entries(value).some(([key, child]) =>
+      visit(
+        child,
+        Array.isArray(value)
+          ? indexPath(path, Number(key))
+          : keyPath(path, key),
+      )
+    );
+  };
+  return Object.entries(record.bindings).some(([root, value]) =>
+    root !== "workflowRunId" && visit(value, keyPath("", root))
+  );
 }
 
 /**
@@ -623,14 +826,28 @@ export function persistEvaluatedDefinition(
   values: RunSensitiveValues,
   schemas: ArgumentSchemas,
   provenance: ProvenanceMap = ProvenanceMap.authored(),
+  /** Forwarded inputs; source reads identify the aliases of masked arguments. */
+  forwardedInputs: readonly MaskedPath[] = [],
+  previousMasks: readonly MaskedPath[] = [],
 ): PersistedEvaluatedDefinition {
   const data = executed.toData();
   const file = {
     ...data,
     tags: values.tagsWithPlaceholders(data.tags ?? {}),
-    deferredExpressions: [...deferredExpressions],
+    deferredExpressions: deferredExpressions.map(neededBindings),
   };
-  const sourcePaths = extractExpressions(source.toData()).map((e) => e.path);
+  const sourceExpressions = extractExpressions(source.toData());
+  const sourcePaths = sourceExpressions.map((e) => e.path);
+  const inputAliases = new Set([
+    ...Object.keys(source.inputs?.properties ?? {}),
+    ...Object.keys(source.globalArguments),
+  ]);
+  let opaqueInputs = false;
+  for (const expression of sourceExpressions) {
+    const refs = expressionReferences(expression.celExpression);
+    opaqueInputs ||= !refs || refs.opaqueInputs;
+    for (const key of refs?.inputs ?? []) inputAliases.add(key);
+  }
   const form = toPersistedForm(file, values, {
     applies: cachedValuePath(sourcePaths),
   });
@@ -641,6 +858,13 @@ export function persistEvaluatedDefinition(
   const plaintextDataAt = (path: MaskedPath) => {
     const at = provenancePath(path);
     const value = readAt(data, path);
+    if (typeof value === "string") {
+      const text = value;
+      for (const record of file.deferredExpressions) {
+        if (!text.includes(deferredExpressionReference(record.id))) continue;
+        if (hasCapturedPlaintext(record, values)) return true;
+      }
+    }
     if (!provenance.hasDataAtOrBelow(at)) return false;
     if (typeof value === "string" && !provenance.isWholeDataAt(at)) {
       const text = value;
@@ -657,9 +881,26 @@ export function persistEvaluatedDefinition(
   // never for an authored vault.get, which stays an expression; the guards
   // read these ranges only to tell the text a reference covers from the
   // text it does not.
-  let persistedProvenance = alignProvenance(provenance, data, definitionData);
+  // Sentinels stand in for the reference text they are written as, so the
+  // persisted map is exact wherever a sentinel became a reference; a value
+  // the search replaced falls to the differing-span rule, and every written
+  // reference is marked data either way.
+  let persistedProvenance = withWrittenReferenceRanges(
+    alignProvenance(
+      provenance,
+      data,
+      definitionData,
+      sentinelReferenceTextOf(values.sentinels),
+    ),
+    definitionData,
+    form.writtenReferences,
+  );
+  // A sensitive leaf the search rewrote keeps only its reference ranges: the
+  // differing-span rule marks the authored text between two references data,
+  // and the plaintext check below would then mask a value that came from a
+  // vault.
   for (const site of argumentSites(schemas, definitionData as DefinitionData)) {
-    for (const entry of findSensitiveValues(site.schema, site.args)) {
+    for (const entry of findSensitiveValues(site.schema, site.args, true)) {
       visitLeaves(entry.value, entry.keys, entry.path, (keys, path, value) => {
         const at = position({ site, keys, path });
         if (typeof value !== "string" || plaintextDataAt(at)) return;
@@ -684,6 +925,67 @@ export function persistEvaluatedDefinition(
     provenance,
   );
   const maskedPaths = masked.values.map(position);
+  if (previousMasks.length && !maskedPaths.length) {
+    masked.data = structuredClone(masked.data);
+  }
+  for (const path of previousMasks) {
+    if (!MaskedPathSchema.safeParse(path).success) continue;
+    const value = readAt(masked.data, path);
+    if (
+      plaintextDataAt(path) ||
+      (!form.writtenReferences.some((ref) => samePath(ref.path, path)) &&
+        isLiteralSecret(value) &&
+        !(typeof value === "string" && holdsRuntimeExpression(value)))
+    ) {
+      maskAt(masked.data, path);
+      if (!maskedPaths.some((other) => samePath(path, other))) {
+        maskedPaths.push(path);
+      }
+    }
+  }
+  if (maskedPaths.length) {
+    const opaqueAliases = opaqueInputs || maskedPaths.some(isArgumentRoot);
+    for (const inputPath of forwardedInputs) {
+      if (!opaqueAliases && !inputAliases.has(String(inputPath.at(-1)))) {
+        continue;
+      }
+      // A whole-input read or transform can consume the forwarded names too.
+      const path = opaqueAliases
+        ? inputPath.slice(0, inputPath[0] === "methods" ? 3 : 1)
+        : inputPath;
+      maskAt(masked.data, path);
+      if (!maskedPaths.some((other) => samePath(path, other))) {
+        maskedPaths.push(path);
+      }
+    }
+    // Historical masks and forwarded aliases may themselves be union tags.
+    const stable = maskSensitiveArguments(
+      schemas,
+      masked.data,
+      form.writtenReferences,
+      persistedProvenance,
+      plaintextDataAt,
+      provenance,
+    );
+    masked.data = stable.data;
+    for (const value of stable.values) {
+      const path = position(value);
+      if (!maskedPaths.some((other) => samePath(path, other))) {
+        maskedPaths.push(path);
+      }
+    }
+    // A captured parent scope can hold another copy of the input that was
+    // masked above. Do not persist that scope, or replay a partial scope.
+    for (const [index, deferred] of persistedDeferred.entries()) {
+      const { workflowRunId, ...captured } = deferred.bindings;
+      if (!Object.keys(captured).length) continue;
+      persistedDeferred[index] = neededBindings({
+        ...deferred,
+        bindings: workflowRunId === undefined ? {} : { workflowRunId },
+      });
+      maskedPaths.push(["deferredExpressions", index, "bindings"]);
+    }
+  }
   const outerMasks = maskedPaths.filter((path) =>
     !maskedPaths.some((other) =>
       other.length < path.length &&
@@ -705,15 +1007,80 @@ export function persistEvaluatedDefinition(
 }
 
 /**
- * Restores a cached evaluated definition for replay: the raw copy for CEL
- * contexts and reports, and the executed copy with data-origin sentinels
- * from the step's bag, exactly as a fresh evaluation would produce.
+ * The arguments of an evaluated definition as a run of `method` shows them
+ * (the completed event, the method-summary report): every sensitive
+ * position of `schemas` that holds data (`provenance`), a literal, or a
+ * container whose keys came from data is the mask, by the same walk the
+ * evaluated cache uses, so what the cache keeps off disk never reaches the
+ * terminal or a report either (swamp-club#3681). A pipeline's raw inputs
+ * count as its sensitive output, the global arguments it may consume
+ * included. A value made only of runtime expressions stays, since its text
+ * names where the secret lives. Only the global arguments and `method`'s
+ * arguments are read, as the run shows only those; `data` is not mutated.
+ */
+export function maskSensitiveArgumentsForDisplay(
+  schemas: ArgumentSchemas,
+  data: DefinitionData,
+  method: string,
+  provenance: ProvenanceMap = ProvenanceMap.authored(),
+): DefinitionData {
+  const masked = maskSensitiveArguments(
+    shownSchemas(schemas, method),
+    data,
+    [],
+    provenance,
+    (path) => provenance.hasDataAtOrBelow(provenancePath(path)),
+    provenance,
+  );
+  return masked.data;
+}
+
+/** The schemas a run of `method` shows: the global arguments and its own. */
+function shownSchemas(
+  schemas: ArgumentSchemas,
+  method: string,
+): ArgumentSchemas {
+  return {
+    globalArguments: schemas.globalArguments,
+    // Own properties only, as argumentSites reads them.
+    methods: Object.hasOwn(schemas.methods, method)
+      ? { [method]: schemas.methods[method] }
+      : {},
+  };
+}
+
+/**
+ * Restores a cached evaluated definition for replay.
+ *
+ * In a typed run (the bag's registry carries the option) the cache's written
+ * references become sentinels the step's bag issues, reading no vault: the
+ * raw and executed copies are one sentinel copy, since a typed run holds no
+ * value anywhere, and the delivery loads the current value under the
+ * principal's current grants (typed-secrets 4.4, design Section 8.2). The
+ * cache's `persistedProvenance`, in reference-text coordinates, is aligned
+ * onto that copy exactly through the reference text each sentinel stands
+ * for, and returned as `provenance` for both copies. A cache written before
+ * swamp-club#3681 records provenance only in value coordinates, which no copy
+ * in hand can realign, so a typed replay refuses it rather than risk a data
+ * range landing on authored text; one with no provenance at all replays as
+ * authored, as it always did.
+ *
+ * In an untyped run the legacy branch restores the raw copy for CEL contexts
+ * and reports, and the executed copy with data-origin sentinels from the
+ * step's bag, exactly as a fresh untyped evaluation would produce.
  */
 export async function rehydrateEvaluatedDefinition(
   cached: {
     definition: Definition;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
+    /**
+     * See {@link PersistedEvaluatedDefinition.persistedProvenance}. A reader
+     * refuses `"unreadable"` before replaying; here it counts as absent.
+     */
+    persistedProvenance?: ProvenanceMap | "unreadable";
+    /** Where data sits in the raw copy, as the cache stores it. */
+    provenance?: ProvenanceMap | "unreadable";
   },
   read: VaultReader,
   values: RunSensitiveValues,
@@ -722,7 +1089,18 @@ export async function rehydrateEvaluatedDefinition(
   definition: Definition;
   executedDefinition: Definition;
   deferredExpressions: DeferredExpression[];
+  /** Set in a typed run: the map of both copies, aligned onto them. */
+  provenance?: ProvenanceMap;
 }> {
+  if (bag.registry.typedSecrets) {
+    const readable = (map: ProvenanceMap | "unreadable" | undefined) =>
+      map instanceof ProvenanceMap ? map : undefined;
+    return rehydrateEvaluatedDefinitionReferences({
+      ...cached,
+      persistedProvenance: readable(cached.persistedProvenance),
+      provenance: readable(cached.provenance),
+    }, bag);
+  }
   const file = {
     ...cached.definition.toData(),
     deferredExpressions: [...cached.deferredExpressions],
@@ -748,6 +1126,84 @@ export async function rehydrateEvaluatedDefinition(
     ),
     deferredExpressions,
   };
+}
+
+/** The typed branch of {@link rehydrateEvaluatedDefinition}. */
+function rehydrateEvaluatedDefinitionReferences(
+  cached: {
+    definition: Definition;
+    deferredExpressions: readonly DeferredExpression[];
+    writtenReferences: readonly WrittenReference[];
+    persistedProvenance?: ProvenanceMap;
+    provenance?: ProvenanceMap;
+  },
+  bag: VaultSecretBag,
+): {
+  definition: Definition;
+  executedDefinition: Definition;
+  deferredExpressions: DeferredExpression[];
+  provenance: ProvenanceMap;
+} {
+  const persisted = cached.definition.toData();
+  const file = {
+    ...persisted,
+    deferredExpressions: [...cached.deferredExpressions],
+  };
+  const restored = rehydrateReferences(
+    file,
+    cached.writtenReferences,
+    bag,
+    cached.definition.name,
+  );
+  const { deferredExpressions, ...restoredDefinition } = restored;
+  const definition = Definition.fromData(restoredDefinition as DefinitionData);
+  return {
+    definition,
+    executedDefinition: definition,
+    deferredExpressions,
+    provenance: replayProvenance(
+      cached,
+      persisted,
+      restoredDefinition,
+      bag,
+      `The evaluated cache for "${cached.definition.name}" was written before it recorded where its references sit, so it is not replayed with references. ` +
+        `Run without --last-evaluated to evaluate it again; that rewrites the cache.`,
+    ),
+  };
+}
+
+/**
+ * The map of a sentinel copy restored from a persisted copy (typed-secrets
+ * 4.4): the persisted-coordinate map aligned exactly, through the reference
+ * text each sentinel stands for. A cache that holds references and a map in
+ * value coordinates only cannot be realigned and is refused with `refusal`;
+ * one with no map replays as authored.
+ */
+export function replayProvenance(
+  cached: {
+    writtenReferences: readonly WrittenReference[];
+    persistedProvenance?: ProvenanceMap;
+    provenance?: ProvenanceMap;
+  },
+  persisted: unknown,
+  restored: unknown,
+  bag: VaultSecretBag,
+  refusal: string,
+): ProvenanceMap {
+  if (cached.persistedProvenance !== undefined) {
+    return alignProvenance(
+      cached.persistedProvenance,
+      persisted,
+      restored,
+      undefined,
+      sentinelReferenceTextOf(bag.registry),
+    );
+  }
+  if (cached.provenance === undefined || cached.provenance.isAuthored) {
+    return ProvenanceMap.authored();
+  }
+  if (cached.writtenReferences.length === 0) return cached.provenance;
+  throw new UserError(refusal);
 }
 
 /**

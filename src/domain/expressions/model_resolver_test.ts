@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunSensitiveValues, SecretRedactor } from "../secrets/mod.ts";
-import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -38,7 +45,11 @@ import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { DataQueryService } from "../data/data_query_service.ts";
+import {
+  type DataQueryOptions,
+  DataQueryService,
+  type QueryView,
+} from "../data/data_query_service.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import { type Namespace, restoreNamespace } from "../data/namespace.ts";
 import {
@@ -3780,6 +3791,76 @@ Deno.test("data.latest with the stored option returns tagged references as writt
   });
 });
 
+Deno.test("data.latest: a tagged field whose vault read fails stays as stored and is recorded as unread, on both paths (swamp-club#3806)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+      );
+      const type = ModelType.create("test/model");
+      // "holder" reads by its coordinates; "orphan" through the catalog.
+      const holder = Definition.create({ name: "holder" });
+      await defRepo.save(type, holder);
+      const orphan = Definition.create({ name: "orphan" });
+      const reference = "${{ vault.get('infra', 'ticket-key') }}";
+      for (const model of [holder, orphan]) {
+        const data = Data.create({
+          name: "creds",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: {
+            type: "resource",
+            modelName: model.name,
+            "_swamp.sensitiveFields": JSON.stringify(["ticket"]),
+          },
+          ownerDefinition: owner,
+        });
+        await dataRepo.save(
+          type,
+          model.id,
+          data,
+          new TextEncoder().encode(JSON.stringify({ ticket: reference })),
+        );
+      }
+      const dqs = new DataQueryService(catalog, dataRepo);
+      await dqs.query('name == ""');
+
+      const vaultService = {
+        get: () =>
+          Promise.reject(
+            new Error("1Password authentication failed: authorization timeout"),
+          ),
+      } as unknown as VaultService;
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+        vaultService,
+      });
+      for (const name of ["holder", "orphan"]) {
+        const values = new RunSensitiveValues();
+        const ctx = await resolver.buildContext(values);
+        const record = await ctx.data!.latest(name, "creds");
+        assertEquals(record?.attributes.ticket, reference, name);
+        const unread = values.unreadReferenceFor(reference);
+        assertExists(unread, name);
+        assertEquals(unread.vaultName, "infra");
+        assertEquals(unread.key, "ticket-key");
+        assertEquals(unread.fieldPath, "ticket");
+        assertStringIncludes(unread.reason, "authorization timeout");
+      }
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
 Deno.test("DataNamespace.namespace: the reader's own namespace, on the full and the light context", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -4015,5 +4096,49 @@ Deno.test("ModelResolver.vaultEvaluationScope: answers the resolver's vault serv
     // A probe's value goes nowhere without a redactor.
     silent.redactor.addSecret("dropped");
     assertEquals(redactor.redact("dropped"), "dropped");
+  });
+});
+
+Deno.test("ModelResolver data namespace: query forwards the view it is handed into the query service's options beside select (typed-secrets 4.3)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    const seen: Array<DataQueryOptions | undefined> = [];
+    const original = dqs.query.bind(dqs);
+    dqs.query = (predicate, options) => {
+      seen.push(options);
+      return original(predicate, options);
+    };
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertExists(ctx.data);
+    const view: QueryView = {
+      environment: (base) => base,
+      record: (record) => record,
+      predicate: (_expression, program, rowCtx) => program(rowCtx),
+      projection: (_expression, program, rowCtx) => program(rowCtx),
+    };
+    await ctx.data.query('name == "none"', undefined, view);
+    await ctx.data.query('name == "none"', "name", view);
+    await ctx.data.query('name == "none"');
+    assertEquals(seen.length, 3);
+    assertStrictEquals(seen[0]?.view, view);
+    assertEquals(seen[0]?.select, undefined);
+    assertStrictEquals(seen[1]?.view, view);
+    assertEquals(seen[1]?.select, "name");
+    assertEquals(seen[2]?.view, undefined);
+    catalog.close();
   });
 });

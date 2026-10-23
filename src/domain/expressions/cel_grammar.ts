@@ -115,6 +115,13 @@ export function parsesAsCel(celExpression: string): boolean {
  * `literal('{{host.name}}')` or `'a' + 'b'` has none.
  */
 export function freeRoots(celExpression: string): Set<string> | undefined {
+  return expressionReferences(celExpression)?.roots;
+}
+
+/** Free roots and input reads, including computed or whole-input accesses. */
+export function expressionReferences(
+  celExpression: string,
+): References | undefined {
   const ast = parseForEvaluation(celExpression);
   if (ast === undefined) return undefined;
   const refs: References = {
@@ -123,7 +130,7 @@ export function freeRoots(celExpression: string): Set<string> | undefined {
     opaqueInputs: false,
   };
   collectReferences(ast, new Set(), refs);
-  return refs.roots;
+  return refs;
 }
 
 /**

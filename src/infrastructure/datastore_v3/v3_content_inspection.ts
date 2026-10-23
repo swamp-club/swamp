@@ -50,6 +50,8 @@ import { unreadableRecordAdvice } from "../../domain/datastore_v3/read_model.ts"
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import { AT_RISK_DIR, READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
+import { type V3KeptLineage, v3KeptLineages } from "./litestream/v3_copy.ts";
+import { v3DatastoreConfigOf } from "./v3_repo_context.ts";
 
 /** How many entries of each kind an inspection lists; the rest are counted. */
 export const V3_CONTENT_LISTED = 10;
@@ -109,6 +111,24 @@ export interface V3ContentInspection {
 }
 
 /** Options for {@link inspectV3Content}. */
+/**
+ * The replication lineages collection keeps for recovery in the v3
+ * datastore the repository at `repoDir` names (swamp-club#3801), for
+ * `doctor datastores`. Read-only, from the datastore's lineage records.
+ */
+export async function inspectV3KeptLineages(
+  options: {
+    readonly repoDir: string;
+    readonly datastoreConfig: DatastoreConfig;
+  },
+): Promise<V3KeptLineage[]> {
+  const location = await v3DatastoreConfigOf(
+    options.repoDir,
+    options.datastoreConfig,
+  );
+  return await v3KeptLineages(location.path);
+}
+
 export interface InspectV3ContentOptions {
   readonly repoDir: string;
   /**

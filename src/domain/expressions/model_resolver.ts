@@ -30,7 +30,10 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
-import type { DataQueryService } from "../data/data_query_service.ts";
+import type {
+  DataQueryService,
+  QueryView,
+} from "../data/data_query_service.ts";
 import {
   mergeModelData,
   modelIdentityPredicate,
@@ -39,7 +42,8 @@ import { isTextContentType } from "../data/content_type.ts";
 import { localContentPath } from "../data/data_record_mapper.ts";
 import {
   parseSensitiveFieldsTag,
-  resolveSensitiveVaultRefs,
+  recordSensitiveVaultRefsUnread,
+  resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { isUuid } from "../models/model_lookup.ts";
@@ -310,6 +314,13 @@ export interface DataNamespace {
   readonly namespace?: Namespace;
 
   /**
+   * Whether the reader reads the solo namespace as another namespace, as a
+   * v3 checkout does, so a solo row is not its own (see
+   * `isForeignNamespace`). Absent reads as false.
+   */
+  readonly readsSoloNamespace?: boolean;
+
+  /**
    * Get a specific version of data. Delegates to catalog query with an
    * explicit `version == N` predicate (which opts out of the implicit
    * latest-only filter). Always returns the record as stored.
@@ -358,10 +369,13 @@ export interface DataNamespace {
 
   /**
    * Query data artifacts using a CEL predicate, with optional projection.
+   * `view` is the expression-facing query view of a typed evaluation
+   * (typed-secrets Section 6.2), handed to the query service as it is.
    */
   query(
     predicate: string,
     select?: string,
+    view?: QueryView,
   ): Promise<DataRecord[] | unknown[]>;
 
   /**
@@ -1060,9 +1074,10 @@ export class ModelResolver {
 
   /**
    * Resolves vault references in a data record's attributes, limited to the
-   * fields the record's schema marked sensitive. Leaves refs unresolved when
-   * no vault is available. Every resolved value is recorded in the run's
-   * sensitive-value record, which also forwards it to the run redactor.
+   * fields the record's schema marked sensitive. A reference whose vault
+   * cannot be read stays as stored, and the failure is recorded as unread in
+   * the run's sensitive-value record (swamp-club#3806). Every resolved value
+   * is recorded there too, which also forwards it to the run redactor.
    */
   private async resolveRecordVaultRefs(
     record: DataRecord | null,
@@ -1073,21 +1088,28 @@ export class ModelResolver {
     if (Object.keys(record.attributes).length === 0) return;
     const sensitiveFields = parseSensitiveFieldsTag(tags);
     if (!sensitiveFields) return;
+    let vaultService: VaultService;
     try {
-      const vaultService = await this.getVaultService();
-      await resolveSensitiveVaultRefs(
-        record.attributes,
-        sensitiveFields,
-        vaultService,
-        sensitiveValues,
-      );
+      vaultService = await this.getVaultService();
     } catch (error) {
       // A refusal by the run's vault access fails the read like every
       // other vault path (swamp-club#2676); it is never mistaken for an
       // unavailable vault.
       if (error instanceof VaultAccessDeniedError) throw error;
-      // Vault unavailable — leave refs unresolved
+      await recordSensitiveVaultRefsUnread(
+        record.attributes,
+        sensitiveFields,
+        error,
+        sensitiveValues,
+      );
+      return;
     }
+    await resolveSensitiveVaultRefsLeavingUnread(
+      record.attributes,
+      sensitiveFields,
+      vaultService,
+      sensitiveValues,
+    );
   }
 
   /**
@@ -1274,6 +1296,8 @@ export class ModelResolver {
 
     return {
       namespace: ownNamespace,
+      readsSoloNamespace:
+        this.dataRepo?.fetchForeignContent?.readsSoloNamespace === true,
       version: async (
         rawModelName: string,
         dataName: string,
@@ -1615,12 +1639,14 @@ export class ModelResolver {
       query: async (
         predicate: string,
         select?: string,
+        view?: QueryView,
       ): Promise<DataRecord[] | unknown[]> => {
         if (!this.dataQueryService) return [];
         const results = await this.dataQueryService.query(predicate, {
           select,
           excludeModelTypes: CONTROL_PLANE_STORED_TYPES,
           includeContentPath: true,
+          view,
         });
         // Projections are opaque values, so a projected path is not
         // existence-checked; record results are.

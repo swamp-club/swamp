@@ -29,10 +29,11 @@ import {
   ProvenanceMap,
   routedGlobalProvenance,
   sentinelIdentityOf,
+  sentinelReferenceTextOf,
   sentinelStandInOf,
 } from "./provenance_map.ts";
 import { sensitiveSpliceSanitizer } from "./splice_pair.ts";
-import { RunSensitiveValues } from "../secrets/mod.ts";
+import { RunSensitiveValues, vaultReferenceText } from "../secrets/mod.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { workflowInputsProvenance } from "../workflows/input_provenance.ts";
@@ -43,6 +44,7 @@ import { StepTask } from "../workflows/step_task.ts";
 import {
   AUTHORED_ORIGIN,
   extractExpressions,
+  readSetMap,
   replaceExpressionsTracked,
 } from "./expression_parser.ts";
 import { partitionAuthoredAt } from "./expression_evaluation_service.ts";
@@ -644,4 +646,120 @@ Deno.test("ProvenanceMap: an object's own keys can be data while its values are 
     true,
   );
   assertEquals(ProvenanceMap.authored().toData(), { whole: [], ranges: {} });
+});
+
+Deno.test("readSetMap: a caller's object holding a vouched expression keeps its keys and its other values as data, and the occurrence still substitutes once spliced (swamp-club#3681)", () => {
+  const vaultRef = "${{ vault.get('v', 'k') }}";
+  const constant = "${{ 'public' }}";
+  const vouched = new Set([vaultRef, constant]);
+  const value = {
+    "SECRET-KEY": null,
+    pin: 7381,
+    text: `Bearer ${vaultRef}`,
+    expr: constant,
+    nested: { "INNER-KEY": "plain", list: [constant, "item"] },
+    plain: { "PLAIN-KEY": "x" },
+  };
+  const map = readSetMap(value, vouched);
+  assertEquals(map.hasDataKeysAt(""), true);
+  assertEquals(map.isWholeDataAt(""), false);
+  assertEquals(map.isWholeDataAt(keyPath("", "SECRET-KEY")), true);
+  assertEquals(map.isWholeDataAt("pin"), true);
+  assertEquals(map.rangesAt("text"), [[0, "Bearer ".length]]);
+  assertEquals(map.hasDataAtOrBelow("expr"), false);
+  assertEquals(map.hasDataKeysAt("nested"), true);
+  assertEquals(map.isWholeDataAt(keyPath("nested", "INNER-KEY")), true);
+  assertEquals(map.hasDataAtOrBelow("nested.list[0]"), false);
+  assertEquals(map.isWholeDataAt("nested.list[1]"), true);
+  // A subtree with no vouched occurrence is data whole, keys included.
+  assertEquals(map.isWholeDataAt("plain"), true);
+  // Nothing vouched, or no expression at all: data whole, as before.
+  assertEquals(readSetMap(value, new Set()).isWholeData, true);
+  assertEquals(readSetMap({ "SECRET-KEY": null }, vouched).isWholeData, true);
+  // An occurrence nothing vouches for is data like any other text.
+  assertEquals(
+    readSetMap({ a: "${{ env.X }}", b: constant }, vouched).isWholeDataAt("a"),
+    true,
+  );
+
+  // Spliced whole into an argument, the keys stay data at their new
+  // position and the vouched occurrences still pass the gate.
+  const at = "methods.run.arguments.tokens";
+  const spliced = replaceExpressionsTracked(
+    { methods: { run: { arguments: { tokens: "${{ inputs.key }}" } } } },
+    new Map([["${{ inputs.key }}", value]]),
+    ProvenanceMap.authored(),
+    () => ({ map, authoredRaws: vouched }),
+  );
+  assertEquals(spliced.provenance.hasDataKeysAt(at), true);
+  assertEquals(spliced.provenance.isWholeDataAt(at), false);
+  assertEquals(
+    spliced.provenance.isWholeDataAt(keyPath(at, "SECRET-KEY")),
+    true,
+  );
+  const resolved = replaceExpressionsTracked(
+    spliced.data,
+    new Map([[vaultRef, "VAULT"], [constant, "public"]]),
+    spliced.provenance,
+    () => AUTHORED_ORIGIN,
+  );
+  const tokens = (resolved.data as {
+    methods: { run: { arguments: { tokens: Record<string, unknown> } } };
+  }).methods.run.arguments.tokens;
+  assertEquals(tokens.text, "Bearer VAULT");
+  assertEquals(tokens.expr, "public");
+  assertEquals((tokens.nested as { list: unknown[] }).list, ["public", "item"]);
+  assertEquals(resolved.provenance.hasDataKeysAt(at), true);
+  assertEquals(resolved.provenance.hasDataKeysAt(`${at}.nested`), true);
+});
+
+Deno.test("sentinelReferenceTextOf: a persisted copy aligns exactly onto a sentinel copy whose sentinels differ in length from the reference text and from each other (typed-secrets 4.4)", () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  // Eleven issues, so the last sentinel has a two-digit counter and is one
+  // character longer than the first.
+  const sentinels: string[] = [];
+  for (let i = 0; i < 11; i++) {
+    sentinels.push(bag.addSecret({ vaultName: "prod", key: `k${i}` }, "loc"));
+  }
+  const short = sentinels[0];
+  const long = sentinels[10];
+  assertEquals(long.length, short.length + 1);
+  const refShort = vaultReferenceText({ vaultName: "prod", key: "k0" });
+  const refLong = vaultReferenceText({ vaultName: "prod", key: "k10" });
+  const persisted = {
+    run: `echo ${refShort} and ${refLong} ${"${{ env.X }}"}`,
+  };
+  const restored = { run: `echo ${short} and ${long} ${"${{ env.X }}"}` };
+  // Data: both references, and the word before the trailing expression.
+  const andStart = persisted.run.indexOf(" and ") + 1;
+  const map = ProvenanceMap.authored().withRanges("run", [
+    [5, 5 + refShort.length],
+    [andStart, andStart + 3],
+    [
+      persisted.run.indexOf(refLong),
+      persisted.run.indexOf(refLong) + refLong.length,
+    ],
+  ]);
+  const aligned = alignProvenance(
+    map,
+    persisted,
+    restored,
+    undefined,
+    sentinelReferenceTextOf(registry),
+  );
+  const restoredAnd = restored.run.indexOf(" and ") + 1;
+  assertEquals(aligned.rangesAt("run"), [
+    [5, 5 + short.length],
+    [restoredAnd, restoredAnd + 3],
+    [restored.run.indexOf(long), restored.run.indexOf(long) + long.length],
+  ]);
+  // The trailing expression stays authored in the sentinel copy.
+  const expr = restored.run.indexOf("${{");
+  assertEquals(aligned.overlapsData("run", expr, restored.run.length), false);
+  // Text that is not a sentinel of the run is left alone.
+  assertEquals(
+    sentinelReferenceTextOf(registry)("__SWAMP_VSEC_x_0__"),
+    undefined,
+  );
 });

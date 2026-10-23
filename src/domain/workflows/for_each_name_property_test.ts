@@ -69,7 +69,9 @@ Deno.test("forEachNameWithoutSecrets: property: a sentinel and a recorded value 
   fc.assert(
     fc.property(
       plainText,
-      fc.stringMatching(/^[A-Za-z0-9]{3,16}$/),
+      // Uppercase only, which plainText never produces, so the value search
+      // can match the secret nowhere but where it was placed.
+      fc.stringMatching(/^[A-Z]{3,16}$/),
       plainText,
       fc.nat({ max: 50 }),
       (before, secret, after, index) => {

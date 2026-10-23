@@ -20,16 +20,20 @@
 export { SecretRedactor } from "./secret_redactor.ts";
 export {
   definedEntry,
+  describeUnreadReference,
   RunSensitiveValues,
   type SecretSink,
   type SecretSource,
   type SensitiveEntry,
+  type UnreadReferenceLookup,
+  type UnreadSensitiveReference,
   vaultReferenceText,
 } from "./run_sensitive_values.ts";
 export {
   type DataPath,
   type PersistedForm,
   rehydratePersistedForm,
+  rehydrateReferences,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
   type VaultReader,

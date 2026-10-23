@@ -54,6 +54,11 @@ export interface PendingApproval {
   prompt: string | undefined;
   inputs: Readonly<Record<string, unknown>>;
   /**
+   * Who started the run, as the run recorded it: the same string its history
+   * shows. Absent when the run recorded no one (swamp-club#3697).
+   */
+  initiatedBy?: string;
+  /**
    * On a nested workflow's run, the parent step that started it
    * (swamp-club#2736).
    */
@@ -298,6 +303,9 @@ export async function* workflowApprovals(
             suspendedAt: step?.startedAt?.toISOString(),
             prompt,
             inputs: run.inputs,
+            ...(run.initiatedBy !== undefined
+              ? { initiatedBy: run.initiatedBy }
+              : {}),
             ...(parentRun ? { parentRun, parentWaiting } : {}),
             ...(verdict && isOrphaned(verdict)
               ? {

@@ -36,7 +36,11 @@ import {
   type RemoteLockHolder,
 } from "../datastore/lock_holder_marker.ts";
 import { Definition } from "../definitions/definition.ts";
-import type { SecretRedactor } from "../secrets/mod.ts";
+import {
+  describeUnreadReference,
+  type SecretRedactor,
+  type UnreadReferenceLookup,
+} from "../secrets/mod.ts";
 import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
@@ -90,6 +94,7 @@ import {
 } from "../behavior_wording.ts";
 import { createDataId } from "../data/data_id.ts";
 import {
+  extractDeliveredSensitiveValues,
   extractRefusedSensitiveValues,
   extractSensitiveFieldValues,
   maskRefusedIssues,
@@ -220,6 +225,40 @@ export interface MethodDeliveryOptions {
    * method runs.
    */
   onArgumentsValidated?: () => Promise<void>;
+  /**
+   * The run's record of stored sensitive-field references whose vault read
+   * failed. An argument still holding one fails naming the vault, key and
+   * provider error, where the method reads it (a global argument) or at
+   * delivery (a method argument), rather than as an unresolved expression
+   * (swamp-club#3806). Not part of the context a method receives.
+   */
+  unreadReferences?: UnreadReferenceLookup;
+}
+
+/**
+ * The error for an argument that still holds the stored reference of a
+ * sensitive field whose vault could not be read in this run, naming the
+ * vault, key and provider error; undefined when `value` holds none.
+ */
+function unreadReferenceError(
+  location: string,
+  value: unknown,
+  unread: UnreadReferenceLookup | undefined,
+): Error | undefined {
+  if (!unread) return undefined;
+  for (const expr of extractExpressions(value, location)) {
+    const reference = unread.unreadReferenceFor(expr.raw);
+    if (!reference) continue;
+    // An argument and a data field, never a filesystem path.
+    const argument = expr.path;
+    const field = reference.fieldPath;
+    return new Error(
+      `Could not read ${argument}: it holds the stored reference of sensitive field ${field}, whose vault could not be read (${
+        describeUnreadReference(reference)
+      })`,
+    );
+  }
+  return undefined;
 }
 
 /**
@@ -506,7 +545,7 @@ function preRunRefusalHint(
  * with what the refusal may echo registered with `redactor` first and the
  * message passed through it (swamp-club#3681). The raw method arguments
  * and the filtered raw globals keep their sentinels, for the shell's
- * env-var delivery.
+ * env-var delivery; `parseInput` is what the schema received.
  */
 function parseMethodArguments(
   definition: Definition,
@@ -514,10 +553,12 @@ function parseMethodArguments(
   methodName: string,
   secretBag: VaultSecretBag | undefined,
   redactor: SecretRedactor | undefined,
+  unread?: UnreadReferenceLookup,
 ): {
   rawMethodArgs: Record<string, unknown>;
   resolvedGlobalArgs: Record<string, unknown>;
   filteredRawGlobalArgs: Record<string, unknown>;
+  parseInput: Record<string, unknown>;
   parsed: { data: unknown };
 } {
   // Get raw method arguments (may contain vault sentinel tokens)
@@ -560,6 +601,16 @@ function parseMethodArguments(
     filteredRawGlobalArgs[key] = value;
   }
 
+  // Method arguments are always delivered, so one still holding a stored
+  // reference its vault could not read fails here, before the method
+  // receives the reference text as if it were the secret.
+  const unreadError = unreadReferenceError(
+    "methodArguments",
+    resolvedMethodArgs,
+    unread,
+  );
+  if (unreadError) throw unreadError;
+
   const mergedArgs = isRecordSchema(method.arguments)
     ? resolvedMethodArgs
     : { ...filteredGlobalArgs, ...resolvedMethodArgs };
@@ -586,6 +637,7 @@ function parseMethodArguments(
     rawMethodArgs,
     resolvedGlobalArgs,
     filteredRawGlobalArgs,
+    parseInput: methodArgs,
     parsed: argsResult,
   };
 }
@@ -630,6 +682,40 @@ function refusedParse(
 }
 
 /**
+ * Registers with the run's redactor what the method is about to receive
+ * under the sensitive positions of `schema`, as the schema parsed them: the
+ * value a transform produced, a number, and an object key the parse
+ * introduced, which a transform derived from a value; the method's error or
+ * output can echo any of them and the values registered before the parse
+ * do not cover them (swamp-club#3681). A key `parseInput` already spelled
+ * is the type's own or one the run registered as a data key. The delivered
+ * value is read whatever its shape: a schema may deliver a sensitive array
+ * or scalar in place of a record, and the global arguments a method reads
+ * from its context are parsed the same way. The values a transform
+ * enclosing a sensitive position delivered are registered whole, since it
+ * may have moved the value under any key, less the values the input holds at
+ * positions the schema leaves plain; the keys its own code wrote are not
+ * (see {@link extractDeliveredSensitiveValues}).
+ */
+function registerDeliveredSecrets(
+  schema: z.ZodTypeAny,
+  parseInput: unknown,
+  delivered: unknown,
+  redactor: SecretRedactor | undefined,
+): void {
+  if (!redactor) return;
+  for (
+    const secret of extractDeliveredSensitiveValues(
+      schema,
+      parseInput,
+      delivered,
+    )
+  ) {
+    redactor.addSecret(secret);
+  }
+}
+
+/**
  * Default implementation of the method execution service.
  *
  * Validates definition attributes against the method's schema before execution.
@@ -668,17 +754,26 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     method: MethodDefinition,
     context: MethodContext,
     onArgumentsValidated?: () => Promise<void>,
+    unread?: UnreadReferenceLookup,
   ): Promise<MethodResult> {
     const {
       rawMethodArgs,
       resolvedGlobalArgs,
       filteredRawGlobalArgs,
+      parseInput,
       parsed: argsResult,
     } = parseMethodArguments(
       definition,
       method,
       context.methodName,
       context.vaultSecrets,
+      context.redactor,
+      unread,
+    );
+    registerDeliveredSecrets(
+      method.arguments,
+      parseInput,
+      argsResult.data,
       context.redactor,
     );
     if (onArgumentsValidated) await onArgumentsValidated();
@@ -693,6 +788,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
         if (typeof prop === "string" && containsSwampExpression(value)) {
+          // A stored sensitive-field reference left as text because its
+          // vault could not be read is reported as that read's failure.
+          const unreadError = unreadReferenceError(
+            `globalArguments.${prop}`,
+            value,
+            unread,
+          );
+          if (unreadError) throw unreadError;
           const exprs = extractExpressions(value);
           const hasVault = exprs.some((e) =>
             containsVaultExpression(e.celExpression)
@@ -809,6 +912,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
    * dispatcher port. Vault sentinels are resolved into the shipped args —
    * the same resolve-before-dispatch pattern out-of-process execution has
    * always used; secrets travel only for the step that needs them.
+   * `globalArgsParseInput` is what the global-arguments parse received,
+   * before its delivery was merged into the definition.
    */
   async #executeRemotely(
     context: MethodContext,
@@ -817,6 +922,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     currentDefinition: Definition,
     methodName: string,
     secretReferences: readonly SecretReference[],
+    globalArgsParseInput: Record<string, unknown>,
   ): Promise<RemoteStepResult> {
     const dispatcher = getRemoteStepDispatcher();
     if (dispatcher === null) {
@@ -859,8 +965,22 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       }
       : {};
     if (modelDef.globalArguments) {
+      // The definition holds the global arguments as their parse delivered
+      // them, a transform's output included, beside what it was given. The
+      // worker's redactor gets what a local run registers: the delivered
+      // secrets less the text the parse input held only at plain positions
+      // and the keys the schema declares, read against that input as
+      // resolved, so a region or a port is not masked on the worker
+      // (swamp-club#3754).
+      const parseInput = secretBag?.resolvesAny
+        ? secretBag.resolveDeep(globalArgsParseInput) as Record<string, unknown>
+        : globalArgsParseInput;
       secretValues.push(
-        ...extractSensitiveFieldValues(modelDef.globalArguments, globalArgs),
+        ...extractDeliveredSensitiveValues(
+          modelDef.globalArguments,
+          parseInput,
+          globalArgs,
+        ),
       );
     }
     const methodArgSchema = modelDef.methods[methodName]?.arguments;
@@ -1105,6 +1225,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // create-time inputs). Strip unresolved fields before Zod validation so
       // methods that don't need them can proceed. A Proxy on context.globalArgs
       // will throw a clear error if the method actually accesses an unresolved field.
+      // What the global-arguments parse received, for a placed step's
+      // secret values (swamp-club#3754).
+      let globalArgsParseInput: Record<string, unknown> = {};
       if (modelDef.globalArguments) {
         const rawGlobalArgs = currentDefinition.globalArguments;
 
@@ -1168,6 +1291,17 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             context.redactor,
           );
         }
+        // What the method reads from its context is what this parse made,
+        // a transform's output included, so it is registered as a method
+        // argument's parse is (swamp-club#3681).
+        registerDeliveredSecrets(
+          globalArgsSchema,
+          coercedGlobalArgs,
+          globalArgsResult.data,
+          context.redactor,
+        );
+        // The unresolved fields the parse skipped travel too, as written.
+        globalArgsParseInput = { ...rawGlobalArgs, ...coercedGlobalArgs };
         // Update definition with parsed values so methods receive correct types
         for (const [key, value] of Object.entries(globalArgsResult.data)) {
           currentDefinition.setGlobalArgument(key, value);
@@ -1483,11 +1617,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           // The worker parses the shipped arguments itself. The caller's
           // record of the evaluation and the redactor still need the parse
           // here, before anything leaves (swamp-club#3681).
-          parseMethodArguments(
+          const { parseInput, parsed } = parseMethodArguments(
             currentDefinition,
             method,
             methodName,
             context.vaultSecrets,
+            context.redactor,
+            options.unreadReferences,
+          );
+          registerDeliveredSecrets(
+            method.arguments,
+            parseInput,
+            parsed.data,
             context.redactor,
           );
           if (options.onArgumentsValidated) {
@@ -1504,6 +1645,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             currentDefinition,
             methodName,
             secretReferences,
+            globalArgsParseInput,
           );
           // Rebuild full handles from the durable records the data plane
           // persisted — downstream consumers (data-record mapping, workflow
@@ -1544,6 +1686,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                   method,
                   context,
                   options.onArgumentsValidated,
+                  options.unreadReferences,
                 ),
             },
             currentDefinition,

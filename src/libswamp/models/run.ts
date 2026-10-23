@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { z } from "zod";
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import {
   type SwampError,
@@ -95,6 +94,7 @@ import {
   findPlaintextSensitiveArguments,
   isNewerSensitiveFormat,
   type MaskedPath,
+  maskSensitiveArgumentsForDisplay,
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
   rehydrateEvaluatedDefinition,
@@ -126,11 +126,13 @@ import {
   coerceInputTypes,
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
-import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
+import {
+  extractInputReferences,
+  readSetMap,
+} from "../../domain/expressions/expression_parser.ts";
 import {
   extractSensitiveFieldValues,
   literalSensitiveGlobalArgsMessage,
-  maskLiteralSensitiveValues,
 } from "../../domain/models/sensitive_field_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
 import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
@@ -763,6 +765,12 @@ export async function* modelMethodRun(
                 lastEvaluated: input.lastEvaluated,
               };
 
+              // Over the stored definition, before the --input overrides below
+              // write into it (a definition with no expressions is not copied
+              // first): the hash then tells a definition edit from a different
+              // input, and no input value reaches it (swamp-club#3722).
+              const definitionHash = await definition.computeHash();
+
               const evaluationService = deps.createEvaluationService();
               let evaluatedDefinition = definition;
               // The copy that executes: the same splices as evaluatedDefinition,
@@ -787,22 +795,33 @@ export async function* modelMethodRun(
               // author-written too.
               // Under literalInputs the caller's inputs are data: they vouch for
               // nothing, and every key they supplied is data in the context.
+              const sourceExpressions = collectAuthoredExpressions(
+                definition.toData(),
+              );
               const authoredExpressions = input.literalInputs
-                ? collectAuthoredExpressions(definition.toData())
+                ? new Set(sourceExpressions)
                 : collectAuthoredExpressions(
                   inputs,
-                  collectAuthoredExpressions(definition.toData()),
+                  new Set(sourceExpressions),
                 );
+              // Where data sits in the inputs. The values an operator types are
+              // the run's data, not the definition's source: spliced into a
+              // sensitive argument they are masked in the cache and the
+              // reports like any other data (swamp-club#3681). Only the
+              // expression occurrences the operator typed stay authored, so
+              // they still resolve. Under literalInputs every value is data
+              // whole. A schema default is the definition's own.
               let inputsProvenance = ProvenanceMap.authored();
-              if (input.literalInputs) {
-                for (const key of Object.keys(inputs)) {
-                  if (!callerInputKeys.has(key)) {
-                    continue;
-                  }
-                  inputsProvenance = inputsProvenance.withWholeData(
-                    keySegment(key),
-                  );
+              for (const [key, value] of Object.entries(inputs)) {
+                if (!callerInputKeys.has(key)) {
+                  continue;
                 }
+                inputsProvenance = inputsProvenance.graft(
+                  keySegment(key),
+                  input.literalInputs
+                    ? ProvenanceMap.data()
+                    : readSetMap(value, collectAuthoredExpressions(value)),
+                );
               }
 
               let deferredExpressions: readonly DeferredExpression[] = [];
@@ -904,11 +923,14 @@ export async function* modelMethodRun(
                   };
                   return;
                 }
-                // Sensitive values are cached as vault references; restore them,
-                // real values into evaluatedDefinition and sentinels into the
+                // Sensitive values are cached as vault references. A typed run
+                // restores them as references the delivery loads, reading no
+                // vault here (typed-secrets 4.4); an untyped run restores real
+                // values into evaluatedDefinition and sentinels into the
                 // executed copy, exactly as a fresh evaluation would.
+                const typedReplay = sensitiveValues.sentinels.typedSecrets;
                 const vaultService =
-                  (lastEval.writtenReferences ?? []).length > 0
+                  !typedReplay && (lastEval.writtenReferences ?? []).length > 0
                     ? await deps.createVaultService()
                     : undefined;
                 const restored = await rehydrateEvaluatedDefinition(
@@ -916,6 +938,12 @@ export async function* modelMethodRun(
                     definition: lastEval.definition,
                     deferredExpressions: lastEval.deferredExpressions ?? [],
                     writtenReferences: lastEval.writtenReferences ?? [],
+                    ...(lastEval.persistedProvenance instanceof ProvenanceMap
+                      ? { persistedProvenance: lastEval.persistedProvenance }
+                      : {}),
+                    ...(lastEval.provenance instanceof ProvenanceMap
+                      ? { provenance: lastEval.provenance }
+                      : {}),
                   },
                   (vaultName, key) =>
                     vaultService!.get(vaultName, key, "evaluated-cache:replay"),
@@ -925,16 +953,24 @@ export async function* modelMethodRun(
                 evaluatedDefinition = restored.definition;
                 executedDefinition = restored.executedDefinition;
                 deferredExpressions = restored.deferredExpressions;
-                // A cache without provenance predates it and replays as it
-                // always did.
-                rawProvenance = lastEval.provenance ?? ProvenanceMap.authored();
-                executedProvenance = alignProvenance(
-                  rawProvenance,
-                  evaluatedDefinition.toData(),
-                  executedDefinition.toData(),
-                  sentinelStandInOf(stepSecretBag.registry),
-                  sentinelStandInOf(stepSecretBag.registry),
-                );
+                if (restored.provenance) {
+                  // One copy, one map: the typed replay aligned the cache's
+                  // persisted-coordinate map onto the sentinel copy.
+                  rawProvenance = restored.provenance;
+                  executedProvenance = restored.provenance;
+                } else {
+                  // A cache without provenance predates it and replays as it
+                  // always did.
+                  rawProvenance = lastEval.provenance ??
+                    ProvenanceMap.authored();
+                  executedProvenance = alignProvenance(
+                    rawProvenance,
+                    evaluatedDefinition.toData(),
+                    executedDefinition.toData(),
+                    sentinelStandInOf(stepSecretBag.registry),
+                    sentinelStandInOf(stepSecretBag.registry),
+                  );
+                }
                 for (const expression of lastEval.authoredExpressions) {
                   authoredExpressions.add(expression);
                 }
@@ -994,6 +1030,10 @@ export async function* modelMethodRun(
                 pendingProvenance = rawProvenance;
               }
 
+              // Where data sits in the raw copy as reports and the completed
+              // event show it: the evaluation's map, plus each override below.
+              let shownProvenance = rawProvenance;
+
               // Merge override inputs into method arguments.
               // Override inputs are --input flags whose keys are not model inputs
               // schema keys (i.e. not used for CEL expression evaluation). They map
@@ -1044,6 +1084,10 @@ export async function* modelMethodRun(
                     methodArgumentPath(input.methodName, key),
                     inputsProvenance.subtree(keySegment(key)),
                   );
+                  shownProvenance = shownProvenance.graft(
+                    methodArgumentPath(input.methodName, key),
+                    inputsProvenance.subtree(keySegment(key)),
+                  );
                 }
               }
 
@@ -1075,7 +1119,10 @@ export async function* modelMethodRun(
               // Written by the execution service once the method's arguments
               // pass their schema (its onArgumentsValidated), so a run the
               // schema refuses never replaces the last good evaluation that
-              // --last-evaluated reuses (swamp-club#3681).
+              // --last-evaluated reuses (swamp-club#3681). The cache carries
+              // the source's expressions and those an input contributed that
+              // it still holds; an input expression the evaluation consumed
+              // names nothing a replay needs and may hold what was typed.
               const saveEvaluation = pendingSave === undefined
                 ? undefined
                 : ((saved: Definition) => () =>
@@ -1083,7 +1130,11 @@ export async function* modelMethodRun(
                     modelType,
                     saved,
                     pendingProvenance,
-                    authoredExpressions,
+                    persistedAuthoredExpressions(
+                      sourceExpressions,
+                      authoredExpressions,
+                      saved,
+                    ),
                     pendingReferences,
                     pendingMasked,
                     pendingPersistedProvenance,
@@ -1093,29 +1144,23 @@ export async function* modelMethodRun(
 
               // Capture pre-vault args for report context (so vault secrets stay as expressions)
               // Reports and the completed event show arguments to the user and are
-              // persisted with report output, so sensitive values are masked there:
-              // values read from a vault or data wherever they sit, then literal
-              // values under a field the schema marks sensitive.
-              const maskArgs = (
-                schema: z.ZodTypeAny | undefined,
-                args: Record<string, unknown>,
-              ): Record<string, unknown> => {
-                const masked = sensitiveValues.masked(args) as Record<
-                  string,
-                  unknown
-                >;
-                return schema
-                  ? maskLiteralSensitiveValues(schema, masked)
-                  : masked;
-              };
-              const reportGlobalArgs = maskArgs(
-                modelDef.globalArguments,
-                evaluatedDefinition.globalArguments,
+              // persisted with report output, so sensitive values are masked there,
+              // by the walk the evaluated cache uses: a sensitive argument that
+              // holds data (an input's value, a data read), a literal, or keys
+              // that came with data, is the mask; then values read from a vault
+              // wherever they sit (swamp-club#3681).
+              const shownArguments = maskSensitiveArgumentsForDisplay(
+                modelDef,
+                evaluatedDefinition.toData(),
+                input.methodName,
+                shownProvenance,
               );
-              const reportMethodArgs = maskArgs(
-                modelDef.methods[input.methodName]?.arguments,
-                evaluatedDefinition.getMethodArguments(input.methodName),
-              );
+              const reportGlobalArgs = sensitiveValues.masked(
+                shownArguments.globalArguments ?? {},
+              ) as Record<string, unknown>;
+              const reportMethodArgs = sensitiveValues.masked(
+                shownArguments.methods?.[input.methodName]?.arguments ?? {},
+              ) as Record<string, unknown>;
 
               // Resolve runtime expressions (vault and env).
               // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
@@ -1217,7 +1262,6 @@ export async function* modelMethodRun(
               const preExecSpan = getTracer().startSpan(
                 "swamp.model.method.pre_execute",
               );
-              const definitionHash = await definition.computeHash();
               const output = ModelOutput.create({
                 definitionId: definition.id,
                 methodName: input.methodName,
@@ -1386,6 +1430,7 @@ export async function* modelMethodRun(
                             redactor,
                           ),
                           onArgumentsValidated: saveEvaluation,
+                          unreadReferences: sensitiveValues,
                         },
                       )),
                 );
@@ -1470,6 +1515,7 @@ export async function* modelMethodRun(
                       errorMessage,
                       dataHandles: recoveredDataHandles(error),
                       outputSpecs: buildOutputSpecs(modelDef),
+                      provenance: output.provenance,
                       extensionFilesRoot: modelDef.extensionFilesRoot,
                     },
                   );
@@ -1699,6 +1745,7 @@ export async function* modelMethodRun(
                     executionStatus: "succeeded",
                     dataHandles,
                     outputSpecs: buildOutputSpecs(modelDef),
+                    provenance: output.provenance,
                     extensionFilesRoot: modelDef.extensionFilesRoot,
                   },
                 );
@@ -2000,6 +2047,26 @@ export function methodExecutionFailed(
     message: executionErrorFrom(cause, redactor).message,
     cause: shown instanceof Error ? shown : undefined,
   });
+}
+
+/**
+ * The authored set an evaluated cache carries: the source definition's
+ * expressions, and those the run's inputs contributed that `persisted`
+ * still holds, for the runtime pass of a replay. An input expression the
+ * evaluation consumed — a constant, say — names nothing a replay needs, and
+ * may hold what the operator typed (swamp-club#3681).
+ */
+function persistedAuthoredExpressions(
+  source: ReadonlySet<string>,
+  authored: ReadonlySet<string>,
+  persisted: Definition,
+): Set<string> {
+  const held = collectAuthoredExpressions(persisted.toData());
+  const kept = new Set(source);
+  for (const raw of authored) {
+    if (held.has(raw)) kept.add(raw);
+  }
+  return kept;
 }
 
 /**

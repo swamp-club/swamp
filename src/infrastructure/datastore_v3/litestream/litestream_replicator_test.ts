@@ -56,6 +56,10 @@ import {
   writePresence,
 } from "./replication_files.ts";
 import { parseSupervisorArgs } from "./replication_supervisor.ts";
+import {
+  localProcess,
+  setLocalProcessForTesting,
+} from "../process_identity.ts";
 
 const UNIX = Deno.build.os !== "windows";
 
@@ -712,15 +716,21 @@ Deno.test({
         Error,
         "download failed",
       );
-      const probe = await Deno.open(world.paths.supervisorLock, {
-        read: true,
-        write: true,
-      });
-      try {
-        assertEquals(await probe.tryLock(true), true, "no lock left held");
-      } finally {
-        probe.close();
-      }
+      // Polled, not checked once: under full-suite load the released probe
+      // was once still seen right after the failed launch (swamp-club#3791,
+      // like swamp-club#3560). A probe left held still fails when the wait
+      // runs out.
+      await waitFor(async () => {
+        const probe = await Deno.open(world.paths.supervisorLock, {
+          read: true,
+          write: true,
+        });
+        try {
+          return await probe.tryLock(true);
+        } finally {
+          probe.close();
+        }
+      }, "no lock left held");
       await (await replicator.acquire(world.request(db, 1))).release();
       assertEquals(world.live.length, 1);
     });
@@ -1104,5 +1114,101 @@ Deno.test({
         await held.release();
       }
     });
+  },
+});
+
+/** This process's identity, as another host name would have recorded it. */
+async function renamedIdentity(hostname: string) {
+  const identity = (await localProcess()).identity;
+  const at = identity.host.indexOf("#");
+  return {
+    ...identity,
+    host: hostname + (at === -1 ? "" : identity.host.slice(at)),
+  };
+}
+
+Deno.test({
+  name:
+    "LitestreamReplicator: this machine's own live sidecar is reused after the hostname changed (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      await (await replicator.acquire(world.request(db, 1))).release();
+      const sidecar = world.live[0];
+      // Its supervisor recorded the name the machine had then; a DHCP
+      // renewal renamed the machine since.
+      await writePresence(world.paths, {
+        supervisorPid: sidecar.supervisorPid,
+        litestreamPid: sidecar.litestreamPid,
+        uid: Deno.uid(),
+        hostname: "Previous-Name.local",
+        process: await renamedIdentity("Previous-Name.local"),
+        lineageFence: 1,
+        replicaPath: "/replica/_litestream/000000000001",
+      });
+      await (await replicator.acquire(world.request(db, 1))).release();
+      // The same, with the rename seen by this process instead.
+      const local = await localProcess();
+      setLocalProcessForTesting({ ...local, hostname: () => "Renamed.local" });
+      try {
+        await (await replicator.acquire(world.request(db, 1))).release();
+      } finally {
+        setLocalProcessForTesting(undefined);
+      }
+      assertEquals(world.sidecars.length, 1, "the sidecar was reused");
+      assertEquals(world.killed, []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a sidecar recorded on another boot or pid namespace is refused, whatever its hostname (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    const here = await localProcess();
+    for (
+      const process of [
+        { ...here.identity, bootId: "another-boot" },
+        // A container sharing this boot id, in its own pid namespace.
+        {
+          ...here.identity,
+          host: `${here.identity.host.split("#")[0]}#pid:[4026532999]`,
+        },
+      ]
+    ) {
+      await withWorld(async (world, db) => {
+        world.commandLines.set(
+          777,
+          `swamp ${SUPERVISOR_MARKER} --db ${world.paths.commitsDb}`,
+        );
+        await writePresence(world.paths, {
+          supervisorPid: 777,
+          uid: Deno.uid(),
+          hostname: Deno.hostname(),
+          process,
+          lineageFence: 1,
+          replicaPath: "/replica/_litestream/000000000001",
+        });
+        const holder = await Deno.open(world.paths.supervisorLock, {
+          read: true,
+          write: true,
+          create: true,
+        });
+        try {
+          await holder.lock(true);
+          const replicator = new LitestreamReplicator(world.deps());
+          await assertRejects(
+            () => replicator.acquire(world.request(db, 1)),
+            V3ReplicationUnavailableError,
+            "another user or host",
+          );
+          assertEquals(world.killed, []);
+        } finally {
+          holder.close();
+        }
+      });
+    }
   },
 });

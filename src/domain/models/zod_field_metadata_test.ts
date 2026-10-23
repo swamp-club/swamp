@@ -31,6 +31,132 @@ import {
 
 const isMarked = (meta: FieldMetadata) => meta.marked === true;
 
+Deno.test("findValuesWithMetadata: raw inputs to marked pipe outputs are reported without running transforms", () => {
+  const output = z.object({ token: z.string().meta({ marked: true }) });
+  const transform = (): { token: string } => {
+    throw new Error("must not execute");
+  };
+  for (
+    const schema of [
+      z.preprocess(transform, output),
+      z.object({ alias: z.string() }).transform(transform).pipe(output),
+    ]
+  ) {
+    const raw = { alias: "secret" };
+    assertEquals(
+      findValuesWithMetadata(schema, raw, isMarked, { rawInputs: true })
+        .map(({ keys, value }) => ({ keys, value })),
+      [{ keys: [], value: raw }, { keys: ["alias"], value: "secret" }],
+    );
+    assertEquals(
+      findValuesWithMetadata(
+        z.object({ credentials: schema }),
+        { credentials: raw },
+        isMarked,
+        { rawInputs: true },
+      )
+        .map(({ keys, value }) => ({ keys, value })),
+      [{ keys: ["credentials"], value: raw }],
+    );
+  }
+});
+
+Deno.test("findValuesWithMetadata: with rawInputs, a pipe whose input side holds no code reports what its output marks exactly, while a preprocess nested on the input side still reports the raw input (swamp-club#3751)", () => {
+  const marked = z.string().meta({ marked: true });
+  const reported = (
+    schema: z.ZodTypeAny,
+    value: unknown,
+  ) =>
+    findValuesWithMetadata(schema, value, isMarked, { rawInputs: true })
+      .map(({ keys, value, rawInput }) => ({ keys, value, rawInput }));
+  assertEquals(
+    reported(z.object({ key: z.string().pipe(marked) }), { key: "secret" }),
+    [{ keys: ["key"], value: "secret", rawInput: undefined }],
+  );
+  assertEquals(
+    reported(z.object({ token: marked }).pipe(z.object({ token: marked })), {
+      token: "secret",
+    }),
+    [{ keys: ["token"], value: "secret", rawInput: undefined }],
+  );
+  const raw = { alias: "secret" };
+  assertEquals(
+    reported(
+      z.preprocess(() => {
+        throw new Error("must not execute");
+      }, z.object({ token: z.string() })).pipe(z.object({ token: marked })),
+      raw,
+    ),
+    [
+      { keys: [], value: raw, rawInput: true },
+      { keys: ["alias"], value: "secret", rawInput: true },
+    ],
+  );
+});
+
+Deno.test("findValuesWithMetadata: with rawInputs, under a pipe whose input side reshapes the value, a field either side marks itself, or the output marks beside a sibling's own transform, is reported exactly, whichever member the walk reaches first (swamp-club#3751)", () => {
+  const marked = z.string().meta({ marked: true });
+  const reported = (schema: z.ZodTypeAny, value: unknown) =>
+    findValuesWithMetadata(schema, value, isMarked, { rawInputs: true })
+      .map(({ keys, rawInput }) => ({ keys, rawInput }));
+  const transform = (): { token: string } => {
+    throw new Error("must not execute");
+  };
+  // Both sides mark `token`; only the input side marks `bearer`.
+  assertEquals(
+    reported(
+      z.object({ token: marked, alias: z.string() }).transform(transform).pipe(
+        z.object({ token: marked }),
+      ),
+      { token: "secret", alias: "a" },
+    ),
+    [
+      { keys: [], rawInput: true },
+      { keys: ["token"], rawInput: undefined },
+      { keys: ["alias"], rawInput: true },
+    ],
+  );
+  assertEquals(
+    reported(
+      z.object({ bearer: marked, alias: z.string() }).transform(transform).pipe(
+        z.object({ token: marked }),
+      ),
+      { bearer: "secret", alias: "a" },
+    ),
+    [
+      { keys: [], rawInput: true },
+      { keys: ["bearer"], rawInput: undefined },
+      { keys: ["alias"], rawInput: true },
+    ],
+  );
+  // A transform on a sibling's own chain leaves `token` exact.
+  assertEquals(
+    reported(
+      z.object({ token: z.string(), n: z.string().transform(Number) }).pipe(
+        z.object({ token: marked, n: z.number() }),
+      ),
+      { token: "secret", n: "1" },
+    ),
+    [
+      { keys: [], rawInput: true },
+      { keys: ["token"], rawInput: undefined },
+      { keys: ["n"], rawInput: true },
+    ],
+  );
+  const piped = z.object({ alias: z.string() }).transform(transform).pipe(
+    z.object({ token: marked }),
+  );
+  const direct = z.object({ alias: marked });
+  for (const members of [[piped, direct], [direct, piped]] as const) {
+    assertEquals(
+      reported(z.union(members), { alias: "secret" }).find(({ keys }) =>
+        keys[0] === "alias"
+      ),
+      { keys: ["alias"], rawInput: undefined },
+    );
+  }
+});
+
 Deno.test("findFieldMetadata: returns metadata set directly on the field", () => {
   const meta = findFieldMetadata(
     z.string().meta({ marked: true, note: "x" }),
@@ -954,6 +1080,72 @@ Deno.test("findValuesWithMetadata: with reportRoot, a match on the root schema's
     findValuesWithMetadata(under, { a: "x" }, isMarked, { reportRoot: true })
       .map((found) => found.path),
     ["a"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: with transformed, what a transform, codec, overwrite or catch enclosing a marked field delivered is reported whole, as is what a union or intersection with such a member delivered, while a preprocess and a transform beside the field are walked precisely (swamp-club#3681)", () => {
+  const marked = z.string().meta({ marked: true });
+  const inner = z.object({ secret: marked, label: z.string() });
+  const delivered = { token: "SECRET", label: "x" };
+  const whole = (schema: z.ZodTypeAny, value: unknown) =>
+    findValuesWithMetadata(schema, value, isMarked, {
+      reportRoot: true,
+      transformed: true,
+    }).map(({ keys, value, rawInput }) => ({ keys, value, rawInput }));
+  for (
+    const schema of [
+      inner.transform((v) => ({ token: v.secret, label: v.label })),
+      z.codec(inner, z.object({ token: z.string(), label: z.string() }), {
+        decode: (v) => ({ token: v.secret, label: v.label }),
+        encode: (v) => ({ secret: v.token, label: v.label }),
+      }),
+      inner.overwrite((v) => ({ secret: v.secret, label: v.label })),
+      inner.catch({ secret: "", label: "" }),
+      z.intersection(inner, z.any().transform((v) => v)),
+      z.union([z.string(), inner.transform((v) => v)]),
+    ]
+  ) {
+    assertEquals(whole(schema, delivered), [{
+      keys: [],
+      value: delivered,
+      rawInput: true,
+    }]);
+  }
+  assertEquals(
+    whole(
+      z.object({
+        creds: inner.transform((v) => ({ k: v.secret })),
+        other: z.string(),
+      }),
+      { creds: { k: "SECRET" }, other: "x" },
+    ),
+    [{ keys: ["creds"], value: { k: "SECRET" }, rawInput: true }],
+  );
+  // Read as stored, the delivered shape is walked against the input shape
+  // and holds nothing the schema can name.
+  assertEquals(
+    findValuesWithMetadata(inner.transform((v) => v), delivered, isMarked, {
+      reportRoot: true,
+    }),
+    [],
+  );
+  // What a preprocess delivers conforms to the schema behind it.
+  assertEquals(
+    whole(z.preprocess((v) => v, inner), { secret: "s", label: "x" }),
+    [{ keys: ["secret"], value: "s", rawInput: undefined }],
+  );
+  // A transform beside the field cannot reach it.
+  assertEquals(
+    whole(
+      z.object({ secret: marked, other: z.string().transform((s) => s) }),
+      { secret: "s", other: "o" },
+    ),
+    [{ keys: ["secret"], value: "s", rawInput: undefined }],
+  );
+  // A transform enclosing nothing marked delivers nothing marked.
+  assertEquals(
+    whole(z.object({ a: z.string() }).transform((v) => v), { a: "x" }),
+    [],
   );
 });
 

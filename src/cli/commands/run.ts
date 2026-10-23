@@ -23,7 +23,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  requireInitializedRepoReadOnly,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -148,7 +151,9 @@ const runHistoryCommand = withRemoteOptions(
         return;
       }
 
-      const { repoDir } = await requireInitializedRepoUnlocked({
+      // It only reads: it never takes the v3 writer lease, which would start a
+      // replication lineage on a bucket (swamp-club#3801).
+      const { repoDir } = await requireInitializedRepoReadOnly({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: ctx.outputMode,
       });

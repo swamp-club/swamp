@@ -81,6 +81,13 @@ export interface EvaluatedWorkflowCache {
    * replay refuses.
    */
   provenance?: ProvenanceMap | "unreadable";
+  /**
+   * Where data sits in the written workflow, in the file's own coordinates,
+   * so a typed replay restores references in place and aligns exactly
+   * (typed-secrets 4.4). Absent in caches written before it was recorded;
+   * `"unreadable"` when present but malformed, which replay refuses.
+   */
+  persistedProvenance?: ProvenanceMap | "unreadable";
   /** Expressions the source workflow contained when the cache was written. */
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
@@ -119,6 +126,7 @@ const CacheMetadataSchema = z.object({
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
+  persistedProvenance: z.unknown().optional(),
   evaluatedInputs: InputRecordSchema.optional(),
   evaluatedInputsProvenance: ProvenanceMapDataSchema.optional(),
   inheritedExpressions: z.array(z.string()).optional(),
@@ -133,6 +141,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
       writtenReferences?: unknown;
       sensitiveFormat?: unknown;
       provenance?: unknown;
+      persistedProvenance?: unknown;
       evaluatedInputs?: unknown;
       evaluatedInputsProvenance?: unknown;
       inheritedExpressions?: unknown;
@@ -146,6 +155,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     writtenReferences,
     sensitiveFormat,
     provenance: provenanceData,
+    persistedProvenance: persistedProvenanceData,
     evaluatedInputs,
     evaluatedInputsProvenance,
     inheritedExpressions,
@@ -158,6 +168,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     writtenReferences,
     sensitiveFormat,
     provenance: provenanceData,
+    persistedProvenance: persistedProvenanceData,
     evaluatedInputs,
     evaluatedInputsProvenance,
     inheritedExpressions,
@@ -184,9 +195,20 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
       provenance = "unreadable";
     }
   }
+  let persistedProvenance: ProvenanceMap | "unreadable" | undefined;
+  if (metadata.persistedProvenance !== undefined) {
+    try {
+      persistedProvenance = ProvenanceMap.fromData(
+        metadata.persistedProvenance,
+      );
+    } catch {
+      persistedProvenance = "unreadable";
+    }
+  }
   return {
     workflow: Workflow.fromData(workflowData),
     provenance,
+    persistedProvenance,
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
     writtenReferences: metadata.writtenReferences ?? [],
@@ -384,6 +406,8 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
     recorded?: RecordedEvaluationInputs,
+    /** See {@link EvaluatedWorkflowCache.persistedProvenance}. */
+    persistedProvenance?: ProvenanceMap,
   ): Promise<void> {
     const dir = this.getWorkflowsDir();
     await assertSafePath(dir, this.baseDir);
@@ -416,6 +440,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
       provenance: provenance?.toData(),
+      persistedProvenance: persistedProvenance?.toData(),
       evaluatedInputs: recorded && "inputs" in recorded
         ? recorded.inputs
         : undefined,

@@ -93,7 +93,10 @@ import {
   restoreV3FormatMarker,
   v3CheckoutFilterRefusal,
 } from "../../infrastructure/datastore_v3/v3_datastore.ts";
-import { inspectV3Content } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
+import {
+  inspectV3Content,
+  inspectV3KeptLineages,
+} from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
   movePreV3CheckoutRecords,
   PRE_V3_RECORDS_DIR,
@@ -343,6 +346,9 @@ async function createDoctorDatastoresDeps(
       ? {
         checkV3Content: (config: DatastoreConfig) =>
           inspectV3Content({ repoDir, datastoreConfig: config }),
+        // The datastore's lineage records only (swamp-club#3801).
+        checkV3KeptLineages: (config: DatastoreConfig) =>
+          inspectV3KeptLineages({ repoDir, datastoreConfig: config }),
         checkV3Filter: (config: DatastoreConfig) =>
           Promise.resolve(
             v3CheckoutFilterRefusal(

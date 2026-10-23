@@ -1793,3 +1793,80 @@ Deno.test("doctorDatastores: a v2 repo bound to a name reserved for swamp's .swa
   assertEquals(v3?.passed, false);
   assertStringIncludes(v3?.message ?? "", "new, empty v3 datastore");
 });
+
+const KEPT = {
+  fence: 5,
+  replicaRoot: "s3:http://proxy:47441:bucket:prefix",
+  holder: "ci@runner",
+  startedAt: "2026-10-22T18:00:00.000Z",
+};
+
+Deno.test("doctorDatastores: reports kept replication lineages on every run, with how to resolve them (swamp-club#3801)", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(customConfig, {
+      healthy: true,
+      message: "ok",
+      latencyMs: 1,
+    }, []),
+    checkV3KeptLineages: () => Promise.resolve([KEPT]),
+  };
+  for (let run = 0; run < 2; run++) {
+    const events = await collect<DoctorDatastoresEvent>(
+      doctorDatastores(createLibSwampContext(), deps),
+    );
+    const completed = events.find((e) => e.kind === "completed");
+    assert(completed?.kind === "completed");
+    const finding = completed.data.healthFindings.find((f) =>
+      f.check === "v3_kept_lineages"
+    );
+    assertEquals(finding?.passed, false);
+    for (
+      const part of [
+        "000000000005",
+        KEPT.replicaRoot,
+        KEPT.holder,
+        KEPT.startedAt,
+        "Chunk collection is deferred",
+        "Recovering kept replication lineages",
+      ]
+    ) {
+      assertStringIncludes(finding!.message, part);
+    }
+    assertEquals(completed.data.v3KeptLineagesFinding, [KEPT]);
+  }
+});
+
+Deno.test("doctorDatastores: no kept replication lineage passes, and one that cannot be read fails (swamp-club#3801)", async () => {
+  const base = makeDeps(customConfig, {
+    healthy: true,
+    message: "ok",
+    latencyMs: 1,
+  }, []);
+  const none = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), {
+      ...base,
+      checkV3KeptLineages: () => Promise.resolve([]),
+    }),
+  );
+  const passed = none.find((e) => e.kind === "completed");
+  assert(passed?.kind === "completed");
+  assertEquals(
+    passed.data.healthFindings.find((f) => f.check === "v3_kept_lineages")
+      ?.passed,
+    true,
+  );
+  assertEquals(passed.data.v3KeptLineagesFinding, undefined);
+  const unreadable = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), {
+      ...base,
+      checkV3KeptLineages: () => Promise.reject(new Error("bucket offline")),
+    }),
+  );
+  const failed = unreadable.find((e) => e.kind === "completed");
+  assert(failed?.kind === "completed");
+  const finding = failed.data.healthFindings.find((f) =>
+    f.check === "v3_kept_lineages"
+  );
+  assertEquals(finding?.passed, false);
+  assertStringIncludes(finding!.message, "bucket offline");
+});

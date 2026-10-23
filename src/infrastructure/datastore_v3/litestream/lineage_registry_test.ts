@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import type { WritableDatastoreControlPlaneStore } from "../../../domain/datastore/control_plane_store.ts";
@@ -95,12 +96,12 @@ Deno.test("LineageRegistry: read finds the current lineage and its head", async 
     await registry.start(started(8));
     calls.list = 0;
     calls.get = 0;
-    const lineages = await registry.read(ROOT);
+    const lineages = await registry.read(ReplicaRoot.of(ROOT));
     assertEquals(lineages.map((l) => l.fence), [8, 5, 3]);
-    const current = currentLineage(lineages, ROOT);
+    const current = currentLineage(lineages, ReplicaRoot.of(ROOT));
     assertEquals(current?.fence, 5);
     assertEquals(current?.head?.txid, "000000000000000a");
-    assertEquals(newestStartedFence(lineages, ROOT), 8);
+    assertEquals(newestStartedFence(lineages, ReplicaRoot.of(ROOT)), 8);
     // One list, then the newest start, and the current start,
     // confirmation and head: the cost of a check on a current copy.
     assertEquals(calls, { list: 1, get: 4 });
@@ -125,9 +126,9 @@ Deno.test("LineageRegistry: records under another root or malformed are ignored"
       "{not json",
     );
     await Deno.writeTextFile(join(lineageDir, "notes.txt"), "x");
-    const lineages = await registry.read(ROOT);
-    assertEquals(currentLineage(lineages, ROOT)?.fence, 3);
-    assertEquals(newestStartedFence(lineages, ROOT), 4);
+    const lineages = await registry.read(ReplicaRoot.of(ROOT));
+    assertEquals(currentLineage(lineages, ReplicaRoot.of(ROOT))?.fence, 3);
+    assertEquals(newestStartedFence(lineages, ReplicaRoot.of(ROOT)), 4);
   });
 });
 
@@ -138,7 +139,7 @@ Deno.test("LineageRegistry: a removed lineage leaves no records", async () => {
     await registry.publishHead(head(3, "4"));
     await registry.remove(3);
     await registry.remove(3);
-    assertEquals(await registry.read(ROOT), []);
+    assertEquals(await registry.read(ReplicaRoot.of(ROOT)), []);
   });
 });
 
@@ -150,11 +151,14 @@ Deno.test("LineageRegistry: a fenced writer's late head never moves a continued 
     // lost the lease before, publishes late.
     await registry.publishHead({ ...head(5, "20"), writerFence: 7 });
     await registry.publishHead({ ...head(5, "18"), writerFence: 6 });
-    const current = currentLineage(await registry.read(ROOT), ROOT);
+    const current = currentLineage(
+      await registry.read(ReplicaRoot.of(ROOT)),
+      ReplicaRoot.of(ROOT),
+    );
     assertEquals(current?.head?.writerFence, 7);
     assertEquals(current?.head?.txid, "0000000000000020");
     await registry.remove(5);
-    assertEquals(await registry.read(ROOT), []);
+    assertEquals(await registry.read(ReplicaRoot.of(ROOT)), []);
   });
 });
 
@@ -172,5 +176,25 @@ Deno.test("LineageRegistry.everConfirmed: only once a lineage under any root is 
       confirmedAt: AT,
     });
     assertEquals(await registry.everConfirmed(), true);
+  });
+});
+
+Deno.test("LineageRegistry: read finds the current lineage another spelling of the S3 endpoint started (swamp-club#3801)", async () => {
+  await withRegistry(async (registry) => {
+    const proxied = "s3:http://localhost:47441:bucket:prefix";
+    await registry.start(started(5, proxied));
+    await registry.confirm({ fence: 5, txid: "1", confirmedAt: AT });
+    await registry.publishHead(head(5, "1"));
+    for (
+      const own of [
+        ReplicaRoot.s3("http://localhost:47411", "bucket", "prefix"),
+        ReplicaRoot.s3("http://localhost:47441/", "bucket", "prefix"),
+        ReplicaRoot.s3(undefined, "bucket", "prefix"),
+      ]
+    ) {
+      const lineages = await registry.read(own);
+      assertEquals(currentLineage(lineages, own)?.fence, 5, own.value);
+      assertEquals(newestStartedFence(lineages, own), 5, own.value);
+    }
   });
 });

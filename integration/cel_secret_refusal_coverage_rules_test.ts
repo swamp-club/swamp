@@ -70,6 +70,8 @@ import {
   createExtensionCelEnvironment,
   createInternalCelEnvironment,
 } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { createQueryEnvironment } from "../src/domain/data/data_query_service.ts";
+import { queryViewEnvironment } from "../src/infrastructure/cel/query_view.ts";
 import {
   classifyPositions,
   type Disposition,
@@ -326,6 +328,42 @@ Deno.test("production half: with typed secrets on, the internal environment defi
       parsed.params.includes(SECRET_TYPE_NAME);
   });
   assertEquals(secretBearing, expected);
+});
+
+Deno.test("production half: the query view's environment defines exactly the function refusals the inventory yields for the query service's base and the query view's own functions (typed-secrets 4.3)", () => {
+  const base = createQueryEnvironment();
+  const swamp = new Set(SWAMP_FUNCTION_SIGNATURES);
+  const builtins = secretCapableBuiltins(base)
+    .map((fn) => fn.signature)
+    .filter((signature) => !swamp.has(signature));
+  const expected = [
+    ...functionRefusalSignatures(builtins),
+    ...functionRefusalSignatures(QUERY_VIEW_FUNCTION_SIGNATURES),
+  ].sort();
+  assertEquals(expected.length, 59);
+  const secretBearing = definedFunctions(queryViewEnvironment(base)).filter(
+    (signature) => {
+      const parsed = parseSignature(signature);
+      if (qualifiedName(parsed) === "type") return false;
+      return parsed.receiverType === SECRET_TYPE_NAME ||
+        parsed.params.includes(SECRET_TYPE_NAME);
+    },
+  );
+  assertEquals(secretBearing, expected);
+});
+
+Deno.test("production half: the query service's base environment defines no Secret, so the raw query path has none", () => {
+  const base = createQueryEnvironment();
+  assertEquals(
+    JSON.stringify(base.getDefinitions()).includes(SECRET_TYPE_NAME),
+    false,
+  );
+  // Building the view's environment leaves the base as it was.
+  queryViewEnvironment(base);
+  assertEquals(
+    JSON.stringify(base.getDefinitions()).includes(SECRET_TYPE_NAME),
+    false,
+  );
 });
 
 Deno.test("production half: with typed secrets off, the internal environment defines what it defined before them", () => {

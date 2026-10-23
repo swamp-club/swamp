@@ -54,7 +54,10 @@ import {
   type WordedText,
   wordedText,
 } from "../behavior_wording.ts";
-import { currentVaultAccess } from "../vaults/run_vault_access.ts";
+import {
+  currentVaultAccess,
+  VaultAccessDeniedError,
+} from "../vaults/run_vault_access.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
 import {
   overriddenSpecVaultName,
@@ -678,13 +681,22 @@ async function prepareSensitiveResourceData(
 }
 
 /**
- * Redacts registered secrets from the serialized resource payload, except
- * inside the vault references {@link processSensitiveResourceData} put at
- * `vaultedPaths`. A generated vault key embeds the instance name, which can
- * contain a resolved secret, so redacting the reference would point it at a
- * key the vault does not hold (swamp-club#3585). The text is split at each
- * reference's JSON literal, and the text between them is redacted as the
- * whole payload was before.
+ * Redacts registered secrets from the resource payload as it will be
+ * persisted, except inside the vault references
+ * {@link processSensitiveResourceData} put at `vaultedPaths`. A generated
+ * vault key embeds the instance name, which can contain a resolved secret,
+ * so redacting the reference would point it at a key the vault does not
+ * hold (swamp-club#3585).
+ *
+ * The payload is redacted node by node in its JSON shape and serialized
+ * after, so what is persisted stays valid JSON (swamp-club#3754). A string,
+ * and an object key, is redacted as it reads in the JSON text, as the whole
+ * text was before, and a mask that breaks its quoting covers it whole. A
+ * number, boolean or null whose JSON text is itself a registered secret (a
+ * sensitive number) becomes the string `***`, and so does an object or array
+ * whose JSON text is (a JSON secret written back as an object); a number
+ * that only contains a secret's digits is kept, where masking the substring
+ * would have broken the syntax.
  */
 function redactOutsideVaultReferences(
   data: Record<string, unknown>,
@@ -692,11 +704,12 @@ function redactOutsideVaultReferences(
   redactor: SecretRedactor,
   sensitiveOutput: boolean,
 ): string {
-  const serialized = JSON.stringify(data);
+  // The JSON shape, so dates and toJSON behave as they do in the bytes
+  // that will be persisted.
+  const shape: unknown = JSON.parse(JSON.stringify(data));
   // Text redaction also changes property names. Refuse sibling names that
-  // would collide, rather than let JSON.parse choose an unvaulted value for
-  // a tagged field. Inspect the JSON shape so dates and toJSON behave as
-  // they do in the bytes that will be persisted.
+  // would collide, rather than let a later name choose an unvaulted value
+  // for a tagged field.
   if (vaultedPaths.length > 0) {
     const checkKeys = (value: unknown): void => {
       if (Array.isArray(value)) {
@@ -715,35 +728,45 @@ function redactOutsideVaultReferences(
         }
       }
     };
-    checkKeys(JSON.parse(serialized));
+    checkKeys(shape);
   }
   // A sensitive object with a sensitive field inside holds that field's
   // reference rather than its own, so only string values are references.
-  const literals = new Set<string>();
-  const references = sensitiveOutput && vaultedPaths.length > 0
+  const references = new Set<string>();
+  const candidates = sensitiveOutput && vaultedPaths.length > 0
     ? Object.values(data)
     : vaultedPaths.map((path) => getNestedValue(data, path));
-  for (const reference of references) {
-    if (typeof reference === "string") literals.add(JSON.stringify(reference));
+  for (const reference of candidates) {
+    if (typeof reference === "string") references.add(reference);
   }
 
-  let pieces = [{ text: serialized, reference: false }];
-  for (const literal of literals) {
-    pieces = pieces.flatMap((piece) => {
-      if (piece.reference) return [piece];
-      const [first, ...rest] = piece.text.split(literal);
-      return [
-        { text: first, reference: false },
-        ...rest.flatMap((text) => [
-          { text: literal, reference: true },
-          { text, reference: false },
-        ]),
-      ];
-    });
-  }
-  return pieces.map((piece) =>
-    piece.reference ? piece.text : redactor.redact(piece.text)
-  ).join("");
+  const redactText = (text: string): string => {
+    if (references.has(text)) return text;
+    const literal = JSON.stringify(text);
+    const redacted = redactor.redact(literal);
+    if (redacted === literal) return text;
+    try {
+      const value: unknown = JSON.parse(redacted);
+      if (typeof value === "string") return value;
+    } catch {
+      // The mask took part of the literal's quoting or an escape.
+    }
+    return "***";
+  };
+  const redactNode = (node: unknown): unknown => {
+    if (typeof node === "string") return redactText(node);
+    if (redactor.isSecret(JSON.stringify(node))) return "***";
+    if (Array.isArray(node)) return node.map(redactNode);
+    if (node !== null && typeof node === "object") {
+      return Object.fromEntries(
+        Object.entries(node).map((
+          [key, child],
+        ) => [redactText(key), redactNode(child)]),
+      );
+    }
+    return node;
+  };
+  return JSON.stringify(redactNode(shape));
 }
 
 /**
@@ -1029,27 +1052,19 @@ export function createResourceWriter(
       )
       : JSON.stringify(data);
     if (vaultedPaths.length > 0) {
-      let persisted: unknown;
-      try {
-        persisted = JSON.parse(serialized);
-      } catch {
-        // Text redaction can mask JSON syntax (for example an entire JSON
-        // secret). Preserve that existing behavior, but such a record has
-        // no verified-writer tag and cannot authorize a resource claim.
+      // Redaction keeps the payload valid JSON (swamp-club#3754).
+      const persisted: unknown = JSON.parse(serialized);
+      if (
+        persisted === null || typeof persisted !== "object" ||
+        Array.isArray(persisted) ||
+        JSON.stringify(referenceIds(persisted as Record<string, unknown>)) !==
+          JSON.stringify(generatedReferences)
+      ) {
+        throw new Error(
+          "Cannot persist sensitive data: serialization or redaction changed the generated vault references.",
+        );
       }
-      if (persisted !== undefined) {
-        if (
-          persisted === null || typeof persisted !== "object" ||
-          Array.isArray(persisted) ||
-          JSON.stringify(referenceIds(persisted as Record<string, unknown>)) !==
-            JSON.stringify(generatedReferences)
-        ) {
-          throw new Error(
-            "Cannot persist sensitive data: serialization or redaction changed the generated vault references.",
-          );
-        }
-        resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
-      }
+      resolvedTags[SENSITIVE_FIELDS_VERSION_TAG] = SENSITIVE_FIELDS_VERSION;
     }
 
     // Commit only after the final reference and redaction checks have passed.
@@ -1489,7 +1504,8 @@ async function walkAndResolve(
  * when `sensitiveFields` is `"*"`). Unlike {@link resolveVaultRefsInData} which
  * walks the entire object tree, this function targets only the paths that were
  * written by {@link processSensitiveResourceData}, preventing untrusted data in
- * non-sensitive fields from being resolved as vault references.
+ * non-sensitive fields from being resolved as vault references. A read that
+ * fails throws.
  */
 export async function resolveSensitiveVaultRefs(
   data: Record<string, unknown>,
@@ -1497,14 +1513,99 @@ export async function resolveSensitiveVaultRefs(
   vaultService: VaultService,
   redactor?: SecretSink,
 ): Promise<void> {
+  await resolveSensitiveLocations(
+    data,
+    sensitiveFields,
+    vaultReadOf(vaultService),
+    redactor,
+    false,
+  );
+}
+
+/**
+ * {@link resolveSensitiveVaultRefs} for an expression's data read, where a
+ * reference whose vault cannot be read stays as stored text. Each reference
+ * is read on its own: one that fails is logged at debug and goes to
+ * `redactor.recordUnread` with the vault, key and provider error, and the
+ * remaining references are still read (swamp-club#3806). A refusal by the
+ * run's vault access is rethrown.
+ */
+export async function resolveSensitiveVaultRefsLeavingUnread(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*",
+  vaultService: VaultService,
+  redactor?: SecretSink,
+): Promise<void> {
+  await resolveSensitiveLocations(
+    data,
+    sensitiveFields,
+    vaultReadOf(vaultService),
+    redactor,
+    true,
+  );
+}
+
+/**
+ * Records every reference at a record's tagged sensitive locations as unread
+ * with `error`, for a read whose vault service could not be built at all. The
+ * references stay as stored, as
+ * {@link resolveSensitiveVaultRefsLeavingUnread} leaves a reference whose
+ * read fails.
+ */
+export async function recordSensitiveVaultRefsUnread(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*",
+  error: unknown,
+  redactor?: SecretSink,
+): Promise<void> {
+  await resolveSensitiveLocations(
+    data,
+    sensitiveFields,
+    () => {
+      throw error;
+    },
+    redactor,
+    true,
+  );
+}
+
+/** Reads the secret a stored reference names. */
+type VaultRead = (vaultName: string, key: string) => Promise<string>;
+
+function vaultReadOf(vaultService: VaultService): VaultRead {
+  return (vaultName, key) =>
+    vaultService.get(vaultName, key, "data-writer:vault-ref-resolve");
+}
+
+async function resolveSensitiveLocations(
+  data: Record<string, unknown>,
+  sensitiveFields: string[] | "*",
+  read: VaultRead,
+  redactor: SecretSink | undefined,
+  leaveUnread: boolean,
+): Promise<void> {
   if (sensitiveFields === SENSITIVE_FIELDS_ALL) {
-    await walkAndResolve(data, vaultService, redactor);
+    // Every own key is a location by its own name, a dotted one included.
+    for (const key of Object.keys(data)) {
+      data[key] = await resolveValueAtPath(
+        data[key],
+        key,
+        read,
+        redactor,
+        leaveUnread,
+      );
+    }
     return;
   }
-
   for (const fieldPath of sensitiveFields) {
     const value = getNestedValue(data, fieldPath);
-    const resolved = await resolveValueAtPath(value, vaultService, redactor);
+    const resolved = await resolveValueAtPath(
+      value,
+      fieldPath,
+      read,
+      redactor,
+      leaveUnread,
+    );
     if (resolved !== value) {
       if (fieldPath.includes(".")) {
         setNestedValue(data, fieldPath, resolved);
@@ -1568,18 +1669,34 @@ export function sensitiveVaultReferences(
 
 async function resolveValueAtPath(
   value: unknown,
-  vaultService: VaultService,
-  redactor?: SecretSink,
+  fieldPath: string,
+  read: VaultRead,
+  redactor: SecretSink | undefined,
+  leaveUnread: boolean,
 ): Promise<unknown> {
   if (typeof value === "string") {
     const match = VAULT_REF_REGEX.exec(value);
     if (match) {
       const [, vaultName, key] = match;
-      const resolved = await vaultService.get(
-        vaultName,
-        key,
-        "data-writer:vault-ref-resolve",
-      );
+      let resolved: string;
+      try {
+        resolved = await read(vaultName, key);
+      } catch (error) {
+        if (!leaveUnread || error instanceof VaultAccessDeniedError) {
+          throw error;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        logger
+          .debug`Could not read sensitive field ${fieldPath} from vault ${vaultName} (key ${key}): ${reason}`;
+        redactor?.recordUnread?.({
+          text: value,
+          vaultName,
+          key,
+          fieldPath,
+          reason,
+        });
+        return value;
+      }
       redactor?.addSecret(resolved, { vaultName, key });
       return resolved;
     }
@@ -1588,7 +1705,13 @@ async function resolveValueAtPath(
 
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      value[i] = await resolveValueAtPath(value[i], vaultService, redactor);
+      value[i] = await resolveValueAtPath(
+        value[i],
+        `${fieldPath}.${i}`,
+        read,
+        redactor,
+        leaveUnread,
+      );
     }
     return value;
   }
@@ -1598,8 +1721,10 @@ async function resolveValueAtPath(
     for (const key of Object.keys(record)) {
       record[key] = await resolveValueAtPath(
         record[key],
-        vaultService,
+        `${fieldPath}.${key}`,
+        read,
         redactor,
+        leaveUnread,
       );
     }
     return record;

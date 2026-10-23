@@ -19,6 +19,7 @@
 
 import {
   isIssuedEntry,
+  jsonEscaped,
   type RegistryEntry,
   SecretBagRegistry,
   type SecretReference,
@@ -58,6 +59,41 @@ export type SecretSource = SecretReference;
  */
 export interface SecretSink {
   addSecret(value: string, source?: SecretSource): void;
+  /**
+   * Records a stored sensitive-field reference whose vault read failed. The
+   * reference text stays in the record; this keeps why, so the run can name
+   * the failed read where the text is refused or used (swamp-club#3806).
+   */
+  recordUnread?(reference: UnreadSensitiveReference): void;
+}
+
+/**
+ * A stored sensitive-field reference the run tried to read from its vault and
+ * could not: where it points, the field it sits at, and the provider's error.
+ */
+export interface UnreadSensitiveReference extends SecretSource {
+  /** The reference text exactly as the record stores it. */
+  readonly text: string;
+  readonly fieldPath: string;
+  readonly reason: string;
+}
+
+/**
+ * Finds the failed read recorded for a stored reference's exact text;
+ * {@link RunSensitiveValues} keeps the run's record.
+ */
+export interface UnreadReferenceLookup {
+  unreadReferenceFor(text: string): UnreadSensitiveReference | undefined;
+}
+
+/**
+ * Describes a failed sensitive-field read for a warning or an error: the
+ * vault, the key, and the provider's reason.
+ */
+export function describeUnreadReference(
+  reference: UnreadSensitiveReference,
+): string {
+  return `vault '${reference.vaultName}', key '${reference.key}': ${reference.reason}`;
 }
 
 /** A recorded sensitive value and where it came from. */
@@ -97,8 +133,10 @@ function encodeKeyForName(key: string): string {
  * run is a view of one registry wherever the run's values go, child runs
  * included.
  */
-export class RunSensitiveValues implements SecretSink {
+export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   private readonly entries = new Map<string, SecretSource>();
+  /** Failed sensitive-field reads, by their stored reference text. */
+  private readonly unread = new Map<string, UnreadSensitiveReference>();
   /** list() result, rebuilt only after a new value is recorded. */
   private sorted: SensitiveEntry[] | undefined;
 
@@ -158,6 +196,22 @@ export class RunSensitiveValues implements SecretSink {
       this.entries.set(value, source);
       this.sorted = undefined;
     }
+  }
+
+  recordUnread(reference: UnreadSensitiveReference): void {
+    this.unread.set(reference.text, reference);
+  }
+
+  /**
+   * The failed read recorded for `text`, when it is exactly the stored
+   * reference of a sensitive field this run could not read. The reason is
+   * masked through the run's redactor, since a provider's error can echo
+   * input.
+   */
+  unreadReferenceFor(text: string): UnreadSensitiveReference | undefined {
+    const reference = this.unread.get(text);
+    if (!reference || !this.redactor?.hasSecrets) return reference;
+    return { ...reference, reason: this.redactor.redact(reference.reason) };
   }
 
   /** Whether no value has been recorded. */
@@ -285,7 +339,7 @@ export class RunSensitiveValues implements SecretSink {
       let result = this.withSentinelStandIns(value, () => "***");
       for (const { value: secret } of this.list()) {
         if (result.includes(secret)) result = result.split(secret).join("***");
-        const escaped = JSON.stringify(secret).slice(1, -1);
+        const escaped = jsonEscaped(secret);
         if (escaped !== secret && result.includes(escaped)) {
           result = result.split(escaped).join("***");
         }

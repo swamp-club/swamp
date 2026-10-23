@@ -22,6 +22,12 @@ import { useSwamp } from "../client/SwampProvider.tsx";
 import { useRequest } from "../client/useRequest.ts";
 import { extractArray } from "../client/extract.ts";
 import { type ApprovalInfo, pendingApprovals } from "../client/approvals.ts";
+import { useDecidedGates } from "../client/useDecidedGates.ts";
+import {
+  decidedGate,
+  decidedLabel,
+  gateKey,
+} from "../components/decision_confirm.ts";
 import type { HealthSnapshot } from "../client/useHealthStream.ts";
 import { healthViewState } from "../client/health_state.ts";
 import { StatusDot } from "../components/StatusDot.tsx";
@@ -94,6 +100,12 @@ export function Overview(
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
   const approvals = pendingApprovals(approvalsData);
+  // A decided gate stays settled until a listing drops it, and a gate in
+  // flight takes no second click (swamp-club#3697).
+  const { decided, hold } = useDecidedGates(approvalsData);
+  const [deciding, setDeciding] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const runsState = loadState(runsReq, () => runs.length === 0);
   const approvalsState = loadState(approvalsReq, () => approvals.length === 0);
   const runsLoading = runsState === "loading";
@@ -146,6 +158,8 @@ export function Overview(
   const decide = useCallback(
     async (type: "workflow.approve" | "workflow.reject", a: ApprovalInfo) => {
       setDecisionError(null);
+      const key = gateKey(a);
+      setDeciding((prev) => new Set(prev).add(key));
       try {
         const result = await request<{ data?: { autoResumed?: boolean } }>(
           type,
@@ -155,15 +169,28 @@ export function Overview(
             runId: a.runId,
           },
         );
+        hold(
+          a,
+          decidedGate(
+            type === "workflow.approve" ? "approve" : "reject",
+            result,
+            new Date().toISOString(),
+          ),
+        );
         if (result.data?.autoResumed) {
           setResumingRuns((prev) => new Set(prev).add(a.runId));
         }
       } catch (err) {
         setDecisionError(err instanceof Error ? err.message : String(err));
       }
+      setDeciding((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
       refresh();
     },
-    [request, refresh],
+    [request, refresh, hold],
   );
 
   const handleApprove = useCallback(
@@ -412,24 +439,44 @@ export function Overview(
                     </div>
                   )}
                 </div>
-                <div className="approval-actions">
-                  <button
-                    type="button"
-                    className="btn-sm btn-approve"
-                    onClick={() =>
-                      handleApprove(a)}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-sm btn-reject"
-                    onClick={() =>
-                      handleReject(a)}
-                  >
-                    Reject
-                  </button>
-                </div>
+                {decided.has(gateKey(a))
+                  ? (
+                    <div className="approval-decided" role="status">
+                      {decidedLabel(decided.get(gateKey(a))!)}
+                    </div>
+                  )
+                  : (
+                    <div
+                      className="approval-actions"
+                      aria-busy={deciding.has(gateKey(a))}
+                    >
+                      <button
+                        type="button"
+                        className="btn-sm btn-approve"
+                        disabled={deciding.has(gateKey(a)) ||
+                          a.canDecide === false}
+                        title={a.canDecide === false
+                          ? "You don't hold approve on this workflow"
+                          : undefined}
+                        onClick={() => handleApprove(a)}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-sm btn-reject"
+                        disabled={deciding.has(gateKey(a)) ||
+                          a.canDecide === false}
+                        title={a.canDecide === false
+                          ? "You don't hold approve on this workflow"
+                          : undefined}
+                        onClick={() =>
+                          handleReject(a)}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
               </div>
             ))}
           </div>

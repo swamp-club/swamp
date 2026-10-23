@@ -23,10 +23,18 @@ import {
   judgeRecordedProcess,
   type ProcessIdentity,
   type ProcessProbe,
+  sameKernel,
 } from "./process_liveness.ts";
 
 const arbIdentity: fc.Arbitrary<ProcessIdentity> = fc.record({
-  host: fc.constantFrom("h1", "h1#pid:[1]", "h1#pid:[2]", "h2"),
+  host: fc.constantFrom(
+    "h1",
+    "h1#pid:[1]",
+    "h1#pid:[2]",
+    "h2",
+    // A hostname that changed under one kernel (swamp-club#3801).
+    "h2#pid:[1]",
+  ),
   bootId: fc.option(fc.constantFrom("b1", "b2"), { nil: undefined }),
   startTime: fc.option(fc.constantFrom("t1", "t2"), { nil: undefined }),
 }, { requiredKeys: ["host"] });
@@ -44,7 +52,13 @@ const arbCase = fc.record({
   here: arbIdentity,
   probe: arbProbe,
   bootIdRequired: fc.boolean(),
+  pidNamespaces: fc.option(fc.boolean(), { nil: undefined }),
 });
+
+/** The pid namespace a host names, or undefined when it names none. */
+function namespaceOf(host: string): string | undefined {
+  return host.includes("#") ? host.slice(host.indexOf("#") + 1) : undefined;
+}
 
 Deno.test("judgeRecordedProcess: a record not written on this kernel is never judged gone", () => {
   fc.assert(
@@ -69,6 +83,34 @@ Deno.test("judgeRecordedProcess: a record not written on this kernel is never ju
         (!c.bootIdRequired || c.here.bootId !== undefined);
       if (!sameKernel) assert(verdict === "unknown", `got ${verdict}`);
       else assert(verdict !== "unknown", "a same-kernel record is judged");
+    }),
+  );
+});
+
+Deno.test("sameKernel: the boot id and pid namespace decide, the hostname only where neither names a namespace (swamp-club#3801)", () => {
+  fc.assert(
+    fc.property(arbCase, (c) => {
+      fc.pre(c.recorded !== undefined);
+      const actual = sameKernel(c.recorded!, {
+        pid: 1,
+        identity: c.here,
+        probe: () => c.probe,
+        bootIdRequired: c.bootIdRequired,
+        ...(c.pidNamespaces !== undefined
+          ? { pidNamespaces: c.pidNamespaces }
+          : {}),
+      });
+      const r = c.recorded;
+      const expected = r !== undefined &&
+        (r.bootId !== undefined && c.here.bootId !== undefined
+          ? r.bootId === c.here.bootId &&
+            (namespaceOf(r.host) !== undefined ||
+                namespaceOf(c.here.host) !== undefined
+              ? namespaceOf(r.host) === namespaceOf(c.here.host)
+              : c.pidNamespaces === false || r.host === c.here.host)
+          : r.host === c.here.host && r.bootId === c.here.bootId &&
+            !c.bootIdRequired);
+      assert(actual === expected, `got ${actual}`);
     }),
   );
 });

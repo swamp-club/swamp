@@ -378,7 +378,13 @@ Deno.test("DenoInfoModuleGraphReader: a package.json project resolves bare impor
 // or package.json is in play (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING),
 // so the no-project case is the one swamp alone could break.
 Deno.test("DenoInfoModuleGraphReader: a repository checked out under a directory named node_modules keeps its local modules", async () => {
-  const outer = await Deno.makeTempDir({ prefix: "graph-reader-ancestor-" });
+  // Resolved: below a node_modules, deno info reports imports by real path,
+  // so an entry point read through a symlinked temp dir (macOS /var) would
+  // be read in two spellings. Push resolves its entry points the same way
+  // (swamp-club#3794).
+  const outer = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "graph-reader-ancestor-" }),
+  );
   try {
     const dir = join(outer, "node_modules", "repo");
     await Deno.mkdir(join(dir, "lib"), { recursive: true });

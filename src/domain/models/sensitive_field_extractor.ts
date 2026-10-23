@@ -81,6 +81,11 @@ function isSensitive(meta: FieldMetadata): boolean {
   return Boolean((meta as SensitiveMetadata).sensitive);
 }
 
+/** Whether a schema marks any field, even when a raw input lacks that field. */
+export function hasSensitiveFields(schema: z.ZodTypeAny): boolean {
+  return schemaHoldsMetadata(schema, isSensitive);
+}
+
 function toSensitiveFieldInfo(
   path: string,
   meta: FieldMetadata,
@@ -214,6 +219,12 @@ export interface LiteralSensitiveValue {
   /** The keys that lead to the value from the root of the arguments. */
   keys: (string | number)[];
   value: unknown;
+  /**
+   * Set when the value is only potentially sensitive: an input a pipeline's
+   * transform may carry into a sensitive output, reported with `rawInputs`,
+   * not a value the schema marks itself (swamp-club#3681).
+   */
+  rawInput?: true;
 }
 
 /**
@@ -231,16 +242,25 @@ export function findLiteralSensitiveValues(
   );
 }
 
-/** Sensitive positions, including expression-shaped values supplied as data. */
+/**
+ * Sensitive positions, including expression-shaped values supplied as data.
+ * `rawInputs` conservatively covers inputs to sensitive pipeline outputs.
+ */
 export function findSensitiveValues(
   schema: z.ZodTypeAny | undefined,
   args: Record<string, unknown> | undefined,
+  rawInputs = false,
 ): LiteralSensitiveValue[] {
   if (!schema || !args) {
     return [];
   }
-  return findValuesWithMetadata(schema, args, isSensitive)
-    .map(({ path, keys, value }) => ({ path, keys, value }));
+  return findValuesWithMetadata(schema, args, isSensitive, { rawInputs })
+    .map(({ path, keys, value, rawInput }) => ({
+      path,
+      keys,
+      value,
+      ...(rawInput ? { rawInput } : {}),
+    }));
 }
 
 /**
@@ -595,16 +615,28 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Recursively collects all string values from a value tree into `out`.
- * Handles strings, arrays, and plain objects (records/maps). An object's own
- * keys are collected too when `includeKey` accepts them. A string that is
- * exactly a vault secret sentinel is skipped: it stands for a reference,
- * and the load that delivers its value registers that value.
+ * Recursively collects the secret text of a value tree into `out`: every
+ * string, and every finite number or bigint as it prints, since a sensitive
+ * number (a PIN, an account number) echoed in an error or a log reads as
+ * that text (swamp-club#3681). Enters arrays, plain objects (records/maps),
+ * Maps, Sets, and the enumerable own entries of any other object a
+ * transform may deliver, which also contributes how it prints when it prints
+ * as more than `[object X]`: a URL its href, an Error `Name: message` (its
+ * stack is not an enumerable entry), a Date its `toString()` text and not the
+ * ISO form JSON writes. A binary buffer holds no text, and a value the walk
+ * cannot read (a revoked Proxy, a getter or a `toString` that throws)
+ * contributes what was read before it failed. An object's own keys, and a
+ * Map's string or numeric keys as they print, are collected too when
+ * `includeKey` accepts them, and never without it. A boolean is not a
+ * secret. A string that is exactly a vault secret sentinel is skipped: it
+ * stands for a reference, and the load that delivers its value registers
+ * that value. A value that contains itself is entered once.
  */
 function collectSecretStrings(
   value: unknown,
   out: string[],
   includeKey?: (key: string) => boolean,
+  seen: Set<object> = new Set(),
 ): void {
   if (value === undefined || value === null) {
     return;
@@ -613,17 +645,64 @@ function collectSecretStrings(
     if (!SENTINEL_EXACT.test(value)) out.push(value);
     return;
   }
-  if (Array.isArray(value)) {
-    for (const element of value) {
-      collectSecretStrings(element, out, includeKey);
-    }
+  if (typeof value === "bigint" || Number.isFinite(value)) {
+    out.push(String(value));
     return;
   }
-  if (isPlainObject(value)) {
-    for (const [k, v] of Object.entries(value)) {
-      if (includeKey?.(k)) out.push(k);
-      collectSecretStrings(v, out, includeKey);
+  if (typeof value !== "object" || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (const element of value) {
+        collectSecretStrings(element, out, includeKey, seen);
+      }
+      return;
     }
+    if (value instanceof Map) {
+      for (const [key, entry] of value) {
+        // A Map key is a key: collected as an object's would be, as it
+        // prints.
+        const keyText = typeof key === "string"
+          ? key
+          : typeof key === "bigint" || Number.isFinite(key)
+          ? String(key)
+          : undefined;
+        if (keyText !== undefined && includeKey?.(keyText)) out.push(keyText);
+        collectSecretStrings(entry, out, includeKey, seen);
+      }
+      return;
+    }
+    if (value instanceof Set) {
+      for (const entry of value) {
+        collectSecretStrings(entry, out, includeKey, seen);
+      }
+      return;
+    }
+    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+      return;
+    }
+    if (!isPlainObject(value)) {
+      try {
+        const prints = (value as { toString?: unknown }).toString;
+        if (
+          typeof prints === "function" && prints !== Object.prototype.toString
+        ) {
+          out.push(String(value));
+        }
+      } catch {
+        // A value that cannot print cannot be echoed as text.
+      }
+    }
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (includeKey?.(k)) out.push(k);
+      collectSecretStrings(v, out, includeKey, seen);
+    }
+  } catch {
+    // A value the walk cannot read (a revoked Proxy, an own getter that
+    // throws) cannot be read by the method either; what was collected
+    // stays.
   }
 }
 
@@ -671,40 +750,148 @@ export function objectKeysOf(value: unknown): Set<string> {
   return inputKeysOf(value).keys;
 }
 
+/** What {@link extractSensitiveFieldValues} collects beyond values. */
+export interface SensitiveValueOptions {
+  /**
+   * Collects the own keys of every object under a sensitive position that
+   * this accepts, as a key a schema transform derived from a value is a
+   * secret like the value (swamp-club#3681); without it, keys are left out.
+   * Never applied inside what a reshaping node delivered whole (see
+   * `delivered`).
+   */
+  includeKey?: (key: string) => boolean;
+  /**
+   * The data is what a parse delivered, not what it was given: a
+   * `.transform()`, codec, `.overwrite()` or `.catch()` that encloses a
+   * sensitive position may have moved its value under any key, so the
+   * values such a node delivered are collected whole (swamp-club#3681). The
+   * keys in it are not: its own code wrote them, and an identifier such as
+   * `headers` or `Authorization` held by the redactor would mask every
+   * occurrence in unrelated output (swamp-club#3754). A secret that code
+   * moved into a key is therefore not collected; a key under a position the
+   * schema itself marks still is, as `includeKey` accepts it.
+   */
+  delivered?: boolean;
+  /**
+   * Text left out of what a node delivered whole: the values the input holds
+   * at positions its schema leaves plain, which the schema itself declares
+   * no secret. A value a schema node marks itself is never left out.
+   */
+  exclude?: ReadonlySet<string>;
+}
+
 /**
- * Extracts the runtime secret values from a data object based on its Zod schema.
+ * Extracts the runtime secret values from a data value based on its Zod
+ * schema.
  *
  * For each value under a field marked `{ sensitive: true }` in the schema,
  * wherever the field sits (nested objects, array elements, record values,
- * union members — see `findValuesWithMetadata`):
- * - String values are collected directly.
- * - Array and plain-object values have each string inside them collected.
- * - Undefined or null values are skipped.
+ * union members — see `findValuesWithMetadata`), and for the whole value
+ * when the schema marks its root, as a pipeline delivering a sensitive
+ * array or scalar does (swamp-club#3681):
+ * - String values are collected directly, and a number as its text.
+ * - Array and plain-object values have each string and number inside them
+ *   collected.
+ * - Undefined, null and boolean values are skipped.
  *
  * Used to register sensitive argument values with SecretRedactor before
  * method execution so they are scrubbed from log files and result resources.
+ * The data is read as stored unless `delivered` says it is a parse's output.
  *
  * @param schema - A Zod schema (typically a method argument schema)
- * @param data - The resolved data object to extract values from
+ * @param data - The resolved data to extract values from, of any shape
+ * @param options - Whether object keys under a sensitive position count, and
+ *   whether the data is what a parse delivered
  * @returns Array of secret string values to register with SecretRedactor
  */
 export function extractSensitiveFieldValues(
   schema: z.ZodTypeAny,
-  data: Record<string, unknown>,
+  data: unknown,
+  options: SensitiveValueOptions = {},
 ): string[] {
   if (!schemaHoldsMetadata(schema, isSensitive)) {
     return [];
   }
   const secrets: string[] = [];
 
-  for (const field of extractSensitiveFields(schema)) {
-    collectSecretStrings(getNestedValue(data, field.path), secrets);
+  if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+    for (const field of extractSensitiveFields(schema)) {
+      const texts: string[] = [];
+      collectSecretStrings(
+        getNestedValue(data as Record<string, unknown>, field.path),
+        texts,
+        // In what a parse delivered, a field's path may lead into what a
+        // reshaping node made, whose keys and plain values its code wrote:
+        // they are left out as from that whole. The walk below collects
+        // every position the schema marks, keys included.
+        options.delivered ? undefined : options.includeKey,
+      );
+      for (const text of texts) {
+        if (!options.delivered || !options.exclude?.has(text)) {
+          secrets.push(text);
+        }
+      }
+    }
   }
-  for (const { value } of findValuesWithMetadata(schema, data, isSensitive)) {
-    collectSecretStrings(value, secrets);
+  for (
+    const { value, rawInput } of findValuesWithMetadata(
+      schema,
+      data,
+      isSensitive,
+      { reportRoot: true, transformed: options.delivered },
+    )
+  ) {
+    if (rawInput) {
+      // What a reshaping node delivered whole: its values, not its keys.
+      const texts: string[] = [];
+      collectSecretStrings(value, texts);
+      for (const text of texts) {
+        if (!options.exclude?.has(text)) secrets.push(text);
+      }
+    } else {
+      collectSecretStrings(value, secrets, options.includeKey);
+    }
   }
 
   return [...new Set(secrets)];
+}
+
+/**
+ * The secret text a parse delivered that the values registered before the
+ * parse do not cover (swamp-club#3681): what sits under the sensitive
+ * positions of `delivered` as the schema parsed it, a transform's output and
+ * a number included, every object key the parse introduced there, and the
+ * values of what a transform, codec, overwrite or catch enclosing a
+ * sensitive position delivered, since it may have moved the value under any
+ * key. The keys of such a whole are not collected, since its code wrote
+ * them (swamp-club#3754). As a refusal does (see
+ * {@link extractRefusedSensitiveValues}), text `parseInput` holds only at
+ * positions the schema leaves plain (see {@link plainTextsOf}) is left out of
+ * such a whole, and a key the schema declares is not collected, so a region,
+ * a port, a year or a field name a transform passes through is not masked out
+ * of every log and resource; a value a schema node marks itself is collected
+ * whatever the input holds.
+ *
+ * @param schema - The arguments schema the parse ran
+ * @param parseInput - What the parse received
+ * @param delivered - What the parse delivered
+ * @returns The text to register with SecretRedactor before the method runs
+ */
+export function extractDeliveredSensitiveValues(
+  schema: z.ZodTypeAny,
+  parseInput: unknown,
+  delivered: unknown,
+): string[] {
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return [];
+  }
+  const spelled = objectKeysOf(parseInput);
+  const declared = schemaDeclaredKeys(schema);
+  return extractSensitiveFieldValues(schema, delivered, {
+    includeKey: (key) => !spelled.has(key) && !declared.has(key),
+    delivered: true,
+    exclude: plainTextsOf(schema, parseInput),
+  });
 }
 
 /** The parts of a parse issue a refusal can echo. */

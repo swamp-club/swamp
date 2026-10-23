@@ -271,6 +271,54 @@ export function getObjectShape(
 }
 
 /**
+ * Whether an input key belongs to a method schema, without parsing values or
+ * running transforms. Used when caching forwarded step inputs: composite
+ * schemas and catchalls accept keys that a single object shape cannot list.
+ */
+export function acceptsMethodArgumentKey(
+  schema: z.ZodTypeAny,
+  key: string,
+): boolean {
+  const seen = new Set<z.ZodTypeAny>();
+  const visit = (current: z.ZodTypeAny | undefined): boolean => {
+    if (!current) return true;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const def = getSchemaDef(current);
+    switch (getSchemaType(current)) {
+      case "object":
+        return Object.hasOwn(readShape(def) ?? {}, key) ||
+          (def.catchall !== undefined &&
+            getSchemaType(def.catchall) !== "never");
+      case "record":
+      case "any":
+      case "unknown":
+        return true;
+      case "union":
+      case "discriminatedunion":
+        return def.options?.some(visit) ?? true;
+      case "intersection":
+        return visit(def.left) || visit(def.right);
+      case "effects":
+        return visit(def.schema);
+      case "pipe":
+        // A preprocessor accepts arbitrary input; its output shape cannot
+        // tell us which input keys it reads.
+        return def.in && getSchemaType(def.in) === "transform"
+          ? true
+          : visit(def.in);
+      case "lazy":
+        return visit(def.getter?.());
+      default:
+        // Opaque schemas can accept an object without describing its keys.
+        // Only omit keys an inspected object shape is known not to accept.
+        return visit(def.innerType);
+    }
+  };
+  return visit(schema);
+}
+
+/**
  * Result of {@link parseGlobalArgumentsLeniently}: the parsed values on
  * success, or the Zod issues (with paths rooted at the global argument key).
  */
@@ -347,7 +395,8 @@ function objectRefinementIssues(
  * Every issue carries the `input` the failing check received, which under a
  * transform is what the transform made of the value, so a caller can
  * register what a sensitive field's refusal may echo before it reports it
- * (swamp-club#3681).
+ * (swamp-club#3681). A parse that delivers a scalar, null or an array is
+ * refused with a value-free issue: global arguments are a record.
  */
 export function parseGlobalArgumentsLeniently(
   schema: z.ZodTypeAny,
@@ -404,9 +453,36 @@ export function parseGlobalArgumentsLeniently(
   if (!result.success) {
     return { success: false, issues: result.error.issues };
   }
+  if (
+    typeof result.data !== "object" || result.data === null ||
+    Array.isArray(result.data)
+  ) {
+    // Global arguments are a record. A schema delivering a scalar, null or
+    // an array cannot be stored as them, and spreading a string would store
+    // it one character per key (swamp-club#3681). The refusal names the
+    // shape, never the value. An instance is stored by its own properties.
+    return {
+      success: false,
+      issues: [{
+        code: "custom",
+        path: [],
+        message: `the global-arguments schema delivered ${
+          describeShape(result.data)
+        }, not an object`,
+        input: undefined,
+      } as z.ZodIssue],
+    };
+  }
   const data = { ...(result.data as Record<string, unknown>) };
   for (const key of skipKeys) delete data[key];
   return { success: true, data };
+}
+
+/** Names a value's kind, never its content. */
+function describeShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  return `a ${typeof value}`;
 }
 
 /**

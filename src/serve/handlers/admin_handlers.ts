@@ -258,7 +258,10 @@ import { isReservedVaultName } from "./vault_handlers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 import { createV3LockfileSync } from "../../infrastructure/datastore_v3/v3_lockfile_sync.ts";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
-import { inspectV3Content } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
+import {
+  inspectV3Content,
+  inspectV3KeptLineages,
+} from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
   v3DatastoreConfigOf,
   v3DatastoreFor,
@@ -1757,6 +1760,9 @@ export async function handleDoctorDatastores(
         ? {
           checkV3Content: (config: DatastoreConfig) =>
             inspectV3Content({ repoDir, datastoreConfig: config }),
+          // The datastore's lineage records only (swamp-club#3801).
+          checkV3KeptLineages: (config: DatastoreConfig) =>
+            inspectV3KeptLineages({ repoDir, datastoreConfig: config }),
         }
         : {}),
     };

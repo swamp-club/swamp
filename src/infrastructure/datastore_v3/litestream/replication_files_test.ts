@@ -174,6 +174,40 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "presence: the supervisor's process identity is read back; a malformed one reads as a record without one (swamp-club#3801)",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const paths = await replicationPathsFor(
+        await database(dir),
+        join(dir, "priv"),
+      );
+      await ensureSharedDir(paths);
+      const record = {
+        supervisorPid: 10,
+        uid: Deno.uid(),
+        hostname: "h",
+        process: { host: "h#pid:[1]", bootId: "b", startTime: "t" },
+        lineageFence: 3,
+        replicaPath: "/r/_litestream/000000000003",
+      };
+      await writePresence(paths, record);
+      assertEquals(await readPresence(paths), { kind: "found", record });
+      await Deno.writeTextFile(
+        paths.presence,
+        JSON.stringify({ ...record, process: "not an identity" }),
+      );
+      const { process: _, ...legacy } = record;
+      assertEquals(await readPresence(paths), {
+        kind: "found",
+        record: legacy,
+      });
+    });
+  },
+});
+
+Deno.test({
   name: "replacement marks: one per supervisor, cleared at a new start",
   ignore: !UNIX,
   async fn() {

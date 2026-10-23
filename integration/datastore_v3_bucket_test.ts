@@ -116,10 +116,21 @@ import {
   prepareV3WriterLineage,
   publishV3Head,
 } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
+import { inspectV3KeptLineages } from "../src/infrastructure/datastore_v3/v3_content_inspection.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
+import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
+import {
+  localProcess,
+  setLocalProcessForTesting,
+} from "../src/infrastructure/datastore_v3/process_identity.ts";
 import { setV3ReplicationForTesting } from "../src/infrastructure/datastore_v3/litestream/v3_replication.ts";
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import { hourStartOf } from "../src/infrastructure/persistence/control_plane_retention_watermark_repository.ts";
+import { Command } from "@cliffy/command";
+import { workflowApprovalsCommand } from "../src/cli/commands/workflow_approvals.ts";
+import { runCommand } from "../src/cli/commands/run.ts";
+import { vaultAuditTrailCommand } from "../src/cli/commands/vault_audit_trail.ts";
+import { vaultReadSecretCommand } from "../src/cli/commands/vault_read_secret.ts";
 import {
   commitCount,
   SIDECAR_TESTS_IGNORED,
@@ -315,6 +326,106 @@ Deno.test({
         outputMode: "json",
       });
       assert(repoContext.commitLog !== undefined, "the context commits on v3");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: doctor's kept-lineage check reads the lineages the bucket's control plane records as kept (swamp-club#3801)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      // As doctor reads it, from the repository's datastore config.
+      const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+      const kept = () => inspectV3KeptLineages({ repoDir, datastoreConfig });
+      assertEquals(await kept(), []);
+      const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
+      const registry = lineageRegistryFor(location.path);
+      await registry.start({
+        fence: 4,
+        holder: "ci@runner",
+        replicaRoot: "s3:http://proxy:1:team-bucket:",
+        startedAt: "2026-10-22T18:00:00.000Z",
+      });
+      await registry.keep(4);
+      assertEquals(await kept(), [{
+        fence: 4,
+        replicaRoot: "s3:http://proxy:1:team-bucket:",
+        holder: "ci@runner",
+        startedAt: "2026-10-22T18:00:00.000Z",
+      }]);
+      assert(
+        [...bucket.remote.controlPlaneRecords().keys()].includes(
+          "_control/lineage/000000000004/kept.json",
+        ),
+        "the record is in the bucket's control plane",
+      );
+    });
+  },
+});
+
+/** Runs a read-only CLI command in-process, in JSON mode; returns its error. */
+async function runReadCommand(
+  repoDir: string,
+  args: string[],
+): Promise<unknown> {
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command(
+      "workflow",
+      new Command().command("approvals", workflowApprovalsCommand),
+    )
+    .command("run", runCommand)
+    .command(
+      "vault",
+      new Command()
+        .command("audit-trail", vaultAuditTrailCommand)
+        .command("read-secret", vaultReadSecretCommand),
+    );
+  try {
+    await root.parse([...args, "--json", "--repo-dir", repoDir]);
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+Deno.test({
+  name:
+    "v3 bucket: read-only commands on a fresh checkout take no lease and start no lineage (swamp-club#3801)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      for (
+        const args of [
+          ["workflow", "approvals"],
+          ["run", "history"],
+          ["vault", "audit-trail"],
+          ["vault", "read-secret", "no-such-vault", "key", "--yes"],
+        ]
+      ) {
+        const error = await runReadCommand(repoDir, args);
+        // The vault does not exist: read-secret is refused once the repo is
+        // open. Every other command succeeds.
+        if (args[1] === "read-secret") {
+          assertStringIncludes(String(error), "no-such-vault");
+        } else {
+          assertEquals(error, undefined, args.join(" "));
+        }
+        await closeV3Datastores();
+        assertEquals(
+          [...bucket.remote.controlPlaneRecords().keys()],
+          [MARKER_RECORD],
+          `${args.join(" ")} wrote only what setup wrote`,
+        );
+      }
     });
   },
 });
@@ -1221,6 +1332,108 @@ Deno.test({
         endpoint: S3_ENDPOINT!,
         forcePathStyle: true,
       },
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: two checkouts that spell the S3 endpoint differently replicate one datastore, on one lineage chain (opt-in, swamp-club#3801)",
+  ignore: SIDECAR_TESTS_IGNORED || S3_ENDPOINT === undefined,
+  async fn() {
+    const prefix = `v3-bucket-${crypto.randomUUID()}`;
+    const s3Bucket = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_BUCKET") ??
+      "swamp-test";
+    // The writer reaches the service as configured; the clone through
+    // another spelling of the same endpoint.
+    const through = (endpoint: string) => ({
+      [V3_REPLICA_ENV]: JSON.stringify({
+        type: "s3",
+        bucket: s3Bucket,
+        path: prefix,
+        endpoint,
+        region: "us-east-1",
+        forcePathStyle: true,
+      }),
+    });
+    const direct = through(S3_ENDPOINT!);
+    const slashed = through(`${S3_ENDPOINT!.replace(/\/$/, "")}/`);
+    await withRoot(async (root, bucket) => {
+      const first = join(root, "first");
+      await initRepo(first);
+      assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+      const second = join(root, "second");
+      await cloneRepo(first, second);
+      await withSidecar(root, async () => {
+        await withMockedEnv(direct, () => writeIn(first, 2));
+        assertEquals(
+          await withMockedEnv(slashed, () => restoredCommits(second)),
+          2,
+          "the clone sees the writer's datastore",
+        );
+        await withMockedEnv(slashed, () => writeIn(second, 1));
+        assertEquals(
+          await withMockedEnv(direct, () => restoredCommits(first)),
+          3,
+          "the writer sees the clone's write",
+        );
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: writes keep working across a hostname change, in the CLI and in a long-running process (swamp-club#3801)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      await withSidecar(root, async () => {
+        await writeIn(repoDir, 1);
+        const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+        const location = await v3DatastoreConfigOf(repoDir, datastoreConfig);
+        const paths = await replicationPathsFor(
+          v3CommitsDbPath(location.path, repoDir),
+          join(root, "priv"),
+        );
+        // A CLI command after the machine was renamed: the live sidecar
+        // recorded the name it had then, on this boot.
+        const record = JSON.parse(await Deno.readTextFile(paths.presence));
+        const host: string | undefined = record.process?.host;
+        const at = host?.indexOf("#") ?? -1;
+        await Deno.writeTextFile(
+          paths.presence,
+          JSON.stringify({
+            ...record,
+            hostname: "Previous-Name.local",
+            ...(host !== undefined
+              ? {
+                process: {
+                  ...record.process,
+                  host: "Previous-Name.local" +
+                    (at === -1 ? "" : host.slice(at)),
+                },
+              }
+              : {}),
+          }),
+        );
+        await writeIn(repoDir, 1);
+        // A long-running process (serve) that sees the rename itself.
+        const local = await localProcess();
+        setLocalProcessForTesting({
+          ...local,
+          hostname: () => "Renamed.local",
+        });
+        try {
+          await writeIn(repoDir, 1);
+        } finally {
+          setLocalProcessForTesting(undefined);
+        }
+        assertEquals(await restoredCommits(repoDir), 3);
+      });
     });
   },
 });

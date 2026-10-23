@@ -41,10 +41,15 @@ import { z } from "zod";
 import { Data } from "../src/domain/data/data.ts";
 import type { DataRecord } from "../src/domain/data/data_record.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
-import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
+import {
+  type Namespace,
+  restoreNamespace,
+  SOLO_NAMESPACE,
+} from "../src/domain/data/namespace.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   InvalidExpressionError,
+  SECRET_OPERATION_UNSUPPORTED,
   SECRET_REFERENCE_INVALID,
   SecretRefusedError,
 } from "../src/domain/expressions/errors.ts";
@@ -125,6 +130,8 @@ interface Fixture {
   orphanId: string;
   dataRepo: FileSystemUnifiedDataRepository;
   catalog: CatalogStore;
+  /** The raw query service, as the command and the extension API use it. */
+  dqs: DataQueryService;
   vaultService: VaultService;
   counting: CountingVault;
   secrets: {
@@ -148,6 +155,12 @@ interface Fixture {
     name: string,
     data: Record<string, unknown>,
   ) => Promise<void>;
+  /**
+   * Writes `db`'s `creds` record `name` as the writer does, through a
+   * repository of the solo namespace over the same files and catalog: a row
+   * written before the repository set a namespace.
+   */
+  writeLegacy: (name: string, data: Record<string, unknown>) => Promise<void>;
   /** Writes a record below the writer, as stored, with the given tags. */
   store: (
     name: string,
@@ -159,7 +172,17 @@ interface Fixture {
   sync: () => Promise<void>;
 }
 
-async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
+interface FixtureOptions {
+  /** The repository's namespace; the solo namespace when absent. */
+  namespace?: Namespace;
+  /** Marks the foreign content fetcher as reading the solo namespace (v3). */
+  readsSoloNamespace?: boolean;
+}
+
+async function withFixture(
+  fn: (f: Fixture) => Promise<void>,
+  options: FixtureOptions = {},
+): Promise<void> {
   const counting = registerCountingVault({});
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-3626-" });
   const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
@@ -178,17 +201,29 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     const foreignContent = new TextEncoder().encode(
       JSON.stringify({ password: FOREIGN_REFERENCE, user: "them" }),
     );
+    // The solo namespace's content, for a fetcher that reads it (v3).
+    let soloContent: Uint8Array | null = null;
+    const fetchForeignContent = Object.assign(
+      (namespace: string) =>
+        Promise.resolve(
+          namespace === "security"
+            ? foreignContent
+            : namespace === ""
+            ? soloContent
+            : null,
+        ),
+      { readsSoloNamespace: options.readsSoloNamespace === true },
+    );
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
       catalog,
       undefined,
       undefined,
-      SOLO_NAMESPACE,
+      options.namespace ?? SOLO_NAMESPACE,
       undefined,
       undefined,
-      (namespace) =>
-        Promise.resolve(namespace === "security" ? foreignContent : null),
+      fetchForeignContent,
     );
     const dqs = new DataQueryService(catalog, dataRepo);
 
@@ -196,15 +231,16 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     await defRepo.save(TYPE, db);
     const orphanId = crypto.randomUUID();
 
-    const write: Fixture["write"] = async (
-      modelId,
-      definitionName,
-      spec,
-      name,
-      data,
+    const writeThrough = async (
+      repo: FileSystemUnifiedDataRepository,
+      modelId: string,
+      definitionName: string,
+      spec: string,
+      name: string,
+      data: Record<string, unknown>,
     ) => {
       const writer = createResourceWriter(
-        dataRepo,
+        repo,
         TYPE,
         modelId,
         resources,
@@ -217,6 +253,22 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         METHOD,
       );
       await writer.writeResource(spec, name, data);
+    };
+    const write: Fixture["write"] = (
+      modelId,
+      definitionName,
+      spec,
+      name,
+      data,
+    ) => writeThrough(dataRepo, modelId, definitionName, spec, name, data);
+    const soloRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const writeLegacy: Fixture["writeLegacy"] = async (name, data) => {
+      await writeThrough(soloRepo, db.id, "db", "creds", name, data);
+      soloContent = await soloRepo.getContent(TYPE, db.id, name);
     };
     const store: Fixture["store"] = async (
       name,
@@ -298,6 +350,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       orphanId,
       dataRepo,
       catalog,
+      dqs,
       vaultService,
       counting,
       secrets,
@@ -314,6 +367,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
           s,
         ),
       write,
+      writeLegacy,
       store,
       sync,
     };
@@ -430,7 +484,46 @@ Deno.test("typed data secrets: own-namespace reads on every accessor return data
         f,
         await f.evaluate("data.latest('orphan', 'main').attributes.password"),
       ),
+      // data.query in both forms (typed-secrets 4.3): records answered
+      // whole, an empty select, and projections of a field, a container
+      // and JSON content.
+      query: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"')[0].attributes.password`,
+        ),
+      ),
+      queryEmptySelect: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', '')[0].attributes.password`,
+        ),
+      ),
+      queryProjected: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', 'attributes.password')[0]`,
+        ),
+      ),
+      queryContainer: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', 'attributes')[0].nested.token`,
+        ),
+      ),
+      queryContent: sentinelOf(
+        f,
+        await f.evaluate(
+          `data.query('modelName == "db" && name == "main"', 'content')[0].password`,
+        ),
+      ),
     };
+    assertEquals(
+      await f.evaluate(
+        `data.query('modelName == "db" && name == "main"', 'attributes.user')`,
+      ),
+      ["u"],
+    );
     // Non-secret structure is unchanged, and a whole record leaves plain.
     assertEquals(
       await f.evaluate("data.latest('db', 'main').attributes.user"),
@@ -469,6 +562,11 @@ Deno.test("typed data secrets: own-namespace reads on every accessor return data
       model: f.secrets.password,
       star: f.secrets.a,
       orphan: f.secrets.orphan,
+      query: f.secrets.password,
+      queryEmptySelect: f.secrets.password,
+      queryProjected: f.secrets.password,
+      queryContainer: f.secrets.token,
+      queryContent: f.secrets.password,
     });
     // One read per distinct reference, not per sentinel.
     assertEquals(
@@ -539,6 +637,31 @@ Deno.test("typed data secrets: denied and revoked access fail before the result 
         () => f.evaluate("size(data.findBySpec('db', 'creds'))"),
         InvalidExpressionError,
       );
+      // A query fails on a record it answers or a projection reads, and not
+      // on a row its predicate read but did not match: that row's references
+      // stay with the row (typed-secrets 4.3).
+      await assertRejects(
+        () =>
+          f.evaluate(
+            `data.query('modelName == "db" && name == "main"')[0].attributes.user`,
+          ),
+        InvalidExpressionError,
+        "Reading vault 'prod' is refused",
+      );
+      await assertRejects(
+        () =>
+          f.evaluate(
+            `data.query('modelName == "db" && name == "main"', 'attributes.user')`,
+          ),
+        InvalidExpressionError,
+        "Reading vault 'prod' is refused",
+      );
+      assertEquals(
+        await f.evaluate(
+          `size(data.query('modelName == "db" && attributes.password != null && name == "nope"'))`,
+        ),
+        0,
+      );
     });
     assertEquals(f.counting.reads, []);
 
@@ -605,6 +728,174 @@ Deno.test("typed data secrets: denied and revoked access fail before the result 
       ),
       FOREIGN_REFERENCE,
     );
+    assertEquals(
+      await f.evaluate(
+        `data.query('ns == "security"', 'attributes.password')`,
+        { secretBag: f.bag },
+      ),
+      [FOREIGN_REFERENCE],
+    );
+  });
+});
+
+Deno.test("typed data secrets: data.query predicates and projections refuse on a tagged field, absorbed or not, under a history term, by membership and by list equality, a null comparison matches, and the raw query keeps the stored reference text", async () => {
+  await withFixture(async (f) => {
+    const passwordKey = keyOf(f.modelId, "creds", "main", "password");
+    const reference = `\${{ vault.get('prod', '${passwordKey}') }}`;
+    // A record stored as JSON with a media type parameter: content aliases
+    // its viewed attributes under the view, and stays text on the raw path.
+    await f.store(
+      "charset",
+      { [SENSITIVE_FIELDS_TAG]: JSON.stringify(["password"]) },
+      JSON.stringify({ password: reference, user: "c" }),
+      "application/json; charset=utf-8",
+    );
+    // Two the view answers as stored, untagged: their content keeps the
+    // raw path's text, whether the body parses or not.
+    const plainBody = JSON.stringify({ password: reference, user: "p" });
+    await f.store(
+      "charset-plain",
+      {},
+      plainBody,
+      "application/json; charset=utf-8",
+    );
+    await f.store(
+      "charset-broken",
+      {},
+      "not json",
+      "application/json; charset=utf-8",
+    );
+    await f.sync();
+    const asStored = [
+      ["charset-plain", plainBody],
+      ["charset-broken", "not json"],
+    ];
+    for (const [name, body] of asStored) {
+      const predicate = `modelName == "db" && name == "${name}"`;
+      assertEquals(
+        await f.evaluate(`data.query('${predicate}', 'content')`),
+        [body],
+        name,
+      );
+      assertEquals(
+        await f.dqs.query(predicate, { select: "content" }),
+        [body],
+        name,
+      );
+      assertEquals(
+        await f.evaluate(
+          `size(data.query('${predicate} && type(content) == string'))`,
+        ),
+        (await f.dqs.query(`${predicate} && type(content) == string`)).length,
+        name,
+      );
+    }
+    const charset = sentinelOf(
+      f,
+      await f.evaluate(
+        `data.query('modelName == "db" && name == "charset"', 'content')[0].password`,
+      ),
+    );
+    assertEquals(
+      (await f.loader.load(f.bag, { charset })).resolveDeep({ charset }),
+      { charset: f.secrets.password },
+    );
+
+    const refused = async (expression: string, operation: string) => {
+      const error = await assertRejects(
+        () => f.evaluate(expression),
+        SecretRefusedError,
+        undefined,
+        expression,
+      );
+      assertEquals(error.code, SECRET_OPERATION_UNSUPPORTED, expression);
+      assertStringIncludes(error.operation, operation, expression);
+    };
+    const container =
+      "a container comparison (in, or == or != with no scalar literal or " +
+      "null operand) in a query ";
+    for (
+      const predicate of [
+        `attributes.password == "x"`,
+        `attributes.password == "x" || true`,
+        `version >= 1 && attributes.password == "x"`,
+        `attributes.nested.token == "x" || name == "main"`,
+      ]
+    ) {
+      await refused(
+        `data.query('modelName == "db" && ${predicate}')`,
+        "Secret == string",
+      );
+    }
+    for (
+      const predicate of [
+        `attributes.password in ["", "changeme"]`,
+        `[attributes.password] == ["x"]`,
+        `{"k": attributes.password} != {"k": "x"}`,
+        // The rule decides before an unrelated error in the same row.
+        `attributes.password in ["changeme"] || attributes.missing.k == "x"`,
+      ]
+    ) {
+      await refused(
+        `data.query('modelName == "db" && ${predicate}')`,
+        container + "predicate that reads a secret",
+      );
+    }
+    await refused(
+      `data.query('modelName == "db" && name == "main"', 'attributes.password == "x"')`,
+      "Secret == string",
+    );
+    await refused(
+      `data.query('modelName == "db" && name == "main"', 'attributes.password in ["x"]')`,
+      container + "projection that reads a secret",
+    );
+    await refused(
+      `data.query('modelName == "db" && name == "main"', 'attributes.password in ["x"] ? 1 : attributes.missing.k')`,
+      container + "projection that reads a secret",
+    );
+
+    // The allowed set holds in a predicate, and the calling expression's own
+    // container comparison beside it is not refused by the predicate's reads.
+    assertEquals(
+      await f.evaluate(
+        `data.query('modelName == "db" && name == "main" && attributes.password != null').map(r, r.name) == ["main"]`,
+      ),
+      true,
+    );
+    assertEquals(
+      await f.evaluate(
+        `size(data.query('modelName == "db" && name == "main" && attributes.password == null'))`,
+      ),
+      0,
+    );
+    // The one vault read is the load above; evaluation made none.
+    assertEquals(f.counting.reads.map((read) => read.key), [passwordKey]);
+    assertEquals(f.bag.rawValues, []);
+    assertEquals(f.redacted, [f.secrets.password]);
+
+    // The raw query service answers the stored reference text everywhere.
+    const [raw] = await f.dqs.query(
+      'modelName == "db" && name == "main"',
+    ) as DataRecord[];
+    assertEquals(raw.attributes.password, reference);
+    assertEquals(
+      await f.dqs.query('modelName == "db" && name == "main"', {
+        select: "attributes.password",
+      }),
+      [reference],
+    );
+    assertEquals(
+      (await f.dqs.query('modelName == "db" && name == "main"', {
+        select: "content",
+      }) as Record<string, unknown>[])[0].password,
+      reference,
+    );
+    assertEquals(
+      await f.dqs.query('modelName == "db" && name == "charset"', {
+        select: "content",
+      }),
+      [JSON.stringify({ password: reference, user: "c" })],
+    );
   });
 });
 
@@ -634,6 +925,11 @@ Deno.test("typed data secrets: a record the writer could not have stored refuses
           `data.latest('db', '${name}').attributes`,
           `dyn(data.latest('db', '${name}')) == null || true`,
           `model.db.resource.creds['${name}'].attributes`,
+          // A record the query answers, and a row its predicate reads.
+          `data.query('modelName == "db" && name == "${name}"')`,
+          `data.query('modelName == "db" && name == "${name}" && attributes.x != null')`,
+          `data.query('modelName == "db" && name == "${name}" && (attributes.x != null || true)')`,
+          `data.query('modelName == "db" && name == "${name}"', 'attributes.x')`,
         ]
       ) {
         const error = await assertRejects(
@@ -647,6 +943,9 @@ Deno.test("typed data secrets: a record the writer could not have stored refuses
         assertStringIncludes(error.operation, reason);
         assertEquals(error.operation.includes(name), false, expression);
         assertEquals(error.message.includes("plain-s3cret"), false);
+        if (expression.startsWith("data.query")) {
+          assertStringIncludes(error.operation, "(data.query)");
+        }
       }
     }
     assertEquals(
@@ -715,4 +1014,92 @@ Deno.test("typed data secrets: readResource keeps resolving plaintext with its s
     assertEquals(f.counting.readsOf(passwordKey), 4);
     assertEquals(f.bag.registry.isEmpty, true);
   });
+});
+
+Deno.test("typed data secrets: a row written before the repository set a namespace is the reader's own, its tagged fields read as data-origin references and delivered exactly once (swamp-club#3785)", async () => {
+  await withFixture(async (f) => {
+    const password = `legacy-${crypto.randomUUID()}`;
+    await f.writeLegacy("legacy", {
+      password,
+      user: "l",
+      nested: { token: "t", plain: "p" },
+    });
+    const record = await f.evaluate(
+      "data.latest('*:db', 'legacy')",
+    ) as DataRecord;
+    assertEquals(record.namespace, "");
+    const read = sentinelOf(
+      f,
+      await f.evaluate("data.latest('*:db', 'legacy').attributes.password"),
+    );
+    assertEquals(
+      await f.evaluate("data.latest('*:db', 'legacy').attributes.user"),
+      "l",
+    );
+    // data.query reads it as the same reference (typed-secrets 4.3), as a
+    // record and as a projection.
+    const queried = sentinelOf(
+      f,
+      await f.evaluate(
+        `data.query('name == "legacy"')[0].attributes.password`,
+      ),
+    );
+    const projected = sentinelOf(
+      f,
+      await f.evaluate(
+        `data.query('name == "legacy"', 'attributes.password')[0]`,
+      ),
+    );
+    assertEquals(f.counting.reads, []);
+    assertEquals(f.bag.rawValues, []);
+
+    const loaded = await f.loader.load(f.bag, { read, queried, projected });
+    assertEquals(loaded.resolveDeep({ read, queried, projected }), {
+      read: password,
+      queried: password,
+      projected: password,
+    });
+    assertEquals(
+      f.counting.reads.map((r) => r.key),
+      [keyOf(f.modelId, "creds", "legacy", "password")],
+    );
+    assertEquals(f.redacted, [password]);
+
+    // Another namespace's record is still returned as stored.
+    assertEquals(
+      await f.evaluate(
+        "data.latest('security:db', 'theirs').attributes.password",
+        { secretBag: f.bag },
+      ),
+      FOREIGN_REFERENCE,
+    );
+  }, { namespace: restoreNamespace("eng") });
+});
+
+Deno.test("typed data secrets: a solo row stays as stored for a repository that reads the solo namespace as another namespace (swamp-club#3785)", async () => {
+  await withFixture(async (f) => {
+    await f.writeLegacy("legacy", {
+      password: `legacy-${crypto.randomUUID()}`,
+      user: "l",
+      nested: { token: "t", plain: "p" },
+    });
+    const reference = `\${{ vault.get('${VAULT}', '${
+      keyOf(f.modelId, "creds", "legacy", "password")
+    }') }}`;
+    assertEquals(
+      await f.evaluate(
+        "data.latest('*:db', 'legacy').attributes.password",
+        { secretBag: f.bag },
+      ),
+      reference,
+    );
+    assertEquals(
+      await f.evaluate(
+        `data.query('name == "legacy"')[0].attributes.password`,
+        { secretBag: f.bag },
+      ),
+      reference,
+    );
+    assertEquals(f.counting.reads, []);
+  }, { namespace: restoreNamespace("eng"), readsSoloNamespace: true });
 });

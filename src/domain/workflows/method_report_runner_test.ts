@@ -161,6 +161,15 @@ function makeHarness(
     evaluatedDefinition: definition,
     originalDefinition: definition,
     methodName: "deploy",
+    provenance: {
+      definitionHash: "def-hash-1",
+      modelVersion: "2025.01.15.1",
+      triggeredBy: "workflow",
+      workflowId: "wf-1",
+      workflowRunId: "run-1",
+      stepName: "step-1",
+      initiatedBy: "user:alice",
+    },
     reportGlobalArgs: {},
     reportMethodArgs: {},
     // The builtin method-summary is a model-type default candidate on
@@ -270,12 +279,14 @@ Deno.test("runFor: succeeded run also executes required model-scope reports", as
   const methodName = `@test/${crypto.randomUUID()}`;
   const modelName = `@test/${crypto.randomUUID()}`;
   let modelScopeSeen: string | undefined;
+  let modelScopeProvenance: ModelReportContext["provenance"];
   await withReports([
     { name: methodName, report: makeReport("method") },
     {
       name: modelName,
       report: makeReport("model", (context) => {
         modelScopeSeen = (context as ModelReportContext).scope;
+        modelScopeProvenance = (context as ModelReportContext).provenance;
         return Promise.resolve({ markdown: "# model", json: {} });
       }),
     },
@@ -288,6 +299,7 @@ Deno.test("runFor: succeeded run also executes required model-scope reports", as
     // Two artifacts per report, both scopes.
     assertEquals(refs.length, 4);
     assertEquals(modelScopeSeen, "model");
+    assertEquals(modelScopeProvenance, harness.args.provenance);
 
     const scopes = harness.events
       .filter((e) => e.kind === "report_completed")
@@ -393,6 +405,7 @@ Deno.test("runFor: feeds the method execution context to the report", async () =
     assertEquals(seen?.definition.name, harness.args.evaluatedDefinition.name);
     assertEquals(seen?.repoDir, "/tmp/test-repo");
     assertEquals(seen?.swampSha, "abc123");
+    assertEquals(seen?.provenance, harness.args.provenance);
   });
 });
 
@@ -423,6 +436,7 @@ Deno.test("runFor: failed run executes method-scope reports with the error and r
     assertEquals(seen?.executionStatus, "failed");
     assertEquals(seen?.errorMessage, "deploy blew up");
     assertEquals(seen?.dataHandles, [written]);
+    assertEquals(seen?.provenance, harness.args.provenance);
 
     // Its persisted artifacts are returned so the caller records them
     // on the failed step, as it does for a successful one.

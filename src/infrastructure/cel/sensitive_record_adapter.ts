@@ -27,7 +27,12 @@
  * - A record from another namespace is returned as stored, its tag unread:
  *   that namespace's tags must not choose which of this repository's secrets
  *   are read (swamp-club#3306), and its references name vaults this
- *   repository does not have. A record with no tag is returned as it is.
+ *   repository does not have. Own and other are decided as the data layer
+ *   decides them (`isForeignToReader`): a record stamped with the solo
+ *   namespace in a namespaced repository was written before it set a
+ *   namespace and is the reader's own, unless the reader reads the solo
+ *   namespace as another namespace, as a v3 checkout does
+ *   (swamp-club#3785). A record with no tag is returned as it is.
  * - A tagged record is validated whole before CEL sees it, against what the
  *   writer can store. The tag is read strictly. Under the star value every
  *   field is sensitive at any depth: the writer stores each top-level field
@@ -63,6 +68,10 @@
  *   tagged output field is a Secret too. See {@link stepsView}.
  */
 
+import {
+  isForeignToReader,
+  type NamespaceReader,
+} from "../../domain/data/namespace.ts";
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
 import {
   parseStoredVaultReference,
@@ -96,6 +105,7 @@ export type DataAccessor =
   | "data.version"
   | "data.findBySpec"
   | "data.findByTag"
+  | "data.query"
   | "model.<name>.resource"
   | "model.method"
   | `steps.${string}.outputs`;
@@ -148,6 +158,18 @@ function defineLazy(target: object, key: string, read: () => unknown): void {
       return value;
     },
   });
+}
+
+/**
+ * Every view this module built: the attribute views and the record views of
+ * {@link adaptDataRecord}. The query view keeps one by identity when a
+ * projection returns it (design/enablers/typed-secrets.md Section 6.2).
+ */
+const views = new WeakSet<object>();
+
+/** Whether `value` is a view this module built. */
+export function isAdaptedView(value: unknown): boolean {
+  return typeof value === "object" && value !== null && views.has(value);
 }
 
 /** Identifies a record without its data name or any value. */
@@ -353,29 +375,31 @@ function viewOf(original: object, node: PathNode): object {
       if (index in original) define(view, String(index), original[index]);
     }
     view.length = original.length;
+    views.add(view);
     return view;
   }
   const view: object = Object.create(Object.getPrototypeOf(original));
   const source = original as Record<string, unknown>;
   for (const key of Object.keys(source)) define(view, key, source[key]);
+  views.add(view);
   return view;
 }
 
 /**
  * `record` as CEL reads it: unchanged when it is not a record, belongs to a
- * namespace other than `ownNamespace` or carries no tag; otherwise a new
- * record whose tagged fields are data-origin Secrets, validated whole first.
- * `ownNamespace` is undefined when every record is the reader's own by
+ * namespace foreign to `reader` or carries no tag; otherwise a new record
+ * whose tagged fields are data-origin Secrets, validated whole first.
+ * `reader` is undefined when every record is the reader's own by
  * construction, as the model map's are: the resolver builds it from the
  * local repository alone.
  */
 export function adaptDataRecord(
   record: unknown,
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
   accessor: DataAccessor,
 ): unknown {
   if (!isRecordLike(record)) return record;
-  if (ownNamespace !== undefined && record.namespace !== ownNamespace) {
+  if (reader !== undefined && isForeignToReader(record.namespace, reader)) {
     return record;
   }
   let tag: SensitiveFieldsTag;
@@ -406,6 +430,7 @@ export function adaptDataRecord(
       (key === "content" && record.content === record.attributes);
     defineValue(view, key, aliased ? attributes : record[key]);
   }
+  views.add(view);
   return view;
 }
 
@@ -433,20 +458,20 @@ export function adaptModelMethodResult(result: unknown): unknown {
  */
 export function adaptDataResult(
   result: unknown,
-  ownNamespace: string,
+  reader: NamespaceReader,
   accessor: DataAccessor,
 ): unknown {
   if (result instanceof Promise) {
     const adapted = result.then((value) =>
-      adaptDataResult(value, ownNamespace, accessor)
+      adaptDataResult(value, reader, accessor)
     );
     adapted.catch(() => {});
     return adapted;
   }
   if (Array.isArray(result)) {
-    return result.map((item) => adaptDataRecord(item, ownNamespace, accessor));
+    return result.map((item) => adaptDataRecord(item, reader, accessor));
   }
-  return adaptDataRecord(result, ownNamespace, accessor);
+  return adaptDataRecord(result, reader, accessor);
 }
 
 /**
@@ -456,12 +481,12 @@ export function adaptDataResult(
  * `resource` and `file` loaders fire only when CEL reads them. One view per
  * original object, so a model indexed by name and by id reads alike. Any
  * value that is not a plain map is returned as it is. The map holds only
- * this repository's records, so with `ownNamespace` undefined every record
+ * this repository's records, so with `reader` undefined every record
  * is adapted; a known namespace is checked as well, as defense in depth.
  */
 export function modelMapView(
   model: unknown,
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
 ): unknown {
   if (!isPlainMap(model)) return model;
   const views = new WeakMap<object, object>();
@@ -486,8 +511,7 @@ export function modelMapView(
   const instancesView = (instances: Record<string, unknown>): object =>
     lazyMap(
       instances,
-      (key) =>
-        adaptDataRecord(instances[key], ownNamespace, "model.<name>.resource"),
+      (key) => adaptDataRecord(instances[key], reader, "model.<name>.resource"),
     );
   const specsView = (specs: Record<string, unknown>): object =>
     lazyMap(specs, (key) => {
@@ -533,7 +557,7 @@ export function modelMapView(
  */
 export function stepsView(
   steps: unknown,
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
 ): unknown {
   if (!isPlainMap(steps)) return steps;
   const view: object = Object.create(Object.getPrototypeOf(steps));
@@ -541,7 +565,7 @@ export function stepsView(
     defineLazy(
       view,
       name,
-      () => stepContextView(name, steps[name], ownNamespace),
+      () => stepContextView(name, steps[name], reader),
     );
   }
   return view;
@@ -551,7 +575,7 @@ export function stepsView(
 function stepContextView(
   stepName: string,
   context: unknown,
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
 ): unknown {
   const sources = stepOutputSourcesOf(context);
   if (sources === undefined || !isPlainMap(context)) return context;
@@ -562,7 +586,7 @@ function stepContextView(
   defineLazy(
     view,
     "outputs",
-    () => mergedOutputsView(stepName, sources, ownNamespace),
+    () => mergedOutputsView(stepName, sources, reader),
   );
   return view;
 }
@@ -578,7 +602,7 @@ function stepContextView(
 function mergedOutputsView(
   stepName: string,
   sources: StepOutputSources,
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
 ): Record<string, unknown> {
   const accessor: DataAccessor = `steps.${stepName}.outputs`;
   const root: Record<string, unknown> = Object.create(null);
@@ -601,7 +625,7 @@ function mergedOutputsView(
     for (let index = group.records.length - 1; index >= 0; index--) {
       const adapted = adaptDataRecord(
         group.records[index],
-        ownNamespace,
+        reader,
         accessor,
       );
       if (!isRecordLike(adapted)) continue;
@@ -661,7 +685,7 @@ function storedReferencesOf(record: RecordLike): SecretReference[] {
  * (`syncDataReads`), and those of the output sources of every step the
  * expression names (`stepTargets`, typed-secrets 4.2), restricted to the
  * records {@link modelMapView} and {@link stepsView} adapt (own-namespace,
- * or every record when `ownNamespace` is undefined). Reading a model's
+ * or every record when `reader` is undefined). Reading a model's
  * `resource` map fires the context's own lazy loader, which the caller has
  * made local first. The authorization step of the synchronous passes
  * authorizes each (design/enablers/typed-secrets.md Section 3.4,
@@ -673,12 +697,12 @@ function storedReferencesOf(record: RecordLike): SecretReference[] {
 export function synchronousSensitiveReferences(
   celExpression: string,
   model: unknown,
-  ownNamespace: string | undefined,
+  reader: NamespaceReader | undefined,
   steps?: unknown,
 ): SecretReference[] {
   const references: SecretReference[] = [];
   const own = (record: RecordLike): boolean =>
-    ownNamespace === undefined || record.namespace === ownNamespace;
+    reader === undefined || !isForeignToReader(record.namespace, reader);
   const analysis = analyzeExpression(celExpression);
   if (isPlainMap(model)) {
     for (const [ref, read] of analysis.syncDataReads) {

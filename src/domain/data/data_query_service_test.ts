@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertStrictEquals,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -39,8 +40,11 @@ import {
   DataQueryService,
   type ForeignContentFetcher,
   type ModelReferenceResolver,
+  type QueryView,
+  QueryViewRefusal,
   type ResolvedModelReference,
 } from "./data_query_service.ts";
+import { SECRET_OPERATION_UNSUPPORTED } from "../expressions/errors.ts";
 import type { DataRecord } from "./data_record.ts";
 import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
@@ -5897,4 +5901,633 @@ Deno.test("getLatestRecord: an unpopulated row behind a deletion marker another 
     t.catalog.close();
     t.cleanup();
   }
+});
+
+// ============================================================================
+// The expression-facing query view (typed-secrets Section 6.2)
+// ============================================================================
+
+/**
+ * A view the domain can test with, no Secret involved: its environment
+ * answers a function the base lacks, the records it views carry a mark, its
+ * projections wrap what the program answered, and it refuses the
+ * expressions `refuses` names, as a refusal recorded in the view would.
+ * Like the CEL adapter it answers a record as stored, the same object, when
+ * the record belongs to a namespace other than `ownNamespace` (the solo
+ * namespace unless given) or `asStored` selects it, standing in for a
+ * record whose tag names no sensitive field.
+ */
+function fakeView(
+  refuses: (expression: string) => boolean = () => false,
+  options: {
+    ownNamespace?: string;
+    asStored?: (record: DataRecord) => boolean;
+  } = {},
+): {
+  view: QueryView;
+  seen: { environments: number; records: DataRecord[]; projections: string[] };
+} {
+  const ownNamespace = options.ownNamespace ?? "";
+  const asStored = options.asStored ?? (() => false);
+  const seen = {
+    environments: 0,
+    records: [] as DataRecord[],
+    projections: [] as string[],
+  };
+  const refusal = (expression: string) =>
+    new QueryViewRefusal(
+      SECRET_OPERATION_UNSUPPORTED,
+      "the fake view's refusal",
+      expression,
+    );
+  const view: QueryView = {
+    environment(base) {
+      seen.environments++;
+      return base.clone().registerFunction("viewed(): bool", () => true);
+    },
+    record(record) {
+      seen.records.push(record);
+      if (record.namespace !== ownNamespace || asStored(record)) return record;
+      return { ...record, attributes: { ...record.attributes, viewed: true } };
+    },
+    predicate(expression, program, ctx) {
+      let result: unknown;
+      try {
+        result = program(ctx);
+      } catch (error) {
+        if (refuses(expression)) throw refusal(expression);
+        throw error;
+      }
+      if (refuses(expression)) throw refusal(expression);
+      return result;
+    },
+    projection(expression, program, ctx) {
+      seen.projections.push(expression);
+      let result: unknown;
+      try {
+        result = program(ctx);
+      } catch (error) {
+        if (refuses(expression)) throw refusal(expression);
+        throw error;
+      }
+      if (refuses(expression)) throw refusal(expression);
+      return { projected: result };
+    },
+  };
+  return { view, seen };
+}
+
+/** Writes one data item's bytes below `dir` as the repository lays them out. */
+function writeContent(
+  dir: string,
+  dataName: string,
+  id: string,
+  contentType: string,
+  bytes: Uint8Array,
+): void {
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    dataName,
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeFileSync(join(dataDir, "raw"), bytes);
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: dataName,
+      id,
+      version: 1,
+      contentType,
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", dataName, "latest"),
+    "1",
+  );
+}
+
+/**
+ * A query service over items written with their bytes. The repository is
+ * solo unless `namespace` names its own; each row carries its item's
+ * `namespace`, the empty namespace unless given.
+ */
+function setupWithContent(
+  items: Array<
+    {
+      name: string;
+      contentType: string;
+      bytes: Uint8Array;
+      namespace?: string;
+    }
+  >,
+  options: { namespace?: string } = {},
+): { catalog: CatalogStore; service: DataQueryService } {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-view-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  for (const item of items) {
+    const id = crypto.randomUUID();
+    writeContent(dir, item.name, id, item.contentType, item.bytes);
+    catalog.upsert(makeRow({
+      namespace: item.namespace ?? "",
+      data_name: item.name,
+      id,
+      content_type: item.contentType,
+      size: item.bytes.length,
+    }));
+  }
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    options.namespace === undefined
+      ? undefined
+      : createNamespace(options.namespace),
+  );
+  return { catalog, service: new DataQueryService(catalog, dataRepo) };
+}
+
+const text = (value: string) => new TextEncoder().encode(value);
+
+Deno.test("DataQueryService: a view's environment evaluates the predicate and the projection, including a history-opening predicate, latestPerStep and the latestRun and model clones", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ workflow_run_id: "run-1" }));
+  const { view, seen } = fakeView();
+  const count = (results: unknown) => (results as unknown[]).length;
+  // viewed() exists only in the view's environment: without the view the
+  // row fails its predicate and is skipped, as any evaluation error is.
+  assertEquals(
+    count(service.querySync('viewed() && modelName == "ingest"', { view })),
+    1,
+  );
+  assertEquals(
+    count(service.querySync('viewed() && modelName == "ingest"')),
+    0,
+  );
+  // The history-opening and latestPerStep programs are the first parse.
+  assertEquals(
+    count(service.querySync("viewed() && version >= 1", { view })),
+    1,
+  );
+  assertEquals(
+    count(
+      service.querySync('viewed() && modelName == "ingest"', {
+        view,
+        latestPerStep: true,
+      }),
+    ),
+    1,
+  );
+  // The latestRun and model() clones derive from the view's environment.
+  assertEquals(
+    count(
+      await service.query('viewed() && workflowRunId == latestRun("wf")', {
+        view,
+        latestRunResolver: () => Promise.resolve("run-1"),
+      }),
+    ),
+    1,
+  );
+  assertEquals(
+    count(
+      await service.query('viewed() && model("ingest")', {
+        view,
+        modelResolver: () =>
+          Promise.resolve({ modelType: "test-model", modelId: "model-001" }),
+      }),
+    ),
+    1,
+  );
+  assertEquals(
+    service.querySync('modelName == "ingest"', { view, select: "viewed()" }),
+    [{ projected: true }],
+  );
+  assertEquals(
+    await service.query('workflowRunId == latestRun("wf")', {
+      view,
+      select: "viewed()",
+      latestRunResolver: () => Promise.resolve("run-1"),
+    }),
+    [{ projected: true }],
+  );
+  assert(seen.environments >= 7);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a view sees the record at most once for the predicate and once for the projection, only when attributes or content are read, and records answered without a select or with an empty one stay as stored", () => {
+  const { catalog, service } = setupWithContent([
+    {
+      name: "my-data",
+      contentType: "application/json",
+      bytes: text('{"kernel":"6.1.0"}'),
+    },
+  ]);
+  const { view, seen } = fakeView();
+  const raw = service.querySync('modelName == "ingest"', {
+    view,
+  }) as DataRecord[];
+  assertEquals(raw.length, 1);
+  assertEquals(raw[0].attributes, { kernel: "6.1.0" });
+  assertEquals(seen.records.length, 0);
+
+  const matched = service.querySync(
+    "attributes.viewed == true && content.viewed == true && attributes.kernel == '6.1.0'",
+    { view },
+  ) as DataRecord[];
+  assertEquals(matched.length, 1);
+  assertEquals(matched[0].attributes, { kernel: "6.1.0" });
+  assertEquals(seen.records.length, 1);
+
+  assertEquals(
+    service.querySync('modelName == "ingest"', {
+      view,
+      select: "attributes.viewed",
+    }),
+    [{ projected: true }],
+  );
+  assertEquals(seen.records.length, 2);
+  assertEquals(
+    service.querySync('modelName == "ingest"', {
+      view,
+      select: "content.viewed",
+    }),
+    [{ projected: true }],
+  );
+  assertEquals(seen.records.length, 3);
+  assertEquals(
+    service.querySync('modelName == "ingest"', { view, select: "name" }),
+    [{ projected: "my-data" }],
+  );
+  assertEquals(seen.records.length, 3);
+  assertEquals(
+    service.querySync("attributes.viewed == true", {
+      view,
+      select: "[attributes.kernel, content.viewed]",
+    }),
+    [{ projected: ["6.1.0", true] }],
+  );
+  assertEquals(seen.records.length, 5);
+  assertEquals(seen.projections, [
+    "attributes.viewed",
+    "content.viewed",
+    "name",
+    "[attributes.kernel, content.viewed]",
+  ]);
+
+  const empty = service.querySync('modelName == "ingest"', {
+    view,
+    select: "",
+  }) as DataRecord[];
+  assertEquals(empty[0].attributes, { kernel: "6.1.0" });
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a refusal the view raises fails the query from the predicate, also beside an absorbed binary-content read, and from the projection, never a skipped row, a violation or a null", async () => {
+  const { catalog, service } = setupWithContent([
+    {
+      name: "my-data",
+      contentType: "application/json",
+      bytes: text('{"kernel":"6.1.0"}'),
+    },
+    {
+      name: "blob",
+      contentType: "application/octet-stream",
+      bytes: new Uint8Array([0, 255]),
+    },
+  ]);
+  const { view } = fakeView((expression) => expression.includes("secret"));
+  assertThrows(
+    () => service.querySync("attributes.secret == 1", { view }),
+    QueryViewRefusal,
+  );
+  await assertRejects(
+    () => service.query("attributes.secret == 1", { view }),
+    QueryViewRefusal,
+  );
+  // The binary row's content read is absorbed and would be a violation; the
+  // refusal decides instead.
+  assertThrows(
+    () =>
+      service.querySync('content == "x" || attributes.secret == 1', { view }),
+    QueryViewRefusal,
+  );
+  assertThrows(
+    () =>
+      service.querySync('name == "my-data"', {
+        view,
+        select: "attributes.secret",
+      }),
+    QueryViewRefusal,
+  );
+  await assertRejects(
+    () =>
+      service.query('name == "my-data"', { view, select: "attributes.secret" }),
+    QueryViewRefusal,
+  );
+  // Without a view the same predicate skips the rows and the projection
+  // answers null, as today.
+  assertEquals(
+    (service.querySync("attributes.secret == 1") as DataRecord[]).length,
+    0,
+  );
+  assertEquals(
+    service.querySync('name == "my-data"', { select: "attributes.secret" }),
+    [null],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view a content projection on a JSON record reads the viewed attributes on the sync and async paths, with a charset parameter too, while text and binary content stay as projected", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "plain", contentType: "application/json", bytes: text('{"a":1}') },
+    {
+      name: "charset",
+      contentType: "application/json; charset=utf-8",
+      bytes: text('{"b":2}'),
+    },
+    { name: "text", contentType: "text/plain", bytes: text("hello") },
+    {
+      name: "blob",
+      contentType: "application/octet-stream",
+      bytes: new Uint8Array([0, 255]),
+    },
+  ]);
+  const { view } = fakeView();
+  const expected: Record<string, unknown> = {
+    plain: { a: 1, viewed: true },
+    charset: { b: 2, viewed: true },
+    text: "hello",
+    blob: "AP8=",
+  };
+  for (const [name, content] of Object.entries(expected)) {
+    assertEquals(
+      service.querySync(`name == "${name}"`, { view, select: "content" }),
+      [{ projected: content }],
+      `sync ${name}`,
+    );
+    assertEquals(
+      await service.query(`name == "${name}"`, { view, select: "content" }),
+      [{ projected: content }],
+      `async ${name}`,
+    );
+  }
+  // The predicate reads JSON content through the view as well, parameters
+  // included.
+  assertEquals(
+    (service.querySync(
+      'contentType != "application/octet-stream" && content.viewed == true',
+      { view },
+    ) as DataRecord[]).map((r) => r.name).sort(),
+    ["charset", "plain"],
+  );
+  // The raw path keeps today's answers: parsed attributes for the strict
+  // JSON type, the JSON text for the parametrized one.
+  assertEquals(service.querySync('name == "plain"', { select: "content" }), [{
+    a: 1,
+  }]);
+  assertEquals(service.querySync('name == "charset"', { select: "content" }), [
+    '{"b":2}',
+  ]);
+  assertEquals(
+    await service.query('name == "charset"', { select: "content" }),
+    ['{"b":2}'],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view a foreign-namespace JSON record the view answers as stored keeps today's projected content, null where its bytes are not on this host", async () => {
+  const { catalog, service } = setupForeignTest(() =>
+    Promise.resolve(jsonBytes({ content: "security" }))
+  );
+  catalog.upsert(foreignRow());
+  const { view, seen } = fakeView();
+  assertEquals(service.querySync('ns == "security"', { select: "content" }), [
+    null,
+  ]);
+  assertEquals(
+    service.querySync('ns == "security"', { view, select: "content" }),
+    [{ projected: null }],
+  );
+  assertEquals(
+    await service.query('ns == "security"', { view, select: "content" }),
+    [{ projected: null }],
+  );
+  // In a predicate the foreign record's content is its unloaded attributes,
+  // as on the raw path: the view changes no answer.
+  for (
+    const predicate of [
+      'ns == "security" && content == null',
+      'ns == "security" && size(content) == 0',
+    ]
+  ) {
+    assertEquals(
+      (service.querySync(predicate, { view }) as DataRecord[]).length,
+      (service.querySync(predicate) as DataRecord[]).length,
+      predicate,
+    );
+  }
+  assertEquals(
+    (service.querySync('ns == "security" && size(content) == 0', {
+      view,
+    }) as DataRecord[]).length,
+    1,
+  );
+  // The view is asked about the foreign record and answers it as stored.
+  assert(seen.records.length > 0);
+  for (const record of [...seen.records]) {
+    assertEquals(record.namespace, "security");
+    assertStrictEquals(view.record(record), record);
+  }
+  catalog.close();
+});
+
+const CHARSET_JSON = "application/json; charset=utf-8";
+
+/**
+ * Asserts that `name`, a record the view answers as stored, reads under the
+ * view as the raw path reads it: its projected content, sync and async, and
+ * each predicate's match.
+ */
+async function assertReadsAsStored(
+  service: DataQueryService,
+  view: QueryView,
+  name: string,
+  predicates: string[],
+): Promise<void> {
+  const select = `name == "${name}"`;
+  const raw = service.querySync(select, { select: "content" });
+  assertEquals(
+    service.querySync(select, { view, select: "content" }),
+    raw.map((content) => ({ projected: content })),
+    `sync ${name}`,
+  );
+  assertEquals(
+    await service.query(select, { view, select: "content" }),
+    (await service.query(select, { select: "content" })).map((content) => ({
+      projected: content,
+    })),
+    `async ${name}`,
+  );
+  for (const predicate of predicates) {
+    const expression = `${select} && ${predicate}`;
+    assertEquals(
+      (service.querySync(expression, { view }) as DataRecord[]).length,
+      (service.querySync(expression) as DataRecord[]).length,
+      expression,
+    );
+  }
+}
+
+Deno.test("DataQueryService: under a view a legacy row stamped with the empty namespace in a namespaced repository, which the view answers as stored, keeps its JSON text and its raw predicate answers, while the repository's own row reads the viewed attributes", async () => {
+  const { catalog, service } = setupWithContent([
+    {
+      name: "legacy",
+      contentType: CHARSET_JSON,
+      bytes: text('{"k":1}'),
+      namespace: "",
+    },
+    {
+      name: "own",
+      contentType: CHARSET_JSON,
+      bytes: text('{"k":1}'),
+      namespace: "infra",
+    },
+  ], { namespace: "infra" });
+  const { view } = fakeView(undefined, { ownNamespace: "infra" });
+  assertEquals(service.querySync('name == "legacy"', { select: "content" }), [
+    '{"k":1}',
+  ]);
+  await assertReadsAsStored(service, view, "legacy", [
+    "content.k == 1",
+    "type(content) == string",
+    "attributes.viewed == true",
+  ]);
+  assertEquals(
+    service.querySync('name == "legacy"', { view, select: "attributes" }),
+    [{ projected: { k: 1 } }],
+  );
+  assertEquals(
+    service.querySync('name == "own"', { view, select: "content" }),
+    [{ projected: { k: 1, viewed: true } }],
+  );
+  assertEquals(
+    await service.query('name == "own"', { view, select: "content" }),
+    [{ projected: { k: 1, viewed: true } }],
+  );
+  assertEquals(
+    (service.querySync("content.viewed == true", { view }) as DataRecord[])
+      .map((r) => r.name),
+    ["own"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view an own-namespace record the view answers as stored, as the adapter answers an untagged one, keeps its JSON text and its raw predicate answers, while an adapted sibling reads the viewed attributes", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "untagged", contentType: CHARSET_JSON, bytes: text('{"k":2}') },
+    { name: "tagged", contentType: CHARSET_JSON, bytes: text('{"k":2}') },
+  ]);
+  const { view } = fakeView(undefined, {
+    asStored: (record) => record.name === "untagged",
+  });
+  assertEquals(
+    service.querySync('name == "untagged"', { select: "content" }),
+    ['{"k":2}'],
+  );
+  await assertReadsAsStored(service, view, "untagged", [
+    "content.k == 2",
+    "type(content) == string",
+    "attributes.viewed == true",
+  ]);
+  assertEquals(
+    service.querySync('name == "tagged"', { view, select: "content" }),
+    [{ projected: { k: 2, viewed: true } }],
+  );
+  assertEquals(
+    await service.query('name == "tagged"', { view, select: "content" }),
+    [{ projected: { k: 2, viewed: true } }],
+  );
+  assertEquals(
+    (service.querySync("content.viewed == true", { view }) as DataRecord[])
+      .map((r) => r.name),
+    ["tagged"],
+  );
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view a parametrized JSON record whose body does not parse keeps its text when the view answers it as stored, and the empty attributes the view holds when the view adapted it", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "stored", contentType: CHARSET_JSON, bytes: text("not json") },
+    { name: "adapted", contentType: CHARSET_JSON, bytes: text("not json") },
+  ]);
+  const { view } = fakeView(undefined, {
+    asStored: (record) => record.name === "stored",
+  });
+  assertEquals(service.querySync('name == "stored"', { select: "content" }), [
+    "not json",
+  ]);
+  await assertReadsAsStored(service, view, "stored", [
+    "type(content) == string",
+    'content == "not json"',
+  ]);
+  // The fake's mark is all the adapted view's attributes hold: the body
+  // parsed to none.
+  assertEquals(
+    service.querySync('name == "adapted"', { view, select: "content" }),
+    [{ projected: { viewed: true } }],
+  );
+  assertEquals(
+    await service.query('name == "adapted"', { view, select: "content" }),
+    [{ projected: { viewed: true } }],
+  );
+  for (
+    const [predicate, count] of [
+      ["type(content) == map", 1],
+      ["type(content) == string", 0],
+    ] as const
+  ) {
+    assertEquals(
+      (service.querySync(`name == "adapted" && ${predicate}`, {
+        view,
+      }) as DataRecord[]).length,
+      count,
+      predicate,
+    );
+  }
+  catalog.close();
+});
+
+Deno.test("DataQueryService: under a view reading a text record's content in a predicate or a projection does not consult the view", async () => {
+  const { catalog, service } = setupWithContent([
+    { name: "notes", contentType: "text/plain", bytes: text("hello") },
+  ]);
+  const { view, seen } = fakeView();
+  assertEquals(
+    (service.querySync('content.contains("hello")', { view }) as DataRecord[])
+      .map((r) => r.name),
+    ["notes"],
+  );
+  assertEquals(
+    service.querySync('name == "notes"', { view, select: "content" }),
+    [{ projected: "hello" }],
+  );
+  assertEquals(
+    await service.query('name == "notes"', { view, select: "content" }),
+    [{ projected: "hello" }],
+  );
+  assertEquals(seen.records.length, 0);
+  catalog.close();
 });

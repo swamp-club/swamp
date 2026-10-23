@@ -19,7 +19,12 @@
 
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   messageFor,
   wordedText,
@@ -47,6 +52,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { SecretLoader } from "../../domain/vaults/secret_loader.ts";
@@ -561,6 +567,100 @@ Deno.test("modelMethodRun: the failed method summary lists data the method wrote
   assertStringIncludes(summary.markdown, "partial-state");
   assertEquals(summary.markdown.includes("No data output."), false);
   assertEquals(events[events.length - 1].kind, "error");
+});
+
+function methodSummaryProvenance(
+  events: ModelMethodRunEvent[],
+): Record<string, unknown> {
+  const summary = events.find((e) =>
+    e.kind === "report_completed" && e.reportName === "@swamp/method-summary"
+  );
+  if (summary?.kind !== "report_completed") {
+    throw new Error("expected a completed method-summary report");
+  }
+  return summary.json.provenance as Record<string, unknown>;
+}
+
+Deno.test("modelMethodRun: the method summary carries the run's provenance on success and failure (swamp-club#3722)", async () => {
+  const modelDef = createTestModelDef("run");
+  const input = {
+    ...createTestInput("test-model", "run"),
+    initiatedBy: "user:alice",
+  };
+
+  const succeeded = await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      createTestDeps(createTestDefinition("test-model", "run"), modelDef),
+      input,
+    ),
+  );
+  const failed = await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      {
+        ...createTestDeps(createTestDefinition("test-model", "run"), modelDef),
+        createExecutionService: () =>
+          createFailingExecutionService(new Error("execution boom")),
+      },
+      input,
+    ),
+  );
+
+  for (const events of [succeeded, failed]) {
+    const provenance = methodSummaryProvenance(events);
+    assertEquals(provenance.triggeredBy, "manual");
+    assertEquals(provenance.initiatedBy, "user:alice");
+    assertEquals(provenance.modelVersion, "1.0.0");
+    assertEquals(typeof provenance.definitionHash, "string");
+  }
+  assertEquals(failed.at(-1)?.kind, "error");
+});
+
+Deno.test("modelMethodRun: an edited definition changes the method summary's definition hash (swamp-club#3722)", async () => {
+  const modelDef = createTestModelDef("run");
+  const before = createTestDefinition("test-model", "run");
+  const after = Definition.create({
+    name: "test-model",
+    methods: { run: { arguments: { key: "edited" } } },
+  });
+
+  const hashes: unknown[] = [];
+  for (const definition of [before, after]) {
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(
+        createLibSwampContext(),
+        createTestDeps(definition, modelDef),
+        createTestInput("test-model", "run"),
+      ),
+    );
+    hashes.push(methodSummaryProvenance(events).definitionHash);
+  }
+
+  assertEquals(hashes[0], await before.computeHash());
+  assertEquals(hashes[1], await after.computeHash());
+  assertEquals(hashes[0] === hashes[1], false);
+});
+
+Deno.test("modelMethodRun: a different --input leaves the method summary's definition hash unchanged (swamp-club#3722)", async () => {
+  const modelDef = createTestModelDef("run");
+  const stored = createTestDefinition("test-model", "run").toData();
+  const storedHash = await Definition.fromData(stored).computeHash();
+
+  const hashes: unknown[] = [];
+  for (const value of ["first", "second"]) {
+    // Each run loads the stored definition afresh, as the CLI does.
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(
+        createLibSwampContext(),
+        createTestDeps(Definition.fromData(stored), modelDef),
+        { ...createTestInput("test-model", "run"), inputs: { key: value } },
+      ),
+    );
+    hashes.push(methodSummaryProvenance(events).definitionHash);
+  }
+
+  assertEquals(hashes, [storedHash, storedHash]);
 });
 
 Deno.test("modelMethodRun marks output cancelled on abort", async () => {
@@ -1860,6 +1960,100 @@ Deno.test("modelMethodRun: --last-evaluated restores cached references into the 
   assertEquals(reported?.key, "echo ***");
 });
 
+Deno.test("modelMethodRun: a typed --last-evaluated replay restores cached references as reference-only sentinels and reads no vault before delivery (typed-secrets 4.4)", async () => {
+  const secret = "Pl41n-s3cret";
+  const cached = Definition.create({
+    name: "test-model",
+    methods: {
+      run: {
+        arguments: { key: "echo ${{ vault.get('prod', 'api-token') }}" },
+      },
+    },
+  });
+  let executed: Definition | undefined;
+  let executedBag: VaultSecretBag | undefined;
+  let vaultServicesAtRuntimePass = -1;
+  let vaultServices = 0;
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.resolveRuntimeExpressionsInDefinition = (
+    def: Definition,
+    _redactor: unknown,
+    _context: unknown,
+    _authored: unknown,
+    options: { secretBag: VaultSecretBag },
+  ) => {
+    executed = def;
+    executedBag = options.secretBag;
+    vaultServicesAtRuntimePass = vaultServices;
+    return Promise.resolve({ definition: def, secretBag: options.secretBag });
+  };
+  const deps = {
+    ...createTestDeps(
+      createTestDefinition("test-model", "run"),
+      createTestModelDef("run"),
+    ),
+    createEvaluationService: () => evaluationService,
+    createSensitiveValues: (redactor: SecretRedactor) =>
+      new RunSensitiveValues(
+        redactor,
+        new SecretBagRegistry({ typedSecrets: true }),
+      ),
+    createVaultService: () => {
+      vaultServices++;
+      return Promise.resolve(
+        { get: () => Promise.resolve(secret) } as unknown as Awaited<
+          ReturnType<ModelMethodRunDeps["createVaultService"]>
+        >,
+      );
+    },
+    loadEvaluatedDefinition: () =>
+      Promise.resolve({
+        definition: cached,
+        authoredExpressions: new Set<string>(),
+        sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+        provenance: ProvenanceMap.authored(),
+        persistedProvenance: ProvenanceMap.authored(),
+        writtenReferences: [{
+          path: ["methods", "run", "arguments", "key"],
+          occurrence: 0,
+          vaultName: "prod",
+          key: "api-token",
+          encoding: "raw" as const,
+          dataOrigin: true,
+        }],
+      }),
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor: new SecretRedactor(),
+        cleanup: () => {},
+      }),
+  };
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      lastEvaluated: true,
+    }),
+  );
+  assertEquals(
+    events.some((e) => e.kind === "error"),
+    false,
+    JSON.stringify(events.find((e) => e.kind === "error")),
+  );
+  // The replay created no vault service: nothing was read to restore.
+  assertEquals(vaultServicesAtRuntimePass, 0);
+  const key = executed?.getMethodArguments("run").key as string;
+  assertEquals(key.includes(secret), false);
+  const [sentinel] = key.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(key, `echo ${sentinel}`);
+  const entry = executedBag?.registry.issuedEntryOf(sentinel);
+  assertEquals(entry?.reference, { vaultName: "prod", key: "api-token" });
+  assertEquals(entry?.dataOrigin, true);
+  assertEquals(entry !== undefined && "value" in entry, false);
+  // Unloaded, the sentinel is never delivered as text.
+  assertThrows(() => executedBag!.resolveRaw(key), Error, "was not loaded");
+});
+
 Deno.test("modelMethodRun keeps an empty-markdown report in the completed run's reports", async () => {
   const reportName = `@test/${crypto.randomUUID()}`;
   reportRegistry.register(reportName, {
@@ -2494,10 +2688,21 @@ Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument 
       deploy: { arguments: { password: "***" } },
     },
   });
-  const replay = async (inputs: Record<string, unknown> = {}) => {
+  const replay = async (
+    inputs: Record<string, unknown> = {},
+    declaredInput = false,
+  ) => {
+    const definition = createTestDefinition("test-model", "run");
+    if (declaredInput) {
+      definition.setInputs({
+        properties: { secret: { type: "string" } },
+        required: ["secret"],
+      });
+      definition.setMethodArgument("run", "secret", "${{ inputs.secret }}");
+    }
     const deps: ModelMethodRunDeps = {
       ...createTestDeps(
-        createTestDefinition("test-model", "run"),
+        definition,
         createSensitiveModelDef(),
       ),
       loadEvaluatedDefinition: () =>
@@ -2544,6 +2749,127 @@ Deno.test("modelMethodRun: --last-evaluated leaves out a masked method argument 
       e.error.code === "evaluated_cache_holds_sensitive_arguments"
     ),
     false,
+  );
+
+  // A declared input with the argument's name feeds evaluation, which replay
+  // skips. It is not a method-argument override and cannot replace the mask.
+  const collision = (await replay({ secret: "OVERRIDE-CANARY" }, true)).at(-1);
+  assertEquals(collision?.kind, "error");
+  if (collision?.kind === "error") {
+    assertEquals(
+      collision.error.code,
+      "evaluated_cache_holds_sensitive_arguments",
+    );
+    assertStringIncludes(
+      collision.error.message,
+      "only if its name is not a declared definition input",
+    );
+    assertEquals(collision.error.message.includes("OVERRIDE-CANARY"), false);
+  }
+});
+
+Deno.test("modelMethodRun: an operator-typed input is data in the evaluation's inputs provenance except the expression it holds, a schema default is authored, and under literalInputs every value is data whole (swamp-club#3681)", async () => {
+  const definition = Definition.create({
+    name: "typed-inputs",
+    inputs: {
+      type: "object",
+      properties: {
+        plain: { type: "string" },
+        typed: { type: "string" },
+        dflt: { type: "string", default: "from-schema" },
+      },
+    },
+    methods: { run: { arguments: { key: "${{ inputs.plain }}" } } },
+  });
+  const seen: ProvenanceMap[] = [];
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  evaluationService.evaluateDefinition = (
+    def: Definition,
+    _type: unknown,
+    _values: unknown,
+    _inputs: unknown,
+    _context: unknown,
+    _bag: unknown,
+    provenance: { inputs?: ProvenanceMap },
+  ) => {
+    seen.push(provenance.inputs ?? ProvenanceMap.authored());
+    return Promise.resolve({
+      definition: def,
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  };
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createTestModelDef("run")),
+    createEvaluationService: () => evaluationService,
+  };
+  const inputs = { plain: "INPUT-CANARY", typed: "Bearer ${{ env.HOME }}" };
+  for (const literalInputs of [false, true]) {
+    await collect(
+      modelMethodRun(createLibSwampContext(), deps, {
+        ...createTestInput("typed-inputs", "run"),
+        inputs,
+        literalInputs,
+      }),
+    );
+  }
+  const [typed, literal] = seen;
+  assertEquals(typed.isWholeDataAt("plain"), true);
+  assertEquals(typed.isWholeDataAt("typed"), false);
+  assertEquals(typed.rangesAt("typed"), [[0, "Bearer ".length]]);
+  assertEquals(typed.hasDataAtOrBelow("dflt"), false);
+  assertEquals(literal.isWholeDataAt("plain"), true);
+  assertEquals(literal.isWholeDataAt("typed"), true);
+  assertEquals(literal.hasDataAtOrBelow("dflt"), false);
+});
+
+Deno.test("modelMethodRun: the saved evaluation carries the source's expressions and an input expression it still holds, not one the evaluation consumed (swamp-club#3681)", async () => {
+  const definition = Definition.create({
+    name: "authored-set",
+    inputs: {
+      type: "object",
+      properties: { c: { type: "string" }, e: { type: "string" } },
+    },
+    methods: {
+      run: { arguments: { key: "${{ inputs.c }}", name: "${{ inputs.e }}" } },
+    },
+  });
+  const evaluationService = createFakeEvaluationService();
+  evaluationService.hasDefinitionExpressions = () => true;
+  // The constant was consumed; the env reference waits for the runtime pass.
+  evaluationService.evaluateDefinition = (def: Definition) =>
+    Promise.resolve({
+      definition: Definition.fromData({
+        ...def.toData(),
+        methods: {
+          run: {
+            arguments: { key: "CONSTANT-CANARY", name: "${{ env.HOME }}" },
+          },
+        },
+      }),
+      type: TEST_MODEL_TYPE,
+      hadExpressions: true,
+    });
+  const saved: ReadonlySet<string>[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, createSensitiveModelDef()),
+    createEvaluationService: () => evaluationService,
+    saveEvaluatedDefinition: (_type, _def, _provenance, authored) => {
+      saved.push(authored);
+      return Promise.resolve();
+    },
+  };
+  await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("authored-set", "run"),
+      inputs: { c: "${{ 'CONSTANT-CANARY' }}", e: "${{ env.HOME }}" },
+    }),
+  );
+  assertEquals(saved.length, 1);
+  assertEquals(
+    [...saved[0]].sort(),
+    ["${{ env.HOME }}", "${{ inputs.c }}", "${{ inputs.e }}"],
   );
 });
 

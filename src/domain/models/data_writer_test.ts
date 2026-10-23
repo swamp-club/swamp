@@ -40,7 +40,9 @@ import {
   parseStoredVaultReference,
   processSensitiveResourceData,
   readSensitiveFieldsTag,
+  recordSensitiveVaultRefsUnread,
   resolveSensitiveVaultRefs,
+  resolveSensitiveVaultRefsLeavingUnread,
   resolveVaultRefsInData,
   sanitizeVaultKey,
   SENSITIVE_FIELDS_ALL,
@@ -60,6 +62,10 @@ import { Data } from "../data/data.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
+import type {
+  SecretSink,
+  UnreadSensitiveReference,
+} from "../secrets/run_sensitive_values.ts";
 import {
   RunVaultAccess,
   runWithVaultAccess,
@@ -2947,8 +2953,8 @@ async function writeRedacted(
     modelId,
     vaultService,
   );
-  // Text-level redaction can leave invalid JSON (a secret matching a number
-  // or a whole object), so those tests read the raw text instead.
+  // Redaction keeps the payload valid JSON (swamp-club#3754); a payload that
+  // does not parse reads as undefined, which a test then reports.
   let persisted;
   try {
     persisted = JSON.parse(repo.persisted());
@@ -3184,18 +3190,81 @@ Deno.test("createResourceWriter: rejected redaction preserves the existing resou
   }
 });
 
-Deno.test("createResourceWriter: redaction that masks JSON syntax cannot stamp a verified writer tag", async () => {
+Deno.test("createResourceWriter: a number equal to a numeric secret is persisted as the string ***, so the record stays valid JSON and keeps its verified writer tag (swamp-club#3754)", async () => {
   const { repo, persisted } = await writeRedacted(
     hostSpec,
     "main",
     { host: HOST, port: 1234, token: "sensitive-value" },
     ["1234"],
   );
-  assertEquals(persisted, undefined);
+  assertEquals(persisted.port, "***");
+  assertEquals(persisted.host, HOST);
   const record = await repo.findByName(modelType, modelId, "main");
   assertExists(record);
   assertEquals(record.tags[SENSITIVE_FIELDS_TAG], '["token"]');
-  assertEquals(record.tags[SENSITIVE_FIELDS_VERSION_TAG], undefined);
+  assertEquals(
+    record.tags[SENSITIVE_FIELDS_VERSION_TAG],
+    SENSITIVE_FIELDS_VERSION,
+  );
+});
+
+Deno.test("createResourceWriter: redaction works on the JSON structure, so a number node equal to a numeric secret becomes ***, a larger number holding its digits is kept, and a string or a key holding it is masked as text (swamp-club#3754)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      pin: z.number(),
+      rows: z.number(),
+      note: z.string(),
+      samples: z.array(z.number()),
+      labels: z.record(z.string(), z.string()),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const { repo, persisted } = await writeRedacted(
+    spec,
+    "main",
+    {
+      pin: 5432,
+      rows: 154321,
+      note: "port 5432",
+      samples: [5432, 54321, 2.5],
+      labels: { "db-5432": "x" },
+    },
+    ["5432"],
+  );
+  assertEquals(JSON.parse(repo.persisted()), persisted);
+  assertEquals(persisted, {
+    pin: "***",
+    rows: 154321,
+    note: "port ***",
+    samples: ["***", 54321, 2.5],
+    labels: { "db-***": "x" },
+  });
+});
+
+Deno.test("createResourceWriter: a secret made only of JSON punctuation masks a value equal to it and leaves the record's structure intact (swamp-club#3798)", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      note: z.string(),
+      empty: z.string(),
+      nested: z.object({}),
+      list: z.array(z.string()),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 5,
+  };
+  const { repo } = await writeRedacted(
+    spec,
+    "main",
+    { note: '":"', empty: "", nested: {}, list: ["", '","'] },
+    ['":"', '","'],
+  );
+  assertEquals(JSON.parse(repo.persisted()), {
+    note: "***",
+    empty: "",
+    nested: {},
+    list: ["", "***"],
+  });
 });
 
 Deno.test("createResourceWriter: a secret containing a JSON-escaped character is masked", async () => {
@@ -4145,4 +4214,141 @@ Deno.test("createFileWriterFactory.getUnfinalizedReceipts: names a writer whose 
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+// --- unreadable sensitive references (swamp-club#3806) ---
+
+/** A sink that keeps what it is given. */
+function recordingSink(): SecretSink & {
+  secrets: string[];
+  unread: UnreadSensitiveReference[];
+} {
+  const secrets: string[] = [];
+  const unread: UnreadSensitiveReference[] = [];
+  return {
+    secrets,
+    unread,
+    addSecret: (value) => secrets.push(value),
+    recordUnread: (reference) => unread.push(reference),
+  };
+}
+
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: a failing read is recorded and the other fields are still read", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "present", "secret-value");
+  const missing = "${{ vault.get('test-vault', 'missing') }}";
+  const data: Record<string, unknown> = {
+    first: missing,
+    second: "${{ vault.get('test-vault', 'present') }}",
+  };
+  const sink = recordingSink();
+
+  await resolveSensitiveVaultRefsLeavingUnread(
+    data,
+    ["first", "second"],
+    vaultService,
+    sink,
+  );
+
+  assertEquals(data.first, missing);
+  assertEquals(data.second, "secret-value");
+  assertEquals(sink.secrets, ["secret-value"]);
+  assertEquals(sink.unread.length, 1);
+  const [reference] = sink.unread;
+  assertEquals(reference.text, missing);
+  assertEquals(reference.vaultName, "test-vault");
+  assertEquals(reference.key, "missing");
+  assertEquals(reference.fieldPath, "first");
+  assertStringIncludes(reference.reason, "missing");
+});
+
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: the * tag records a failing own key, dotted or not", async () => {
+  const vaultService = createTestVaultService();
+  const missing = "${{ vault.get('test-vault', 'missing') }}";
+  const data: Record<string, unknown> = { "a.b": missing, nested: [missing] };
+  const sink = recordingSink();
+
+  await resolveSensitiveVaultRefsLeavingUnread(
+    data,
+    SENSITIVE_FIELDS_ALL,
+    vaultService,
+    sink,
+  );
+
+  assertEquals(data, { "a.b": missing, nested: [missing] });
+  assertEquals(sink.unread.map((r) => r.fieldPath), ["a.b", "nested.0"]);
+});
+
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: a refusal by the run's vault access is rethrown, not recorded", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+  await vaultService.put("erp", "k", "secret-value");
+  const sink = recordingSink();
+
+  await runWithVaultAccess(
+    RunVaultAccess.create({ allowedVaults: ["other"], allowListSource: "wf" }),
+    () =>
+      assertRejects(
+        () =>
+          resolveSensitiveVaultRefsLeavingUnread(
+            { secret: "${{ vault.get('erp', 'k') }}" },
+            ["secret"],
+            vaultService,
+            sink,
+          ),
+        VaultAccessDeniedError,
+      ),
+  );
+  assertEquals(sink.unread, []);
+});
+
+Deno.test("resolveSensitiveVaultRefs: a failing read throws, for readResource", async () => {
+  const vaultService = createTestVaultService();
+  const sink = recordingSink();
+  await assertRejects(() =>
+    resolveSensitiveVaultRefs(
+      { secret: "${{ vault.get('test-vault', 'missing') }}" },
+      ["secret"],
+      vaultService,
+      sink,
+    )
+  );
+  assertEquals(sink.unread, []);
+});
+
+Deno.test("resolveVaultRefsInData: a failing read still throws", async () => {
+  const vaultService = createTestVaultService();
+  await assertRejects(() =>
+    resolveVaultRefsInData(
+      { secret: "${{ vault.get('test-vault', 'missing') }}" },
+      vaultService,
+    )
+  );
+});
+
+Deno.test("recordSensitiveVaultRefsUnread: records every tagged reference with the error and leaves them as stored", async () => {
+  const first = "${{ vault.get('a', 'k1') }}";
+  const second = "${{ vault.get('b', 'k2') }}";
+  const data: Record<string, unknown> = {
+    first,
+    nested: { second },
+    plain: "hello",
+  };
+  const sink = recordingSink();
+
+  await recordSensitiveVaultRefsUnread(
+    data,
+    ["first", "nested.second", "plain"],
+    new Error("vault config unreadable"),
+    sink,
+  );
+
+  assertEquals(data, { first, nested: { second }, plain: "hello" });
+  assertEquals(
+    sink.unread.map((r) => [r.vaultName, r.key, r.fieldPath, r.reason]),
+    [
+      ["a", "k1", "first", "vault config unreadable"],
+      ["b", "k2", "nested.second", "vault config unreadable"],
+    ],
+  );
 });

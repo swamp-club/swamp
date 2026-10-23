@@ -51,6 +51,7 @@
 
 import { padFence } from "./writer_lease.ts";
 import type { ReplicationLineage } from "./replication_lineage.ts";
+import type { ReplicaRoot } from "./replica_root.ts";
 
 /** The format every published lineage record carries. */
 export const PUBLISHED_LINEAGE_FORMAT = 1;
@@ -63,6 +64,18 @@ export interface LineageStarted {
   /** The replica the lineage replicates under (`replicaRootOf`). */
   readonly replicaRoot: string;
   readonly startedAt: string;
+  /**
+   * The current lineage the writer's copy held when it began this one: the
+   * state it continues (swamp-club#3801). Undefined when there was none, and
+   * in a lineage a swamp before it started.
+   */
+  readonly follows?: number;
+  /**
+   * Set by every swamp that matches endpoint spellings (swamp-club#3801), so
+   * a lineage it began with nothing to follow is never read as one a swamp
+   * before it started.
+   */
+  readonly chained?: true;
 }
 
 /** That a lineage's first sync was confirmed. */
@@ -131,12 +144,13 @@ export type CompleteLineage = PublishedLineage & {
  */
 export function currentLineage(
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): CompleteLineage | undefined {
   let current: CompleteLineage | undefined;
   for (const lineage of lineages) {
     if (
-      lineage.started?.replicaRoot === replicaRoot &&
+      lineage.started !== undefined &&
+      replicaRoot.matches(lineage.started.replicaRoot) &&
       lineage.confirmed !== undefined && lineage.head !== undefined &&
       lineage.head.fence === lineage.fence &&
       (current === undefined || lineage.fence > current.fence)
@@ -150,12 +164,13 @@ export function currentLineage(
 /** The highest fence any lineage under `replicaRoot` was started at. */
 export function newestStartedFence(
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): number | undefined {
   let newest: number | undefined;
   for (const lineage of lineages) {
     if (
-      lineage.started?.replicaRoot === replicaRoot &&
+      lineage.started !== undefined &&
+      replicaRoot.matches(lineage.started.replicaRoot) &&
       (newest === undefined || lineage.fence > newest)
     ) {
       newest = lineage.fence;
@@ -195,7 +210,7 @@ export function decideLocalCopy(
     readonly lineage?: ReplicationLineage;
   } | undefined,
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): LocalCopyDecision {
   const current = currentLineage(lineages, replicaRoot);
   if (current === undefined) return { kind: "none" };
@@ -207,7 +222,7 @@ export function decideLocalCopy(
   if (local === undefined) return restore("missing");
   const own = local.lineage;
   if (
-    own !== undefined && own.replicaRoot === replicaRoot &&
+    own !== undefined && replicaRoot.matches(own.replicaRoot) &&
     own.lineageFence > current.fence &&
     newestStartedFence(lineages, replicaRoot) === own.lineageFence
   ) {
@@ -215,7 +230,7 @@ export function decideLocalCopy(
   }
   const copy = local.copy;
   if (
-    copy === undefined || copy.replicaRoot !== replicaRoot ||
+    copy === undefined || !replicaRoot.matches(copy.replicaRoot) ||
     copy.lineageFence !== current.fence
   ) {
     return restore("foreign");
@@ -223,6 +238,34 @@ export function decideLocalCopy(
   return compareTxid(copy.txid, head.txid) >= 0
     ? { kind: "current" }
     : restore("behind");
+}
+
+/**
+ * The start of a lineage under another replica root that would decide the
+ * datastore's state (swamp-club#3801): one started above every lineage
+ * under `replicaRoot`, or any, when none was started under it. Ignoring it
+ * would fork the datastore: a writer would start a lineage beside it, and a
+ * reader would see an empty datastore. Lineages under another root below
+ * this replica's newest start are history (a replica target that moved) and
+ * stay ignored. The highest such start, or undefined.
+ */
+export function outrankingForeignLineage(
+  lineages: readonly PublishedLineage[],
+  replicaRoot: ReplicaRoot,
+): LineageStarted | undefined {
+  const newestOwn = newestStartedFence(lineages, replicaRoot);
+  let found: LineageStarted | undefined;
+  for (const lineage of lineages) {
+    const started = lineage.started;
+    if (
+      started !== undefined && !replicaRoot.matches(started.replicaRoot) &&
+      (newestOwn === undefined || lineage.fence > newestOwn) &&
+      (found === undefined || lineage.fence > found.fence)
+    ) {
+      found = started;
+    }
+  }
+  return found;
 }
 
 /**
@@ -253,14 +296,15 @@ export function copyNeverRestored(
 export function mayContinueLineage(
   previous: ReplicationLineage | undefined,
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): boolean {
-  if (previous === undefined || previous.replicaRoot !== replicaRoot) {
+  if (previous === undefined || !replicaRoot.matches(previous.replicaRoot)) {
     return false;
   }
   const started = lineages.some((lineage) =>
     lineage.fence === previous.lineageFence &&
-    lineage.started?.replicaRoot === replicaRoot
+    lineage.started !== undefined &&
+    replicaRoot.matches(lineage.started.replicaRoot)
   );
   return started &&
     newestStartedFence(lineages, replicaRoot) === previous.lineageFence;
@@ -272,12 +316,12 @@ export function mayContinueLineage(
  */
 export function restartLineage(
   previous: ReplicationLineage | undefined,
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
   fence: number,
 ): ReplicationLineage {
   padFence(fence);
   return {
-    replicaRoot,
+    replicaRoot: replicaRoot.value,
     lineageFence: fence,
     lastFence: fence,
     previousLineages: previous === undefined ? [] : [
@@ -299,7 +343,7 @@ export function restartLineage(
 export function collectableLineages(
   lineages: readonly PublishedLineage[],
   abandoned: readonly number[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
   current: number,
 ): number[] {
   const fences = new Set<number>(abandoned.filter((fence) => fence < current));
@@ -307,12 +351,86 @@ export function collectableLineages(
     if (
       lineage.fence < current &&
       (lineage.started === undefined ||
-        lineage.started.replicaRoot === replicaRoot)
+        replicaRoot.matches(lineage.started.replicaRoot))
     ) {
       fences.add(lineage.fence);
     }
   }
   return [...fences].sort((a, b) => a - b);
+}
+
+/**
+ * The lineages below `current` that garbage collection keeps because the
+ * current state may lack their commits (swamp-club#3801). A lineage's
+ * commits are in `current` when `current` descends from it: a lineage this
+ * swamp started (`chained`) continues the one it `follows`, and one a swamp
+ * before it started continues the highest complete lineage below it under
+ * its exact root spelling, the only ones that swamp could restore.
+ *
+ * A lineage below `current` that an ancestor started by a swamp before
+ * this superseded under another spelling was never seen by that ancestor:
+ * a fork, or an older swamp writing beside an upgraded one. Its commits may
+ * be nowhere else, so it is kept. Every other lineage below `current`
+ * is collected as before: one `current` descends from, or one a fenced
+ * writer left, whose commits nobody acknowledged.
+ *
+ * A collection that keeps a lineage records it (`marked`), and every later
+ * one keeps it too: collecting the chain between `current` and the
+ * ancestor that showed the fork would otherwise hide it from the next.
+ *
+ * `starts` holds the starts of the lineages collection would remove and of
+ * `current`'s chain; `complete` the fences started, confirmed and headed. A
+ * lineage whose start was not read is not judged here.
+ */
+export function lineagesKeptForFork(
+  starts: ReadonlyMap<number, LineageStarted>,
+  current: number,
+  recorded: {
+    readonly complete: ReadonlySet<number>;
+    readonly marked?: ReadonlySet<number>;
+  },
+): Set<number> {
+  const parentOf = (started: LineageStarted): number | undefined => {
+    if (started.chained === true) return started.follows;
+    let parent: number | undefined;
+    for (const other of starts.values()) {
+      if (
+        other.fence < started.fence &&
+        other.replicaRoot === started.replicaRoot &&
+        recorded.complete.has(other.fence) &&
+        (parent === undefined || other.fence > parent)
+      ) {
+        parent = other.fence;
+      }
+    }
+    return parent;
+  };
+  const ancestors: LineageStarted[] = [];
+  const onChain = new Set<number>();
+  for (
+    let started = starts.get(current);
+    started !== undefined && !onChain.has(started.fence);
+  ) {
+    onChain.add(started.fence);
+    ancestors.push(started);
+    const parent = parentOf(started);
+    started = parent === undefined ? undefined : starts.get(parent);
+  }
+  const kept = new Set(
+    [...(recorded.marked ?? [])].filter((fence) => fence < current),
+  );
+  for (const started of starts.values()) {
+    if (started.fence >= current || onChain.has(started.fence)) continue;
+    for (const ancestor of ancestors) {
+      if (
+        ancestor.chained !== true && ancestor.fence > started.fence &&
+        ancestor.replicaRoot !== started.replicaRoot
+      ) {
+        kept.add(started.fence);
+      }
+    }
+  }
+  return kept;
 }
 
 /**
@@ -356,14 +474,14 @@ export type ChunkCollectionDecision =
 export function decideChunkCollection(
   copy: LocalCopyState | undefined,
   lineages: readonly PublishedLineage[],
-  replicaRoot: string,
+  replicaRoot: ReplicaRoot,
 ): ChunkCollectionDecision {
   const current = currentLineage(lineages, replicaRoot);
   if (current === undefined) {
     return { kind: "defer", reason: "no replication lineage is confirmed yet" };
   }
   if (
-    copy === undefined || copy.replicaRoot !== replicaRoot ||
+    copy === undefined || !replicaRoot.matches(copy.replicaRoot) ||
     copy.lineageFence !== current.fence ||
     compareTxid(copy.txid, current.head.txid) < 0
   ) {
@@ -377,7 +495,7 @@ export function decideChunkCollection(
   const other = lineages.find((lineage) =>
     lineage.fence !== current.fence &&
     (lineage.started === undefined ||
-      lineage.started.replicaRoot === replicaRoot)
+      replicaRoot.matches(lineage.started.replicaRoot))
   );
   if (other !== undefined) {
     const fence = padFence(other.fence);
@@ -463,11 +581,18 @@ export function parseLineageStarted(
   ) {
     return undefined;
   }
+  // A predecessor that is not a lower fence is not one: the lineage reads
+  // as one a swamp before it started, which collection keeps when forked.
+  const follows = isFence(r.follows) && r.follows < r.fence
+    ? r.follows
+    : undefined;
   return {
     fence: r.fence,
     holder: r.holder,
     replicaRoot: r.replicaRoot,
     startedAt: r.startedAt,
+    ...(follows !== undefined ? { follows } : {}),
+    ...(r.chained === true ? { chained: true as const } : {}),
   };
 }
 

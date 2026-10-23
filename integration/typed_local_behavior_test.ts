@@ -34,6 +34,7 @@ import { z } from "zod";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
+import { ProvenanceMap } from "../src/domain/expressions/provenance_map.ts";
 import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
 import { createResourceWriter } from "../src/domain/models/data_writer.ts";
 import { buildMethodContext } from "../src/domain/models/method_context.ts";
@@ -282,8 +283,25 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       createEvaluationService: () => evaluationService,
       loadEvaluatedDefinition: (t, name) =>
         evaluatedDefRepo.findByNameWithProvenance(t, name),
-      saveEvaluatedDefinition: (t, def, provenance, authored, written) =>
-        evaluatedDefRepo.save(t, def, provenance, authored, undefined, written),
+      saveEvaluatedDefinition: (
+        t,
+        def,
+        provenance,
+        authored,
+        written,
+        maskedPaths,
+        persistedProvenance,
+      ) =>
+        evaluatedDefRepo.save(
+          t,
+          def,
+          provenance,
+          authored,
+          undefined,
+          written,
+          maskedPaths,
+          persistedProvenance,
+        ),
       createExecutionService: () => new DefaultMethodExecutionService(),
       createVaultService: () => Promise.resolve(vaultService),
       dataRepo,
@@ -534,6 +552,78 @@ Deno.test("typed local behavior: run delivers the exact value of every canary cl
     );
     assertEquals(f.received.at(-1)!.args.password, f.canaries[1].value);
     assertEquals(f.received.at(-1)!.args.note, f.stored.password);
+    await assertNoPlaintextOnDisk(f);
+  });
+});
+
+Deno.test("typed local behavior: --last-evaluated replays the cache as references, reads nothing to restore, loads the current value once at delivery, and persists none (typed-secrets 4.4)", async () => {
+  await withFixture(async (f) => {
+    await f.save(Definition.create({
+      name: "replay",
+      type: f.type.normalized,
+      globalArguments: {
+        token: "${{ data.latest('db', 'main').attributes.password }}",
+      },
+      methods: {
+        [METHOD]: {
+          arguments: {
+            password: "${{ vault.get('prod', 'canary-0') + '' }}",
+            note: "${{ 'n-' + data.latest('db', 'main').attributes.password }}",
+          },
+        },
+      },
+    }));
+    const replay = (typed: boolean, lastEvaluated: boolean) =>
+      collect<ModelMethodRunEvent>(
+        modelMethodRun(createLibSwampContext(), f.runDeps(typed), {
+          modelIdOrName: "replay",
+          methodName: METHOD,
+          inputs: {},
+          lastEvaluated,
+        }),
+      );
+    // A fresh typed run writes the cache: references, never values.
+    const fresh = await replay(true, false);
+    assertEquals(fresh.some((e) => e.kind === "error"), false);
+    assertEquals(f.received.at(-1)!.args.note, `n-${f.stored.password}`);
+    const cached = await f.evaluatedDefRepo.findByNameWithProvenance(
+      f.type,
+      "replay",
+    );
+    assert(cached);
+    assertEquals((cached.writtenReferences ?? []).length, 2);
+    assert(cached.persistedProvenance instanceof ProvenanceMap);
+
+    // The vault rotates between the run and its replay.
+    const vault = /vault\.get\('([^']+)'/.exec(f.stored.reference)![1];
+    const rotated = `pw-rotated-${crypto.randomUUID()}`;
+    await f.access(() => f.vaultService.put(vault, f.stored.key, rotated));
+    f.forbidden.push(rotated);
+
+    const storedBefore = f.counting.readsOf(f.stored.key);
+    const canaryBefore = f.counting.readsOf(keyOf(0));
+    const events = await replay(true, true);
+    const error = events.find((e) => e.kind === "error");
+    assertEquals(error, undefined, JSON.stringify(error));
+    // The replay restored references and loaded the current value at
+    // delivery: one load per data-origin reference (authorized, not probed),
+    // a probe and a load for the runtime vault.get.
+    const last = f.received.at(-1)!;
+    assertEquals(last.args.note, `n-${rotated}`);
+    assertEquals(last.globalArgs.token, rotated);
+    assertEquals(last.args.password, f.canaries[0].value);
+    assertEquals(f.counting.readsOf(f.stored.key) - storedBefore, 1);
+    assertEquals(f.counting.readsOf(keyOf(0)) - canaryBefore, 2);
+    assertStringIncludes(String(last.unresolved?.note), "__SWAMP_VSEC_");
+    assertValueFree(f, JSON.stringify(events), "replay events");
+    await assertNoPlaintextOnDisk(f);
+
+    // The untyped replay of the same cache restores the values eagerly and
+    // delivers the same.
+    const untyped = await replay(false, true);
+    assertEquals(untyped.some((e) => e.kind === "error"), false);
+    assertEquals(f.received.at(-1)!.args.note, `n-${rotated}`);
+    assertEquals(f.received.at(-1)!.globalArgs.token, rotated);
     await assertNoPlaintextOnDisk(f);
   });
 });

@@ -154,13 +154,21 @@
   color: var(--warning);
   font-weight: 500;
 }
+/* The prompt keeps its line breaks, clamped to its first lines */
 .approval-prompt {
   margin-top: 4px;
   font-size: 0.78rem;
   color: var(--text-2);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+.approval-by {
+  color: var(--text-2);
 }
 .approval-note {
   margin-top: 4px;
@@ -194,6 +202,49 @@
 .approvals-page .btn-sm:not(.btn-approve):not(.btn-reject):hover:not(:disabled) {
   color: var(--text-1);
   border-color: var(--text-3);
+}
+
+/* Confirming a decision, with an optional reason */
+.approval-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+.approval-confirm-label {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.approval-reason {
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--text-1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+.approval-reason:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.approval-cannot-decide {
+  flex-wrap: wrap;
+}
+/* Disabled for this viewer: neutral, so it never reads as clickable */
+.approvals-page .approval-cannot-decide .btn-sm:disabled {
+  background: transparent;
+  color: var(--text-3);
+  border-color: var(--border);
+}
+.approval-cannot-decide-note,
+.approval-decided {
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.approval-decided {
+  white-space: nowrap;
 }
 
 /* Inline context under an expanded gate */
@@ -290,4 +341,33 @@
   .approval-toggle svg {
     transition: none;
   }
+}
+
+.gate-facts .gate-inputs {
+  grid-column: 1 / -1;
+}
+.gate-inputs summary {
+  cursor: pointer;
+  color: var(--text-2);
+}
+.gate-input-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 6px 0 0;
+}
+.gate-input-list > div {
+  display: contents;
+}
+.gate-input-list dt {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.75rem;
+}
+.gate-input-list dd {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

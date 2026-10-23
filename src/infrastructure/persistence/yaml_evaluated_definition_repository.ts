@@ -66,6 +66,7 @@ import {
 import {
   findPlaintextSensitiveArguments,
   type MaskedPath,
+  MaskedPathSchema,
   maskProvenance,
   PLAINTEXT_SENSITIVE_EVALUATED_ARG_CODE,
   plaintextSensitiveArgumentsMessage,
@@ -106,9 +107,7 @@ const CacheMetadataSchema = z.object({
   authoredExpressions: z.array(z.string()).optional(),
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
-  maskedPaths: z.array(
-    z.array(z.union([z.string(), z.number().int().nonnegative()])),
-  ).optional(),
+  maskedPaths: z.array(MaskedPathSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
   provenance: z.unknown().optional(),
   persistedProvenance: z.unknown().optional(),
@@ -522,6 +521,7 @@ export class YamlEvaluatedDefinitionRepository {
   ): Promise<void> {
     // Fail closed before anything is staged or written: a sensitive argument
     // reaches the cache only as a vault reference or the mask.
+    z.array(MaskedPathSchema).parse(maskedPaths);
     // persistEvaluatedDefinition builds that form, so this never fires for a
     // writer that goes through it; one that bypasses it fails here instead
     // of leaking (swamp-club#3681).

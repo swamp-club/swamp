@@ -590,6 +590,51 @@ Deno.test("createDataRepositoryAttributeReader: a read the run's vault access re
   assertEquals((await unavailable(ref))?.token, stored.token);
 });
 
+Deno.test("createDataRepositoryAttributeReader: a failed vault read, or a vault service that cannot be built, is recorded as unread (swamp-club#3806)", async () => {
+  const stored = { token: "${{ vault.get('prod-vault', 'api-token') }}" };
+  const dataRepo = {
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(stored))),
+  } as unknown as UnifiedDataRepository;
+  const ref: StepResourceRef = {
+    dataId: "data-1",
+    modelType: "command/shell",
+    modelId: "model-1",
+    modelName: "writer",
+    specName: "creds",
+    contentType: "application/json",
+    name: "creds",
+    version: 1,
+    tags: { "_swamp.sensitiveFields": JSON.stringify(["token"]) },
+  };
+  const cases: [string, () => Promise<VaultService>][] = [
+    [
+      "vault down",
+      () =>
+        Promise.resolve(
+          {
+            get: () => Promise.reject(new Error("vault down")),
+          } as unknown as VaultService,
+        ),
+    ],
+    ["vault config unreadable", () => {
+      throw new Error("vault config unreadable");
+    }],
+  ];
+  for (const [reason, getVaultService] of cases) {
+    const sensitiveValues = new RunSensitiveValues();
+    const resolved = await createDataRepositoryAttributeReader(dataRepo, {
+      getVaultService,
+      sensitiveValues,
+    })(ref);
+    assertEquals(resolved?.token, stored.token, reason);
+    assertEquals(
+      sensitiveValues.unreadReferenceFor(stored.token)?.reason,
+      reason,
+    );
+  }
+});
+
 Deno.test("StepOutputResolver.resolve: a wait_for_signal step's outputs are its payload and receipt, with no datastore read", async () => {
   const signal = {
     id: "33333333-3333-4333-8333-333333333333",

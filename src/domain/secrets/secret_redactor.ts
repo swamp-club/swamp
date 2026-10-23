@@ -150,6 +150,16 @@ export class SecretRedactor {
   }
 
   /**
+   * Whether `text` is itself a registered secret, matched whole rather than
+   * as a substring. A writer that serializes structure asks this of a value
+   * it writes unquoted, such as a number, where masking a substring would
+   * break the syntax (swamp-club#3754).
+   */
+  isSecret(text: string): boolean {
+    return this.secrets.has(text);
+  }
+
+  /**
    * Whether anything is redacted: a registered value, or a sentinel of an
    * attached registry. Callers gate on this before calling {@link redact}, so
    * it must answer true before any value is loaded in a typed run.

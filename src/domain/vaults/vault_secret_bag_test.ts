@@ -27,6 +27,7 @@ import {
 import { isIssuedEntry, SecretBagRegistry } from "./secret_bag_registry.ts";
 import { secretOccurrencesOf } from "./secret_occurrences.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
+import { sentinelIdentityOf } from "../expressions/provenance_map.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -1315,4 +1316,115 @@ Deno.test("planPowerShellPlacement and resolveForPowerShell: names skip authored
   );
   assertEquals(resolved.dataInCommandLine, true);
   assertEquals(resolved.env, { __SWAMP_VAULT_3: "v" });
+});
+
+// --- typed-secrets 4.4: written references keep their encoding ---
+
+Deno.test("VaultSecretBag.addWrittenReference: issues a reference-only entry in the written entry's shape, by encoding and origin", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const data = bag.addWrittenReference(REF, "json", true, "run-1 inputs.body");
+  const vault = bag.addWrittenReference(
+    REF,
+    "number",
+    false,
+    "run-1 inputs.port",
+  );
+  assertEquals(bag.registry.entryOf(data), {
+    sentinel: data,
+    reference: REF,
+    encoding: "json",
+    dataOrigin: true,
+    location: "run-1 inputs.body",
+  });
+  assertEquals(bag.registry.entryOf(vault), {
+    sentinel: vault,
+    reference: REF,
+    encoding: "number",
+    dataOrigin: false,
+    location: "run-1 inputs.port",
+  });
+  // Neither holds a value: a load at delivery reads it.
+  assertEquals(bag.toEntries(), []);
+});
+
+Deno.test("VaultSecretBag.rehomeSentinels: a written reference keeps its encoding, origin and location, and both sentinels share one identity", () => {
+  const registry = new SecretBagRegistry();
+  const source = new VaultSecretBag(registry);
+  const target = new VaultSecretBag(registry);
+  const json = source.addWrittenReference(REF, "json", true, "wf body");
+  const number = source.addWrittenReference(REF, "number", false, "wf port");
+  const rehomed = source.rehomeSentinels(
+    { body: `{"k":"${json}"}`, port: number },
+    target,
+  ) as { body: string; port: string };
+  const [jsonCopy] = rehomed.body.match(VaultSecretBag.SENTINEL_PATTERN)!;
+  assertEquals(registry.entryOf(jsonCopy), {
+    sentinel: jsonCopy,
+    reference: REF,
+    encoding: "json",
+    dataOrigin: true,
+    location: "wf body",
+  });
+  assertEquals(registry.entryOf(rehomed.port), {
+    sentinel: rehomed.port,
+    reference: REF,
+    encoding: "number",
+    dataOrigin: false,
+    location: "wf port",
+  });
+  const identity = sentinelIdentityOf(registry);
+  assertEquals(identity(jsonCopy), identity(json));
+  assertEquals(identity(rehomed.port), identity(number));
+  assertEquals(identity(rehomed.port) === identity(jsonCopy), false);
+});
+
+Deno.test("VaultSecretBag: a json written reference delivers the loaded value escaped in text, in the shell environment on both strategies, and in shipped entries", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addWrittenReference(REF, "json", false, "loc");
+  const view = bag.withLoaded(new Map([[sentinel, 'p"w\\d']]));
+  assertEquals(view.resolveRaw(`{"k":"${sentinel}"}`), '{"k":"p\\"w\\\\d"}');
+  assertEquals(view.resolveDeep({ body: `{"k":"${sentinel}"}` }), {
+    body: '{"k":"p\\"w\\\\d"}',
+  });
+  assertEquals(
+    Object.values(view.resolveForShell(`echo ${sentinel}`).env),
+    ['p\\"w\\\\d'],
+  );
+  assertEquals(
+    Object.values(view.resolveForPowerShell(`echo ${sentinel}`).env),
+    ['p\\"w\\\\d'],
+  );
+  assertEquals(view.toEntries(), [{
+    sentinel,
+    value: 'p\\"w\\\\d',
+    dataOrigin: false,
+  }]);
+});
+
+Deno.test("VaultSecretBag: a number or boolean written reference delivers its text, at a whole leaf and inside a string, for the trusted boundary's schema to coerce", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const port = bag.addWrittenReference(
+    { vaultName: "prod", key: "port" },
+    "number",
+    false,
+    "run-1 inputs.port",
+  );
+  const flag = bag.addWrittenReference(REF, "boolean", true, "run-1 inputs.on");
+  const view = bag.withLoaded(new Map([[port, "8080"], [flag, "true"]]));
+  assertEquals(view.resolveDeep({ port, on: flag, text: `p=${port}` }), {
+    port: "8080",
+    on: "true",
+    text: "p=8080",
+  });
+  assertEquals(view.resolveRaw(port), "8080");
+  // A rotated value is delivered as it is: the schema of the field it
+  // reaches decides, as for any delivered text.
+  const rotated = bag.withLoaded(new Map([[port, "eight"], [flag, "yes"]]));
+  assertEquals(rotated.resolveDeep({ port, on: flag }), {
+    port: "eight",
+    on: "yes",
+  });
+  // The entries keep their encodings for persistence and identity.
+  assertEquals(bag.registry.issuedEntryOf(port)?.encoding, "number");
+  assertEquals(bag.registry.issuedEntryOf(flag)?.encoding, "boolean");
 });

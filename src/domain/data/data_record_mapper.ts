@@ -27,7 +27,6 @@ import {
   type UnifiedDataRepository,
 } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
-import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isJsonMediaType, isTextContentType } from "./content_type.ts";
@@ -37,7 +36,7 @@ import {
 } from "./data_metadata.ts";
 import {
   parseSensitiveFieldsTag,
-  resolveSensitiveVaultRefs,
+  resolveSensitiveVaultRefsLeavingUnread,
 } from "../models/data_writer.ts";
 
 export interface DataRecordMapperOptions {
@@ -104,9 +103,10 @@ function parseContent(
 
 /**
  * Attempts vault resolution on attributes. If resolution fails for any
- * individual reference, that reference is left unresolved — the record
- * is never failed entirely — except when the run's vault access refuses the
- * read: {@link VaultAccessDeniedError} is rethrown.
+ * individual reference, that reference is left unresolved and the failure is
+ * logged at debug and recorded through the sink — the record is never failed
+ * entirely — except when the run's vault access refuses the read:
+ * `VaultAccessDeniedError` is rethrown.
  */
 async function resolveVaultRefs(
   attributes: Record<string, unknown>,
@@ -120,19 +120,12 @@ async function resolveVaultRefs(
   }
   const sensitiveFields = parseSensitiveFieldsTag(tags);
   if (!sensitiveFields) return;
-  try {
-    await resolveSensitiveVaultRefs(
-      attributes,
-      sensitiveFields,
-      options.vaultService,
-      options.redactor,
-    );
-  } catch (error) {
-    // A refusal by the run's vault access fails the read like every other
-    // vault path; it is never mistaken for an unavailable vault.
-    if (error instanceof VaultAccessDeniedError) throw error;
-    // Vault unavailable or specific keys failed — leave unresolved
-  }
+  await resolveSensitiveVaultRefsLeavingUnread(
+    attributes,
+    sensitiveFields,
+    options.vaultService,
+    options.redactor,
+  );
 }
 
 /**
@@ -390,20 +383,15 @@ export async function fromResourceHandle(
   if (vaultService && Object.keys(attributes).length > 0) {
     const sensitiveFields = parseSensitiveFieldsTag(handle.tags);
     if (sensitiveFields) {
-      try {
-        await resolveSensitiveVaultRefs(
-          attributes,
-          sensitiveFields,
-          vaultService,
-          sensitiveValues,
-        );
-      } catch (error) {
-        // A refusal by the run's vault access fails the read like every
-        // other vault path (swamp-club#2676); it is never mistaken for an
-        // unavailable vault.
-        if (error instanceof VaultAccessDeniedError) throw error;
-        // Vault unavailable or specific keys failed — leave unresolved
-      }
+      // A reference whose vault cannot be read stays as stored and is
+      // recorded through the sink; a refusal by the run's vault access is
+      // rethrown (swamp-club#2676, swamp-club#3806).
+      await resolveSensitiveVaultRefsLeavingUnread(
+        attributes,
+        sensitiveFields,
+        vaultService,
+        sensitiveValues,
+      );
     }
   }
 

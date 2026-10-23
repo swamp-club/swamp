@@ -47,6 +47,7 @@ import {
   type LineageHead,
 } from "../src/domain/datastore_v3/published_lineage.ts";
 import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.ts";
+import { ReplicaRoot } from "../src/domain/datastore_v3/replica_root.ts";
 import {
   modelCommit,
   savePut,
@@ -177,11 +178,11 @@ for (const mb of args.sizes.split(",").map(Number)) {
   const checks: number[] = [];
   for (let i = 0; i < runs; i++) {
     const start = performance.now();
-    const lineages = await registry.read(replicaRoot);
+    const lineages = await registry.read(ReplicaRoot.of(replicaRoot));
     const decision = decideLocalCopy(
       { copy: { replicaRoot, lineageFence: 1, txid } },
       lineages,
-      replicaRoot,
+      ReplicaRoot.of(replicaRoot),
     );
     checks.push(performance.now() - start);
     if (decision.kind !== "current") throw new Error(decision.kind);

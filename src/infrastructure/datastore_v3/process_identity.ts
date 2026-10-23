@@ -74,9 +74,19 @@ export function localProcess(): Promise<LocalProcess> {
       probe: probeProcess,
       // Windows has no boot id; everywhere else one missing places nothing.
       bootIdRequired: Deno.build.os !== "windows",
+      pidNamespaces: Deno.build.os === "linux",
+      hostname: () => Deno.hostname(),
     };
   });
   return resolved;
+}
+
+/**
+ * The hostname a record without an identity is judged by: `local`'s, which
+ * a test sets, or this machine's now.
+ */
+export function hostnameOf(local: LocalProcess): string {
+  return local.hostname?.() ?? Deno.hostname();
 }
 
 /** Judges the writer `recorded` names from this process. */

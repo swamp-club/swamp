@@ -10,7 +10,7 @@
     resolution, verifies SHA-256 checksums, and handles installation.
 
 .PARAMETER Destination
-    Destination directory for installation. Default: C:\Program Files\swamp (admin) or $env:LOCALAPPDATA\swamp (user)
+    Destination directory for installation. Default: $env:SWAMP_HOME\bin when SWAMP_HOME is set, otherwise C:\Program Files\swamp (admin) or $env:LOCALAPPDATA\swamp (user)
 
 .PARAMETER Version
     Release version to install. Default: stable
@@ -31,6 +31,9 @@
 
     # Install to custom location
     .\install.ps1 -Destination "C:\Tools\swamp"
+
+    # Install to $env:SWAMP_HOME\bin
+    $env:SWAMP_HOME = "C:\swamp"; .\install.ps1
 
     # Install specific version
     .\install.ps1 -Version "stable"
@@ -105,6 +108,10 @@ function Test-Administrator {
 }
 
 function Get-DefaultDestination {
+    if ($env:SWAMP_HOME) {
+        return Join-Path $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:SWAMP_HOME) "bin"
+    }
+
     $isAdmin = Test-Administrator
 
     if ($isAdmin) {
@@ -400,7 +407,7 @@ function Show-Help {
     Write-Host "Installs the swamp CLI binary for Windows."
     Write-Host ""
     Write-Host "Parameters:"
-    Write-Host "  -Destination <dir>   Installation directory. Default: C:\Program Files\swamp (admin) or %LOCALAPPDATA%\swamp (user)"
+    Write-Host "  -Destination <dir>   Installation directory. Default: %SWAMP_HOME%\bin when SWAMP_HOME is set, otherwise C:\Program Files\swamp (admin) or %LOCALAPPDATA%\swamp (user)"
     Write-Host "  -Version <version>   Release version to install. Default: stable"
     Write-Host "  -AddToPath <bool>    Add the installation directory to the PATH. Default: `$true"
     Write-Host "  -Help                Show this help message."
@@ -525,6 +532,13 @@ function Main {
         $installedBinary = Join-Path $Destination $BinExe
         if (Test-Path $installedBinary) {
             Write-Success "Installation complete: $installedBinary"
+
+            # An earlier install elsewhere on PATH would keep running the old version.
+            $resolved = Get-Command $BinExe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            $installedFullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($installedBinary)
+            if ($resolved -and $resolved.Source -ne $installedFullPath) {
+                Write-Warn "'$($resolved.Source)' comes before '$installedBinary' on PATH, so '$BinName' runs that copy. Remove it, or put '$Destination' earlier on PATH."
+            }
 
             try {
                 $versionOutput = & $installedBinary --version 2>&1

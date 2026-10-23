@@ -60,6 +60,7 @@ found), see [references/version-check.md](references/version-check.md).
 | "Is anything running right now?"                   | Tier 1 → `swamp run history --active`                            |
 | Every command fails with `auth_gate_blocked`       | Account required → see below                                     |
 | `datastore_format_unsupported` / `_marker_invalid` | Datastore format → see below                                     |
+| Windows blocks `deno.exe`, esbuild or Litestream   | Blocked program → see below                                      |
 | Command errored — message is clear                 | Tier 2 → read it, fix the named issue                            |
 | Command errored — message is vague                 | Tier 2 → re-run with `--json`                                    |
 | Method or workflow run failed                      | Tier 2 → inspect generated reports                               |
@@ -108,5 +109,25 @@ on S3/GCS.
 - **`datastore_format_marker_invalid`**: the marker exists but is not valid JSON
   with a positive integer `format`. Find out who wrote it before changing it;
   report it with `swamp issue bug` if swamp did.
+
+### Blocked program (Windows application control)
+
+A message like "An unauthorized application was blocked" naming `deno.exe`,
+`esbuild-win32-x64.exe` or `litestream.exe` under `C:\Users\<user>\.swamp` comes
+from the organisation's policy, not from swamp. Those are programs swamp unpacks
+or downloads into its home directory. Do not try to bypass the policy; move the
+home directory into a folder it allows:
+
+- Set `SWAMP_HOME` to a folder there, both persisted as a User environment
+  variable and for the current session:
+  `[Environment]::SetEnvironmentVariable("SWAMP_HOME", "C:\Allowed\.swamp", "User")`
+  and `$env:SWAMP_HOME = "C:\Allowed\.swamp"`.
+- Re-run the installer (`irm https://swamp-club.com/install.ps1 | iex`) in that
+  session: with `SWAMP_HOME` set it installs `swamp.exe` into `$SWAMP_HOME\bin`
+  and adds it to PATH, so swamp itself also runs from the allowed folder.
+- `SWAMP_HOME` also moves the login, so run `swamp auth login` again.
+
+The README section "Windows: running swamp from an allowed folder" has the full
+PowerShell walkthrough.
 
 For detailed walkthroughs of each tier, see [reference.md](reference.md).

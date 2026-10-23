@@ -61,9 +61,12 @@ import {
 } from "./signal_wait.ts";
 import type { WaitOutcome } from "./signal_wait_records.ts";
 import {
+  alignProvenance,
   ProvenanceMap,
   ProvenanceMapDataSchema,
+  sentinelReferenceTextOf,
 } from "../expressions/provenance_map.ts";
+import { withWrittenReferenceRanges } from "../expressions/persisted_evaluation.ts";
 
 /**
  * Zod schema for an approval decision recorded on a manual_approval step.
@@ -326,6 +329,12 @@ export const WorkflowRunSchema = z.object({
   // a resume knows which input text came from the caller. Absent on runs
   // recorded before it existed.
   inputsProvenance: ProvenanceMapDataSchema.optional(),
+  // The same map in the written record's own coordinates, where `inputs`
+  // holds vault references in place of sensitive values, so a typed resume
+  // restores references in place and aligns exactly (typed-secrets 4.4).
+  // Absent on runs recorded before it existed, which a typed resume treats
+  // fail-closed: an input string holding a reference is whole data.
+  persistedInputsProvenance: ProvenanceMapDataSchema.optional(),
   // Started with --last-evaluated: its steps ran the evaluated cache, whose
   // source may differ from the workflow on disk (swamp-club#3583). Absent on
   // other runs and on runs recorded before it existed.
@@ -1394,6 +1403,8 @@ export interface RunOwner {
 export class WorkflowRun implements TriggerEvaluationContext {
   /** See {@link captureInputsProvenance}. */
   private _inputsProvenance: ProvenanceMap | undefined;
+  /** See {@link persistedInputsProvenance}. */
+  private _persistedInputsProvenance: ProvenanceMap | undefined;
   private _replayedEvaluatedCache = false;
 
   private constructor(
@@ -1454,12 +1465,22 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * A value field of this run as it is shown: every recorded sensitive value
+   * masked and, in a typed run, every sentinel the run issued, whatever it
+   * stands for and without reading it. The one display view the run events
+   * and the run view share (typed-secrets 4.4, design Section 7.1); the
+   * value itself when no record is attached.
+   */
+  mask<T>(value: T): T {
+    return (this._sensitiveValues?.masked(value) ?? value) as T;
+  }
+
+  /**
    * The run's inputs with sensitive values masked, for output shown to users
    * or written with reports.
    */
   maskedInputs(): Record<string, unknown> {
-    return (this._sensitiveValues?.masked(this._inputs) ??
-      this._inputs) as Record<string, unknown>;
+    return this.mask(this._inputs) as Record<string, unknown>;
   }
 
   /** Where the stored record holds references, as loaded. */
@@ -1476,22 +1497,47 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * The data to write to disk. With the run's record attached, every
    * recorded sensitive value at a value position (inputs, deferred binding
    * values, approval prompts, step errors and assert text, the failure
-   * reason) is written as the vault reference it came from. Without one (a
-   * process that only changes status), the stored data and its references
-   * are written back unchanged.
+   * reason) is written as the vault reference it came from, and the inputs
+   * map is written again in the written inputs' own coordinates
+   * (`persistedInputsProvenance`): exact through the reference text each
+   * sentinel stands for, and with every written reference marked data.
+   * Without a record (a process that only changes status), the stored data
+   * and its references are written back unchanged.
    */
   toPersistedData(): WorkflowRunData {
     const data = this.toData();
     if (!this._sensitiveValues) return data;
-    const { writtenReferences: _stale, sensitiveFormat: _format, ...rest } =
-      data;
+    const {
+      writtenReferences: _stale,
+      sensitiveFormat: _format,
+      persistedInputsProvenance: _staleMap,
+      ...rest
+    } = data;
     const form = toPersistedForm(rest, this._sensitiveValues, {
       applies: isRunValuePath,
     });
+    const inputReferences = form.writtenReferences
+      .filter((reference) => reference.path[0] === "inputs")
+      .map((reference) => ({ ...reference, path: reference.path.slice(1) }));
+    const persistedInputsProvenance = this._inputsProvenance === undefined
+      ? undefined
+      : withWrittenReferenceRanges(
+        alignProvenance(
+          this._inputsProvenance,
+          data.inputs ?? {},
+          form.data.inputs ?? {},
+          sentinelReferenceTextOf(this._sensitiveValues.sentinels),
+        ),
+        form.data.inputs ?? {},
+        inputReferences,
+      );
     return {
       ...form.data,
       ...(form.writtenReferences.length > 0
         ? { writtenReferences: form.writtenReferences }
+        : {}),
+      ...(persistedInputsProvenance
+        ? { persistedInputsProvenance: persistedInputsProvenance.toData() }
         : {}),
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
     };
@@ -1574,6 +1620,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (validated.inputsProvenance) {
       run._inputsProvenance = ProvenanceMap.fromData(
         validated.inputsProvenance,
+      );
+    }
+    if (validated.persistedInputsProvenance) {
+      run._persistedInputsProvenance = ProvenanceMap.fromData(
+        validated.persistedInputsProvenance,
       );
     }
     return run;
@@ -2034,6 +2085,15 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return this._inputsProvenance;
   }
 
+  /**
+   * Where data sits in the stored record's `inputs`, in the written form's
+   * own coordinates, as loaded (typed-secrets 4.4); undefined for runs
+   * recorded before it existed.
+   */
+  get persistedInputsProvenance(): ProvenanceMap | undefined {
+    return this._persistedInputsProvenance;
+  }
+
   /** Capture durable parent scopes so resume does not borrow child bindings. */
   captureDeferredExpressions(expressions: readonly DeferredExpression[]): void {
     this._deferredExpressions = structuredClone([...expressions]);
@@ -2374,6 +2434,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._inputsProvenance) {
       data.inputsProvenance = this._inputsProvenance.toData();
+    }
+    if (this._persistedInputsProvenance) {
+      data.persistedInputsProvenance = this._persistedInputsProvenance
+        .toData();
     }
     if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;
