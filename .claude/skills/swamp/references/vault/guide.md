@@ -63,3 +63,18 @@ For detailed walkthroughs of each operation, see [reference.md](reference.md).
 - In a workflow, a top-level `vaults:` list caps the vaults any run may touch,
   locally too; include the vault sensitive outputs land in. See
   [../workflow/reference.md](../workflow/reference.md#vaults-allow-list).
+
+## Version control
+
+Vault definition files, by default `vaults/<type>/<id>.yaml` in the repo, are
+safe to commit. A definition holds the vault's `id`, `name`, `type`,
+`createdAt`, an optional `auditReads` flag and the type's `config`, such as
+`auto_generate: true`; Swamp never writes a secret value into it. Values live in
+the vault's backend. For `local_encryption` that store is per machine, so a
+clone starts with the vault empty. Behavior and workflow files that use
+`${{ vault.get(<vault>, KEY) }}` store the reference, not the resolved value,
+and are safe to commit too.
+
+`config` is stored as plain text. Give an extension vault type its credentials
+through the source its documentation names (environment, IAM role, CLI login),
+never in `config`.
