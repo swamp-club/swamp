@@ -562,6 +562,42 @@ function deliveredMethodData(
 }
 
 /**
+ * The global arguments the pre-flight checks receive, parsed by the type's
+ * schema as a method run parses them before its checks: defaults,
+ * coercions and transforms applied, and a field still holding a swamp
+ * expression left as written (swamp-club#3851). A parse the schema refuses
+ * or throws on leaves the values as given; the Global arguments item
+ * reports it.
+ */
+function parsedForChecks(
+  modelDef: ModelDefinition,
+  globalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const schema = modelDef.globalArguments;
+  if (!schema) return globalArgs;
+  const unresolvedKeys = new Set(
+    Object.keys(globalArgs).filter((key) =>
+      containsSwampExpression(globalArgs[key])
+    ),
+  );
+  // fromEntries defines own properties, so a "__proto__" key stays a key.
+  const resolved = Object.fromEntries(
+    Object.entries(globalArgs).filter(([key]) => !unresolvedKeys.has(key)),
+  );
+  let result: ReturnType<typeof parseGlobalArgumentsLeniently>;
+  try {
+    result = parseGlobalArgumentsLeniently(
+      schema,
+      coerceMethodArgs(resolved, schema),
+      unresolvedKeys,
+    );
+  } catch {
+    return globalArgs;
+  }
+  return result.success ? { ...globalArgs, ...result.data } : globalArgs;
+}
+
+/**
  * Default implementation of the model validation service.
  */
 export class DefaultModelValidationService implements ModelValidationService {
@@ -896,6 +932,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         // Vault may not be configured; degrade to unresolved values
       }
     }
+    resolvedGlobalArgs = parsedForChecks(modelDef, resolvedGlobalArgs);
 
     for (const [name, check] of applicable) {
       try {

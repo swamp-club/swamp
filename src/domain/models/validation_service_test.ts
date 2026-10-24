@@ -4108,3 +4108,175 @@ Deno.test("validateModel: a schema that throws while parsing a sensitive argumen
   assertEquals(reported?.passed, false);
   assertStringIncludes(reported?.error ?? "", "key rejected: plain-value");
 });
+
+/**
+ * A type whose global arguments carry a default, a coerced number and a
+ * transform, with a check that records what it receives.
+ */
+function parsingModel(
+  seen: { globalArgs?: Record<string, unknown>; unresolved?: unknown },
+  overrides: Partial<ModelDefinition> = {},
+): ModelDefinition {
+  return {
+    type: ModelType.create("test/parsed-check-args"),
+    version: "2026.10.24.1",
+    globalArguments: z.object({
+      steamcmd: z.string().default("/opt/steamcmd/steamcmd.sh"),
+      port: z.number().optional(),
+      region: z.string().transform((s) => s.toUpperCase()).optional(),
+    }),
+    methods: {
+      upload: {
+        description: "Upload",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "needs-steamcmd": {
+        description: "Reads a defaulted global argument",
+        appliesTo: ["upload"],
+        execute: (context) => {
+          seen.globalArgs = context.globalArgs;
+          seen.unresolved = context.unresolvedMethodArgs;
+          return Promise.resolve({
+            pass: (context.globalArgs.steamcmd as string).includes("steamcmd"),
+          });
+        },
+      },
+    },
+    ...overrides,
+  };
+}
+
+function checkResult(results: ValidationResult[], name: string) {
+  return results.find((r) => r.name === `Check: ${name}`);
+}
+
+Deno.test("validateModel: pre-flight checks receive global argument defaults, as the run gives them (swamp-club#3851)", async () => {
+  const seen: { globalArgs?: Record<string, unknown> } = {};
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({ name: "p1" }),
+    parsingModel(seen),
+    undefined,
+    createCheckContext(),
+  );
+
+  assertEquals(checkResult(results, "needs-steamcmd")?.passed, true);
+  assertEquals(seen.globalArgs, { steamcmd: "/opt/steamcmd/steamcmd.sh" });
+});
+
+Deno.test("validateModel: pre-flight checks receive coerced and transformed global arguments", async () => {
+  const seen: { globalArgs?: Record<string, unknown> } = {};
+  await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "p1",
+      globalArguments: { port: "8080", region: "eu-west-1" },
+    }),
+    parsingModel(seen),
+    undefined,
+    createCheckContext(),
+  );
+
+  assertEquals(seen.globalArgs, {
+    steamcmd: "/opt/steamcmd/steamcmd.sh",
+    port: 8080,
+    region: "EU-WEST-1",
+  });
+});
+
+Deno.test("validateModel: a global argument holding an expression reaches the checks as written, not as its default", async () => {
+  const seen: { globalArgs?: Record<string, unknown> } = {};
+  const expression = "${{ inputs.steamcmd }}";
+  await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "p1",
+      globalArguments: { steamcmd: expression, port: "22" },
+    }),
+    parsingModel(seen),
+    undefined,
+    createCheckContext(),
+  );
+
+  assertEquals(seen.globalArgs, { steamcmd: expression, port: 22 });
+});
+
+Deno.test("validateModel: a typed delivery's global arguments are parsed before the checks receive them", async () => {
+  const seen: { globalArgs?: Record<string, unknown> } = {};
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({ name: "p1" }),
+    parsingModel(seen),
+    undefined,
+    createCheckContext({
+      deliverCheckArguments: () =>
+        Promise.resolve({
+          globalArgs: { region: "us-east-1" },
+          unresolvedMethodArgs: {},
+        }),
+    }),
+  );
+
+  assertEquals(checkResult(results, "needs-steamcmd")?.passed, true);
+  assertEquals(seen.globalArgs, {
+    steamcmd: "/opt/steamcmd/steamcmd.sh",
+    region: "US-EAST-1",
+  });
+});
+
+Deno.test("validateModel: global arguments the schema refuses reach the checks as stored", async () => {
+  const seen: { globalArgs?: Record<string, unknown> } = {};
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({ name: "p1", globalArguments: { port: "not-a-port" } }),
+    parsingModel(seen),
+    undefined,
+    createCheckContext(),
+  );
+
+  assertEquals(
+    results.find((r) => r.name === "Global arguments")?.passed,
+    false,
+  );
+  assertEquals(seen.globalArgs, { port: "not-a-port" });
+});
+
+Deno.test("validateModel: unresolvedMethodArgs carries global argument defaults", async () => {
+  const seen: { unresolved?: unknown } = {};
+  await new DefaultModelValidationService().validateModel(
+    Definition.create({ name: "p1" }),
+    parsingModel(seen),
+    undefined,
+    createCheckContext({ method: "upload" }),
+  );
+
+  assertEquals(seen.unresolved, { steamcmd: "/opt/steamcmd/steamcmd.sh" });
+});
+
+Deno.test("validateModel: pre-flight checks receive defaults of the upgraded global arguments", async () => {
+  const seen: { globalArgs?: Record<string, unknown> } = {};
+  const model = parsingModel(seen, {
+    version: "2026.10.24.2",
+    upgrades: [{
+      toVersion: "2026.10.24.2",
+      description: "Rename zone to region",
+      upgradeAttributes: (old) => {
+        const { zone, ...rest } = old;
+        return { ...rest, region: zone };
+      },
+    }],
+  });
+  await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "p1",
+      typeVersion: "2026.10.24.1",
+      globalArguments: { zone: "ap-south-1" },
+    }),
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  assertEquals(seen.globalArgs, {
+    steamcmd: "/opt/steamcmd/steamcmd.sh",
+    region: "AP-SOUTH-1",
+  });
+});
