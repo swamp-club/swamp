@@ -264,8 +264,11 @@ inputs match required method/workflow arguments.
    missing value into a valid one, may be omitted. Deciding this parses the
    arguments, so their refinements and transforms run during validation — keep
    them free of side effects. For `workflow` tasks, checks that all required
-   workflow inputs are provided. Dynamic CEL references (`${{ ... }}`) in
-   behavior/workflow names are skipped.
+   workflow inputs are provided. A behavior target that is a single workflow
+   input (`${{ inputs.instance }}`) with a literal string default is checked at
+   that default. Other dynamic CEL references (`${{ ... }}`) in behavior names
+   pass with the note `(target resolved at run time, not checked)`, and those in
+   workflow names are skipped.
 
 ```bash
 swamp workflow validate my-workflow --json

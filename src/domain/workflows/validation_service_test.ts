@@ -1033,6 +1033,182 @@ Deno.test("validateStepInputs: skips dynamic CEL model reference", async () => {
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.warning, false);
+  assertStringIncludes(
+    inputResult?.name ?? "",
+    "(target resolved at run time, not checked)",
+  );
+});
+
+function workflowWithInputTarget(
+  target: string,
+  methodName: string,
+  properties: Record<string, Record<string, unknown>>,
+  inputs?: Record<string, unknown>,
+): Workflow {
+  return Workflow.create({
+    name: "test",
+    inputs: { type: "object", properties },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model(target, methodName, inputs),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+const PROBE_INPUT = { instance: { type: "string", default: "probe" } };
+
+Deno.test("validateStepInputs: an input target with a default fails on a method the default's type lacks", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({
+    "probe.execuet": { status: "method_not_found", modelType: "command/shell" },
+  }));
+
+  const results = await svc.validate(
+    workflowWithInputTarget("${{ inputs.instance }}", "execuet", PROBE_INPUT),
+  );
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(
+    inputResult?.name,
+    "Step inputs for 'step1' in job 'job1' (${{ inputs.instance }}.execuet)",
+  );
+  assertEquals(
+    inputResult?.error,
+    "With input 'instance' at its default 'probe': " +
+      "Method 'execuet' not found on behavior type 'command/shell'",
+  );
+});
+
+Deno.test("validateStepInputs: an input target in bracket form is checked at its default", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({
+    "probe.execuet": { status: "method_not_found", modelType: "command/shell" },
+  }));
+
+  const results = await svc.validate(
+    workflowWithInputTarget(
+      '${{ inputs["instance"] }}',
+      "execuet",
+      PROBE_INPUT,
+    ),
+  );
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertStringIncludes(inputResult?.error ?? "", "Method 'execuet' not found");
+});
+
+Deno.test("validateStepInputs: an input target with a default passes when the method exists", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({
+    "probe.execute": { status: "resolved", requiredArgs: [] },
+  }));
+
+  const results = await svc.validate(
+    workflowWithInputTarget("${{ inputs.instance }}", "execute", PROBE_INPUT),
+  );
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.warning, false);
+  assertEquals(
+    inputResult?.name,
+    "Step inputs for 'step1' in job 'job1' (${{ inputs.instance }}.execute)",
+  );
+});
+
+Deno.test("validateStepInputs: an input target whose default names no behavior warns", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({}));
+
+  const results = await svc.validate(
+    workflowWithInputTarget("${{ inputs.instance }}", "execute", PROBE_INPUT),
+  );
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.warning, true);
+  assertStringIncludes(inputResult?.name ?? "", "(behavior not found)");
+  assertStringIncludes(
+    inputResult?.error ?? "",
+    "With input 'instance' at its default 'probe': ",
+  );
+});
+
+Deno.test("validateStepInputs: an input target with a default fails on a missing required argument", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({
+    "probe.deploy": { status: "resolved", requiredArgs: ["environment"] },
+  }));
+
+  const results = await svc.validate(
+    workflowWithInputTarget("${{ inputs.instance }}", "deploy", PROBE_INPUT),
+  );
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(
+    inputResult?.error,
+    "With input 'instance' at its default 'probe': " +
+      "Missing required inputs: environment",
+  );
+});
+
+Deno.test("validateStepInputs: an input target with a default and a CEL methodName passes", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({
+    "probe.${{ inputs.method }}": {
+      status: "method_not_found",
+      modelType: "command/shell",
+    },
+  }));
+
+  const results = await svc.validate(
+    workflowWithInputTarget("${{ inputs.instance }}", "${{ inputs.method }}", {
+      ...PROBE_INPUT,
+      method: { type: "string" },
+    }),
+  );
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.warning, false);
+});
+
+Deno.test("validateStepInputs: a dynamic target that cannot be resolved statically passes as not checked", async () => {
+  // Every resolution names a misspelled method, so any target the validator
+  // resolved would fail rather than pass.
+  const resolver: ModelMethodResolver = {
+    resolve: () =>
+      Promise.resolve({
+        status: "method_not_found",
+        modelType: "command/shell",
+      }),
+  };
+  const svc = new DefaultWorkflowValidationService(resolver);
+  const cases: Array<[string, Record<string, Record<string, unknown>>]> = [
+    ["${{ inputs.instance }}", { instance: { type: "string" } }],
+    ["${{ inputs.instance }}", { instance: { type: "number", default: 3 } }],
+    ["${{ inputs.instance }}", { instance: { type: "string", default: "" } }],
+    [
+      "${{ inputs.instance }}",
+      { instance: { type: "string", default: "${{ inputs.other }}" } },
+    ],
+    ["${{ inputs.instance }}", { other: { type: "string", default: "probe" } }],
+    ['${{ "probe-" + inputs.instance }}', PROBE_INPUT],
+    ["${{ self.item }}", PROBE_INPUT],
+  ];
+
+  for (const [target, properties] of cases) {
+    const results = await svc.validate(
+      workflowWithInputTarget(target, "execuet", properties),
+    );
+    const inputResult = results.find((r) => r.name.includes("Step inputs"));
+    assertEquals(inputResult?.passed, true, target);
+    assertEquals(inputResult?.warning, false, target);
+    assertEquals(
+      inputResult?.name,
+      `Step inputs for 'step1' in job 'job1' (${target}.execuet)` +
+        " (target resolved at run time, not checked)",
+    );
+  }
 });
 
 // --- Step input validation tests (workflow tasks) ---
@@ -1365,6 +1541,10 @@ Deno.test("validateStepInputs: direct-execution step with CEL in modelType skips
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, true);
+  assertStringIncludes(
+    inputResult?.name ?? "",
+    "(target resolved at run time, not checked)",
+  );
 });
 
 Deno.test("validateStepInputs: direct-execution step with CEL modelName and unresolvable modelType fails", async () => {
