@@ -1045,9 +1045,10 @@ export class DefaultWorkflowValidationService
           ? [
             WorkflowValidationResult.fail(
               `Global arguments for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
-              literalSensitiveGlobalArgsMessage(
-                resolution.literalSensitiveGlobals,
-              ),
+              atDefault +
+                literalSensitiveGlobalArgsMessage(
+                  resolution.literalSensitiveGlobals,
+                ),
             ),
           ]
           : [];
@@ -1055,7 +1056,7 @@ export class DefaultWorkflowValidationService
           ? [
             WorkflowValidationResult.fail(
               `Tags for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
-              resolution.reservedTagRefusal,
+              atDefault + resolution.reservedTagRefusal,
             ),
           ]
           : [];

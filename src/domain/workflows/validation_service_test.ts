@@ -1153,6 +1153,32 @@ Deno.test("validateStepInputs: an input target with a default fails on a missing
   );
 });
 
+Deno.test("validateStepInputs: an input target names its default on the default definition's own problems", async () => {
+  const svc = new DefaultWorkflowValidationService(mockResolver({
+    "probe.execute": {
+      status: "resolved",
+      requiredArgs: [],
+      literalSensitiveGlobals: ["apiKey"],
+      reservedTagRefusal: "reserved tag refused",
+    },
+  }));
+
+  const results = await svc.validate(
+    workflowWithInputTarget("${{ inputs.instance }}", "execute", PROBE_INPUT),
+  );
+  const globals = results.find((r) => r.name.startsWith("Global arguments"));
+  const tags = results.find((r) => r.name.startsWith("Tags for"));
+  assertEquals(globals?.passed, false);
+  assertStringIncludes(
+    globals?.error ?? "",
+    "With input 'instance' at its default 'probe': ",
+  );
+  assertEquals(
+    tags?.error,
+    "With input 'instance' at its default 'probe': reserved tag refused",
+  );
+});
+
 Deno.test("validateStepInputs: an input target with a default and a CEL methodName passes", async () => {
   const svc = new DefaultWorkflowValidationService(mockResolver({
     "probe.${{ inputs.method }}": {
