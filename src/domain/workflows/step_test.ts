@@ -358,23 +358,24 @@ Deno.test("Step.fromData and toData roundtrip with forEach", () => {
 });
 
 Deno.test("StepSchema throws clear error for string dependsOn entries with step name", () => {
-  const error = assertThrows(
-    () => {
-      StepSchema.parse({
-        name: "deploy",
-        task: {
-          type: "model_method",
-          modelIdOrName: "my-model",
-          methodName: "run",
-        },
-        dependsOn: ["build-step"],
-      });
+  const result = StepSchema.safeParse({
+    name: "deploy",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
     },
-    Error,
-    "dependsOn entries must be objects, not strings",
+    dependsOn: ["build-step"],
+  });
+  assertEquals(result.success, false);
+  const issues = result.error?.issues ?? [];
+  assertEquals(issues.length, 1);
+  assertEquals(issues[0].path, ["dependsOn", 0]);
+  assertEquals(
+    issues[0].message,
+    'Step "deploy": dependsOn entries must be objects, not strings. ' +
+      'Replace "- build-step" with "- step: build-step" plus "condition: { type: succeeded }".',
   );
-  assertStringIncludes(error.message, 'Step "deploy"');
-  assertStringIncludes(error.message, "build-step");
 });
 
 // Unknown-key rejection tests (swamp-club#1240)

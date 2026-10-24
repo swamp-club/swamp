@@ -777,6 +777,38 @@ Deno.test("YamlWorkflowRepository.findByName: a schema-broken file at the name p
   });
 });
 
+Deno.test("YamlWorkflowRepository.findByName: a string-form dependsOn at the name path fails naming the file (swamp-club#3832)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const data = createTestWorkflow("deploy").toData();
+    const job = data.jobs[0];
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(workflowsDir, "workflow-deploy.yaml"),
+      stringifyYaml(JSON.parse(JSON.stringify({
+        ...data,
+        jobs: [{
+          ...job,
+          steps: [{ ...job.steps[0], dependsOn: ["host"] }],
+        }],
+      }))),
+    );
+
+    const error = await assertRejects(
+      () => repo.findByName("deploy"),
+      WorkflowSchemaError,
+    );
+    assertEquals(
+      error.message,
+      `workflow-deploy.yaml: jobs[0].steps[0].dependsOn[0]: Step "${
+        job.steps[0].name
+      }": dependsOn entries must be objects, not strings. Replace "- host" ` +
+        `with "- step: host" plus "condition: { type: succeeded }".`,
+    );
+  });
+});
+
 Deno.test("YamlWorkflowRepository.findById: a schema-broken file at the id path fails naming the file", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRepository(dir);

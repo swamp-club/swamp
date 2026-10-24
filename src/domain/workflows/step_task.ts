@@ -153,37 +153,9 @@ export function normalizeBehaviorTask(raw: unknown): unknown {
   // existing file keeps parsing (no regression). Only the new spelling
   // refuses a mix.
   if (d.type !== BEHAVIOR_STEP_TASK_TYPE) return raw;
-  const stray = presentKeys(d, MODEL_SPECIFIC_KEYS);
-  if (stray.length > 0) {
-    throw new Error(
-      `A behavior step task cannot use ${stray.join(", ")}. ` +
-        `Use behavior, or behaviorType + behaviorName, with type: behavior; ` +
-        `or modelIdOrName, or modelType + modelName, with type: model_method.`,
-    );
-  }
-  const hasExisting = !!d.behavior;
-  const hasDirect = !!d.behaviorType;
-  if (hasExisting && hasDirect) {
-    throw new Error(
-      `Step task has both behavior and behaviorType. ` +
-        `Use either behavior (existing definition) or behaviorType + behaviorName (direct type execution), not both.`,
-    );
-  }
-  if (!hasExisting && !hasDirect) {
-    throw new Error(
-      `Step task requires either behavior or behaviorType + behaviorName.`,
-    );
-  }
-  if (hasDirect && !d.behaviorName) {
-    throw new Error(
-      `behaviorType requires behaviorName to name the auto-created definition.`,
-    );
-  }
-  if ("globalArgs" in d && d.globalArgs && !hasDirect) {
-    throw new Error(
-      `globalArgs is only valid with direct type execution (behaviorType + behaviorName). ` +
-        `For existing definitions, set global arguments in the definition YAML instead.`,
-    );
+  const refusal = behaviorTaskRefusal(d);
+  if (refusal !== undefined) {
+    throw new Error(refusal);
   }
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(d)) {
@@ -195,50 +167,64 @@ export function normalizeBehaviorTask(raw: unknown): unknown {
   return out;
 }
 
+/** Why a `type: behavior` task is refused, or undefined when it is not. */
+function behaviorTaskRefusal(d: Record<string, unknown>): string | undefined {
+  const stray = presentKeys(d, MODEL_SPECIFIC_KEYS);
+  if (stray.length > 0) {
+    return `A behavior step task cannot use ${stray.join(", ")}. ` +
+      `Use behavior, or behaviorType + behaviorName, with type: behavior; ` +
+      `or modelIdOrName, or modelType + modelName, with type: model_method.`;
+  }
+  const hasExisting = !!d.behavior;
+  const hasDirect = !!d.behaviorType;
+  if (hasExisting && hasDirect) {
+    return `Step task has both behavior and behaviorType. ` +
+      `Use either behavior (existing definition) or behaviorType + behaviorName (direct type execution), not both.`;
+  }
+  if (!hasExisting && !hasDirect) {
+    return `Step task requires either behavior or behaviorType + behaviorName.`;
+  }
+  if (hasDirect && !d.behaviorName) {
+    return `behaviorType requires behaviorName to name the auto-created definition.`;
+  }
+  if ("globalArgs" in d && d.globalArgs && !hasDirect) {
+    return `globalArgs is only valid with direct type execution (behaviorType + behaviorName). ` +
+      `For existing definitions, set global arguments in the definition YAML instead.`;
+  }
+  return undefined;
+}
+
 /**
- * Zod schema for step tasks with backward compatibility preprocessing.
- *
- * - The behavior spelling is rewritten to `model_method` first
- *   ({@link normalizeBehaviorTask}), so every consumer sees one form
- * - `type: "shell"` throws an actionable error
+ * Why a step task is refused, or undefined when it is not. Each message is
+ * one line: schema errors escape control characters, so a newline would
+ * print as an escape (swamp-club#3832).
  */
-export const StepTaskSchema = z.preprocess((input) => {
+function stepTaskRefusal(input: unknown): string | undefined {
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const raw = input as Record<string, unknown>;
+    if (raw.type === BEHAVIOR_STEP_TASK_TYPE) {
+      const refusal = behaviorTaskRefusal(raw);
+      if (refusal !== undefined) return refusal;
+    }
+  }
   const data = normalizeBehaviorTask(input);
   if (data && typeof data === "object" && "type" in data) {
     const d = data as Record<string, unknown>;
     if (d.type === "shell") {
-      throw new Error(
-        `Step task type "shell" is no longer supported. ` +
-          `Use 'type: model_method' with the 'command/shell' behavior instead.\n\n` +
-          `Example:\n` +
-          `  task:\n` +
-          `    type: model_method\n` +
-          `    modelIdOrName: command/shell\n` +
-          `    methodName: run\n` +
-          `    inputs:\n` +
-          `      command: "your-command-here"`,
-      );
+      return `Step task type "shell" is no longer supported. ` +
+        `Use 'type: model_method' with 'modelIdOrName: command/shell', ` +
+        `'methodName: run' and the command under 'inputs.command' instead.`;
     }
     if ("arguments" in d && !("inputs" in d)) {
-      throw new Error(
-        `Unknown field "arguments" in step task. Did you mean "inputs"?\n\n` +
-          `Example:\n` +
-          `  task:\n` +
-          `    type: model_method\n` +
-          `    modelIdOrName: my-model\n` +
-          `    methodName: run\n` +
-          `    inputs:\n` +
-          `      param: value`,
-      );
+      return `Unknown field "arguments" in step task. Did you mean "inputs"? ` +
+        `Put the method's arguments under 'inputs'.`;
     }
     if (d.type === "wait_for_signal") {
       // An early signal is addressed by key, so there is nothing to hold it
       // under without one.
       if (d.acceptEarly !== undefined && d.key === undefined) {
-        throw new Error(
-          `A wait_for_signal step that sets acceptEarly must declare a key: ` +
-            `a signal that arrives before the wait opens is held under the key.`,
-        );
+        return `A wait_for_signal step that sets acceptEarly must declare a key: ` +
+          `a signal that arrives before the wait opens is held under the key.`;
       }
       const schema = d.schema;
       // An inputs schema may be written flat, as a bare map of properties.
@@ -249,61 +235,56 @@ export const StepTaskSchema = z.preprocess((input) => {
         (schema as Record<string, unknown>).type !== "object" &&
         !("properties" in schema)
       ) {
-        throw new Error(
-          `A wait_for_signal schema must declare "type: object" or "properties". ` +
-            `List the payload's fields under "properties".\n\n` +
-            `Example:\n` +
-            `  task:\n` +
-            `    type: wait_for_signal\n` +
-            `    timeout: 3600\n` +
-            `    schema:\n` +
-            `      type: object\n` +
-            `      required: [verdict]\n` +
-            `      properties:\n` +
-            `        verdict: { type: string }`,
-        );
+        return `A wait_for_signal schema must declare "type: object" or "properties". ` +
+          `List the payload's fields under "properties", e.g. ` +
+          `schema: { type: object, properties: { verdict: { type: string } } }.`;
       }
       // A signal comes from outside the workflow, so a schema keyword that
       // no payload is checked against is refused, not silently ignored.
       const unenforced = unenforcedSchemaKeywords(schema);
       if (unenforced.length > 0) {
-        throw new Error(
-          `A wait_for_signal schema may only use keywords a payload is checked against. Not checked:\n` +
-            unenforced.map((entry) => `  - ${entry}`).join("\n") +
-            `\n\nSupported keywords: ${
-              SUPPORTED_WAIT_SCHEMA_KEYWORDS.join(", ")
-            }.`,
-        );
+        return `A wait_for_signal schema may only use keywords a payload is checked against. ` +
+          `Not checked: ${unenforced.join("; ")}. ` +
+          `Supported keywords: ${SUPPORTED_WAIT_SCHEMA_KEYWORDS.join(", ")}.`;
       }
     }
     if (d.type === "model_method") {
       const hasExisting = "modelIdOrName" in d && d.modelIdOrName;
       const hasDirect = "modelType" in d && d.modelType;
       if (hasExisting && hasDirect) {
-        throw new Error(
-          `Step task has both modelIdOrName and modelType. ` +
-            `Use either modelIdOrName (existing definition) or modelType + modelName (direct type execution), not both.`,
-        );
+        return `Step task has both modelIdOrName and modelType. ` +
+          `Use either modelIdOrName (existing definition) or modelType + modelName (direct type execution), not both.`;
       }
       if (!hasExisting && !hasDirect) {
-        throw new Error(
-          `Step task requires either modelIdOrName or modelType + modelName.`,
-        );
+        return `Step task requires either modelIdOrName or modelType + modelName.`;
       }
       if (hasDirect && !("modelName" in d && d.modelName)) {
-        throw new Error(
-          `modelType requires modelName to name the auto-created definition.`,
-        );
+        return `modelType requires modelName to name the auto-created definition.`;
       }
       if ("globalArgs" in d && d.globalArgs && !hasDirect) {
-        throw new Error(
-          `globalArgs is only valid with direct type execution (modelType + modelName). ` +
-            `For existing definitions, set global arguments in the definition YAML instead.`,
-        );
+        return `globalArgs is only valid with direct type execution (modelType + modelName). ` +
+          `For existing definitions, set global arguments in the definition YAML instead.`;
       }
     }
   }
-  return data;
+  return undefined;
+}
+
+/**
+ * Zod schema for step tasks with backward compatibility preprocessing.
+ *
+ * - The behavior spelling is rewritten to `model_method` first
+ *   ({@link normalizeBehaviorTask}), so every consumer sees one form
+ * - A refused task (e.g. `type: "shell"`) is reported as a schema issue with
+ *   an actionable message
+ */
+export const StepTaskSchema = z.preprocess((input, ctx) => {
+  const refusal = stepTaskRefusal(input);
+  if (refusal !== undefined) {
+    ctx.addIssue({ code: "custom", message: refusal, input });
+    return input;
+  }
+  return normalizeBehaviorTask(input);
 }, StepTaskRawSchema);
 
 /**

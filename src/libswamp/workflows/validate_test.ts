@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { WorkflowValidationResult } from "../../domain/workflows/validation_service.ts";
 import { collect } from "../testing.ts";
@@ -31,6 +33,8 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
 import {
   createWorkflowValidateDeps,
   isWorkflowValidateAllData,
@@ -293,6 +297,140 @@ Deno.test("workflowValidate single: still not-found when no broken file matches"
   );
 
   assertEquals(events[1].kind, "error");
+});
+
+// A file named after its workflow is read by the lookup itself, which then
+// throws its schema failure instead of returning null (swamp-club#3832).
+
+const SCHEMA_ERROR = new WorkflowSchemaError(
+  [{ path: "jobs[0].weight", message: "Invalid input" }],
+  "workflow-variant-a-job-labels.yaml",
+);
+
+Deno.test("workflowValidate single: a schema failure thrown by the lookup fails Schema validation (swamp-club#3832)", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.reject(SCHEMA_ERROR),
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "variant-a-job-labels",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  const data = completed.data as WorkflowValidateData;
+  assertEquals(data.passed, false);
+  assertEquals(data.validations[0].name, "Schema validation");
+  assertStringIncludes(
+    data.validations[0].error ?? "",
+    "'labels' is a step property",
+  );
+});
+
+Deno.test("workflowValidate single: a schema failure the broken listing does not match is rethrown (swamp-club#3832)", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.reject(SCHEMA_ERROR),
+    listBrokenWorkflows: () => Promise.resolve([]),
+  });
+  const error = await assertRejects(
+    () =>
+      collect<WorkflowValidateEvent>(
+        workflowValidate(createLibSwampContext(), deps, {
+          workflowIdOrName: "variant-a-job-labels",
+        }),
+      ),
+    WorkflowSchemaError,
+  );
+  assertEquals(error, SCHEMA_ERROR);
+});
+
+Deno.test("workflowValidate single: an error from the lookup that is not a schema failure is rethrown (swamp-club#3832)", async () => {
+  const failure = new Error("disk unreadable");
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.reject(failure),
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+  });
+  const error = await assertRejects(() =>
+    collect<WorkflowValidateEvent>(
+      workflowValidate(createLibSwampContext(), deps, {
+        workflowIdOrName: "variant-a-job-labels",
+      }),
+    )
+  );
+  assertEquals(error, failure);
+});
+
+Deno.test("createWorkflowValidateDeps: a name-named file with a string-form dependsOn fails Schema validation on one line (swamp-club#3832)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    const data = Workflow.create({
+      name: "probe",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "example",
+              task: StepTask.model("example-behavior", "run"),
+            }),
+          ],
+        }),
+      ],
+    }).toData();
+    const job = data.jobs[0];
+    await Deno.writeTextFile(
+      join(workflowsDir, "workflow-probe.yaml"),
+      stringifyYaml(JSON.parse(JSON.stringify({
+        ...data,
+        jobs: [{
+          ...job,
+          steps: [{ ...job.steps[0], dependsOn: ["host", "disk"] }],
+        }],
+      }))),
+    );
+    const deps = createWorkflowValidateDeps(
+      new YamlWorkflowRepository(dir),
+      undefined,
+      workflowsDir,
+    );
+
+    const events = await collect<WorkflowValidateEvent>(
+      workflowValidate(createLibSwampContext(), deps, {
+        workflowIdOrName: "probe",
+      }),
+    );
+
+    const completed = events[1] as Extract<
+      WorkflowValidateEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    const report = completed.data as WorkflowValidateData;
+    assertEquals(report.passed, false);
+    assertEquals(report.workflowName, "probe");
+    const error = report.validations[0].error ?? "";
+    assertEquals(report.validations[0].name, "Schema validation");
+    assertStringIncludes(
+      error,
+      'jobs[0].steps[0].dependsOn[0]: Step "example": dependsOn entries must ' +
+        'be objects, not strings. Replace "- host" with "- step: host"',
+    );
+    assertEquals(error.includes("\n"), false);
+    assertEquals(error.includes("\\x0a"), false);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
 
 Deno.test("workflowValidate all: broken files count as failures", async () => {
