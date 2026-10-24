@@ -37,6 +37,17 @@ export const CLI_CLIENT_ID = "swamp-cli";
 
 const DEFAULT_MIN_DEVICE_AUTH_EXPIRY_MS = 300_000;
 
+const CREDENTIALS_REQUIRED = "Username and password are required.";
+
+// Shown instead of prompting when stdin is not a terminal; keep it in step
+// with the non-interactive guidance in the `auth login` help text.
+const NO_TERMINAL_GUIDANCE =
+  "There is no terminal to prompt on. For non-interactive use (CI, agents, " +
+  "scripts), set the SWAMP_API_KEY environment variable (or " +
+  "SWAMP_API_KEY_FILE, a path to a file holding the key), or pipe the " +
+  "password with --username: " +
+  "printf 'mypassword\\n' | swamp auth login --username alice --no-browser";
+
 /** Data returned on successful authentication. */
 export interface AuthLoginData {
   username: string;
@@ -68,6 +79,8 @@ export interface AuthLoginInput {
   username?: string;
   password?: string;
   minDeviceAuthExpiryMs?: number;
+  /** Whether stdin is a terminal the stdin flow can prompt on. Defaults to true. */
+  stdinIsTerminal?: boolean;
 }
 
 /** Device authorization response from swamp-club. */
@@ -457,6 +470,15 @@ export async function* authLogin(
         // Stdin flow
         let username = input.username;
         let password = input.password;
+        if (!username && input.stdinIsTerminal === false) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `${CREDENTIALS_REQUIRED} ${NO_TERMINAL_GUIDANCE}`,
+            ),
+          };
+          return;
+        }
         if (!username || !password) {
           const creds = await deps.readCredentials({ username, password });
           username = creds.username;
@@ -466,7 +488,7 @@ export async function* authLogin(
         if (!username || !password) {
           yield {
             kind: "error",
-            error: validationFailed("Username and password are required."),
+            error: validationFailed(CREDENTIALS_REQUIRED),
           };
           return;
         }
