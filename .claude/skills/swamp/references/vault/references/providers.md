@@ -47,6 +47,9 @@ createdAt: 2025-02-01T...
 2. Default SSH key at `~/.ssh/id_rsa` if `auto_generate: false`
 3. Auto-generated key in `.key` file if `auto_generate: true`
 
+On Unix, an SSH key readable beyond its owner (wider than `0600`) is refused. A
+`.key` or `key_file` that wide is still used, with a warning to run `chmod 600`.
+
 ### Encrypted File Format
 
 ```json
