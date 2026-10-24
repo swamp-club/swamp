@@ -30,7 +30,6 @@ import {
   AssertSeveritySchema,
 } from "../../domain/workflows/step_task.ts";
 import {
-  acquireModelLocks,
   createLockProgressWriter,
   createWorkflowRunClaims,
   libSwampContextForRepo,
@@ -47,7 +46,14 @@ import {
   withRunUnknownSteps,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { removeStaleRunIndexes } from "../../infrastructure/persistence/workflow_run_index.ts";
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { createSyncGate, type SyncGate } from "../../serve/sync_gate.ts";
+import { createStepLockHook } from "../../serve/deps.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   type DirectTypeResolver,
@@ -122,6 +128,30 @@ import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datas
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * The step lock hook a CLI workflow run or resume gives its execution
+ * service: each step takes its model's lock, pulls, and pushes what it wrote
+ * when it ends. The run's steps share one in-process sync gate, as a serve
+ * process's runs do, so a lock's last publish attempt runs with no other step
+ * of the run syncing (swamp-club#3860).
+ */
+export function workflowStepLockHook(
+  repoDir: string,
+  repoContext: RepositoryContext,
+  datastoreConfig: DatastoreConfig,
+  syncService: DatastoreSyncService | undefined,
+  syncGate: SyncGate = createSyncGate(),
+): StepLockHook {
+  return createStepLockHook(
+    repoDir,
+    repoContext,
+    datastoreConfig,
+    syncService,
+    syncGate,
+    createLockProgressWriter,
+  );
+}
 
 export const workflowRunCommand = new Command()
   .name("run")
@@ -362,19 +392,12 @@ export const workflowRunCommand = new Command()
       unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
     );
 
-    const stepLockHook: StepLockHook = async (modelType, modelId) => {
-      const result = await acquireModelLocks(
-        unlocked.datastoreConfig,
-        [{ modelType, modelId }],
-        repoDir,
-        unlocked.syncService,
-        repoContext.catalogStore,
-        createLockProgressWriter(modelId),
-        { repoContext },
-      );
-      if (result.synced) repoContext.catalogStore.invalidate();
-      return result;
-    };
+    const stepLockHook = workflowStepLockHook(
+      repoDir,
+      repoContext,
+      unlocked.datastoreConfig,
+      unlocked.syncService,
+    );
 
     const abort = new AbortController();
     const exitSuppress = suppressSyncExitOnSignal();

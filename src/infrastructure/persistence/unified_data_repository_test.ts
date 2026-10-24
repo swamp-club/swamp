@@ -1032,23 +1032,35 @@ Deno.test({
 
 // Pins the markDirty contract from design/enablers/datastores.md: every public mutation
 // that writes into the cache must call the sync service's markDirty hook before
-// the write begins, so the fast-path sidecar cannot short-circuit past it. Also
-// pins the per-call relPath granularity — pre-write notify sites (save, append,
+// the write begins, so the fast-path sidecar cannot short-circuit past it, and
+// again once the write has landed (swamp-club#2421), so a push that ran while
+// the write was in flight cannot have cleared the mark for good. Also pins the
+// per-call relPath granularity — pre-write notify sites (save, append,
 // allocateVersion) pass the data-name directory because the version directory
 // doesn't exist yet; finalizeVersion passes the version directory; delete
 // passes the version dir or data-name dir based on whether a version was
-// supplied; rename passes undefined (bulk); collectGarbage passes each version
-// directory being removed (per-path, so the sync service can detect deletions).
+// supplied; collectGarbage passes each version directory being removed
+// (per-path, so the sync service can detect deletions).
 //
 // Regression coverage for the datastore fast-path contract violation that
 // silently lost writes when the sidecar stayed clean.
-Deno.test("mutations call markDirty before writing", async () => {
+Deno.test("mutations call markDirty before and after writing", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
     const calls: Array<string | undefined> = [];
+    // Whether the marked path existed when the mark arrived.
+    const existed: boolean[] = [];
     const markDirty = (relPath?: string) => {
       calls.push(relPath);
+      let present = false;
+      try {
+        if (relPath !== undefined) Deno.lstatSync(relPath);
+        present = relPath !== undefined;
+      } catch {
+        // Absent.
+      }
+      existed.push(present);
       return Promise.resolve();
     };
     const repo = new FileSystemUnifiedDataRepository(
@@ -1058,7 +1070,8 @@ Deno.test("mutations call markDirty before writing", async () => {
       markDirty,
     );
 
-    // save → data-name directory (version not yet allocated)
+    // save → data-name directory (version not yet allocated): before the
+    // directory exists, then again once the version is on disk.
     const data = makeData("mark-dirty-save");
     await repo.save(
       testType,
@@ -1066,11 +1079,9 @@ Deno.test("mutations call markDirty before writing", async () => {
       data,
       new TextEncoder().encode("hello"),
     );
-    assertEquals(calls.length, 1);
-    assertEquals(
-      calls[0],
-      repo.getDataNameDir(testType, "model-1", "mark-dirty-save"),
-    );
+    const saveDir = repo.getDataNameDir(testType, "model-1", "mark-dirty-save");
+    assertEquals(calls, [saveDir, saveDir]);
+    assertEquals(existed, [false, true]);
 
     // allocateVersion → data-name directory; finalizeVersion → version dir
     const data2 = makeData("mark-dirty-alloc");
@@ -1079,22 +1090,27 @@ Deno.test("mutations call markDirty before writing", async () => {
       "model-1",
       data2,
     );
-    assertEquals(calls.length, 2);
-    assertEquals(
-      calls[1],
-      repo.getDataNameDir(testType, "model-1", "mark-dirty-alloc"),
+    const allocDir = repo.getDataNameDir(
+      testType,
+      "model-1",
+      "mark-dirty-alloc",
     );
+    assertEquals(calls.slice(2), [allocDir, allocDir]);
+    assertEquals(existed.slice(2), [false, true]);
     await Deno.writeFile(contentPath, new TextEncoder().encode("direct"));
     await repo.finalizeVersion(testType, "model-1", data2, version);
-    assertEquals(calls.length, 3);
-    assertEquals(
-      calls[2],
-      repo.getPath(testType, "model-1", "mark-dirty-alloc", version),
+    const finalDir = repo.getPath(
+      testType,
+      "model-1",
+      "mark-dirty-alloc",
+      version,
     );
+    assertEquals(calls.slice(4), [finalDir, finalDir]);
 
     // append → data-name directory (matches save/allocateVersion granularity).
-    // notifyDirty fires before the streaming-configured check throws, so the
-    // signal lands even though the operation aborts. Tolerate the throw.
+    // The mark fires before the streaming-configured check throws, so the
+    // signal lands even though the operation aborts, and the after-mark
+    // still follows the failure. Tolerate the throw.
     try {
       await repo.append(
         testType,
@@ -1105,23 +1121,24 @@ Deno.test("mutations call markDirty before writing", async () => {
     } catch {
       // Expected — mark-dirty-save isn't streaming-configured.
     }
-    assertEquals(calls.length, 4);
-    assertEquals(
-      calls[3],
-      repo.getDataNameDir(testType, "model-1", "mark-dirty-save"),
-    );
+    assertEquals(calls.slice(6), [saveDir, saveDir]);
     const afterAppend = calls.length;
 
-    // rename → old-name directory at entry. Internal save() emits a per-path
-    // signal for the new name.
+    // rename → old-name directory at entry and again at the end. Internal
+    // save() emits its own per-path signals for the new name.
     await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
-    if (calls.length < afterAppend + 2) {
+    if (calls.length < afterAppend + 3) {
       throw new Error(`rename did not call markDirty: ${calls.length}`);
     }
     assertEquals(
       calls[afterAppend],
-      repo.getDataNameDir(testType, "model-1", "mark-dirty-save"),
+      saveDir,
       "rename's first markDirty call must be old-name directory",
+    );
+    assertEquals(
+      calls[calls.length - 1],
+      saveDir,
+      "rename's last markDirty call must be old-name directory",
     );
     // The inner save() emits a per-path signal for the new name. Verify by
     // looking for the new-name data-name directory in the subsequent calls.
@@ -1141,39 +1158,33 @@ Deno.test("mutations call markDirty before writing", async () => {
     const afterRename = calls.length;
 
     // delete with specific version → version directory; it is the name's
-    // last version, so its latest marker goes too (swamp-club#3473)
+    // last version, so its latest marker goes too (swamp-club#3473). Each
+    // is marked while present, then again once gone.
     await repo.delete(testType, "model-1", "mark-dirty-ren", 1);
-    assertEquals(calls.length, afterRename + 2);
-    assertEquals(
-      calls[afterRename],
-      repo.getPath(testType, "model-1", "mark-dirty-ren", 1),
+    const renVersion = repo.getPath(testType, "model-1", "mark-dirty-ren", 1);
+    const renLatest = join(
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
+      "latest",
     );
-    assertEquals(
-      calls[afterRename + 1],
-      join(
-        repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
-        "latest",
-      ),
-    );
+    assertEquals(calls.slice(afterRename), [
+      renVersion,
+      renVersion,
+      renLatest,
+      renLatest,
+    ]);
+    assertEquals(existed.slice(afterRename), [true, false, true, false]);
 
     // delete without version → latest marker file (data-name dir already
     // removed by the prior specific-version delete that left no versions;
     // listVersions returns [] so only the latest marker signal fires).
     await repo.delete(testType, "model-1", "mark-dirty-ren");
-    assertEquals(calls.length, afterRename + 3);
-    assertEquals(
-      calls[afterRename + 2],
-      join(
-        repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
-        "latest",
-      ),
-    );
+    assertEquals(calls.slice(afterRename + 4), [renLatest, renLatest]);
 
     // collectGarbage (live) with nothing to GC → no markDirty calls
     await repo.collectGarbage(testType, "model-1");
     assertEquals(
       calls.length,
-      afterRename + 3,
+      afterRename + 6,
       "collectGarbage with no excess versions must not call markDirty",
     );
 
@@ -1216,7 +1227,8 @@ Deno.test("delete: full delete emits per-version markDirty signals", async () =>
 
     await repo.delete(testType, "m1", "multi-ver");
 
-    // Must emit one signal per version directory + one for the latest marker.
+    // Must emit one signal per version directory + one for the latest
+    // marker, before the removal and again after it (swamp-club#2421).
     const expectedVersionPaths = [1, 2, 3].map((v) =>
       repo.getPath(testType, "m1", "multi-ver", v)
     );
@@ -1224,14 +1236,8 @@ Deno.test("delete: full delete emits per-version markDirty signals", async () =>
       repo.getDataNameDir(testType, "m1", "multi-ver"),
       "latest",
     );
-    assertEquals(calls.length, 4);
-    for (const vp of expectedVersionPaths) {
-      assertStringIncludes(
-        JSON.stringify(calls),
-        JSON.stringify(vp),
-      );
-    }
-    assertEquals(calls[3], expectedLatest);
+    const expected = [...expectedVersionPaths, expectedLatest];
+    assertEquals(calls, [...expected, ...expected]);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -1324,7 +1330,8 @@ Deno.test("collectGarbage: emits per-path markDirty for each removed version", a
     const v1Dir = repo.getPath(testType, "gc-model", "gc-dirty", 1);
     const v2Dir = repo.getPath(testType, "gc-model", "gc-dirty", 2);
     const pruneCalls = calls.filter((c) => c === v1Dir || c === v2Dir);
-    assertEquals(pruneCalls.length, 2);
+    // Each removal is marked before and after (swamp-club#2421).
+    assertEquals(pruneCalls.length, 4);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -1350,7 +1357,7 @@ Deno.test("markDirty is not called on read paths", async () => {
       markDirty,
     );
 
-    // Seed data with a write (counts as 1 call).
+    // Seed data with a write (a mark before it and one after).
     const data = makeData("read-probe");
     await repo.save(
       testType,
@@ -1358,7 +1365,7 @@ Deno.test("markDirty is not called on read paths", async () => {
       data,
       new TextEncoder().encode("x"),
     );
-    assertEquals(calls.length, 1);
+    assertEquals(calls.length, 2);
 
     // All reads below must not increment the count.
     await repo.findAllGlobal();
@@ -1369,7 +1376,7 @@ Deno.test("markDirty is not called on read paths", async () => {
     repo.findAllForModelSync(testType, "model-1");
     repo.findByNameSync(testType, "model-1", "read-probe");
     repo.getContentSync(testType, "model-1", "read-probe");
-    assertEquals(calls.length, 1);
+    assertEquals(calls.length, 2);
   } finally {
     if (Deno.build.os === "windows") {
       // Best-effort: EBUSY can fire when V8 hasn't GC'd native
@@ -1967,7 +1974,8 @@ Deno.test("save: write-time pruning emits markDirty for each pruned version", as
 
     const v1Dir = repo.getPath(testType, "m", "dirty-prune", 1);
     const pruneMarkDirty = calls.filter((c) => c === v1Dir);
-    assertEquals(pruneMarkDirty.length, 1);
+    // Before the removal and after it (swamp-club#2421).
+    assertEquals(pruneMarkDirty.length, 2);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -3557,8 +3565,9 @@ Deno.test("allocateVersion: never allocates at or below a raised version floor (
     const floorPath = `${
       repo.getDataNameDir(testType, "m1", "reaped")
     }${VERSION_FLOOR_SUFFIX}`;
-    // Marked for the push, so other clones get it.
-    assertEquals(calls, [floorPath]);
+    // Marked for the push, so other clones get it: before the write and
+    // after it (swamp-club#2421).
+    assertEquals(calls, [floorPath, floorPath]);
     for (const v of [1, 2, 3]) {
       await repo.delete(testType, "m1", "reaped", v);
     }

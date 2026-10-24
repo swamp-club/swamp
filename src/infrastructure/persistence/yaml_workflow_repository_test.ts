@@ -700,8 +700,12 @@ Deno.test("YamlWorkflowRepository.delete: stages a remove of the deleted file", 
 
     await runInUnitOfWork(uow, () => repo.delete(workflow.id));
 
-    assertEquals(uow.staged(), [{ kind: "remove", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "remove", path }, {
+      kind: "remove",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), false);
   });
 });
@@ -725,8 +729,12 @@ Deno.test("YamlWorkflowRepository.delete: stages a write when the file holds ano
 
     await runInUnitOfWork(uow, () => repo.delete(ghost.id));
 
-    assertEquals(uow.staged(), [{ kind: "write", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "write", path }, {
+      kind: "write",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), true);
   });
 });

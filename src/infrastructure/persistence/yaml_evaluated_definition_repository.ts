@@ -24,9 +24,9 @@ import {
 import { ensureDir, walk } from "@std/fs";
 import { basename, join } from "@std/path";
 import {
-  signalChange,
   stageTyped,
   typedStagingActive,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import {
   keyUnder,
@@ -533,87 +533,90 @@ export class YamlEvaluatedDefinitionRepository {
       persistedProvenance,
     );
     const targetPath = this.resolveWritePath(type, definition);
-    await signalChange(this.markDirty, { kind: "write", path: targetPath }, {
+    return await withChangeSignalled(this.markDirty, {
+      kind: "write",
+      path: targetPath,
+    }, {
       typed: true,
-    });
+    }, async () => {
+      const dir = this.getTypeDir(type);
+      await assertSafePath(dir, this.baseDir);
+      await ensureDir(dir);
 
-    const dir = this.getTypeDir(type);
-    await assertSafePath(dir, this.baseDir);
-    await ensureDir(dir);
+      const data = {
+        ...definition.toData(),
+        deferredExpressions: deferredExpressions?.length
+          ? deferredExpressions
+          : undefined,
+        authoredExpressions: authoredExpressions === undefined
+          ? undefined
+          : [...authoredExpressions],
+        writtenReferences: writtenReferences.length
+          ? writtenReferences
+          : undefined,
+        maskedPaths: maskedPaths.length ? maskedPaths : undefined,
+        sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+        provenance: provenance
+          ? maskProvenance(provenance, maskedPaths).toData()
+          : undefined,
+        persistedProvenance: persistedProvenance
+          ? maskProvenance(persistedProvenance, maskedPaths).toData()
+          : undefined,
+      };
+      // Ensure type metadata is always present in persisted YAML
+      data.type = type.normalized;
+      // typeVersion is copied verbatim from the source definition by toData().
+      // Evaluated definitions are derived data replayed under --last-evaluated,
+      // so restamping here would reintroduce the staleness masking fixed in the
+      // source repository (swamp-club#900).
+      // Remove undefined values since YAML can't stringify them
+      const cleanData = JSON.parse(JSON.stringify(data));
+      const content = stringifyYaml(cleanData as Record<string, unknown>);
+      await atomicWriteTextFile(targetPath, content);
+      // The paths a removal below actually removed, for their v3 tombstones.
+      const removed: string[] = [];
 
-    const data = {
-      ...definition.toData(),
-      deferredExpressions: deferredExpressions?.length
-        ? deferredExpressions
-        : undefined,
-      authoredExpressions: authoredExpressions === undefined
-        ? undefined
-        : [...authoredExpressions],
-      writtenReferences: writtenReferences.length
-        ? writtenReferences
-        : undefined,
-      maskedPaths: maskedPaths.length ? maskedPaths : undefined,
-      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
-      provenance: provenance
-        ? maskProvenance(provenance, maskedPaths).toData()
-        : undefined,
-      persistedProvenance: persistedProvenance
-        ? maskProvenance(persistedProvenance, maskedPaths).toData()
-        : undefined,
-    };
-    // Ensure type metadata is always present in persisted YAML
-    data.type = type.normalized;
-    // typeVersion is copied verbatim from the source definition by toData().
-    // Evaluated definitions are derived data replayed under --last-evaluated,
-    // so restamping here would reintroduce the staleness masking fixed in the
-    // source repository (swamp-club#900).
-    // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(targetPath, content);
-    // The paths a removal below actually removed, for their v3 tombstones.
-    const removed: string[] = [];
-
-    // Clean up old file if it's at a different path
-    const previousPath = this.idToActualPath.get(definition.id);
-    if (previousPath && previousPath !== targetPath) {
-      try {
-        await Deno.remove(previousPath);
-        removed.push(previousPath);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+      // Clean up old file if it's at a different path
+      const previousPath = this.idToActualPath.get(definition.id);
+      if (previousPath && previousPath !== targetPath) {
+        try {
+          await Deno.remove(previousPath);
+          removed.push(previousPath);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
         }
       }
-    }
 
-    // Also check legacy UUID path
-    const legacyPath = this.getLegacyPath(type, definition.id);
-    if (targetPath !== legacyPath && previousPath !== legacyPath) {
-      try {
-        await Deno.remove(legacyPath);
-        removed.push(legacyPath);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+      // Also check legacy UUID path
+      const legacyPath = this.getLegacyPath(type, definition.id);
+      if (targetPath !== legacyPath && previousPath !== legacyPath) {
+        try {
+          await Deno.remove(legacyPath);
+          removed.push(legacyPath);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
         }
       }
-    }
 
-    this.idToActualPath.set(definition.id, targetPath);
-    // On v3 (swamp-club#3256): the evaluated definition is derived, so its
-    // changes carry no precondition.
-    await stageTyped(this.markDirty, () => {
-      const changes = new ModelChanges(type, definition.id);
-      return [
-        changes.writeEvaluatedDefinition(
-          this.keyOf(targetPath),
-          new TextEncoder().encode(content),
-        ),
-        ...removed.map((path) =>
-          changes.removeEvaluatedDefinition(this.keyOf(path))
-        ),
-      ];
+      this.idToActualPath.set(definition.id, targetPath);
+      // On v3 (swamp-club#3256): the evaluated definition is derived, so its
+      // changes carry no precondition.
+      await stageTyped(this.markDirty, () => {
+        const changes = new ModelChanges(type, definition.id);
+        return [
+          changes.writeEvaluatedDefinition(
+            this.keyOf(targetPath),
+            new TextEncoder().encode(content),
+          ),
+          ...removed.map((path) =>
+            changes.removeEvaluatedDefinition(this.keyOf(path))
+          ),
+        ];
+      });
     });
   }
 
@@ -636,35 +639,38 @@ export class YamlEvaluatedDefinitionRepository {
 
     const resolvedPath = this.idToActualPath.get(id) ??
       this.getLegacyPath(type, id);
-    await signalChange(this.markDirty, { kind: "remove", path: resolvedPath }, {
+    return await withChangeSignalled(this.markDirty, {
+      kind: "remove",
+      path: resolvedPath,
+    }, {
       typed: true,
-    });
+    }, async () => {
+      const removed: string[] = [];
+      for (const path of pathsToTry) {
+        try {
+          await Deno.remove(path);
+          removed.push(path);
 
-    const removed: string[] = [];
-    for (const path of pathsToTry) {
-      try {
-        await Deno.remove(path);
-        removed.push(path);
-
-        // Clean up empty parent directories
-        const definitionsDir = swampPath(
-          this.repoDir,
-          SWAMP_SUBDIRS.definitionsEvaluated,
-        );
-        await cleanupEmptyParentDirs(path, definitionsDir);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+          // Clean up empty parent directories
+          const definitionsDir = swampPath(
+            this.repoDir,
+            SWAMP_SUBDIRS.definitionsEvaluated,
+          );
+          await cleanupEmptyParentDirs(path, definitionsDir);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
         }
       }
-    }
 
-    this.idToActualPath.delete(id);
-    await stageTyped(this.markDirty, () => {
-      const changes = new ModelChanges(type, id);
-      return removed.map((path) =>
-        changes.removeEvaluatedDefinition(this.keyOf(path))
-      );
+      this.idToActualPath.delete(id);
+      await stageTyped(this.markDirty, () => {
+        const changes = new ModelChanges(type, id);
+        return removed.map((path) =>
+          changes.removeEvaluatedDefinition(this.keyOf(path))
+        );
+      });
     });
   }
 
@@ -713,25 +719,29 @@ export class YamlEvaluatedDefinitionRepository {
    * Used when needing to regenerate all evaluations.
    */
   async clearAll(): Promise<void> {
-    await signalChange(this.markDirty, { kind: "remove", path: this.baseDir }, {
+    return await withChangeSignalled(this.markDirty, {
+      kind: "remove",
+      path: this.baseDir,
+    }, {
       typed: true,
-    });
-    // On v3, each file's model is read before the removal destroys it, so
-    // the directory removal stages one tombstone per file.
-    const tombstones = typedStagingActive(this.markDirty)
-      ? await this.tombstonesOfAll()
-      : [];
+    }, async () => {
+      // On v3, each file's model is read before the removal destroys it, so
+      // the directory removal stages one tombstone per file.
+      const tombstones = typedStagingActive(this.markDirty)
+        ? await this.tombstonesOfAll()
+        : [];
 
-    const definitionsDir = this.baseDir;
-    try {
-      await Deno.remove(definitionsDir, { recursive: true });
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+      const definitionsDir = this.baseDir;
+      try {
+        await Deno.remove(definitionsDir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
-    }
-    this.idToActualPath.clear();
-    await stageTyped(this.markDirty, () => tombstones);
+      this.idToActualPath.clear();
+      await stageTyped(this.markDirty, () => tombstones);
+    });
   }
 
   /**

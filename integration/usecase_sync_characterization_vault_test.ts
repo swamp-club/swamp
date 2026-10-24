@@ -260,6 +260,7 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": [
         "markDirty config/vaults/local_encryption/<id>.yaml",
+        "markDirty config/vaults/local_encryption/<id>.yaml",
         "push[0 del 1]",
       ],
       "remote": {
@@ -294,7 +295,11 @@ const EXPECTED: Record<string, PinnedRow> = {
       },
     },
     serve: {
-      "ops": ["markDirty config/vaults/local_encryption/<id>.yaml", "push[1]"],
+      "ops": [
+        "markDirty config/vaults/local_encryption/<id>.yaml",
+        "markDirty config/vaults/local_encryption/<id>.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": ["config/vaults/local_encryption/<id>.yaml"],
         "removed": [],
@@ -324,7 +329,11 @@ const EXPECTED: Record<string, PinnedRow> = {
       },
     },
     serve: {
-      "ops": ["markDirty config/vaults/local_encryption/<id>.yaml", "push[1]"],
+      "ops": [
+        "markDirty config/vaults/local_encryption/<id>.yaml",
+        "markDirty config/vaults/local_encryption/<id>.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": [],
         "removed": [],
@@ -380,6 +389,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: {
       "ops": [
         "markDirty config/vaults/local_encryption/<id>.yaml",
+        "markDirty config/vaults/local_encryption/<id>.yaml",
+        "markDirty config/vaults/@test/usecase-vault-<id>/<id>.yaml",
         "markDirty config/vaults/@test/usecase-vault-<id>/<id>.yaml",
         "push[1 del 1]",
       ],

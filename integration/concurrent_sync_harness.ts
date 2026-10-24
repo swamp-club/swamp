@@ -25,6 +25,7 @@ import "../src/domain/models/models.ts";
 import { join } from "@std/path";
 import {
   createInMemoryRemote,
+  EXTENSION_2026_10_20_SEMANTICS,
   type InMemoryRemote,
   type InMemorySyncService,
 } from "@swamp-club/swamp-testing";
@@ -62,8 +63,11 @@ export interface Harness {
   other: InMemorySyncService;
   /** Takes the model lock, pushing through `syncService` when given. */
   lock: (syncService?: DatastoreSyncService) => Promise<ModelLockResult>;
-  /** Writes one version of DATA_NAME, inside a unit of work like a step. */
-  write: (content: string) => Promise<number>;
+  /**
+   * Writes one version of DATA_NAME, inside a unit of work like a step, for
+   * the harness model or `modelId`.
+   */
+  write: (content: string, modelId?: string) => Promise<number>;
   remoteText: (relPath: string) => string | undefined;
   localLatest: () => Promise<string>;
 }
@@ -71,7 +75,12 @@ export interface Harness {
 export async function withHarness(
   fn: (h: Harness) => Promise<void>,
 ): Promise<void> {
-  const remote = createInMemoryRemote();
+  // The released extensions' clearing: a commit clears every mark, those
+  // made after its prepare included. That is the race these tests hold
+  // core to surviving while those releases are deployed (swamp-club#3860).
+  const remote = createInMemoryRemote({
+    semantics: EXTENSION_2026_10_20_SEMANTICS,
+  });
   const { typeName, dispose } = registerTestDatastoreType(remote);
   const dir = await Deno.makeTempDir({ prefix: "swamp-concurrent-sync-" });
   try {
@@ -109,7 +118,7 @@ export async function withHarness(
           () => {},
           { repoContext: context.repoContext },
         ),
-      write: (content) =>
+      write: (content, writeModelId = modelId) =>
         runInRootUnitOfWork(
           context.repoContext,
           { flush: undefined },
@@ -124,7 +133,7 @@ export async function withHarness(
             });
             const saved = await context.repoContext.unifiedDataRepo.save(
               modelType,
-              modelId,
+              writeModelId,
               data,
               new TextEncoder().encode(content),
             );

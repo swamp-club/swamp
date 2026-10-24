@@ -917,11 +917,14 @@ Deno.test("handleVaultMigrate: marks the new and the old config path before the 
           e.kind === "mark" ? [e.relPath] : []
         );
         // The old path is marked so the scoped push sees it absent and
-        // deletes it remotely; a bare markDirty() would skip that.
+        // deletes it remotely; a bare markDirty() would skip that. Each is
+        // marked before its write and again after it (swamp-club#2421).
         assertEquals(
           marks.sort(),
           [
             `config/vaults/${targetType}/migrate-vault-id.yaml`,
+            `config/vaults/${targetType}/migrate-vault-id.yaml`,
+            "config/vaults/local_encryption/migrate-vault-id.yaml",
             "config/vaults/local_encryption/migrate-vault-id.yaml",
           ].sort(),
         );

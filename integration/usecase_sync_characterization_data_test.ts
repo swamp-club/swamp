@@ -201,6 +201,8 @@ const EXPECTED: Record<string, PinnedRow> = {
         "pull[0]",
         "markDirty data/<type>/<id>/state/1",
         "markDirty data/<type>/<id>/state/latest",
+        "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/latest",
         "prepare[0 del 3]",
         "commit[0 del 3]",
       ],
@@ -216,6 +218,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
     serve: {
       "ops": [
+        "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/latest",
         "markDirty data/<type>/<id>/state/1",
         "markDirty data/<type>/<id>/state/latest",
         "push[0 del 3]",
@@ -239,6 +243,8 @@ const EXPECTED: Record<string, PinnedRow> = {
         "pull[0]",
         "markDirty data/<type>/<id>/state",
         "markDirty data/<type>/<id>/renamed",
+        "markDirty data/<type>/<id>/renamed",
+        "markDirty data/<type>/<id>/state",
         "prepare[6]",
         "commit[6]",
       ],
@@ -258,6 +264,8 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "markDirty data/<type>/<id>/state",
         "markDirty data/<type>/<id>/renamed",
+        "markDirty data/<type>/<id>/renamed",
+        "markDirty data/<type>/<id>/state",
         "push[6]",
       ],
       "remote": {
@@ -282,6 +290,8 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "pull[0]",
         "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/2",
         "markDirty data/<type>/<id>/state/2",
         "push[0 del 4]",
       ],
@@ -299,6 +309,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: {
       "ops": [
         "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/2",
         "markDirty data/<type>/<id>/state/2",
         "push[0 del 4]",
       ],
@@ -322,6 +334,8 @@ const EXPECTED: Record<string, PinnedRow> = {
         "pull[0]",
         "markDirty data/<type>/<id>/state/1",
         "markDirty data/<type>/<id>/state/latest",
+        "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/latest",
         "push[0 del 3]",
       ],
       "remote": {
@@ -336,6 +350,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
     serve: {
       "ops": [
+        "markDirty data/<type>/<id>/state/1",
+        "markDirty data/<type>/<id>/state/latest",
         "markDirty data/<type>/<id>/state/1",
         "markDirty data/<type>/<id>/state/latest",
         "push[0 del 3]",

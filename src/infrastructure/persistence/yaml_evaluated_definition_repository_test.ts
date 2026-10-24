@@ -89,30 +89,28 @@ Deno.test(
         name: "test-def",
       });
 
+      // Each mutation marks before it and again after it
+      // (swamp-club#2421).
       // save → per-definition yaml path (name-based for kebab-case names)
       await repo.save(testType, definition, undefined);
-      assertEquals(calls.length, 1);
       const savedPath = repo.getPath(testType, definition.id);
-      assertEquals(calls[0], savedPath);
+      assertEquals(calls, [savedPath, savedPath]);
 
       // delete → notifies with the resolved path
       await repo.delete(testType, definition.id);
-      assertEquals(calls.length, 2);
+      assertEquals(calls.length, 4);
 
       // Reads do not notify.
       await repo.findAll(testType);
       await repo.findById(testType, definition.id);
-      assertEquals(calls.length, 2);
+      assertEquals(calls.length, 4);
 
       // clearAll → baseDir path (whole evaluated-definitions tree removed)
       await repo.save(testType, definition, undefined);
-      assertEquals(calls.length, 3);
+      assertEquals(calls.length, 6);
       await repo.clearAll();
-      assertEquals(calls.length, 4);
-      assertEquals(
-        calls[3],
-        join(dir, ".swamp", "definitions-evaluated"),
-      );
+      const baseDir = join(dir, ".swamp", "definitions-evaluated");
+      assertEquals(calls.slice(6), [baseDir, baseDir]);
     });
   },
 );

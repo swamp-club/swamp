@@ -217,20 +217,28 @@ export interface DatastoreSyncService {
    *
    * Implementations must be idempotent and cheap — swamp core calls this at
    * the start of every repository-layer mutation that writes into the cache,
-   * and calls are not deduplicated. Called before the write begins so a crash
-   * mid-write still leaves the watermark dirty.
+   * and again once the write has landed (swamp-club#2421), and calls are not
+   * deduplicated. Called before the write begins so a crash mid-write still
+   * leaves the watermark dirty; called again after it so a push that ran
+   * while the write was in flight cannot have cleared the mark for good.
    *
    * Contract — the load-bearing rules every implementer needs to honor:
    *
-   * 1. **Pre-write timing.** Fires *before* the cache write begins.
-   *    Extensions MUST NOT act synchronously on `options.relPath` — the
-   *    file isn't on disk yet. Treat `relPath` as a hint to record for
-   *    the next `pushChanged`.
+   * 1. **Before and after the write.** Fires *before* the cache write
+   *    begins, and again once it has landed — after the write or removal
+   *    settles, including one that throws part-way (swamp-club#2421).
+   *    Extensions MUST NOT act synchronously on `options.relPath` — at
+   *    the first call the file isn't on disk yet. Treat `relPath` as a
+   *    hint to record for the next `pushChanged`. A push that starts
+   *    between the two calls can upload the old bytes (or re-upload a
+   *    file about to be removed); the second call re-marks the path, so
+   *    a push MUST NOT drop a mark recorded after it started.
    * 2. **Absence-on-disk = delete.** When `pushChanged` later consumes a
    *    recorded `relPath` and the file no longer exists in the cache, the
    *    extension SHOULD delete the corresponding remote record. This
    *    collapses create/update/delete into one signal — no separate
-   *    op-kind needed.
+   *    op-kind needed. After a removal the second call names a path that
+   *    is already gone.
    * 3. **`undefined` `relPath` = bulk.** A call without `relPath` signals
    *    a mutation core couldn't attribute to a single path. Extensions
    *    maintaining a per-path dirty set MUST honor this by either
@@ -745,10 +753,15 @@ export interface WrittenVersion {
 
 /**
  * Thrown when the remote datastore still lacks a data version after the
- * lock's push published it and retried (swamp-club#3146): another sync in
- * the same process undid the push. A workflow step or CLI method run that
- * wrote the version fails with it; a serve method run, which has already
- * answered its client when it pushes, logs it.
+ * lock's push published it and retried (swamp-club#3146). Another sync in
+ * the same process (a parallel step of the run, another serve run, the serve
+ * poller) can undo the earlier attempts, but the last one normally runs with
+ * no other sync in the process (swamp-club#3860; a gate wait that times out
+ * goes ahead ungated), so what undid it is most likely another swamp process
+ * using the same repository, or a datastore that did not keep the files. A
+ * workflow step or CLI method run that wrote the version fails with it; a
+ * serve method run, which has already answered its client when it pushes,
+ * logs it.
  *
  * Extends `UserError` so the message renders clean at the CLI error boundary.
  */
@@ -761,9 +774,11 @@ export class UnpublishedDataVersionError extends UserError {
     ).join(", ");
     super(
       `The datastore does not hold ${names} after ${attempts} push ` +
-        `attempts: each time, a concurrent run or the serve poller synced ` +
-        `the datastore over the push. The data is on this host only; run ` +
-        `the step or method again to write and publish it.`,
+        `attempts: another swamp process using this repository (a ` +
+        `workflow run or swamp serve) may have synced over the last push, ` +
+        `or the datastore did not keep the uploaded files. The data is on ` +
+        `this host only; run the step or method again once that process ` +
+        `has finished, to write and publish it.`,
       "datastore_unpublished_data_version",
     );
     this.name = "UnpublishedDataVersionError";

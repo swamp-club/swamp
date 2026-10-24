@@ -26,6 +26,7 @@ import {
   stageTyped,
   typedStagingActive,
   versionFloorSource,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import type {
@@ -274,21 +275,35 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Stages a typed change for the configured sync service: the cache has
    * uncommitted work at `change.path`.
    *
-   * Called at the start of every mutation that writes into (or removes from)
-   * the cache directory, before the write. A `write` names a file or directory
-   * that exists after the operation; a `remove` names one that is gone after
-   * it. The path is absolute; the wiring layer converts it to a
-   * cache-relative form before forwarding to the sync service. The change
-   * goes into the ambient unit of work bound to this
-   * repository's hook, or straight to the hook, which is a no-op when no sync
-   * service is wired — e.g. filesystem datastores, or when constructing the
-   * repository outside a CLI sync lifecycle. See
-   * `design/enablers/datastores.md` for the contract.
+   * Called directly only where a write has already landed (see
+   * {@link reassertLatestVersion}); every other mutation goes through
+   * {@link staged}, which signals before and after the write.
    */
   private async stage(change: StagedChange): Promise<void> {
     // Every write this repository makes stages its typed changes after it
     // (swamp-club#3250), so a v3 unit takes no path change from it.
     await signalChange(this.markDirty, change, { typed: true });
+  }
+
+  /**
+   * Runs a mutation that writes into (or removes from) the cache directory
+   * with its changes signalled before it and, on v2, again once it has
+   * settled (swamp-club#2421): a push that ran while the write was in
+   * flight cannot have cleared the mark for good. A `write` names a file or
+   * directory that exists after the operation; a `remove` names one that is
+   * gone after it. The path is absolute; the wiring layer converts it to a
+   * cache-relative form before forwarding to the sync service. The changes
+   * go into the ambient unit of work bound to this repository's hook, or
+   * straight to the hook, which is a no-op when no sync service is wired.
+   * See `design/enablers/datastores.md` for the contract.
+   */
+  private staged<T>(
+    changes: StagedChange | readonly StagedChange[],
+    write: () => Promise<T>,
+  ): Promise<T> {
+    // Every write this repository makes stages its typed changes after it
+    // (swamp-club#3250), so a v3 unit takes no path change from it.
+    return withChangeSignalled(this.markDirty, changes, { typed: true }, write);
   }
 
   /**
@@ -1177,108 +1192,110 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     // Pre-write notify with the data-name directory: version not yet
     // allocated, so the truthful signal is "this subtree is changing."
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
-    });
+    }, async () => {
+      // Check if data with this name already exists
+      const existing = await this.findByName(type, modelId, data.name);
+      if (existing) {
+        // Validate ownership
+        if (!existing.isOwnedBy(data.ownerDefinition)) {
+          throw new OwnershipValidationError(
+            data.name,
+            existing.ownerDefinition,
+            data.ownerDefinition,
+          );
+        }
+      }
 
-    // Check if data with this name already exists
-    const existing = await this.findByName(type, modelId, data.name);
-    if (existing) {
-      // Validate ownership
-      if (!existing.isOwnedBy(data.ownerDefinition)) {
-        throw new OwnershipValidationError(
+      // Atomically allocate a new version directory
+      const { version: newVersion, priorVersions } = await this
+        .atomicAllocateVersionDir(
+          type,
+          modelId,
           data.name,
-          existing.ownerDefinition,
-          data.ownerDefinition,
+        );
+
+      // Create the data with updated version and size
+      const checksum = await this.computeChecksum(content);
+      const dataToSave = data.withNewVersion({
+        version: newVersion,
+        size: content.length,
+        checksum,
+      });
+
+      // Save metadata
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+      );
+      const boundary = this.baseDir;
+      await assertSafePath(metadataPath, boundary);
+      const metadata = dataToSave.toData();
+      // Remove undefined values
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      const metadataContent = stringifyYaml(
+        cleanData as Record<string, unknown>,
+      );
+      await atomicWriteTextFile(metadataPath, metadataContent);
+
+      // Save content
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+      );
+      await assertSafePath(contentPath, boundary);
+      await atomicWriteFile(contentPath, content);
+
+      // Update latest marker
+      await this.advanceLatestMarker(type, modelId, data.name, newVersion);
+
+      // Staged before the prune below, so a failed prune never leaves the
+      // version local-only.
+      if (stageAs !== undefined) {
+        await this.stageTypedChanges(type, modelId, async (changes) => [
+          ...await this.writtenVersionChanges(
+            changes,
+            stageAs,
+            type,
+            modelId,
+            data.name,
+            newVersion,
+          ),
+          ...await this.latestAfterWrite(
+            changes,
+            stageAs,
+            type,
+            modelId,
+            data.name,
+            newVersion,
+          ),
+        ]);
+      }
+
+      this.catalogUpsert(type, modelId, dataToSave);
+
+      if (this.enableWriteGc && typeof data.garbageCollection === "number") {
+        await this.pruneExcessVersions(
+          type,
+          modelId,
+          data.name,
+          priorVersions,
+          data.garbageCollection,
         );
       }
-    }
 
-    // Atomically allocate a new version directory
-    const { version: newVersion, priorVersions } = await this
-      .atomicAllocateVersionDir(
-        type,
-        modelId,
-        data.name,
-      );
-
-    // Create the data with updated version and size
-    const checksum = await this.computeChecksum(content);
-    const dataToSave = data.withNewVersion({
-      version: newVersion,
-      size: content.length,
-      checksum,
+      // Reported only on v3, where a run record keeps it (swamp-club#3279);
+      // nothing about a v2 save changes.
+      return typedStagingActive(this.markDirty)
+        ? { version: newVersion, checksum }
+        : { version: newVersion };
     });
-
-    // Save metadata
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-    const boundary = this.baseDir;
-    await assertSafePath(metadataPath, boundary);
-    const metadata = dataToSave.toData();
-    // Remove undefined values
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(metadataPath, metadataContent);
-
-    // Save content
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-    await assertSafePath(contentPath, boundary);
-    await atomicWriteFile(contentPath, content);
-
-    // Update latest marker
-    await this.advanceLatestMarker(type, modelId, data.name, newVersion);
-
-    // Staged before the prune below, so a failed prune never leaves the
-    // version local-only.
-    if (stageAs !== undefined) {
-      await this.stageTypedChanges(type, modelId, async (changes) => [
-        ...await this.writtenVersionChanges(
-          changes,
-          stageAs,
-          type,
-          modelId,
-          data.name,
-          newVersion,
-        ),
-        ...await this.latestAfterWrite(
-          changes,
-          stageAs,
-          type,
-          modelId,
-          data.name,
-          newVersion,
-        ),
-      ]);
-    }
-
-    this.catalogUpsert(type, modelId, dataToSave);
-
-    if (this.enableWriteGc && typeof data.garbageCollection === "number") {
-      await this.pruneExcessVersions(
-        type,
-        modelId,
-        data.name,
-        priorVersions,
-        data.garbageCollection,
-      );
-    }
-
-    // Reported only on v3, where a run record keeps it (swamp-club#3279);
-    // nothing about a v2 save changes.
-    return typedStagingActive(this.markDirty)
-      ? { version: newVersion, checksum }
-      : { version: newVersion };
   }
 
   async saveDeferred(
@@ -1293,72 +1310,72 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
-    });
-
-    const existing = await this.findByName(type, modelId, data.name);
-    if (existing) {
-      if (!existing.isOwnedBy(data.ownerDefinition)) {
-        throw new OwnershipValidationError(
-          data.name,
-          existing.ownerDefinition,
-          data.ownerDefinition,
-        );
+    }, async () => {
+      const existing = await this.findByName(type, modelId, data.name);
+      if (existing) {
+        if (!existing.isOwnedBy(data.ownerDefinition)) {
+          throw new OwnershipValidationError(
+            data.name,
+            existing.ownerDefinition,
+            data.ownerDefinition,
+          );
+        }
       }
-    }
 
-    const checksum = await this.computeChecksum(content);
-    const { version: newVersion } = await this.atomicAllocateVersionDir(
-      type,
-      modelId,
-      data.name,
-    );
+      const checksum = await this.computeChecksum(content);
+      const { version: newVersion } = await this.atomicAllocateVersionDir(
+        type,
+        modelId,
+        data.name,
+      );
 
-    const dataToSave = data.withNewVersion({
-      version: newVersion,
-      size: content.length,
-      checksum,
+      const dataToSave = data.withNewVersion({
+        version: newVersion,
+        size: content.length,
+        checksum,
+      });
+      try {
+        // Register the write as pending before any of its files reach disk, so
+        // delete and GC never mistake the new version for a promoted one.
+        this.upsertPendingRow(type, modelId, dataToSave);
+
+        const metadataPath = this.getMetadataPath(
+          type,
+          modelId,
+          data.name,
+          newVersion,
+        );
+        const boundary = this.baseDir;
+        await assertSafePath(metadataPath, boundary);
+        const metadata = dataToSave.toData();
+        const cleanData = JSON.parse(JSON.stringify(metadata));
+        const metadataContent = stringifyYaml(
+          cleanData as Record<string, unknown>,
+        );
+        await atomicWriteTextFile(metadataPath, metadataContent);
+
+        const contentPath = this.getContentPath(
+          type,
+          modelId,
+          data.name,
+          newVersion,
+        );
+        await assertSafePath(contentPath, boundary);
+        await atomicWriteFile(contentPath, content);
+      } catch (error) {
+        // No receipt reaches the caller, so nothing else would roll this
+        // version back; its pending row would stay under this live process.
+        await this.rollbackKeepingError([
+          { type, modelId, dataName: data.name, version: newVersion },
+        ]);
+        throw error;
+      }
+
+      return { type, modelId, dataName: data.name, version: newVersion };
     });
-    try {
-      // Register the write as pending before any of its files reach disk, so
-      // delete and GC never mistake the new version for a promoted one.
-      this.upsertPendingRow(type, modelId, dataToSave);
-
-      const metadataPath = this.getMetadataPath(
-        type,
-        modelId,
-        data.name,
-        newVersion,
-      );
-      const boundary = this.baseDir;
-      await assertSafePath(metadataPath, boundary);
-      const metadata = dataToSave.toData();
-      const cleanData = JSON.parse(JSON.stringify(metadata));
-      const metadataContent = stringifyYaml(
-        cleanData as Record<string, unknown>,
-      );
-      await atomicWriteTextFile(metadataPath, metadataContent);
-
-      const contentPath = this.getContentPath(
-        type,
-        modelId,
-        data.name,
-        newVersion,
-      );
-      await assertSafePath(contentPath, boundary);
-      await atomicWriteFile(contentPath, content);
-    } catch (error) {
-      // No receipt reaches the caller, so nothing else would roll this
-      // version back; its pending row would stay under this live process.
-      await this.rollbackKeepingError([
-        { type, modelId, dataName: data.name, version: newVersion },
-      ]);
-      throw error;
-    }
-
-    return { type, modelId, dataName: data.name, version: newVersion };
   }
 
   async append(
@@ -1367,105 +1384,114 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     content: Uint8Array,
   ): Promise<void> {
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, dataName),
-    });
-
-    const latestVersion = await this.getLatestVersion(type, modelId, dataName);
-    if (latestVersion === null) {
-      throw new Error(`No existing data found for "${dataName}"`);
-    }
-
-    const data = await this.findByName(type, modelId, dataName, latestVersion);
-    if (!data?.streaming) {
-      throw new Error(`Data "${dataName}" is not configured for streaming`);
-    }
-
-    // Appending to a missing or stale content file would write new bytes
-    // after a truncated prefix, record that size, and push the corrupt file
-    // (swamp-club#3178).
-    const availability = await this.ensureContentFile(
-      type,
-      modelId,
-      dataName,
-      latestVersion,
-      data.size,
-    );
-    if (availability !== "current") {
-      throw new Error(
-        availability === "missing"
-          ? `Cannot append to "${dataName}" version ${latestVersion}: its ` +
-            `content could not be downloaded from the datastore`
-          : `Cannot append to "${dataName}" version ${latestVersion}: the ` +
-            `datastore holds less content than its metadata records, so ` +
-            `another host's push may not have finished; retry once it has`,
+    }, async () => {
+      const latestVersion = await this.getLatestVersion(
+        type,
+        modelId,
+        dataName,
       );
-    }
+      if (latestVersion === null) {
+        throw new Error(`No existing data found for "${dataName}"`);
+      }
 
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      dataName,
-      latestVersion,
-    );
-    await assertSafePath(contentPath, this.baseDir);
-    // On v3 the append edits the version it was loaded from: its metadata
-    // put expects the digest it replaces, so a version another writer
-    // recorded under this number refuses it rather than being overwritten.
-    // Read only on v3, before the rewrite destroys it.
-    const priorMetadata = typedStagingActive(this.markDirty)
-      ? await this.computeChecksum(
-        await Deno.readFile(
-          this.getMetadataPath(type, modelId, dataName, latestVersion),
-        ),
-      )
-      : undefined;
-    const file = await Deno.open(contentPath, { append: true });
-    try {
-      await file.write(content);
-    } finally {
-      file.close();
-    }
+      const data = await this.findByName(
+        type,
+        modelId,
+        dataName,
+        latestVersion,
+      );
+      if (!data?.streaming) {
+        throw new Error(`Data "${dataName}" is not configured for streaming`);
+      }
 
-    // Update metadata with new size (O(1) via stat, no file read)
-    const stat = await Deno.stat(contentPath);
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      dataName,
-      latestVersion,
-    );
-    const metadata = data.toData();
-    metadata.size = stat.size;
-    // Remove stale checksum — content has changed and recomputing
-    // would require reading the entire file into memory
-    delete metadata.checksum;
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    await atomicWriteTextFile(
-      metadataPath,
-      stringifyYaml(cleanData as Record<string, unknown>),
-    );
+      // Appending to a missing or stale content file would write new bytes
+      // after a truncated prefix, record that size, and push the corrupt file
+      // (swamp-club#3178).
+      const availability = await this.ensureContentFile(
+        type,
+        modelId,
+        dataName,
+        latestVersion,
+        data.size,
+      );
+      if (availability !== "current") {
+        throw new Error(
+          availability === "missing"
+            ? `Cannot append to "${dataName}" version ${latestVersion}: its ` +
+              `content could not be downloaded from the datastore`
+            : `Cannot append to "${dataName}" version ${latestVersion}: the ` +
+              `datastore holds less content than its metadata records, so ` +
+              `another host's push may not have finished; retry once it has`,
+        );
+      }
 
-    // Update catalog with new size
-    const updatedData = Data.fromData(metadata);
-    this.catalogUpsert(type, modelId, updatedData);
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        dataName,
+        latestVersion,
+      );
+      await assertSafePath(contentPath, this.baseDir);
+      // On v3 the append edits the version it was loaded from: its metadata
+      // put expects the digest it replaces, so a version another writer
+      // recorded under this number refuses it rather than being overwritten.
+      // Read only on v3, before the rewrite destroys it.
+      const priorMetadata = typedStagingActive(this.markDirty)
+        ? await this.computeChecksum(
+          await Deno.readFile(
+            this.getMetadataPath(type, modelId, dataName, latestVersion),
+          ),
+        )
+        : undefined;
+      const file = await Deno.open(contentPath, { append: true });
+      try {
+        await file.write(content);
+      } finally {
+        file.close();
+      }
 
-    // The append re-records the live version it extended.
-    await this.stageTypedChanges(
-      type,
-      modelId,
-      (changes) =>
-        this.writtenVersionChanges(
-          changes,
-          { kind: "data.append" },
-          type,
-          modelId,
-          dataName,
-          latestVersion,
-          priorMetadata === undefined ? undefined : { sha256: priorMetadata },
-        ),
-    );
+      // Update metadata with new size (O(1) via stat, no file read)
+      const stat = await Deno.stat(contentPath);
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        dataName,
+        latestVersion,
+      );
+      const metadata = data.toData();
+      metadata.size = stat.size;
+      // Remove stale checksum — content has changed and recomputing
+      // would require reading the entire file into memory
+      delete metadata.checksum;
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      await atomicWriteTextFile(
+        metadataPath,
+        stringifyYaml(cleanData as Record<string, unknown>),
+      );
+
+      // Update catalog with new size
+      const updatedData = Data.fromData(metadata);
+      this.catalogUpsert(type, modelId, updatedData);
+
+      // The append re-records the live version it extended.
+      await this.stageTypedChanges(
+        type,
+        modelId,
+        (changes) =>
+          this.writtenVersionChanges(
+            changes,
+            { kind: "data.append" },
+            type,
+            modelId,
+            dataName,
+            latestVersion,
+            priorMetadata === undefined ? undefined : { sha256: priorMetadata },
+          ),
+      );
+    });
   }
 
   async *stream(
@@ -1718,19 +1744,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version?: number,
   ): Promise<void> {
     if (version !== undefined) {
-      await this.stage({
-        kind: "remove",
-        path: this.getPath(type, modelId, dataName, version),
-      });
       // Delete specific version
       const versionDir = this.getPath(type, modelId, dataName, version);
-      try {
-        await Deno.remove(versionDir, { recursive: true });
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+      await this.staged({
+        kind: "remove",
+        path: this.getPath(type, modelId, dataName, version),
+      }, async () => {
+        try {
+          await Deno.remove(versionDir, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
         }
-      }
+      });
 
       // Drop the deleted version's catalog row before touching the latest
       // marker — leaves the catalog in a valid state even if the follow-up
@@ -1792,8 +1819,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // synced datastore kept a remote `latest` naming a version no
         // longer there (swamp-club#3473).
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-        await this.stage({ kind: "remove", path: join(dataNameDir, "latest") });
-        await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+        await this.staged(
+          { kind: "remove", path: join(dataNameDir, "latest") },
+          () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
+        );
         this.catalogRemove(type, modelId, dataName);
       }
       await this.stageRemovedVersion(
@@ -1817,27 +1846,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Matches the collectGarbage pattern (swamp-club#2277).
       const dataNameDir = this.getDataNameDir(type, modelId, dataName);
       let versions: number[] = [];
+      let removals: StagedChange[];
       try {
         versions = await this.listVersions(type, modelId, dataName);
-        for (const v of versions) {
-          await this.stage({
-            kind: "remove",
-            path: this.getPath(type, modelId, dataName, v),
-          });
-        }
-        await this.stage({ kind: "remove", path: join(dataNameDir, "latest") });
+        removals = versions.map((v) => ({
+          kind: "remove",
+          path: this.getPath(type, modelId, dataName, v),
+        }));
+        removals.push({ kind: "remove", path: join(dataNameDir, "latest") });
       } catch {
         // Enumeration failed (directory absent, lazy hydration) — fall
         // back to the data-name directory signal.
-        await this.stage({ kind: "remove", path: dataNameDir });
+        removals = [{ kind: "remove", path: dataNameDir }];
       }
-      try {
-        await Deno.remove(dataNameDir, { recursive: true });
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+      await this.staged(removals, async () => {
+        try {
+          await Deno.remove(dataNameDir, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
         }
-      }
+      });
       this.catalogRemove(type, modelId, dataName);
       // Each version seen is its own versioned tombstone, so a version
       // written concurrently survives; one batch each, so a name with many
@@ -1870,26 +1900,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): Promise<void> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-    await this.stage({ kind: "write", path: dataNameDir });
+    return await this.staged({ kind: "write", path: dataNameDir }, async () => {
+      const latestMarker = join(dataNameDir, "latest");
 
-    const latestMarker = join(dataNameDir, "latest");
-
-    try {
-      await Deno.remove(latestMarker);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+      try {
+        await Deno.remove(latestMarker);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+        // Marker already missing is OK
       }
-      // Marker already missing is OK
-    }
 
-    this.catalogRemove(type, modelId, dataName);
-    // Expiry: a version-less data.gc of the marker; the versions stay.
-    await this.stageTypedChanges(
-      type,
-      modelId,
-      (changes) => Promise.resolve([changes.removeLatest("data.gc", dataName)]),
-    );
+      this.catalogRemove(type, modelId, dataName);
+      // Expiry: a version-less data.gc of the marker; the versions stay.
+      await this.stageTypedChanges(
+        type,
+        modelId,
+        (changes) =>
+          Promise.resolve([changes.removeLatest("data.gc", dataName)]),
+      );
+    });
   }
 
   async rename(
@@ -1907,217 +1938,221 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   > {
     // Old-name directory covers tombstone, content, and latest-marker
     // writes. The inner save() emits its own per-path signal for newName.
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, oldName),
-    });
+    }, async () => {
+      // Read the latest version of old data
+      const oldData = await this.findByName(type, modelId, oldName);
+      if (!oldData) {
+        throw new Error(`Data "${oldName}" not found`);
+      }
+      if (oldData.isDeleted) {
+        throw new Error(`Data "${oldName}" is already deleted or renamed`);
+      }
 
-    // Read the latest version of old data
-    const oldData = await this.findByName(type, modelId, oldName);
-    if (!oldData) {
-      throw new Error(`Data "${oldName}" not found`);
-    }
-    if (oldData.isDeleted) {
-      throw new Error(`Data "${oldName}" is already deleted or renamed`);
-    }
+      // Verify new name doesn't already have active data
+      const existingNew = await this.findByName(type, modelId, newName);
+      if (existingNew && !existingNew.isDeleted) {
+        throw new Error(`Data "${newName}" already exists`);
+      }
 
-    // Verify new name doesn't already have active data
-    const existingNew = await this.findByName(type, modelId, newName);
-    if (existingNew && !existingNew.isDeleted) {
-      throw new Error(`Data "${newName}" already exists`);
-    }
-
-    // Read the content to copy
-    const content = await this.getContent(
-      type,
-      modelId,
-      oldName,
-      oldData.version,
-    );
-    if (!content) {
-      throw new Error(
-        `Content not found for "${oldName}" version ${oldData.version}`,
+      // Read the content to copy
+      const content = await this.getContent(
+        type,
+        modelId,
+        oldName,
+        oldData.version,
       );
-    }
+      if (!content) {
+        throw new Error(
+          `Content not found for "${oldName}" version ${oldData.version}`,
+        );
+      }
 
-    // Create new data under the new name with a fresh ID
-    const newData = Data.create({
-      name: newName,
-      contentType: oldData.contentType,
-      lifetime: oldData.lifetime,
-      garbageCollection: oldData.garbageCollection,
-      streaming: oldData.streaming,
-      tags: { ...oldData.tags },
-      ownerDefinition: { ...oldData.ownerDefinition },
-    });
-
-    // Save under the new name. Its typed changes stage below, in the
-    // rename's own batch with the rename intent.
-    const { version: newVersion } = await this.saveVersion(
-      type,
-      modelId,
-      newData,
-      content,
-      undefined,
-    );
-    let tombstoneVersion = 0;
-
-    // Write a tombstone with forward reference on the old name.
-    // If this fails, roll back the newly saved data to avoid an inconsistent
-    // state where both old and new names have valid active data.
-    try {
-      const versions = await this.listVersions(type, modelId, oldName);
-      const nextTombstoneVersion = (maxOf(versions) ?? 0) + 1;
-      const tombstone = oldData.withRenameMarker({
-        version: nextTombstoneVersion,
-        renamedTo: newName,
+      // Create new data under the new name with a fresh ID
+      const newData = Data.create({
+        name: newName,
+        contentType: oldData.contentType,
+        lifetime: oldData.lifetime,
+        garbageCollection: oldData.garbageCollection,
+        streaming: oldData.streaming,
+        tags: { ...oldData.tags },
+        ownerDefinition: { ...oldData.ownerDefinition },
       });
 
-      // Save tombstone metadata and content
-      ({ version: tombstoneVersion } = await this.atomicAllocateVersionDir(
+      // Save under the new name. Its typed changes stage below, in the
+      // rename's own batch with the rename intent.
+      const { version: newVersion } = await this.saveVersion(
         type,
         modelId,
-        oldName,
-      ));
-      const tombstoneData = tombstone.withNewVersion({
-        version: tombstoneVersion,
-      });
-
-      const tombstoneContent = new TextEncoder().encode(
-        JSON.stringify({
-          renamedTo: newName,
-          renamedAt: new Date().toISOString(),
-        }),
+        newData,
+        content,
+        undefined,
       );
+      let tombstoneVersion = 0;
 
-      const metadataPath = this.getMetadataPath(
-        type,
-        modelId,
-        oldName,
-        tombstoneVersion,
-      );
-      const boundary = this.baseDir;
-      await assertSafePath(metadataPath, boundary);
-      const metadata = tombstoneData.toData();
-      const cleanData = JSON.parse(JSON.stringify(metadata));
-      const metadataYaml = stringifyYaml(
-        cleanData as Record<string, unknown>,
-      );
-      await atomicWriteTextFile(metadataPath, metadataYaml);
-
-      const contentPath = this.getContentPath(
-        type,
-        modelId,
-        oldName,
-        tombstoneVersion,
-      );
-      await assertSafePath(contentPath, boundary);
-      await atomicWriteFile(contentPath, tombstoneContent);
-
-      // Update latest marker to point to tombstone
-      await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
-    } catch (tombstoneError) {
-      // Roll back: remove the newly created data under the new name
-      logger
-        .warn`Tombstone write failed during rename ${oldName} -> ${newName}. Rolling back new data.`;
+      // Write a tombstone with forward reference on the old name.
+      // If this fails, roll back the newly saved data to avoid an inconsistent
+      // state where both old and new names have valid active data.
       try {
-        const newVersionDir = this.getPath(
+        const versions = await this.listVersions(type, modelId, oldName);
+        const nextTombstoneVersion = (maxOf(versions) ?? 0) + 1;
+        const tombstone = oldData.withRenameMarker({
+          version: nextTombstoneVersion,
+          renamedTo: newName,
+        });
+
+        // Save tombstone metadata and content
+        ({ version: tombstoneVersion } = await this.atomicAllocateVersionDir(
+          type,
+          modelId,
+          oldName,
+        ));
+        const tombstoneData = tombstone.withNewVersion({
+          version: tombstoneVersion,
+        });
+
+        const tombstoneContent = new TextEncoder().encode(
+          JSON.stringify({
+            renamedTo: newName,
+            renamedAt: new Date().toISOString(),
+          }),
+        );
+
+        const metadataPath = this.getMetadataPath(
+          type,
+          modelId,
+          oldName,
+          tombstoneVersion,
+        );
+        const boundary = this.baseDir;
+        await assertSafePath(metadataPath, boundary);
+        const metadata = tombstoneData.toData();
+        const cleanData = JSON.parse(JSON.stringify(metadata));
+        const metadataYaml = stringifyYaml(
+          cleanData as Record<string, unknown>,
+        );
+        await atomicWriteTextFile(metadataPath, metadataYaml);
+
+        const contentPath = this.getContentPath(
+          type,
+          modelId,
+          oldName,
+          tombstoneVersion,
+        );
+        await assertSafePath(contentPath, boundary);
+        await atomicWriteFile(contentPath, tombstoneContent);
+
+        // Update latest marker to point to tombstone
+        await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
+      } catch (tombstoneError) {
+        // Roll back: remove the newly created data under the new name
+        logger
+          .warn`Tombstone write failed during rename ${oldName} -> ${newName}. Rolling back new data.`;
+        try {
+          const newVersionDir = this.getPath(
+            type,
+            modelId,
+            newName,
+            newVersion,
+          );
+          await Deno.remove(newVersionDir, { recursive: true });
+          // If this was the only version, clean up the data name directory.
+          // Otherwise, reset the latest marker to the highest remaining version
+          // to avoid a corrupted marker pointing to the deleted version.
+          const remaining = await this.listVersions(type, modelId, newName);
+          const maxRemaining = maxOf(remaining);
+          if (maxRemaining === undefined) {
+            const dataNameDir = this.getDataNameDir(type, modelId, newName);
+            await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+          } else {
+            await this.updateLatestMarker(type, modelId, newName, maxRemaining);
+          }
+        } catch (rollbackError) {
+          logger
+            .error`Rollback also failed during rename ${oldName} -> ${newName}: ${
+            String(rollbackError)
+          }. Manual cleanup may be needed.`;
+        }
+        // The new version was never staged; stage the new name's marker as
+        // the rollback left it. A staging error must not hide the rename's.
+        try {
+          await this.stageLatestAfterRemoval(
+            "data.delete",
+            type,
+            modelId,
+            newName,
+          );
+        } catch (stageError) {
+          logger
+            .error`Staging the rollback of rename ${oldName} -> ${newName} failed: ${stageError}`;
+        }
+        throw tombstoneError;
+      }
+
+      // One batch, so the rename lands in one commit: the new name's version
+      // and the old name's marker version, both with the rename intent, and
+      // each name's latest marker.
+      const why: DataWrite = {
+        kind: "data.rename",
+        from: oldName,
+        to: newName,
+      };
+      await this.stageTypedChanges(type, modelId, async (changes) => [
+        ...await this.writtenVersionChanges(
+          changes,
+          why,
           type,
           modelId,
           newName,
           newVersion,
-        );
-        await Deno.remove(newVersionDir, { recursive: true });
-        // If this was the only version, clean up the data name directory.
-        // Otherwise, reset the latest marker to the highest remaining version
-        // to avoid a corrupted marker pointing to the deleted version.
-        const remaining = await this.listVersions(type, modelId, newName);
-        const maxRemaining = maxOf(remaining);
-        if (maxRemaining === undefined) {
-          const dataNameDir = this.getDataNameDir(type, modelId, newName);
-          await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
-        } else {
-          await this.updateLatestMarker(type, modelId, newName, maxRemaining);
-        }
-      } catch (rollbackError) {
-        logger
-          .error`Rollback also failed during rename ${oldName} -> ${newName}: ${
-          String(rollbackError)
-        }. Manual cleanup may be needed.`;
-      }
-      // The new version was never staged; stage the new name's marker as
-      // the rollback left it. A staging error must not hide the rename's.
-      try {
-        await this.stageLatestAfterRemoval(
-          "data.delete",
+        ),
+        ...await this.latestAfterWrite(
+          changes,
+          why,
           type,
           modelId,
           newName,
-        );
-      } catch (stageError) {
+          newVersion,
+        ),
+        ...await this.writtenVersionChanges(
+          changes,
+          why,
+          type,
+          modelId,
+          oldName,
+          tombstoneVersion,
+        ),
+        ...await this.latestAfterWrite(
+          changes,
+          why,
+          type,
+          modelId,
+          oldName,
+          tombstoneVersion,
+        ),
+      ]);
+
+      // The old name is now a tombstone: drop its rows and record the forward
+      // so data query can follow it. Outside the rollback above: the files are
+      // authoritative and the catalog is a projection the next backfill
+      // rebuilds, so a failed catalog write must never undo the rename.
+      try {
+        this.catalogRemove(type, modelId, oldName);
+      } catch (error) {
         logger
-          .error`Staging the rollback of rename ${oldName} -> ${newName} failed: ${stageError}`;
+          .warn`Could not remove ${oldName} from the data catalog after renaming it to ${newName}: ${error}. Run swamp doctor datastores --repair if data query still lists it.`;
       }
-      throw tombstoneError;
-    }
+      this.recordRenameForward(type, modelId, oldName, newName);
 
-    // One batch, so the rename lands in one commit: the new name's version
-    // and the old name's marker version, both with the rename intent, and
-    // each name's latest marker.
-    const why: DataWrite = { kind: "data.rename", from: oldName, to: newName };
-    await this.stageTypedChanges(type, modelId, async (changes) => [
-      ...await this.writtenVersionChanges(
-        changes,
-        why,
-        type,
-        modelId,
-        newName,
-        newVersion,
-      ),
-      ...await this.latestAfterWrite(
-        changes,
-        why,
-        type,
-        modelId,
-        newName,
-        newVersion,
-      ),
-      ...await this.writtenVersionChanges(
-        changes,
-        why,
-        type,
-        modelId,
+      return {
         oldName,
-        tombstoneVersion,
-      ),
-      ...await this.latestAfterWrite(
-        changes,
-        why,
-        type,
-        modelId,
-        oldName,
-        tombstoneVersion,
-      ),
-    ]);
-
-    // The old name is now a tombstone: drop its rows and record the forward
-    // so data query can follow it. Outside the rollback above: the files are
-    // authoritative and the catalog is a projection the next backfill
-    // rebuilds, so a failed catalog write must never undo the rename.
-    try {
-      this.catalogRemove(type, modelId, oldName);
-    } catch (error) {
-      logger
-        .warn`Could not remove ${oldName} from the data catalog after renaming it to ${newName}: ${error}. Run swamp doctor datastores --repair if data query still lists it.`;
-    }
-    this.recordRenameForward(type, modelId, oldName, newName);
-
-    return {
-      oldName,
-      newName,
-      copiedVersion: oldData.version,
-      newVersion,
-    };
+        newName,
+        copiedVersion: oldData.version,
+        newVersion,
+      };
+    });
   }
 
   async allocateVersion(
@@ -2137,58 +2172,58 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     // Pre-write notify with the data-name directory: version not yet
     // allocated. Same granularity as save/append.
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getDataNameDir(type, modelId, data.name),
-    });
-
-    // Validate ownership if data with this name already exists
-    const existing = await this.findByName(type, modelId, data.name);
-    if (existing) {
-      if (!existing.isOwnedBy(data.ownerDefinition)) {
-        throw new OwnershipValidationError(
-          data.name,
-          existing.ownerDefinition,
-          data.ownerDefinition,
-        );
+    }, async () => {
+      // Validate ownership if data with this name already exists
+      const existing = await this.findByName(type, modelId, data.name);
+      if (existing) {
+        if (!existing.isOwnedBy(data.ownerDefinition)) {
+          throw new OwnershipValidationError(
+            data.name,
+            existing.ownerDefinition,
+            data.ownerDefinition,
+          );
+        }
       }
-    }
 
-    // Atomically allocate a new version directory
-    const { version: newVersion, priorVersions } = await this
-      .atomicAllocateVersionDir(
+      // Atomically allocate a new version directory
+      const { version: newVersion, priorVersions } = await this
+        .atomicAllocateVersionDir(
+          type,
+          modelId,
+          data.name,
+        );
+
+      // A deferred write is registered as pending before its content is
+      // streamed in; finalizeVersionDeferred completes the row.
+      if (options?.deferred) {
+        try {
+          this.upsertPendingRow(
+            type,
+            modelId,
+            data.withNewVersion({ version: newVersion, size: 0 }),
+          );
+        } catch (error) {
+          // The writer never gets the allocation, so nothing else would roll
+          // the empty version directory back.
+          await this.rollbackKeepingError([
+            { type, modelId, dataName: data.name, version: newVersion },
+          ]);
+          throw error;
+        }
+      }
+
+      const contentPath = this.getContentPath(
         type,
         modelId,
         data.name,
+        newVersion,
       );
 
-    // A deferred write is registered as pending before its content is
-    // streamed in; finalizeVersionDeferred completes the row.
-    if (options?.deferred) {
-      try {
-        this.upsertPendingRow(
-          type,
-          modelId,
-          data.withNewVersion({ version: newVersion, size: 0 }),
-        );
-      } catch (error) {
-        // The writer never gets the allocation, so nothing else would roll
-        // the empty version directory back.
-        await this.rollbackKeepingError([
-          { type, modelId, dataName: data.name, version: newVersion },
-        ]);
-        throw error;
-      }
-    }
-
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      data.name,
-      newVersion,
-    );
-
-    return { version: newVersion, contentPath, priorVersions };
+      return { version: newVersion, contentPath, priorVersions };
+    });
   }
 
   async finalizeVersion(
@@ -2200,82 +2235,84 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<{ size: number; checksum: string }> {
     // Version is known here (allocateVersion has already run); pass the
     // version directory as the per-call signal.
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getPath(type, modelId, data.name, version),
-    });
-
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      data.name,
-      version,
-    );
-
-    // Read content to compute size and checksum
-    const content = await Deno.readFile(contentPath);
-    const size = content.length;
-    const checksum = await this.computeChecksum(content);
-
-    // Create the data with updated version, size, and checksum
-    const dataToSave = data.withNewVersion({
-      version,
-      size,
-      checksum,
-    });
-
-    // Save metadata
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      data.name,
-      version,
-    );
-    const metadata = dataToSave.toData();
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(metadataPath, metadataContent);
-
-    // Update latest marker
-    await this.advanceLatestMarker(type, modelId, data.name, version);
-
-    // The content was streamed in by the writer; it stages from the file.
-    const why: DataWrite = { kind: "data.save" };
-    await this.stageTypedChanges(type, modelId, async (changes) => [
-      ...await this.writtenVersionChanges(
-        changes,
-        why,
+    }, async () => {
+      const contentPath = this.getContentPath(
         type,
         modelId,
         data.name,
         version,
-      ),
-      ...await this.latestAfterWrite(
-        changes,
-        why,
-        type,
-        modelId,
-        data.name,
-        version,
-      ),
-    ]);
-
-    this.catalogUpsert(type, modelId, dataToSave);
-
-    if (
-      this.enableWriteGc && typeof data.garbageCollection === "number" &&
-      priorVersions
-    ) {
-      await this.pruneExcessVersions(
-        type,
-        modelId,
-        data.name,
-        priorVersions,
-        data.garbageCollection,
       );
-    }
 
-    return { size, checksum };
+      // Read content to compute size and checksum
+      const content = await Deno.readFile(contentPath);
+      const size = content.length;
+      const checksum = await this.computeChecksum(content);
+
+      // Create the data with updated version, size, and checksum
+      const dataToSave = data.withNewVersion({
+        version,
+        size,
+        checksum,
+      });
+
+      // Save metadata
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        data.name,
+        version,
+      );
+      const metadata = dataToSave.toData();
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      const metadataContent = stringifyYaml(
+        cleanData as Record<string, unknown>,
+      );
+      await atomicWriteTextFile(metadataPath, metadataContent);
+
+      // Update latest marker
+      await this.advanceLatestMarker(type, modelId, data.name, version);
+
+      // The content was streamed in by the writer; it stages from the file.
+      const why: DataWrite = { kind: "data.save" };
+      await this.stageTypedChanges(type, modelId, async (changes) => [
+        ...await this.writtenVersionChanges(
+          changes,
+          why,
+          type,
+          modelId,
+          data.name,
+          version,
+        ),
+        ...await this.latestAfterWrite(
+          changes,
+          why,
+          type,
+          modelId,
+          data.name,
+          version,
+        ),
+      ]);
+
+      this.catalogUpsert(type, modelId, dataToSave);
+
+      if (
+        this.enableWriteGc && typeof data.garbageCollection === "number" &&
+        priorVersions
+      ) {
+        await this.pruneExcessVersions(
+          type,
+          modelId,
+          data.name,
+          priorVersions,
+          data.garbageCollection,
+        );
+      }
+
+      return { size, checksum };
+    });
   }
 
   async finalizeVersionDeferred(
@@ -2287,36 +2324,43 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {
-    await this.stage({
+    return await this.staged({
       kind: "write",
       path: this.getPath(type, modelId, data.name, version),
+    }, async () => {
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        data.name,
+        version,
+      );
+      const content = await Deno.readFile(contentPath);
+      const size = content.length;
+      const checksum = await this.computeChecksum(content);
+
+      const dataToSave = data.withNewVersion({ version, size, checksum });
+
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        data.name,
+        version,
+      );
+      const metadata = dataToSave.toData();
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      const metadataContent = stringifyYaml(
+        cleanData as Record<string, unknown>,
+      );
+      await atomicWriteTextFile(metadataPath, metadataContent);
+
+      this.upsertPendingRow(type, modelId, dataToSave);
+
+      return {
+        receipt: { type, modelId, dataName: data.name, version },
+        size,
+        checksum,
+      };
     });
-
-    const contentPath = this.getContentPath(type, modelId, data.name, version);
-    const content = await Deno.readFile(contentPath);
-    const size = content.length;
-    const checksum = await this.computeChecksum(content);
-
-    const dataToSave = data.withNewVersion({ version, size, checksum });
-
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      data.name,
-      version,
-    );
-    const metadata = dataToSave.toData();
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(metadataPath, metadataContent);
-
-    this.upsertPendingRow(type, modelId, dataToSave);
-
-    return {
-      receipt: { type, modelId, dataName: data.name, version },
-      size,
-      checksum,
-    };
   }
 
   async advanceLatestMarkers(
@@ -2954,12 +2998,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               // Ignore stat errors
             }
             if (!dryRun) {
-              await this.stage({ kind: "remove", path: versionDir });
-              try {
-                await Deno.remove(versionDir, { recursive: true });
-              } catch (error) {
-                if (!(error instanceof Deno.errors.NotFound)) throw error;
-              }
+              await this.staged(
+                { kind: "remove", path: versionDir },
+                async () => {
+                  try {
+                    await Deno.remove(versionDir, { recursive: true });
+                  } catch (error) {
+                    if (!(error instanceof Deno.errors.NotFound)) throw error;
+                  }
+                },
+              );
             }
             return bytes;
           }),
@@ -3034,8 +3082,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           );
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
-          await this.stage({ kind: "remove", path: dataNameDir });
-          await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+          await this.staged(
+            { kind: "remove", path: dataNameDir },
+            () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
+          );
           this.catalogRemove(type, modelId, data.name);
         }
         await this.stageLatestAfterRemoval("data.gc", type, modelId, data.name);
@@ -3145,9 +3195,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     if (typedStagingActive(this.markDirty)) return;
     if (await this.readVersionFloor(type, modelId, dataName) >= version) return;
     const path = this.getVersionFloorPath(type, modelId, dataName);
-    await this.stage({ kind: "write", path });
-    await Deno.mkdir(this.getModelDataDir(type, modelId), { recursive: true });
-    await atomicWriteTextFile(path, `${version}\n`);
+    await this.staged({ kind: "write", path }, async () => {
+      await Deno.mkdir(this.getModelDataDir(type, modelId), {
+        recursive: true,
+      });
+      await atomicWriteTextFile(path, `${version}\n`);
+    });
   }
 
   /**
@@ -3233,12 +3286,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const toRemove = sorted.slice(0, sorted.length - cap + 1);
     for (const version of toRemove) {
       const versionDir = this.getPath(type, modelId, dataName, version);
-      await this.stage({ kind: "remove", path: versionDir });
-      try {
-        await Deno.remove(versionDir, { recursive: true });
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      }
+      await this.staged({ kind: "remove", path: versionDir }, async () => {
+        try {
+          await Deno.remove(versionDir, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      });
       await this.stageRemovedVersion(
         "data.gc",
         type,
@@ -3471,8 +3525,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     } catch {
       return;
     }
-    await this.stage({ kind: "remove", path: dataNameDir });
-    await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+    await this.staged(
+      { kind: "remove", path: dataNameDir },
+      () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
+    );
     this.catalogRemove(type, modelId, dataName);
   }
 
@@ -3651,19 +3707,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         row.data_name,
         row.version,
       );
-      await this.stage({ kind: "remove", path: versionDir });
-      try {
-        bytesReclaimed += (await Deno.stat(
-          this.getContentPath(type, modelId, row.data_name, row.version),
-        )).size;
-      } catch {
-        // Ignore stat errors
-      }
-      try {
-        await Deno.remove(versionDir, { recursive: true });
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      }
+      await this.staged({ kind: "remove", path: versionDir }, async () => {
+        try {
+          bytesReclaimed += (await Deno.stat(
+            this.getContentPath(type, modelId, row.data_name, row.version),
+          )).size;
+        } catch {
+          // Ignore stat errors
+        }
+        try {
+          await Deno.remove(versionDir, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      });
       this.catalogStore.removeVersion(
         this.namespace,
         type.normalized,
@@ -3690,8 +3747,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     for (const name of names) {
       if ((await this.listVersions(type, modelId, name)).length > 0) continue;
       const dataNameDir = this.getDataNameDir(type, modelId, name);
-      await this.stage({ kind: "remove", path: dataNameDir });
-      await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+      await this.staged(
+        { kind: "remove", path: dataNameDir },
+        () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
+      );
       this.catalogRemove(type, modelId, name);
       await this.stageLatestAfterRemoval("data.gc", type, modelId, name);
     }

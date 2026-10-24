@@ -928,10 +928,10 @@ Deno.test("acquireModelLocks: with extensions from 2026.10.01.1 (swamp-club#2888
   });
 });
 
-// --- A push that fails after its uploads loses the recorded deletes ------
+// --- A push that fails after its uploads keeps its recorded deletes --------
 
 for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
-  Deno.test(`${path.fn}: a ${path.variant} push failing after its uploads publishes the write on retry but loses the recorded delete (pinned)`, async () => {
+  Deno.test(`${path.fn}: a ${path.variant} push failing after its uploads publishes the write and the recorded delete on retry (swamp-club#2907, swamp-club#3860)`, async () => {
     await withRepos(path.options, async (repos) => {
       const model = await saveModel(repos.serveRepo, "writer");
       const first = await path.begin(repos, model);
@@ -962,40 +962,35 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
       await path.failFlush(repos, unit.flush, "injected push failure");
 
       // The uploads landed as objects but nothing was committed: the remote
-      // still serves "gone" and not "kept". Each upload's bare mark set the
-      // bulk flag (S3SYNC:2911), and a bulk push deletes nothing
-      // (S3SYNC:3206-3276, swamp-extensions 7c0b1eacf), so the recorded
-      // delete is already lost. Still true through extensions 2026.10.07.1;
-      // filed as swamp-club#2907.
+      // still serves "gone" and not "kept". The push kept its marks: its own
+      // uploads no longer set the bulk flag, so the recorded delete survives
+      // (swamp-club#3860; before, a bulk retry deleted nothing,
+      // swamp-club#2907).
       assertEquals(remoteKeysOf(repos, model), goneKeys);
       const after = await repos.remote.pendingPush(cacheDir(repos.repoA));
-      assertEquals(after.bulk, true);
+      assertEquals(after.bulk, false);
       assertEquals(after.uploads, [...kept.keys()]);
-      assertEquals(after.deletes, [], "the recorded delete is lost");
+      assertEquals(after.deletes, goneKeys, "the recorded delete survives");
 
-      // KNOWN GAP, pinned: the retry's full walk publishes the write but
-      // never deletes "gone" remotely.
+      // The retry publishes the write and deletes "gone" remotely.
       const retryFrom = repos.remote.ops().length;
       const retry = await path.begin(repos, model);
       await retry.flush();
       assertEquals(pushOpsSince(repos, retryFrom), path.pushOps);
       assertEquals(await dirtyOnA(repos), []);
-      assertEquals(
-        remoteKeysOf(repos, model),
-        [...goneKeys, ...kept.keys()].sort(),
-      );
+      assertEquals(remoteKeysOf(repos, model), [...kept.keys()].sort());
       for (const [rel, bytes] of kept) {
         assertEquals(repos.remote.files().get(rel), bytes);
       }
 
-      // B reads the write, and still reads the item A deleted.
+      // B reads the write, and no longer reads the item A deleted.
       assertEquals(await readOnB(repos, model, "kept"), {
         content: savedContent("kept"),
         versions: [1],
       });
       assertEquals(await readOnB(repos, model, "gone"), {
-        content: savedContent("gone"),
-        versions: [1],
+        content: null,
+        versions: [],
       });
     });
   });

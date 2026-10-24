@@ -25,7 +25,9 @@
 // extension behaviours.
 
 import "../src/domain/models/models.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { assertEquals, assertGreater, assertRejects } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import {
   type DatastoreSyncService,
@@ -38,6 +40,8 @@ import {
   acquireModelLocks,
   PUBLISH_ATTEMPTS,
 } from "../src/cli/repo_context.ts";
+import { workflowStepLockHook } from "../src/cli/commands/workflow_run.ts";
+import { createSyncGate, runSyncLanesOf } from "../src/serve/sync_gate.ts";
 import {
   DATA_NAME,
   type Harness,
@@ -234,5 +238,119 @@ Deno.test("acquireModelLocks: the last publish attempt asks to run alone (swamp-
       UnpublishedDataVersionError,
     );
     assertEquals(kinds, ["pull", "push", "push", "push-alone"]);
+  });
+});
+
+/** A sibling step of the run, and the park its first commit waits in. */
+interface Sibling {
+  /** Settles once the sibling prepared and its commit waits. */
+  readonly parked: Promise<void>;
+  /** Lets the parked commit go on. */
+  readonly release: () => void;
+  readonly done: Promise<void>;
+}
+
+Deno.test("workflowStepLockHook: the steps of one CLI run cannot undo a step's last publish attempt (swamp-club#3860)", async () => {
+  await withHarness(async (h) => {
+    const service = h.context.syncService!;
+    const gate = createSyncGate();
+    const lanes = runSyncLanesOf(gate);
+    // A sync call waiting on the run's gate: step A's last attempt waits for
+    // a parked sibling to finish its commit before it stages.
+    const queued = () => gate.waiters > 0 || lanes.waiters > 0;
+    const siblingOf = new AsyncLocalStorage<{ park?: Sibling }>();
+    let prepares = 0;
+    let current: Sibling | undefined;
+
+    // A sibling's commit clears every dirty mark, step A's staged ones too,
+    // and step A's prepare then walks a set holding only other paths. That
+    // is what the 16-step ministack run showed on every attempt.
+    const racing: DatastoreSyncService = {
+      capabilities: () => service.capabilities!(),
+      markDirty: (o) => service.markDirty(o),
+      pullChanged: (o) => service.pullChanged(o),
+      pushChanged: (o) => service.pushChanged(o),
+      fetchContent: (p, o) => service.fetchContent!(p, o),
+      preparePush: async (o) => {
+        if (siblingOf.getStore() === undefined) {
+          prepares++;
+          const sibling = current!;
+          sibling.release();
+          await sibling.done;
+          await h.write("another step", crypto.randomUUID());
+          current = startSibling();
+          let started = false;
+          const reached = current.parked.then(() => {
+            started = true;
+          });
+          // Under the gate a new sibling cannot start inside this push.
+          await waitFor(() => started || queued(), "sibling parked or queued");
+          if (started) await reached;
+        }
+        return await service.preparePush!(o);
+      },
+      commitPush: async (m, o) => {
+        const state = siblingOf.getStore();
+        const park = state?.park;
+        if (park !== undefined) {
+          state!.park = undefined;
+          (park as Sibling & { reach: () => void }).reach();
+          let released = false;
+          const gateRelease = (park as Sibling & { gate: Promise<void> }).gate
+            .then(() => {
+              released = true;
+            });
+          await waitFor(() => released || queued(), "release or queued");
+          if (released) await gateRelease;
+        }
+        return await service.commitPush!(m, o);
+      },
+    };
+    const hook = workflowStepLockHook(
+      h.repoDir,
+      h.context.repoContext,
+      h.context.datastoreConfig,
+      racing,
+      gate,
+    );
+    const startSibling = (): Sibling => {
+      let reach!: () => void;
+      let release!: () => void;
+      const parked = new Promise<void>((r) => (reach = r));
+      const gateOpen = new Promise<void>((r) => (release = r));
+      const sibling = { parked, release, reach, gate: gateOpen } as
+        & Sibling
+        & { reach: () => void; gate: Promise<void> };
+      const id = crypto.randomUUID();
+      (sibling as { done: Promise<void> }).done = siblingOf.run(
+        { park: sibling },
+        async () => {
+          const locks = await hook(h.modelType.normalized, id);
+          const version = await h.write("sibling", id);
+          await locks.flush([{
+            modelType: h.modelType.normalized,
+            modelId: id,
+            dataName: DATA_NAME,
+            version,
+          }]);
+        },
+      );
+      return sibling;
+    };
+
+    const locks = await hook(h.modelType.normalized, h.modelId);
+    // The first sibling prepares before step A writes, and commits after.
+    current = startSibling();
+    await current.parked;
+    const version = await h.write("step A");
+
+    await locks.flush(written(h, version));
+    current.release();
+    await current.done;
+
+    // A sibling undid at least the first attempt, and the version landed.
+    assertGreater(prepares, 1);
+    assertEquals(h.remoteText("latest"), String(version));
+    assertEquals(h.remoteText(`${version}/raw`), "step A");
   });
 });

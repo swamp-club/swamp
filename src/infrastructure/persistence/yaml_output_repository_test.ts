@@ -412,18 +412,17 @@ Deno.test("YamlOutputRepository invokes markDirty with relPath on mutations", as
 
     const expectedPath = repo.getPath(testType, "create", output);
 
+    // Each mutation marks before it and again after it (swamp-club#2421).
     await repo.save(testType, "create", output);
-    assertEquals(calls.length, 1);
-    assertEquals(calls[0], expectedPath);
+    assertEquals(calls, [expectedPath, expectedPath]);
 
     await repo.delete(testType, "create", output.id);
-    assertEquals(calls.length, 2);
-    assertEquals(calls[1], expectedPath);
+    assertEquals(calls.slice(2), [expectedPath, expectedPath]);
 
     // Reads do not notify.
     await repo.findAll(testType);
     await repo.findById(testType, "create", output.id);
-    assertEquals(calls.length, 2);
+    assertEquals(calls.length, 4);
   });
 });
 
@@ -776,9 +775,9 @@ Deno.test(
         null,
       );
 
-      // notifyDirty must have fired with the target's path.
-      assertEquals(dirtyPaths.length, 1);
-      assertEquals(dirtyPaths[0], targetPath);
+      // The mark must have fired with the target's path, before the
+      // removal and after it (swamp-club#2421).
+      assertEquals(dirtyPaths, [targetPath, targetPath]);
     });
   },
 );

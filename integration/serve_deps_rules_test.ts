@@ -444,3 +444,70 @@ Deno.test("every workflow run entry point passes the repo's defaultVault", async
       violations.join("\n"),
   );
 });
+
+// A CLI workflow run's steps share one sync service, so their syncs need the
+// same in-process gate a serve process's runs take: without it a sibling
+// step's commit clears the marks of a lock's last publish attempt
+// (swamp-club#3860).
+Deno.test("CLI workflow runs take step locks through workflowStepLockHook, which gates them", async () => {
+  const violations: string[] = [];
+  let hooks = 0;
+
+  for await (
+    const entry of walk(join(ROOT, "src", "cli"), {
+      exts: [".ts"],
+      skip: [/_test\.ts$/],
+    })
+  ) {
+    const content = await Deno.readTextFile(entry.path);
+    const rel = normalise(relative(ROOT, entry.path));
+    const assigned = String.raw`\bstepLockHook\s*(?::[^=\n]+)?=`;
+    const all = [...content.matchAll(new RegExp(`${assigned}(?![=>])`, "g"))];
+    const built = [
+      ...content.matchAll(
+        new RegExp(`${assigned}\\s*workflowStepLockHook\\(`, "g"),
+      ),
+    ];
+    hooks += all.length;
+    if (all.length !== built.length) {
+      violations.push(
+        `${rel}: a stepLockHook not built by workflowStepLockHook`,
+      );
+    }
+  }
+
+  const builder = await Deno.readTextFile(
+    join(ROOT, "src", "cli", "commands", "workflow_run.ts"),
+  );
+  const body = builder.match(
+    /export function workflowStepLockHook\(([\s\S]*?)\): StepLockHook \{([\s\S]*?)\n\}/,
+  );
+  if (body === null) {
+    violations.push(
+      "src/cli/commands/workflow_run.ts: no workflowStepLockHook",
+    );
+  } else {
+    if (!/syncGate: SyncGate = createSyncGate\(\)/.test(body[1])) {
+      violations.push(
+        "workflowStepLockHook: its syncGate must default to createSyncGate()",
+      );
+    }
+    const call = body[2].match(/createStepLockHook\(([\s\S]*?)\);/);
+    const gateArg = call?.[1].split(",")[4]?.trim();
+    if (gateArg !== "syncGate") {
+      violations.push(
+        `workflowStepLockHook: passes '${gateArg}' to createStepLockHook as its gate`,
+      );
+    }
+  }
+
+  assertGreater(hooks, 0, "expected to find CLI step lock hooks");
+  assertEquals(
+    violations,
+    [],
+    "A CLI workflow run or resume must build its step lock hook with " +
+      "workflowStepLockHook (src/cli/commands/workflow_run.ts), which gives " +
+      "the run's steps one sync gate through createStepLockHook.\n\n" +
+      "Violations:\n" + violations.join("\n"),
+  );
+});

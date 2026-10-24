@@ -496,24 +496,25 @@ Deno.test("YamlWorkflowRunRepository invokes markDirty with relPath on mutations
     const run = WorkflowRun.create(workflow);
     run.start();
 
+    // Each mutation marks before it and again after it (swamp-club#2421).
     // save → per-run yaml path
     await repo.save(workflow.id, run);
-    assertEquals(calls.length, 1);
-    assertEquals(calls[0], repo.getPath(workflow.id, run.id));
+    const runPath = repo.getPath(workflow.id, run.id);
+    assertEquals(calls, [runPath, runPath]);
 
     await repo.findById(workflow.id, run.id);
     await repo.findAllByWorkflowId(workflow.id);
-    assertEquals(calls.length, 1);
+    assertEquals(calls.length, 2);
 
     // deleteAllByWorkflowId → runs directory path (not bulk)
     await repo.deleteAllByWorkflowId(workflow.id);
-    assertEquals(calls.length, 2);
-    assertEquals(calls[1], join(dir, ".swamp", "workflow-runs", workflow.id));
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    assertEquals(calls.slice(2), [runsDir, runsDir]);
 
     // deleteAllByWorkflowId on an empty workflow is a no-op and must not
     // notify — nothing was written or removed.
     await repo.deleteAllByWorkflowId(workflow.id);
-    assertEquals(calls.length, 2);
+    assertEquals(calls.length, 4);
   });
 });
 
@@ -2070,8 +2071,12 @@ Deno.test("YamlWorkflowRunRepository.save: stages a write of the run file", asyn
 
     await runInUnitOfWork(uow, () => repo.save(workflow.id, run));
 
-    assertEquals(uow.staged(), [{ kind: "write", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "write", path }, {
+      kind: "write",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), true);
   });
 });
@@ -2094,8 +2099,12 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: stages a remove of t
 
     await runInUnitOfWork(uow, () => repo.deleteAllByWorkflowId(workflow.id));
 
-    assertEquals(uow.staged(), [{ kind: "remove", path: runsDir }]);
-    assertEquals(marks, [runsDir]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "remove", path: runsDir }, {
+      kind: "remove",
+      path: runsDir,
+    }]);
+    assertEquals(marks, [runsDir, runsDir]);
     assertEquals(await pathExists(runsDir), false);
   });
 });
@@ -2123,8 +2132,12 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each te
     );
 
     assertEquals(result.deletedRunIds, [finished.id]);
-    assertEquals(uow.staged(), [{ kind: "remove", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "remove", path }, {
+      kind: "remove",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), false);
   });
 });
@@ -2154,8 +2167,12 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each un
     );
 
     assertEquals(result.deletedRunIds, [runId]);
-    assertEquals(uow.staged(), [{ kind: "remove", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "remove", path }, {
+      kind: "remove",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), false);
   });
 });

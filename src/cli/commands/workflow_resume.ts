@@ -26,8 +26,6 @@ import {
   resolveTracestate,
 } from "../context.ts";
 import {
-  acquireModelLocks,
-  createLockProgressWriter,
   createWorkflowRunClaims,
   requireInitializedRepoUnlocked,
   signalWaitsOf,
@@ -43,6 +41,7 @@ import {
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { removeStaleRunIndexes } from "../../infrastructure/persistence/workflow_run_index.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { workflowStepLockHook } from "./workflow_run.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
@@ -52,7 +51,6 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   type DirectTypeResolver,
-  type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import {
@@ -358,19 +356,12 @@ export const workflowResumeCommand = withRemoteOptions(
       }
     }
 
-    const stepLockHook: StepLockHook = async (modelType, modelId) => {
-      const result = await acquireModelLocks(
-        unlocked.datastoreConfig,
-        [{ modelType, modelId }],
-        repoDir,
-        unlocked.syncService,
-        repoContext.catalogStore,
-        createLockProgressWriter(modelId),
-        { repoContext },
-      );
-      if (result.synced) repoContext.catalogStore.invalidate();
-      return result;
-    };
+    const stepLockHook = workflowStepLockHook(
+      repoDir,
+      repoContext,
+      unlocked.datastoreConfig,
+      unlocked.syncService,
+    );
 
     await Promise.all([
       modelRegistry.ensureLoaded(),

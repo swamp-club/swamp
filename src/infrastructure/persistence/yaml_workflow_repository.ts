@@ -20,9 +20,9 @@
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import {
-  signalChange,
   stageTyped,
   typedStagingActive,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import {
   definitionDeleteBatches,
@@ -464,96 +464,99 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
-    await signalChange(
+    return await withChangeSignalled(
       this.markDirtyHook,
       { kind: "write", path: targetPath },
       { typed: true },
+      async () => {
+        const previousPath = this.idToActualPath.get(workflow.id);
+
+        // Check if this is a new workflow or an update
+        const legacyPath = this.getLegacyPath(workflow.id);
+        // On v3 (swamp-club#3256), what each file held before this save replaces
+        // or removes it: its digest for an edit's precondition, and the name it
+        // declared, which tells a rename apart.
+        const priors = typedStagingActive(this.markDirtyHook)
+          ? await readPriors([targetPath, previousPath, legacyPath])
+          : new Map<string, PriorFile>();
+        const isNew = !(await this.exists(targetPath)) &&
+          !(previousPath && await this.exists(previousPath)) &&
+          !(await this.exists(legacyPath));
+
+        const data = workflow.toData();
+        // Remove undefined values since YAML can't stringify them
+        const cleanData = JSON.parse(JSON.stringify(data));
+        const content = stringifyYaml(cleanData as Record<string, unknown>);
+        await atomicWriteTextFile(targetPath, content);
+        // The paths the cleanup below actually removed, for their v3 tombstones.
+        const removed: string[] = [];
+
+        // Clean up old file if we wrote to a different path
+        if (previousPath && previousPath !== targetPath) {
+          try {
+            await Deno.remove(previousPath);
+            removed.push(previousPath);
+            logger.debug`Migrated workflow file from ${
+              basename(previousPath)
+            } to ${basename(targetPath)}`;
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              logger.warn`Failed to remove old workflow file ${previousPath}: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
+          }
+        }
+
+        // Also check the legacy UUID path if it wasn't the previousPath
+        if (
+          targetPath !== legacyPath && previousPath !== legacyPath &&
+          await this.exists(legacyPath)
+        ) {
+          try {
+            await Deno.remove(legacyPath);
+            removed.push(legacyPath);
+            logger.debug`Migrated workflow file from ${
+              basename(legacyPath)
+            } to ${basename(targetPath)}`;
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              logger
+                .warn`Failed to remove legacy workflow file ${legacyPath}: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
+          }
+        }
+
+        this.idToActualPath.set(workflow.id, targetPath);
+        // Staged outside the cleanup's catch blocks, so a v3 refusal surfaces.
+        for (
+          const batch of typedStagingActive(this.markDirtyHook)
+            ? definitionSaveBatches({
+              kind: "workflow",
+              id: workflow.id,
+              name: workflow.name,
+              targetPath,
+              content: new TextEncoder().encode(content),
+              removed,
+              priors,
+              tierOf: (path) => this.stagingTierOf(path),
+            })
+            : [[]]
+        ) {
+          await stageTyped(this.markDirtyHook, () => batch);
+        }
+
+        // Emit event
+        if (this.eventBus) {
+          const event = isNew
+            ? createWorkflowCreated(workflow.id, workflow.name)
+            : createWorkflowUpdated(workflow.id, workflow.name);
+          await this.eventBus.publish(event);
+        }
+      },
     );
-    const previousPath = this.idToActualPath.get(workflow.id);
-
-    // Check if this is a new workflow or an update
-    const legacyPath = this.getLegacyPath(workflow.id);
-    // On v3 (swamp-club#3256), what each file held before this save replaces
-    // or removes it: its digest for an edit's precondition, and the name it
-    // declared, which tells a rename apart.
-    const priors = typedStagingActive(this.markDirtyHook)
-      ? await readPriors([targetPath, previousPath, legacyPath])
-      : new Map<string, PriorFile>();
-    const isNew = !(await this.exists(targetPath)) &&
-      !(previousPath && await this.exists(previousPath)) &&
-      !(await this.exists(legacyPath));
-
-    const data = workflow.toData();
-    // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(targetPath, content);
-    // The paths the cleanup below actually removed, for their v3 tombstones.
-    const removed: string[] = [];
-
-    // Clean up old file if we wrote to a different path
-    if (previousPath && previousPath !== targetPath) {
-      try {
-        await Deno.remove(previousPath);
-        removed.push(previousPath);
-        logger.debug`Migrated workflow file from ${basename(previousPath)} to ${
-          basename(targetPath)
-        }`;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          logger.warn`Failed to remove old workflow file ${previousPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
-    }
-
-    // Also check the legacy UUID path if it wasn't the previousPath
-    if (
-      targetPath !== legacyPath && previousPath !== legacyPath &&
-      await this.exists(legacyPath)
-    ) {
-      try {
-        await Deno.remove(legacyPath);
-        removed.push(legacyPath);
-        logger.debug`Migrated workflow file from ${basename(legacyPath)} to ${
-          basename(targetPath)
-        }`;
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          logger.warn`Failed to remove legacy workflow file ${legacyPath}: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-        }
-      }
-    }
-
-    this.idToActualPath.set(workflow.id, targetPath);
-    // Staged outside the cleanup's catch blocks, so a v3 refusal surfaces.
-    for (
-      const batch of typedStagingActive(this.markDirtyHook)
-        ? definitionSaveBatches({
-          kind: "workflow",
-          id: workflow.id,
-          name: workflow.name,
-          targetPath,
-          content: new TextEncoder().encode(content),
-          removed,
-          priors,
-          tierOf: (path) => this.stagingTierOf(path),
-        })
-        : [[]]
-    ) {
-      await stageTyped(this.markDirtyHook, () => batch);
-    }
-
-    // Emit event
-    if (this.eventBus) {
-      const event = isNew
-        ? createWorkflowCreated(workflow.id, workflow.name)
-        : createWorkflowUpdated(workflow.id, workflow.name);
-      await this.eventBus.publish(event);
-    }
   }
 
   /**
@@ -595,54 +598,60 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     // A file here that declares another workflow is kept, so the change is
     // a write of this path rather than its removal.
     const kept = await this.declaresOther(resolvedPath, id, name);
-    await signalChange(this.markDirtyHook, {
-      kind: kept ? "write" : "remove",
-      path: resolvedPath,
-    }, { typed: true });
-    const priors = typedStagingActive(this.markDirtyHook)
-      ? await readPriors([...pathsToTry])
-      : new Map<string, PriorFile>();
+    return await withChangeSignalled(
+      this.markDirtyHook,
+      {
+        kind: kept ? "write" : "remove",
+        path: resolvedPath,
+      },
+      { typed: true },
+      async () => {
+        const priors = typedStagingActive(this.markDirtyHook)
+          ? await readPriors([...pathsToTry])
+          : new Map<string, PriorFile>();
 
-    let deleted = false;
-    const removed: string[] = [];
-    for (const path of pathsToTry) {
-      // The id-named path is also where a workflow named with this UUID
-      // lives, and a copied file can share the id; never remove another
-      // workflow's file.
-      if (await this.declaresOther(path, id, name)) continue;
-      try {
-        await Deno.remove(path);
-        deleted = true;
-        removed.push(path);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+        let deleted = false;
+        const removed: string[] = [];
+        for (const path of pathsToTry) {
+          // The id-named path is also where a workflow named with this UUID
+          // lives, and a copied file can share the id; never remove another
+          // workflow's file.
+          if (await this.declaresOther(path, id, name)) continue;
+          try {
+            await Deno.remove(path);
+            deleted = true;
+            removed.push(path);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              throw error;
+            }
+          }
         }
-      }
-    }
 
-    if (deleted) {
-      this.idToActualPath.delete(id);
+        if (deleted) {
+          this.idToActualPath.delete(id);
 
-      if (this.eventBus && workflowName) {
-        const event = createWorkflowDeleted(id, workflowName);
-        await this.eventBus.publish(event);
-      }
-    }
-    for (
-      const batch of typedStagingActive(this.markDirtyHook)
-        ? definitionDeleteBatches({
-          kind: "workflow",
-          id,
-          name: workflowName,
-          removed,
-          priors,
-          tierOf: (path) => this.stagingTierOf(path),
-        })
-        : [[]]
-    ) {
-      await stageTyped(this.markDirtyHook, () => batch);
-    }
+          if (this.eventBus && workflowName) {
+            const event = createWorkflowDeleted(id, workflowName);
+            await this.eventBus.publish(event);
+          }
+        }
+        for (
+          const batch of typedStagingActive(this.markDirtyHook)
+            ? definitionDeleteBatches({
+              kind: "workflow",
+              id,
+              name: workflowName,
+              removed,
+              priors,
+              tierOf: (path) => this.stagingTierOf(path),
+            })
+            : [[]]
+        ) {
+          await stageTyped(this.markDirtyHook, () => batch);
+        }
+      },
+    );
   }
 
   /**

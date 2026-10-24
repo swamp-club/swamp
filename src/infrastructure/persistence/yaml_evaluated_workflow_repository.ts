@@ -26,9 +26,9 @@ import { join, relative, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import {
-  signalChange,
   stageTyped,
   typedStagingActive,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import {
   keyUnder,
@@ -414,80 +414,88 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
-    await signalChange(
+    return await withChangeSignalled(
       this.markDirtyHook,
       { kind: "write", path: targetPath },
       { typed: true },
+      async () => {
+        const previousPath = this.idToActualPath.get(workflow.id);
+        const legacyPath = this.getLegacyPath(workflow.id);
+        // On v3, the names the files declared before this save, read before it
+        // replaces or removes them: a fresh repository's id cache is cold, so a
+        // rename is known only from them (swamp-club#3256).
+        const priors = typedStagingActive(this.markDirtyHook)
+          ? await readPriors([targetPath, previousPath, legacyPath])
+          : new Map<string, PriorFile>();
+        const data = {
+          ...workflow.toData(),
+          deferredExpressions: deferredExpressions?.length
+            ? deferredExpressions
+            : undefined,
+          authoredExpressions: authoredExpressions === undefined
+            ? undefined
+            : [...authoredExpressions],
+          writtenReferences: writtenReferences.length
+            ? writtenReferences
+            : undefined,
+          sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+          provenance: provenance?.toData(),
+          persistedProvenance: persistedProvenance?.toData(),
+          evaluatedInputs: recorded && "inputs" in recorded
+            ? recorded.inputs
+            : undefined,
+          evaluatedInputsProvenance: recorded && "inputs" in recorded
+            ? recorded.provenance?.toData()
+            : undefined,
+          inheritedExpressions:
+            recorded && "inputs" in recorded && recorded.inheritedExpressions
+              ? [...recorded.inheritedExpressions]
+              : undefined,
+          evaluatedInputsOmitted: recorded && "omitted" in recorded
+            ? recorded.omitted
+            : undefined,
+        };
+        // Remove undefined values since YAML can't stringify them
+        const cleanData = JSON.parse(JSON.stringify(data));
+        const content = stringifyYaml(cleanData as Record<string, unknown>);
+        await atomicWriteTextFile(targetPath, content);
+        // The paths a removal below actually removed, for their v3 tombstones.
+        const removed: string[] = [];
+
+        // Clean up old file if it's at a different path
+        if (previousPath && previousPath !== targetPath) {
+          try {
+            await Deno.remove(previousPath);
+            removed.push(previousPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              throw error;
+            }
+          }
+        }
+
+        // Also check legacy UUID path
+        if (targetPath !== legacyPath && previousPath !== legacyPath) {
+          try {
+            await Deno.remove(legacyPath);
+            removed.push(legacyPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              throw error;
+            }
+          }
+        }
+
+        this.idToActualPath.set(workflow.id, targetPath);
+        await this.stageSave(
+          workflow.name,
+          targetPath,
+          content,
+          removed,
+          priors,
+        );
+      },
     );
-    const previousPath = this.idToActualPath.get(workflow.id);
-    const legacyPath = this.getLegacyPath(workflow.id);
-    // On v3, the names the files declared before this save, read before it
-    // replaces or removes them: a fresh repository's id cache is cold, so a
-    // rename is known only from them (swamp-club#3256).
-    const priors = typedStagingActive(this.markDirtyHook)
-      ? await readPriors([targetPath, previousPath, legacyPath])
-      : new Map<string, PriorFile>();
-    const data = {
-      ...workflow.toData(),
-      deferredExpressions: deferredExpressions?.length
-        ? deferredExpressions
-        : undefined,
-      authoredExpressions: authoredExpressions === undefined
-        ? undefined
-        : [...authoredExpressions],
-      writtenReferences: writtenReferences.length
-        ? writtenReferences
-        : undefined,
-      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
-      provenance: provenance?.toData(),
-      persistedProvenance: persistedProvenance?.toData(),
-      evaluatedInputs: recorded && "inputs" in recorded
-        ? recorded.inputs
-        : undefined,
-      evaluatedInputsProvenance: recorded && "inputs" in recorded
-        ? recorded.provenance?.toData()
-        : undefined,
-      inheritedExpressions:
-        recorded && "inputs" in recorded && recorded.inheritedExpressions
-          ? [...recorded.inheritedExpressions]
-          : undefined,
-      evaluatedInputsOmitted: recorded && "omitted" in recorded
-        ? recorded.omitted
-        : undefined,
-    };
-    // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(targetPath, content);
-    // The paths a removal below actually removed, for their v3 tombstones.
-    const removed: string[] = [];
-
-    // Clean up old file if it's at a different path
-    if (previousPath && previousPath !== targetPath) {
-      try {
-        await Deno.remove(previousPath);
-        removed.push(previousPath);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
-        }
-      }
-    }
-
-    // Also check legacy UUID path
-    if (targetPath !== legacyPath && previousPath !== legacyPath) {
-      try {
-        await Deno.remove(legacyPath);
-        removed.push(legacyPath);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
-        }
-      }
-    }
-
-    this.idToActualPath.set(workflow.id, targetPath);
-    await this.stageSave(workflow.name, targetPath, content, removed, priors);
   }
 
   /**
@@ -555,42 +563,48 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }
 
     const resolvedPath = cachedPath ?? this.getLegacyPath(id);
-    await signalChange(this.markDirtyHook, {
-      kind: "remove",
-      path: resolvedPath,
-    }, { typed: true });
-    const priors = typedStagingActive(this.markDirtyHook)
-      ? await readPriors([...pathsToTry])
-      : new Map<string, PriorFile>();
+    return await withChangeSignalled(
+      this.markDirtyHook,
+      {
+        kind: "remove",
+        path: resolvedPath,
+      },
+      { typed: true },
+      async () => {
+        const priors = typedStagingActive(this.markDirtyHook)
+          ? await readPriors([...pathsToTry])
+          : new Map<string, PriorFile>();
 
-    const removed: string[] = [];
-    for (const path of pathsToTry) {
-      try {
-        await Deno.remove(path);
-        removed.push(path);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+        const removed: string[] = [];
+        for (const path of pathsToTry) {
+          try {
+            await Deno.remove(path);
+            removed.push(path);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              throw error;
+            }
+          }
         }
-      }
-    }
 
-    this.idToActualPath.delete(id);
-    // On v3: a tombstone of each removed file in the partition of the name it
-    // declared; a file that names no workflow stages nothing.
-    await stageTyped(this.markDirtyHook, () =>
-      removed.flatMap((path) => {
-        const name = priors.get(path)?.name ?? workflow?.name;
-        const change = name === undefined
-          ? undefined
-          : unlessUnpartitionable(() =>
-            new ConfigChanges("workflow", name).remove(
-              "evaluated-workflow.delete",
-              this.keyOf(path),
-            )
-          );
-        return change === undefined ? [] : [change];
-      }));
+        this.idToActualPath.delete(id);
+        // On v3: a tombstone of each removed file in the partition of the name it
+        // declared; a file that names no workflow stages nothing.
+        await stageTyped(this.markDirtyHook, () =>
+          removed.flatMap((path) => {
+            const name = priors.get(path)?.name ?? workflow?.name;
+            const change = name === undefined
+              ? undefined
+              : unlessUnpartitionable(() =>
+                new ConfigChanges("workflow", name).remove(
+                  "evaluated-workflow.delete",
+                  this.keyOf(path),
+                )
+              );
+            return change === undefined ? [] : [change];
+          }));
+      },
+    );
   }
 
   /**
@@ -598,23 +612,27 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
    */
   async clear(): Promise<void> {
     const dir = this.getWorkflowsDir();
-    await signalChange(this.markDirtyHook, { kind: "remove", path: dir }, {
+    return await withChangeSignalled(this.markDirtyHook, {
+      kind: "remove",
+      path: dir,
+    }, {
       typed: true,
-    });
-    // On v3, each file's partition is read before the removal destroys it,
-    // so the directory removal stages one tombstone per file.
-    const tombstones = typedStagingActive(this.markDirtyHook)
-      ? await this.tombstonesOfAll()
-      : [];
-    try {
-      await Deno.remove(dir, { recursive: true });
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+    }, async () => {
+      // On v3, each file's partition is read before the removal destroys it,
+      // so the directory removal stages one tombstone per file.
+      const tombstones = typedStagingActive(this.markDirtyHook)
+        ? await this.tombstonesOfAll()
+        : [];
+      try {
+        await Deno.remove(dir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
-    }
-    this.idToActualPath.clear();
-    await stageTyped(this.markDirtyHook, () => tombstones);
+      this.idToActualPath.clear();
+      await stageTyped(this.markDirtyHook, () => tombstones);
+    });
   }
 
   /**
@@ -675,28 +693,30 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await ensureDir(dir);
 
     const targetPath = join(dir, "evaluated-workflow.yaml");
-    await signalChange(
+    return await withChangeSignalled(
       this.markDirtyHook,
       { kind: "write", path: targetPath },
       { typed: true },
+      async () => {
+        const data = {
+          ...workflow.toData(),
+          writtenReferences: writtenReferences.length
+            ? writtenReferences
+            : undefined,
+          sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+        };
+        const cleanData = JSON.parse(JSON.stringify(data));
+        const content = stringifyYaml(cleanData as Record<string, unknown>);
+        await atomicWriteTextFile(targetPath, content);
+        // On v3, the run's snapshot, which is derived: no precondition.
+        await stageTyped(this.markDirtyHook, () => [
+          new RunSnapshotChanges(workflow.id, runId).write(
+            this.keyOf(targetPath),
+            new TextEncoder().encode(content),
+          ),
+        ]);
+      },
     );
-    const data = {
-      ...workflow.toData(),
-      writtenReferences: writtenReferences.length
-        ? writtenReferences
-        : undefined,
-      sensitiveFormat: SENSITIVE_FORMAT_VERSION,
-    };
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(targetPath, content);
-    // On v3, the run's snapshot, which is derived: no precondition.
-    await stageTyped(this.markDirtyHook, () => [
-      new RunSnapshotChanges(workflow.id, runId).write(
-        this.keyOf(targetPath),
-        new TextEncoder().encode(content),
-      ),
-    ]);
   }
 
   async findByRunId(runId: string): Promise<Workflow | null> {
@@ -762,34 +782,38 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
 
   async deleteForRun(runId: string): Promise<void> {
     const dir = await this.runDir(runId);
-    await signalChange(this.markDirtyHook, { kind: "remove", path: dir }, {
+    return await withChangeSignalled(this.markDirtyHook, {
+      kind: "remove",
+      path: dir,
+    }, {
       typed: true,
-    });
-    // On v3, the snapshot's workflow id, read before the removal: run GC
-    // passes directory names, so a run id that is not a UUID, or a snapshot
-    // that is missing or names no workflow, stages nothing (no repository put
-    // it) rather than abort the collection.
-    const snapshotPath = join(dir, "evaluated-workflow.yaml");
-    const snapshot = typedStagingActive(this.markDirtyHook)
-      ? await readPriorFile(snapshotPath)
-      : undefined;
-    try {
-      await Deno.remove(dir, { recursive: true });
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+    }, async () => {
+      // On v3, the snapshot's workflow id, read before the removal: run GC
+      // passes directory names, so a run id that is not a UUID, or a snapshot
+      // that is missing or names no workflow, stages nothing (no repository put
+      // it) rather than abort the collection.
+      const snapshotPath = join(dir, "evaluated-workflow.yaml");
+      const snapshot = typedStagingActive(this.markDirtyHook)
+        ? await readPriorFile(snapshotPath)
+        : undefined;
+      try {
+        await Deno.remove(dir, { recursive: true });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
-    }
-    await stageTyped(this.markDirtyHook, () => {
-      const workflowId = snapshot?.id;
-      const change = workflowId === undefined
-        ? undefined
-        : unlessUnpartitionable(() =>
-          new RunSnapshotChanges(workflowId, runId).remove(
-            this.keyOf(snapshotPath),
-          )
-        );
-      return change === undefined ? [] : [change];
+      await stageTyped(this.markDirtyHook, () => {
+        const workflowId = snapshot?.id;
+        const change = workflowId === undefined
+          ? undefined
+          : unlessUnpartitionable(() =>
+            new RunSnapshotChanges(workflowId, runId).remove(
+              this.keyOf(snapshotPath),
+            )
+          );
+        return change === undefined ? [] : [change];
+      });
     });
   }
 

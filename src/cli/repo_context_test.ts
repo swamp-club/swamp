@@ -1388,8 +1388,10 @@ Deno.test(
           new TextEncoder().encode("payload"),
         );
 
-        // save fires one markDirty call with the data-name directory as relPath.
-        assertEquals(markDirtyCalls.length, 1);
+        // save fires a markDirty call with the data-name directory as
+        // relPath before the write and another after it (swamp-club#2421).
+        assertEquals(markDirtyCalls.length, 2);
+        assertEquals(markDirtyCalls[1], markDirtyCalls[0]);
         const relPath = markDirtyCalls[0].relPath;
         if (relPath === undefined) {
           throw new Error("expected relPath to be set");

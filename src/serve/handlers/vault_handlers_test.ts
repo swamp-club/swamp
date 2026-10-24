@@ -433,8 +433,10 @@ Deno.test("handleVaultCreate: marks the new config file by path under managedCon
     const { events, response } = await runVaultCreate(repoDir, cacheRoot);
 
     assertEquals(response.type, "vault.create");
-    assertEquals(events.length, 2);
-    const [mark, push] = events;
+    // Marked before the write and again after it (swamp-club#2421).
+    assertEquals(events.length, 3);
+    const [mark, markAfter, push] = events;
+    assertEquals(markAfter, mark);
     assertEquals(push, { kind: "push" });
     assert(
       mark.kind === "mark" &&
@@ -722,8 +724,10 @@ Deno.test("handleVaultEdit: updates the managed vault config and pushes it by pa
       "updated",
     );
     assertEquals((await read(vault.id))?.auditReads, true);
-    assertEquals(events.length, 2);
-    const [mark, push] = events;
+    // Marked before the write and again after it (swamp-club#2421).
+    assertEquals(events.length, 3);
+    const [mark, markAfter, push] = events;
+    assertEquals(markAfter, mark);
     assertEquals(push, { kind: "push" });
     assertEquals(mark, {
       kind: "mark",

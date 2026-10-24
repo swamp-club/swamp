@@ -465,13 +465,17 @@ Deno.test("YamlVaultConfigRepository.save: stages a write of the config file", a
 
     await runInUnitOfWork(uow, () => repo.save(config));
 
-    assertEquals(uow.staged(), [{ kind: "write", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "write", path }, {
+      kind: "write",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), true);
   });
 });
 
-Deno.test("YamlVaultConfigRepository.save: marks the config before writing it", async () => {
+Deno.test("YamlVaultConfigRepository.save: marks the config before writing it and after", async () => {
   await withTempDir(async (dir) => {
     const existedAtMark: boolean[] = [];
     const markDirty: MarkDirtyHook = async (path?: string) => {
@@ -486,7 +490,9 @@ Deno.test("YamlVaultConfigRepository.save: marks the config before writing it", 
 
     await repo.save(localVault("vault-1", "v1"));
 
-    assertEquals(existedAtMark, [false]);
+    // Absent before the write; present at the mark after it
+    // (swamp-club#2421).
+    assertEquals(existedAtMark, [false, true]);
   });
 });
 
@@ -505,13 +511,17 @@ Deno.test("YamlVaultConfigRepository.delete: stages a remove of the config file"
 
     await runInUnitOfWork(uow, () => repo.delete(config));
 
-    assertEquals(uow.staged(), [{ kind: "remove", path }]);
-    assertEquals(marks, [path]);
+    // Signalled before the write and again after it (swamp-club#2421).
+    assertEquals(uow.staged(), [{ kind: "remove", path }, {
+      kind: "remove",
+      path,
+    }]);
+    assertEquals(marks, [path, path]);
     assertEquals(await pathExists(path), false);
   });
 });
 
-Deno.test("YamlVaultConfigRepository.delete: marks the config before removing it", async () => {
+Deno.test("YamlVaultConfigRepository.delete: marks the config before removing it and after", async () => {
   await withTempDir(async (dir) => {
     const config = localVault("vault-1", "v1");
     await new YamlVaultConfigRepository(dir).save(config);
@@ -528,7 +538,9 @@ Deno.test("YamlVaultConfigRepository.delete: marks the config before removing it
 
     await repo.delete(config);
 
-    assertEquals(existedAtMark, [true]);
+    // Present before the removal; gone at the mark after it
+    // (swamp-club#2421).
+    assertEquals(existedAtMark, [true, false]);
   });
 });
 
@@ -545,7 +557,9 @@ Deno.test("YamlVaultConfigRepository.delete: stages a remove for a config alread
 
     await repo.delete(config);
 
-    assertEquals(marks, [repo.getPath(config.type, config.id)]);
+    // Marked before the removal and after it (swamp-club#2421).
+    const path = repo.getPath(config.type, config.id);
+    assertEquals(marks, [path, path]);
   });
 });
 

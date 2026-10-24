@@ -28,7 +28,7 @@ import {
   relative,
   SEPARATOR,
 } from "@std/path";
-import { signalChange, stageTyped } from "./unit_of_work_scope.ts";
+import { stageTyped, withChangeSignalled } from "./unit_of_work_scope.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
@@ -141,11 +141,18 @@ export class YamlOutputRepository implements OutputRepository {
     this.baseDir = baseDir ?? this.localOutputsDir;
   }
 
-  private async stage(change: StagedChange): Promise<void> {
+  /**
+   * Runs a write or remove with its changes signalled before it and, on v2,
+   * again once it has settled (swamp-club#2421).
+   */
+  private staged<T>(
+    changes: StagedChange | readonly StagedChange[],
+    write: () => Promise<T>,
+  ): Promise<T> {
     // Every record write stages its typed change after it (swamp-club#3250),
     // so a v3 unit takes no path change from this repository. Run logs have
     // no typed change: nothing puts them on v3 yet.
-    await signalChange(this.markDirty, change, { typed: true });
+    return withChangeSignalled(this.markDirty, changes, { typed: true }, write);
   }
 
   /**
@@ -520,20 +527,21 @@ export class YamlOutputRepository implements OutputRepository {
     output: ModelOutput,
   ): Promise<void> {
     const path = this.getPath(type, method, output);
-    await this.stage({ kind: "write", path });
-
-    const dir = this.getMethodDir(type, method);
-    await assertSafePath(dir, this.baseDir);
-    await ensureDir(dir);
-    const data = output.toData();
-    // Convert logFile to relative path for storage
-    if (data.logFile) {
-      data.logFile = toRelativePath(this.repoDir, data.logFile);
-    }
-    // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(path, content);
+    const content = await this.staged({ kind: "write", path }, async () => {
+      const dir = this.getMethodDir(type, method);
+      await assertSafePath(dir, this.baseDir);
+      await ensureDir(dir);
+      const data = output.toData();
+      // Convert logFile to relative path for storage
+      if (data.logFile) {
+        data.logFile = toRelativePath(this.repoDir, data.logFile);
+      }
+      // Remove undefined values since YAML can't stringify them
+      const cleanData = JSON.parse(JSON.stringify(data));
+      const text = stringifyYaml(cleanData as Record<string, unknown>);
+      await atomicWriteTextFile(path, text);
+      return text;
+    });
     await stageTyped(this.markDirty, () => [
       new ModelChanges(type, output.definitionId).writeOutput(
         output.id,
@@ -781,23 +789,25 @@ export class YamlOutputRepository implements OutputRepository {
     }
     if (dryRun) return bytes;
 
-    await this.stage({ kind: "remove", path: yamlPath });
+    const removals: StagedChange[] = [{ kind: "remove", path: yamlPath }];
     if (logPath && logExists && this.inBaseDir(logPath)) {
-      await this.stage({ kind: "remove", path: logPath });
+      removals.push({ kind: "remove", path: logPath });
     }
-    try {
-      await Deno.remove(yamlPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
-    if (logPath && logExists) {
+    await this.staged(removals, async () => {
       try {
-        await Deno.remove(logPath);
+        await Deno.remove(yamlPath);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       }
-      await cleanupEmptyParentDirs(logPath, this.rootFor(logPath));
-    }
+      if (logPath && logExists) {
+        try {
+          await Deno.remove(logPath);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+        await cleanupEmptyParentDirs(logPath, this.rootFor(logPath));
+      }
+    });
     await cleanupEmptyParentDirs(yamlPath, this.baseDir);
     await stageTyped(
       this.markDirty,
@@ -882,14 +892,16 @@ export class YamlOutputRepository implements OutputRepository {
         if (referenced.has(candidate.path)) continue;
         bytes += candidate.size;
         if (dryRun) continue;
-        if (this.inBaseDir(candidate.path)) {
-          await this.stage({ kind: "remove", path: candidate.path });
-        }
-        try {
-          await Deno.remove(candidate.path);
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-        }
+        const removal: StagedChange[] = this.inBaseDir(candidate.path)
+          ? [{ kind: "remove", path: candidate.path }]
+          : [];
+        await this.staged(removal, async () => {
+          try {
+            await Deno.remove(candidate.path);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+        });
         await cleanupEmptyParentDirs(candidate.path, this.localOutputsDir);
       }
     }

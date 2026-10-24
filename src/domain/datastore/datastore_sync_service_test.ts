@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertStringIncludes,
+} from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
   HydrateContractViolationError,
@@ -160,6 +164,30 @@ Deno.test("ModelLockLostError: names each model, its current holder, and says no
   assertStringIncludes(err.message, "data was discarded from this host");
   assertStringIncludes(err.message, "refreshed from the datastore when it");
   assertStringIncludes(err.message, "Run the method or workflow again");
+});
+
+Deno.test("UnpublishedDataVersionError: names the versions and the causes left once the last push runs alone (swamp-club#3860)", () => {
+  const err = new UnpublishedDataVersionError([{
+    modelType: "command/shell",
+    modelId: "m1",
+    dataName: "report",
+    version: 72,
+  }], 3);
+  assertInstanceOf(err, UserError);
+  assertEquals(err.code, "datastore_unpublished_data_version");
+  assertEquals(err.versions.map((v) => v.version), [72]);
+  assertStringIncludes(
+    err.message,
+    "does not hold command/shell/m1 report version 72 after 3 push attempts",
+  );
+  assertStringIncludes(
+    err.message,
+    "another swamp process using this repository (a workflow run or swamp serve)",
+  );
+  assertStringIncludes(err.message, "once that process has finished");
+  assertStringIncludes(err.message, "did not keep the uploaded files");
+  assertEquals(err.message.includes("serve poller"), false);
+  assertStringIncludes(err.message, "The data is on this host only");
 });
 
 Deno.test("isUnpublishedDataError: matches the two push refusals and nothing else", () => {

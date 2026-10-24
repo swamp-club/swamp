@@ -201,9 +201,16 @@ Deno.test("serve root units: a workflow run that suspends pushes once, after the
     const observation = observe(repos, base);
 
     assertEquals(last, "suspended:suspended");
+    // Each repository write is marked before it and after it
+    // (swamp-club#2421).
     assertEquals(observation.ops, [
       "markDirty workflows-evaluated/workflow-gated.yaml",
+      "markDirty workflows-evaluated/workflow-gated.yaml",
       "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+      "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+      "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -238,9 +245,16 @@ Deno.test("serve root units: a workflow run cancelled before it starts a step pu
     const observation = observe(repos, base);
 
     assertEquals(last, "cancelled:cancelled");
+    // Each repository write is marked before it and after it
+    // (swamp-club#2421).
     assertEquals(observation.ops, [
       "markDirty workflows-evaluated/workflow-plain.yaml",
+      "markDirty workflows-evaluated/workflow-plain.yaml",
       "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+      "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+      "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
@@ -798,11 +812,17 @@ Deno.test("serve root units: a model.method.run that takes model locks pushes on
     assertEquals(errorFrame(frames), undefined);
     // The lock flush commits the run's changes when the locks are released;
     // the root's flush, which owns only the no-lock push, pushes nothing.
+    // Each repository write is marked before it and after it
+    // (swamp-club#2421).
     assertEquals(observation.ops, [
       "pull[0]",
       "markDirty definitions-evaluated/<type>/m1.yaml",
+      "markDirty definitions-evaluated/<type>/m1.yaml",
+      "markDirty outputs/<type>/touch/<id>-<time>.yaml",
       "markDirty outputs/<type>/touch/<id>-<time>.yaml",
       "markDirty data/<type>/<id>/report-swamp-method-summary",
+      "markDirty data/<type>/<id>/report-swamp-method-summary",
+      "markDirty data/<type>/<id>/report-swamp-method-summary-json",
       "markDirty data/<type>/<id>/report-swamp-method-summary-json",
       "prepare[8]",
       "commit[8]",

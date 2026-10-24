@@ -1355,9 +1355,14 @@ interface DatastoreSyncOptions {
 
 The contract has eight rules:
 
-1. **Pre-write timing.** `markDirty` fires before the cache write. The file is
-   not on disk yet, so extensions MUST NOT act on `relPath` synchronously. Record
-   it as a hint for the next `pushChanged`.
+1. **Before and after the write.** `markDirty` fires before the cache write,
+   and again once the write or removal has landed, including one that throws
+   part-way (swamp-club#2421). At the first call the file is not on disk yet,
+   so extensions MUST NOT act on `relPath` synchronously. Record it as a hint
+   for the next `pushChanged`. A push that starts between the two calls can
+   upload the old bytes, or re-upload a file about to be removed; the second
+   call marks the path again, so a push MUST NOT drop a mark recorded after it
+   started.
 2. **Absence-on-disk = delete.** If `pushChanged` later finds a recorded
    `relPath` missing from the cache, the extension SHOULD delete the remote
    record. One signal covers create, update and delete.
@@ -1448,13 +1453,19 @@ Repositories stage each change (`write` or `remove` with an absolute path, or
 `bulk`) before writing, and a use case commits the unit once the operation is
 done. The legacy adapter (`src/infrastructure/persistence/legacy_unit_of_work.ts`)
 forwards each staged change to the dirty hook straight away, `markDirty(path)`
-for a write or remove and `markDirty()` for bulk. It keeps the pre-write timing
-and the order of bulk and per-path signals, and never batches or deduplicates.
+for a write or remove and `markDirty()` for bulk. It keeps the timing (a signal
+before each write and one once it has landed) and the order of bulk and
+per-path signals, and never batches or deduplicates.
 `commit` waits for any stage still in flight, runs once, and spends the unit
 even when it fails.
 
-Repositories route their signal through `signalChange`
-(`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
+Repositories route their signal through `withChangeSignalled`
+(`src/infrastructure/persistence/unit_of_work_scope.ts`), which sends each
+change through `signalChange` before the write runs and, on v2, again once it
+has settled, even when it throws (swamp-club#2421). The signal before keeps a
+v3 unit's pre-write check and leaves a path marked if the process dies
+mid-write. The signal after is skipped for a hook that requires a unit (v3):
+the commit-log unit already holds the change. The data and output
 repositories (swamp-club#2979), the definition, workflow, evaluated definition
 and evaluated workflow repositories (swamp-club#2980), the workflow run
 repository (swamp-club#2992) and the vault config repository (swamp-club#2995)
@@ -1790,21 +1801,34 @@ extension and overrides the per-path signal. That has two costs:
   (swamp-club#2408), and every vault or access change did the same
   (swamp-club#2415).
 
-The repositories mark a path dirty before they write it, so a push can land
-between a repository's mark and its write. That push finds the path absent,
-treats it as a delete and clears the mark, and the writer's own push then has
-nothing to upload. Serve's gate now keeps run pushes (shared mode) out of every
-handler mutation (exclusive mode), so a run finishing at the same moment can no
+The repositories used to mark a path dirty only before they wrote it, so a push
+could land between a repository's mark and its write. That push found the path
+absent (or its old bytes), treated it as a delete (or uploaded the old bytes)
+and cleared the mark, and the writer's own push then had nothing to upload.
+Serve's gate now keeps run pushes (shared mode) out of every handler mutation
+(exclusive mode), so a run finishing at the same moment can no
 longer do this to a gated handler (swamp-club#2405). Concurrent runs still
 share the gate and can still do it to each other. The OAuth mint and
 `access.reload` also re-mark their paths, by path, after the writes and just
 before `pushChanged()`: the mint for the token's definition file and data
 folder, `access.reload` for each grant definition it created and each grant data
 folder it wrote. A reload that changes nothing marks nothing, so its push takes
-the fast path. A push already running when the re-mark lands still clears it,
-because the extension resets the whole dirty set when a push completes.
-swamp-club#2421 tracks the proper fix: repositories that mark after the write,
-and extensions that clear only the marks a push handled.
+the fast path. With an extension older than 2026.10.24.2, a push already
+running when the re-mark lands still clears it, because that extension resets
+the whole dirty set when a push completes.
+swamp-club#2421 has two halves. Core now marks before and after every
+repository write and remove (`withChangeSignalled`), so a push that cleared
+the first mark mid-write leaves the second one for the next push. The
+extension half ships in `@swamp/s3-datastore` and `@swamp/gcs-datastore`
+2026.10.24.2 (swamp-club#3860): each mark gives its path a new generation, a
+push snapshots the marks it walks, and its commit clears only those whose
+generation is unchanged, so a mark made while a push runs survives it. A push
+no longer bulk-marks itself, so a failed scoped push keeps its path marks and
+its recorded deletes (swamp-club#2907). A file that vanishes mid-walk is
+skipped and stays marked, a dangling symlink is skipped, and atomic-write
+temp files are never walked. With an older extension, a push already running
+when the second mark lands can still clear it. The re-marks above stay: they
+mark again just before the push they precede.
 
 **Data versions written under a behavior lock (swamp-club#3146).** Concurrent
 runs of one serve process share its sync service, so another run's push can
@@ -1842,10 +1866,11 @@ publishes what the work under it wrote and checks it landed:
 What stays exposed until the S3/GCS extensions clear only the marks a push
 handled and stop overwriting paths with a pending mark:
 
-- In serve, the run lanes keep a run pull out of every run push, so a pull
-  can no longer revert a marker, locally or on the remote, after a push
-  verified it. Two processes sharing one cache (a CLI next to serve) are not
-  covered: there a pull can still do both.
+- In serve and in a CLI workflow run (swamp-club#3860), the run lanes keep a
+  run pull out of every run push, so a pull can no longer revert a marker,
+  locally or on the remote, after a push verified it. Two processes sharing one
+  cache (a CLI next to serve, or two CLI runs) are not covered: there a pull can
+  still do both.
 - Run records, evaluated definitions, output records, definition YAML and
   appends to an existing version can still be reverted locally by an
   overlapping pull; only data versions are verified.
@@ -1975,6 +2000,22 @@ serve function pushes outside the gate: a raw push outside a
 `createStepLockHook` and `executeWorkflowWithLocks` take the gate as a required
 parameter, so the compiler also catches callers outside `src/serve`, such as the
 scheduler in `src/cli/commands/serve.ts`.
+
+**A CLI workflow run gates its own steps (swamp-club#3860).** The steps of one
+`swamp workflow run` or `swamp workflow resume` share that command's sync
+service, so the same undo happens inside a single run: a parallel step's commit
+clears the marks another step just staged, and before #3860 nothing kept the
+step's last publish attempt apart from its siblings. Each command now builds its
+step lock hook with `workflowStepLockHook` (`src/cli/commands/workflow_run.ts`),
+which creates one gate per command and passes it to `createStepLockHook`. A
+run's steps take the shared mode in their lanes, and a lock's last publish
+attempt takes the exclusive mode, as in serve. The gate is per command, so two
+CLI processes on one repository still do not exclude each other. A fitness rule
+in `integration/serve_deps_rules_test.ts` pins that every CLI step lock hook is
+built this way. Since the last attempt normally runs with no other sync in the
+process (a gate wait that times out goes ahead ungated),
+`UnpublishedDataVersionError` names the likely causes left: another swamp
+process using the repository, or a datastore that did not keep the files.
 
 Six properties of the gate are easy to misread:
 

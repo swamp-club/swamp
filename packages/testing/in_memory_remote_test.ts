@@ -29,6 +29,7 @@ import { dirname, join } from "@std/path";
 import {
   createInMemoryRemote,
   EXTENSION_2026_10_01_SEMANTICS,
+  EXTENSION_2026_10_20_SEMANTICS,
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 import { assertSyncServiceConformance } from "./datastore_conformance.ts";
@@ -396,9 +397,28 @@ Deno.test("createInMemoryRemote: prepare keeps dirty state, so a push without co
   });
 });
 
-Deno.test("createInMemoryRemote: pins that commit clears marks made after prepare (S3SYNC:4051)", async () => {
+Deno.test("createInMemoryRemote: commit keeps marks made after prepare", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "first", "1");
+    await a.markDirty({ relPath: "first" });
+    const manifest = await a.preparePush();
+
+    await write(aCache, "second", "2");
+    await a.markDirty({ relPath: "second" });
+    await a.commitPush(manifest);
+    assertEquals((await remote.pendingPush(aCache)).marked, ["second"]);
+    assertEquals(await a.pushChanged(), 1);
+    assertEquals(remoteText(remote, "second"), "2");
+    assertEquals(await a.pushChanged(), 0);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that commit clears marks made after prepare with extensions through 2026.10.20.2 (S3SYNC:4051)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
     await write(aCache, "first", "1");
     await a.markDirty({ relPath: "first" });
     const manifest = await a.preparePush();
@@ -409,6 +429,183 @@ Deno.test("createInMemoryRemote: pins that commit clears marks made after prepar
     assertEquals(await a.pushChanged(), 0);
     assertEquals(remote.files().has("second"), false);
   });
+});
+
+Deno.test("createInMemoryRemote: commit keeps a path marked again after prepare", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "f", "1");
+    await a.markDirty({ relPath: "f" });
+    const manifest = await a.preparePush();
+
+    await a.markDirty({ relPath: "f" });
+    await write(aCache, "f", "2");
+    await a.commitPush(manifest);
+    assertEquals(remoteText(remote, "f"), "1");
+    assertEquals(await a.pushChanged(), 1);
+    assertEquals(remoteText(remote, "f"), "2");
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that commit clears a path marked again after prepare with extensions through 2026.10.20.2", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
+    await write(aCache, "f", "1");
+    await a.markDirty({ relPath: "f" });
+    const manifest = await a.preparePush();
+
+    await a.markDirty({ relPath: "f" });
+    await write(aCache, "f", "2");
+    await a.commitPush(manifest);
+    assertEquals(await a.pushChanged(), 0);
+    assertEquals(remoteText(remote, "f"), "1");
+  });
+});
+
+Deno.test("createInMemoryRemote: commit keeps a bulk mark made after prepare, and a path mark the bulk flag absorbed", async () => {
+  for (const late of ["bare", "path"] as const) {
+    await withTempDir(async (dir) => {
+      const { remote, a, aCache } = await twoMachines(dir);
+      await a.markDirty();
+      await write(aCache, "first", "1");
+      const manifest = await a.preparePush();
+
+      // A path mark while the bulk flag is set is not recorded, so the
+      // flag has to carry it.
+      if (late === "bare") await a.markDirty();
+      else await a.markDirty({ relPath: "second" });
+      await write(aCache, "second", "2");
+      await a.commitPush(manifest);
+      assertEquals((await remote.pendingPush(aCache)).bulk, true, late);
+      assertEquals(await a.pushChanged(), 1, late);
+      assertEquals(remoteText(remote, "second"), "2", late);
+      assertEquals((await remote.pendingPush(aCache)).bulk, false, late);
+    });
+  }
+});
+
+Deno.test("createInMemoryRemote: pins that commit clears a bulk mark made after prepare with extensions through 2026.10.20.2", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
+    await write(aCache, "first", "1");
+    await a.markDirty({ relPath: "first" });
+    const manifest = await a.preparePush();
+
+    await a.markDirty();
+    await write(aCache, "second", "2");
+    await a.commitPush(manifest);
+    assertEquals(await a.pushChanged(), 0);
+    assertEquals(remote.files().has("second"), false);
+  });
+});
+
+Deno.test("createInMemoryRemote: a push walks the marks made before it started, and keeps later ones", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "early", "e");
+    await write(aCache, "late", "l");
+    await a.markDirty({ relPath: "early" });
+    // The push snapshots its marks before its first await.
+    const pushing = a.pushChanged();
+    await a.markDirty({ relPath: "late" });
+    assertEquals(await pushing, 1);
+    assertEquals(remote.files().has("late"), false);
+    assertEquals((await remote.pendingPush(aCache)).marked, ["late"]);
+    assertEquals(await a.pushChanged(), 1);
+    assertEquals(remoteText(remote, "late"), "l");
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a push walks and clears marks made while it runs with extensions through 2026.10.20.2", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
+    await write(aCache, "early", "e");
+    await write(aCache, "late", "l");
+    await a.markDirty({ relPath: "early" });
+    const pushing = a.pushChanged();
+    await a.markDirty({ relPath: "late" });
+    assertEquals(await pushing, 2);
+    assertEquals((await remote.pendingPush(aCache)).marked, []);
+  });
+});
+
+Deno.test({
+  name:
+    "createInMemoryRemote: a dangling symlink in a marked directory is skipped, per semantics",
+  // Windows hosts without Developer Mode cannot create symlinks.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    for (const released of [false, true]) {
+      await withTempDir(async (dir) => {
+        const { remote, a, aCache } = await twoMachines(
+          dir,
+          released ? { semantics: EXTENSION_2026_10_20_SEMANTICS } : undefined,
+        );
+        await write(aCache, "d/live", "l");
+        await a.markDirty({ relPath: "d/live" });
+        await a.pushChanged();
+
+        await a.markDirty({ relPath: "d" });
+        await write(aCache, "d/a-added", "a");
+        await write(aCache, "d/z-added", "z");
+        await Deno.symlink(
+          join(aCache, "d", "nowhere"),
+          join(aCache, "d", "m"),
+          {
+            type: "file",
+          },
+        );
+        await a.pushChanged();
+        const keys = [...remote.files().keys()].sort();
+        // Released: the stat failure takes the directory as absent, after
+        // uploading what it walked before the entry.
+        assertEquals(
+          keys,
+          released ? ["d/a-added"] : ["d/a-added", "d/live", "d/z-added"],
+          released ? "released" : "default",
+        );
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "createInMemoryRemote: pins that a dangling symlink ends an overflowed full walk with extensions through 2026.10.20.2",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    for (const released of [false, true]) {
+      await withTempDir(async (dir) => {
+        const { remote, a, aCache } = await twoMachines(dir, {
+          dirtyPathsCap: 1,
+          ...(released ? { semantics: EXTENSION_2026_10_20_SEMANTICS } : {}),
+        });
+        await write(aCache, "a", "a");
+        await write(aCache, "z", "z");
+        await a.markDirty({ relPath: "a" });
+        await a.markDirty({ relPath: "z" });
+        await a.pushChanged();
+
+        await Deno.symlink(join(aCache, "nowhere"), join(aCache, "m"), {
+          type: "file",
+        });
+        await a.markDirty({ relPath: "a" });
+        await a.markDirty({ relPath: "m" });
+        await a.pushChanged();
+        assertEquals(
+          [...remote.files().keys()].sort(),
+          released ? ["a"] : ["a", "z"],
+          released ? "released" : "default",
+        );
+      });
+    }
+  },
 });
 
 Deno.test("createInMemoryRemote: injected prepare and commit failures leave the change pending", async () => {
@@ -427,7 +624,28 @@ Deno.test("createInMemoryRemote: injected prepare and commit failures leave the 
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a push failing after its uploads loses the recorded deletes (S3SYNC:2911, 3305-3307)", async () => {
+Deno.test("createInMemoryRemote: pins that a push failing after its uploads loses the recorded deletes, as released (S3SYNC:2911, 3305-3307)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
+    await write(aCache, "gone", "g");
+    await a.markDirty({ relPath: "gone" });
+    await a.pushChanged();
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "new" });
+    remote.failNext("push", undefined, { afterUploads: true });
+    await assertRejects(() => a.pushChanged());
+
+    await a.pushChanged();
+    assertEquals([...remote.files().keys()].sort(), ["gone", "new"]);
+  });
+});
+
+Deno.test("createInMemoryRemote: a scoped push failing after its uploads keeps its marks, so the next push still sends its deletes (swamp-club#3860)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "gone", "g");
@@ -442,7 +660,7 @@ Deno.test("createInMemoryRemote: pins that a push failing after its uploads lose
     await assertRejects(() => a.pushChanged());
 
     await a.pushChanged();
-    assertEquals([...remote.files().keys()].sort(), ["gone", "new"]);
+    assertEquals([...remote.files().keys()].sort(), ["new"]);
   });
 });
 
@@ -695,9 +913,11 @@ Deno.test("pendingPush: reports the next push's uploads, deletes and marks witho
   });
 });
 
-Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails past its uploads", async () => {
+Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails past its uploads, as released", async () => {
   await withTempDir(async (dir) => {
-    const { remote, a, aCache } = await twoMachines(dir);
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
     await write(aCache, "gone", "g");
     await a.markDirty({ relPath: "gone" });
     await a.pushChanged();
@@ -714,6 +934,29 @@ Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails 
       deletes: [],
       marked: ["gone", "new"],
       bulk: true,
+    });
+  });
+});
+
+Deno.test("pendingPush: a scoped push failing past its uploads keeps its marks and deletes, with no bulk flag (swamp-club#3860)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "gone", "g");
+    await a.markDirty({ relPath: "gone" });
+    await a.pushChanged();
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "new" });
+    remote.failNext("push", undefined, { afterUploads: true });
+    await assertRejects(() => a.pushChanged());
+
+    assertEquals(await remote.pendingPush(aCache), {
+      uploads: ["new"],
+      deletes: ["gone"],
+      marked: ["gone", "new"],
+      bulk: false,
     });
   });
 });

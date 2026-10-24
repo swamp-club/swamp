@@ -232,15 +232,13 @@ Deno.test("YamlEvaluatedWorkflowRepository: clear calls markDirty with directory
       }],
     });
 
+    // Each mutation marks before it and again after it (swamp-club#2421).
     await repo.save(workflow, undefined);
-    assertEquals(calls.length, 1);
+    assertEquals(calls.length, 2);
 
     await repo.clear();
-    assertEquals(calls.length, 2);
-    assertEquals(
-      calls[1],
-      join(tempDir, ".swamp", "workflows-evaluated"),
-    );
+    const evaluatedDir = join(tempDir, ".swamp", "workflows-evaluated");
+    assertEquals(calls.slice(2), [evaluatedDir, evaluatedDir]);
   } finally {
     await Deno.remove(tempDir, { recursive: true }).catch(() => {});
   }
@@ -286,11 +284,12 @@ Deno.test("YamlEvaluatedWorkflowRepository: listRunSnapshots lists run snapshots
   }
 });
 
-Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory dirty before removing it", async () => {
+Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory dirty before removing it and after", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
     const calls: Array<string | undefined> = [];
-    let existedWhenMarked = false;
+    // Whether the run directory existed at each of its marks.
+    const existedWhenMarked: boolean[] = [];
     const runId = crypto.randomUUID();
     const runDir = join(
       tempDir,
@@ -302,9 +301,11 @@ Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory
     const markDirty = async (relPath?: string) => {
       calls.push(relPath);
       if (relPath === runDir) {
-        existedWhenMarked = await Deno.stat(runDir).then(
-          () => true,
-          () => false,
+        existedWhenMarked.push(
+          await Deno.stat(runDir).then(
+            () => true,
+            () => false,
+          ),
         );
       }
     };
@@ -317,8 +318,10 @@ Deno.test("YamlEvaluatedWorkflowRepository: deleteForRun marks the run directory
 
     await repo.deleteForRun(runId);
 
-    assertEquals(calls.at(-1), runDir);
-    assertEquals(existedWhenMarked, true);
+    assertEquals(calls.slice(-2), [runDir, runDir]);
+    // Present before the removal, gone at the mark after it
+    // (swamp-club#2421).
+    assertEquals(existedWhenMarked, [true, false]);
     assertEquals(await repo.listRunSnapshots(), []);
     // A missing snapshot is ignored.
     await repo.deleteForRun(runId);

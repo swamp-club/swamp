@@ -188,7 +188,9 @@ Deno.test("lock acquire and release", async () => {
 An in-memory remote datastore shared by several simulated machines. Each
 `connect(cacheDir)` returns a sync service bound to that cache directory, with
 two-phase push. By default it behaves like `@swamp/s3-datastore` and
-`@swamp/gcs-datastore` 2026.10.06.1 through 2026.10.07.1, gaps included:
+`@swamp/gcs-datastore` 2026.10.06.1 through 2026.10.20.2, gaps included, except
+where it models the fix of swamp-club#3860: a push or commit clears only the
+marks it handled, and an entry that vanishes mid-walk is skipped. Otherwise:
 
 - a bare `markDirty()` makes the next push a full walk that deletes nothing;
 - a write that was never marked is never pushed;
@@ -200,15 +202,21 @@ two-phase push. By default it behaves like `@swamp/s3-datastore` and
 - a service keeps the namespace of its first pull or push, and rejects a later
   one with a different namespace.
 
+Each mark gives its path a new generation, even when the path is already marked.
+A push or `preparePush` snapshots the marks when it starts and walks only those;
+success removes only the snapshot's paths whose generation is unchanged, and
+clears the bulk flag only when no bulk mark came after the snapshot.
+
 The source header cites the extension code behind each behaviour, checked at
-swamp-extensions 7c0b1eacf. Earlier releases are available as `semantics`
+swamp-extensions 7c0b1eacf. Released behaviour is available as `semantics`
 values:
 
-| Constant                         | Models                    | Differs from the default                                 |
-| -------------------------------- | ------------------------- | -------------------------------------------------------- |
-| `EXTENSION_SEMANTICS`            | 2026.10.06.1–2026.10.07.1 | the default                                              |
-| `EXTENSION_2026_10_01_SEMANTICS` | 2026.10.01.1              | removes no peer deletes                                  |
-| `LEGACY_EXTENSION_SEMANTICS`     | 2026.09.24.1 and earlier  | also: a pull of a remote that moved drops a pending push |
+| Constant                         | Models                    | Differs from the default                                                                                        |
+| -------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `EXTENSION_SEMANTICS`            | the swamp-club#3860 fix   | the default                                                                                                     |
+| `EXTENSION_2026_10_20_SEMANTICS` | 2026.10.06.1–2026.10.20.2 | a push or commit clears every mark, later ones included; a vanished entry deletes its marked directory remotely |
+| `EXTENSION_2026_10_01_SEMANTICS` | 2026.10.01.1              | also: removes no peer deletes                                                                                   |
+| `LEGACY_EXTENSION_SEMANTICS`     | 2026.09.24.1 and earlier  | also: a pull of a remote that moved drops a pending push                                                        |
 
 Each service also has `fetchContent(relPath)`, which returns the committed bytes
 of one file, or `null`, and touches neither the cache nor its dirty state. Pass
@@ -231,11 +239,11 @@ Deno.test("a marked file reaches another machine", async () => {
 });
 ```
 
-| Option          | Default                  | Description                                                                         |
-| --------------- | ------------------------ | ----------------------------------------------------------------------------------- |
-| `semantics`     | `EXTENSION_SEMANTICS`    | `pullDeletes`, `bulkDisablesDeletes`, `pullClearsPendingPush`, `removesPeerDeletes` |
-| `dirtyPathsCap` | `2000`                   | Marked paths kept before overflowing to bulk                                        |
-| `capabilities`  | `{ twoPhaseSync: true }` | What every connected service advertises                                             |
+| Option          | Default                  | Description                                                                                                                              |
+| --------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `semantics`     | `EXTENSION_SEMANTICS`    | `pullDeletes`, `bulkDisablesDeletes`, `pullClearsPendingPush`, `removesPeerDeletes`, `commitClearsLaterMarks`, `vanishedEntryDeletesDir` |
+| `dirtyPathsCap` | `2000`                   | Marked paths kept before overflowing to bulk                                                                                             |
+| `capabilities`  | `{ twoPhaseSync: true }` | What every connected service advertises                                                                                                  |
 
 The remote also offers:
 
@@ -473,21 +481,25 @@ Litestream would; its `removePath` deletes two objects per listing page.
 Holds a `DatastoreSyncService` to the `markDirty` contract, delete propagation
 and two-phase push. The factory returns two services bound to two different
 cache directories on **one** fresh backend, plus a cleanup. The suite calls it
-once per case (eleven fixtures), pulls on both caches, then runs:
+once per case (fifteen fixtures), pulls on both caches, then runs:
 
-| Case                      | Asserts                                                                                                                             |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `round-trip`              | A path-marked file pushed by `first` pulls on `second` with identical bytes                                                         |
-| `push-deletes`            | A marked path that is absent on disk deletes the remote file                                                                        |
-| `pull-deletes`            | A pull removes a local file the remote deleted                                                                                      |
-| `bulk-mark`               | A bare `markDirty()` pushes every changed file                                                                                      |
-| `failed-push-retry`       | A failed push leaves the path dirty, and the next push uploads it                                                                   |
-| `two-phase`               | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                                                  |
-| `pull-nothing-new`        | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                                         |
-| `forward-slash-paths`     | A forward-slash `relPath` lands at the native path                                                                                  |
-| `fetch-content`           | `fetchContent` returns the remote's bytes or `null`, rejects a `..` or absolute path, and leaves the cache and a pending push alone |
-| `fetch-content-error`     | A `fetchContent` that cannot read the remote rejects, never resolving to `null`                                                     |
-| `fetch-content-namespace` | A cache-relative path that starts with the namespace is read without the namespace being added again                                |
+| Case                                | Asserts                                                                                                                                             |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `round-trip`                        | A path-marked file pushed by `first` pulls on `second` with identical bytes                                                                         |
+| `push-deletes`                      | A marked path that is absent on disk deletes the remote file                                                                                        |
+| `pull-deletes`                      | A pull removes a local file the remote deleted                                                                                                      |
+| `bulk-mark`                         | A bare `markDirty()` pushes every changed file                                                                                                      |
+| `failed-push-retry`                 | A failed push leaves the path dirty, and the next push uploads it                                                                                   |
+| `two-phase`                         | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                                                                  |
+| `pull-nothing-new`                  | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                                                         |
+| `forward-slash-paths`               | A forward-slash `relPath` lands at the native path                                                                                                  |
+| `fetch-content`                     | `fetchContent` returns the remote's bytes or `null`, rejects a `..` or absolute path, and leaves the cache and a pending push alone                 |
+| `fetch-content-error`               | A `fetchContent` that cannot read the remote rejects, never resolving to `null`                                                                     |
+| `fetch-content-namespace`           | A cache-relative path that starts with the namespace is read without the namespace being added again                                                |
+| `mark-between-prepare-and-commit`   | A path marked after `preparePush` stays dirty through `commitPush`, and the next push sends it                                                      |
+| `remark-between-prepare-and-commit` | A prepared path marked and rewritten before `commitPush` stays dirty, and the next push sends its new bytes                                         |
+| `bulk-between-prepare-and-commit`   | A bare `markDirty()` after `preparePush` stays set through `commitPush`, and the next push sends a later write                                      |
+| `vanish-during-walk`                | A marked directory holding an entry the push cannot stat (a dangling symlink) still pushes its changes and deletes none of its other files remotely |
 
 The suite marks before it writes or deletes, as swamp core does. Counts may
 resolve to `void` everywhere.
@@ -508,7 +520,10 @@ a reason:
   of their first pull. It has only been run against `createInMemoryRemote`,
   which binds a namespace the same way but stores a namespaced path as a plain
   key;
-- `two-phase` when the service has no `preparePush` and `commitPush`.
+- `two-phase` and the three `*-between-prepare-and-commit` cases when the
+  service has no `preparePush` and `commitPush`;
+- `vanish-during-walk` on Windows, where creating a symlink may need Developer
+  Mode.
 
 A failing case rejects with an error that names it, such as
 `sync round-trip case "push-deletes" failed: ...`.
