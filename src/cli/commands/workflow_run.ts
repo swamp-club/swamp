@@ -44,6 +44,7 @@ import { holdFromOutcome } from "../committed_output.ts";
 import {
   CommitUnreachableError,
   RunPartlyCommittedError,
+  withRunUnknownSteps,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { removeStaleRunIndexes } from "../../infrastructure/persistence/workflow_run_index.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -773,10 +774,16 @@ export const workflowRunCommand = new Command()
         await removeStaleRunIndexes(repoDir);
       }
       // The run's steps ran before its commit failed (swamp-club#3759).
-      throw error instanceof CommitUnreachableError ||
-          error instanceof RunPartlyCommittedError
-        ? error.afterStepsRan()
-        : error;
+      // A run cut while a step ran needs that step acknowledged to be
+      // recovered (swamp-club#3882).
+      const worded = withRunUnknownSteps(
+        error,
+        (runId) => runCheckpointer.committedUnknownSteps(runId),
+      );
+      throw worded instanceof CommitUnreachableError ||
+          worded instanceof RunPartlyCommittedError
+        ? worded.afterStepsRan()
+        : worded;
     } finally {
       for (const tracker of executionTrackers) tracker.close();
       executionTrackers.clear();

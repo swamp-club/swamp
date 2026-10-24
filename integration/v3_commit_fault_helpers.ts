@@ -25,6 +25,7 @@
 
 import "../src/domain/models/models.ts";
 import { z } from "zod";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -155,6 +156,57 @@ export function registerBigWriter(cut = true): ModelType {
           await Deno.writeTextFile(await writer.getFilePath(), PAYLOAD);
           const payload = await writer.finalize();
           if (cut) faults.storageDown = true;
+          return { dataHandles: [payload] };
+        },
+      },
+    },
+  });
+  return type;
+}
+
+/**
+ * Registers a model whose `write` method waits until a run checkpoint has
+ * committed while it runs, then writes {@link PAYLOAD} and takes the
+ * storage down (swamp-club#3882):
+ * the run's committed record shows the step running, as a cut mid-step
+ * leaves it. The step's start is saved before the method runs, inside the
+ * checkpoint interval of the run's start, so a trailing checkpoint commits
+ * it within that interval.
+ */
+export function registerMidStepCutter(repos: RowRepos): ModelType {
+  const type = ModelType.create(`test/mid-step-cutter-${crypto.randomUUID()}`);
+  modelRegistry.register({
+    type,
+    version: "2026.10.24.1",
+    files: {
+      payload: {
+        description: "A file larger than a commit inlines",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      write: {
+        description: "Wait for a checkpoint of the running step, then cut",
+        kind: "update",
+        arguments: z.object({}),
+        execute: async (_args, context) => {
+          const config = repos.a.datastoreConfig;
+          if (isCustomDatastoreConfig(config)) {
+            throw new Error("these cases run on a filesystem datastore");
+          }
+          const store = v3DatastoreFor(repos.repoA, config).commitStore;
+          const entered = store.highWaterMark().cursor;
+          await waitFor(
+            () => store.highWaterMark().cursor > entered,
+            "a checkpoint of the running step",
+            { timeoutMs: 15_000 },
+          );
+          const writer = context.createFileWriter!("payload", "payload");
+          await Deno.writeTextFile(await writer.getFilePath(), PAYLOAD);
+          const payload = await writer.finalize();
+          faults.storageDown = true;
           return { dataHandles: [payload] };
         },
       },

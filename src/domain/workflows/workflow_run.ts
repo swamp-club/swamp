@@ -1965,6 +1965,33 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * The steps {@link unknownSteps} would name once {@link interruptOrphaned}
+   * ran, without changing the run: what `workflow recover` would ask to be
+   * acknowledged for this run as it stands (swamp-club#3882).
+   */
+  unknownStepsIfOrphaned(): string[] {
+    const ended = this._status === "succeeded" || this._status === "failed" ||
+      this._status === "interrupted";
+    const result: string[] = [];
+    for (const job of this._jobs) {
+      const startNotRecorded = this._status === "running" &&
+        job.status === "running" &&
+        !job.steps.some((step) => step.status === "running");
+      for (const step of job.steps) {
+        if (
+          step.status === "unknown" ||
+          (startNotRecorded && step.status === "pending") ||
+          (!ended && step.status === "running") ||
+          (!ended && step.status === "failed" && step.stoppedByAbort)
+        ) {
+          result.push(step.stepName);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
    * Resets all `unknown` steps to `pending` for recovery re-execution.
    * Also resets their containing jobs if those jobs are in `unknown` status.
    * Only valid on interrupted runs.

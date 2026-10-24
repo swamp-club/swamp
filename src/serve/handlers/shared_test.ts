@@ -21,6 +21,7 @@ import {
   assertEquals,
   assertInstanceOf,
   assertRejects,
+  assertStrictEquals,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -91,6 +92,7 @@ import {
   terminateTokenSessions,
   type TerminateTokenSessionsOptions,
   updateCollectivesForPrincipal,
+  withCommittedUnknownSteps,
 } from "./shared.ts";
 import type { ServerMessage } from "../protocol.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
@@ -2579,6 +2581,38 @@ Deno.test("runFailureForClient: a run a checkpoint partly committed keeps its co
   assertEquals(partly.code, RUN_PARTLY_COMMITTED_CODE);
   assertStringIncludes(partly.message, "steps had already run");
   assertStringIncludes(partly.message, "swamp workflow recover wf-1");
+});
+
+Deno.test("withCommittedUnknownSteps: a served run cut while its step ran names the step and a recover command with --acknowledge-unknown; any other error is unchanged (swamp-club#3882)", () => {
+  const checkpointer = {
+    committedUnknownSteps: (runId: string) =>
+      runId === "run-1" ? ["deploy"] : undefined,
+  };
+  const worded = withCommittedUnknownSteps(
+    new RunPartlyCommittedError(new Error("connect ECONNREFUSED"), [
+      { workflowId: "wf-1", runId: "run-1" },
+      { workflowId: "wf-2", runId: "run-2" },
+    ]),
+    checkpointer,
+  );
+  assertInstanceOf(worded, RunPartlyCommittedError);
+  assertEquals(worded.runs, [
+    { workflowId: "wf-1", runId: "run-1", unknownSteps: ["deploy"] },
+    { workflowId: "wf-2", runId: "run-2" },
+  ]);
+  assertStringIncludes(
+    worded.message,
+    "swamp workflow recover wf-1 --run run-1 --acknowledge-unknown; " +
+      "swamp workflow recover wf-2 --run run-2 in",
+  );
+  const reply = runFailureForClient(worded, "workflow_execution_failed");
+  assertEquals(reply.code, RUN_PARTLY_COMMITTED_CODE);
+  assertStringIncludes(
+    reply.message,
+    "swamp workflow recover wf-1 --run run-1 --acknowledge-unknown",
+  );
+  const other = new Error("other");
+  assertStrictEquals(withCommittedUnknownSteps(other, checkpointer), other);
 });
 
 Deno.test("runFailureForClient: a commit part of which had landed keeps its own code (swamp-club#3802)", () => {

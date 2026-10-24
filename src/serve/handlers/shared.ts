@@ -40,6 +40,7 @@ import {
   CommitUnreachableError,
   RUN_PARTLY_COMMITTED_CODE,
   RunPartlyCommittedError,
+  withRunUnknownSteps,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -2416,6 +2417,23 @@ export function runFailureForClient(
     };
   }
   return { code: fallbackCode, message: sanitizeErrorForClient(error) };
+}
+
+/**
+ * `error`, a partly-committed run's error with the steps each run had in
+ * flight as `checkpointer` last committed it (swamp-club#3882), so the
+ * recovery it names works as printed; any other error unchanged.
+ */
+export function withCommittedUnknownSteps(
+  error: unknown,
+  checkpointer: {
+    committedUnknownSteps(runId: string): readonly string[] | undefined;
+  },
+): unknown {
+  return withRunUnknownSteps(
+    error,
+    (runId) => checkpointer.committedUnknownSteps(runId),
+  );
 }
 
 /**

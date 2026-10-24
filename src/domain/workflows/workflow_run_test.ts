@@ -3544,3 +3544,78 @@ Deno.test("WorkflowRun.toPersistedData: a typed run writes its inputs map in the
   unmapped.captureInputs({ token });
   assertEquals(unmapped.toPersistedData().persistedInputsProvenance, undefined);
 });
+
+Deno.test("WorkflowRun.unknownStepsIfOrphaned: names what interruptOrphaned then unknownSteps would, for every step, job and run status, and changes nothing (swamp-club#3882)", () => {
+  const base = WorkflowRun.create(createTestWorkflow()).toData();
+  const stepStates = [
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "stopped",
+    "unknown",
+    "skipped",
+  ] as const;
+  const jobStates = ["running", "succeeded", "failed"] as const;
+  const runStates = [
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "interrupted",
+    "cancelled",
+  ] as const;
+  let checked = 0;
+  for (const runStatus of runStates) {
+    for (const job1 of jobStates) {
+      for (const job2 of jobStates) {
+        for (const s1 of stepStates) {
+          for (const s2 of stepStates) {
+            for (const s3 of stepStates) {
+              const step = (
+                data: (typeof base.jobs)[number]["steps"][number],
+                state: (typeof stepStates)[number],
+              ) => ({
+                ...data,
+                status: state === "stopped" ? "failed" as const : state,
+                ...(state === "stopped" ? { stoppedByAbort: true } : {}),
+              });
+              const data = {
+                ...base,
+                status: runStatus,
+                jobs: [
+                  {
+                    ...base.jobs[0],
+                    status: job1,
+                    steps: [
+                      step(base.jobs[0].steps[0], s1),
+                      step(base.jobs[0].steps[1], s2),
+                    ],
+                  },
+                  {
+                    ...base.jobs[1],
+                    status: job2,
+                    steps: [step(base.jobs[1].steps[0], s3)],
+                  },
+                ],
+              };
+              const run = WorkflowRun.fromData(data);
+              const before = JSON.stringify(run.toData());
+              const named = run.unknownStepsIfOrphaned();
+              assertEquals(JSON.stringify(run.toData()), before);
+              const orphaned = WorkflowRun.fromData(data);
+              orphaned.interruptOrphaned("owner_process_dead");
+              assertEquals(
+                named,
+                orphaned.unknownSteps(),
+                `${runStatus} ${job1}/${job2} ${s1},${s2},${s3}`,
+              );
+              checked++;
+            }
+          }
+        }
+      }
+    }
+  }
+  assertEquals(checked, 6 * 9 * 343);
+});

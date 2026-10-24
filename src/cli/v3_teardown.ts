@@ -30,32 +30,47 @@ import {
 } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ReadModelCatchUpUnreachableError } from "../domain/datastore_v3/read_model.ts";
 import { V3StorageUnreachableError } from "../domain/datastore_v3/writer_lease.ts";
-import { closeV3Datastores } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  closeV3Datastores,
+  reportedV3Failure,
+  type V3CommandCommits,
+  v3CommandCommits,
+} from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 /**
  * Closes the v3 datastores after a command that succeeded. Commits a sync
  * could not confirm fail the command (swamp-club#3416): they are saved, but
- * not yet replicated. Any other failure is only logged: the command's work
- * is committed, and the writer lock's TTL expires if its release failed.
+ * not yet replicated; a command that committed nothing reports what
+ * {@link reportedV3Failure} makes of it instead. Any other failure is only
+ * logged: the command's work is committed, and the writer lock's TTL
+ * expires if its release failed.
  *
  * @throws V3ReplicationError
+ * @throws V3StorageUnreachableError
+ * @throws V3ReplicationUnavailableError
  */
 export async function closeV3DatastoresAfterSuccess(
   close: () => Promise<void> = closeV3Datastores,
+  commits: () => V3CommandCommits = v3CommandCommits,
 ): Promise<void> {
+  // Before the close, which forgets what the command committed.
+  const committed = commits();
   try {
     await close();
   } catch (error) {
-    if (error instanceof V3ReplicationError) throw error;
+    if (error instanceof V3ReplicationError) {
+      throw reportedV3Failure(error, committed, { closing: true });
+    }
     getSwampLogger(["datastore", "v3"])
       .warn`Closing the v3 datastore failed: ${error}`;
   }
 }
 
 /**
- * Closes the v3 datastores after a command that failed, best effort: the
- * command's error is the one reported. When it failed because the
+ * Closes the v3 datastores after a command that failed, best effort, and
+ * resolves with the error the command reports: `error`, as
+ * {@link reportedV3Failure} words it. When it failed because the
  * datastore's storage could not be reached, the close is told so
  * (swamp-club#3759, swamp-club#3802): it gives the closing sync a short
  * deadline and stops waiting on compaction, recovery and lease retries that
@@ -67,12 +82,16 @@ export async function closeV3DatastoresAfterFailure(
   close: (
     options: { readonly storageUnreachable?: boolean },
   ) => Promise<void> = closeV3Datastores,
-): Promise<void> {
+  commits: () => V3CommandCommits = v3CommandCommits,
+): Promise<unknown> {
+  // Before the close, which forgets what the command committed.
+  const reported = reportedV3Failure(error, commits());
   try {
-    await close({ storageUnreachable: failedReachingStorage(error) });
+    await close({ storageUnreachable: failedReachingStorage(reported) });
   } catch {
     // Best effort: the writer lock's TTL expires if its release failed.
   }
+  return reported;
 }
 
 /** How far {@link failedReachingStorage} follows `cause` links. */

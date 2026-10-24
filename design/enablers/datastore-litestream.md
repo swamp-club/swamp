@@ -785,7 +785,10 @@ kept in `commits.db` and replicate when this checkout writes next. If another
 checkout writes to the datastore first, this copy's next refresh restores the
 newer lineage over them and they are lost; the message says so, and that
 restore logs a warning naming how many commits it dropped (swamp-club#3565).
-A definite failure (an error answer, or a socket that refuses) marks the sidecar
+That error is only for a command that committed something: one whose commit
+log did not move since it first held the writer, such as one cut off while it
+records its lineage, says nothing was changed instead (swamp-club#3882; see
+`datastores.md`). A definite failure (an error answer, or a socket that refuses) marks the sidecar
 for replacement, while a timeout leaves it running so a large first snapshot can
 finish. The default deadline is 60 s.
 

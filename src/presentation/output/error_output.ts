@@ -39,6 +39,7 @@ import {
 } from "../../domain/datastore_v3/read_model.ts";
 import {
   COMMIT_UNREACHABLE_CODE,
+  recoveryNeedsAcknowledgement,
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 
@@ -64,8 +65,10 @@ const logger = getSwampLogger(["error"]);
  * - {@link SignalRefusedUserError} adds `refusal` and, for a key no open
  *   wait holds, `lastWait`: the wait that last held the key, how it was
  *   settled and when.
- * - {@link RunPartlyCommittedError} adds `runs`, each `{workflowId, runId}`:
- *   the workflow runs left running, to pass to `swamp workflow recover`.
+ * - {@link RunPartlyCommittedError} adds `runs`, each `{workflowId, runId,
+ *   acknowledgeUnknown}`: the workflow runs left running, to pass to
+ *   `swamp workflow recover`, and whether a run's recovery needs
+ *   `--acknowledge-unknown` for a step it was cut in (swamp-club#3882).
  */
 export function buildErrorJson(
   err: Error,
@@ -103,7 +106,13 @@ export function buildErrorJson(
     if (err.pending) data.pending = { ...err.pending };
   }
   if (err instanceof RunPartlyCommittedError) {
-    data.runs = err.runs.map((run) => ({ ...run }));
+    // Whether each run's recovery needs --acknowledge-unknown
+    // (swamp-club#3882).
+    data.runs = err.runs.map((run) => ({
+      workflowId: run.workflowId,
+      runId: run.runId,
+      acknowledgeUnknown: recoveryNeedsAcknowledgement(run),
+    }));
   }
   if (err instanceof DuplicateTypeUserError) {
     data.duplicateType = {
