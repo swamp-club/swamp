@@ -42,7 +42,10 @@ import {
   holdV3Writer,
   setV3TeardownTimingForTesting,
   UNREACHABLE_SYNC_DEADLINE_MS,
+  v3CommandCommits,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import { closeV3DatastoresAfterSuccess } from "../src/cli/v3_teardown.ts";
+import { V3ReplicationUnavailableError } from "../src/domain/datastore_v3/litestream_replication.ts";
 import {
   commitIn,
   SIDECAR_TESTS_IGNORED,
@@ -234,5 +237,53 @@ Deno.test({
     } finally {
       setV3DatastoreFaultsForTesting(undefined);
     }
+  },
+});
+
+/** A sidecar whose sync fails: Litestream answers with an error. */
+const FAILING_SYNC = {
+  control: {
+    info: unixLitestreamControl.info,
+    sync: () =>
+      Promise.reject(new LitestreamControlError("replica write failed", false)),
+  },
+};
+
+Deno.test({
+  name:
+    "v3 teardown: a closing sync that fails after the command committed keeps the saved-locally error (swamp-club#3882)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir);
+      assertEquals(v3CommandCommits(), {
+        committed: false,
+        datastorePath: env.config.path,
+      });
+      await commitIn(env, 1);
+      assertEquals(v3CommandCommits(), { committed: true });
+      await assertRejects(
+        () => closeV3DatastoresAfterSuccess(),
+        V3ReplicationError,
+        "saved locally",
+      );
+    }, { syncDeadlineMs: NEVER_MS, deps: FAILING_SYNC });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 teardown: a closing sync that fails after the command committed nothing says nothing was changed (swamp-club#3882)",
+  ignore,
+  async fn() {
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir);
+      const error = await assertRejects(
+        () => closeV3DatastoresAfterSuccess(),
+        V3ReplicationUnavailableError,
+        "Nothing was changed.",
+      );
+      assert(!error.message.includes("saved locally"), error.message);
+    }, { syncDeadlineMs: NEVER_MS, deps: FAILING_SYNC });
   },
 });

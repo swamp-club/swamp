@@ -54,6 +54,7 @@ import {
   pushChangedToRemote,
   runFailureForClient,
   sanitizeErrorForClient,
+  withCommittedUnknownSteps,
 } from "./handlers/shared.ts";
 import { resolveRecordedWorkflow } from "./handlers/resource_resolution.ts";
 import {
@@ -485,7 +486,8 @@ export async function startDetachedResume(
           () => ctx.runTracker,
           error,
         );
-        throw error;
+        // Names the steps a recovery must acknowledge (swamp-club#3882).
+        throw withCommittedUnknownSteps(error, runCheckpointer);
       }).finally(() => runCheckpointer.close());
       if (!buffer.finished) {
         const unconfirmed = await confirmRunReplicated(

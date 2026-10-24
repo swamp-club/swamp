@@ -35,7 +35,10 @@ import {
   RUN_PARTLY_COMMITTED_CODE,
   RunPartlyCommittedError,
 } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
-import { exitCodeForError } from "../src/presentation/output/error_output.ts";
+import {
+  buildErrorJson,
+  exitCodeForError,
+} from "../src/presentation/output/error_output.ts";
 import { closeV3DatastoresAfterFailure } from "../src/cli/v3_teardown.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import { writerMarkerPath } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
@@ -49,9 +52,17 @@ import {
 } from "../src/domain/datastore_v3/read_model.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { Step } from "../src/domain/workflows/step.ts";
+import type { Workflow } from "../src/domain/workflows/workflow.ts";
+import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
+import {
+  assessRecoveryForRun,
+  type RecoveryAssessment,
+} from "../src/domain/workflows/recovery_assessment.ts";
+import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import {
   type CapturedCli,
+  type RowRepos,
   runCli,
   runCliCapturing,
 } from "./usecase_sync_fixtures.ts";
@@ -59,6 +70,7 @@ import {
   faults,
   payloadCommitted,
   registerBigWriter,
+  registerMidStepCutter,
   seedModel,
   seedWorkflow,
   withFaults,
@@ -225,6 +237,14 @@ for (const mode of ["json", "log"] as const) {
             ],
           });
           assertPartlyCommittedRun(result, mode, workflow.id);
+          // Only the run's start was committed, before its step started:
+          // recover needs no acknowledgement (swamp-club#3882).
+          const [run] = (result.error as RunPartlyCommittedError).runs;
+          assertEquals(run.unknownSteps, []);
+          assert(
+            !String(result.error).includes("--acknowledge-unknown"),
+            String(result.error),
+          );
           assertEquals(await payloadCommitted(repos, type), false);
         } finally {
           modelRegistry.invalidateType(type);
@@ -233,6 +253,87 @@ for (const mode of ["json", "log"] as const) {
     },
   });
 }
+
+/**
+ * What `workflow recover` decides for run `runId` as it was committed:
+ * another checkout catches up from the commit log and reads the run, then
+ * interrupts it as recover does for a run whose owner is gone.
+ */
+async function recoveryOfCommittedRun(
+  repos: RowRepos,
+  workflow: Workflow,
+  runId: string,
+): Promise<RecoveryAssessment> {
+  const reader = await requireInitializedRepoUnlocked({
+    repoDir: repos.repoB,
+    outputMode: "json",
+  });
+  const run = await reader.repoContext.workflowRunRepo.findById(
+    workflow.id,
+    createWorkflowRunId(runId),
+  );
+  assert(run !== null, `the second checkout has no run ${runId}`);
+  assertEquals(run.status, "running");
+  run.interruptOrphaned("owner_process_dead");
+  return await assessRecoveryForRun(workflow, run);
+}
+
+Deno.test({
+  name:
+    "v3 output after commit: a workflow run cut while its step ran names the step and a recover command with --acknowledge-unknown, which recover needs for the committed run (swamp-club#3882)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withFaults(async (repos) => {
+      const type = registerMidStepCutter(repos);
+      try {
+        const name = `cutter-${crypto.randomUUID().slice(0, 8)}`;
+        await seedModel(repos, type, name);
+        const workflow = await seedWorkflow(repos, name);
+        const result = await runCliCapturing({
+          args: [
+            "workflow",
+            "run",
+            workflow.name,
+            "--repo-dir",
+            repos.repoA,
+            "--json",
+          ],
+        });
+        assertPartlyCommittedRun(result, "json", workflow.id);
+        const error = result.error as RunPartlyCommittedError;
+        const [run] = error.runs;
+        assertEquals(run.unknownSteps, ["write"]);
+        assertStringIncludes(
+          error.message,
+          `swamp workflow recover ${workflow.id} --run ${run.runId} ` +
+            "--acknowledge-unknown in this checkout",
+        );
+        assertStringIncludes(
+          error.message,
+          `Before that, check what step write of run ${run.runId} did ` +
+            "outside swamp",
+        );
+        assertEquals(
+          (buildErrorJson(error).runs as { acknowledgeUnknown: boolean }[])[0]
+            .acknowledgeUnknown,
+          true,
+        );
+        await closeV3DatastoresAfterFailure(error);
+        faults.storageDown = false;
+        const assessment = await recoveryOfCommittedRun(
+          repos,
+          workflow,
+          run.runId,
+        );
+        // Without the flag recover refuses; the printed command has it.
+        assertEquals(assessment.canAutoRecover, false);
+        assertEquals(assessment.unguardedSteps, ["write"]);
+      } finally {
+        modelRegistry.invalidateType(type);
+      }
+    });
+  },
+});
 
 Deno.test({
   name:

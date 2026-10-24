@@ -322,3 +322,38 @@ Deno.test("WorkflowRunCheckpointer: a nested child run's ending save stays paced
     [],
   );
 });
+
+Deno.test("WorkflowRunCheckpointer.committedUnknownSteps: names the steps in flight in the latest committed save, not in a later save that failed to commit (swamp-club#3882)", async () => {
+  let failing = false;
+  const commitLog = engine(() =>
+    failing
+      ? Promise.reject(new Error("the commit store is down"))
+      : Promise.resolve("committed")
+  );
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 0,
+  });
+  const cutMidStep = newRun();
+  const cutBetweenSteps = newRun();
+  const never = newRun();
+  for (const run of [cutMidStep, cutBetweenSteps]) {
+    run.start();
+    run.jobs[0].start();
+  }
+  // Saved and committed while its step ran; the step ends in a save the
+  // commit store never takes.
+  cutMidStep.jobs[0].steps[0].start();
+  await checkpointer.checkpoint(cutMidStep);
+  // Saved and committed once its step had ended.
+  cutBetweenSteps.jobs[0].steps[0].start();
+  cutBetweenSteps.jobs[0].steps[0].succeed();
+  await checkpointer.checkpoint(cutBetweenSteps);
+  failing = true;
+  cutMidStep.jobs[0].steps[0].succeed();
+  await checkpointer.checkpoint(cutMidStep);
+  await checkpointer.checkpoint(never);
+
+  assertEquals(checkpointer.committedUnknownSteps(cutMidStep.id), ["a"]);
+  assertEquals(checkpointer.committedUnknownSteps(cutBetweenSteps.id), []);
+  assertEquals(checkpointer.committedUnknownSteps(never.id), undefined);
+});

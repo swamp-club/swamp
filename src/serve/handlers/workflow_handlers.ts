@@ -248,6 +248,7 @@ import {
   sendTraced,
   subscribeUntilDetach,
   wasRequestErrored,
+  withCommittedUnknownSteps,
 } from "./shared.ts";
 import type { ResourceReadPolicy } from "../../domain/workflows/step_output_resolver.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
@@ -2589,7 +2590,8 @@ export async function handleWorkflowResume(
         () => ctx.runTracker,
         error,
       );
-      throw error;
+      // Names the steps a recovery must acknowledge (swamp-club#3882).
+      throw withCommittedUnknownSteps(error, runCheckpointer);
     }).finally(() => runCheckpointer.close());
     return;
   }

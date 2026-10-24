@@ -70,6 +70,9 @@ export class V3ChunkCollectionDeferredError extends UserError {
  * (swamp-club#3565).
  */
 export class V3ReplicationError extends UserError {
+  /** Why the commits were not confirmed, as the message embeds it. */
+  readonly detail: string;
+
   constructor(detail: string, options: { readonly cause?: unknown } = {}) {
     super(
       `This command's changes are saved locally, but swamp could not confirm ` +
@@ -79,6 +82,7 @@ export class V3ReplicationError extends UserError {
         `first, they are lost.`,
       V3_REPLICATION_UNCONFIRMED_CODE,
     );
+    this.detail = detail;
     this.name = "V3ReplicationError";
     if (options.cause !== undefined) this.cause = options.cause;
   }

@@ -126,6 +126,7 @@ import { storageNamespaceOf } from "../../domain/datastore_v3/chunk_store.ts";
 import {
   V3ChunkCollectionDeferredError,
   V3ReplicationError,
+  V3ReplicationUnavailableError,
 } from "../../domain/datastore_v3/litestream_replication.ts";
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
@@ -202,6 +203,77 @@ const owedReplications = new Set<string>();
  * retention pass's), which never fail the command (swamp-club#3534).
  */
 let commandConfirmed = false;
+
+/**
+ * The commit log's high-water mark of each replicated datastore when this
+ * process first held its writer for the command, by datastore, with the
+ * datastore's path as configured: whether the command committed anything
+ * is whether a mark moved (swamp-club#3882).
+ */
+const commandStartMarks = new Map<
+  string,
+  { readonly path: string; readonly mark: number }
+>();
+
+/** What {@link v3CommandCommits} finds. */
+export type V3CommandCommits =
+  | { readonly committed: true }
+  | { readonly committed: false; readonly datastorePath: string };
+
+/**
+ * Whether this process committed anything to a replicated v3 datastore
+ * since it first held its writer: a {@link V3ReplicationError} says the
+ * command's changes are saved locally, which is true only then
+ * (swamp-club#3882). Read before {@link closeV3Datastores}, which closes the
+ * handles and forgets the marks. A process that held no replicated writer,
+ * or whose datastore is no longer open, counts as committed: what was
+ * committed cannot be told, and the error keeps its wording.
+ */
+export function v3CommandCommits(): V3CommandCommits {
+  if (commandStartMarks.size === 0) return { committed: true };
+  const handles = [...opened.values()];
+  for (const [datastore, { mark }] of commandStartMarks) {
+    const handle = handles.find((h) => resolve(h.datastorePath) === datastore);
+    if (handle === undefined) return { committed: true };
+    if (handle.commitStore.highWaterMark().cursor > mark) {
+      return { committed: true };
+    }
+  }
+  const [{ path }] = commandStartMarks.values();
+  return { committed: false, datastorePath: path };
+}
+
+/**
+ * The error a command reports for `error` (swamp-club#3882). A
+ * {@link V3ReplicationError} says the command's changes are saved locally,
+ * which is true only for a command that committed something; one that
+ * committed nothing (`commits`) changed nothing. Then a failure to reach
+ * the storage is {@link V3StorageUnreachableError}, as for the rest of the
+ * writer's start (swamp-club#3802), worded for the closing sync when
+ * `options.closing` says it came from there, and any other failure
+ * {@link V3ReplicationUnavailableError}. Every other error is returned as
+ * it is.
+ */
+export function reportedV3Failure(
+  error: unknown,
+  commits: V3CommandCommits,
+  options: { readonly closing?: boolean } = {},
+): unknown {
+  if (!(error instanceof V3ReplicationError) || commits.committed) {
+    return error;
+  }
+  const cause = error.cause ?? error;
+  if (!isNetworkFailure(error)) {
+    return new V3ReplicationUnavailableError(error.detail, { cause });
+  }
+  return options.closing === true
+    ? new V3StorageUnreachableError(
+      commits.datastorePath,
+      cause,
+      "while confirming its replica as the command ended",
+    )
+    : new V3StorageUnreachableError(commits.datastorePath, cause);
+}
 
 /** Whether the lease listener that records replication lineages is set. */
 let lineageListening = false;
@@ -596,9 +668,17 @@ async function takeV3WriterHold(
       // The lease first, then the restore: every commit the previous writer
       // acknowledged is in what this one restores (swamp-club#3482).
       await ensureV3CopyCurrent(repoDir, config, "write");
+      const handle = v3DatastoreFor(repoDir, config);
       const fence = v3WriterFence(config.path);
-      if (fence !== undefined) {
-        await v3DatastoreFor(repoDir, config).raiseWriterFence(fence);
+      if (fence !== undefined) await handle.raiseWriterFence(fence);
+      // Before the recovery, lineage and sidecar this hold starts, which
+      // can fail before the command commits anything (swamp-club#3882).
+      const datastore = resolve(config.path);
+      if (!commandStartMarks.has(datastore)) {
+        commandStartMarks.set(datastore, {
+          path: config.path,
+          mark: handle.commitStore.highWaterMark().cursor,
+        });
       }
     } catch (error) {
       await releaseAfterFailure(release, error);
@@ -1369,6 +1449,7 @@ export async function closeV3Datastores(
   let unreachable = options.storageUnreachable === true;
   const pending = releases.splice(0);
   markedCheckouts.clear();
+  commandStartMarks.clear();
   const entries = [...opened.entries()];
   const handles = entries.map(([, handle]) => handle);
   opened.clear();

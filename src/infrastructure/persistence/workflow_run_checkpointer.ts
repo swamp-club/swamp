@@ -68,8 +68,16 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   #saves = 0;
   /** The last save a checkpoint committed. */
   #committedThrough = 0;
-  /** Each run's first and latest save. */
-  readonly #runs = new Map<string, { first: number; latest: number }>();
+  /**
+   * Each run's first and latest save, and the steps a recovery would find
+   * in flight in its latest save (swamp-club#3882).
+   */
+  readonly #runs = new Map<
+    string,
+    { first: number; latest: number; unknownSteps: readonly string[] }
+  >();
+  /** The same steps, as of the latest save a checkpoint committed. */
+  readonly #committedUnknownSteps = new Map<string, readonly string[]>();
   #current: Promise<void> | undefined;
   #next: Promise<void> | undefined;
   /** A refusal stops checkpoints; the root settles it when it ends. */
@@ -97,7 +105,11 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   async checkpoint(run: WorkflowRun): Promise<void> {
     const save = ++this.#saves;
     const seen = this.#runs.get(run.id);
-    this.#runs.set(run.id, { first: seen?.first ?? save, latest: save });
+    this.#runs.set(run.id, {
+      first: seen?.first ?? save,
+      latest: save,
+      unknownSteps: run.unknownStepsIfOrphaned(),
+    });
     if (this.#refused || this.#closed) return;
     // A top-level run's last save commits at once, so whether its final
     // record landed is known before its root ends (see
@@ -183,6 +195,16 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     return restored;
   }
 
+  /**
+   * The steps of run `runId` that `workflow recover` would find in flight
+   * in the run's record as the last checkpoint committed it, which a
+   * recovery must be told to accept (swamp-club#3882); undefined when no
+   * checkpoint of this checkpointer committed the run.
+   */
+  committedUnknownSteps(runId: string): readonly string[] | undefined {
+    return this.#committedUnknownSteps.get(runId);
+  }
+
   #schedule(): Promise<void> {
     // Between a checkpoint's end and the start of the one queued after it,
     // a new save joins the queued one rather than starting a third.
@@ -201,12 +223,21 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
 
   #start(): Promise<void> {
     const covers = this.#saves;
+    // Every save so far is one this checkpoint commits.
+    const unknownSteps = [...this.#runs].map(([runId, saves]) =>
+      [runId, saves.unknownSteps] as const
+    );
     this.#lastStarted = this.#now();
     const started = (async () => {
       if (this.#refused) return;
       try {
         const outcome = await checkpointOpenUnitOfWork(this.#repoContext);
         if (outcome === "committed") {
+          if (covers > this.#committedThrough) {
+            for (const [runId, steps] of unknownSteps) {
+              this.#committedUnknownSteps.set(runId, steps);
+            }
+          }
           this.#committedThrough = Math.max(this.#committedThrough, covers);
         } else if (outcome === "refused") {
           this.#refused = true;

@@ -3093,7 +3093,9 @@ async function runInvocation(
     } catch {
       // Best effort — don't shadow the original error.
     }
-    await closeV3DatastoresAfterFailure(error);
+    // A command that committed nothing is not told its changes are saved
+    // (swamp-club#3882).
+    const reported = await closeV3DatastoresAfterFailure(error);
 
     // The command already ran, so a proof due its weekly refresh still
     // gets one.
@@ -3102,16 +3104,16 @@ async function runInvocation(
     }
 
     // Record error invocation and flush before re-throwing
-    if (telemetryCtx && error instanceof Error) {
+    if (telemetryCtx && reported instanceof Error) {
       await recordAndFlushError(
         telemetryCtx,
         telemetryInvocation,
         startTime,
-        error,
+        reported,
         knownSensitiveValues(redactedValues, repoDir),
       );
     }
-    throw error;
+    throw reported;
   } finally {
     // Always clear the module-scoped service handle when the CLI
     // invocation finishes.

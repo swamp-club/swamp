@@ -317,6 +317,31 @@ export const RUN_PARTLY_COMMITTED_CODE = "datastore_v3_run_partly_committed";
 export interface PartlyCommittedRun {
   readonly workflowId: string;
   readonly runId: string;
+  /**
+   * The steps `workflow recover` would find in flight in the run as it was
+   * committed, which it re-runs only with `--acknowledge-unknown`
+   * (swamp-club#3882); undefined when that is not known.
+   */
+  readonly unknownSteps?: readonly string[];
+}
+
+/**
+ * `error`, a {@link RunPartlyCommittedError} with each run's in-flight steps
+ * as `unknownSteps` answers them (swamp-club#3882), so the recovery it names
+ * works as printed; any other error unchanged.
+ */
+export function withRunUnknownSteps(
+  error: unknown,
+  unknownSteps: (runId: string) => readonly string[] | undefined,
+): unknown {
+  return error instanceof RunPartlyCommittedError
+    ? error.withUnknownSteps((run) => unknownSteps(run.runId))
+    : error;
+}
+
+/** Whether recovering `run` needs `--acknowledge-unknown`. */
+export function recoveryNeedsAcknowledgement(run: PartlyCommittedRun): boolean {
+  return (run.unknownSteps?.length ?? 0) > 0;
 }
 
 /** How a {@link RunPartlyCommittedError} is worded. */
@@ -355,8 +380,20 @@ export class RunPartlyCommittedError extends UserError {
       ? `${one ? "Its" : "Their"} steps had already run; check what they ` +
         "changed outside swamp. "
       : "";
+    // A step in flight when the run was cut is re-run by the recovery only
+    // once acknowledged (swamp-club#3882). Said after the command, which
+    // stays where it was: serve shortens a long message for its clients.
+    const inFlight = runs.filter(recoveryNeedsAcknowledgement).map((run) => {
+      const names = run.unknownSteps!;
+      const several = names.length > 1;
+      return ` Before that, check what ${several ? "steps" : "step"} ` +
+        `${names.join(", ")} of run ${run.runId} did outside swamp: ` +
+        `${several ? "they were" : "it was"} running when the run was cut ` +
+        `off, and the recovery runs ${several ? "them" : "it"} again.`;
+    }).join("");
     const recover = runs.map((run) =>
-      `swamp workflow recover ${run.workflowId} --run ${run.runId}`
+      `swamp workflow recover ${run.workflowId} --run ${run.runId}` +
+      (recoveryNeedsAcknowledgement(run) ? " --acknowledge-unknown" : "")
     ).join("; ");
     super(
       `Swamp could not reach the datastore's storage (${messageOf(cause)}), ` +
@@ -366,12 +403,26 @@ export class RunPartlyCommittedError extends UserError {
         `checkout and ${one ? "is" : "are"} left running. ${failed}${steps}` +
         `With the datastore reachable, run ${recover} in this checkout to ` +
         `settle ${one ? "it" : "them"} and send that progress to the ` +
-        `datastore.`,
+        `datastore.${inFlight}`,
       RUN_PARTLY_COMMITTED_CODE,
     );
     this.name = "RunPartlyCommittedError";
     this.cause = cause;
     this.#wording = options;
+  }
+
+  /**
+   * This error, with each run's in-flight steps as `unknownSteps` answers
+   * them for the run; a run it answers undefined for keeps what it had.
+   */
+  withUnknownSteps(
+    unknownSteps: (run: PartlyCommittedRun) => readonly string[] | undefined,
+  ): RunPartlyCommittedError {
+    const runs = this.runs.map((run) => {
+      const steps = unknownSteps(run);
+      return steps === undefined ? run : { ...run, unknownSteps: steps };
+    });
+    return new RunPartlyCommittedError(this.cause, runs, this.#wording);
   }
 
   /** This error, for a workflow run whose steps ran. */

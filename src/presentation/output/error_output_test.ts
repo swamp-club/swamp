@@ -1147,12 +1147,62 @@ Deno.test("buildErrorJson: a run a checkpoint partly committed carries its code 
     ]).afterStepsRan(),
   );
   assertEquals(json.code, RUN_PARTLY_COMMITTED_CODE);
-  assertEquals(json.runs, [{ workflowId: "wf-1", runId: "run-1" }]);
+  assertEquals(json.runs, [
+    { workflowId: "wf-1", runId: "run-1", acknowledgeUnknown: false },
+  ]);
   assertStringIncludes(
     String(json.error),
     "swamp workflow recover wf-1 --run run-1",
   );
   assertEquals(json.stack, undefined);
+});
+
+Deno.test("buildErrorJson: a run cut while a step ran names that step and a recover command with --acknowledge-unknown, and says which runs need it; a run cut between steps keeps the plain command (swamp-club#3882)", () => {
+  const error = new RunPartlyCommittedError(new Error("refused"), [
+    { workflowId: "wf-1", runId: "run-1" },
+    { workflowId: "wf-2", runId: "run-2" },
+    { workflowId: "wf-3", runId: "run-3" },
+  ]).withUnknownSteps((run) =>
+    run.runId === "run-1" ? ["deploy"] : run.runId === "run-2" ? [] : undefined
+  ).afterStepsRan();
+  const json = buildErrorJson(error);
+  assertEquals(json.code, RUN_PARTLY_COMMITTED_CODE);
+  assertEquals(json.runs, [
+    { workflowId: "wf-1", runId: "run-1", acknowledgeUnknown: true },
+    { workflowId: "wf-2", runId: "run-2", acknowledgeUnknown: false },
+    { workflowId: "wf-3", runId: "run-3", acknowledgeUnknown: false },
+  ]);
+  const message = String(json.error);
+  assertStringIncludes(
+    message,
+    "to the datastore. Before that, check what step deploy of run run-1 " +
+      "did outside swamp: it was running when the run was cut off, and the " +
+      "recovery runs it again.",
+  );
+  assertStringIncludes(
+    message,
+    "swamp workflow recover wf-1 --run run-1 --acknowledge-unknown; " +
+      "swamp workflow recover wf-2 --run run-2; " +
+      "swamp workflow recover wf-3 --run run-3 in this checkout",
+  );
+  assertEquals(exitCodeForError(error), 1);
+});
+
+Deno.test("RunPartlyCommittedError: several steps in flight are named together, and the wording survives during() (swamp-club#3882)", () => {
+  const error = new RunPartlyCommittedError(new Error("refused"), [
+    { workflowId: "wf-1", runId: "run-1" },
+  ]).withUnknownSteps(() => ["build", "test"]).during(new Error("boom"));
+  assertStringIncludes(
+    error.message,
+    "Before that, check what steps build, test of run run-1 did outside " +
+      "swamp: they were running when the run was cut off, and the recovery " +
+      "runs them again.",
+  );
+  assertStringIncludes(
+    error.message,
+    "swamp workflow recover wf-1 --run run-1 --acknowledge-unknown in",
+  );
+  assertStringIncludes(error.message, "The command had also failed: boom.");
 });
 
 Deno.test("exitCodeForError: returns 75 for a datastore cut off while getting ready to write or while catching up, since nothing changed (swamp-club#3802)", () => {
