@@ -194,6 +194,43 @@ async function readPassword(prompt: string): Promise<string> {
   }
 }
 
+/**
+ * POSTs JSON to a device-flow endpoint and reads the response body. Network
+ * failures and timeouts, while connecting or while reading the body, become
+ * UserErrors worded like SwampClubClient's.
+ */
+async function deviceRequest(
+  serverUrl: string,
+  endpoint: string,
+  payload: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<{ status: number; ok: boolean; statusText: string; text: string }> {
+  try {
+    const resp = await fetch(`${serverUrl}${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    const text = await resp.text();
+    return {
+      status: resp.status,
+      ok: resp.ok,
+      statusText: resp.statusText,
+      text,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new UserError(
+        `Request to ${serverUrl}${endpoint} timed out.`,
+        "timeout",
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UserError(`Could not connect to ${serverUrl}: ${message}`);
+  }
+}
+
 /** Delay helper that respects AbortSignal. */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -239,13 +276,13 @@ export function createAuthLoginDeps(
       clientId: string,
       signal: AbortSignal,
     ): Promise<DeviceAuthResponse> => {
-      const resp = await fetch(`${serverUrl}/api/auth/device/code`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_id: clientId }),
+      const resp = await deviceRequest(
+        serverUrl,
+        "/api/auth/device/code",
+        { client_id: clientId },
         signal,
-      });
-      const body = await resp.text();
+      );
+      const body = resp.text;
       if (!resp.ok) {
         throw new UserError(
           `Failed to start device authorization: ${resp.status} ${body}`,
@@ -276,23 +313,22 @@ export function createAuthLoginDeps(
       clientId: string,
       signal: AbortSignal,
     ): Promise<DeviceTokenResponse> => {
-      const resp = await fetch(`${serverUrl}/api/auth/device/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const resp = await deviceRequest(
+        serverUrl,
+        "/api/auth/device/token",
+        {
           grant_type: "urn:ietf:params:oauth:grant-type:device_code",
           device_code: deviceCode,
           client_id: clientId,
-        }),
+        },
         signal,
-      });
+      );
+      const body = resp.text;
       if (resp.status === 403 || resp.status === 410) {
-        const body = await resp.text();
         throw new UserError(
           `Device authorization failed: ${body || resp.statusText}`,
         );
       }
-      const body = await resp.text();
       let data: Record<string, unknown>;
       try {
         data = JSON.parse(body);
@@ -430,6 +466,10 @@ export async function* authLogin(
             token = result.accessToken;
             break;
           } catch (err) {
+            // The device code expired while a poll request was in flight.
+            if (signal.aborted) {
+              break;
+            }
             if (err instanceof DeviceAuthPendingError) {
               if (err.slowDown) {
                 intervalMs += 5000;
