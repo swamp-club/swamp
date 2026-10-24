@@ -106,7 +106,9 @@ export function validateWebSocketOrigin(
   trustedHosts?: readonly string[],
 ): { allowed: boolean; reason?: string } {
   const originCheck = validateOrigin(
-    origin,
+    // Preserve the historic WebSocket treatment of an empty Origin as absent.
+    // HTTP API requests deliberately reject it as malformed.
+    origin === "" ? null : origin,
     bindHost,
     tlsEnabled,
     trustedHosts,

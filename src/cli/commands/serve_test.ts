@@ -594,6 +594,16 @@ Deno.test("validateWebSocketOrigin: accepts absent origin (non-browser client)",
   assertEquals(result.allowed, true);
 });
 
+Deno.test("validateWebSocketOrigin: accepts an empty origin as absent", () => {
+  const result = validateWebSocketOrigin(
+    "",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
 Deno.test("validateWebSocketOrigin: accepts proxy host on loopback bind", () => {
   const result = validateWebSocketOrigin(
     null,

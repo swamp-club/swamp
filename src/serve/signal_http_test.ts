@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   handleSignalHttpRequest,
+  hasJsonContentType,
   matchSignalRoute,
   MAX_SIGNAL_BODY_BYTES,
   type SignalHttpDeps,
@@ -31,6 +32,21 @@ import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_ac
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 
 const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
+
+Deno.test("hasJsonContentType: accepts only JSON media types", () => {
+  const request = (contentType?: string) =>
+    new Request("http://serve.test", {
+      headers: contentType === undefined ? {} : { "content-type": contentType },
+    });
+  assertEquals(hasJsonContentType(request("application/json")), true);
+  assertEquals(
+    hasJsonContentType(request("application/json; charset=utf-8")),
+    true,
+  );
+  assertEquals(hasJsonContentType(request("APPLICATION/JSON")), true);
+  assertEquals(hasJsonContentType(request("application/jsonp")), false);
+  assertEquals(hasJsonContentType(request()), false);
+});
 
 /**
  * Deps whose context has no repository: reaching delivery throws, so a test

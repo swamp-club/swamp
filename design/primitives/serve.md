@@ -284,8 +284,9 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   rejects a browser Origin outside the loopback or configured trusted-host
   authorities, and checks Host on every API request to prevent DNS rebinding.
   A no-auth server behind a reverse proxy lists its public authority in
-  `--trusted-hosts`. Native clients without an Origin remain supported. Signal and cancel HTTP
-  requests must declare `Content-Type: application/json`; this makes them
+  `--trusted-hosts`. Native clients without an Origin remain supported. Signal
+  and cancel HTTP requests must declare `Content-Type: application/json`; this
+  makes them
   non-simple browser requests, so a cross-origin browser must pass the same
   origin check before sending one.
 - `token`: clients present `<name>.<secret>`. `--admins` is required, and each
