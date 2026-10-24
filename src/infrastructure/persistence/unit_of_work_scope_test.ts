@@ -798,7 +798,7 @@ Deno.test("withChangeSignalled: no signal after on a v3 hook, or with no hook", 
   );
   assertEquals(ran, false);
 
-  // A hookless write inside a v3 unit is offered to it once.
+  // A hookless write inside a unit stages nothing, before or after.
   const adopter = typedUnit(recordingHook().hook);
   await runInUnitOfWork(
     adopter.uow,

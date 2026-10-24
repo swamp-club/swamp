@@ -202,8 +202,10 @@ export async function signalChange(
  *
  * When `write` throws and a signal after fails as well, the write's error
  * is the one rethrown. When `write` succeeds and a signal after fails, the
- * failure is logged and the result returned: the write is on disk and the
- * signal before already marked its path.
+ * failure is logged as a warning and the result returned, since the write
+ * is on disk. The signal before still marked the path, but a push that ran
+ * during the write may have cleared that mark, so the next push can then
+ * miss the path, which is what the warning says.
  */
 export async function withChangeSignalled<T>(
   markDirty: MarkDirtyHook | undefined,
@@ -237,10 +239,14 @@ export async function withChangeSignalled<T>(
       try {
         await signalChange(markDirty, change, options);
       } catch (error) {
-        // The write has landed and the signal before marked its path, so a
-        // failed signal after must not report the write as failed.
+        // The write has landed, so a failed signal after must not report it
+        // as failed. The signal before may already have been cleared by a
+        // push that ran during the write, so the next push can miss the
+        // path: say so.
         logger
-          .warn`Marking ${changeLabel(change)} again after its write failed: ${
+          .warn`Could not mark ${
+          changeLabel(change)
+        } dirty again after its write landed, so the next datastore push may miss it: ${
           error instanceof Error ? error.message : String(error)
         }`;
       }
