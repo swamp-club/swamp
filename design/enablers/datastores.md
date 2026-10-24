@@ -1817,11 +1817,16 @@ because the extension resets the whole dirty set when a push completes.
 swamp-club#2421 has two halves. Core now marks before and after every
 repository write and remove (`withChangeSignalled`), so a push that cleared
 the first mark mid-write leaves the second one for the next push. The
-extension half, S3 and GCS pushes that clear only the marks they handled
-rather than the whole dirty set, is tracked in the same work
-(swamp-club#3860); until it ships, a push already running when the second
-mark lands can still clear it. The re-marks above stay: they mark again just
-before the push they precede.
+extension half ships in `@swamp/s3-datastore` and `@swamp/gcs-datastore`
+2026.10.24.1 (swamp-club#3860): each mark gives its path a new generation, a
+push snapshots the marks it walks, and its commit clears only those whose
+generation is unchanged, so a mark made while a push runs survives it. A push
+no longer bulk-marks itself, so a failed scoped push keeps its path marks and
+its recorded deletes (swamp-club#2907). A file that vanishes mid-walk is
+skipped and stays marked, a dangling symlink is skipped, and atomic-write
+temp files are never walked. With an older extension, a push already running
+when the second mark lands can still clear it. The re-marks above stay: they
+mark again just before the push they precede.
 
 **Data versions written under a behavior lock (swamp-club#3146).** Concurrent
 runs of one serve process share its sync service, so another run's push can
