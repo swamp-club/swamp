@@ -190,6 +190,14 @@ export function setSystemPipeWidth(width: number): void {
   pipeOutputActive = true;
 }
 
+/**
+ * Called by the workflow run renderer when its pipe display ends, so records
+ * logged after the run go back to the status gutter.
+ */
+export function endSystemPipeOutput(): void {
+  pipeOutputActive = false;
+}
+
 export function getSystemPipeWidth(): number {
   return systemPipeWidth;
 }

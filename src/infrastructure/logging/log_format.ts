@@ -24,6 +24,7 @@ import {
   type TextFormatter,
 } from "@logtape/logtape";
 import { bold, dim, getColorEnabled, red, yellow } from "@std/fmt/colors";
+import { mapControlCharacters } from "../../domain/control_characters.ts";
 
 // Leaf module: the single source of truth for swamp's log-line timestamp
 // format. Imported by both logger.ts (console/stderr sinks) and
@@ -114,20 +115,37 @@ export interface InteractiveFormatterOptions {
 }
 
 /**
+ * `text` with every control character but newline and tab written as a
+ * visible `\xNN` escape. Interpolated values can carry text from outside
+ * swamp (a remote error, a pulled extension's path), and printed raw an
+ * escape sequence in one would drive the terminal.
+ */
+function printable(text: string): string {
+  return mapControlCharacters(
+    text,
+    (c) =>
+      c === "\n" || c === "\t"
+        ? c
+        : `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  );
+}
+
+/**
  * A string as it is; an error as its message with its stack frames dimmed
  * below, since the gutter already says it is an error; anything else as
- * `Deno.inspect` shows it.
+ * `Deno.inspect` shows it. Strings are made printable first.
  */
 function renderValue(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return printable(value);
   if (value instanceof Error) {
     const frames = (value.stack ?? "").split("\n")
       .filter((line) => /^\s+at /.test(line))
-      .map((line) => dim(line.trim()));
+      .map((line) => dim(printable(line.trim())));
     const cause = value.cause instanceof Error
-      ? [dim(`caused by: ${value.cause.message}`)]
+      ? [dim(`caused by: ${printable(value.cause.message)}`)]
       : [];
-    return [value.message, ...frames, ...cause].join("\n");
+    return [printable(value.message || value.name), ...frames, ...cause]
+      .join("\n");
   }
   return Deno.inspect(value, { colors: getColorEnabled() });
 }

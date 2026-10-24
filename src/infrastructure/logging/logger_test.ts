@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   createStderrSink,
+  endSystemPipeOutput,
   escapeLogTemplate,
   getRunLogger,
   getSwampLogger,
@@ -474,7 +475,7 @@ Deno.test("initializeLogging: pretty mode without stderrOnly still writes to std
   }
 });
 
-Deno.test("initializeLogging: pretty mode writes gutter lines, then system pipe lines once a pipe display starts", async () => {
+Deno.test("initializeLogging: pretty mode writes gutter lines, system pipe lines while a pipe display is on screen, then gutter lines again", async () => {
   const capture = captureStreams();
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
   try {
@@ -489,10 +490,13 @@ Deno.test("initializeLogging: pretty mode writes gutter lines, then system pipe 
     logger.warn`Using discovered deno config for ${"a.ts"}: ${"/x/deno.json"}`;
     setSystemPipeWidth(10);
     logger.warn`second ${"b.ts"}`;
+    endSystemPipeOutput();
+    logger.warn`third ${"c.ts"}`;
 
     assertEquals(capture.stderr.map((line) => line.replace(ansi, "")), [
       "    Warning   Using discovered deno config for a.ts: /x/deno.json",
       "     system │ Warning second b.ts",
+      "    Warning   third c.ts",
     ]);
   } finally {
     capture.restore();

@@ -251,3 +251,33 @@ Deno.test("interactiveFormatter: starts info lines where the Warning label start
   assertEquals(info, "    Deleted 6 versions\n    second\n");
   assertEquals(info.indexOf("D"), warning.indexOf("W"));
 });
+
+Deno.test("interactiveFormatter: escapes control characters in interpolated strings but keeps newlines and tabs", () => {
+  const esc = String.fromCharCode(27);
+  const bel = String.fromCharCode(7);
+  const line = interactive()(
+    templateRecord(
+      "warning",
+      ["pulled ", ""],
+      `${esc}]52;c;aGk=${bel}a\tb${esc}[2K\nnext`,
+    ),
+  );
+  assertEquals(
+    line,
+    "    Warning   pulled \\x1b]52;c;aGk=\\x07a\tb\\x1b[2K\n              next\n",
+  );
+});
+
+Deno.test("interactiveFormatter: escapes control characters in an error's message", () => {
+  const error = new Error(`remote ${String.fromCharCode(27)}[31msaid no`);
+  error.stack = "Error: remote";
+  const line = interactive()(templateRecord("error", ["", ""], error));
+  assertEquals(line, "      Error   remote \\x1b[31msaid no\n");
+});
+
+Deno.test("interactiveFormatter: shows an error with no message by its name", () => {
+  const error = new TypeError("");
+  error.stack = "TypeError";
+  const line = interactive()(templateRecord("error", ["", ""], error));
+  assertEquals(line, "      Error   TypeError\n");
+});
