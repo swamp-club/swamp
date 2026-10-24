@@ -105,10 +105,9 @@ never reach `globalAction` (swamp-club#2414). Colors are off when `--no-color`
 is passed, when `NO_COLOR` is set to any value including empty, or when **stdout
 is not a terminal**, so piped and redirected output carries no escape sequences.
 
-Two things this does _not_ cover: LogTape's pretty sink colors through its own
-`colors` option rather than this flag (see
-[references/logtape.md](references/logtape.md)), and the policy is process-wide,
-so a piped stdout also un-colors diagnostics on stderr.
+The policy covers LogTape's pretty sink as well (see
+[references/logtape.md](references/logtape.md)), and it is process-wide, so a
+piped stdout also un-colors diagnostics on stderr.
 
 | Element              | Style             | Example                |
 | -------------------- | ----------------- | ---------------------- |

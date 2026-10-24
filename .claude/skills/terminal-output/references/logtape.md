@@ -24,12 +24,12 @@ structured logging with timestamps, levels, and category prefixes.
 
 **Important characteristics:**
 
-- LogTape v2 uses `@logtape/logtape` and `@logtape/pretty`
+- LogTape v2 uses `@logtape/logtape`; the terminal formatter is swamp's own
+  (`interactiveFormatter` in `src/infrastructure/logging/log_format.ts`)
 - Configured once per process via `initializeLogging()`
 - In `--json` mode, LogTape is suppressed to `"fatal"` level only, with a
   special JSON error sink on stderr
-- Pretty output (colored, formatted) is enabled when stdin is a TTY and
-  `--no-color` is not set
+- The pretty sink is selected when stdin is a TTY and `--no-color` is not set
 - LogTape message templates wrap values in quotes:
   `logger.info("Type: {name}", { name })` outputs `Type: "name"` - this is why
   it is unsuitable for user-facing output
@@ -119,8 +119,14 @@ Configured in `initializeLogging()`:
 `--no-color` and `NO_COLOR` select the text sink; a non-terminal **stdout** does
 not (sink choice follows stdin — see below).
 
-The pretty sink uses `@logtape/pretty` with dimmed timestamps/levels, bold green
-categories, and aligned output.
+The pretty sink renders records in the run renderers' layout rather than as a
+log stream: a status gutter like `gutterLine` (`Warning   message`), or
+`system │ Warning message` once a workflow run's pipe display has started
+(`setSystemPipeWidth`). Info records carry no label and start in the column
+where `Warning` starts, so command results read as plain text. Errors show their
+message with dimmed stack frames. No timestamp; interpolated strings print
+unquoted; the category is appended only at debug level. `console_writer_test.ts`
+pins the gutter and pipe layouts to `console_writer.ts`.
 
 ## Which Stream Log Output Reaches
 
@@ -166,9 +172,9 @@ defined once in `src/infrastructure/logging/log_format.ts` (`TIMESTAMP_FORMAT`,
   sinks all use `textFormatter()` by default, whose layout is
   `<timestamp> [<LEVEL>] <category>: <message>` in **plain text** — no ANSI, so
   piped or redirected output stays clean.
-- The pretty sink (TTY) keeps its richer aligned, colored layout but uses the
-  same RFC3339 timestamp. Colored output is the pretty sink's job; the console
-  sink is never colored.
+- The pretty sink (TTY) carries no timestamp — see the configuration summary
+  above. Colored output is the pretty sink's job; the console sink is never
+  colored.
 
 ## Color Support
 
@@ -186,11 +192,8 @@ Colors for `writeOutput` content come from `@std/fmt/colors`, **not** LogTape:
   the single-`@std/fmt`-copy resolution the whole mechanism depends on
 - `--no-color` additionally sets `NO_COLOR=1` in the environment, in
   `globalAction`, so spawned child processes inherit it
-- The pretty sink is **separate**: it colors through `@logtape/pretty`'s own
-  `colors` option, derived from the flag and the environment but not from
-  stdout. A run like `swamp ... -v > file` from a terminal still writes colored
-  _log_ records to the pipe; `writeOutput` content and Cliffy's own output are
-  clean
+- The pretty sink colors through `@std/fmt/colors` too, so the same policy
+  decides whether its records carry escape codes
 - Tests that need to change color state should restore the previous value read
   from `getColorEnabled()` rather than assuming it was on. Better still, inject
   the effect — `applyColorPolicy` takes a `NO_COLOR` reader, the terminal probe

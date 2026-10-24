@@ -39,7 +39,6 @@
     "zod": "npm:zod@^4.4.3",
     "@cliffy/command": "jsr:@cliffy/command@^1.0.1",
     "@logtape/logtape": "jsr:@logtape/logtape@^2.0.7",
-    "@logtape/pretty": "jsr:@logtape/pretty@^2.0.7",
     "fzf": "npm:fzf@0.5.2",
     "ink": "npm:ink@^6.8.0",
     "ink-testing-library": "npm:ink-testing-library@4",

@@ -26,11 +26,10 @@ import {
   type Sink,
   type TextFormatter,
 } from "@logtape/logtape";
-import { getPrettyFormatter } from "@logtape/pretty";
 import {
+  interactiveFormatter,
   serveTextFormatter,
   textFormatter,
-  TIMESTAMP_FORMAT,
 } from "./log_format.ts";
 import { RUN_ID_PROPERTY, runFileSink } from "./run_file_sink.ts";
 import { initLogs, type InitLogsConfig } from "../tracing/mod.ts";
@@ -132,6 +131,9 @@ export function createStderrSink(
 
 let isInitialized = false;
 let systemPipeWidth = 6;
+// Set once a workflow run's pipe display is on screen, so log records line
+// up with it as `system │` lines instead of gutter lines.
+let pipeOutputActive = false;
 
 /** Most warnings kept while buffering; later ones are dropped. */
 const STARTUP_BUFFER_CAP = 200;
@@ -178,8 +180,14 @@ export async function bufferStartupWarnings(
 }
 let serveFormatEnabled = false;
 
+/**
+ * Record the width of a workflow run's `name │` column. Called by the
+ * workflow run renderer once its pipe display starts, which also switches
+ * the pretty sink to `system │` lines for the rest of the run.
+ */
 export function setSystemPipeWidth(width: number): void {
   systemPipeWidth = Math.max(width, 6);
+  pipeOutputActive = true;
 }
 
 export function getSystemPipeWidth(): number {
@@ -207,6 +215,7 @@ export async function initializeLogging(
 ): Promise<void> {
   if (options._reset) {
     isInitialized = false;
+    pipeOutputActive = false;
   }
   if (isInitialized) {
     return;
@@ -244,22 +253,14 @@ export async function initializeLogging(
   }> = [];
 
   if (options.prettyOutput) {
-    const useColors = !(options.noColor ?? false);
-    const prettyFormat = getPrettyFormatter({
-      timestamp: TIMESTAMP_FORMAT,
-      timestampStyle: "dim",
-      levelStyle: "dim",
-      icons: false,
-      categoryColor: "rgb(34,197,94)",
-      categoryStyle: "bold",
-      categoryTruncate: false,
-      messageColor: null,
-      messageStyle: null,
-      align: true,
-      wordWrap: true,
-      colors: useColors,
-      properties: options.showProperties ?? false,
-      inspectOptions: { colors: useColors },
+    // Terminal output reads like the run renderers' output, not a log
+    // stream: a status gutter, or `system │` lines during a workflow run.
+    // The category is shown only when debug records are, where it helps
+    // say which component is talking.
+    const prettyFormat = interactiveFormatter({
+      showCategory: logLevel === "debug" || logLevel === "trace",
+      showProperties: options.showProperties ?? false,
+      getPipeWidth: () => pipeOutputActive ? systemPipeWidth : undefined,
     });
 
     // The pretty sink honours `stderrOnly` too. It is easy to miss, because
