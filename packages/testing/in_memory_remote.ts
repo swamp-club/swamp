@@ -1234,10 +1234,17 @@ export function createInMemoryRemote(
       const removed = await removeBeforePush(walked);
       const plan = await planPush(walked);
       if (failure) {
-        // Uploads landed as objects but the index was never committed, and
-        // each upload's bare mark leaves the bulk flag set (S3SYNC:2911).
+        // Uploads landed as objects but the index was never committed. As
+        // released, each upload's bare mark leaves the bulk flag set
+        // (S3SYNC:2911). With per-path generations the uploads mark nothing
+        // and a scoped push keeps its path marks; only a whole-cache push,
+        // which no mark covered, leaves the cache bulk-dirty.
         for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);
-        if (plan.uploads.size > 0) markBulkOn(ensureSidecar(), false);
+        const keepsPathMarks = !semantics.commitClearsLaterMarks &&
+          plan.scoped;
+        if (plan.uploads.size > 0 && !keepsPathMarks) {
+          markBulkOn(ensureSidecar(), false);
+        }
         throw failure.error;
       }
       for (const [rel, bytes] of plan.uploads) objects.set(rel, bytes);

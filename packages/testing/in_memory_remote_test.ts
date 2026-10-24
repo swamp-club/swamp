@@ -624,7 +624,28 @@ Deno.test("createInMemoryRemote: injected prepare and commit failures leave the 
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a push failing after its uploads loses the recorded deletes (S3SYNC:2911, 3305-3307)", async () => {
+Deno.test("createInMemoryRemote: pins that a push failing after its uploads loses the recorded deletes, as released (S3SYNC:2911, 3305-3307)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
+    await write(aCache, "gone", "g");
+    await a.markDirty({ relPath: "gone" });
+    await a.pushChanged();
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "new" });
+    remote.failNext("push", undefined, { afterUploads: true });
+    await assertRejects(() => a.pushChanged());
+
+    await a.pushChanged();
+    assertEquals([...remote.files().keys()].sort(), ["gone", "new"]);
+  });
+});
+
+Deno.test("createInMemoryRemote: a scoped push failing after its uploads keeps its marks, so the next push still sends its deletes (swamp-club#3860)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "gone", "g");
@@ -639,7 +660,7 @@ Deno.test("createInMemoryRemote: pins that a push failing after its uploads lose
     await assertRejects(() => a.pushChanged());
 
     await a.pushChanged();
-    assertEquals([...remote.files().keys()].sort(), ["gone", "new"]);
+    assertEquals([...remote.files().keys()].sort(), ["new"]);
   });
 });
 
@@ -892,9 +913,11 @@ Deno.test("pendingPush: reports the next push's uploads, deletes and marks witho
   });
 });
 
-Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails past its uploads", async () => {
+Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails past its uploads, as released", async () => {
   await withTempDir(async (dir) => {
-    const { remote, a, aCache } = await twoMachines(dir);
+    const { remote, a, aCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_20_SEMANTICS,
+    });
     await write(aCache, "gone", "g");
     await a.markDirty({ relPath: "gone" });
     await a.pushChanged();
@@ -911,6 +934,29 @@ Deno.test("pendingPush: shows the bulk flag and lost deletes after a push fails 
       deletes: [],
       marked: ["gone", "new"],
       bulk: true,
+    });
+  });
+});
+
+Deno.test("pendingPush: a scoped push failing past its uploads keeps its marks and deletes, with no bulk flag (swamp-club#3860)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, aCache } = await twoMachines(dir);
+    await write(aCache, "gone", "g");
+    await a.markDirty({ relPath: "gone" });
+    await a.pushChanged();
+
+    await remove(aCache, "gone");
+    await write(aCache, "new", "n");
+    await a.markDirty({ relPath: "gone" });
+    await a.markDirty({ relPath: "new" });
+    remote.failNext("push", undefined, { afterUploads: true });
+    await assertRejects(() => a.pushChanged());
+
+    assertEquals(await remote.pendingPush(aCache), {
+      uploads: ["new"],
+      deletes: ["gone"],
+      marked: ["gone", "new"],
+      bulk: false,
     });
   });
 });
