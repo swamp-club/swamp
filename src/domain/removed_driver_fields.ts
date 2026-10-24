@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { z } from "zod";
+
 /**
  * User-facing deprecation guard for the removed execution-driver fields.
  *
@@ -44,12 +46,36 @@ export function removedDriverFieldMessage(field: string): string {
  * an actionable error before unknown-key stripping silently drops it.
  */
 export function rejectRemovedDriverFields(data: unknown): unknown {
-  if (data !== null && typeof data === "object" && !Array.isArray(data)) {
-    for (const field of ["driver", "driverConfig"]) {
-      if (field in data) {
-        throw new Error(removedDriverFieldMessage(field));
-      }
-    }
+  const [field] = removedDriverFieldsIn(data);
+  if (field !== undefined) {
+    throw new Error(removedDriverFieldMessage(field));
   }
   return data;
+}
+
+/**
+ * Zod preprocess hook that reports each removed `driver`/`driverConfig`
+ * field as a schema issue, so a workflow document that carries one fails
+ * like any other schema error instead of throwing (swamp-club#3832).
+ */
+export function addRemovedDriverFieldIssues(
+  data: unknown,
+  ctx: z.RefinementCtx,
+): unknown {
+  for (const field of removedDriverFieldsIn(data)) {
+    ctx.addIssue({
+      code: "custom",
+      message: removedDriverFieldMessage(field),
+      path: [field],
+      input: data,
+    });
+  }
+  return data;
+}
+
+function removedDriverFieldsIn(data: unknown): string[] {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return [];
+  }
+  return ["driver", "driverConfig"].filter((field) => field in data);
 }

@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { z } from "zod";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 
 const JOB_KEYS = [
@@ -33,20 +34,44 @@ const JOB_KEYS = [
   "queueTimeout",
 ];
 
+/** Runs a hook through a schema and returns the data or the issues it adds. */
+function run(
+  hook: ReturnType<typeof rejectUnknownKeys>,
+  data: unknown,
+): { data?: unknown; issues: { path: string; message: string }[] } {
+  const result = z.preprocess(hook, z.unknown()).safeParse(data);
+  return result.success ? { data: result.data, issues: [] } : {
+    issues: result.error.issues.map((issue) => ({
+      path: z.core.toDotPath(issue.path),
+      message: issue.message,
+    })),
+  };
+}
+
+/** The single issue a hook reports for `data`. */
+function onlyIssue(
+  hook: ReturnType<typeof rejectUnknownKeys>,
+  data: unknown,
+): { path: string; message: string } {
+  const { issues } = run(hook, data);
+  assertEquals(issues.length, 1);
+  return issues[0];
+}
+
 Deno.test("rejectUnknownKeys: passes through objects with only known keys", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
   const data = { name: "build", steps: [], weight: 1 };
-  assertEquals(hook(data), data);
+  assertEquals(run(hook, data), { data: data, issues: [] });
 });
 
 Deno.test("rejectUnknownKeys: passes through non-object values", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
-  assertEquals(hook(null), null);
-  assertEquals(hook(undefined), undefined);
-  assertEquals(hook("string"), "string");
-  assertEquals(hook(42), 42);
+  assertEquals(run(hook, null), { data: null, issues: [] });
+  assertEquals(run(hook, undefined), { data: undefined, issues: [] });
+  assertEquals(run(hook, "string"), { data: "string", issues: [] });
+  assertEquals(run(hook, 42), { data: 42, issues: [] });
   const arr = [{ unknown: true }];
-  assertEquals(hook(arr), arr);
+  assertEquals(run(hook, arr), { data: arr, issues: [] });
 });
 
 Deno.test("rejectUnknownKeys: accepts placement keys on job", () => {
@@ -59,7 +84,7 @@ Deno.test("rejectUnknownKeys: accepts placement keys on job", () => {
     queueTimeout: 30,
     steps: [],
   };
-  assertEquals(hook(data), data);
+  assertEquals(run(hook, data), { data: data, issues: [] });
 });
 
 Deno.test("rejectUnknownKeys: accepts placement keys on workflow", () => {
@@ -74,7 +99,7 @@ Deno.test("rejectUnknownKeys: accepts placement keys on workflow", () => {
   const hook = rejectUnknownKeys("workflow", WORKFLOW_KEYS);
   for (const key of ["labels", "target", "platform", "queueTimeout"]) {
     const data = { name: "wf", jobs: [], [key]: "x" };
-    assertEquals(hook(data), data);
+    assertEquals(run(hook, data), { data: data, issues: [] });
   }
 });
 
@@ -83,20 +108,15 @@ Deno.test("rejectUnknownKeys: placement keys on a step get the generic unknown-k
   // unknown. But if a placement-adjacent typo appears, it is a plain
   // unknown key with a suggestion — not the misplaced-property message.
   const hook = rejectUnknownKeys("step", ["name", "task", "labels"]);
-  const error = assertThrows(
-    () => hook({ name: "echo", task: {}, lables: { a: "b" } }),
-    Error,
-  );
+  const error = onlyIssue(hook, { name: "echo", task: {}, lables: { a: "b" } });
+  assertEquals(error.path, "lables");
   assertStringIncludes(error.message, "Unknown key 'lables' on step 'echo'");
   assertStringIncludes(error.message, "Did you mean 'labels'?");
 });
 
 Deno.test("rejectUnknownKeys: unknown key without close match lists valid keys", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
-  const error = assertThrows(
-    () => hook({ name: "build", steps: [], zzz_bogus_zzz: 1 }),
-    Error,
-  );
+  const error = onlyIssue(hook, { name: "build", steps: [], zzz_bogus_zzz: 1 });
   assertStringIncludes(error.message, "Unknown key 'zzz_bogus_zzz'");
   assertStringIncludes(
     error.message,
@@ -107,16 +127,21 @@ Deno.test("rejectUnknownKeys: unknown key without close match lists valid keys",
 Deno.test("rejectUnknownKeys: leaves driver/driverConfig for the removed-fields hook", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
   const data = { name: "build", steps: [], driver: "docker" };
-  // Must pass through so rejectRemovedDriverFields (chained first in the
+  // Must pass through so addRemovedDriverFieldIssues (chained first in the
   // schemas) produces its specific migration message.
-  assertEquals(hook(data), data);
+  assertEquals(run(hook, data), { data: data, issues: [] });
 });
 
 Deno.test("rejectUnknownKeys: omits entity name when data has no string name", () => {
   const hook = rejectUnknownKeys("job", JOB_KEYS);
-  const error = assertThrows(
-    () => hook({ steps: [], zzz_bogus: true }),
-    Error,
-  );
+  const error = onlyIssue(hook, { steps: [], zzz_bogus: true });
   assertStringIncludes(error.message, "Unknown key 'zzz_bogus' on job");
+});
+
+Deno.test("rejectUnknownKeys: reports every unknown key as its own issue (swamp-club#3832)", () => {
+  const hook = rejectUnknownKeys("job", JOB_KEYS);
+  const { issues } = run(hook, { name: "build", steps: [], aaa: 1, bbb: 2 });
+  assertEquals(issues.map((issue) => issue.path), ["aaa", "bbb"]);
+  assertStringIncludes(issues[0].message, "Unknown key 'aaa' on job 'build'");
+  assertStringIncludes(issues[1].message, "Unknown key 'bbb' on job 'build'");
 });

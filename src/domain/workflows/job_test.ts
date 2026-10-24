@@ -425,26 +425,27 @@ Deno.test("Job: writes field roundtrips through toData", () => {
 });
 
 Deno.test("JobSchema throws clear error for string dependsOn entries with job name", () => {
-  const error = assertThrows(
-    () => {
-      JobSchema.parse({
-        name: "build-job",
-        steps: [{
-          name: "step1",
-          task: {
-            type: "model_method",
-            modelIdOrName: "test-model",
-            methodName: "run",
-          },
-        }],
-        dependsOn: ["setup-job"],
-      });
-    },
-    Error,
-    "dependsOn entries must be objects, not strings",
+  const result = JobSchema.safeParse({
+    name: "build-job",
+    steps: [{
+      name: "step1",
+      task: {
+        type: "model_method",
+        modelIdOrName: "test-model",
+        methodName: "run",
+      },
+    }],
+    dependsOn: ["setup-job"],
+  });
+  assertEquals(result.success, false);
+  const issues = result.error?.issues ?? [];
+  assertEquals(issues.length, 1);
+  assertEquals(issues[0].path, ["dependsOn", 0]);
+  assertEquals(
+    issues[0].message,
+    'Job "build-job": dependsOn entries must be objects, not strings. ' +
+      'Replace "- setup-job" with "- job: setup-job" and a condition of type succeeded.',
   );
-  assertStringIncludes(error.message, 'Job "build-job"');
-  assertStringIncludes(error.message, "setup-job");
 });
 
 Deno.test("Job: writes field is undefined when absent", () => {

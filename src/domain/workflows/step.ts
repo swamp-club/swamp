@@ -26,7 +26,7 @@ import {
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
-import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { nodeName } from "./node_name.ts";
 import {
@@ -79,26 +79,31 @@ export const StepObjectSchema = z.object({
   writes: z.boolean().optional(),
 });
 
-function rejectStringStepDependsOn(data: unknown): unknown {
+/**
+ * Reports a string-form `dependsOn` entry as a schema issue with the object
+ * form to write instead (swamp-club#3832). The message is one line: schema
+ * errors escape control characters, so a newline would print as an escape.
+ */
+function rejectStringStepDependsOn(
+  data: unknown,
+  ctx: z.RefinementCtx,
+): unknown {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const raw = data as Record<string, unknown>;
     const deps = raw.dependsOn;
     if (Array.isArray(deps)) {
-      const hasStrings = deps.some((item) => typeof item === "string");
-      if (hasStrings) {
+      const index = deps.findIndex((item) => typeof item === "string");
+      if (index !== -1) {
         const name = typeof raw.name === "string" ? raw.name : "<unnamed step>";
-        const example = typeof deps[0] === "string" ? deps[0] : "step-name";
-        throw new Error(
-          `Step "${name}": dependsOn entries must be objects, not strings.\n\n` +
-            `Replace:\n` +
-            `  dependsOn:\n` +
-            `    - ${example}\n\n` +
-            `With:\n` +
-            `  dependsOn:\n` +
-            `    - step: ${example}\n` +
-            `      condition:\n` +
-            `        type: succeeded`,
-        );
+        const entry = String(deps[index]);
+        ctx.addIssue({
+          code: "custom",
+          message: `Step "${name}": dependsOn entries must be objects, not ` +
+            `strings. Replace "- ${entry}" with "- step: ${entry}" and a ` +
+            `condition of type succeeded.`,
+          path: ["dependsOn", index],
+          input: data,
+        });
       }
     }
   }
@@ -113,7 +118,7 @@ function rejectStringStepDependsOn(data: unknown): unknown {
  * (swamp-club#1240).
  */
 export const StepSchema = z.preprocess(
-  rejectRemovedDriverFields,
+  addRemovedDriverFieldIssues,
   z.preprocess(
     rejectUnknownKeys("step", Object.keys(StepObjectSchema.shape)),
     z.preprocess(rejectStringStepDependsOn, StepObjectSchema),

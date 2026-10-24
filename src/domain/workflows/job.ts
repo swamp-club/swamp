@@ -24,7 +24,7 @@ import {
   TriggerConditionSchema,
 } from "./trigger_condition.ts";
 import { Step, type StepData, StepSchema } from "./step.ts";
-import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { nodeName } from "./node_name.ts";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
@@ -56,26 +56,31 @@ export const JobObjectSchema = z.object({
   ...PlacementFieldsSchema.shape,
 });
 
-function rejectStringJobDependsOn(data: unknown): unknown {
+/**
+ * Reports a string-form `dependsOn` entry as a schema issue with the object
+ * form to write instead (swamp-club#3832). The message is one line: schema
+ * errors escape control characters, so a newline would print as an escape.
+ */
+function rejectStringJobDependsOn(
+  data: unknown,
+  ctx: z.RefinementCtx,
+): unknown {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const raw = data as Record<string, unknown>;
     const deps = raw.dependsOn;
     if (Array.isArray(deps)) {
-      const hasStrings = deps.some((item) => typeof item === "string");
-      if (hasStrings) {
+      const index = deps.findIndex((item) => typeof item === "string");
+      if (index !== -1) {
         const name = typeof raw.name === "string" ? raw.name : "<unnamed job>";
-        const example = typeof deps[0] === "string" ? deps[0] : "job-name";
-        throw new Error(
-          `Job "${name}": dependsOn entries must be objects, not strings.\n\n` +
-            `Replace:\n` +
-            `  dependsOn:\n` +
-            `    - ${example}\n\n` +
-            `With:\n` +
-            `  dependsOn:\n` +
-            `    - job: ${example}\n` +
-            `      condition:\n` +
-            `        type: succeeded`,
-        );
+        const entry = String(deps[index]);
+        ctx.addIssue({
+          code: "custom",
+          message: `Job "${name}": dependsOn entries must be objects, not ` +
+            `strings. Replace "- ${entry}" with "- job: ${entry}" and a ` +
+            `condition of type succeeded.`,
+          path: ["dependsOn", index],
+          input: data,
+        });
       }
     }
   }
@@ -88,7 +93,7 @@ function rejectStringJobDependsOn(data: unknown): unknown {
  * rejects unknown keys with did-you-mean suggestions (swamp-club#1240).
  */
 export const JobSchema = z.preprocess(
-  rejectRemovedDriverFields,
+  addRemovedDriverFieldIssues,
   z.preprocess(
     rejectUnknownKeys("job", Object.keys(JobObjectSchema.shape)),
     z.preprocess(rejectStringJobDependsOn, JobObjectSchema),
