@@ -25,7 +25,10 @@ import {
   DASHBOARD_DIST_DIR,
   serveDashboardRoute,
 } from "../../serve/dashboard_assets.ts";
-import { validateWebSocketOrigin } from "../../serve/origin.ts";
+import {
+  validateNoAuthHttpRequest,
+  validateWebSocketOrigin,
+} from "../../serve/origin.ts";
 import { Command } from "@cliffy/command";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import {
@@ -157,6 +160,7 @@ import {
 } from "../../serve/rate_limiter.ts";
 import {
   handleSignalHttpRequest,
+  hasJsonContentType,
   matchSignalRoute,
 } from "../../serve/signal_http.ts";
 import {
@@ -6358,9 +6362,32 @@ export const serveCommand = new Command()
           if (webhookResponse) return webhookResponse;
         }
 
+        const apiUrl = new URL(req.url);
+        if (
+          authConfig.mode === "none" &&
+          apiUrl.pathname.startsWith("/api/v1/")
+        ) {
+          const requestTrust = validateNoAuthHttpRequest(
+            req.headers.get("origin"),
+            req.headers.get("host"),
+            host,
+            tlsEnabled,
+            trustedHosts,
+          );
+          if (!requestTrust.allowed) {
+            logger.warn(
+              "No-auth HTTP API request rejected: {reason} from {ip}",
+              { reason: requestTrust.reason, ip: clientAddress() },
+            );
+            return new Response(`Forbidden: ${requestTrust.reason}`, {
+              status: 403,
+            });
+          }
+        }
+
         // Cancel endpoint (authenticated + authorized)
         if (req.method === "POST") {
-          const url = new URL(req.url);
+          const url = apiUrl;
           const cancelMatch = url.pathname.match(
             /^\/api\/v1\/cancel\/(workflow-run|method-run)\/([^/]+)$/,
           );
@@ -6468,6 +6495,12 @@ export const serveCommand = new Command()
                 },
               );
               if (refusal) return refusal;
+            }
+            if (!hasJsonContentType(req)) {
+              return Response.json({
+                status: "error",
+                message: "Content-Type must be application/json",
+              }, { status: 415 });
             }
           }
           if (cancelMatch) {

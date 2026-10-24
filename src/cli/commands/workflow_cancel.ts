@@ -961,11 +961,12 @@ export const workflowCancelCommand = withRemoteOptions(
         options,
       );
       const cancelUrl = buildCancelUrl(server, options.run as string);
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
       if (token) headers["Authorization"] = `Bearer ${token}`;
       let requestBody: string | undefined;
       if (options.reason) {
-        headers["Content-Type"] = "application/json";
         requestBody = JSON.stringify({ reason: options.reason });
       }
       let body: Record<string, unknown>;

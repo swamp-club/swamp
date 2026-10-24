@@ -280,7 +280,13 @@ status in no bucket counts in `runs` only.
 Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
 
 - `none`: no principal; every request is anonymous. Deprecated and loopback
-  only. `--restricted-*` options are ignored with a warning.
+  only. `--restricted-*` options are ignored with a warning. Its HTTP API
+  rejects a browser Origin outside the loopback or configured trusted-host
+  authorities, and checks Host on every API request to prevent DNS rebinding.
+  Native clients without an Origin remain supported. Signal and cancel HTTP
+  requests must declare `Content-Type: application/json`; this makes them
+  non-simple browser requests, so a cross-origin browser must pass the same
+  origin check before sending one.
 - `token`: clients present `<name>.<secret>`. `--admins` is required, and each
   entry must parse as `user:<id>`, `group:<name>` or `idp-group:<name>`.
 - `oauth`: clients log in through the swamp-club device grant. Requires

@@ -50,6 +50,7 @@ import {
   validateDashboardSessionOrigin,
   validateWebSocketOrigin,
 } from "./serve.ts";
+import { validateNoAuthHttpRequest } from "../../serve/origin.ts";
 import {
   type ActiveRun,
   ActiveRunRegistry,
@@ -502,6 +503,53 @@ Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () =>
   );
   assertEquals(result.allowed, false);
   assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateNoAuthHttpRequest: rejects an untrusted browser origin on loopback", () => {
+  const result = validateNoAuthHttpRequest(
+    "https://attacker.example",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateNoAuthHttpRequest: admits an Origin-less local client", () => {
+  assertEquals(
+    validateNoAuthHttpRequest(
+      null,
+      "127.0.0.1:9090",
+      "127.0.0.1",
+      false,
+    ),
+    { allowed: true },
+  );
+});
+
+Deno.test("validateNoAuthHttpRequest: rejects an untrusted Host on loopback", () => {
+  const result = validateNoAuthHttpRequest(
+    null,
+    "rebind.attacker.example:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted host");
+});
+
+Deno.test("validateNoAuthHttpRequest: admits a configured trusted proxy authority", () => {
+  assertEquals(
+    validateNoAuthHttpRequest(
+      "https://serve.example.com",
+      "serve.example.com:443",
+      "127.0.0.1",
+      true,
+      ["serve.example.com"],
+    ),
+    { allowed: true },
+  );
 });
 
 Deno.test("validateWebSocketOrigin: rejects attacker-controlled origin", () => {
