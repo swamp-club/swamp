@@ -1716,6 +1716,7 @@ export class SqliteReadModel implements ReadModel {
   }
 
   async #loadBaseNow(signal: AbortSignal): Promise<void> {
+    const started = performance.now();
     let point: number | undefined;
     for (let staged = false; !staged;) {
       this.#state.beginLoad();
@@ -1737,20 +1738,33 @@ export class SqliteReadModel implements ReadModel {
         after = page.next;
       } while (after !== undefined);
     }
+    this.#stats?.bump("base_stage_ms", Math.round(performance.now() - started));
     if (point === undefined) return;
 
     const removals = this.#state.loadRemovals();
     const writes = this.#state.loadWrites();
     this.#state.touchKeys([...removals, ...writes]);
-    const batch = new DurableWriteBatch();
+    this.#stats?.bump("base_removals", removals.length);
+    this.#stats?.bump("base_writes", writes.length);
+    // Unsynced where the kernel names the boot, as a page's files are: the
+    // keys are listed with the boot when the load finishes, and the first
+    // open in a later boot checks them (swamp-club#3803). Syncing each file
+    // made a load slower than replaying the commits it folds.
+    const batch = this.#writeBatch();
     let unreadable: StoredUnreadableRecord[];
+    const filesStarted = performance.now();
     try {
       unreadable = await this.#loadFiles(removals, writes, batch, signal);
       await batch.barrier();
     } finally {
       batch.discard();
     }
+    this.#stats?.bump(
+      "base_files_ms",
+      Math.round(performance.now() - filesStarted),
+    );
 
+    const catalogStarted = performance.now();
     const names = this.#state.loadCatalogNames();
     this.#state.touchNames(names);
     for (const name of names) {
@@ -1770,7 +1784,23 @@ export class SqliteReadModel implements ReadModel {
           : [{ kind: "forward" as const, name: name.name, to: state.forward }]),
       ]);
     }
-    this.#state.finishLoad(point, unreadable);
+    this.#stats?.bump("base_names", names.length);
+    this.#stats?.bump(
+      "base_catalog_ms",
+      Math.round(performance.now() - catalogStarted),
+    );
+    const finishStarted = performance.now();
+    this.#state.finishLoad(
+      point,
+      unreadable,
+      batch.syncs || this.#boot === undefined
+        ? undefined
+        : { keys: [...removals, ...writes], boot: this.#boot },
+    );
+    this.#stats?.bump(
+      "base_finish_ms",
+      Math.round(performance.now() - finishStarted),
+    );
     for (const record of unreadable) warnUnreadable(record);
   }
 

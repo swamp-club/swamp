@@ -951,11 +951,21 @@ export class ReadModelState {
    * catch-up reaches the end of the feed, and the staging and touched
    * tables are cleared. Unreadable records whose key the base no longer
    * shows at their put are forgotten, and `unreadable`, the base records
-   * the load could not read, recorded (swamp-club#3617).
+   * the load could not read, recorded (swamp-club#3617). `unsynced`, the
+   * keys the load wrote or removed without a sync, is listed with the boot
+   * in the same transaction, as a commit's are (swamp-club#3803), so the
+   * first open in a later boot checks them.
    */
   finishLoad(
     point: number,
     unreadable: readonly StoredUnreadableRecord[] = [],
+    unsynced?: {
+      readonly keys: readonly {
+        readonly namespace: string;
+        readonly record_key: string;
+      }[];
+      readonly boot: string;
+    },
   ): void {
     this.#transaction(() => {
       this.#db.exec(`
@@ -983,6 +993,12 @@ export class ReadModelState {
           AND m.mark = unreadable_records.position AND m.present = 1);
       `);
       for (const record of unreadable) this.#insertUnreadable(record);
+      if (unsynced !== undefined && unsynced.keys.length > 0) {
+        for (const { namespace, record_key } of unsynced.keys) {
+          this.#insertUnsynced.run(namespace, record_key);
+        }
+        this.#upsertUnsyncedBoot.run(unsynced.boot);
+      }
       this.#upsertMeta.run("cursor", point);
     });
   }

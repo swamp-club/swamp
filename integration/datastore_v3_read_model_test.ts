@@ -934,6 +934,110 @@ Deno.test("read model: files a reboot lost after their page committed are repair
   });
 });
 
+/** What a clean load of the compacted {@link appendScenario} leaves. */
+async function cleanCompactedResult(): Promise<unknown> {
+  let result: unknown;
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    const readModel = env.openReadModel();
+    try {
+      await readModel.catchUp(signal());
+      result = await observeReadModel(env, readModel, PARTITIONS);
+    } finally {
+      await readModel.close();
+    }
+  });
+  return result;
+}
+
+Deno.test("read model: a compacted base's files a reboot lost are repaired on the next open, as a page's are (swamp-club#3803)", async () => {
+  const clean = await cleanCompactedResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    let boot = "boot-id:1";
+    const open = () =>
+      env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
+    const first = open();
+    try {
+      assertEquals((await first.catchUp(signal())).cursor, 5);
+    } finally {
+      await first.close();
+    }
+    // The load wrote the base's files unsynced, and listed them.
+    assert(unsyncedCount(env) > 0, "the base load listed no unsynced files");
+    // A power loss: one base file comes back empty, one not at all.
+    const root = swampPath(env.repoDir);
+    const fileOf = (key: RecordKey) => join(root, ...key.toString().split("/"));
+    await Deno.truncate(fileOf(dataKey("b", 1)), 0);
+    await Deno.remove(fileOf(dataKey("a", 2)));
+    boot = "boot-id:2";
+    const reopened = open();
+    try {
+      await reopened.catchUp(signal());
+    } finally {
+      await reopened.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+/** A batch whose `fail`th write throws, as a process killed mid-load. */
+class FailingWriteBatch extends DurableWriteBatch {
+  constructor(readonly control: { writes: number; fail: number | undefined }) {
+    super({ sync: false });
+  }
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: { readonly absentDirectories?: readonly string[] },
+  ): Promise<void> {
+    if (++this.control.writes === this.control.fail) {
+      this.control.fail = undefined;
+      throw new Error("injected crash partway through the base load");
+    }
+    await super.write(path, content, signal, options);
+  }
+}
+
+Deno.test("read model: a base load cut off partway, whose written files a reboot then lost, ends as a clean load on the next open (swamp-club#3803)", async () => {
+  const clean = await cleanCompactedResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    const control = { writes: 0, fail: 3 as number | undefined };
+    const cut = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+      writeBatch: () => new FailingWriteBatch(control),
+    });
+    try {
+      await assertRejects(
+        () => cut.catchUp(signal()),
+        Error,
+        "injected crash partway through the base load",
+      );
+    } finally {
+      await cut.close();
+    }
+    // The state did not move: a reboot then lost what the load wrote.
+    assertEquals(committedCursor(env), 0);
+    const root = swampPath(env.repoDir);
+    const lost = join(root, ...dataKey("a", 2).toString().split("/"));
+    await Deno.remove(lost).catch(() => {});
+    const next = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:2"),
+    });
+    try {
+      assertEquals((await next.catchUp(signal())).cursor, 5);
+    } finally {
+      await next.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
 Deno.test("read model: syncUnsyncedFiles makes the listed files durable and clears the list (swamp-club#3416)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {
