@@ -55,6 +55,7 @@ import { markErrorPaths, UserError } from "../../../domain/errors.ts";
 import type { LineageHead } from "../../../domain/datastore_v3/published_lineage.ts";
 import { replicaPathFor } from "../../../domain/datastore_v3/replication_lineage.ts";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
+import { withSpan } from "../../tracing/tracer.ts";
 import {
   COMMIT_STORE_SCHEMA_VERSION,
   SqliteCommitStore,
@@ -145,7 +146,7 @@ export async function restoreV3Copy(
       { mode: 0o600 },
     );
     let exactTxid = true;
-    const exact = await runRestore(
+    const exact = await runRestoreAttempt(
       request.binary,
       config,
       temp,
@@ -156,7 +157,7 @@ export async function restoreV3Copy(
     if (exact.kind === "unavailable") {
       exactTxid = false;
       await removeDatabase(temp);
-      const latest = await runRestore(
+      const latest = await runRestoreAttempt(
         request.binary,
         config,
         temp,
@@ -178,10 +179,20 @@ export async function restoreV3Copy(
         }: ${exact.message}`,
       );
     }
-    checkDatabase(temp);
-    const truncated = await truncateToMark(temp, request.head, target);
-    await syncFile(temp);
-    await request.install(temp);
+    await withSpan(
+      "swamp.datastore.v3.restore.integrity_check",
+      {},
+      () => Promise.resolve(checkDatabase(temp)),
+    );
+    const truncated = await withSpan(
+      "swamp.datastore.v3.restore.truncate",
+      {},
+      () => truncateToMark(temp, request.head, target),
+    );
+    await withSpan("swamp.datastore.v3.restore.install", {}, async () => {
+      await syncFile(temp);
+      await request.install(temp);
+    });
     // Litestream's local state described the copy just replaced.
     await Deno.remove(
       join(dirname(target), litestreamStateDirName(basename(target))),
@@ -250,6 +261,36 @@ type RestoreOutcome =
   | { readonly kind: "ok" }
   | { readonly kind: "unavailable" }
   | { readonly kind: "failed"; readonly message: string };
+
+/**
+ * One `litestream restore`, in its own span (swamp-club#3803): a restore at
+ * the head's TXID that finds it compacted away runs a second, full one.
+ */
+function runRestoreAttempt(
+  binary: string,
+  config: string,
+  temp: string,
+  signal: AbortSignal,
+  extra: readonly string[],
+  replicaType: LitestreamReplicaType,
+): Promise<RestoreOutcome> {
+  return withSpan("swamp.datastore.v3.restore.attempt", {
+    "swamp.datastore.v3.restore_txid": extra.length === 0
+      ? "latest"
+      : extra[extra.length - 1],
+  }, async (span) => {
+    const outcome = await runRestore(
+      binary,
+      config,
+      temp,
+      signal,
+      extra,
+      replicaType,
+    );
+    span.setAttribute("swamp.datastore.v3.restore_outcome", outcome.kind);
+    return outcome;
+  });
+}
 
 async function runRestore(
   binary: string,

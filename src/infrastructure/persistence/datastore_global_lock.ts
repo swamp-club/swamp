@@ -24,6 +24,7 @@ import {
   resolveLockTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
+import { withSpan } from "../tracing/tracer.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type {
   DistributedLock,
@@ -42,8 +43,18 @@ import { FileLock } from "./file_lock.ts";
 export async function resolveCustomProvider(
   config: CustomDatastoreConfig,
 ): Promise<DatastoreProvider> {
-  await datastoreTypeRegistry.ensureLoaded();
-  await datastoreTypeRegistry.ensureTypeLoaded(config.type);
+  // Named, since a fresh checkout loads or installs the extension here
+  // (swamp-club#3803).
+  await withSpan(
+    "swamp.datastore.extensions.load",
+    {},
+    () => datastoreTypeRegistry.ensureLoaded(),
+  );
+  await withSpan(
+    "swamp.datastore.extension.type_load",
+    { "swamp.datastore.type": config.type },
+    () => datastoreTypeRegistry.ensureTypeLoaded(config.type),
+  );
   const typeInfo = datastoreTypeRegistry.get(config.type);
   if (!typeInfo?.createProvider) {
     throw new UserError(

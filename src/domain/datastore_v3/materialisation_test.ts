@@ -21,9 +21,14 @@ import { assertEquals } from "@std/assert";
 import {
   decideFile,
   finalKeyStates,
+  type KeyChange,
   lexicalConflict,
   lexicalRefusal,
+  type NetReplayPlan,
+  NetReplayPlanner,
 } from "./materialisation.ts";
+import type { PutOp } from "./op.ts";
+import { RecordKey } from "./record_key.ts";
 import {
   dataKey,
   deleteVersion,
@@ -110,4 +115,111 @@ Deno.test("lexicalConflict: finds a file above the key or a file under it", () =
   assertEquals(lexicalConflict("data/y", isFile, under), "directory");
   assertEquals(lexicalConflict("data/x", isFile, under), undefined);
   assertEquals(lexicalConflict("data/w/1", isFile, under), undefined);
+});
+
+/** A key change of `key`: a put when `put`, else a tombstone. */
+function change(key: string, put: boolean): KeyChange {
+  return {
+    key: RecordKey.create(key),
+    put: put ? ({} as PutOp) : null,
+  };
+}
+
+function planOf(
+  commits: [partition: string, changes: KeyChange[]][],
+  options: {
+    readonly ignored?: (key: string) => boolean;
+    readonly present?: readonly string[];
+  } = {},
+): NetReplayPlan {
+  const planner = new NetReplayPlanner((_, key) =>
+    options.ignored?.(key) ?? false
+  );
+  commits.forEach(([partition, changes], i) =>
+    planner.add({ namespace: "", partition, position: i + 1, changes })
+  );
+  const present = new Set(options.present ?? []);
+  return planner.finish((_, segment) => !present.has(segment));
+}
+
+Deno.test("NetReplayPlanner: skips a write a later put or the owner's tombstone replaces, never the final one (swamp-club#3803)", () => {
+  const plan = planOf([
+    ["p", [change("data/x", true)]],
+    ["p", [change("data/x", true)]],
+    ["p", [change("data/y", true)]],
+    ["p", [change("data/y", false)]],
+  ]);
+  assertEquals(plan.skipsWrite("", "data/x", 1), true);
+  assertEquals(plan.skipsWrite("", "data/x", 2), false);
+  assertEquals(plan.skipsWrite("", "data/y", 3), true);
+  assertEquals(plan.skipsRemoval("", "data/y", 4), true);
+  assertEquals(plan.replaceable, 2);
+  assertEquals(plan.bound, 4);
+});
+
+Deno.test("NetReplayPlanner: keeps a write another partition's tombstone leaves on disk (swamp-club#3803)", () => {
+  const plan = planOf([
+    ["p", [change("config/k", true)]],
+    ["q", [change("config/k", false)]],
+  ]);
+  assertEquals(plan.skipsWrite("", "config/k", 1), false);
+  assertEquals(plan.replaceable, 0);
+});
+
+Deno.test("NetReplayPlanner: a key that is another's path prefix, or under one, replays in full (swamp-club#3803)", () => {
+  const plan = planOf([
+    ["p", [change("data/a", true)]],
+    ["p", [change("data/a", true), change("data/a/b", true)]],
+    ["p", [change("data/a/b", false), change("data/c", true)]],
+    ["p", [change("data/c", true)]],
+  ]);
+  assertEquals(plan.skipsWrite("", "data/a", 1), false);
+  assertEquals(plan.skipsWrite("", "data/a/b", 2), false);
+  assertEquals(plan.skipsRemoval("", "data/a/b", 3), false);
+  assertEquals(plan.skipsWrite("", "data/c", 3), true);
+  assertEquals(plan.replaceable, 3);
+  assertEquals(plan.keptForPrefix, 2);
+});
+
+Deno.test("NetReplayPlanner: a key whose directory was there before replays in full (swamp-club#3803)", () => {
+  const plan = planOf([
+    ["p", [change("data/x", true)]],
+    ["p", [change("data/x", true)]],
+    ["p", [change("outputs/z", false)]],
+  ], { present: ["data"] });
+  assertEquals(plan.skipsWrite("", "data/x", 1), false);
+  assertEquals(plan.keptForDirectory, 1);
+  // A key only ever removed, under a directory that was absent.
+  assertEquals(plan.skipsRemoval("", "outputs/z", 3), true);
+});
+
+Deno.test("NetReplayPlanner: skips nothing past its bound, and nothing of a key it leaves alone (swamp-club#3803)", () => {
+  const plan = planOf([
+    ["p", [change("data/x", true)]],
+    ["p", [change("data/x", true)]],
+    ["p", [change("data/local", true)]],
+    ["p", [change("data/local", true)]],
+  ], { ignored: (key) => key === "data/local" });
+  assertEquals(plan.skipsWrite("", "data/x", 1), true);
+  assertEquals(plan.skipsWrite("", "data/x", 9), false);
+  assertEquals(plan.skipsRemoval("", "data/x", 9), false);
+  assertEquals(plan.skipsWrite("", "data/local", 3), false);
+  assertEquals(plan.skipsRemoval("", "data/local", 3), false);
+});
+
+Deno.test("NetReplayPlanner: keys that differ only by case or composition, or whose prefix does, replay in full (swamp-club#3803)", () => {
+  const plan = planOf([
+    ["p", [change("config/A.yaml", true), change("config/x.yaml", true)]],
+    ["p", [change("config/a.yaml/b", true), change("config/X.yaml", true)]],
+    ["p", [
+      change("config/A.yaml", true),
+      change("config/x.yaml", true),
+      change("config/café", true),
+    ]],
+    ["p", [change("config/café", true), change("config/café", true)]],
+  ]);
+  assertEquals(plan.skipsWrite("", "config/A.yaml", 1), false);
+  assertEquals(plan.skipsWrite("", "config/x.yaml", 1), false);
+  assertEquals(plan.skipsWrite("", "config/café", 3), false);
+  assertEquals(plan.keptForPrefix, plan.replaceable);
 });

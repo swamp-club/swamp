@@ -33,7 +33,10 @@ import {
   V3_STORAGE_UNREACHABLE_CODE,
   V3_WRITER_BUSY_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
-import { CATCH_UP_UNREACHABLE_CODE } from "../../domain/datastore_v3/read_model.ts";
+import {
+  CATCH_UP_UNREACHABLE_CODE,
+  READ_MODEL_BUSY_CODE,
+} from "../../domain/datastore_v3/read_model.ts";
 import {
   COMMIT_UNREACHABLE_CODE,
   RunPartlyCommittedError,
@@ -172,6 +175,8 @@ export function exitCodeForError(error: unknown): number {
   if (code === V3_REPLICATION_UNCONFIRMED_CODE) return 75;
   // Writer lease contention: nothing changed, so a retry is safe.
   if (code === V3_WRITER_BUSY_CODE) return 75;
+  // Another process's catch-up outlasted the wait: nothing was read.
+  if (code === READ_MODEL_BUSY_CODE) return 75;
   // A commit given up because the storage was unreachable: nothing landed.
   if (code === COMMIT_UNREACHABLE_CODE) return 75;
   // Cut off from the storage before writing, or while catching up: nothing

@@ -884,7 +884,15 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
   read takes the highest writer's, so a head never goes backwards: two
   processes in one checkout share and continue one lineage, and the first,
   fenced and publishing late, must not overwrite the head of the second,
-  which already acknowledged more. `copy.json` likewise only moves forward;
+  which already acknowledged more. `copy.json` likewise only moves forward.
+  Every 16th writer fence prunes the heads below its own once its sync passed
+  the lease check (swamp-club#3803), 16 deletes at a time, at most 64,
+  so a lineage that many commands continue does not make every read list one
+  head per command. It keeps the newest head below its own as well: a swamp
+  before this one, which never lists a lineage again, may have listed the
+  heads just before the pruning writer published. A read that finds a listed
+  head above the one it reads gone lists the lineage again, up to three times,
+  before it settles on a lower head or treats the lineage as headless;
 - `confirmed.json`, created once, after the lineage's first head.
 
 **The current state** is the highest lineage under the current replica root

@@ -91,6 +91,7 @@ import {
   collectV3Lineages,
   makeV3CopyCurrent,
   prepareV3WriterLineage,
+  pruneV3Heads,
   publishV3Head,
   recordV3LeaseFence,
   type V3Copy,
@@ -129,6 +130,7 @@ import {
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { withSpan } from "../tracing/tracer.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
@@ -452,6 +454,21 @@ export async function ensureV3CopyCurrent(
     return {};
   }
   if (mode === "read" && currentCopies.has(key)) return {};
+  // Named, since a first clone spends most of its time here (swamp-club#3803).
+  return await withSpan(
+    "swamp.datastore.v3.copy.ensure",
+    { "swamp.datastore.v3.mode": mode },
+    () => ensureV3CopyCurrentNow(repoDir, config, mode, key, options),
+  );
+}
+
+async function ensureV3CopyCurrentNow(
+  repoDir: string,
+  config: V3DatastoreConfig,
+  mode: "read" | "write",
+  key: string,
+  options: { readonly stillCurrent?: () => boolean },
+): Promise<V3CopyRefresh & { readonly stale?: true }> {
   // The handle's directory: the copy lives under the checkout's .swamp/.
   await Deno.mkdir(resolve(repoDir), { recursive: true });
   const copy = copyOf(repoDir, config);
@@ -1062,6 +1079,13 @@ export async function v3RepositoryFactoryConfig(
   } else if (!await anotherProcessWritesCheckout(repoDir, config.path)) {
     await handle.catchUp();
     if (writer) caughtUpWriters.add(handle);
+  } else {
+    // The writer's files are the newest only once the read model is
+    // complete. Until then a catch-up is in progress or was cut short, and
+    // the files may be anywhere between two commits: wait for it, bounded
+    // by the lock timeout, and finish it if it was cut short
+    // (swamp-club#3803).
+    await handle.catchUpUnlessComplete(resolveLockTimeoutMs());
   }
   const unreadableContent = unreadableContentLookup(repoDir, handle.readModel);
   return {
@@ -1520,6 +1544,9 @@ async function syncAndPublishNow(
     datastore,
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
   );
+  // The lease check passed: the heads below this writer's are never read
+  // again (swamp-club#3803).
+  await pruneV3Heads(copy, use.lineageFence, writerFence);
   if (first) {
     // A bucket datastore's old lineage paths go through its provider's
     // replica paths (swamp-club#3531, #3534).

@@ -45,6 +45,7 @@ import {
   type CatalogRow,
   type CatalogRowKey,
   CatalogStore,
+  type CatalogWriter,
 } from "../persistence/catalog_store.ts";
 
 /** The catalog the read model writes. {@link V3Catalog} is the real one. */
@@ -69,18 +70,40 @@ export interface ReadModelCatalog {
    * local; resolves with the new generation (swamp-club#3299).
    */
   clear(admits: (key: string) => boolean): number;
-  /** Applies one commit's catalog actions, in order, on a model partition. */
+  /**
+   * Applies one commit's catalog actions, in order, on a model partition.
+   * Inside a batch they are held until {@link commitBatch}.
+   */
   apply(
     namespace: string,
     partition: PartitionKey,
     actions: readonly CatalogAction[],
   ): void;
+  /**
+   * Opens a batch (swamp-club#3803): the actions of every {@link apply} until
+   * {@link commitBatch} land in one transaction, which the read model commits
+   * with a page's state, once the page's files are written.
+   */
+  beginBatch(): void;
+  /** Applies the batch's actions, in order, in one transaction. */
+  commitBatch(): void;
+  /** Drops the batch's actions; does nothing when none is open. */
+  rollbackBatch(): void;
   close(): void;
+}
+
+/** One commit's catalog actions, held in a batch. */
+interface HeldActions {
+  readonly namespace: string;
+  readonly partition: PartitionKey;
+  readonly actions: readonly CatalogAction[];
 }
 
 /** The v3 catalog over {@link CatalogStore}. */
 export class V3Catalog implements ReadModelCatalog {
   readonly #store: CatalogStore;
+  /** The open batch's actions; undefined when no batch is open. */
+  #held: HeldActions[] | undefined;
 
   constructor(store: CatalogStore) {
     this.#store = store;
@@ -118,52 +141,95 @@ export class V3Catalog implements ReadModelCatalog {
     actions: readonly CatalogAction[],
   ): void {
     if (actions.length === 0) return;
-    const identity = partition.identity;
-    if (identity.kind !== "model") {
+    if (partition.identity.kind !== "model") {
       throw new Error(
         `Catalog actions need a model partition, not ${partition}`,
       );
     }
-    const type = identity.type;
-    const modelId = identity.id;
-    for (const action of actions) {
-      switch (action.kind) {
-        case "upsert-version":
-          this.#store.upsertNewVersion(
-            catalogRow(namespace, type, modelId, action.metadata),
-          );
-          break;
-        case "remove-version":
-          this.#store.removeVersion(
-            namespace,
-            type,
-            modelId,
-            action.name,
-            action.version,
-            computeLatestFlags,
-          );
-          break;
-        case "remove-name":
-          this.#store.remove(namespace, type, modelId, action.name);
-          break;
-        case "forward":
-          this.#store.recordRename({
-            namespace,
-            type_normalized: type,
-            model_id: modelId,
-            data_name: action.name,
-            renamed_to: action.to,
-          });
-          break;
-        case "end-forward":
-          this.#store.removeRename(namespace, type, modelId, action.name);
-          break;
-      }
+    if (this.#held !== undefined) {
+      this.#held.push({ namespace, partition, actions });
+      return;
     }
+    applyActions(this.#store, namespace, partition, actions);
+  }
+
+  beginBatch(): void {
+    if (this.#held !== undefined) {
+      throw new Error("A catalog batch is open");
+    }
+    this.#held = [];
+  }
+
+  commitBatch(): void {
+    const held = this.#held;
+    if (held === undefined) throw new Error("No catalog batch is open");
+    this.#held = undefined;
+    if (held.length === 0) return;
+    this.#store.applyInTransaction((writer) => {
+      for (const { namespace, partition, actions } of held) {
+        applyActions(writer, namespace, partition, actions);
+      }
+    });
+  }
+
+  rollbackBatch(): void {
+    this.#held = undefined;
   }
 
   close(): void {
     this.#store.close();
+  }
+}
+
+/**
+ * Applies one commit's catalog actions through `writer`: the store, a
+ * transaction per action, or a batch's writer.
+ */
+function applyActions(
+  writer: CatalogWriter,
+  namespace: string,
+  partition: PartitionKey,
+  actions: readonly CatalogAction[],
+): void {
+  const identity = partition.identity;
+  if (identity.kind !== "model") {
+    throw new Error(`Catalog actions need a model partition, not ${partition}`);
+  }
+  const type = identity.type;
+  const modelId = identity.id;
+  for (const action of actions) {
+    switch (action.kind) {
+      case "upsert-version":
+        writer.upsertNewVersion(
+          catalogRow(namespace, type, modelId, action.metadata),
+        );
+        break;
+      case "remove-version":
+        writer.removeVersion(
+          namespace,
+          type,
+          modelId,
+          action.name,
+          action.version,
+          computeLatestFlags,
+        );
+        break;
+      case "remove-name":
+        writer.remove(namespace, type, modelId, action.name);
+        break;
+      case "forward":
+        writer.recordRename({
+          namespace,
+          type_normalized: type,
+          model_id: modelId,
+          data_name: action.name,
+          renamed_to: action.to,
+        });
+        break;
+      case "end-forward":
+        writer.removeRename(namespace, type, modelId, action.name);
+        break;
+    }
   }
 }
 
@@ -227,6 +293,18 @@ export class ProjectedCatalog implements ReadModelCatalog {
         )
       ),
     );
+  }
+
+  beginBatch(): void {
+    this.#inner.beginBatch();
+  }
+
+  commitBatch(): void {
+    this.#inner.commitBatch();
+  }
+
+  rollbackBatch(): void {
+    this.#inner.rollbackBatch();
   }
 
   close(): void {

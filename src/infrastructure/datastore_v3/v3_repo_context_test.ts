@@ -82,6 +82,15 @@ import {
   setLocalProcessForTesting,
 } from "./process_identity.ts";
 import { FileLock } from "../persistence/file_lock.ts";
+import { withCapturedSpans } from "../tracing/span_test_helpers.ts";
+import { withMockedEnv } from "../persistence/path_test_helpers.ts";
+import { LOCK_TIMEOUT_ENV_VAR } from "../../domain/datastore/datastore_config.ts";
+import {
+  READ_MODEL_BUSY_CODE,
+  ReadModelBusyError,
+} from "../../domain/datastore_v3/read_model.ts";
+import { readModelStateDir } from "./record_path_guard.ts";
+import { READ_MODEL_LOCK_FILE } from "./sqlite_read_model.ts";
 import { DatabaseSync } from "node:sqlite";
 import {
   plantV3WriterLease,
@@ -400,71 +409,204 @@ Deno.test("holdV3Writer: a hostname change while the writer runs still removes i
   });
 });
 
-Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process writes does not catch up", async () => {
+/**
+ * A v3 datastore at `dir/datastore` whose checkout `dir/repo` another live
+ * process on this host writes, as its lease and checkout record say.
+ */
+async function withAnotherWriter(
+  dir: string,
+): Promise<{
+  readonly datastorePath: string;
+  readonly repoDir: string;
+  commit(name: string): Promise<void>;
+  materialised(repo: string, name: string): Promise<boolean>;
+}> {
+  const datastorePath = join(dir, "datastore");
+  await initializeV3Datastore(datastorePath, "test");
+  const repoDir = join(dir, "repo");
+  await Deno.mkdir(repoDir);
+  // A live process that is not this one.
+  const otherPid = Deno.ppid;
+  await plantV3WriterLease(datastorePath, { pid: otherPid });
+  await Deno.writeTextFile(
+    join(datastorePath, "_control", "writer.checkout.json"),
+    JSON.stringify({
+      repoDir: await Deno.realPath(repoDir),
+      hostname: Deno.hostname(),
+      pid: otherPid,
+    }),
+  );
+  return {
+    datastorePath,
+    repoDir,
+    async commit(name) {
+      const writer = openV3Datastore({
+        repoDir: join(dir, "writer"),
+        datastorePath,
+      });
+      try {
+        const engine = writer.engineFor(() => Promise.resolve(), () => {
+          throw new Error("no run repository needed");
+        });
+        await engine.runRoot({}, async () => {
+          const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+          await unit.stageOps([
+            new AutoDefinitionChanges(crypto.randomUUID()).write(
+              recordKeyOf(["auto-definitions", `${name}.yaml`]),
+              new TextEncoder().encode(name),
+            ),
+          ]);
+          await unit.commit();
+        });
+      } finally {
+        await writer.close();
+      }
+    },
+    materialised: (repo, name) =>
+      Deno.stat(swampPath(repo, "auto-definitions", `${name}.yaml`)).then(
+        () => true,
+        () => false,
+      ),
+  };
+}
+
+Deno.test("v3RepositoryFactoryConfig: a writer's first catch-up of a fresh checkout is a net replay that ends as a full replay would (swamp-club#3803)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
-    const repoDir = join(dir, "repo");
-    await Deno.mkdir(repoDir);
-    // Another process on this host holds the writer lease for this checkout.
-    // A live process that is not this one.
-    const otherPid = Deno.ppid;
-    await plantV3WriterLease(datastorePath, { pid: otherPid });
-    await Deno.writeTextFile(
-      join(datastorePath, "_control", "writer.checkout.json"),
-      JSON.stringify({
-        repoDir: await Deno.realPath(repoDir),
-        hostname: Deno.hostname(),
-        pid: otherPid,
-      }),
-    );
-    // A commit exists that a catch-up would materialise.
-    const key = recordKeyOf(["auto-definitions", "x.yaml"]);
+    const config = { type: "filesystem" as const, path: datastorePath };
+    // Another checkout wrote x twice, then y.
     const writer = openV3Datastore({
       repoDir: join(dir, "writer"),
       datastorePath,
     });
     try {
-      const hook = () => Promise.resolve();
-      const engine = writer.engineFor(hook, () => {
+      const engine = writer.engineFor(() => Promise.resolve(), () => {
         throw new Error("no run repository needed");
       });
-      await engine.runRoot({}, async () => {
-        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
-        await unit.stageOps([
-          new AutoDefinitionChanges(crypto.randomUUID()).write(
-            key,
-            new TextEncoder().encode("x"),
-          ),
-        ]);
-        await unit.commit();
-      });
+      for (const [name, text] of [["x", "one"], ["x", "two"], ["y", "y"]]) {
+        await engine.runRoot({}, async () => {
+          const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+          await unit.stageOps([
+            new AutoDefinitionChanges(crypto.randomUUID()).write(
+              recordKeyOf(["auto-definitions", `${name}.yaml`]),
+              new TextEncoder().encode(text),
+            ),
+          ]);
+          await unit.commit();
+        });
+      }
     } finally {
       await writer.close();
     }
-    const materialised = (repo: string) =>
-      Deno.stat(swampPath(repo, "auto-definitions", "x.yaml")).then(
-        () => true,
-        () => false,
-      );
+    // A fresh checkout whose first command writes, as `workflow run` does.
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir);
+    await holdV3Writer(config, repoDir);
+    try {
+      await withCapturedSpans(async (spans) => {
+        await v3RepositoryFactoryConfig(repoDir, config);
+        const catchUp = spans.find((span) =>
+          span.name === "swamp.datastore.v3.readmodel.catchup" &&
+          (span.attributes["swamp.datastore.v3.commits"] as number) > 0
+        );
+        assertEquals(
+          catchUp?.attributes["swamp.datastore.v3.writes_skipped"],
+          1,
+        );
+      });
+      const read = (name: string) =>
+        Deno.readTextFile(
+          swampPath(repoDir, "auto-definitions", `${name}.yaml`),
+        );
+      assertEquals(await read("x"), "two");
+      assertEquals(await read("y"), "y");
+    } finally {
+      await closeV3Datastores();
+    }
+  });
+});
 
-    await v3RepositoryFactoryConfig(repoDir, {
-      type: "filesystem",
-      path: datastorePath,
+Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process writes does not catch up once its read model is complete", async () => {
+  await withTempDir(async (dir) => {
+    const env = await withAnotherWriter(dir);
+    const config = { type: "filesystem" as const, path: env.datastorePath };
+    await env.commit("x");
+    // The read model completed a catch-up before (the writer's own, say).
+    const handle = openV3Datastore({
+      repoDir: env.repoDir,
+      datastorePath: env.datastorePath,
     });
+    try {
+      await handle.catchUp();
+    } finally {
+      await handle.close();
+    }
+    assertEquals(await env.materialised(env.repoDir, "x"), true);
+    // A commit the writer's files may already be newer than.
+    await env.commit("y");
+
+    await v3RepositoryFactoryConfig(env.repoDir, config);
     assertEquals(
-      await materialised(repoDir),
+      await env.materialised(env.repoDir, "y"),
       false,
       "the written checkout was not caught up",
     );
 
     // A checkout the other process does not write catches up as usual.
     const other = join(dir, "elsewhere");
-    await v3RepositoryFactoryConfig(other, {
+    await v3RepositoryFactoryConfig(other, config);
+    assertEquals(await env.materialised(other, "y"), true);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process writes finishes a catch-up that never completed, rather than read its files half applied (swamp-club#3803)", async () => {
+  await withTempDir(async (dir) => {
+    const env = await withAnotherWriter(dir);
+    await env.commit("x");
+    // No catch-up ever completed here: a fresh clone whose first catch-up
+    // was cut short, or is still running in another process.
+    await v3RepositoryFactoryConfig(env.repoDir, {
       type: "filesystem",
-      path: datastorePath,
+      path: env.datastorePath,
     });
-    assertEquals(await materialised(other), true);
+    assertEquals(await env.materialised(env.repoDir, "x"), true);
+  });
+});
+
+Deno.test("v3RepositoryFactoryConfig: a reader waits no longer than the lock timeout for another process's catch-up, then fails without reading (swamp-club#3803)", async () => {
+  await withTempDir(async (dir) => {
+    const env = await withAnotherWriter(dir);
+    await env.commit("x");
+    // Another process is mid-way through the checkout's first catch-up: it
+    // holds the read model's lock.
+    const stateDir = readModelStateDir(env.repoDir);
+    await Deno.mkdir(stateDir, { recursive: true });
+    const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    try {
+      await held.lock(true);
+      const error = await withMockedEnv(
+        { [LOCK_TIMEOUT_ENV_VAR]: "300" },
+        () =>
+          assertRejects(
+            () =>
+              v3RepositoryFactoryConfig(env.repoDir, {
+                type: "filesystem",
+                path: env.datastorePath,
+              }),
+            ReadModelBusyError,
+          ),
+      );
+      assertEquals(error.code, READ_MODEL_BUSY_CODE);
+      assertEquals(await env.materialised(env.repoDir, "x"), false);
+    } finally {
+      held.close();
+    }
+    await closeV3Datastores();
   });
 });
 
@@ -609,6 +751,7 @@ Deno.test("v3RepositoryFactoryConfig: a reader reaching the writer's checkout th
     await Deno.mkdir(swampPath(realRepo, "_read_model_v3"), {
       recursive: true,
     });
+    await completeReadModel(realRepo, datastorePath);
     const linkedRepo = join(dir, "repo-link");
     await Deno.symlink(realRepo, linkedRepo, { type: "dir" });
     // A live process that is not this one.
@@ -792,6 +935,23 @@ async function withUncaughtCheckout(
   });
 }
 
+/**
+ * Catches `repoDir` up with the datastore, which completes its read model,
+ * as a writer's first catch-up does: a reader then skips catch-up while the
+ * writer writes (swamp-club#3803).
+ */
+async function completeReadModel(
+  repoDir: string,
+  datastorePath: string,
+): Promise<void> {
+  const handle = openV3Datastore({ repoDir, datastorePath });
+  try {
+    await handle.catchUp();
+  } finally {
+    await handle.close();
+  }
+}
+
 const config = (datastorePath: string) => ({
   type: "filesystem" as const,
   path: datastorePath,
@@ -799,6 +959,7 @@ const config = (datastorePath: string) => ({
 
 Deno.test("v3RepositoryFactoryConfig: a reader does not catch up over a live writer on this kernel past its TTL (swamp-club#3564)", async () => {
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    await completeReadModel(repoDir, datastorePath);
     // A live writer whose renewals stalled for longer than its TTL.
     const planted = await plantV3WriterLease(datastorePath, {
       pid: Deno.ppid,
@@ -818,6 +979,7 @@ Deno.test("v3RepositoryFactoryConfig: a reader does not catch up over a live wri
 
 Deno.test("v3RepositoryFactoryConfig: a writer this process cannot judge is protected until a higher fence, then the reader's recovery fences it first (swamp-club#3564)", async () => {
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    await completeReadModel(repoDir, datastorePath);
     // A container sharing this hostname, in another pid namespace.
     const kernel = await thisKernelIdentity();
     const elsewhere = { ...kernel, host: `${kernel.host}#pid:[4026532999]` };
@@ -881,6 +1043,7 @@ Deno.test("v3RepositoryFactoryConfig: a writer this process cannot judge is prot
 
 Deno.test("v3RepositoryFactoryConfig: a force-released fence keeps its live writer's checkout protected until a higher fence (swamp-club#3564)", async () => {
   await withUncaughtCheckout(async ({ dir, datastorePath, repoDir }) => {
+    await completeReadModel(repoDir, datastorePath);
     const planted = await plantV3WriterLease(datastorePath, { pid: Deno.ppid });
     await plantSidecar(datastorePath, repoDir, {
       pid: Deno.ppid,

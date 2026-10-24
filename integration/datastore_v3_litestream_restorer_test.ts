@@ -39,6 +39,10 @@ import {
   restoreV3Copy,
   V3RestoreError,
 } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
 
 const ignore = Deno.build.os === "windows";
 
@@ -213,6 +217,39 @@ Deno.test({
         (await Deno.readTextFile(join(dir, "calls"))).split("\n").slice(0, -1),
         ["0000000000000004", ""],
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "restoreV3Copy: each litestream restore is its own span, so a fallback to a second full restore shows (swamp-club#3803)",
+  ignore,
+  async fn() {
+    await withDir(async (dir) => {
+      await storeWith(join(dir, "source.db"), 6);
+      await withCapturedSpans(async (spans) => {
+        await restore(dir, "fallback", withPartition(4));
+        const attempts = spans.filter((span) =>
+          span.name === "swamp.datastore.v3.restore.attempt"
+        );
+        assertEquals(
+          attempts.map((span) => [
+            span.attributes["swamp.datastore.v3.restore_txid"],
+            span.attributes["swamp.datastore.v3.restore_outcome"],
+          ]),
+          [["0000000000000004", "unavailable"], ["latest", "ok"]],
+        );
+        for (
+          const name of [
+            "swamp.datastore.v3.restore.integrity_check",
+            "swamp.datastore.v3.restore.truncate",
+            "swamp.datastore.v3.restore.install",
+          ]
+        ) {
+          findSpan(spans, name);
+        }
+      });
     });
   },
 });

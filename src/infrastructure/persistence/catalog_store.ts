@@ -210,6 +210,85 @@ export interface CatalogRowKey {
   readonly version?: number;
 }
 
+/**
+ * The catalog changes {@link CatalogStore.applyInTransaction} hands out, each
+ * as the store's method of the same name makes it. The store itself is one,
+ * with a transaction per call.
+ */
+export interface CatalogWriter {
+  upsertNewVersion(row: CatalogRow): void;
+  removeVersion(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    version: number,
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): void;
+  remove(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): void;
+  recordRename(row: RenameForwardRow): void;
+  removeRename(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): void;
+}
+
+/**
+ * Each step's versions within a group, for the latest-flag recompute
+ * (swamp-club#3803). Created on open like every other index, so a catalog
+ * written before it gains it without a rebuild.
+ */
+const GROUP_STEP_INDEX = "idx_catalog_group_step_version";
+
+/** One group's rows, `catalog` aliased as `alias`; four parameters. */
+function groupWhere(alias: string): string {
+  return `${alias}.namespace = ? AND ${alias}.type_normalized = ? AND ${alias}.model_id = ? AND ${alias}.data_name = ? AND ${alias}.is_pending = 0`;
+}
+
+/**
+ * The latest-flag recompute of one group's promoted rows, by the rules of
+ * `computeLatestFlags`: `is_latest` on the highest version; a model-method
+ * row (`step_name` empty) is step-latest only as the highest version; a step
+ * row is step-latest as its step's highest version, unless a model-method
+ * version is higher. Takes the group's four key columns three times.
+ */
+const RECOMPUTE_GROUP_FLAGS_SQL = `
+  WITH top AS (
+    SELECT
+      (SELECT MAX(version) FROM catalog g WHERE ${groupWhere("g")}) AS overall,
+      (SELECT MAX(version) FROM catalog g WHERE ${
+  groupWhere("g")
+} AND g.step_name = '') AS method
+  ),
+  flags AS (
+    SELECT c.rowid AS id,
+      CASE WHEN c.version = top.overall THEN 1 ELSE 0 END AS latest,
+      CASE
+        WHEN c.step_name = '' THEN CASE WHEN c.version = top.overall THEN 1 ELSE 0 END
+        WHEN top.method IS NOT NULL AND c.version < top.method THEN 0
+        WHEN c.version = (
+          SELECT MAX(s.version) FROM catalog s
+          WHERE s.namespace = c.namespace AND s.type_normalized = c.type_normalized
+            AND s.model_id = c.model_id AND s.data_name = c.data_name
+            AND s.step_name = c.step_name AND s.is_pending = 0
+        ) THEN 1
+        ELSE 0
+      END AS step
+    FROM catalog c, top WHERE ${groupWhere("c")}
+  )
+  UPDATE catalog SET is_latest = flags.latest, is_step_latest = flags.step
+  FROM flags
+  WHERE catalog.rowid = flags.id
+    AND (catalog.is_latest IS NOT flags.latest OR catalog.is_step_latest IS NOT flags.step)
+`;
+
 export class CatalogStore {
   private db: DatabaseSync;
   private readonly dbPath: string;
@@ -329,6 +408,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_catalog_step_name       ON catalog(step_name);
       CREATE INDEX IF NOT EXISTS idx_namespace               ON catalog(namespace);
       CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
+      CREATE INDEX IF NOT EXISTS ${GROUP_STEP_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, step_name, version);
       CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
 
       CREATE TABLE IF NOT EXISTS catalog_renames (
@@ -497,6 +577,18 @@ export class CatalogStore {
    * through SQLite's reserved lock rather than racing on the flags.
    */
   upsertNewVersion(row: CatalogRow): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#upsertNewVersionRows(row);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** {@link upsertNewVersion}'s writes, inside a transaction the caller holds. */
+  #upsertNewVersionRows(row: CatalogRow): void {
     const group = [
       row.namespace,
       row.type_normalized,
@@ -507,60 +599,53 @@ export class CatalogStore {
       "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
     const stepScope = "(step_name = ? OR ? = '' OR step_name = '')";
     const scope = [row.step_name, row.step_name];
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const higherFlagged = this.db.prepare(
-        `SELECT 1 FROM catalog
-         WHERE ${groupWhere} AND version > ?
-           AND (is_latest = 1 OR is_step_latest = 1)
-         LIMIT 1`,
-      ).get(...group, row.version);
-      // Not filtered on flags: a superseded model-method row holds neither
-      // flag yet still outranks lower step rows, exactly as it does in
-      // computeLatestFlags. An unpromoted deferred row counts too; if it is
-      // rolled back, removeVersion recomputes the flags without it. The
-      // removal recompute skips pending rows, so until a pending row settles
-      // a lower row of its step may hold is_step_latest from one path and not
-      // the other; both agree once it is promoted or rolled back.
-      const higherInScope = this.db.prepare(
-        `SELECT 1 FROM catalog
-         WHERE ${groupWhere} AND version > ? AND ${stepScope}
-         LIMIT 1`,
-      ).get(...group, row.version, ...scope);
-      const isLatest = higherFlagged ? 0 : 1;
-      const isStepLatest = isLatest || !higherInScope ? 1 : 0;
-      this.db.prepare(
-        `UPDATE catalog SET is_latest = 0
-         WHERE ${groupWhere} AND version < ? AND is_latest = 1`,
-      ).run(...group, row.version);
-      this.db.prepare(
-        `UPDATE catalog SET is_step_latest = 0
-         WHERE ${groupWhere} AND version < ? AND ${stepScope}
-           AND is_step_latest = 1`,
-      ).run(...group, row.version, ...scope);
-      // A new latest version makes the name active again, so any rename
-      // forward from it ends here.
-      if (isLatest) {
-        this.removeRename(
-          row.namespace,
-          row.type_normalized,
-          row.model_id,
-          row.data_name,
-        );
-      }
-      this.upsert({
-        ...row,
-        is_latest: isLatest,
-        is_step_latest: isStepLatest,
-        is_pending: 0,
-        pending_pid: 0,
-        pending_host: "",
-      });
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
+    const higherFlagged = this.db.prepare(
+      `SELECT 1 FROM catalog
+       WHERE ${groupWhere} AND version > ?
+         AND (is_latest = 1 OR is_step_latest = 1)
+       LIMIT 1`,
+    ).get(...group, row.version);
+    // Not filtered on flags: a superseded model-method row holds neither
+    // flag yet still outranks lower step rows, exactly as it does in
+    // computeLatestFlags. An unpromoted deferred row counts too; if it is
+    // rolled back, removeVersion recomputes the flags without it. The
+    // removal recompute skips pending rows, so until a pending row settles
+    // a lower row of its step may hold is_step_latest from one path and not
+    // the other; both agree once it is promoted or rolled back.
+    const higherInScope = this.db.prepare(
+      `SELECT 1 FROM catalog
+       WHERE ${groupWhere} AND version > ? AND ${stepScope}
+       LIMIT 1`,
+    ).get(...group, row.version, ...scope);
+    const isLatest = higherFlagged ? 0 : 1;
+    const isStepLatest = isLatest || !higherInScope ? 1 : 0;
+    this.db.prepare(
+      `UPDATE catalog SET is_latest = 0
+       WHERE ${groupWhere} AND version < ? AND is_latest = 1`,
+    ).run(...group, row.version);
+    this.db.prepare(
+      `UPDATE catalog SET is_step_latest = 0
+       WHERE ${groupWhere} AND version < ? AND ${stepScope}
+         AND is_step_latest = 1`,
+    ).run(...group, row.version, ...scope);
+    // A new latest version makes the name active again, so any rename
+    // forward from it ends here.
+    if (isLatest) {
+      this.removeRename(
+        row.namespace,
+        row.type_normalized,
+        row.model_id,
+        row.data_name,
+      );
     }
+    this.upsert({
+      ...row,
+      is_latest: isLatest,
+      is_step_latest: isStepLatest,
+      is_pending: 0,
+      pending_pid: 0,
+      pending_host: "",
+    });
   }
 
   /**
@@ -1405,8 +1490,11 @@ export class CatalogStore {
 
   /**
    * Removes multiple versions for a single (type, model, name) triple and
-   * recomputes both latest flags for the group's remaining promoted rows via
-   * `computeFlags`, all in one BEGIN IMMEDIATE transaction. The recompute
+   * recomputes both latest flags for the group's remaining promoted rows by
+   * the rules of `computeLatestFlags`, all in one BEGIN IMMEDIATE
+   * transaction. The recompute runs in SQL (swamp-club#3803), so
+   * `computeFlags` is not called: every caller passes `computeLatestFlags`,
+   * and a caller with other rules would need its own recompute. The recompute
    * restores `is_step_latest` for a step whose latest was removed, which
    * re-promoting only the surviving highest version cannot (swamp-club#2975).
    * Pending rows (unpromoted deferred writes) are left out, so they keep
@@ -1426,18 +1514,12 @@ export class CatalogStore {
     if (versions.length === 0) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const stmt = this.db.prepare(
-        `DELETE FROM catalog
-         WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
-      );
-      for (const version of versions) {
-        stmt.run(namespace, typeNormalized, modelId, dataName, version);
-      }
-      this.recomputeGroupFlags(
+      this.#removeVersionRows(
         namespace,
         typeNormalized,
         modelId,
         dataName,
+        versions,
         computeFlags,
       );
       this.db.exec("COMMIT");
@@ -1445,6 +1527,74 @@ export class CatalogStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /**
+   * Runs `apply` in one IMMEDIATE transaction, handing it a writer whose
+   * methods make the same changes as this store's methods of the same name
+   * without a transaction of their own, and commits once `apply` returns;
+   * rolls back and rethrows when it throws. The v3 read model applies a
+   * page of commits' catalog actions this way (swamp-club#3803), instead of
+   * one transaction per action.
+   */
+  applyInTransaction(apply: (writer: CatalogWriter) => void): void {
+    const writer: CatalogWriter = {
+      upsertNewVersion: (row) => this.#upsertNewVersionRows(row),
+      removeVersion: (
+        namespace,
+        typeNormalized,
+        modelId,
+        dataName,
+        version,
+        computeFlags,
+      ) =>
+        this.#removeVersionRows(
+          namespace,
+          typeNormalized,
+          modelId,
+          dataName,
+          [version],
+          computeFlags,
+        ),
+      remove: (namespace, typeNormalized, modelId, dataName) =>
+        this.remove(namespace, typeNormalized, modelId, dataName),
+      recordRename: (row) => this.recordRename(row),
+      removeRename: (namespace, typeNormalized, modelId, dataName) =>
+        this.removeRename(namespace, typeNormalized, modelId, dataName),
+    };
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      apply(writer);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** {@link bulkRemoveVersions}' writes, inside a transaction the caller holds. */
+  #removeVersionRows(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    versions: readonly number[],
+    computeFlags: (rows: CatalogRow[]) => void,
+  ): void {
+    const stmt = this.db.prepare(
+      `DELETE FROM catalog
+       WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
+    );
+    for (const version of versions) {
+      stmt.run(namespace, typeNormalized, modelId, dataName, version);
+    }
+    this.recomputeGroupFlags(
+      namespace,
+      typeNormalized,
+      modelId,
+      dataName,
+      computeFlags,
+    );
   }
 
   /**
@@ -1711,23 +1861,29 @@ export class CatalogStore {
 
   /**
    * Recomputes both latest flags for one (namespace, type, model, name)
-   * group over its promoted rows. Must run inside the caller's transaction.
+   * group over its promoted rows, by the rules of `computeLatestFlags`, and
+   * writes only the rows whose flags change. Must run inside the caller's
+   * transaction.
+   *
+   * It runs in SQL (swamp-club#3803): the group's highest version, its
+   * highest model-method version and each step's highest version come from
+   * the primary key and {@link GROUP_STEP_INDEX}, so no row is read into
+   * JavaScript. Reading the whole group for every removal made a replay of
+   * many removals slow. Every caller passes `computeLatestFlags`, which these
+   * rules are; a test holds the two to the same flags.
    */
   private recomputeGroupFlags(
     namespace: string,
     typeNormalized: string,
     modelId: string,
     dataName: string,
-    computeFlags: (rows: CatalogRow[]) => void,
+    _computeFlags: (rows: CatalogRow[]) => void,
   ): void {
-    this.writeRecomputedFlags(
-      [
-        ...this.iterateFiltered(
-          "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND is_pending = 0",
-          [namespace, typeNormalized, modelId, dataName],
-        ),
-      ],
-      computeFlags,
+    const group = [namespace, typeNormalized, modelId, dataName];
+    this.db.prepare(RECOMPUTE_GROUP_FLAGS_SQL).run(
+      ...group,
+      ...group,
+      ...group,
     );
   }
 

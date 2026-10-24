@@ -42,6 +42,7 @@ import {
 } from "./litestream_replicator.ts";
 import { defaultPrivateRoot } from "./replication_files.ts";
 import { v3ReplicaFor } from "../v3_datastore_binding.ts";
+import { withSpan } from "../../tracing/tracer.ts";
 
 export type { ReplicationHandle } from "./litestream_replicator.ts";
 
@@ -121,11 +122,20 @@ export function v3PrivateRoot(): string {
   return testDeps?.privateRoot ?? defaultPrivateRoot();
 }
 
-/** The hash-checked Litestream binary, or the test seam's. */
-export async function resolveV3LitestreamBinary(): Promise<string> {
-  return testDeps?.resolveBinary !== undefined
-    ? await testDeps.resolveBinary()
-    : (await defaultLitestreamBinaryProvider().resolve()).path;
+/**
+ * The hash-checked Litestream binary, or the test seam's. Its span says
+ * whether it was downloaded (swamp-club#3803): a fresh swamp home pays that
+ * on its first restore.
+ */
+export function resolveV3LitestreamBinary(): Promise<string> {
+  return withSpan("swamp.datastore.v3.litestream.binary", {}, async (span) => {
+    if (testDeps?.resolveBinary !== undefined) {
+      return await testDeps.resolveBinary();
+    }
+    const resolved = await defaultLitestreamBinaryProvider().resolve();
+    span.setAttribute("swamp.datastore.v3.binary_source", resolved.source);
+    return resolved.path;
+  });
 }
 
 function theReplicator(): LitestreamReplicator {

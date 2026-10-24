@@ -75,6 +75,8 @@ import {
   type SqliteReadModel,
 } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
 import { DurableWriteBatch } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
+import { assertV3CheckoutJoinable } from "../src/infrastructure/datastore_v3/v3_checkout_join.ts";
+import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import {
   type ReadModelCatalog,
   V3Catalog,
@@ -193,6 +195,15 @@ class FailingCatalog implements ReadModelCatalog {
       throw new Error("injected crash after the catalog");
     }
   }
+  beginBatch(): void {
+    this.inner.beginBatch();
+  }
+  commitBatch(): void {
+    this.inner.commitBatch();
+  }
+  rollbackBatch(): void {
+    this.inner.rollbackBatch();
+  }
   close(): void {
     this.inner.close();
   }
@@ -305,6 +316,15 @@ class FailAtSeqCatalog implements ReadModelCatalog {
     }
     this.inner.apply(namespace, partition, actions);
   }
+  beginBatch(): void {
+    this.inner.beginBatch();
+  }
+  commitBatch(): void {
+    this.inner.commitBatch();
+  }
+  rollbackBatch(): void {
+    this.inner.rollbackBatch();
+  }
   close(): void {
     this.inner.close();
   }
@@ -325,6 +345,182 @@ function committedCursor(env: V3Env): number {
   } finally {
     db.close();
   }
+}
+
+/** Counts the transactions `store` begins, through its connection. */
+function countTransactions(store: CatalogStore): { begun: number } {
+  const db = (store as unknown as { db: DatabaseSync }).db;
+  const exec = db.exec.bind(db);
+  const count = { begun: 0 };
+  db.exec = (sql: string) => {
+    if (/^\s*BEGIN/i.test(sql)) count.begun++;
+    return exec(sql);
+  };
+  return count;
+}
+
+Deno.test("read model: a page's catalog actions land in one catalog transaction (swamp-club#3803)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const store = new CatalogStore(catalogV3Path(env));
+    const transactions = countTransactions(store);
+    const readModel = env.openReadModel({ catalog: new V3Catalog(store) });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    // The five commits fit one page.
+    assertEquals(transactions.begun, 1);
+    assertEquals(await observe(env), clean);
+  });
+});
+
+/** A catalog whose batch commits, then throws once: a crash before the state. */
+class CrashAfterCatalogCommit implements ReadModelCatalog {
+  #armed = true;
+  constructor(readonly inner: V3Catalog) {}
+  generation(): number {
+    return this.inner.generation();
+  }
+  isPopulated(): boolean {
+    return this.inner.isPopulated();
+  }
+  markPopulated(generation: number): void {
+    this.inner.markPopulated(generation);
+  }
+  clear(admits: (key: string) => boolean): number {
+    return this.inner.clear(admits);
+  }
+  apply(
+    namespace: string,
+    partition: PartitionKey,
+    actions: readonly CatalogAction[],
+  ): void {
+    this.inner.apply(namespace, partition, actions);
+  }
+  beginBatch(): void {
+    this.inner.beginBatch();
+  }
+  commitBatch(): void {
+    this.inner.commitBatch();
+    if (this.#armed) {
+      this.#armed = false;
+      throw new Error("injected crash after the page's catalog");
+    }
+  }
+  rollbackBatch(): void {
+    this.inner.rollbackBatch();
+  }
+  close(): void {
+    this.inner.close();
+  }
+}
+
+Deno.test("read model: a crash after a page's catalog commits but before its state replays the page (swamp-club#3803)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const crashing = env.openReadModel({
+      catalog: new CrashAfterCatalogCommit(
+        V3Catalog.open(catalogV3Path(env)),
+      ),
+    });
+    try {
+      await assertRejects(
+        () => crashing.catchUp(signal()),
+        Error,
+        "injected crash after the page's catalog",
+      );
+      // The catalog is ahead; the state committed nothing.
+      assertEquals(committedCursor(env), 0);
+    } finally {
+      await crashing.close();
+    }
+    const again = env.openReadModel();
+    try {
+      assertEquals((await again.catchUp(signal())).cursor, 5);
+    } finally {
+      await again.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+/** A catalog that aborts `controller` once the commit with seq `seq` is applied. */
+class AbortAfterSeqCatalog implements ReadModelCatalog {
+  #applied = 0;
+  constructor(
+    readonly inner: V3Catalog,
+    readonly seq: number,
+    readonly controller: AbortController,
+  ) {}
+  generation(): number {
+    return this.inner.generation();
+  }
+  isPopulated(): boolean {
+    return this.inner.isPopulated();
+  }
+  markPopulated(generation: number): void {
+    this.inner.markPopulated(generation);
+  }
+  clear(admits: (key: string) => boolean): number {
+    return this.inner.clear(admits);
+  }
+  apply(
+    namespace: string,
+    partition: PartitionKey,
+    actions: readonly CatalogAction[],
+  ): void {
+    this.inner.apply(namespace, partition, actions);
+    if (++this.#applied === this.seq) this.controller.abort();
+  }
+  beginBatch(): void {
+    this.inner.beginBatch();
+  }
+  commitBatch(): void {
+    this.inner.commitBatch();
+  }
+  rollbackBatch(): void {
+    this.inner.rollbackBatch();
+  }
+  close(): void {
+    this.inner.close();
+  }
+}
+
+for (const seq of [1, 2, 3, 4]) {
+  Deno.test(`read model: a catch-up killed mid-page after commit ${seq} is repaired by the next one (swamp-club#3803)`, async () => {
+    const clean = await cleanResult();
+    await withV3Env(async (env) => {
+      await appendScenario(env);
+      const controller = new AbortController();
+      const killed = env.openReadModel({
+        catalog: new AbortAfterSeqCatalog(
+          V3Catalog.open(catalogV3Path(env)),
+          seq,
+          controller,
+        ),
+      });
+      try {
+        await assertRejects(() => killed.catchUp(controller.signal));
+        // Never past the commits the page applied, whose catalog rows
+        // landed with them.
+        assert(committedCursor(env) <= seq);
+      } finally {
+        await killed.close();
+      }
+      // A later process: a read model of its own over the same checkout.
+      const next = env.openReadModel();
+      try {
+        assertEquals((await next.catchUp(signal())).cursor, 5);
+      } finally {
+        await next.close();
+      }
+      assertEquals(await observe(env), clean);
+    });
+  });
 }
 
 /**
@@ -366,6 +562,204 @@ class CrashingBatch extends DurableWriteBatch {
     await super.barrier();
   }
 }
+
+/** Commits whose early versions later ones replace or remove. */
+async function appendChurn(env: V3Env): Promise<void> {
+  const commits: Op[][] = [
+    [await savePut("a", 1), versionOp("a", 1)],
+    [await savePut("b", 1), versionOp("b", 1)],
+    [deleteVersion("a", 1)],
+    [await savePut("a", 2), versionOp("a", 2)],
+    [deleteVersion("b", 1)],
+  ];
+  let seq = 0;
+  for (const ops of commits) {
+    await env.store.append(
+      commitOf({ seq: ++seq, partition: PARTITION, namespace: "", ops }),
+    );
+  }
+}
+
+/** What a full replay of {@link appendChurn} leaves. */
+async function cleanChurn(): Promise<unknown> {
+  let result: unknown;
+  await withV3Env(async (env) => {
+    await appendChurn(env);
+    const readModel = env.openReadModel({ netReplay: false });
+    try {
+      await readModel.catchUp(signal());
+      result = await observeReadModel(env, readModel, PARTITIONS);
+    } finally {
+      await readModel.close();
+    }
+  });
+  return result;
+}
+
+/** A batch that fails its barrier on page `at` (from 1). */
+class CrashAtPageBatch extends DurableWriteBatch {
+  constructor(readonly control: { pages: number; at: number }) {
+    super();
+    control.pages++;
+  }
+  override async barrier(): Promise<void> {
+    if (this.control.pages === this.control.at) {
+      throw new Error("injected crash before the barrier");
+    }
+    await super.barrier();
+  }
+}
+
+for (const at of [2, 3, 4]) {
+  Deno.test(`read model: a net catch-up cut short at page ${at} leaves a checkout that joins, and the next reader finishes it as a full replay would (swamp-club#3803)`, async () => {
+    const clean = await cleanChurn();
+    await withV3Env(async (env) => {
+      await appendChurn(env);
+      const control = { pages: 0, at };
+      const cut = env.openReadModel({
+        pageSize: 1,
+        writeBatch: () => new CrashAtPageBatch(control),
+      });
+      try {
+        await assertRejects(() => cut.catchUp(signal()));
+      } finally {
+        await cut.close();
+      }
+      // Its state is there, so the checkout is a v3 one: it joins.
+      await assertV3CheckoutJoinable(env.repoDir);
+      // A reader of a checkout another process writes finishes it.
+      const reader = env.openReadModel({ pageSize: 1 });
+      try {
+        assertEquals(await reader.catchUpUnlessComplete(signal(), 1_000), true);
+      } finally {
+        await reader.close();
+      }
+      assertEquals(await observe(env), clean);
+    });
+  });
+}
+
+Deno.test("read model: a recovery replays in full, never net (swamp-club#3803)", async () => {
+  await withV3Env(async (env) => {
+    await appendChurn(env);
+    const readModel = env.openReadModel();
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.recover("", {
+          since: 0,
+          admits: () => true,
+          signal: signal(),
+        });
+        assertEquals(
+          spans.filter((span) =>
+            span.name === "swamp.datastore.v3.readmodel.net_plan"
+          ).length,
+          0,
+        );
+      });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await observe(env), await cleanChurn());
+  });
+});
+
+/** A batch whose barrier waits for `gate`, holding a catch-up mid-page. */
+class GatedBatch extends DurableWriteBatch {
+  constructor(
+    readonly reached: () => void,
+    readonly gate: Promise<void>,
+  ) {
+    super();
+  }
+  override async barrier(): Promise<void> {
+    this.reached();
+    await this.gate;
+    await super.barrier();
+  }
+}
+
+Deno.test("read model: a reader arriving during another read model's catch-up waits for it, then reads without catching up again (swamp-club#3803)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const reached = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    // Another process's read model: its own lock handle and state connection.
+    const catchingUp = env.openReadModel({
+      writeBatch: () => new GatedBatch(reached.resolve, gate.promise),
+    });
+    const reader = env.openReadModel();
+    try {
+      const first = catchingUp.catchUp(signal());
+      await reached.promise;
+      let settled = false;
+      const waiting = reader.catchUpUnlessComplete(signal(), 30_000).then(
+        (caughtUp) => {
+          settled = true;
+          return caughtUp;
+        },
+      );
+      // Still waiting while the other catch-up holds the lock.
+      await new Promise((done) => setTimeout(done, 200));
+      assertEquals(settled, false);
+      gate.resolve();
+      assertEquals((await first).cursor, 5);
+      assertEquals(await waiting, false, "the reader did not catch up again");
+    } finally {
+      await catchingUp.close();
+      await reader.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: an aborted reader stops waiting for another process's catch-up at once (swamp-club#3803)", async () => {
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await Deno.mkdir(env.stateDir, { recursive: true });
+    const held = await Deno.open(join(env.stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    const reader = env.openReadModel();
+    try {
+      await held.lock(true);
+      const controller = new AbortController();
+      const waiting = reader.catchUpUnlessComplete(controller.signal, 60_000);
+      controller.abort(new Error("the command was cancelled"));
+      await assertRejects(() => waiting, Error, "the command was cancelled");
+    } finally {
+      held.close();
+      await reader.close();
+    }
+  });
+});
+
+Deno.test("read model: a complete read model answers a reader at once, even while another process holds its lock (swamp-club#3803)", async () => {
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const done = env.openReadModel();
+    try {
+      await done.catchUp(signal());
+    } finally {
+      await done.close();
+    }
+    const held = await Deno.open(join(env.stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+    });
+    const reader = env.openReadModel();
+    try {
+      await held.lock(true);
+      assertEquals(await reader.catchUpUnlessComplete(signal(), 100), false);
+    } finally {
+      held.close();
+      await reader.close();
+    }
+  });
+});
 
 for (const when of ["before", "during"] as const) {
   Deno.test(`read model: a crash ${when} a page's barrier leaves the cursor and is repaired by catching up again (swamp-club#3337)`, async () => {
@@ -535,6 +929,110 @@ Deno.test("read model: files a reboot lost after their page committed are repair
       assertEquals(await reopened.catchUp(signal()), { applied: 0, cursor: 5 });
     } finally {
       await reopened.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+/** What a clean load of the compacted {@link appendScenario} leaves. */
+async function cleanCompactedResult(): Promise<unknown> {
+  let result: unknown;
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    const readModel = env.openReadModel();
+    try {
+      await readModel.catchUp(signal());
+      result = await observeReadModel(env, readModel, PARTITIONS);
+    } finally {
+      await readModel.close();
+    }
+  });
+  return result;
+}
+
+Deno.test("read model: a compacted base's files a reboot lost are repaired on the next open, as a page's are (swamp-club#3803)", async () => {
+  const clean = await cleanCompactedResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    let boot = "boot-id:1";
+    const open = () =>
+      env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
+    const first = open();
+    try {
+      assertEquals((await first.catchUp(signal())).cursor, 5);
+    } finally {
+      await first.close();
+    }
+    // The load wrote the base's files unsynced, and listed them.
+    assert(unsyncedCount(env) > 0, "the base load listed no unsynced files");
+    // A power loss: one base file comes back empty, one not at all.
+    const root = swampPath(env.repoDir);
+    const fileOf = (key: RecordKey) => join(root, ...key.toString().split("/"));
+    await Deno.truncate(fileOf(dataKey("b", 1)), 0);
+    await Deno.remove(fileOf(dataKey("a", 2)));
+    boot = "boot-id:2";
+    const reopened = open();
+    try {
+      await reopened.catchUp(signal());
+    } finally {
+      await reopened.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+/** A batch whose `fail`th write throws, as a process killed mid-load. */
+class FailingWriteBatch extends DurableWriteBatch {
+  constructor(readonly control: { writes: number; fail: number | undefined }) {
+    super({ sync: false });
+  }
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: { readonly absentDirectories?: readonly string[] },
+  ): Promise<void> {
+    if (++this.control.writes === this.control.fail) {
+      this.control.fail = undefined;
+      throw new Error("injected crash partway through the base load");
+    }
+    await super.write(path, content, signal, options);
+  }
+}
+
+Deno.test("read model: a base load cut off partway, whose written files a reboot then lost, ends as a clean load on the next open (swamp-club#3803)", async () => {
+  const clean = await cleanCompactedResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    const control = { writes: 0, fail: 3 as number | undefined };
+    const cut = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+      writeBatch: () => new FailingWriteBatch(control),
+    });
+    try {
+      await assertRejects(
+        () => cut.catchUp(signal()),
+        Error,
+        "injected crash partway through the base load",
+      );
+    } finally {
+      await cut.close();
+    }
+    // The state did not move: a reboot then lost what the load wrote.
+    assertEquals(committedCursor(env), 0);
+    const root = swampPath(env.repoDir);
+    const lost = join(root, ...dataKey("a", 2).toString().split("/"));
+    await Deno.remove(lost).catch(() => {});
+    const next = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:2"),
+    });
+    try {
+      assertEquals((await next.catchUp(signal())).cursor, 5);
+    } finally {
+      await next.close();
     }
     assertEquals(await observe(env), clean);
   });
@@ -878,16 +1376,14 @@ Deno.test("read model: a read made during a page waits for it and never sees wha
 
 Deno.test("read model: a syncing removal syncs the deepest directory its cleanup left, not the one it removed (swamp-club#3337)", async () => {
   await withV3Env(async (env) => {
-    for (
-      const [seq, ops] of [
-        [1, [await savePut("x", 1), versionOp("x", 1)]],
-        [2, [deleteVersion("x", 1)]],
-      ] as const
-    ) {
-      await env.store.append(
-        commitOf({ seq, partition: PARTITION, namespace: "", ops: [...ops] }),
-      );
-    }
+    await env.store.append(
+      commitOf({
+        seq: 1,
+        partition: PARTITION,
+        namespace: "",
+        ops: [await savePut("x", 1), versionOp("x", 1)],
+      }),
+    );
     const syncedPerPage: string[][] = [];
     const readModel = env.openReadModel({
       pageSize: 1,
@@ -903,6 +1399,18 @@ Deno.test("read model: a syncing removal syncs the deepest directory its cleanup
       },
     });
     try {
+      // The put is caught up first, so the removal acts on its file: a
+      // catch-up from the start of the feed would leave both off disk
+      // (swamp-club#3803).
+      assertEquals((await readModel.catchUp(signal())).cursor, 1);
+      await env.store.append(
+        commitOf({
+          seq: 2,
+          partition: PARTITION,
+          namespace: "",
+          ops: [deleteVersion("x", 1)],
+        }),
+      );
       assertEquals((await readModel.catchUp(signal())).cursor, 2);
     } finally {
       await readModel.close();

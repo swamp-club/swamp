@@ -111,6 +111,7 @@ import {
   v3PrivateRoot,
   v3Replicator,
 } from "./v3_replication.ts";
+import { withSpan } from "../../tracing/tracer.ts";
 import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
@@ -218,7 +219,37 @@ export interface V3CopyRefresh {
  * that was restored before as it is, with a warning; a writer, or a reader
  * of a copy that never was, fails (swamp-club#3642).
  */
-export async function makeV3CopyCurrent(
+export function makeV3CopyCurrent(
+  copy: V3Copy,
+  options: {
+    readonly mode: "read" | "write";
+    readonly openStore?: SqliteCommitStore;
+    readonly lockWaitMs: number;
+  },
+): Promise<V3CopyRefresh> {
+  if (v3ReplicaFor(copy.datastorePath) === undefined) {
+    return Promise.resolve({});
+  }
+  return withSpan("swamp.datastore.v3.copy.refresh", {
+    "swamp.datastore.v3.mode": options.mode,
+  }, async (span) => {
+    const refresh = await makeV3CopyCurrentNow(copy, options);
+    span.setAttribute(
+      "swamp.datastore.v3.restored",
+      refresh.restored !== undefined,
+    );
+    if (refresh.restored !== undefined) {
+      span.setAttributes({
+        "swamp.datastore.v3.exact_txid": refresh.restored.exactTxid,
+        "swamp.datastore.v3.truncated": refresh.restored.truncated,
+        "swamp.datastore.v3.read_model_moved": refresh.restored.readModelMoved,
+      });
+    }
+    return refresh;
+  });
+}
+
+async function makeV3CopyCurrentNow(
   copy: V3Copy,
   options: {
     readonly mode: "read" | "write";
@@ -230,7 +261,14 @@ export async function makeV3CopyCurrent(
   if (replica === undefined) return {};
   // Before the copy's first read of the bucket: the datastore is known to
   // be v3 (swamp-club#3534).
-  await v3BucketBindingAt(copy.datastorePath)?.confirmMarker();
+  const binding = v3BucketBindingAt(copy.datastorePath);
+  if (binding !== undefined) {
+    await withSpan(
+      "swamp.datastore.v3.marker.confirm",
+      {},
+      () => binding.confirmMarker(),
+    );
+  }
   const root = replicaRootOf(replica);
   const paths = await copyPaths(copy);
   const registry = lineageRegistryFor(copy.datastorePath);
@@ -322,15 +360,19 @@ export async function makeV3CopyCurrent(
     const restoreStarted = Date.now();
     let restored: V3RestoreResult;
     try {
-      restored = await restoreV3Copy({
-        binary: await resolveV3LitestreamBinary(),
-        replica,
-        head: decision.lineage.head,
-        target,
-        configDir: paths.privateDir,
-        install,
-        deadlineMs: restoreDeadlineMs,
-      });
+      restored = await withSpan("swamp.datastore.v3.restore", {
+        "swamp.datastore.v3.lineage": decision.lineage.fence,
+        "swamp.datastore.v3.decision": decision.kind,
+      }, async () =>
+        await restoreV3Copy({
+          binary: await resolveV3LitestreamBinary(),
+          replica,
+          head: decision.lineage.head,
+          target,
+          configDir: paths.privateDir,
+          install,
+          deadlineMs: restoreDeadlineMs,
+        }));
     } catch (error) {
       // A reader whose restore fails (the replica unreachable, or the
       // lineage collected while it read) reads a copy restored before as it
@@ -909,6 +951,49 @@ export async function publishV3Head(
       `the replicated state could not be published: ${messageOf(error)}`,
       { cause: error },
     );
+  }
+}
+
+/** How many writer fences pass between two prunes of a lineage's heads. */
+export const V3_HEAD_PRUNE_EVERY = 16;
+
+/**
+ * Prunes the heads of `lineageFence` that writers below `writerFence`
+ * published (swamp-club#3803), on every {@link V3_HEAD_PRUNE_EVERY}th writer
+ * fence only, so a writing command pays a list and its deletes once in that
+ * many. Called once the sync that published `writerFence`'s head passed its
+ * lease check. Best-effort: a failure is logged, and a later writer prunes
+ * what is left.
+ */
+export async function pruneV3Heads(
+  copy: V3Copy,
+  lineageFence: number,
+  writerFence: number,
+): Promise<void> {
+  if (writerFence % V3_HEAD_PRUNE_EVERY !== 0) return;
+  if (v3ReplicaFor(copy.datastorePath) === undefined) return;
+  try {
+    const pruned = await withSpan(
+      "swamp.datastore.v3.lineage.prune",
+      { "swamp.datastore.v3.lineage": lineageFence },
+      async (span) => {
+        const removed = await lineageRegistryFor(copy.datastorePath)
+          .pruneHeads(lineageFence, writerFence);
+        span.setAttribute("swamp.datastore.v3.heads_removed", removed);
+        return removed;
+      },
+    );
+    if (pruned > 0) {
+      logger
+        .debug`Pruned ${pruned} head(s) below writer fence ${writerFence} from replication lineage ${
+        padFence(lineageFence)
+      } of ${copy.datastorePath}`;
+    }
+  } catch (error) {
+    logger
+      .debug`Pruning the heads of replication lineage ${
+      padFence(lineageFence)
+    } of ${copy.datastorePath} failed; a later writer retries: ${error}`;
   }
 }
 

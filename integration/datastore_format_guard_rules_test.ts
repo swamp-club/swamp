@@ -149,7 +149,7 @@ const GUARDED_PINNED = [
   // datastore holdV3Writer or v3RepositoryFactoryConfig passes it, after
   // the same check; serve's upkeep does the same for the config serve's
   // checked context resolved.
-  "src/infrastructure/datastore_v3/v3_repo_context.ts:ensureV3CopyCurrent",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:ensureV3CopyCurrentNow",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:startV3ReplicationUpkeep",
   // swamp-club#3299: interrupted-writer recovery opens the handle and
   // inspects the writer lock (the lease's holder since swamp-club#3564) of
