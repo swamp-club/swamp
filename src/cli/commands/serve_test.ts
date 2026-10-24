@@ -48,9 +48,9 @@ import {
   ROOT_CONTROL_PLANE_IMPORT_PREFIXES,
   shouldWarnGroupRefreshIgnored,
   validateDashboardSessionOrigin,
+  validateNoAuthApiRequest,
   validateWebSocketOrigin,
 } from "./serve.ts";
-import { validateNoAuthHttpRequest } from "../../serve/origin.ts";
 import {
   type ActiveRun,
   ActiveRunRegistry,
@@ -505,50 +505,41 @@ Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () =>
   assertStringIncludes(result.reason!, "untrusted origin");
 });
 
-Deno.test("validateNoAuthHttpRequest: rejects an untrusted browser origin on loopback", () => {
-  const result = validateNoAuthHttpRequest(
-    "https://attacker.example",
-    "127.0.0.1:9090",
-    "127.0.0.1",
-    false,
-  );
-  assertEquals(result.allowed, false);
-  assertStringIncludes(result.reason!, "untrusted origin");
-});
-
-Deno.test("validateNoAuthHttpRequest: admits an Origin-less local client", () => {
+Deno.test("validateNoAuthApiRequest: scopes Origin and Host checks to no-auth API routes", () => {
+  const untrustedRequest = new Request("http://127.0.0.1:9090/api/v1/health", {
+    headers: {
+      host: "rebind.attacker.example:9090",
+      origin: "https://attacker.example",
+    },
+  });
   assertEquals(
-    validateNoAuthHttpRequest(
-      null,
-      "127.0.0.1:9090",
+    validateNoAuthApiRequest(
+      untrustedRequest,
+      "token",
       "127.0.0.1",
       false,
     ),
     { allowed: true },
   );
-});
-
-Deno.test("validateNoAuthHttpRequest: rejects an untrusted Host on loopback", () => {
-  const result = validateNoAuthHttpRequest(
-    null,
-    "rebind.attacker.example:9090",
-    "127.0.0.1",
-    false,
-  );
-  assertEquals(result.allowed, false);
-  assertStringIncludes(result.reason!, "untrusted host");
-});
-
-Deno.test("validateNoAuthHttpRequest: admits a configured trusted proxy authority", () => {
   assertEquals(
-    validateNoAuthHttpRequest(
-      "https://serve.example.com",
-      "serve.example.com:443",
+    validateNoAuthApiRequest(
+      new Request("http://127.0.0.1:9090/health", {
+        headers: untrustedRequest.headers,
+      }),
+      "none",
       "127.0.0.1",
-      true,
-      ["serve.example.com"],
+      false,
     ),
     { allowed: true },
+  );
+  assertEquals(
+    validateNoAuthApiRequest(
+      untrustedRequest,
+      "none",
+      "127.0.0.1",
+      false,
+    ).allowed,
+    false,
   );
 });
 

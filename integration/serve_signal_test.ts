@@ -780,7 +780,10 @@ async function post(
   const response = await handleSignalHttpRequest(
     new Request(`http://serve.test/api/v1/signal/${waitId}`, {
       method: "POST",
-      headers: token ? { authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        "content-type": "application/json",
+      },
       body: options.raw ?? JSON.stringify(body),
     }),
     matched,
@@ -1125,7 +1128,10 @@ Deno.test({
         handleSignalHttpRequest(
           new Request(`http://serve.test/api/v1/signal/${w.waitId}`, {
             method: "POST",
-            headers: { authorization: `Bearer ${TOKEN}` },
+            headers: {
+              authorization: `Bearer ${TOKEN}`,
+              "content-type": "application/json",
+            },
             body: JSON.stringify({ payload: { verdict: "ship" } }),
           }),
           { waitId: w.waitId },
@@ -1199,6 +1205,7 @@ async function postByKey(
       method: "POST",
       headers: {
         authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
         ...(idempotencyKey !== undefined
           ? { "idempotency-key": idempotencyKey }
           : {}),

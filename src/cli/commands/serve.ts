@@ -1013,6 +1013,33 @@ export function assertOffLoopbackSecurity(
   }
 }
 
+/**
+ * Validates browser-facing API requests only for the deprecated no-auth mode.
+ * Authenticated API requests already require a bearer credential, so applying
+ * browser CSRF content rules there would break existing native integrations.
+ */
+export function validateNoAuthApiRequest(
+  req: Request,
+  authMode: ServeAuthConfig["mode"],
+  bindHost: string,
+  tlsEnabled: boolean,
+  trustedHosts?: readonly string[],
+): { allowed: boolean; reason?: string } {
+  if (
+    authMode !== "none" ||
+    !new URL(req.url).pathname.startsWith("/api/v1/")
+  ) {
+    return { allowed: true };
+  }
+  return validateNoAuthHttpRequest(
+    req.headers.get("origin"),
+    req.headers.get("host"),
+    bindHost,
+    tlsEnabled,
+    trustedHosts,
+  );
+}
+
 export { validateWebSocketOrigin };
 
 function forwardedHeaderValue(req: Request, name: string): string | null {
@@ -6363,26 +6390,21 @@ export const serveCommand = new Command()
         }
 
         const apiUrl = new URL(req.url);
-        if (
-          authConfig.mode === "none" &&
-          apiUrl.pathname.startsWith("/api/v1/")
-        ) {
-          const requestTrust = validateNoAuthHttpRequest(
-            req.headers.get("origin"),
-            req.headers.get("host"),
-            host,
-            tlsEnabled,
-            trustedHosts,
+        const requestTrust = validateNoAuthApiRequest(
+          req,
+          authConfig.mode,
+          host,
+          tlsEnabled,
+          trustedHosts,
+        );
+        if (!requestTrust.allowed) {
+          logger.warn(
+            "No-auth HTTP API request rejected: {reason} from {ip}",
+            { reason: requestTrust.reason, ip: clientAddress() },
           );
-          if (!requestTrust.allowed) {
-            logger.warn(
-              "No-auth HTTP API request rejected: {reason} from {ip}",
-              { reason: requestTrust.reason, ip: clientAddress() },
-            );
-            return new Response(`Forbidden: ${requestTrust.reason}`, {
-              status: 403,
-            });
-          }
+          return new Response(`Forbidden: ${requestTrust.reason}`, {
+            status: 403,
+          });
         }
 
         // Cancel endpoint (authenticated + authorized)
@@ -6496,7 +6518,7 @@ export const serveCommand = new Command()
               );
               if (refusal) return refusal;
             }
-            if (!hasJsonContentType(req)) {
+            if (authConfig.mode === "none" && !hasJsonContentType(req)) {
               return Response.json({
                 status: "error",
                 message: "Content-Type must be application/json",

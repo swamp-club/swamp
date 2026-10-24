@@ -38,6 +38,7 @@ import { TriggerCondition } from "../../domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   buildCancelUrl,
+  buildServerCancelRequest,
   cancelAllLocalRuns,
   cancelLocalRun,
   type CancelTargetDeps,
@@ -158,6 +159,27 @@ Deno.test("buildCancelUrl: maps ws(s) to http(s) and appends the cancel path", (
     buildCancelUrl("wss://serve.example.com/swamp/", "a/b"),
     "https://serve.example.com/swamp/api/v1/cancel/workflow-run/a%2Fb",
   );
+});
+
+Deno.test("buildServerCancelRequest: declares JSON without a cancel reason", () => {
+  const request = buildServerCancelRequest(
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+    undefined,
+    undefined,
+  );
+  assertEquals(request.method, "POST");
+  assertEquals(request.headers.get("content-type"), "application/json");
+  assertEquals(request.headers.get("authorization"), null);
+});
+
+Deno.test("buildServerCancelRequest: includes a bearer token and JSON reason", async () => {
+  const request = buildServerCancelRequest(
+    "http://127.0.0.1:9000/api/v1/cancel/workflow-run/run-1",
+    "token.secret",
+    "deploy window closed",
+  );
+  assertEquals(request.headers.get("authorization"), "Bearer token.secret");
+  assertEquals(await request.json(), { reason: "deploy window closed" });
 });
 
 Deno.test("buildCancelUrl: drops userinfo, token query and fragment", () => {

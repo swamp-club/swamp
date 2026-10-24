@@ -249,7 +249,7 @@ export async function handleSignalHttpRequest(
     );
   }
 
-  if (!hasJsonContentType(req)) {
+  if (ctx.authConfig.mode === "none" && !hasJsonContentType(req)) {
     return badRequest("Content-Type must be application/json", 415);
   }
 

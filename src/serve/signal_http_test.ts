@@ -181,18 +181,37 @@ Deno.test("handleSignalHttpRequest: a malformed or oversized body is refused bef
   }
 });
 
-Deno.test("handleSignalHttpRequest: rejects a CORS-simple content type before delivery", async () => {
+Deno.test("handleSignalHttpRequest: no-auth mode rejects a CORS-simple content type before delivery", async () => {
   resetRateLimitState();
   const response = await handleSignalHttpRequest(
-    request({ token: "good.secret", contentType: "text/plain;charset=UTF-8" }),
+    request({ contentType: "text/plain;charset=UTF-8" }),
     { waitId: WAIT_ID },
     "203.0.113.14",
-    deps(),
+    deps("none"),
   );
   assertEquals(response.status, 415);
   assertEquals(
     await response.json(),
     { status: "error", message: "Content-Type must be application/json" },
+  );
+});
+
+Deno.test("handleSignalHttpRequest: authenticated mode accepts an existing non-JSON content type", async () => {
+  resetRateLimitState();
+  const response = await handleSignalHttpRequest(
+    request({
+      token: "good.secret",
+      contentType: "text/plain;charset=UTF-8",
+      body: "{not json",
+    }),
+    { waitId: WAIT_ID },
+    "203.0.113.15",
+    deps(),
+  );
+  assertEquals(response.status, 400);
+  assertEquals(
+    await response.json(),
+    { status: "error", message: "Request body must be JSON" },
   );
 });
 
