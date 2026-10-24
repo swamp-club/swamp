@@ -131,6 +131,23 @@ export function buildCancelUrl(server: string, runId: string): string {
   return `${base}/api/v1/cancel/workflow-run/${encodeURIComponent(runId)}`;
 }
 
+/** Builds a JSON-declared HTTP request for a serve-owned workflow run. */
+export function buildServerCancelRequest(
+  cancelUrl: string,
+  token: string | undefined,
+  reason: string | undefined,
+): Request {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return new Request(cancelUrl, {
+    method: "POST",
+    headers,
+    ...(reason === undefined ? {} : { body: JSON.stringify({ reason }) }),
+  });
+}
+
 /**
  * How long `--server` waits for the cancel endpoint to answer. Cancelling a
  * run serve is driving waits up to {@link RUN_CANCEL_GRACE_MS} for it to stop,
@@ -961,19 +978,14 @@ export const workflowCancelCommand = withRemoteOptions(
         options,
       );
       const cancelUrl = buildCancelUrl(server, options.run as string);
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      let requestBody: string | undefined;
-      if (options.reason) {
-        headers["Content-Type"] = "application/json";
-        requestBody = JSON.stringify({ reason: options.reason });
-      }
+      const request = buildServerCancelRequest(
+        cancelUrl,
+        token,
+        options.reason as string | undefined,
+      );
       let body: Record<string, unknown>;
       try {
-        const response = await fetch(cancelUrl, {
-          method: "POST",
-          headers,
-          body: requestBody,
+        const response = await fetch(request, {
           signal: AbortSignal.timeout(SERVER_CANCEL_TIMEOUT_MS),
         });
         if (!response.ok) {

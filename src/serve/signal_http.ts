@@ -72,6 +72,13 @@ import { readBodyWithLimit } from "./webhook.ts";
  */
 export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES * 6 + 1024;
 
+/** Whether a request declares the JSON representation this API accepts. */
+export function hasJsonContentType(req: Request): boolean {
+  const contentType = req.headers.get("content-type");
+  return contentType !== null &&
+    /^application\/json(?:\s*;|$)/i.test(contentType);
+}
+
 // Only narrows the path segment; normalizeWaitId decides what a wait ID is.
 const SIGNAL_ROUTE = /^\/api\/v1\/signal\/([0-9A-Fa-f-]{36})$/;
 
@@ -240,6 +247,10 @@ export async function handleSignalHttpRequest(
       `Access denied: ${SIGNAL_REQUEST_TYPE} is restricted to admins on this server`,
       403,
     );
+  }
+
+  if (ctx.authConfig.mode === "none" && !hasJsonContentType(req)) {
+    return badRequest("Content-Type must be application/json", 415);
   }
 
   const bytes = await readBodyWithLimit(req, MAX_SIGNAL_BODY_BYTES);

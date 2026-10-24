@@ -25,7 +25,10 @@ import {
   DASHBOARD_DIST_DIR,
   serveDashboardRoute,
 } from "../../serve/dashboard_assets.ts";
-import { validateWebSocketOrigin } from "../../serve/origin.ts";
+import {
+  validateNoAuthHttpRequest,
+  validateWebSocketOrigin,
+} from "../../serve/origin.ts";
 import { Command } from "@cliffy/command";
 import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import {
@@ -157,6 +160,7 @@ import {
 } from "../../serve/rate_limiter.ts";
 import {
   handleSignalHttpRequest,
+  hasJsonContentType,
   matchSignalRoute,
 } from "../../serve/signal_http.ts";
 import {
@@ -1009,6 +1013,37 @@ export function assertOffLoopbackSecurity(
   }
 }
 
+/**
+ * Validates browser-facing API requests only for the deprecated no-auth mode.
+ * Authenticated API requests already require a bearer credential, so applying
+ * browser CSRF content rules there would break existing native integrations.
+ */
+export function validateNoAuthApiRequest(
+  req: Request,
+  authMode: ServeAuthConfig["mode"],
+  bindHost: string,
+  tlsEnabled: boolean,
+  trustedHosts?: readonly string[],
+): { allowed: boolean; reason?: string } {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  if (
+    authMode !== "none" ||
+    (!path.startsWith("/api/v1/") && !path.startsWith("/internal/"))
+  ) {
+    return { allowed: true };
+  }
+  return validateNoAuthHttpRequest(
+    req.headers.get("origin"),
+    // HTTP/2 carries this authority in :authority, which Deno exposes through
+    // Request.url instead of a Host header.
+    req.headers.get("host") ?? url.host,
+    bindHost,
+    tlsEnabled,
+    trustedHosts,
+  );
+}
+
 export { validateWebSocketOrigin };
 
 function forwardedHeaderValue(req: Request, name: string): string | null {
@@ -1859,7 +1894,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host header validation (env: SWAMP_TRUSTED_HOSTS)",
+    "Comma-separated hostnames to trust for Host validation, including no-auth HTTP APIs behind reverse proxies (env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(
     "--dispatch-env-allow <names:string>",
@@ -2673,7 +2708,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host header validation when binding off-loopback " +
+    "Comma-separated hostnames to trust for Host validation when binding off-loopback or serving no-auth HTTP APIs through a reverse proxy " +
       "(e.g. host.docker.internal,host.minikube.internal). " +
       "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections " +
       "(env: SWAMP_TRUSTED_HOSTS)",
@@ -6358,9 +6393,27 @@ export const serveCommand = new Command()
           if (webhookResponse) return webhookResponse;
         }
 
+        const apiUrl = new URL(req.url);
+        const requestTrust = validateNoAuthApiRequest(
+          req,
+          authConfig.mode,
+          host,
+          tlsEnabled,
+          trustedHosts,
+        );
+        if (!requestTrust.allowed) {
+          logger.warn(
+            "No-auth HTTP API request rejected: {reason} from {ip}",
+            { reason: requestTrust.reason, ip: clientAddress() },
+          );
+          return new Response(`Forbidden: ${requestTrust.reason}`, {
+            status: 403,
+          });
+        }
+
         // Cancel endpoint (authenticated + authorized)
         if (req.method === "POST") {
-          const url = new URL(req.url);
+          const url = apiUrl;
           const cancelMatch = url.pathname.match(
             /^\/api\/v1\/cancel\/(workflow-run|method-run)\/([^/]+)$/,
           );
@@ -6468,6 +6521,12 @@ export const serveCommand = new Command()
                 },
               );
               if (refusal) return refusal;
+            }
+            if (authConfig.mode === "none" && !hasJsonContentType(req)) {
+              return Response.json({
+                status: "error",
+                message: "Content-Type must be application/json",
+              }, { status: 415 });
             }
           }
           if (cancelMatch) {

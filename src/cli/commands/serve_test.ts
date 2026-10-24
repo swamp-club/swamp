@@ -48,6 +48,7 @@ import {
   ROOT_CONTROL_PLANE_IMPORT_PREFIXES,
   shouldWarnGroupRefreshIgnored,
   validateDashboardSessionOrigin,
+  validateNoAuthApiRequest,
   validateWebSocketOrigin,
 } from "./serve.ts";
 import {
@@ -504,6 +505,69 @@ Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () =>
   assertStringIncludes(result.reason!, "untrusted origin");
 });
 
+Deno.test("validateNoAuthApiRequest: scopes Origin and Host checks to no-auth API routes", () => {
+  const untrustedRequest = new Request("http://127.0.0.1:9090/api/v1/health", {
+    headers: {
+      host: "rebind.attacker.example:9090",
+      origin: "https://attacker.example",
+    },
+  });
+  assertEquals(
+    validateNoAuthApiRequest(
+      untrustedRequest,
+      "token",
+      "127.0.0.1",
+      false,
+    ),
+    { allowed: true },
+  );
+  assertEquals(
+    validateNoAuthApiRequest(
+      new Request("http://127.0.0.1:9090/health", {
+        headers: untrustedRequest.headers,
+      }),
+      "none",
+      "127.0.0.1",
+      false,
+    ),
+    { allowed: true },
+  );
+  assertEquals(
+    validateNoAuthApiRequest(
+      untrustedRequest,
+      "none",
+      "127.0.0.1",
+      false,
+    ).allowed,
+    false,
+  );
+  assertEquals(
+    validateNoAuthApiRequest(
+      new Request("http://127.0.0.1:9090/internal/runs", {
+        headers: untrustedRequest.headers,
+      }),
+      "none",
+      "127.0.0.1",
+      false,
+    ).allowed,
+    false,
+  );
+});
+
+Deno.test("validateNoAuthApiRequest: uses the request authority when HTTP/2 omits Host", () => {
+  const request = new Request("https://127.0.0.1:9090/api/v1/health");
+  assertEquals(request.headers.get("host"), null);
+  assertEquals(
+    validateNoAuthApiRequest(
+      request,
+      "none",
+      "127.0.0.1",
+      true,
+    ),
+    { allowed: true },
+  );
+});
+
 Deno.test("validateWebSocketOrigin: rejects attacker-controlled origin", () => {
   const result = validateWebSocketOrigin(
     "http://attacker.example.com",
@@ -548,6 +612,16 @@ Deno.test("validateWebSocketOrigin: accepts http://localhost", () => {
 Deno.test("validateWebSocketOrigin: accepts absent origin (non-browser client)", () => {
   const result = validateWebSocketOrigin(
     null,
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts an empty origin as absent", () => {
+  const result = validateWebSocketOrigin(
+    "",
     "127.0.0.1:9090",
     "127.0.0.1",
     false,

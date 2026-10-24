@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   handleSignalHttpRequest,
+  hasJsonContentType,
   matchSignalRoute,
   MAX_SIGNAL_BODY_BYTES,
   type SignalHttpDeps,
@@ -31,6 +32,21 @@ import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_ac
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 
 const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
+
+Deno.test("hasJsonContentType: accepts only JSON media types", () => {
+  const request = (contentType?: string) =>
+    new Request("http://serve.test", {
+      headers: contentType === undefined ? {} : { "content-type": contentType },
+    });
+  assertEquals(hasJsonContentType(request("application/json")), true);
+  assertEquals(
+    hasJsonContentType(request("application/json; charset=utf-8")),
+    true,
+  );
+  assertEquals(hasJsonContentType(request("APPLICATION/JSON")), true);
+  assertEquals(hasJsonContentType(request("application/jsonp")), false);
+  assertEquals(hasJsonContentType(request()), false);
+});
 
 /**
  * Deps whose context has no repository: reaching delivery throws, so a test
@@ -67,11 +83,14 @@ function deps(
 }
 
 function request(
-  options: { token?: string; body?: string } = {},
+  options: { token?: string; body?: string; contentType?: string } = {},
 ): Request {
   return new Request(`http://serve.test/api/v1/signal/${WAIT_ID}`, {
     method: "POST",
-    headers: options.token ? { authorization: `Bearer ${options.token}` } : {},
+    headers: {
+      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      "content-type": options.contentType ?? "application/json",
+    },
     body: options.body ?? JSON.stringify({ payload: { verdict: "ship" } }),
   });
 }
@@ -178,6 +197,40 @@ Deno.test("handleSignalHttpRequest: a malformed or oversized body is refused bef
   }
 });
 
+Deno.test("handleSignalHttpRequest: no-auth mode rejects a CORS-simple content type before delivery", async () => {
+  resetRateLimitState();
+  const response = await handleSignalHttpRequest(
+    request({ contentType: "text/plain;charset=UTF-8" }),
+    { waitId: WAIT_ID },
+    "203.0.113.14",
+    deps("none"),
+  );
+  assertEquals(response.status, 415);
+  assertEquals(
+    await response.json(),
+    { status: "error", message: "Content-Type must be application/json" },
+  );
+});
+
+Deno.test("handleSignalHttpRequest: authenticated mode accepts an existing non-JSON content type", async () => {
+  resetRateLimitState();
+  const response = await handleSignalHttpRequest(
+    request({
+      token: "good.secret",
+      contentType: "text/plain;charset=UTF-8",
+      body: "{not json",
+    }),
+    { waitId: WAIT_ID },
+    "203.0.113.15",
+    deps(),
+  );
+  assertEquals(response.status, 400);
+  assertEquals(
+    await response.json(),
+    { status: "error", message: "Request body must be JSON" },
+  );
+});
+
 Deno.test("handleSignalHttpRequest: by key, a body that does not name a workflow and a key is refused before delivery", async () => {
   resetRateLimitState();
   const payload = { verdict: "ship" };
@@ -199,7 +252,10 @@ Deno.test("handleSignalHttpRequest: by key, a body that does not name a workflow
     const response = await handleSignalHttpRequest(
       new Request("http://serve.test/api/v1/signal", {
         method: "POST",
-        headers: { authorization: "Bearer good.secret" },
+        headers: {
+          authorization: "Bearer good.secret",
+          "content-type": "application/json",
+        },
         body: JSON.stringify(body),
       }),
       { byKey: true },
@@ -346,7 +402,10 @@ Deno.test("handleSignalHttpRequest: the Bearer scheme is matched in any case and
     const response = await handleSignalHttpRequest(
       new Request(`http://serve.test/api/v1/signal/${WAIT_ID}`, {
         method: "POST",
-        headers: { authorization: `${scheme} good.secret` },
+        headers: {
+          authorization: `${scheme} good.secret`,
+          "content-type": "application/json",
+        },
         body: "{not json",
       }),
       { waitId: WAIT_ID },
@@ -411,6 +470,7 @@ Deno.test("handleSignalHttpRequest: an Idempotency-Key header in another form is
         method: "POST",
         headers: {
           authorization: "Bearer good.secret",
+          "content-type": "application/json",
           "idempotency-key": key,
         },
         body: JSON.stringify({ payload: { verdict: "ship" } }),
