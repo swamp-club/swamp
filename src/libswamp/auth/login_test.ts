@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
+import { UserError } from "../../domain/errors.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -25,6 +27,7 @@ import {
   type AuthLoginDeps,
   type AuthLoginEvent,
   type AuthLoginInput,
+  createAuthLoginDeps,
   DeviceAuthPendingError,
 } from "./login.ts";
 
@@ -608,3 +611,246 @@ for (
     assertEquals(keyName.length <= 32, true, keyName);
   });
 }
+
+const UNREACHABLE = "http://localhost:1";
+
+function refusedFetch(): Response {
+  throw new TypeError("Fetch failed: Requests to port 1 are blocked");
+}
+
+function timedOutFetch(): Response {
+  throw new DOMException("Signal timed out.", "TimeoutError");
+}
+
+function brokenBodyFetch(): Response {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new TypeError("connection reset"));
+      },
+    }),
+  );
+}
+
+Deno.test("createAuthLoginDeps: startDeviceAuth reports an unreachable server as a UserError", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch(refusedFetch, async () => {
+    const err = await assertRejects(
+      () =>
+        deps.startDeviceAuth(
+          UNREACHABLE,
+          "swamp-cli",
+          new AbortController().signal,
+        ),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      "Could not connect to http://localhost:1: Fetch failed: Requests to port 1 are blocked",
+    );
+  });
+});
+
+Deno.test("createAuthLoginDeps: startDeviceAuth reports a timeout as a UserError", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch(timedOutFetch, async () => {
+    const err = await assertRejects(
+      () =>
+        deps.startDeviceAuth(
+          UNREACHABLE,
+          "swamp-cli",
+          new AbortController().signal,
+        ),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      "Request to http://localhost:1/api/auth/device/code timed out.",
+    );
+    assertEquals(err.code, "timeout");
+  });
+});
+
+Deno.test("createAuthLoginDeps: startDeviceAuth reports a body that fails mid-read as a UserError", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch(brokenBodyFetch, async () => {
+    const err = await assertRejects(
+      () =>
+        deps.startDeviceAuth(
+          UNREACHABLE,
+          "swamp-cli",
+          new AbortController().signal,
+        ),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      "Could not connect to http://localhost:1: connection reset",
+    );
+  });
+});
+
+Deno.test("createAuthLoginDeps: startDeviceAuth keeps the HTTP error message", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch([new Response("nope", { status: 500 })], async () => {
+    const err = await assertRejects(
+      () =>
+        deps.startDeviceAuth(
+          UNREACHABLE,
+          "swamp-cli",
+          new AbortController().signal,
+        ),
+      UserError,
+    );
+    assertEquals(err.message, "Failed to start device authorization: 500 nope");
+  });
+});
+
+Deno.test("createAuthLoginDeps: pollDeviceToken reports an unreachable server as a UserError", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch(refusedFetch, async () => {
+    const err = await assertRejects(
+      () =>
+        deps.pollDeviceToken(
+          UNREACHABLE,
+          "device-abc-123",
+          "swamp-cli",
+          new AbortController().signal,
+        ),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      "Could not connect to http://localhost:1: Fetch failed: Requests to port 1 are blocked",
+    );
+  });
+});
+
+Deno.test("createAuthLoginDeps: pollDeviceToken reports a body that fails mid-read as a UserError", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch(brokenBodyFetch, async () => {
+    const err = await assertRejects(
+      () =>
+        deps.pollDeviceToken(
+          UNREACHABLE,
+          "device-abc-123",
+          "swamp-cli",
+          new AbortController().signal,
+        ),
+      UserError,
+    );
+    assertEquals(
+      err.message,
+      "Could not connect to http://localhost:1: connection reset",
+    );
+  });
+});
+
+Deno.test("createAuthLoginDeps: pollDeviceToken keeps the pending response", async () => {
+  const deps = createAuthLoginDeps();
+  await withMockedFetch(
+    [Response.json({ error: "authorization_pending" }, { status: 400 })],
+    async () => {
+      await assertRejects(
+        () =>
+          deps.pollDeviceToken(
+            UNREACHABLE,
+            "device-abc-123",
+            "swamp-cli",
+            new AbortController().signal,
+          ),
+        DeviceAuthPendingError,
+      );
+    },
+  );
+});
+
+Deno.test("authLogin: device flow rethrows a start failure before any event", async () => {
+  const deps = makeDeps({
+    startDeviceAuth: () =>
+      Promise.reject(
+        new UserError("Could not connect to http://localhost:1: refused"),
+      ),
+  });
+  const events: AuthLoginEvent[] = [];
+  await assertRejects(
+    async () => {
+      for await (
+        const event of authLogin(
+          createLibSwampContext(),
+          deps,
+          makeInput({ useBrowserFlow: true }),
+        )
+      ) {
+        events.push(event);
+      }
+    },
+    UserError,
+    "Could not connect to http://localhost:1",
+  );
+  assertEquals(events, []);
+});
+
+Deno.test("authLogin: device flow reports a poll connection failure as a user error", async () => {
+  const deps = createAuthLoginDeps();
+  const events = await withMockedFetch(
+    refusedFetch,
+    () =>
+      collect<AuthLoginEvent>(
+        authLogin(
+          createLibSwampContext(),
+          {
+            ...makeDeps(),
+            pollDeviceToken: deps.pollDeviceToken,
+          },
+          makeInput({ useBrowserFlow: true, serverUrl: UNREACHABLE }),
+        ),
+      ),
+  );
+
+  const last = events.result[events.result.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "user_error");
+    assertEquals(
+      last.error.message,
+      "Could not connect to http://localhost:1: Fetch failed: Requests to port 1 are blocked",
+    );
+  }
+});
+
+Deno.test("authLogin: device flow reports expiry during a poll request as timed out", async () => {
+  const deps = makeDeps({
+    startDeviceAuth: () =>
+      Promise.resolve({
+        deviceCode: "device-abc-123",
+        userCode: "ABCD-1234",
+        verificationUri: "https://swamp-club.com/device",
+        expiresIn: 0.001,
+        interval: 0.001,
+      }),
+    // A request still in flight when the device code expires is aborted by
+    // the expiry signal.
+    pollDeviceToken: (_serverUrl, _deviceCode, _clientId, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+  });
+  const input = makeInput({
+    useBrowserFlow: true,
+    minDeviceAuthExpiryMs: 50,
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "user_error");
+    assertEquals(last.error.message, "Device authorization timed out");
+  }
+});
