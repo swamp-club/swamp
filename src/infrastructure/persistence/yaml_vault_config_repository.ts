@@ -24,9 +24,9 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { assertSafePath } from "./safe_path.ts";
 import {
-  signalChange,
   stageTyped,
   typedStagingActive,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import {
   definitionDeleteBatches,
@@ -216,24 +216,25 @@ export class YamlVaultConfigRepository {
 
     const data = config.toData();
     const content = stringifyYaml(data as unknown as Record<string, unknown>);
-    await signalChange(this.markDirty, { kind: "write", path }, {
+    return await withChangeSignalled(this.markDirty, { kind: "write", path }, {
       typed: true,
-    });
-    // On v3, the file the save replaces: an edit's precondition, and the
-    // name that tells a rename apart (the path is by id, not name).
-    const prior = typedStagingActive(this.markDirty)
-      ? await readPriorFile(path)
-      : undefined;
-    await atomicWriteTextFile(path, content);
-    await this.stageSave(config, path, content, prior);
+    }, async () => {
+      // On v3, the file the save replaces: an edit's precondition, and the
+      // name that tells a rename apart (the path is by id, not name).
+      const prior = typedStagingActive(this.markDirty)
+        ? await readPriorFile(path)
+        : undefined;
+      await atomicWriteTextFile(path, content);
+      await this.stageSave(config, path, content, prior);
 
-    // Emit event
-    if (this.eventBus) {
-      const event = isNew
-        ? createVaultCreated(config.id, config.type, config.name)
-        : createVaultUpdated(config.id, config.type, config.name);
-      await this.eventBus.publish(event);
-    }
+      // Emit event
+      if (this.eventBus) {
+        const event = isNew
+          ? createVaultCreated(config.id, config.type, config.name)
+          : createVaultUpdated(config.id, config.type, config.name);
+        await this.eventBus.publish(event);
+      }
+    });
   }
 
   /**
@@ -241,40 +242,41 @@ export class YamlVaultConfigRepository {
    */
   async delete(config: VaultConfig): Promise<void> {
     const path = this.getPath(config.type, config.id);
-    await signalChange(this.markDirty, { kind: "remove", path }, {
+    return await withChangeSignalled(this.markDirty, { kind: "remove", path }, {
       typed: true,
-    });
-    const prior = typedStagingActive(this.markDirty)
-      ? await readPriorFile(path)
-      : undefined;
-    let removed = false;
-    try {
-      await Deno.remove(path);
-      removed = true;
+    }, async () => {
+      const prior = typedStagingActive(this.markDirty)
+        ? await readPriorFile(path)
+        : undefined;
+      let removed = false;
+      try {
+        await Deno.remove(path);
+        removed = true;
 
-      // Emit event
-      if (this.eventBus) {
-        const event = createVaultDeleted(config.id, config.type, config.name);
-        await this.eventBus.publish(event);
+        // Emit event
+        if (this.eventBus) {
+          const event = createVaultDeleted(config.id, config.type, config.name);
+          await this.eventBus.publish(event);
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
       }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+      if (!typedStagingActive(this.markDirty)) return;
+      for (
+        const batch of definitionDeleteBatches({
+          kind: "vault",
+          id: config.id,
+          name: config.name,
+          removed: removed ? [path] : [],
+          priors: prior === undefined ? new Map() : new Map([[path, prior]]),
+          tierOf: (p) => this.stagingTierOf(p),
+        })
+      ) {
+        await stageTyped(this.markDirty, () => batch);
       }
-    }
-    if (!typedStagingActive(this.markDirty)) return;
-    for (
-      const batch of definitionDeleteBatches({
-        kind: "vault",
-        id: config.id,
-        name: config.name,
-        removed: removed ? [path] : [],
-        priors: prior === undefined ? new Map() : new Map([[path, prior]]),
-        tierOf: (p) => this.stagingTierOf(p),
-      })
-    ) {
-      await stageTyped(this.markDirty, () => batch);
-    }
+    });
   }
 
   /**

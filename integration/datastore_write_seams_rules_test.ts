@@ -383,8 +383,8 @@ function persistenceMarksOutsideAdapters(
 }
 
 // ---------------------------------------------------------------------------
-// Rule 7: repositories reach their hook only through signalChange and
-// stageTyped
+// Rule 7: repositories reach their hook only through signalChange,
+// withChangeSignalled and stageTyped
 // ---------------------------------------------------------------------------
 
 // A reference to a repository's hook field. The field is markDirty or
@@ -398,7 +398,8 @@ const SIGNAL_CHANGE_LOOKBACK = 200;
 /**
  * One key per reference to the hook field inside a datastore-tier repository
  * class that is not the first argument of a `signalChange(...)` call, or of
- * a `stageTyped(...)` call, the typed route after a write, or the only
+ * a `withChangeSignalled(...)` call, which signals before and after a write
+ * (swamp-club#2421), or of a `stageTyped(...)` call, the typed route after a write, or the only
  * argument of `typedStagingActive(...)` (swamp-club#3250) or
  * `versionFloorSource(...)` (swamp-club#3532), lookups of the unit the hook
  * routes to, as
@@ -433,7 +434,7 @@ function hookReferencesOutsideSignalChange(
           );
           const after = source.slice(start + match[0].length);
           if (
-            /\b(?:signalChange|stageTyped|typedStagingActive|versionFloorSource)\(\s*$/
+            /\b(?:signalChange|withChangeSignalled|stageTyped|typedStagingActive|versionFloorSource)\(\s*$/
               .test(
                 before,
               ) &&

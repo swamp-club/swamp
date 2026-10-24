@@ -1355,9 +1355,14 @@ interface DatastoreSyncOptions {
 
 The contract has eight rules:
 
-1. **Pre-write timing.** `markDirty` fires before the cache write. The file is
-   not on disk yet, so extensions MUST NOT act on `relPath` synchronously. Record
-   it as a hint for the next `pushChanged`.
+1. **Before and after the write.** `markDirty` fires before the cache write,
+   and again once the write or removal has landed, including one that throws
+   part-way (swamp-club#2421). At the first call the file is not on disk yet,
+   so extensions MUST NOT act on `relPath` synchronously. Record it as a hint
+   for the next `pushChanged`. A push that starts between the two calls can
+   upload the old bytes, or re-upload a file about to be removed; the second
+   call marks the path again, so a push MUST NOT drop a mark recorded after it
+   started.
 2. **Absence-on-disk = delete.** If `pushChanged` later finds a recorded
    `relPath` missing from the cache, the extension SHOULD delete the remote
    record. One signal covers create, update and delete.
@@ -1448,13 +1453,19 @@ Repositories stage each change (`write` or `remove` with an absolute path, or
 `bulk`) before writing, and a use case commits the unit once the operation is
 done. The legacy adapter (`src/infrastructure/persistence/legacy_unit_of_work.ts`)
 forwards each staged change to the dirty hook straight away, `markDirty(path)`
-for a write or remove and `markDirty()` for bulk. It keeps the pre-write timing
-and the order of bulk and per-path signals, and never batches or deduplicates.
+for a write or remove and `markDirty()` for bulk. It keeps the timing (a signal
+before each write and one once it has landed) and the order of bulk and
+per-path signals, and never batches or deduplicates.
 `commit` waits for any stage still in flight, runs once, and spends the unit
 even when it fails.
 
-Repositories route their signal through `signalChange`
-(`src/infrastructure/persistence/unit_of_work_scope.ts`). The data and output
+Repositories route their signal through `withChangeSignalled`
+(`src/infrastructure/persistence/unit_of_work_scope.ts`), which sends each
+change through `signalChange` before the write runs and, on v2, again once it
+has settled, even when it throws (swamp-club#2421). The signal before keeps a
+v3 unit's pre-write check and leaves a path marked if the process dies
+mid-write. The signal after is skipped for a hook that requires a unit (v3):
+the commit-log unit already holds the change. The data and output
 repositories (swamp-club#2979), the definition, workflow, evaluated definition
 and evaluated workflow repositories (swamp-club#2980), the workflow run
 repository (swamp-club#2992) and the vault config repository (swamp-club#2995)
@@ -1790,10 +1801,10 @@ extension and overrides the per-path signal. That has two costs:
   (swamp-club#2408), and every vault or access change did the same
   (swamp-club#2415).
 
-The repositories mark a path dirty before they write it, so a push can land
-between a repository's mark and its write. That push finds the path absent,
-treats it as a delete and clears the mark, and the writer's own push then has
-nothing to upload. Serve's gate now keeps run pushes (shared mode) out of every
+The repositories used to mark a path dirty only before they wrote it, so a push
+could land between a repository's mark and its write. That push found the path
+absent (or its old bytes), treated it as a delete (or uploaded the old bytes)
+and cleared the mark, and the writer's own push then had nothing to upload. Serve's gate now keeps run pushes (shared mode) out of every
 handler mutation (exclusive mode), so a run finishing at the same moment can no
 longer do this to a gated handler (swamp-club#2405). Concurrent runs still
 share the gate and can still do it to each other. The OAuth mint and
@@ -1803,8 +1814,14 @@ folder, `access.reload` for each grant definition it created and each grant data
 folder it wrote. A reload that changes nothing marks nothing, so its push takes
 the fast path. A push already running when the re-mark lands still clears it,
 because the extension resets the whole dirty set when a push completes.
-swamp-club#2421 tracks the proper fix: repositories that mark after the write,
-and extensions that clear only the marks a push handled.
+swamp-club#2421 has two halves. Core now marks before and after every
+repository write and remove (`withChangeSignalled`), so a push that cleared
+the first mark mid-write leaves the second one for the next push. The
+extension half, S3 and GCS pushes that clear only the marks they handled
+rather than the whole dirty set, is tracked in the same work
+(swamp-club#3860); until it ships, a push already running when the second
+mark lands can still clear it. The re-marks above stay: they mark again just
+before the push they precede.
 
 **Data versions written under a behavior lock (swamp-club#3146).** Concurrent
 runs of one serve process share its sync service, so another run's push can

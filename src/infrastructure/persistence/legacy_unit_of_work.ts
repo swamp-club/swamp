@@ -168,8 +168,10 @@ function nearestOpenAncestor(
  * `stage` forwards each change straight away: `write` and `remove` become
  * `markDirty(path)`, and `bulk` becomes `markDirty(undefined)`. It never
  * batches, deduplicates, reorders or defers, because the `markDirty`
- * contract depends on pre-write timing and on the order of bulk and per-path
- * marks (rules 1 and 8 on `DatastoreSyncService.markDirty`). The S3 and GCS
+ * contract depends on timing (a mark before each write and another once it
+ * has landed, both sent by `withChangeSignalled`, swamp-club#2421) and on the
+ * order of bulk and per-path marks (rules 1 and 8 on
+ * `DatastoreSyncService.markDirty`). The S3 and GCS
  * extensions drop path marks that arrive after a bulk mark. A rejected hook
  * rejects `stage` with the same error, as `notifyDirty` does today. With no
  * hook (filesystem datastores) `stage` only records the change.

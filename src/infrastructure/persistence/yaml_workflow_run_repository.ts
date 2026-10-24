@@ -21,9 +21,9 @@ import { ensureDir } from "@std/fs";
 import { basename, join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
-  signalChange,
   stageTyped,
   typedStagingActive,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
 import {
@@ -839,81 +839,81 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     await this.beforeSave?.(run);
     const path = this.getPath(workflowId, run.id);
-    await signalChange(this.markDirty, { kind: "write", path }, {
+    return await withChangeSignalled(this.markDirty, { kind: "write", path }, {
       typed: true,
-    });
+    }, async () => {
+      const dir = this.getRunsDir(workflowId);
+      await assertSafePath(dir, this.baseDir);
+      await ensureDir(dir);
+      // On v3, whether the save creates the run's record or updates it.
+      const created = typedStagingActive(this.markDirty) &&
+        !(await fileExists(path));
 
-    const dir = this.getRunsDir(workflowId);
-    await assertSafePath(dir, this.baseDir);
-    await ensureDir(dir);
-    // On v3, whether the save creates the run's record or updates it.
-    const created = typedStagingActive(this.markDirty) &&
-      !(await fileExists(path));
+      // Get the previous status to detect state changes
+      let previousStatus: string | undefined;
+      if (this.eventBus) {
+        const existingRun = await this.findById(workflowId, run.id);
+        previousStatus = existingRun?.status;
+      }
 
-    // Get the previous status to detect state changes
-    let previousStatus: string | undefined;
-    if (this.eventBus) {
-      const existingRun = await this.findById(workflowId, run.id);
-      previousStatus = existingRun?.status;
-    }
+      // The persisted form: sensitive values the run read through expressions
+      // are written as the vault references they came from.
+      const data = run.toPersistedData();
+      // Convert logFile to relative path for storage
+      if (data.logFile) {
+        data.logFile = toRelativePath(this.repoDir, data.logFile);
+      }
+      // Remove undefined values since YAML can't stringify them
+      const cleanData = JSON.parse(JSON.stringify(data));
+      const content = stringifyYaml(cleanData as Record<string, unknown>);
+      await atomicWriteTextFile(path, content);
+      // A stream of the file just written: a later save of the run in the
+      // same unit supersedes it before it is read.
+      await stageTyped(this.markDirty, () => [
+        new RunChanges(workflowId, run.id).write(
+          created ? "run.create" : "run.update",
+          this.keyOf(path),
+          async () => (await Deno.open(path)).readable,
+        ),
+      ]);
 
-    // The persisted form: sensitive values the run read through expressions
-    // are written as the vault references they came from.
-    const data = run.toPersistedData();
-    // Convert logFile to relative path for storage
-    if (data.logFile) {
-      data.logFile = toRelativePath(this.repoDir, data.logFile);
-    }
-    // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data));
-    const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(path, content);
-    // A stream of the file just written: a later save of the run in the
-    // same unit supersedes it before it is read.
-    await stageTyped(this.markDirty, () => [
-      new RunChanges(workflowId, run.id).write(
-        created ? "run.create" : "run.update",
-        this.keyOf(path),
-        async () => (await Deno.open(path)).readable,
-      ),
-    ]);
+      await this.updateIndexEntry(workflowId, run, path, content);
 
-    await this.updateIndexEntry(workflowId, run, path, content);
+      // Emit events based on status changes
+      if (this.eventBus) {
+        const currentStatus = run.status;
 
-    // Emit events based on status changes
-    if (this.eventBus) {
-      const currentStatus = run.status;
-
-      if (previousStatus !== currentStatus) {
-        // Emit WorkflowRunStarted for new runs (previousStatus undefined) or
-        // transitions from pending to running
-        if (
-          currentStatus === "running" &&
-          (previousStatus === "pending" || previousStatus === undefined)
-        ) {
-          const event = createWorkflowRunStarted(
-            workflowId,
-            run.workflowName,
-            run.id,
-          );
-          await this.eventBus.publish(event);
-        } else if (currentStatus === "succeeded") {
-          const event = createWorkflowRunCompleted(
-            workflowId,
-            run.workflowName,
-            run.id,
-          );
-          await this.eventBus.publish(event);
-        } else if (currentStatus === "failed") {
-          const event = createWorkflowRunFailed(
-            workflowId,
-            run.workflowName,
-            run.id,
-          );
-          await this.eventBus.publish(event);
+        if (previousStatus !== currentStatus) {
+          // Emit WorkflowRunStarted for new runs (previousStatus undefined) or
+          // transitions from pending to running
+          if (
+            currentStatus === "running" &&
+            (previousStatus === "pending" || previousStatus === undefined)
+          ) {
+            const event = createWorkflowRunStarted(
+              workflowId,
+              run.workflowName,
+              run.id,
+            );
+            await this.eventBus.publish(event);
+          } else if (currentStatus === "succeeded") {
+            const event = createWorkflowRunCompleted(
+              workflowId,
+              run.workflowName,
+              run.id,
+            );
+            await this.eventBus.publish(event);
+          } else if (currentStatus === "failed") {
+            const event = createWorkflowRunFailed(
+              workflowId,
+              run.workflowName,
+              run.id,
+            );
+            await this.eventBus.publish(event);
+          }
         }
       }
-    }
+    });
   }
 
   nextId(): WorkflowRunId {
@@ -977,22 +977,26 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return 0;
     }
 
-    await signalChange(this.markDirty, { kind: "remove", path: dir }, {
-      typed: true,
-    });
-    // On v3, the runs the directory holds, listed before the removal: each
-    // record's removal is its own run's tombstone.
-    const runIds = typedStagingActive(this.markDirty)
-      ? await this.listRunIdsInDir(dir)
-      : [];
-
-    try {
-      await Deno.remove(dir, { recursive: true });
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
+    const runIds = await withChangeSignalled(
+      this.markDirty,
+      { kind: "remove", path: dir },
+      { typed: true },
+      async () => {
+        // On v3, the runs the directory holds, listed before the removal:
+        // each record's removal is its own run's tombstone.
+        const ids = typedStagingActive(this.markDirty)
+          ? await this.listRunIdsInDir(dir)
+          : [];
+        try {
+          await Deno.remove(dir, { recursive: true });
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) {
+            throw error;
+          }
+        }
+        return ids;
+      },
+    );
 
     for (const runId of runIds) {
       await this.stageRunRemoval(workflowId, runId, dir);
@@ -1156,15 +1160,23 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 if (limitReached()) break scan;
                 let fileBytes = stat.size ?? 0;
                 if (!options?.dryRun) {
-                  await signalChange(this.markDirty, {
-                    kind: "remove",
-                    path: yamlPath,
-                  }, { typed: true });
-                  try {
-                    await Deno.remove(yamlPath);
-                  } catch (error) {
-                    if (!(error instanceof Deno.errors.NotFound)) throw error;
-                  }
+                  await withChangeSignalled(
+                    this.markDirty,
+                    {
+                      kind: "remove",
+                      path: yamlPath,
+                    },
+                    { typed: true },
+                    async () => {
+                      try {
+                        await Deno.remove(yamlPath);
+                      } catch (error) {
+                        if (!(error instanceof Deno.errors.NotFound)) {
+                          throw error;
+                        }
+                      }
+                    },
+                  );
                 }
                 fileBytes += await this.removeRunLogs(
                   workflowId,
@@ -1205,15 +1217,21 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
               let fileBytes = stat.size ?? 0;
               if (!options?.dryRun) {
-                await signalChange(this.markDirty, {
-                  kind: "remove",
-                  path: yamlPath,
-                }, { typed: true });
-                try {
-                  await Deno.remove(yamlPath);
-                } catch (error) {
-                  if (!(error instanceof Deno.errors.NotFound)) throw error;
-                }
+                await withChangeSignalled(
+                  this.markDirty,
+                  {
+                    kind: "remove",
+                    path: yamlPath,
+                  },
+                  { typed: true },
+                  async () => {
+                    try {
+                      await Deno.remove(yamlPath);
+                    } catch (error) {
+                      if (!(error instanceof Deno.errors.NotFound)) throw error;
+                    }
+                  },
+                );
               }
               fileBytes += await this.removeRunLogs(
                 workflowId,

@@ -39,6 +39,7 @@ import {
   type UnscopedChange,
   UnscopedWriteRefusedError,
   useUnscopedChangeReporterForTesting,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import {
   typedStagers,
@@ -693,4 +694,102 @@ Deno.test("signalChange and stageTyped: tell a v3 unit a repository writes into 
     await stageTyped(undefined, () => []);
   });
   assertEquals(writes, 4);
+});
+
+Deno.test("withChangeSignalled: on v2, signals each change before the write and again once it has landed (swamp-club#2421)", async () => {
+  await withReports(async () => {
+    const { hook, calls } = recordingHook();
+    const seenByWrite: (string | undefined)[][] = [];
+    const result = await withChangeSignalled(
+      hook,
+      [WRITE, REMOVE],
+      { typed: true },
+      () => {
+        seenByWrite.push([...calls]);
+        return Promise.resolve("done");
+      },
+    );
+    assertEquals(result, "done");
+    assertEquals(seenByWrite, [[WRITE.path, REMOVE.path]]);
+    assertEquals(calls, [WRITE.path, REMOVE.path, WRITE.path, REMOVE.path]);
+
+    // A single change, through a legacy unit bound to the hook: staged
+    // twice, and the unit forwards each to the hook.
+    const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+    calls.length = 0;
+    await runInUnitOfWork(
+      uow,
+      () => withChangeSignalled(hook, WRITE, {}, () => Promise.resolve()),
+    );
+    assertEquals(uow.staged(), [WRITE, WRITE]);
+    assertEquals(calls, [WRITE.path, WRITE.path]);
+  });
+});
+
+Deno.test("withChangeSignalled: a write that throws is signalled after too, and its error is the one rethrown", async () => {
+  await withReports(async () => {
+    const { hook, calls, failNext } = recordingHook();
+    const writeError = new Error("write failed");
+    const thrown = await assertRejects(() =>
+      withChangeSignalled(hook, WRITE, {}, () => {
+        // The signal after fails as well: the write's error still wins.
+        failNext(new Error("mark failed"));
+        return Promise.reject(writeError);
+      })
+    );
+    assertStrictEquals(thrown, writeError);
+    assertEquals(calls, [WRITE.path, WRITE.path]);
+
+    // A refused signal before stops the write from running.
+    failNext(new Error("refused"));
+    let ran = false;
+    await assertRejects(
+      () =>
+        withChangeSignalled(hook, WRITE, {}, () => {
+          ran = true;
+          return Promise.resolve();
+        }),
+      Error,
+      "refused",
+    );
+    assertEquals(ran, false);
+  });
+});
+
+Deno.test("withChangeSignalled: no signal after on a v3 hook, or with no hook", async () => {
+  const { hook, calls } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  const typed = typedUnit(hook);
+  await runInUnitOfWork(typed.uow, async () => {
+    // Typed: checked before the write, nothing staged or marked.
+    await withChangeSignalled(
+      hook,
+      WRITE,
+      { typed: true },
+      () => Promise.resolve(),
+    );
+    // Untyped: offered to the unit once, before the write.
+    await withChangeSignalled(hook, REMOVE, {}, () => Promise.resolve());
+  });
+  assertEquals(typed.staged, [REMOVE]);
+  assertEquals(calls, []);
+  // Outside the unit the v3 hook still refuses before the write runs.
+  let ran = false;
+  await assertRejects(
+    () =>
+      withChangeSignalled(hook, WRITE, { typed: true }, () => {
+        ran = true;
+        return Promise.resolve();
+      }),
+    UnscopedWriteRefusedError,
+  );
+  assertEquals(ran, false);
+
+  // A hookless write inside a v3 unit is offered to it once.
+  const adopter = typedUnit(recordingHook().hook);
+  await runInUnitOfWork(
+    adopter.uow,
+    () => withChangeSignalled(undefined, REMOVE, {}, () => Promise.resolve()),
+  );
+  assertEquals(adopter.staged, []);
 });

@@ -28,9 +28,9 @@ import {
 } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
-  signalChange,
   stageTyped,
   typedStagingActive,
+  withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import {
   definitionDeleteBatches,
@@ -887,160 +887,173 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(type, definition, writeBaseDir);
-    await signalChange(
+    return await withChangeSignalled(
       this.markDirtyHook,
       { kind: "write", path: targetPath },
       { typed: true },
-    );
-    const previousPath = this.idToActualPath.get(definition.id);
+      async () => {
+        const previousPath = this.idToActualPath.get(definition.id);
 
-    // Check if this is a new definition or an update
-    const legacyPath = this.getLegacyPath(type, definition.id, writeBaseDir);
-    // On v3 (swamp-club#3256), what each file held before this save replaces
-    // or removes it: its digest for an edit's precondition, and the name it
-    // declared, which tells a rename apart. Read before readMergeSource,
-    // which removes a corrupt target.
-    const priors = typedStagingActive(this.markDirtyHook)
-      ? await readPriors([targetPath, previousPath, legacyPath])
-      : new Map<string, PriorFile>();
-    const isNew = !(await this.exists(targetPath)) &&
-      !(previousPath && await this.exists(previousPath)) &&
-      !(await this.exists(legacyPath));
+        // Check if this is a new definition or an update
+        const legacyPath = this.getLegacyPath(
+          type,
+          definition.id,
+          writeBaseDir,
+        );
+        // On v3 (swamp-club#3256), what each file held before this save replaces
+        // or removes it: its digest for an edit's precondition, and the name it
+        // declared, which tells a rename apart. Read before readMergeSource,
+        // which removes a corrupt target.
+        const priors = typedStagingActive(this.markDirtyHook)
+          ? await readPriors([targetPath, previousPath, legacyPath])
+          : new Map<string, PriorFile>();
+        const isNew = !(await this.exists(targetPath)) &&
+          !(previousPath && await this.exists(previousPath)) &&
+          !(await this.exists(legacyPath));
 
-    const data = definition.toData();
-    // Ensure type metadata is always present in persisted YAML
-    data.type = type.normalized;
-    await modelRegistry.ensureTypeLoaded(type);
-    let modelDef = modelRegistry.get(type);
-    // ensureTypeLoaded only imports types already registered as lazy. A command
-    // that never populated the registry (e.g. `model edit`, which resolves the
-    // type only from the YAML on disk) leaves an extension type unresolved here,
-    // which would silently bypass the sensitive-arg guard below. Fall back to a
-    // full extension load so the schema is available. ensureLoaded is memoized,
-    // so commands that already loaded the registry (create/run/serve) pay
-    // nothing, and this only does real work the first time an unloaded type is
-    // written.
-    if (!modelDef) {
-      await modelRegistry.ensureLoaded();
-      await modelRegistry.ensureTypeLoaded(type);
-      modelDef = modelRegistry.get(type);
-    }
-    // typeVersion is deliberately NOT stamped here. It records the model type
-    // version a definition's globalArguments were authored or migrated for, so
-    // only creation and DefinitionUpgradeService may set it. Stamping it on
-    // every save marked a stale instance as current without migrating its
-    // arguments, which stranded it permanently: DefinitionUpgradeService
-    // short-circuits once typeVersion is at or above the model version, so no
-    // upgrade chain shipped later could ever run (swamp-club#900). An absent
-    // typeVersion is likewise left absent rather than backfilled: backfilling
-    // would claim the arguments were authored for a version nobody verified
-    // them against (swamp-club#2412).
+        const data = definition.toData();
+        // Ensure type metadata is always present in persisted YAML
+        data.type = type.normalized;
+        await modelRegistry.ensureTypeLoaded(type);
+        let modelDef = modelRegistry.get(type);
+        // ensureTypeLoaded only imports types already registered as lazy. A command
+        // that never populated the registry (e.g. `model edit`, which resolves the
+        // type only from the YAML on disk) leaves an extension type unresolved here,
+        // which would silently bypass the sensitive-arg guard below. Fall back to a
+        // full extension load so the schema is available. ensureLoaded is memoized,
+        // so commands that already loaded the registry (create/run/serve) pay
+        // nothing, and this only does real work the first time an unloaded type is
+        // written.
+        if (!modelDef) {
+          await modelRegistry.ensureLoaded();
+          await modelRegistry.ensureTypeLoaded(type);
+          modelDef = modelRegistry.get(type);
+        }
+        // typeVersion is deliberately NOT stamped here. It records the model type
+        // version a definition's globalArguments were authored or migrated for, so
+        // only creation and DefinitionUpgradeService may set it. Stamping it on
+        // every save marked a stale instance as current without migrating its
+        // arguments, which stranded it permanently: DefinitionUpgradeService
+        // short-circuits once typeVersion is at or above the model version, so no
+        // upgrade chain shipped later could ever run (swamp-club#900). An absent
+        // typeVersion is likewise left absent rather than backfilled: backfilling
+        // would claim the arguments were authored for a version nobody verified
+        // them against (swamp-club#2412).
 
-    // Fail closed before writing: a global argument marked `{ sensitive: true }`
-    // must never be persisted as a literal value — it would sit in cleartext in
-    // the definition YAML, readable by anyone with repo/filesystem access. This
-    // is the single chokepoint every source-definition writer funnels through
-    // (model create/edit/run/workflow auto-definitions and the serve API), so
-    // enforcing it here covers them all. Literal values must instead be supplied
-    // as a `vault.get(...)` expression, which is resolved at runtime and stored
-    // unevaluated. Throwing before the write leaves no partial file behind.
-    const leakedArgs = findLiteralSensitiveGlobalArgs(
-      modelDef?.globalArguments,
-      data.globalArguments,
-    );
-    if (leakedArgs.length > 0) {
-      throw new UserError(
-        literalSensitiveGlobalArgsMessage(leakedArgs),
-        LITERAL_SENSITIVE_GLOBAL_ARG_CODE,
-      );
-    }
+        // Fail closed before writing: a global argument marked `{ sensitive: true }`
+        // must never be persisted as a literal value — it would sit in cleartext in
+        // the definition YAML, readable by anyone with repo/filesystem access. This
+        // is the single chokepoint every source-definition writer funnels through
+        // (model create/edit/run/workflow auto-definitions and the serve API), so
+        // enforcing it here covers them all. Literal values must instead be supplied
+        // as a `vault.get(...)` expression, which is resolved at runtime and stored
+        // unevaluated. Throwing before the write leaves no partial file behind.
+        const leakedArgs = findLiteralSensitiveGlobalArgs(
+          modelDef?.globalArguments,
+          data.globalArguments,
+        );
+        if (leakedArgs.length > 0) {
+          throw new UserError(
+            literalSensitiveGlobalArgsMessage(leakedArgs),
+            LITERAL_SENSITIVE_GLOBAL_ARG_CODE,
+          );
+        }
 
-    // Remove undefined values since YAML can't stringify them
-    const cleanData = JSON.parse(JSON.stringify(data)) as Record<
-      string,
-      unknown
-    >;
+        // Remove undefined values since YAML can't stringify them
+        const cleanData = JSON.parse(JSON.stringify(data)) as Record<
+          string,
+          unknown
+        >;
 
-    // When the definition already has a file — at the target path, or at the
-    // path it is moving from (a legacy uuid-named file, or its previous name)
-    // — check whether the definition data has actually changed. If it hasn't,
-    // skip the write entirely, or carry the text over verbatim when the file
-    // is moving, to avoid destroying YAML comments and producing git noise.
-    // When the data HAS changed, use npm:yaml's Document API to merge the
-    // new values onto the existing AST so that comments on unchanged nodes
-    // are preserved (swamp-club#1842, swamp-club#3012, swamp-club#3502).
-    const source = isNew ? null : await this.readMergeSource(
-      definition.id,
-      targetPath,
-      previousPath,
-      legacyPath,
-    );
-    if (source) {
-      const normalizedExisting = JSON.parse(
-        JSON.stringify(source.parsed),
-      ) as Record<string, unknown>;
-      const unchanged =
-        canonicalJson(cleanData) === canonicalJson(normalizedExisting);
+        // When the definition already has a file — at the target path, or at the
+        // path it is moving from (a legacy uuid-named file, or its previous name)
+        // — check whether the definition data has actually changed. If it hasn't,
+        // skip the write entirely, or carry the text over verbatim when the file
+        // is moving, to avoid destroying YAML comments and producing git noise.
+        // When the data HAS changed, use npm:yaml's Document API to merge the
+        // new values onto the existing AST so that comments on unchanged nodes
+        // are preserved (swamp-club#1842, swamp-club#3012, swamp-club#3502).
+        const source = isNew ? null : await this.readMergeSource(
+          definition.id,
+          targetPath,
+          previousPath,
+          legacyPath,
+        );
+        if (source) {
+          const normalizedExisting = JSON.parse(
+            JSON.stringify(source.parsed),
+          ) as Record<string, unknown>;
+          const unchanged =
+            canonicalJson(cleanData) === canonicalJson(normalizedExisting);
 
-      if (unchanged && source.path === targetPath) {
-        this.idToActualPath.set(definition.id, targetPath);
-        logger.debug`Definition ${definition.name} unchanged, skipping write`;
-        return;
-      }
+          if (unchanged && source.path === targetPath) {
+            this.idToActualPath.set(definition.id, targetPath);
+            logger
+              .debug`Definition ${definition.name} unchanged, skipping write`;
+            return;
+          }
 
-      const content = unchanged
-        ? source.raw
-        : renderMerged(source.raw, cleanData, normalizedExisting);
-      await atomicWriteTextFile(targetPath, content);
+          const content = unchanged
+            ? source.raw
+            : renderMerged(source.raw, cleanData, normalizedExisting);
+          await atomicWriteTextFile(targetPath, content);
 
-      const removed = await this.cleanupOldPaths(
-        definition.id,
-        targetPath,
-        previousPath,
-        legacyPath,
-      );
-      this.idToActualPath.set(definition.id, targetPath);
-      await this.stageSave(definition, targetPath, content, removed, priors);
-      if (this.eventBus) {
-        await this.eventBus.publish(
-          createDefinitionUpdated(
-            type.normalized,
+          const removed = await this.cleanupOldPaths(
             definition.id,
-            definition.name,
-          ),
+            targetPath,
+            previousPath,
+            legacyPath,
+          );
+          this.idToActualPath.set(definition.id, targetPath);
+          await this.stageSave(
+            definition,
+            targetPath,
+            content,
+            removed,
+            priors,
+          );
+          if (this.eventBus) {
+            await this.eventBus.publish(
+              createDefinitionUpdated(
+                type.normalized,
+                definition.id,
+                definition.name,
+              ),
+            );
+          }
+          return;
+        }
+
+        const content = stringifyYaml(cleanData);
+        await atomicWriteTextFile(targetPath, content);
+
+        const removed = await this.cleanupOldPaths(
+          definition.id,
+          targetPath,
+          previousPath,
+          legacyPath,
         );
-      }
-      return;
-    }
 
-    const content = stringifyYaml(cleanData);
-    await atomicWriteTextFile(targetPath, content);
+        this.idToActualPath.set(definition.id, targetPath);
+        await this.stageSave(definition, targetPath, content, removed, priors);
 
-    const removed = await this.cleanupOldPaths(
-      definition.id,
-      targetPath,
-      previousPath,
-      legacyPath,
+        // Emit event
+        if (this.eventBus) {
+          const event = isNew
+            ? createDefinitionCreated(
+              type.normalized,
+              definition.id,
+              definition.name,
+            )
+            : createDefinitionUpdated(
+              type.normalized,
+              definition.id,
+              definition.name,
+            );
+          await this.eventBus.publish(event);
+        }
+      },
     );
-
-    this.idToActualPath.set(definition.id, targetPath);
-    await this.stageSave(definition, targetPath, content, removed, priors);
-
-    // Emit event
-    if (this.eventBus) {
-      const event = isNew
-        ? createDefinitionCreated(
-          type.normalized,
-          definition.id,
-          definition.name,
-        )
-        : createDefinitionUpdated(
-          type.normalized,
-          definition.id,
-          definition.name,
-        );
-      await this.eventBus.publish(event);
-    }
   }
 
   /**
@@ -1147,67 +1160,75 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // A file here that declares another definition is kept, so the change is
     // a write of this path rather than its removal.
     const kept = await this.declaresOther(resolvedPath, id, name);
-    await signalChange(this.markDirtyHook, {
-      kind: kept ? "write" : "remove",
-      path: resolvedPath,
-    }, { typed: true });
-    const priors = typedStagingActive(this.markDirtyHook)
-      ? await readPriors([...pathsToTry])
-      : new Map<string, PriorFile>();
+    return await withChangeSignalled(
+      this.markDirtyHook,
+      {
+        kind: kept ? "write" : "remove",
+        path: resolvedPath,
+      },
+      { typed: true },
+      async () => {
+        const priors = typedStagingActive(this.markDirtyHook)
+          ? await readPriors([...pathsToTry])
+          : new Map<string, PriorFile>();
 
-    let deleted = false;
-    const removed: string[] = [];
-    for (const path of pathsToTry) {
-      // The id-named path is also where a definition named with this UUID
-      // lives, and a copied file can share the id; never remove another
-      // definition's file.
-      if (await this.declaresOther(path, id, name)) continue;
-      try {
-        if (path !== resolvedPath && await this.exists(path)) {
-          await signalChange(this.markDirtyHook, { kind: "remove", path }, {
-            typed: true,
-          });
+        let deleted = false;
+        const removed: string[] = [];
+        for (const path of pathsToTry) {
+          // The id-named path is also where a definition named with this UUID
+          // lives, and a copied file can share the id; never remove another
+          // definition's file.
+          if (await this.declaresOther(path, id, name)) continue;
+          try {
+            const otherCandidate = path !== resolvedPath &&
+              await this.exists(path);
+            await withChangeSignalled(
+              this.markDirtyHook,
+              otherCandidate ? [{ kind: "remove", path }] : [],
+              { typed: true },
+              () => Deno.remove(path),
+            );
+            deleted = true;
+            removed.push(path);
+
+            // Clean up empty parent directories
+            await cleanupEmptyParentDirs(path, this.ownerBaseDir(path));
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              throw error;
+            }
+          }
         }
-        await Deno.remove(path);
-        deleted = true;
-        removed.push(path);
 
-        // Clean up empty parent directories
-        await cleanupEmptyParentDirs(path, this.ownerBaseDir(path));
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+        if (deleted) {
+          this.idToActualPath.delete(id);
+
+          if (this.eventBus && definitionName) {
+            const event = createDefinitionDeleted(
+              type.normalized,
+              id,
+              definitionName,
+            );
+            await this.eventBus.publish(event);
+          }
+        } else {
+          logger.debug`No definition file found to delete for ${id}`;
         }
-      }
-    }
-
-    if (deleted) {
-      this.idToActualPath.delete(id);
-
-      if (this.eventBus && definitionName) {
-        const event = createDefinitionDeleted(
-          type.normalized,
-          id,
-          definitionName,
-        );
-        await this.eventBus.publish(event);
-      }
-    } else {
-      logger.debug`No definition file found to delete for ${id}`;
-    }
-    const batches = typedStagingActive(this.markDirtyHook)
-      ? definitionDeleteBatches({
-        kind: "model",
-        id,
-        name: definitionName,
-        removed,
-        priors,
-        tierOf: (path) => this.stagingTierOf(path),
-      })
-      : [[]];
-    for (const batch of batches) {
-      await stageTyped(this.markDirtyHook, () => batch);
-    }
+        const batches = typedStagingActive(this.markDirtyHook)
+          ? definitionDeleteBatches({
+            kind: "model",
+            id,
+            name: definitionName,
+            removed,
+            priors,
+            tierOf: (path) => this.stagingTierOf(path),
+          })
+          : [[]];
+        for (const batch of batches) {
+          await stageTyped(this.markDirtyHook, () => batch);
+        }
+      },
+    );
   }
 
   /**

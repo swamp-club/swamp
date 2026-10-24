@@ -616,16 +616,26 @@ const ROWS: AnyRow[] = [
       cli: [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
       // Serve's resume (startDetachedResume) drives the same service.
       serve: [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
     },
@@ -738,7 +748,10 @@ const ROWS: AnyRow[] = [
     // rather than a use case's unit. Serve goes through
     // workflowCancelSuspended.
     outsideUseCase: {
-      cli: ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
+      cli: [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
     },
     seed: suspendAtGate,
     serveCtx: (run: SuspendedRun) => ({ activeRunRegistry: run.registry }),
@@ -771,6 +784,8 @@ const ROWS: AnyRow[] = [
       cli: [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
     },
     seed: (repos: RowRepos) => strandedWorkflowRun(repos),
@@ -798,6 +813,8 @@ const ROWS: AnyRow[] = [
     outsideUseCase: {
       cli: [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
     },
@@ -816,7 +833,12 @@ const ROWS: AnyRow[] = [
     syncOrder: { cli: [] },
     // The dead owner's method run is cancelled by the command itself, not a
     // use case.
-    outsideUseCase: { cli: ["markDirty outputs/<type>/noop/<id>-<time>.yaml"] },
+    outsideUseCase: {
+      cli: [
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+      ],
+    },
     seed: (repos: RowRepos) => strandedMethodRun(repos),
     cli: (repos, modelName: string) => ({
       args: ["model", "cancel", modelName, ...json(repos)],
@@ -846,8 +868,12 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": [
         "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
       ],
       "remote": {
@@ -859,8 +885,12 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: {
       "ops": [
         "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
       ],
       "remote": {
@@ -874,14 +904,23 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": [
         "markDirty workflows-evaluated/workflow-wf1.yaml",
+        "markDirty workflows-evaluated/workflow-wf1.yaml",
         "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+        "markDirty workflows-evaluated/runs/<id>/evaluated-workflow.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "pull[0]",
         "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty definitions-evaluated/<type>/m1.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
         "markDirty data/<type>/<id>/report-swamp-method-summary/1",
         "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
@@ -895,8 +934,13 @@ const EXPECTED: Record<string, PinnedRow> = {
         "fetch[1]",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "push[7]",
       ],
@@ -931,8 +975,13 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "push[7]",
       ],
@@ -955,8 +1004,13 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty data/workflow/<id>/report-swamp-workflow-summary-json",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "push[7]",
       ],
@@ -1001,7 +1055,11 @@ const EXPECTED: Record<string, PinnedRow> = {
       },
     },
     serve: {
-      "ops": ["markDirty config/models/<type>/m2.yaml", "push[1]"],
+      "ops": [
+        "markDirty config/models/<type>/m2.yaml",
+        "markDirty config/models/<type>/m2.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": ["config/models/<type>/m2.yaml"],
         "removed": [],
@@ -1031,7 +1089,11 @@ const EXPECTED: Record<string, PinnedRow> = {
       },
     },
     serve: {
-      "ops": ["markDirty config/models/<type>/m1.yaml", "push[1]"],
+      "ops": [
+        "markDirty config/models/<type>/m1.yaml",
+        "markDirty config/models/<type>/m1.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": [],
         "removed": [],
@@ -1048,13 +1110,18 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "pull[0]",
         "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "markDirty definitions-evaluated/<type>/<id>.yaml",
         "prepare[0]",
         "commit[0]",
       ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
     serve: {
-      "ops": ["markDirty definitions-evaluated/<type>/<id>.yaml", "push[0]"],
+      "ops": [
+        "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "push[0]",
+      ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
@@ -1066,6 +1133,8 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "pull[0]",
         "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "markDirty config/models/<type>/m1.yaml",
         "markDirty config/models/<type>/m1.yaml",
         "prepare[0 del 1]",
         "commit[0 del 1]",
@@ -1079,6 +1148,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: {
       "ops": [
         "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "markDirty definitions-evaluated/<type>/<id>.yaml",
+        "markDirty config/models/<type>/m1.yaml",
         "markDirty config/models/<type>/m1.yaml",
         "push[0 del 1]",
       ],
@@ -1144,7 +1215,11 @@ const EXPECTED: Record<string, PinnedRow> = {
       },
     },
     serve: {
-      "ops": ["markDirty config/workflows/workflow-wf2.yaml", "push[1]"],
+      "ops": [
+        "markDirty config/workflows/workflow-wf2.yaml",
+        "markDirty config/workflows/workflow-wf2.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": ["config/workflows/workflow-wf2.yaml"],
         "removed": [],
@@ -1170,6 +1245,7 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": [
         "markDirty config/workflows/workflow-wf1.yaml",
+        "markDirty config/workflows/workflow-wf1.yaml",
         "markDirty(bulk)",
         "push[1]",
       ],
@@ -1180,7 +1256,11 @@ const EXPECTED: Record<string, PinnedRow> = {
       },
     },
     serve: {
-      "ops": ["markDirty config/workflows/workflow-wf1.yaml", "push[1]"],
+      "ops": [
+        "markDirty config/workflows/workflow-wf1.yaml",
+        "markDirty config/workflows/workflow-wf1.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": [],
         "removed": [],
@@ -1197,12 +1277,17 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "pull[0]",
         "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "markDirty workflows-evaluated/workflow-<id>.yaml",
         "push[0]",
       ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
     serve: {
-      "ops": ["markDirty workflows-evaluated/workflow-<id>.yaml", "push[0]"],
+      "ops": [
+        "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "push[0]",
+      ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
   },
@@ -1213,6 +1298,8 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "pull[0]",
         "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "markDirty config/workflows/workflow-wf1.yaml",
         "markDirty config/workflows/workflow-wf1.yaml",
         "push[0 del 1]",
       ],
@@ -1225,6 +1312,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     serve: {
       "ops": [
         "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "markDirty workflows-evaluated/workflow-<id>.yaml",
+        "markDirty config/workflows/workflow-wf1.yaml",
         "markDirty config/workflows/workflow-wf1.yaml",
         "push[0 del 1]",
       ],
@@ -1308,11 +1397,18 @@ const EXPECTED: Record<string, PinnedRow> = {
     // push from this cache. Serve pushes it. Datastore refactor phase 2 is
     // expected to change this.
     cli: {
-      "ops": ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
     serve: {
-      "ops": ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml", "push[1]"],
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": [],
         "removed": [],
@@ -1324,11 +1420,18 @@ const EXPECTED: Record<string, PinnedRow> = {
     // GAP: marked, never pushed, as for workflow approve. Datastore refactor
     // phase 2 is expected to change this.
     cli: {
-      "ops": ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
     serve: {
-      "ops": ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml", "push[1]"],
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": [],
         "removed": [],
@@ -1340,11 +1443,18 @@ const EXPECTED: Record<string, PinnedRow> = {
     // GAP: marked, never pushed, as for workflow approve. Datastore refactor
     // phase 2 is expected to change this.
     cli: {
-      "ops": ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml"],
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+      ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
     serve: {
-      "ops": ["markDirty workflow-runs/<id>/workflow-run-<id>.yaml", "push[1]"],
+      "ops": [
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "push[1]",
+      ],
       "remote": {
         "added": [],
         "removed": [],
@@ -1358,6 +1468,8 @@ const EXPECTED: Record<string, PinnedRow> = {
       "ops": [
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
       "remote": { "added": [], "removed": [], "changed": [] },
     },
@@ -1368,6 +1480,8 @@ const EXPECTED: Record<string, PinnedRow> = {
     cli: {
       "ops": [
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
+        "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
       ],
       "remote": { "added": [], "removed": [], "changed": [] },
@@ -1378,6 +1492,7 @@ const EXPECTED: Record<string, PinnedRow> = {
     // GAP: marked, never pushed, as for workflow cancel.
     cli: {
       "ops": [
+        "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
       ],
       "remote": { "added": [], "removed": [], "changed": [] },

@@ -115,7 +115,10 @@ Deno.test("markDirty hook: repo-local definitions send no mark and model delete 
         data,
         new TextEncoder().encode("payload"),
       );
-      assertEquals(marks.length, 1);
+      // Marked before the write and again once it has landed
+      // (swamp-club#2421).
+      assertEquals(marks.length, 2);
+      assertEquals(marks[1], marks[0]);
       assertCacheRelative(marks);
       const dataRelPath = marks[0]!;
       assert(

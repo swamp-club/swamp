@@ -230,6 +230,8 @@ interface Marks {
   abs: Array<string | undefined>;
   /** relPaths the hook forwarded to the sync service. */
   forwarded: Array<string | undefined>;
+  /** Whether each `abs` path existed on disk when its mark arrived. */
+  existed: boolean[];
 }
 
 async function withHarness(
@@ -245,10 +247,13 @@ async function withHarness(
     const { service, marks: forwarded } = createRecordingSyncService();
     const hook = buildMarkDirtyHook(service, cacheRoot, repoDir);
     const abs: Array<string | undefined> = [];
-    // Record the absolute path, then delegate to the real hook.
-    const markDirty: MarkDirtyHook = (absPath?: string) => {
+    const existed: boolean[] = [];
+    // Record the absolute path and whether it exists, then delegate to the
+    // real hook.
+    const markDirty: MarkDirtyHook = async (absPath?: string) => {
       abs.push(absPath);
-      return hook(absPath);
+      existed.push(absPath !== undefined && await pathExists(absPath));
+      await hook(absPath);
     };
     const resolver = new DefaultDatastorePathResolver(repoDir, {
       type: "@test/remote",
@@ -300,7 +305,7 @@ async function withHarness(
           workflowsDir,
           markDirty,
           fresh: build,
-        }, { abs, forwarded })
+        }, { abs, forwarded, existed })
       );
     } finally {
       for (const ctx of opened) ctx.catalogStore.close();
@@ -1638,6 +1643,39 @@ Deno.test("unit of work: each change a moved repository stages matches the disk 
               `expected staged remove ${shown} to be gone after the act`,
             );
           }
+        }
+      });
+    });
+  }
+});
+
+Deno.test("markDirty: each path a repository marks is marked again once its final state is on disk (swamp-club#2421)", async (t) => {
+  for (const row of ROWS) {
+    if (row.changesCache === false) continue;
+    if (UNSTAGED_ROWS.has(`${row.repo}.${row.method}`)) continue;
+    await t.step(`${row.repo}.${row.method}`, async () => {
+      await withHarness(row.autoGc ?? false, async (h, marks) => {
+        const act = await row.prepare(h);
+        marks.abs.length = 0;
+        marks.existed.length = 0;
+        await act();
+        assert(marks.abs.length > 0, "expected the act to mark a path");
+        // The last mark of each path: a push that ran before it can have
+        // uploaded the old bytes and cleared an earlier mark, so it must
+        // see the path as the act left it, present after a write and gone
+        // after a remove.
+        const last = new Map<string, boolean>();
+        marks.abs.forEach((path, i) => {
+          if (path !== undefined) last.set(path, marks.existed[i]);
+        });
+        for (const [path, existedAtMark] of last) {
+          assertEquals(
+            existedAtMark,
+            await pathExists(path),
+            `expected the last mark of ${
+              comparableMark(h, path)
+            } to arrive after its final state was on disk`,
+          );
         }
       });
     });

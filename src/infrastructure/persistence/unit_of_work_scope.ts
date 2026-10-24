@@ -114,8 +114,10 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
  *    `design/enablers/datastores.md`);
  * 3. otherwise nowhere (filesystem datastores have no hook).
  *
- * Call it before the write, as `notifyDirty` always has. A rejected hook
- * rejects the returned promise with the same error on either route.
+ * Call it before the write, as `notifyDirty` always has; a repository wraps
+ * the write in {@link withChangeSignalled}, which calls it again once the
+ * write has landed on v2 (swamp-club#2421). A rejected hook rejects the
+ * returned promise with the same error on either route.
  *
  * With `options.typed`, the repository declares that it stages typed changes
  * for this write through {@link stageTyped} once the write is done
@@ -175,6 +177,69 @@ export async function signalChange(
   }
   await markDirty(change.kind === "bulk" ? undefined : change.path);
   reportUnscopedChange(change);
+}
+
+/**
+ * Signals `changes` through {@link signalChange}, in order, before `write`
+ * runs and, on v2, again once it has settled (swamp-club#2421). Every
+ * repository write and remove goes through it.
+ *
+ * - The signals before keep what they always gave: a v3 unit checks (or
+ *   refuses) each change before anything is written, and a process that
+ *   dies mid-write leaves the path marked.
+ * - The signals after close the window between the two: a push that ran
+ *   while the write was in flight may have uploaded the old bytes (or
+ *   re-uploaded a file about to be removed) and cleared the mark. Marking
+ *   again once the path holds its final state makes the next push see it.
+ *   They are sent when `write` throws too, since a write can land partly
+ *   before it fails.
+ *
+ * The signals after are sent only for a hook that does not require a unit
+ * (every v2 context). A v3 hook buffers changes in its commit-log unit,
+ * where the signals before already did all there is to do; a hookless
+ * repository marks nothing on v2. Marks are idempotent, so a doubled mark
+ * changes nothing else.
+ *
+ * When `write` throws and a signal after fails as well, the write's error
+ * is the one rethrown.
+ */
+export async function withChangeSignalled<T>(
+  markDirty: MarkDirtyHook | undefined,
+  changes: StagedChange | readonly StagedChange[],
+  options: { readonly typed?: boolean },
+  write: () => Promise<T>,
+): Promise<T> {
+  const list: readonly StagedChange[] = isChangeList(changes)
+    ? changes
+    : [changes];
+  for (const change of list) await signalChange(markDirty, change, options);
+  const signalAfter = markDirty !== undefined &&
+    !unitOfWorkBinding.requiresUnit(markDirty);
+  let result: T;
+  try {
+    result = await write();
+  } catch (error) {
+    if (signalAfter) {
+      try {
+        for (const change of list) {
+          await signalChange(markDirty, change, options);
+        }
+      } catch {
+        // The write's own failure is the one the caller needs to see.
+      }
+    }
+    throw error;
+  }
+  if (signalAfter) {
+    for (const change of list) await signalChange(markDirty, change, options);
+  }
+  return result;
+}
+
+function isChangeList(
+  changes: StagedChange | readonly StagedChange[],
+): changes is readonly StagedChange[] {
+  return Array.isArray(changes);
 }
 
 /**
