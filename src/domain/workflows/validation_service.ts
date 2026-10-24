@@ -930,6 +930,7 @@ export class DefaultWorkflowValidationService
                 typeof taskData.globalArgs === "string"
                   ? undefined
                   : taskData.globalArgs,
+                workflow.inputs?.properties,
               ),
             );
           }
@@ -957,25 +958,45 @@ export class DefaultWorkflowValidationService
     inputs: Record<string, unknown> | undefined,
     modelType?: string,
     globalArgs?: Record<string, unknown>,
+    inputProperties?: Record<string, { default?: unknown }>,
   ): Promise<WorkflowValidationResult[]> {
     const checkName =
       `Step inputs for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`;
+    const notChecked = [
+      WorkflowValidationResult.pass(
+        checkName + " (target resolved at run time, not checked)",
+      ),
+    ];
 
     // Skip dynamic CEL references — cannot resolve statically.
     // For factory-pattern steps (modelType is set), only the modelType
     // matters for type/method resolution — a CEL modelName does not
     // prevent resolving the extension type. A CEL methodName still
     // resolves the model and type; only the method lookup is skipped below.
+    // A target that is a single workflow input with a literal default is
+    // checked at that default, the value the run uses when the input is
+    // left out (swamp-club#3844).
+    let target = modelIdOrName;
+    let atDefault = "";
     if (modelType) {
-      if (modelType.includes("${{")) {
-        return [WorkflowValidationResult.pass(checkName)];
-      }
+      if (modelType.includes("${{")) return notChecked;
     } else if (modelIdOrName.includes("${{")) {
-      return [WorkflowValidationResult.pass(checkName)];
+      const inputName = extractWholeFieldInputRef(modelIdOrName);
+      const fallback = inputName === null
+        ? undefined
+        : inputProperties?.[inputName]?.default;
+      if (
+        typeof fallback !== "string" || fallback === "" ||
+        fallback.includes("${{")
+      ) {
+        return notChecked;
+      }
+      target = fallback;
+      atDefault = `With input '${inputName}' at its default '${fallback}': `;
     }
 
     const resolution = await this.methodResolver!.resolve(
-      modelIdOrName,
+      target,
       methodName,
       modelType,
     );
@@ -991,7 +1012,8 @@ export class DefaultWorkflowValidationService
           WorkflowValidationResult.warning(
             checkName +
               " (behavior not found)",
-            "Behavior instance not found — may be created at runtime, " +
+            atDefault +
+              "Behavior instance not found — may be created at runtime, " +
               "or could be a typo",
           ),
         ];
@@ -999,7 +1021,8 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.fail(
             checkName,
-            `Behavior type '${resolution.modelType}' could not be resolved — ` +
+            atDefault +
+              `Behavior type '${resolution.modelType}' could not be resolved — ` +
               `ensure the extension is available so its step ` +
               `inputs can be validated`,
           ),
@@ -1011,7 +1034,8 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.fail(
             checkName,
-            `Method '${methodName}' not found on behavior type '${resolution.modelType}'`,
+            atDefault +
+              `Method '${methodName}' not found on behavior type '${resolution.modelType}'`,
           ),
         ];
       case "resolved": {
@@ -1021,9 +1045,10 @@ export class DefaultWorkflowValidationService
           ? [
             WorkflowValidationResult.fail(
               `Global arguments for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
-              literalSensitiveGlobalArgsMessage(
-                resolution.literalSensitiveGlobals,
-              ),
+              atDefault +
+                literalSensitiveGlobalArgsMessage(
+                  resolution.literalSensitiveGlobals,
+                ),
             ),
           ]
           : [];
@@ -1031,7 +1056,7 @@ export class DefaultWorkflowValidationService
           ? [
             WorkflowValidationResult.fail(
               `Tags for '${stepName}' in job '${jobName}' (${modelIdOrName})`,
-              resolution.reservedTagRefusal,
+              atDefault + resolution.reservedTagRefusal,
             ),
           ]
           : [];
@@ -1049,7 +1074,7 @@ export class DefaultWorkflowValidationService
             ...definitionProblems,
             WorkflowValidationResult.fail(
               checkName,
-              `Missing required inputs: ${missing.join(", ")}`,
+              atDefault + `Missing required inputs: ${missing.join(", ")}`,
             ),
           ];
         }
