@@ -816,8 +816,11 @@ checks:
 
 `swamp behavior validate` runs checks as part of validation. It runs all checks
 regardless of `appliesTo`, so validate surfaces the same errors method
-execution would. It honors definition-level `skip` lists as well as CLI flags.
-Two flags narrow which checks run:
+execution would. The checks receive the global arguments parsed by the type's
+schema as a method run gives them: defaults, coercions and transforms applied,
+and a field still holding an unresolved expression left as written. It honors
+definition-level `skip` lists as well as CLI flags. Two flags narrow which
+checks run:
 
 - `--label <label>`: only checks with this label
 - `--method <method>`: only checks that apply to this method (skips checks whose
