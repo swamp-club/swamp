@@ -1627,15 +1627,26 @@ const RACE_OUTPUT =
 
 /**
  * A fake `deno bundle`: writes the `-o` file, or answers with the esbuild
- * install race while `loses()` holds. Records how many run at once.
+ * install race while `loses()` holds. Records how many run at once. With
+ * `holdUntilPeak`, each run waits until that many have run at once, so
+ * overlap never depends on how long each caller takes to reach the spawn.
  */
-function fakeBundler(loses: () => boolean) {
+function fakeBundler(loses: () => boolean, holdUntilPeak?: number) {
   const state = { running: 0, peak: 0, runs: 0 };
   const handler = async (_cmd: string, args: string[]) => {
     state.runs++;
     state.running++;
     state.peak = Math.max(state.peak, state.running);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (holdUntilPeak === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } else {
+      // Reads peak, not running: a run that passed its wait may already
+      // have finished.
+      await waitFor(
+        () => state.peak >= holdUntilPeak,
+        `${holdUntilPeak} bundles running at once`,
+      );
+    }
     state.running--;
     if (loses()) return { stdout: "", stderr: RACE_OUTPUT, code: 1 };
     await Deno.writeTextFile(
@@ -1700,7 +1711,7 @@ Deno.test("bundleExtension: no bundle on the same cache starts beside the first 
 
 Deno.test("bundleExtension: bundles on different caches do not wait for each other", async () => {
   await withTempFile("export const x = 1;\n", async (path) => {
-    const { state, handler } = fakeBundler(() => false);
+    const { state, handler } = fakeBundler(() => false, 2);
     await withMockedCommand(handler, async () => {
       await Promise.all([
         bundleExtension(path, DENO_PATH, {
