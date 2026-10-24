@@ -1394,7 +1394,9 @@ Deno.test("Workflow.fromData: keeps the step name rule and escapes the offending
 Deno.test("Workflow.fromData: passes a non-schema error through unchanged", () => {
   const data = createTestWorkflowData();
   const job = { ...data.jobs[0] };
-  // A read that throws is not a schema failure, so it is not reworded.
+  // A read that throws is not a schema failure, so it is not reworded. Every
+  // schema guard reports issues, so a throwing getter on a field the schema
+  // reads is how a test raises an error that is not one (swamp-club#3832).
   Object.defineProperty(job, "steps", {
     enumerable: true,
     get() {
@@ -1427,15 +1429,28 @@ function schemaErrorOf(data: WorkflowInput): WorkflowSchemaError {
   return assertThrows(() => Workflow.fromData(data), WorkflowSchemaError);
 }
 
-Deno.test("Workflow.fromData: a string-form step dependsOn is a schema error on one line (swamp-club#3832)", () => {
-  const error = schemaErrorOf(withFirstStep({ dependsOn: ["host", "disk"] }));
-  assertEquals(error.issues.length, 1);
-  assertEquals(error.issues[0].path, "jobs[0].steps[0].dependsOn[0]");
+Deno.test("Workflow.fromData: each string-form step dependsOn entry is a schema error on one line (swamp-club#3832)", () => {
+  const error = schemaErrorOf(
+    withFirstStep({
+      dependsOn: [
+        "host",
+        { step: "fine", condition: { type: "succeeded" } },
+        "disk",
+      ],
+    }),
+  );
+  assertEquals(error.issues.map((issue) => issue.path), [
+    "jobs[0].steps[0].dependsOn[0]",
+    "jobs[0].steps[0].dependsOn[2]",
+  ]);
   assertEquals(
     error.message,
     'jobs[0].steps[0].dependsOn[0]: Step "step1": dependsOn entries must be ' +
-      'objects, not strings. Replace "- host" with "- step: host" and a ' +
-      "condition of type succeeded.",
+      'objects, not strings. Replace "- host" with "- step: host" plus ' +
+      '"condition: { type: succeeded }".; ' +
+      'jobs[0].steps[0].dependsOn[2]: Step "step1": dependsOn entries must be ' +
+      'objects, not strings. Replace "- disk" with "- step: disk" plus ' +
+      '"condition: { type: succeeded }".',
   );
 });
 

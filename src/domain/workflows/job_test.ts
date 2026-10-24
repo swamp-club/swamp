@@ -444,7 +444,7 @@ Deno.test("JobSchema throws clear error for string dependsOn entries with job na
   assertEquals(
     issues[0].message,
     'Job "build-job": dependsOn entries must be objects, not strings. ' +
-      'Replace "- setup-job" with "- job: setup-job" and a condition of type succeeded.',
+      'Replace "- setup-job" with "- job: setup-job" plus "condition: { type: succeeded }".',
   );
 });
 

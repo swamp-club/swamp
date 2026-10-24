@@ -374,7 +374,7 @@ Deno.test("StepSchema throws clear error for string dependsOn entries with step 
   assertEquals(
     issues[0].message,
     'Step "deploy": dependsOn entries must be objects, not strings. ' +
-      'Replace "- build-step" with "- step: build-step" and a condition of type succeeded.',
+      'Replace "- build-step" with "- step: build-step" plus "condition: { type: succeeded }".',
   );
 });
 

@@ -80,7 +80,7 @@ export const StepObjectSchema = z.object({
 });
 
 /**
- * Reports a string-form `dependsOn` entry as a schema issue with the object
+ * Reports each string-form `dependsOn` entry as a schema issue with the object
  * form to write instead (swamp-club#3832). The message is one line: schema
  * errors escape control characters, so a newline would print as an escape.
  */
@@ -92,19 +92,18 @@ function rejectStringStepDependsOn(
     const raw = data as Record<string, unknown>;
     const deps = raw.dependsOn;
     if (Array.isArray(deps)) {
-      const index = deps.findIndex((item) => typeof item === "string");
-      if (index !== -1) {
-        const name = typeof raw.name === "string" ? raw.name : "<unnamed step>";
-        const entry = String(deps[index]);
+      const name = typeof raw.name === "string" ? raw.name : "<unnamed step>";
+      deps.forEach((entry, index) => {
+        if (typeof entry !== "string") return;
         ctx.addIssue({
           code: "custom",
           message: `Step "${name}": dependsOn entries must be objects, not ` +
-            `strings. Replace "- ${entry}" with "- step: ${entry}" and a ` +
-            `condition of type succeeded.`,
+            `strings. Replace "- ${entry}" with "- step: ${entry}" plus ` +
+            `"condition: { type: succeeded }".`,
           path: ["dependsOn", index],
           input: data,
         });
-      }
+      });
     }
   }
   return data;

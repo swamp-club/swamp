@@ -804,7 +804,7 @@ Deno.test("YamlWorkflowRepository.findByName: a string-form dependsOn at the nam
       `workflow-deploy.yaml: jobs[0].steps[0].dependsOn[0]: Step "${
         job.steps[0].name
       }": dependsOn entries must be objects, not strings. Replace "- host" ` +
-        `with "- step: host" and a condition of type succeeded.`,
+        `with "- step: host" plus "condition: { type: succeeded }".`,
     );
   });
 });
