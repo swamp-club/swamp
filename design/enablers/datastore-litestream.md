@@ -711,7 +711,7 @@ credentials and compaction still favour it.
 
 ### Real-bucket check
 
-Before Phase 4E ships, on a test account and never on production data:
+On a test account and never on production data, still owed:
 
 - a cold forced sync and a warm one on near S3 (static keys, an SSO profile, and
   instance or workload identity), on far S3, and on GCS with ADC;
@@ -720,6 +720,107 @@ Before Phase 4E ships, on a test account and never on production data:
 - what ADC adds to a cold GCS sync, which the model leaves out;
 - GCS uploads over 16 MB;
 - the reversal figures above.
+
+These moved to the team-mode dogfood (Phase 5): v3 on buckets is not announced
+until team mode is in place (decided 2026-10-24), so solo mode closed on the
+emulator dogfood below (swamp-club#3756). The per-run tables are in that issue
+and in the descriptions of swamp-club#3802, #3803 and #3882.
+
+**What was run.** One macOS host (APFS). Six throwaway repos, one per datastore
+(filesystem, S3, GCS, each in format 2 and 3), populated the same way through
+the CLI: 200 `command/shell`, 40 blob and 10 `@swamp/git` behaviors, 30
+workflows, about 800 method runs and 150 workflow runs, data from inline records
+to 17 MiB chunks, executable and 0600 outputs, dot-named and non-ASCII names.
+The v3 bucket repos hold 7,250 (S3) and 5,882 (GCS) commits, uncompacted. S3 is
+ministack and GCS fake-gcs-server 1.56.1 (one per proxy, its `-public-host` set
+to the proxy), each behind a TCP proxy that drops every connection, or only
+Litestream's. Binaries: `main` at `bc388c720`, and release `20261024.011325.0`
+(`5840c80b4`, with swamp-club#3801–#3803). Timings were interleaved, with an A/A
+twin within ±5%, each round started below a load of 3.5.
+
+**Kill criteria (K2, solo).** Neither fires.
+
+- K2a: the p95 commit bound (the `swamp.cli` span less bootstrap and the
+  method, so an upper bound on the commit) is 221–255 ms on buckets and
+  122–123 ms on a filesystem (release, 30 rounds). Head pruning adds 6–7 ms at
+  p95 against `bc388c720`.
+- K2b, judged on buckets against v2's `pushChanged`: a workflow step costs
+  51–73 ms on v3 against 0.92–1.38 s on v2, 94–95% less; a one-step workflow is
+  28–53% faster.
+- A v3 filesystem costs more than a v2 one, which has no `pushChanged`: a write
+  +26%, a one-step workflow +27%, a step 64 ms against 28 ms (`bc388c720`). It
+  is a known cost, not a kill.
+
+**Outage behaviour.** 42 random cuts per bucket kind and binary, over method
+runs, workflow runs and approves in `--json` and log mode, with the bucket held
+down until the command exits: no run printed success and then lost its write
+(3 of 84 did before swamp-club#3759), no error was raw or uncoded (17 on
+`bc388c720`), and every failure exited within 8.3 s (up to 65 s on
+`bc388c720`). The outcomes, as of swamp-club#3802 and #3882, are in
+[datastores.md](datastores.md#v3-on-s3-and-gcs-datastore-rework-phase-4e):
+
+| Outcome                                          | Exit | What landed                                 |
+| ------------------------------------------------ | ---- | ------------------------------------------- |
+| `datastore_v3_commit_unreachable`                | 75   | nothing                                     |
+| `datastore_v3_storage_unreachable`               | 75   | nothing (cut while taking the writer)       |
+| `datastore_v3_catch_up_unreachable`              | 75   | nothing; the next command finishes it       |
+| `datastore_v3_read_model_busy`                   | 75   | nothing                                     |
+| `datastore_v3_run_partly_committed`              | 1    | a run's last checkpoint; `workflow recover` |
+| `datastore_v3_commit_partly_committed`           | 1    | part of the change                          |
+| `datastore_v3_commit_may_land`                   | 1    | maybe, later                                |
+| `datastore_v3_replication_unconfirmed`           | 75   | the change, saved locally, not replicated   |
+| refused before any work (format marker, sidecar) | 1    | nothing                                     |
+
+Known limit: a cut of only the replica's traffic on S3 waits the closing sync's
+60 s (60.8 s measured), because Litestream retries inside the sync; GCS answers
+the same cut in about 1 s.
+
+**First clone and restore.** Release against the same repos in format 2, three
+rounds; the extension's auto-install (7–9 s, both formats) and the Litestream
+download (once per swamp home) are paid separately:
+
+| Cell                     | v2     | v3     | v3 / v2 |
+| ------------------------ | ------ | ------ | ------- |
+| S3 clone, `data list`    | 15.3 s | 29.2 s | 1.90x   |
+| S3 clone, write-first    | 15.8 s | 29.8 s | 1.89x   |
+| S3 restore, `data list`  | 19.0 s | 29.4 s | 1.55x   |
+| S3 restore, write-first  | 19.1 s | 31.6 s | 1.66x   |
+| GCS clone, `data list`   | 6.8 s  | 20.8 s | 3.06x   |
+| GCS clone, write-first   | 7.1 s  | 21.8 s | 3.09x   |
+| GCS restore, `data list` | 10.2 s | 21.5 s | 2.11x   |
+| GCS restore, write-first | 9.9 s  | 23.2 s | 2.35x   |
+
+swamp-club#3418's 1.5x is not met. The cost grows with the history a clone
+replays: compaction keeps the last 7 days and the newest 10,000 commits
+(`DEFAULT_COMPACTION_POLICY`), so these repos replay all of theirs. The
+compaction-policy follow-up carries it into Phase 5. v3's own times match
+swamp-club#3803's; the ratios moved with v2's.
+
+**Storage.** For the same work v3 stores 5–7x fewer objects than v2 (2,265–3,387
+against 14,391–17,820); bytes follow each repo's mix of large blobs, so neither
+format is smaller. Nothing is reclaimed the same day: an unreferenced chunk
+keeps its 24 h grace (`DEFAULT_CHUNK_GRACE_MS`), so `data gc` and `datastore gc`
+left the chunks in place. Locally, v3's checkout and v2's cache under the swamp
+home are the same order (560–850 MB against 610–620 MB).
+
+**Known limits.**
+
+- macOS chunk barrier (swamp-club#3737) on a busy disk: an 18 KiB write's p95 is
+  2.0 s on v3 against 0.75 s on v2 (idle disk: 0.69 s against 0.53 s).
+- `datastore setup filesystem --format 3` fails with `unable to open database
+  file` when the path goes through a symlinked directory.
+- A checkout behind the writer that reads during a Litestream cut hangs about
+  112 s, then exits 0 (measured in swamp-club#3882's verification).
+- A SIGKILLed workflow's per-model lock outlives `workflow recover`, so the next
+  `data gc` waits out the lock's 30 s TTL (v2 too).
+
+**Deferred.** Lazy content (only if clones are still over target after the
+compaction policy), the full-replay crash bug (Phase 7), and the long silent
+waits: crash recovery after a writer is killed mid-method (about 24 s on a
+14,000-file checkout), `data prune` (6–10 s before any output) and the 112 s
+read above.
+
+**Not measured.** Real S3 and GCS, and SSO, instance and workload identity.
 
 ### Phase 4D1: the idle sidecar (swamp-club#3416)
 
@@ -785,7 +886,10 @@ kept in `commits.db` and replicate when this checkout writes next. If another
 checkout writes to the datastore first, this copy's next refresh restores the
 newer lineage over them and they are lost; the message says so, and that
 restore logs a warning naming how many commits it dropped (swamp-club#3565).
-A definite failure (an error answer, or a socket that refuses) marks the sidecar
+That error is only for a command that committed something: one whose commit
+log did not move since it first held the writer, such as one cut off while it
+records its lineage, says nothing was changed instead (swamp-club#3882; see
+`datastores.md`). A definite failure (an error answer, or a socket that refuses) marks the sidecar
 for replacement, while a timeout leaves it running so a large first snapshot can
 finish. The default deadline is 60 s.
 
@@ -1200,8 +1304,8 @@ bucket it becomes one list and up to four gets, about three round trips,
 measured with 4E. The 20 ms RTT restore of a small copy is about 15 round
 trips, half Phase 4A's modelled 32 for a cold restore with credentials. The
 116 MB figure through the proxy is bound by the proxy, which delays every
-64 KB chunk (about 6 MB/s), not by Litestream; the real-bucket check before
-4E measures bandwidth. **The first-clone budget:** a fresh machine pays one
+64 KB chunk (about 6 MB/s), not by Litestream; the real-bucket check in the
+team-mode dogfood measures bandwidth. **The first-clone budget:** a fresh machine pays one
 check and one full restore before its first command; afterwards a command
 whose copy is current pays only the check. Since 4E the restore logs a line
 naming the lineage before it starts and one with its time after, so the cost
@@ -1655,8 +1759,9 @@ macOS.
 - **Size.** Downloading keeps release binaries unchanged; embedding would
   have added 10–12 % to each.
 - **Real-bucket latency** is modelled, not measured: Phase 4A ran on emulators
-  behind a latency, handshake, bandwidth and credential model. The
-  [Real-bucket check](#real-bucket-check) has to run before Phase 4E.
+  behind a latency, handshake, bandwidth and credential model, and the Phase 4
+  dogfood on emulators too. The [Real-bucket check](#real-bucket-check) moved
+  to the team-mode dogfood (Phase 5).
 - **Teardown order** (Phase 4A). If swamp closes `commits.db` after its
   sidecar has stopped, or before the sidecar has opened it, the next sidecar
   uploads a full snapshot. Sync, close the stores, then stop the sidecar.
@@ -1665,8 +1770,8 @@ macOS.
 ## Changes to the Phase 4, 5 and 7 plans
 
 - **Phase 4 entry criterion.** Met on a bucket model by Phase 4A, which chose
-  an idle sidecar. The [Real-bucket check](#real-bucket-check) runs before
-  Phase 4E.
+  an idle sidecar. The [Real-bucket check](#real-bucket-check) moved to the
+  team-mode dogfood (Phase 5); solo mode closed on the emulator dogfood.
 - **Phase 4 (embedded datastore service):**
   - an idle sidecar: a write command reuses or starts it, forces `/sync wait`
     before it exits, and the sidecar exits after a five-minute idle timeout

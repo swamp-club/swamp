@@ -1393,21 +1393,112 @@ Deno.test("Workflow.fromData: keeps the step name rule and escapes the offending
 
 Deno.test("Workflow.fromData: passes a non-schema error through unchanged", () => {
   const data = createTestWorkflowData();
+  const job = { ...data.jobs[0] };
+  // A read that throws is not a schema failure, so it is not reworded. Every
+  // schema guard reports issues, so a throwing getter on a field the schema
+  // reads is how a test raises an error that is not one (swamp-club#3832).
+  Object.defineProperty(job, "steps", {
+    enumerable: true,
+    get() {
+      throw new Error("steps could not be read");
+    },
+  });
   const error = assertThrows(
     () =>
-      Workflow.fromData({
-        ...data,
-        jobs: [{
-          ...data.jobs[0],
-          steps: [{
-            ...data.jobs[0].steps[0],
-            task: { type: "shell" },
-          }],
-        }],
-      } as unknown as WorkflowInput),
+      Workflow.fromData({ ...data, jobs: [job] } as unknown as WorkflowInput),
     Error,
   );
   assertEquals(error instanceof WorkflowSchemaError, false);
+  assertEquals(error.message, "steps could not be read");
+});
+
+/** The workflow test data with one change to its first step. */
+function withFirstStep(change: Record<string, unknown>): WorkflowInput {
+  const data = createTestWorkflowData();
+  return {
+    ...data,
+    jobs: [{
+      ...data.jobs[0],
+      steps: [{ ...data.jobs[0].steps[0], ...change }],
+    }],
+  } as unknown as WorkflowInput;
+}
+
+/** The WorkflowSchemaError `Workflow.fromData` throws for `data`. */
+function schemaErrorOf(data: WorkflowInput): WorkflowSchemaError {
+  return assertThrows(() => Workflow.fromData(data), WorkflowSchemaError);
+}
+
+Deno.test("Workflow.fromData: each string-form step dependsOn entry is a schema error on one line (swamp-club#3832)", () => {
+  const error = schemaErrorOf(
+    withFirstStep({
+      dependsOn: [
+        "host",
+        { step: "fine", condition: { type: "succeeded" } },
+        "disk",
+      ],
+    }),
+  );
+  assertEquals(error.issues.map((issue) => issue.path), [
+    "jobs[0].steps[0].dependsOn[0]",
+    "jobs[0].steps[0].dependsOn[2]",
+  ]);
+  assertEquals(
+    error.message,
+    'jobs[0].steps[0].dependsOn[0]: Step "step1": dependsOn entries must be ' +
+      'objects, not strings. Replace "- host" with "- step: host" plus ' +
+      '"condition: { type: succeeded }".; ' +
+      'jobs[0].steps[0].dependsOn[2]: Step "step1": dependsOn entries must be ' +
+      'objects, not strings. Replace "- disk" with "- step: disk" plus ' +
+      '"condition: { type: succeeded }".',
+  );
+});
+
+Deno.test("Workflow.fromData: a string-form job dependsOn is a schema error (swamp-club#3832)", () => {
+  const data = createTestWorkflowData();
+  const error = schemaErrorOf({
+    ...data,
+    jobs: [{ ...data.jobs[0], dependsOn: ["setup"] }],
+  } as unknown as WorkflowInput);
+  assertEquals(error.issues.length, 1);
+  assertEquals(error.issues[0].path, "jobs[0].dependsOn[0]");
+  assertStringIncludes(
+    error.message,
+    'Job "job1": dependsOn entries must be objects, not strings. ' +
+      'Replace "- setup" with "- job: setup"',
+  );
+});
+
+Deno.test("Workflow.fromData: a string-form dependsOn entry has its control characters escaped (swamp-club#3832)", () => {
+  const error = schemaErrorOf(withFirstStep({ dependsOn: ["ho\u001b]0;st"] }));
+  assertEquals(error.message.includes("\u001b"), false);
+  assertStringIncludes(error.message, '"- ho\\x1b]0;st"');
+});
+
+Deno.test("Workflow.fromData: each unknown key is a schema issue with its key escaped (swamp-club#3832)", () => {
+  const error = schemaErrorOf(
+    withFirstStep({ lables: {}, "bad\u001bkey": true }),
+  );
+  assertEquals(
+    error.issues.map((issue) => issue.path),
+    ["jobs[0].steps[0].lables", 'jobs[0].steps[0]["bad\\u001bkey"]'],
+  );
+  assertStringIncludes(error.message, "Did you mean 'labels'?");
+  assertStringIncludes(error.message, "Unknown key 'bad\\x1bkey' on step");
+  assertEquals(error.message.includes("\u001b"), false);
+});
+
+Deno.test("Workflow.fromData: a removed driver field on a step is a schema error and suppresses the unknown-key check (swamp-club#3832)", () => {
+  const error = schemaErrorOf(withFirstStep({ driver: "docker", lables: {} }));
+  assertEquals(error.issues.length, 1);
+  assertEquals(error.issues[0].path, "jobs[0].steps[0].driver");
+  assertStringIncludes(error.message, "The 'driver' field has been removed");
+});
+
+Deno.test("Workflow.fromData: a refused step task is a schema error (swamp-club#3832)", () => {
+  const error = schemaErrorOf(withFirstStep({ task: { type: "shell" } }));
+  assertEquals(error.issues.length, 1);
+  assertEquals(error.issues[0].path, "jobs[0].steps[0].task");
   assertStringIncludes(
     error.message,
     'Step task type "shell" is no longer supported',

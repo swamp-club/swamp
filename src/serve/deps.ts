@@ -31,6 +31,7 @@ import {
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { WorkflowRunCheckpointer } from "../infrastructure/persistence/workflow_run_checkpointer.ts";
+import { withCommittedUnknownSteps } from "./handlers/shared.ts";
 import type { ModelMethodRunDeps } from "../libswamp/models/run.ts";
 import type {
   WorkflowRunDeps,
@@ -701,7 +702,8 @@ export async function executeWorkflowWithLocks(
       () => runTracker,
       error,
     );
-    throw error;
+    // Names the steps a recovery must acknowledge (swamp-club#3882).
+    throw withCommittedUnknownSteps(error, runCheckpointer);
   }).finally(() => runCheckpointer.close());
 }
 

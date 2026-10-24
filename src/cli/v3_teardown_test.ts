@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   V3StorageUnreachableError,
   WriterFencedError,
@@ -26,15 +32,38 @@ import {
   ReadModelApplyError,
   ReadModelCatchUpUnreachableError,
 } from "../domain/datastore_v3/read_model.ts";
-import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
+import {
+  V3_REPLICATION_UNAVAILABLE_CODE,
+  V3ReplicationError,
+  V3ReplicationUnavailableError,
+} from "../domain/datastore_v3/litestream_replication.ts";
 import {
   closeV3DatastoresAfterFailure,
   closeV3DatastoresAfterSuccess,
 } from "./v3_teardown.ts";
+import { reportedV3Failure } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   CommitUnreachableError,
+  MayLandLaterError,
   RunPartlyCommittedError,
 } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { V3_STORAGE_UNREACHABLE_CODE } from "../domain/datastore_v3/writer_lease.ts";
+import { exitCodeForError } from "../presentation/output/error_output.ts";
+
+/** A command that committed nothing to the datastore at `/ds`. */
+const NOTHING_COMMITTED = { committed: false, datastorePath: "/ds" } as const;
+const COMMITTED = { committed: true } as const;
+
+/** A lineage the bucket could not be reached to record, as the reporter's. */
+function lineageCutOff(): V3ReplicationError {
+  const lost = new Error("S3 putObjectConditional failed key=lineage/1", {
+    cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+  });
+  return new V3ReplicationError(
+    `the replication lineage of this writer could not be recorded: ${lost.message}`,
+    { cause: lost },
+  );
+}
 
 Deno.test("closeV3DatastoresAfterSuccess: commits a sync did not confirm fail the command", async () => {
   await assertRejects(
@@ -109,4 +138,96 @@ Deno.test("closeV3DatastoresAfterFailure: any other failure closes as usual, and
     },
   );
   assertEquals(closes, [{ storageUnreachable: false }]);
+});
+
+Deno.test("reportedV3Failure: a command that committed nothing and could not reach the storage reports storage-unreachable, exit 75, nothing changed (swamp-club#3882)", () => {
+  const reported = reportedV3Failure(lineageCutOff(), NOTHING_COMMITTED);
+  assert(reported instanceof V3StorageUnreachableError, String(reported));
+  assertEquals(reported.code, V3_STORAGE_UNREACHABLE_CODE);
+  assertEquals(exitCodeForError(reported), 75);
+  assertStringIncludes(reported.message, "nothing was changed");
+  assertStringIncludes(reported.message, "/ds");
+  assertStringIncludes(reported.message, "putObjectConditional");
+  assert(!reported.message.includes("saved locally"), reported.message);
+});
+
+Deno.test("reportedV3Failure: a command that committed nothing and failed otherwise keeps its cause, worded as nothing changed (swamp-club#3882)", () => {
+  const claimed = new V3ReplicationError(
+    "the replication lineage of this writer could not be recorded: " +
+      "replication lineage 00000001 was already claimed under another " +
+      "replica root",
+    { cause: new Error("already claimed") },
+  );
+  const reported = reportedV3Failure(claimed, NOTHING_COMMITTED);
+  assert(reported instanceof V3ReplicationUnavailableError, String(reported));
+  assertEquals(reported.code, V3_REPLICATION_UNAVAILABLE_CODE);
+  assertStringIncludes(reported.message, "already claimed under another");
+  assertStringIncludes(reported.message, "Nothing was changed.");
+  assert(!reported.message.includes("saved locally"), reported.message);
+});
+
+Deno.test("reportedV3Failure: a command that committed keeps the saved-locally error, and every other error passes unchanged (swamp-club#3882)", () => {
+  const unconfirmed = lineageCutOff();
+  assertStrictEquals(reportedV3Failure(unconfirmed, COMMITTED), unconfirmed);
+  for (
+    const other of [
+      new MayLandLaterError(new Error("refused"), "the outbox"),
+      new CommitUnreachableError(new Error("refused")),
+      new V3StorageUnreachableError("/ds", new Error("ECONNRESET")),
+      new Error("plain"),
+    ]
+  ) {
+    assertStrictEquals(reportedV3Failure(other, NOTHING_COMMITTED), other);
+  }
+});
+
+Deno.test("closeV3DatastoresAfterFailure: resolves with the reported error, read before the close, and tells the close the storage is unreachable (swamp-club#3882)", async () => {
+  const closes: { storageUnreachable?: boolean }[] = [];
+  let closed = false;
+  const reported = await closeV3DatastoresAfterFailure(
+    lineageCutOff(),
+    (options) => {
+      closes.push(options);
+      closed = true;
+      return Promise.resolve();
+    },
+    () => {
+      assertEquals(closed, false, "read after the close");
+      return NOTHING_COMMITTED;
+    },
+  );
+  assert(reported instanceof V3StorageUnreachableError, String(reported));
+  assertEquals(closes, [{ storageUnreachable: true }]);
+});
+
+Deno.test("closeV3DatastoresAfterSuccess: a closing sync that fails for a command that committed nothing says nothing changed (swamp-club#3882)", async () => {
+  let closed = false;
+  const error = await assertRejects(
+    () =>
+      closeV3DatastoresAfterSuccess(
+        () => {
+          closed = true;
+          return Promise.reject(lineageCutOff());
+        },
+        () => {
+          assertEquals(closed, false, "read after the close");
+          return NOTHING_COMMITTED;
+        },
+      ),
+    V3StorageUnreachableError,
+  );
+  assertStringIncludes(
+    error.message,
+    "while confirming its replica as the command ended, so nothing was " +
+      "changed",
+  );
+  await assertRejects(
+    () =>
+      closeV3DatastoresAfterSuccess(
+        () => Promise.reject(lineageCutOff()),
+        () => COMMITTED,
+      ),
+    V3ReplicationError,
+    "saved locally",
+  );
 });

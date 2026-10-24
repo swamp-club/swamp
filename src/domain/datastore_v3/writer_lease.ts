@@ -89,11 +89,20 @@ export const V3_STORAGE_UNREACHABLE_CODE = "datastore_v3_storage_unreachable";
  * run again once the storage is reachable. `cause` is the storage failure.
  */
 export class V3StorageUnreachableError extends UserError {
-  constructor(datastorePath: string, cause: unknown) {
+  /**
+   * `during` says what the command was doing: by default getting ready to
+   * write; a command that committed nothing may also be cut off while it
+   * confirms its replica as it ends (swamp-club#3882).
+   */
+  constructor(
+    datastorePath: string,
+    cause: unknown,
+    during = "while getting ready to write",
+  ) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     super(
       `Swamp could not reach the storage of the v3 datastore at ` +
-        `${datastorePath} (${reason}) while getting ready to write, so ` +
+        `${datastorePath} (${reason}) ${during}, so ` +
         `nothing was changed. Run the command again once the datastore is ` +
         `reachable.`,
       V3_STORAGE_UNREACHABLE_CODE,

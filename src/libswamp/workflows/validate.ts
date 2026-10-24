@@ -35,6 +35,7 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
+import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -446,9 +447,20 @@ async function* validateSingle(
     findByName: deps.findWorkflowByName,
     findById: (id: string) => deps.findWorkflowById(id),
   };
-  const workflow = byId
-    ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
-    : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
+  let workflow: Workflow | null;
+  let schemaError: WorkflowSchemaError | undefined;
+  try {
+    workflow = byId
+      ? await findWorkflowById(lookupRepo, workflowIdOrName, expectedName)
+      : await findWorkflowByIdOrName(lookupRepo, workflowIdOrName);
+  } catch (error) {
+    // A file named after the workflow is read by the lookup itself, so its
+    // schema failure is thrown rather than hidden. Report it as the failed
+    // schema check a file the lookup cannot see gets (swamp-club#3832).
+    if (!(error instanceof WorkflowSchemaError)) throw error;
+    workflow = null;
+    schemaError = error;
+  }
 
   if (!workflow) {
     // The file may exist but fail schema parsing, making it invisible to
@@ -467,6 +479,7 @@ async function* validateSingle(
         return;
       }
     }
+    if (schemaError) throw schemaError;
     yield {
       kind: "error",
       error: notFound("Workflow", workflowIdOrName),

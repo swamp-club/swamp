@@ -2536,11 +2536,19 @@ which keeps its own migration message.
 - Any unknown key gets a did-you-mean suggestion (Levenshtein) and the list of
   valid keys for that entity.
 
+These guards — removed driver fields, unknown keys, string-form `dependsOn`
+entries and refused step tasks (e.g. `type: shell`) — report Zod issues rather
+than throwing, so each surfaces as a `WorkflowSchemaError`: one line per issue
+with its path, control characters escaped, and no stack trace
+(swamp-club#3832). A guard's message is therefore one line.
+
 The repository loader skips a schema-rejected file with a warning, so it is
 invisible there. On a lookup miss, `workflow validate` and `workflow run`
-re-scan the raw files and show the parse error inline. A broken file fails
-validation naming the bad key, and can never make `validate` (or validate-all)
-report green.
+re-scan the raw files and show the parse error inline. A file named after its
+workflow is read by the lookup itself, which throws its schema failure;
+`workflow validate` reports that as the same failed "Schema validation" check.
+A broken file fails validation naming the bad key, and can never make
+`validate` (or validate-all) report green.
 
 **Schema evolution consequence**: saved evaluated-workflow snapshots and
 suspended approval runs are re-parsed through these schemas on resume. Removing

@@ -28,13 +28,14 @@
  * so the raw keys are seen before unknown-key stripping drops them.
  */
 
+import type { z } from "zod";
 import { findClosestMatch } from "../string_distance.ts";
 
 /** Entities whose schemas reject unknown keys. */
 export type WorkflowEntity = "workflow" | "job" | "step";
 
 /**
- * Fields owned by rejectRemovedDriverFields, which runs before this hook
+ * Fields owned by addRemovedDriverFieldIssues, which runs before this hook
  * and produces its own migration message.
  */
 const REMOVED_DRIVER_FIELDS = ["driver", "driverConfig"];
@@ -57,18 +58,19 @@ export function unknownKeyMessage(
 }
 
 /**
- * Creates a Zod preprocess hook that rejects unknown keys on a workflow,
- * job, or step object with an actionable error. Chain it after
- * rejectRemovedDriverFields so `driver`/`driverConfig` keep their specific
- * migration message:
- * `z.preprocess(rejectRemovedDriverFields, z.preprocess(rejectUnknownKeys(...), schema))`.
+ * Creates a Zod preprocess hook that reports each unknown key on a
+ * workflow, job, or step object as a schema issue with an actionable
+ * message, so the document fails like any other schema error instead of
+ * throwing (swamp-club#3832). Chain it after addRemovedDriverFieldIssues so
+ * `driver`/`driverConfig` keep their specific migration message:
+ * `z.preprocess(addRemovedDriverFieldIssues, z.preprocess(rejectUnknownKeys(...), schema))`.
  */
 export function rejectUnknownKeys(
   entity: WorkflowEntity,
   knownKeys: readonly string[],
-): (data: unknown) => unknown {
+): (data: unknown, ctx: z.RefinementCtx) => unknown {
   const known = new Set(knownKeys);
-  return (data: unknown): unknown => {
+  return (data: unknown, ctx: z.RefinementCtx): unknown => {
     if (data === null || typeof data !== "object" || Array.isArray(data)) {
       return data;
     }
@@ -80,7 +82,12 @@ export function rejectUnknownKeys(
       if (known.has(field) || REMOVED_DRIVER_FIELDS.includes(field)) {
         continue;
       }
-      throw new Error(unknownKeyMessage(field, entity, entityName, knownKeys));
+      ctx.addIssue({
+        code: "custom",
+        message: unknownKeyMessage(field, entity, entityName, knownKeys),
+        path: [field],
+        input: data,
+      });
     }
     return data;
   };

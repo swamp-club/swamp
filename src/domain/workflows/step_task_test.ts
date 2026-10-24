@@ -17,12 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   SIGNAL_ACCEPT_EARLY_MAX_SECONDS,
   SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
 } from "./signal_wait.ts";
 import { StepTask, StepTaskSchema } from "./step_task.ts";
+
+/** The one schema issue a refused step task reports. */
+function refusalOf(input: unknown): string {
+  const result = StepTaskSchema.safeParse(input);
+  assertEquals(result.success, false);
+  assertEquals(result.error?.issues.length, 1);
+  return result.error?.issues[0].message ?? "";
+}
 
 Deno.test("StepTask.modelMethod creates model method task", () => {
   const task = StepTask.modelMethod("my-model", "run");
@@ -184,14 +192,8 @@ Deno.test("StepTaskSchema rejects empty workflowIdOrName", () => {
 // Backward compatibility tests
 
 Deno.test("StepTaskSchema throws clear error for shell type", () => {
-  assertThrows(
-    () => {
-      StepTaskSchema.parse({
-        type: "shell",
-        command: "echo",
-      });
-    },
-    Error,
+  assertStringIncludes(
+    refusalOf({ type: "shell", command: "echo" }),
     'Step task type "shell" is no longer supported',
   );
 });
@@ -419,16 +421,13 @@ Deno.test("StepTaskSchema rejects negative timeout for manual_approval", () => {
 });
 
 Deno.test("StepTaskSchema throws clear error for arguments instead of inputs", () => {
-  assertThrows(
-    () => {
-      StepTaskSchema.parse({
-        type: "model_method",
-        modelIdOrName: "my-model",
-        methodName: "run",
-        arguments: { key: "value" },
-      });
-    },
-    Error,
+  assertStringIncludes(
+    refusalOf({
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+      arguments: { key: "value" },
+    }),
     'Did you mean "inputs"',
   );
 });
@@ -698,10 +697,8 @@ Deno.test("StepTaskSchema: a wait_for_signal schema in the flat form is refused 
       {},
     ]
   ) {
-    assertThrows(
-      () =>
-        StepTaskSchema.parse({ type: "wait_for_signal", timeout: 60, schema }),
-      Error,
+    assertStringIncludes(
+      refusalOf({ type: "wait_for_signal", timeout: 60, schema }),
       'must declare "type: object" or "properties"',
     );
   }
@@ -858,5 +855,65 @@ Deno.test("StepTaskSchema: a wait_for_signal key that is a Windows device name i
     const key of ["console", "nul-verdict", "com10", "com", "lpt", "a-con"]
   ) {
     assertEquals(StepTaskSchema.safeParse(task(key)).success, true, key);
+  }
+});
+
+Deno.test("StepTaskSchema: every refusal is one schema issue on one line (swamp-club#3832)", () => {
+  // A refusal that threw escaped the workflow schema error and crashed
+  // workflow validate with a stack trace. Schema errors escape control
+  // characters, so a newline would print as an escape.
+  const refused: Record<string, unknown>[] = [
+    { type: "shell", command: "echo" },
+    {
+      type: "model_method",
+      modelIdOrName: "m",
+      methodName: "run",
+      arguments: {},
+    },
+    { type: "wait_for_signal", timeout: 60, acceptEarly: 10 },
+    { type: "wait_for_signal", timeout: 60, schema: { verdict: {} } },
+    {
+      type: "wait_for_signal",
+      timeout: 60,
+      schema: {
+        type: "object",
+        properties: { v: { type: "string" } },
+        oneOf: [],
+      },
+    },
+    {
+      type: "model_method",
+      modelIdOrName: "m",
+      modelType: "@a/b",
+      modelName: "n",
+      methodName: "run",
+    },
+    { type: "model_method", methodName: "run" },
+    { type: "model_method", modelType: "@a/b", methodName: "run" },
+    {
+      type: "model_method",
+      modelIdOrName: "m",
+      methodName: "run",
+      globalArgs: { a: 1 },
+    },
+    { type: "behavior", behavior: "b", modelIdOrName: "m", methodName: "run" },
+    {
+      type: "behavior",
+      behavior: "b",
+      behaviorType: "@a/b",
+      methodName: "run",
+    },
+    { type: "behavior", methodName: "run" },
+    { type: "behavior", behaviorType: "@a/b", methodName: "run" },
+    {
+      type: "behavior",
+      behavior: "b",
+      methodName: "run",
+      globalArgs: { a: 1 },
+    },
+  ];
+  for (const input of refused) {
+    const message = refusalOf(input);
+    assertEquals(message.includes("\n"), false, message);
   }
 });

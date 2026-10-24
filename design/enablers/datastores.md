@@ -5476,7 +5476,12 @@ reports a `local` deployment mode on a v3 bucket datastore.
   so a retry would start another run. The message names each run and `swamp
   workflow recover <workflow> --run <id>`, to run in that checkout once the
   storage is reachable; that write also carries the checkpoint to the datastore
-  if it had not replicated. `--json` adds `runs` (`workflowId`, `runId`). A root
+  if it had not replicated. A run whose committed record has a step in flight
+  (one `workflow recover` would mark unknown) is named with that step and with
+  `--acknowledge-unknown` on its recover command, since recover refuses such a
+  step without it (swamp-club#3882): the run's checkpointer keeps, per run, the
+  steps in flight as of the last save a checkpoint committed. `--json` adds
+  `runs` (`workflowId`, `runId`, `acknowledgeUnknown`). A root
   part of whose change landed but no run record left running fails with
   `datastore_v3_commit_partly_committed` and exits 1, since 75 means nothing
   landed: a checkpoint had published part of it (`access token mint`, `worker
@@ -5501,6 +5506,17 @@ reports a `local` deployment mode on a v3 bucket datastore.
   first code, not the message that offers deleting its marker. A lease release
   that fails after such a failure is logged and never replaces it. Other
   failures keep their own errors.
+- `datastore_v3_replication_unconfirmed` ("this command's changes are saved
+  locally") is reported only for a command that committed something
+  (swamp-club#3882). The writer records the commit log's high-water mark when
+  it first holds a replicated datastore, and the CLI's teardown compares it
+  before closing (`v3CommandCommits`). A `V3ReplicationError` from a command
+  whose mark did not move, such as a lineage that could not be recorded while
+  the hold started, or a closing sync of nothing new, becomes
+  `datastore_v3_storage_unreachable` (exit 75) on a network failure and
+  `datastore_v3_replication_unavailable` otherwise, both saying nothing was
+  changed. One decision at the boundary covers every place the error is
+  thrown.
 - A root's refusal-settling checkpoint before its commit is not retried once it
   fails reaching the storage (swamp-club#3802): it can meet no refusal then, and
   each retry waited out the same upload retries, about 2 s apiece.

@@ -24,7 +24,7 @@ import {
   type InputsSchema,
   InputsSchemaSchema,
 } from "../definitions/definition.ts";
-import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { addRemovedDriverFieldIssues } from "../removed_driver_fields.ts";
 import { rejectUnknownKeys } from "./unknown_keys.ts";
 import { deepMerge } from "../inputs/input_merge.ts";
 import {
@@ -138,7 +138,7 @@ export const WorkflowObjectSchema = z.object({
  * (swamp-club#1240).
  */
 export const WorkflowSchema = z.preprocess(
-  rejectRemovedDriverFields,
+  addRemovedDriverFieldIssues,
   z.preprocess(
     rejectUnknownKeys("workflow", Object.keys(WorkflowObjectSchema.shape)),
     WorkflowObjectSchema,
