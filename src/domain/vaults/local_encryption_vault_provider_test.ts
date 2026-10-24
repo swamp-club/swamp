@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import {
   countLocalEncryptionSecrets,
   findLocalEncryptionLeftovers,
@@ -1286,6 +1287,171 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
       });
     },
   );
+});
+
+/**
+ * Runs `fn` with LogTape capturing the local-encryption vault's warnings and
+ * returns their rendered messages.
+ */
+async function captureKeyFileWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      {
+        category: ["vaults", "local-encryption"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return captured
+    .filter((r) => r.level === "warning")
+    .map((r) => r.message.map((p) => String(p)).join(""));
+}
+
+Deno.test({
+  name: "LocalEncryptionVaultProvider - key file permission warning",
+  // POSIX file mode is not enforced by NTFS, so the key file check is
+  // skipped on Windows.
+  ignore: Deno.build.os === "windows",
+  fn: async (t) => {
+    await t.step(
+      "warns but still uses an auto-generated key wider than 0600",
+      async () => {
+        await withTempDir(async (dir) => {
+          const config: LocalEncryptionConfig = {
+            auto_generate: true,
+            base_dir: dir,
+          };
+          await new LocalEncryptionVaultProvider("wide-vault", config).put(
+            "secret",
+            "value",
+          );
+          const keyFile = join(secretsDir(dir, "wide-vault"), ".key");
+          await Deno.chmod(keyFile, 0o644);
+
+          let retrieved: string | undefined;
+          const warnings = await captureKeyFileWarnings(async () => {
+            const vault = new LocalEncryptionVaultProvider(
+              "wide-vault",
+              config,
+            );
+            await vault.put("other", "value2");
+            retrieved = await vault.get("secret");
+          });
+
+          assertEquals(retrieved, "value");
+          assertEquals(warnings.length, 1);
+          assertStringIncludes(warnings[0], "wide-vault");
+          assertStringIncludes(warnings[0], keyFile);
+          assertStringIncludes(warnings[0], "0o644");
+          assertStringIncludes(warnings[0], "chmod 600");
+        });
+      },
+    );
+
+    await t.step(
+      "warns but still uses a configured key_file wider than 0600",
+      async () => {
+        await withTempDir(async (dir) => {
+          const keyFile = join(dir, "custom.key");
+          const config: LocalEncryptionConfig = {
+            auto_generate: true,
+            key_file: keyFile,
+            base_dir: dir,
+          };
+          await new LocalEncryptionVaultProvider("custom-vault", config).put(
+            "secret",
+            "value",
+          );
+          await Deno.chmod(keyFile, 0o640);
+
+          let retrieved: string | undefined;
+          const warnings = await captureKeyFileWarnings(async () => {
+            retrieved = await new LocalEncryptionVaultProvider(
+              "custom-vault",
+              config,
+            ).get("secret");
+          });
+
+          assertEquals(retrieved, "value");
+          assertEquals(warnings.length, 1);
+          assertStringIncludes(warnings[0], keyFile);
+          assertStringIncludes(warnings[0], "0o640");
+        });
+      },
+    );
+
+    await t.step("does not warn for a key file at 0600", async () => {
+      await withTempDir(async (dir) => {
+        const config: LocalEncryptionConfig = {
+          auto_generate: true,
+          base_dir: dir,
+        };
+        await new LocalEncryptionVaultProvider("tight-vault", config).put(
+          "secret",
+          "value",
+        );
+
+        const warnings = await captureKeyFileWarnings(async () => {
+          await new LocalEncryptionVaultProvider("tight-vault", config).get(
+            "secret",
+          );
+        });
+
+        assertEquals(warnings, []);
+      });
+    });
+
+    await t.step("does not warn when generating a new key", async () => {
+      await withTempDir(async (dir) => {
+        const warnings = await captureKeyFileWarnings(async () => {
+          await new LocalEncryptionVaultProvider("fresh-vault", {
+            auto_generate: true,
+            base_dir: dir,
+          }).put("secret", "value");
+        });
+
+        assertEquals(warnings, []);
+      });
+    });
+
+    await t.step(
+      "does not warn for a 0600 key file after falling back from a refused SSH key",
+      async () => {
+        await withTempDir(async (dir) => {
+          await Deno.writeTextFile(
+            join(dir, "wide_ssh_key"),
+            MOCK_SSH_PRIVATE_KEY,
+            { mode: 0o644 },
+          );
+          const config: LocalEncryptionConfig = {
+            ssh_key_path: join(dir, "wide_ssh_key"),
+            auto_generate: true,
+            base_dir: dir,
+          };
+          await new LocalEncryptionVaultProvider("fallback-vault", config)
+            .put("secret", "value");
+
+          const warnings = await captureKeyFileWarnings(async () => {
+            await new LocalEncryptionVaultProvider("fallback-vault", config)
+              .get("secret");
+          });
+
+          assertEquals(warnings, []);
+        });
+      },
+    );
+  },
 });
 
 Deno.test("moveLocalEncryptionSecrets: secrets, key and annotations stay readable under the new name", async () => {

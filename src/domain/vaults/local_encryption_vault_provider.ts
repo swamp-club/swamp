@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { dirname, isAbsolute, join, relative } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type {
@@ -38,8 +39,13 @@ import {
   isSinglePathSegment,
   PathTraversalError,
 } from "../../infrastructure/persistence/safe_path.ts";
-import { checkFileNotBroadlyReadable } from "../../infrastructure/security/file_security_check.ts";
+import {
+  checkFileNotBroadlyReadable,
+  type SecurityCheckResult,
+} from "../../infrastructure/security/file_security_check.ts";
 import { errorPaths, markErrorPaths } from "../errors.ts";
+
+const logger = getLogger(["vaults", "local-encryption"]);
 
 /**
  * Configuration options for local encryption vault.
@@ -778,6 +784,7 @@ export class LocalEncryptionVaultProvider
         if (existingKey.length === 0) {
           throw new Deno.errors.NotFound("Key file is empty");
         }
+        await this.warnIfKeyFileBroadlyReadable(keyFile);
         return await crypto.subtle.importKey(
           "raw",
           new TextEncoder().encode(existingKey),
@@ -851,6 +858,29 @@ export class LocalEncryptionVaultProvider
       `No SSH key or auto-generated key configured for local vault '${this.name}'. ` +
         `Set 'ssh_key_path' to point to an SSH private key file or enable 'auto_generate' in vault configuration.`,
     );
+  }
+
+  /**
+   * Warns when an existing key file is readable beyond its owner. Swamp
+   * creates the file at `0o600`, but a copy restored from a backup or
+   * extracted from an archive can arrive wider. Unlike SSH keys this only
+   * warns, so a vault that works today keeps working. Skipped on Windows,
+   * where Deno ignores the creation mode and the file inherits its folder's
+   * ACL.
+   */
+  private async warnIfKeyFileBroadlyReadable(keyFile: string): Promise<void> {
+    if (Deno.build.os === "windows") return;
+    let result: SecurityCheckResult;
+    try {
+      result = await checkFileNotBroadlyReadable(keyFile);
+    } catch {
+      // The key has already been read; a failed check must not stop it
+      // being used.
+      return;
+    }
+    if (!result.ok) {
+      logger.warn`Key file for local vault ${this.name}: ${result.reason}`;
+    }
   }
 
   /**
