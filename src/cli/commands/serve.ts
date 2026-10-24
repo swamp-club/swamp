@@ -1025,7 +1025,8 @@ export function validateNoAuthApiRequest(
   tlsEnabled: boolean,
   trustedHosts?: readonly string[],
 ): { allowed: boolean; reason?: string } {
-  const path = new URL(req.url).pathname;
+  const url = new URL(req.url);
+  const path = url.pathname;
   if (
     authMode !== "none" ||
     (!path.startsWith("/api/v1/") && !path.startsWith("/internal/"))
@@ -1034,7 +1035,9 @@ export function validateNoAuthApiRequest(
   }
   return validateNoAuthHttpRequest(
     req.headers.get("origin"),
-    req.headers.get("host"),
+    // HTTP/2 carries this authority in :authority, which Deno exposes through
+    // Request.url instead of a Host header.
+    req.headers.get("host") ?? url.host,
     bindHost,
     tlsEnabled,
     trustedHosts,
@@ -2705,10 +2708,9 @@ export const serveCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host validation when binding off-loopback or serving " +
+    "Comma-separated hostnames to trust for Host validation when binding off-loopback or serving no-auth HTTP APIs through a reverse proxy " +
       "(e.g. host.docker.internal,host.minikube.internal). " +
-      "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections and " +
-      "no-auth HTTP APIs behind reverse proxies " +
+      "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections " +
       "(env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(

@@ -554,6 +554,20 @@ Deno.test("validateNoAuthApiRequest: scopes Origin and Host checks to no-auth AP
   );
 });
 
+Deno.test("validateNoAuthApiRequest: uses the request authority when HTTP/2 omits Host", () => {
+  const request = new Request("https://127.0.0.1:9090/api/v1/health");
+  assertEquals(request.headers.get("host"), null);
+  assertEquals(
+    validateNoAuthApiRequest(
+      request,
+      "none",
+      "127.0.0.1",
+      true,
+    ),
+    { allowed: true },
+  );
+});
+
 Deno.test("validateWebSocketOrigin: rejects attacker-controlled origin", () => {
   const result = validateWebSocketOrigin(
     "http://attacker.example.com",
