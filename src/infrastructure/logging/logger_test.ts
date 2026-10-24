@@ -19,15 +19,17 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { getPrettyFormatter } from "@logtape/pretty";
 import {
   createStderrSink,
+  endSystemPipeOutput,
   escapeLogTemplate,
   getRunLogger,
   getSwampLogger,
   getWorkflowRunLogger,
   initializeLogging,
+  setSystemPipeWidth,
 } from "./logger.ts";
+import { interactiveFormatter } from "./log_format.ts";
 import { runFileSink } from "./run_file_sink.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
@@ -426,8 +428,6 @@ Deno.test("initializeLogging: stderrOnly keeps records off stdout in pretty mode
       _logsConfig: { exporterKind: "none" },
     });
 
-    // Short tokens on purpose: the pretty formatter word-wraps, which
-    // splits a longer message across lines and defeats substring matching.
     getSwampLogger(["invite", "link"]).debug`dbg-2254`;
     getSwampLogger(["invite", "link"]).info`inf-2254`;
 
@@ -470,6 +470,34 @@ Deno.test("initializeLogging: pretty mode without stderrOnly still writes to std
       "stdout-2254",
     );
     assertEquals(capture.stderr, []);
+  } finally {
+    capture.restore();
+  }
+});
+
+Deno.test("initializeLogging: pretty mode writes gutter lines, system pipe lines while a pipe display is on screen, then gutter lines again", async () => {
+  const capture = captureStreams();
+  const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+  try {
+    await initializeLogging({
+      prettyOutput: true,
+      logLevel: "info",
+      _reset: true,
+      _logsConfig: { exporterKind: "none" },
+    });
+
+    const logger = getSwampLogger(["model", "loader"]);
+    logger.warn`Using discovered deno config for ${"a.ts"}: ${"/x/deno.json"}`;
+    setSystemPipeWidth(10);
+    logger.warn`second ${"b.ts"}`;
+    endSystemPipeOutput();
+    logger.warn`third ${"c.ts"}`;
+
+    assertEquals(capture.stderr.map((line) => line.replace(ansi, "")), [
+      "    Warning   Using discovered deno config for a.ts: /x/deno.json",
+      "     system │ Warning second b.ts",
+      "    Warning   third c.ts",
+    ]);
   } finally {
     capture.restore();
   }
@@ -553,7 +581,7 @@ Deno.test("createStderrSink: writes the line as it is when no redactor is active
   assertStringIncludes(written[0], "plain-secret-3526");
 });
 
-Deno.test("createStderrSink: masks structured secrets before pretty wrapping and leaves the record intact", () => {
+Deno.test("createStderrSink: masks structured secrets before the interactive formatter lays them out and leaves the record intact", () => {
   const secret = `START-${"word ".repeat(60)}\n${"line\n".repeat(20)}-END`;
   const redactor = new SecretRedactor();
   redactor.addSecret(secret);
@@ -566,11 +594,10 @@ Deno.test("createStderrSink: masks structured secrets before pretty wrapping and
   };
   const written: string[] = [];
   const sink = createStderrSink(
-    getPrettyFormatter({
-      colors: false,
-      wordWrap: true,
-      properties: true,
-      inspectOptions: { colors: false },
+    interactiveFormatter({
+      showCategory: true,
+      showProperties: true,
+      getPipeWidth: () => undefined,
     }),
     (text) => written.push(text),
   );

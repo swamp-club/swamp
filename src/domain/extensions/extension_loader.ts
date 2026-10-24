@@ -2530,7 +2530,7 @@ export class ExtensionLoader {
           );
           if (denoConfigPath) {
             this.logger
-              .warn`Using discovered deno config for ${relativePath}: ${denoConfigPath}`;
+              .debug`Using discovered deno config for ${relativePath}: ${denoConfigPath}`;
           }
         }
         js = await bundleExtension(absolutePath, denoPath, {
@@ -2600,7 +2600,7 @@ export class ExtensionLoader {
       );
       if (denoConfigPath) {
         this.logger
-          .warn`Using discovered deno config for ${absolutePath}: ${denoConfigPath}`;
+          .debug`Using discovered deno config for ${absolutePath}: ${denoConfigPath}`;
       }
     }
     const js = await bundleExtension(absolutePath, denoPath, {

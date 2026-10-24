@@ -27,7 +27,9 @@ import {
   gutterLine,
   PipeWriter,
   renderDataBox,
+  STATUS_COLORS,
 } from "./console_writer.ts";
+import { interactiveFormatter } from "../../infrastructure/logging/log_format.ts";
 
 function noColor<T>(fn: () => T): T {
   setColorEnabled(false);
@@ -83,6 +85,41 @@ Deno.test("gutterLine: includes timestamp when provided", () => {
     const line = gutterLine("Executing", (s) => s, "deploy", "23:43:45 UTC");
     assertEquals(line, "  Executing   deploy · 23:43:45 UTC");
   });
+});
+
+Deno.test("interactiveFormatter: log records line up with gutter and pipe lines", () => {
+  const record = {
+    category: ["model", "loader"],
+    level: "warning" as const,
+    message: ["Using ", "deno.json", ""],
+    rawMessage: "Using {}",
+    timestamp: 0,
+    properties: {},
+  };
+  const pipeState: { width?: number } = {};
+  const format = interactiveFormatter({
+    showCategory: false,
+    showProperties: false,
+    getPipeWidth: () => pipeState.width,
+  });
+  assertEquals(
+    format(record),
+    `${gutterLine("Warning", STATUS_COLORS.warn, "Using deno.json")}\n`,
+  );
+  const pipe = new PipeWriter(["create-vpc", "system"]);
+  pipeState.width = pipe.maxWidth;
+  const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+  assertEquals(
+    format(record).replace(ansi, ""),
+    `${
+      pipe.statusLine(
+        "system",
+        "Warning",
+        STATUS_COLORS.warn,
+        "Using deno.json",
+      )
+    }\n`.replace(ansi, ""),
+  );
 });
 
 Deno.test("contentLine: indents to content column", () => {

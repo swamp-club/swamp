@@ -8,7 +8,6 @@
     "jsr:@cliffy/table@1.0.1": "1.0.1",
     "jsr:@cliffy/table@^1.0.1": "1.0.1",
     "jsr:@logtape/logtape@^2.0.7": "2.0.7",
-    "jsr:@logtape/pretty@^2.0.7": "2.0.7",
     "jsr:@std/assert@1.0.19": "1.0.19",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
@@ -54,7 +53,6 @@
     "npm:@types/d3-selection@^3.0.12": "3.0.12",
     "npm:@types/d3-transition@^3.0.9": "3.0.9",
     "npm:@types/js-yaml@^4.0.9": "4.0.9",
-    "npm:@types/node@24.0.7": "24.0.7",
     "npm:@types/react-dom@^19.2.4": "19.2.4_@types+react@19.2.14",
     "npm:@types/react@^19.2.14": "19.2.14",
     "npm:@vercel/beautiful-mermaid@~0.1.5": "0.1.5",
@@ -112,13 +110,6 @@
     },
     "@logtape/logtape@2.0.7": {
       "integrity": "2092395af4f2f6c12acd85e569c2539055b39fd936861348c23db59206a8ed4f"
-    },
-    "@logtape/pretty@2.0.7": {
-      "integrity": "765fe6a0442dfb9b75344872116b2e6a252a90fa2bfb9bc3a073187d6f02ccb0",
-      "dependencies": [
-        "jsr:@logtape/logtape",
-        "npm:@types/node"
-      ]
     },
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
@@ -2759,7 +2750,6 @@
       "jsr:@cliffy/command@^1.0.1",
       "jsr:@cliffy/table@^1.0.1",
       "jsr:@logtape/logtape@^2.0.7",
-      "jsr:@logtape/pretty@^2.0.7",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/cli@^1.0.29",
       "jsr:@std/fmt@^1.0.10",

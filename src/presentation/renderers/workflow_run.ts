@@ -30,6 +30,7 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import {
+  endSystemPipeOutput,
   setSystemPipeWidth,
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
@@ -701,6 +702,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       completed: (e) => {
         this.clearAllHeartbeats();
+        endSystemPipeOutput();
         if (!this.pipe) return;
 
         // Render assert summary if any assert steps ran
@@ -797,6 +799,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       cancelled: (e) => {
         this._failed = true;
         this.clearAllHeartbeats();
+        endSystemPipeOutput();
         if (!this.pipe) return;
         const reason = e.reason ? `: ${e.reason}` : "";
         writeBlankLine();
@@ -812,6 +815,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       suspended: (e) => {
         this.clearAllHeartbeats();
+        endSystemPipeOutput();
         if (!this.pipe) return;
         writeBlankLine();
         if (e.nested) {
@@ -952,6 +956,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       error: (e) => {
         this.clearAllHeartbeats();
+        endSystemPipeOutput();
         throw userErrorFromSwampError(e.error);
       },
     };

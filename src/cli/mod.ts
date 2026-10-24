@@ -2774,13 +2774,8 @@ async function runInvocation(
       // value-on-stdout commands the log records go to stderr, which is often a
       // terminal while stdout is a pipe; deriving this from stdout would drop
       // the pretty sink for every piped run and unwind swamp-club#2254 (see the
-      // comment in logger.ts beside the pretty sink).
-      //
-      // That leaves one boundary worth naming: LogTape's pretty sink colours
-      // through its own `colors` option rather than the `@std/fmt` flag, so
-      // `swamp ... -v > file` from a terminal still writes coloured *log*
-      // records to the pipe. Renderer output and everything Cliffy prints are
-      // clean; the pretty log sink is out of scope for swamp-club#2414.
+      // comment in logger.ts beside the pretty sink). The pretty sink colours
+      // through `@std/fmt`, so the colour switch decides its colours too.
       const noColor = options.color === false ||
         Deno.env.get("NO_COLOR") !== undefined;
       if (noColor) {
