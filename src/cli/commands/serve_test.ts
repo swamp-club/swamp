@@ -541,6 +541,17 @@ Deno.test("validateNoAuthApiRequest: scopes Origin and Host checks to no-auth AP
     ).allowed,
     false,
   );
+  assertEquals(
+    validateNoAuthApiRequest(
+      new Request("http://127.0.0.1:9090/internal/runs", {
+        headers: untrustedRequest.headers,
+      }),
+      "none",
+      "127.0.0.1",
+      false,
+    ).allowed,
+    false,
+  );
 });
 
 Deno.test("validateWebSocketOrigin: rejects attacker-controlled origin", () => {

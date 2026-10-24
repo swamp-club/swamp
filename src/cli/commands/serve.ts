@@ -1025,9 +1025,10 @@ export function validateNoAuthApiRequest(
   tlsEnabled: boolean,
   trustedHosts?: readonly string[],
 ): { allowed: boolean; reason?: string } {
+  const path = new URL(req.url).pathname;
   if (
     authMode !== "none" ||
-    !new URL(req.url).pathname.startsWith("/api/v1/")
+    (!path.startsWith("/api/v1/") && !path.startsWith("/internal/"))
   ) {
     return { allowed: true };
   }
@@ -1890,7 +1891,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host header validation (env: SWAMP_TRUSTED_HOSTS)",
+    "Comma-separated hostnames to trust for Host validation, including no-auth HTTP APIs behind reverse proxies (env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(
     "--dispatch-env-allow <names:string>",
@@ -2704,9 +2705,10 @@ export const serveCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host header validation when binding off-loopback " +
+    "Comma-separated hostnames to trust for Host validation when binding off-loopback or serving " +
       "(e.g. host.docker.internal,host.minikube.internal). " +
-      "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections " +
+      "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections and " +
+      "no-auth HTTP APIs behind reverse proxies " +
       "(env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(
