@@ -756,6 +756,19 @@ Deno.test("withChangeSignalled: a write that throws is signalled after too, and 
   });
 });
 
+Deno.test("withChangeSignalled: a failed signal after a write that landed is logged, and the write still succeeds", async () => {
+  await withReports(async () => {
+    const { hook, calls, failNext } = recordingHook();
+    const result = await withChangeSignalled(hook, WRITE, {}, () => {
+      // The write lands; then the signal after fails.
+      failNext(new Error("mark failed"));
+      return Promise.resolve("written");
+    });
+    assertEquals(result, "written");
+    assertEquals(calls, [WRITE.path, WRITE.path]);
+  });
+});
+
 Deno.test("withChangeSignalled: no signal after on a v3 hook, or with no hook", async () => {
   const { hook, calls } = recordingHook();
   unitOfWorkBinding.requireUnit(hook);

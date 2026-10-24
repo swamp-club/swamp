@@ -229,9 +229,9 @@ export interface InMemoryRemoteSemantics {
 }
 
 /**
- * The default: what `@swamp/s3-datastore` and `@swamp/gcs-datastore` are
- * expected to do once a push clears only the marks it handled and skips an
- * entry that vanished mid-walk (swamp-club#3860). Otherwise as
+ * The default: what `@swamp/s3-datastore` and `@swamp/gcs-datastore` do
+ * from 2026.10.24.1, where a push clears only the marks it handled and skips
+ * an entry that vanished mid-walk (swamp-club#3860). Otherwise as
  * {@link EXTENSION_2026_10_20_SEMANTICS}.
  */
 export const EXTENSION_SEMANTICS: Readonly<InMemoryRemoteSemantics> = Object

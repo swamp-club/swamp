@@ -1804,16 +1804,18 @@ extension and overrides the per-path signal. That has two costs:
 The repositories used to mark a path dirty only before they wrote it, so a push
 could land between a repository's mark and its write. That push found the path
 absent (or its old bytes), treated it as a delete (or uploaded the old bytes)
-and cleared the mark, and the writer's own push then had nothing to upload. Serve's gate now keeps run pushes (shared mode) out of every
-handler mutation (exclusive mode), so a run finishing at the same moment can no
+and cleared the mark, and the writer's own push then had nothing to upload.
+Serve's gate now keeps run pushes (shared mode) out of every handler mutation
+(exclusive mode), so a run finishing at the same moment can no
 longer do this to a gated handler (swamp-club#2405). Concurrent runs still
 share the gate and can still do it to each other. The OAuth mint and
 `access.reload` also re-mark their paths, by path, after the writes and just
 before `pushChanged()`: the mint for the token's definition file and data
 folder, `access.reload` for each grant definition it created and each grant data
 folder it wrote. A reload that changes nothing marks nothing, so its push takes
-the fast path. A push already running when the re-mark lands still clears it,
-because the extension resets the whole dirty set when a push completes.
+the fast path. With an extension older than 2026.10.24.1, a push already
+running when the re-mark lands still clears it, because that extension resets
+the whole dirty set when a push completes.
 swamp-club#2421 has two halves. Core now marks before and after every
 repository write and remove (`withChangeSignalled`), so a push that cleared
 the first mark mid-write leaves the second one for the next push. The

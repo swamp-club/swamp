@@ -201,7 +201,9 @@ export async function signalChange(
  * changes nothing else.
  *
  * When `write` throws and a signal after fails as well, the write's error
- * is the one rethrown.
+ * is the one rethrown. When `write` succeeds and a signal after fails, the
+ * failure is logged and the result returned: the write is on disk and the
+ * signal before already marked its path.
  */
 export async function withChangeSignalled<T>(
   markDirty: MarkDirtyHook | undefined,
@@ -231,9 +233,24 @@ export async function withChangeSignalled<T>(
     throw error;
   }
   if (signalAfter) {
-    for (const change of list) await signalChange(markDirty, change, options);
+    for (const change of list) {
+      try {
+        await signalChange(markDirty, change, options);
+      } catch (error) {
+        // The write has landed and the signal before marked its path, so a
+        // failed signal after must not report the write as failed.
+        logger
+          .warn`Marking ${changeLabel(change)} again after its write failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      }
+    }
   }
   return result;
+}
+
+function changeLabel(change: StagedChange): string {
+  return change.kind === "bulk" ? "the datastore cache" : change.path;
 }
 
 function isChangeList(
