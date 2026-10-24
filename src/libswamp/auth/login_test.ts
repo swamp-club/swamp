@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -288,6 +288,89 @@ Deno.test("authLogin: stdin flow missing credentials yields validation error", a
     errorEvent.error.message,
     "Username and password are required.",
   );
+});
+
+function assertNoTerminalError(events: AuthLoginEvent[]): void {
+  assertEquals(events.length, 1);
+  const errorEvent = events[0] as Extract<
+    AuthLoginEvent,
+    { kind: "error" }
+  >;
+  assertEquals(errorEvent.kind, "error");
+  assertEquals(errorEvent.error.code, "validation_failed");
+  const message = errorEvent.error.message;
+  assertEquals(
+    message.startsWith("Username and password are required. "),
+    true,
+  );
+  assertStringIncludes(message, "SWAMP_API_KEY environment variable");
+  assertStringIncludes(message, "SWAMP_API_KEY_FILE");
+  assertStringIncludes(
+    message,
+    "printf 'mypassword\\n' | swamp auth login --username alice --no-browser",
+  );
+}
+
+Deno.test("authLogin: stdin flow without a terminal or username fails without prompting", async () => {
+  let readCalled = false;
+  const deps = makeDeps({
+    readCredentials: (_prefilled) => {
+      readCalled = true;
+      return Promise.resolve({ username: "", password: "" });
+    },
+  });
+  const input = makeInput({ useBrowserFlow: false, stdinIsTerminal: false });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(readCalled, false);
+  assertNoTerminalError(events);
+});
+
+Deno.test("authLogin: stdin flow without a terminal fails when only --password is given", async () => {
+  let readCalled = false;
+  const deps = makeDeps({
+    readCredentials: (_prefilled) => {
+      readCalled = true;
+      return Promise.resolve({ username: "", password: "pw" });
+    },
+  });
+  const input = makeInput({
+    useBrowserFlow: false,
+    stdinIsTerminal: false,
+    password: "pw",
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(readCalled, false);
+  assertNoTerminalError(events);
+});
+
+Deno.test("authLogin: stdin flow without a terminal still reads a piped password with --username", async () => {
+  let prefilledArg: { username?: string; password?: string } | undefined;
+  const deps = makeDeps({
+    readCredentials: (prefilled) => {
+      prefilledArg = prefilled;
+      return Promise.resolve({ username: "alice", password: "piped" });
+    },
+  });
+  const input = makeInput({
+    useBrowserFlow: false,
+    stdinIsTerminal: false,
+    username: "alice",
+  });
+
+  const events = await collect<AuthLoginEvent>(
+    authLogin(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(prefilledArg?.username, "alice");
+  assertEquals(events[events.length - 1].kind, "completed");
 });
 
 Deno.test("authLogin: stdin flow with --username skips username prompt", async () => {

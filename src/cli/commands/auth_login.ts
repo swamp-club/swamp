@@ -83,8 +83,9 @@ export const authLoginCommand = new Command()
     // Decide which flow to use:
     // - stdin flow if --username/--password provided, --no-browser, or non-TTY
     // - browser flow otherwise
+    const stdinIsTerminal = isStdinTty();
     const useStdinFlow = options.username || options.password ||
-      options.browser === false || !isStdinTty();
+      options.browser === false || !stdinIsTerminal;
 
     const showSpinner = cliCtx.outputMode !== "json" && !useStdinFlow;
 
@@ -99,6 +100,7 @@ export const authLoginCommand = new Command()
       useBrowserFlow: !useStdinFlow,
       username: options.username,
       password: options.password,
+      stdinIsTerminal,
     };
     const renderer = createAuthLoginRenderer(cliCtx.outputMode, showSpinner, {
       isFirstLogin,
