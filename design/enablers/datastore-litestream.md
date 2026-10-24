@@ -740,16 +740,16 @@ twin within ±5%, each round started below a load of 3.5.
 
 **Kill criteria (K2, solo).** Neither fires.
 
-- K2a: the p95 commit bound (`swamp.cli` less bootstrap and the method, so an
-  upper bound on the commit) is 221–255 ms on buckets and 122–123 ms on a
-  filesystem (release, 30 rounds). Head pruning adds 6–7 ms at p95 against
-  `bc388c720`.
+- K2a: the p95 commit bound (the `swamp.cli` span less bootstrap and the
+  method, so an upper bound on the commit) is 221–255 ms on buckets and
+  122–123 ms on a filesystem (release, 30 rounds). Head pruning adds 6–7 ms at
+  p95 against `bc388c720`.
 - K2b, judged on buckets against v2's `pushChanged`: a workflow step costs
   51–73 ms on v3 against 0.92–1.38 s on v2, 94–95% less; a one-step workflow is
   28–53% faster.
 - A v3 filesystem costs more than a v2 one, which has no `pushChanged`: a write
-  +26%, a one-step workflow +27%, a step 64 ms against 28 ms (`bc388c720`). It is
-  a known cost, not a kill.
+  +26%, a one-step workflow +27%, a step 64 ms against 28 ms (`bc388c720`). It
+  is a known cost, not a kill.
 
 **Outage behaviour.** 42 random cuts per bucket kind and binary, over method
 runs, workflow runs and approves in `--json` and log mode, with the bucket held
@@ -798,10 +798,10 @@ swamp-club#3803's; the ratios moved with v2's.
 
 **Storage.** For the same work v3 stores 5–7x fewer objects than v2 (2,265–3,387
 against 14,391–17,820); bytes follow each repo's mix of large blobs, so neither
-format is smaller. Nothing is reclaimed the same day: an unreferenced chunk keeps
-its 24 h grace (`DEFAULT_CHUNK_GRACE_MS`), so `data gc` and `datastore gc` left
-the chunks in place. Locally, v3's checkout and v2's cache under the swamp home
-are the same order (560–850 MB against 610–620 MB).
+format is smaller. Nothing is reclaimed the same day: an unreferenced chunk
+keeps its 24 h grace (`DEFAULT_CHUNK_GRACE_MS`), so `data gc` and `datastore gc`
+left the chunks in place. Locally, v3's checkout and v2's cache under the swamp
+home are the same order (560–850 MB against 610–620 MB).
 
 **Known limits.**
 
@@ -1304,8 +1304,8 @@ bucket it becomes one list and up to four gets, about three round trips,
 measured with 4E. The 20 ms RTT restore of a small copy is about 15 round
 trips, half Phase 4A's modelled 32 for a cold restore with credentials. The
 116 MB figure through the proxy is bound by the proxy, which delays every
-64 KB chunk (about 6 MB/s), not by Litestream; the real-bucket check before
-4E measures bandwidth. **The first-clone budget:** a fresh machine pays one
+64 KB chunk (about 6 MB/s), not by Litestream; the real-bucket check in the
+team-mode dogfood measures bandwidth. **The first-clone budget:** a fresh machine pays one
 check and one full restore before its first command; afterwards a command
 whose copy is current pays only the check. Since 4E the restore logs a line
 naming the lineage before it starts and one with its time after, so the cost
@@ -1759,8 +1759,9 @@ macOS.
 - **Size.** Downloading keeps release binaries unchanged; embedding would
   have added 10–12 % to each.
 - **Real-bucket latency** is modelled, not measured: Phase 4A ran on emulators
-  behind a latency, handshake, bandwidth and credential model. The
-  [Real-bucket check](#real-bucket-check) has to run before Phase 4E.
+  behind a latency, handshake, bandwidth and credential model, and the Phase 4
+  dogfood on emulators too. The [Real-bucket check](#real-bucket-check) moved
+  to the team-mode dogfood (Phase 5).
 - **Teardown order** (Phase 4A). If swamp closes `commits.db` after its
   sidecar has stopped, or before the sidecar has opened it, the next sidecar
   uploads a full snapshot. Sync, close the stores, then stop the sidecar.
@@ -1769,8 +1770,8 @@ macOS.
 ## Changes to the Phase 4, 5 and 7 plans
 
 - **Phase 4 entry criterion.** Met on a bucket model by Phase 4A, which chose
-  an idle sidecar. The [Real-bucket check](#real-bucket-check) runs before
-  Phase 4E.
+  an idle sidecar. The [Real-bucket check](#real-bucket-check) moved to the
+  team-mode dogfood (Phase 5); solo mode closed on the emulator dogfood.
 - **Phase 4 (embedded datastore service):**
   - an idle sidecar: a write command reuses or starts it, forces `/sync wait`
     before it exits, and the sidecar exits after a five-minute idle timeout
