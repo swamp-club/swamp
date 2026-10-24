@@ -1813,14 +1813,14 @@ share the gate and can still do it to each other. The OAuth mint and
 before `pushChanged()`: the mint for the token's definition file and data
 folder, `access.reload` for each grant definition it created and each grant data
 folder it wrote. A reload that changes nothing marks nothing, so its push takes
-the fast path. With an extension older than 2026.10.24.1, a push already
+the fast path. With an extension older than 2026.10.24.2, a push already
 running when the re-mark lands still clears it, because that extension resets
 the whole dirty set when a push completes.
 swamp-club#2421 has two halves. Core now marks before and after every
 repository write and remove (`withChangeSignalled`), so a push that cleared
 the first mark mid-write leaves the second one for the next push. The
 extension half ships in `@swamp/s3-datastore` and `@swamp/gcs-datastore`
-2026.10.24.1 (swamp-club#3860): each mark gives its path a new generation, a
+2026.10.24.2 (swamp-club#3860): each mark gives its path a new generation, a
 push snapshots the marks it walks, and its commit clears only those whose
 generation is unchanged, so a mark made while a push runs survives it. A push
 no longer bulk-marks itself, so a failed scoped push keeps its path marks and
