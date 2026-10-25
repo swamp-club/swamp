@@ -27,7 +27,11 @@ import type {
   WorkflowHistorySearchItem,
 } from "../../libswamp/workflows/history_search.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
@@ -172,11 +176,24 @@ class InkWorkflowHistorySearchRenderer
 export function createWorkflowHistorySearchRenderer(
   mode: OutputMode,
   fetchPreview?: HistoryPreviewFetcher,
+  options: SearchRendererOptions = {},
 ): WorkflowHistorySearchRenderer {
   switch (mode) {
     case "json":
       return new JsonWorkflowHistorySearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<
+          WorkflowHistorySearchEvent,
+          WorkflowHistorySearchItem
+        >({
+          itemLabel: "runs",
+          items: (e) => filterRuns(e.data.results, e.data.query),
+          renderEntry: (item) => renderHistoryScrollback(item, undefined),
+          afterList: (e) => writeReapedRunsLine(e.data.reapedBefore),
+          toError: (error) => new UserError(error.message),
+        });
+      }
       return new InkWorkflowHistorySearchRenderer(fetchPreview);
   }
 }

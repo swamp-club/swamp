@@ -215,7 +215,11 @@ export const extensionSearchCommand = withRemoteOptions(
       },
     );
     const effectiveMode = interactiveOutputMode(ctx);
-    const renderer = createExtensionSearchRenderer(effectiveMode);
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createExtensionSearchRenderer(effectiveMode, {
+      interactive: false,
+    });
     await consumeStream(
       (async function* () {
         yield {

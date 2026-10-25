@@ -114,7 +114,13 @@ export async function workflowHistorySearchAction(
         },
       },
     );
-    const renderer = createWorkflowHistorySearchRenderer(effectiveMode);
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createWorkflowHistorySearchRenderer(
+      effectiveMode,
+      undefined,
+      { interactive: false },
+    );
     await consumeStream(
       (async function* () {
         yield {
@@ -163,9 +169,11 @@ export async function workflowHistorySearchAction(
   let resultCount = 0;
   const handlers = renderer.handlers();
   const origCompleted = handlers.completed;
-  handlers.completed = (e) => {
+  // Await the picker: an unawaited picker lets the command end under it
+  // (swamp-club#3917).
+  handlers.completed = async (e) => {
     resultCount = e.data.results.length;
-    origCompleted(e);
+    await origCompleted(e);
   };
 
   await consumeStream(

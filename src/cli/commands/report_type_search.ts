@@ -66,8 +66,13 @@ export async function reportTypeSearchAction(
         payload: { query },
       },
     );
-    const renderer = createReportTypeSearchRenderer(interactiveOutputMode(ctx));
-    renderer.handlers().completed({
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createReportTypeSearchRenderer(
+      interactiveOutputMode(ctx),
+      { interactive: false },
+    );
+    await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as ReportTypeSearchData,
     });

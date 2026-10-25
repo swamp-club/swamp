@@ -26,7 +26,11 @@ import type {
   ReportTypeSearchEvent,
   ReportTypeSearchItem,
 } from "../../libswamp/reports/type_search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
@@ -113,11 +117,23 @@ class InkReportTypeSearchRenderer implements ReportTypeSearchRenderer {
 
 export function createReportTypeSearchRenderer(
   mode: OutputMode,
+  options: SearchRendererOptions = {},
 ): ReportTypeSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonReportTypeSearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<
+          ReportTypeSearchEvent,
+          ReportTypeSearchItem
+        >({
+          itemLabel: "report types",
+          items: (e) => filterReportTypes(e.data.results, e.data.query),
+          renderEntry: (item) => renderReportTypeScrollback(item, undefined),
+          toError: (error) => new UserError(error.message),
+        });
+      }
       return new InkReportTypeSearchRenderer();
   }
 }

@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { captureLog } from "./search_list_test_helpers.ts";
 import {
   createWorkflowRunSearchRenderer,
   reapedRunsLine,
@@ -53,4 +54,30 @@ Deno.test("reapedRunsLine: names the cutoff and the retention", () => {
     reapedRunsLine(REAPED),
     "Older runs reaped by retention before 2026-10-01T00:00:00.000Z (14d)",
   );
+});
+
+Deno.test("createWorkflowRunSearchRenderer: non-interactive log lists every run and ends with the reaped note", async () => {
+  const renderer = createWorkflowRunSearchRenderer("log", undefined, {
+    interactive: false,
+  });
+  const lines = await captureLog(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        query: "",
+        results: [{
+          runId: "r1",
+          workflowId: "w1",
+          workflowName: "deploy",
+          status: "running",
+        }],
+        reapedBefore: REAPED,
+      },
+      total: 1,
+    })
+  );
+  assertEquals(lines.length, 4);
+  assertStringIncludes(lines[0], "deploy [running]\nrun: r1");
+  assertEquals(lines[2], "runs: 1");
+  assertEquals(lines[3], reapedRunsLine(REAPED));
 });

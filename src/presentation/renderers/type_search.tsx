@@ -27,7 +27,11 @@ import type {
   TypeSearchEvent,
   TypeSearchItem,
 } from "../../libswamp/types/search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
@@ -143,11 +147,25 @@ class InkTypeSearchRenderer implements TypeSearchRenderer {
 export function createTypeSearchRenderer(
   mode: OutputMode,
   fetchPreview?: TypePreviewFetcher,
+  options: SearchRendererOptions = {},
 ): TypeSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonTypeSearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<TypeSearchEvent, TypeSearchItem>({
+          itemLabel: "types",
+          items: (e) => filterTypes(e.data.results, e.data.query),
+          renderEntry: (item) => renderTypeScrollback(item, undefined),
+          emptyHint: (e) =>
+            e.data.query
+              ? `Tip: run \`swamp extension search ${e.data.query}\` to check community extensions`
+              : undefined,
+          toError: (error) =>
+            carryModelWording(error, new UserError(error.message)),
+        });
+      }
       return new InkTypeSearchRenderer(fetchPreview);
   }
 }

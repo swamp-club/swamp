@@ -180,12 +180,15 @@ export async function reportSearchAction(
         },
       },
     );
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
     const renderer = createReportSearchRenderer(
       interactiveOutputMode(ctx),
       query ?? "",
       undefined,
+      { interactive: false },
     );
-    renderer.handlers().completed({
+    await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as { reports: StoredReportSummary[] },
     });

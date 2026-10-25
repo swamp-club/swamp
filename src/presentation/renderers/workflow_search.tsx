@@ -26,11 +26,15 @@ import type {
   WorkflowSearchEvent,
   WorkflowSearchItem,
 } from "../../libswamp/workflows/search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 
 /**
  * Filters workflows by a query string (case-insensitive match on name, id, or description).
@@ -158,11 +162,25 @@ class InkWorkflowSearchRenderer implements WorkflowSearchRenderer {
 export function createWorkflowSearchRenderer(
   mode: OutputMode,
   fetchPreview?: WorkflowPreviewFetcher,
+  options: SearchRendererOptions = {},
 ): WorkflowSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonWorkflowSearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return {
+          ...createSearchListRenderer<WorkflowSearchEvent, WorkflowSearchItem>(
+            {
+              itemLabel: "workflows",
+              items: (e) => filterWorkflows(e.data.results, e.data.query),
+              renderEntry: (item) => renderWorkflowScrollback(item, undefined),
+              toError: (error) => new UserError(error.message),
+            },
+          ),
+          selectedAction: () => undefined,
+        };
+      }
       return new InkWorkflowSearchRenderer(fetchPreview);
   }
 }

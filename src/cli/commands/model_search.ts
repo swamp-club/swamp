@@ -113,10 +113,13 @@ export async function modelSearchAction(
         payload: { query, includeInternal },
       },
     );
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
     const renderer = createModelSearchRenderer(
       interactiveOutputMode(ctx),
       undefined,
       surface,
+      { interactive: false },
     );
     await renderer.handlers().completed({
       kind: "completed",

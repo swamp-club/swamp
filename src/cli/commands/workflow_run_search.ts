@@ -116,7 +116,13 @@ export async function workflowRunSearchAction(
         },
       },
     );
-    const renderer = createWorkflowRunSearchRenderer(effectiveMode);
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createWorkflowRunSearchRenderer(
+      effectiveMode,
+      undefined,
+      { interactive: false },
+    );
     await consumeStream(
       (async function* () {
         yield {

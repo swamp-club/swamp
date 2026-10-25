@@ -27,7 +27,11 @@ import type {
   ModelOutputSearchEvent,
   ModelOutputSearchItem,
 } from "../../libswamp/models/output_search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
@@ -207,11 +211,24 @@ export function createModelOutputSearchRenderer(
     "model",
     "output",
   ),
+  options: SearchRendererOptions = {},
 ): ModelOutputSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonModelOutputSearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<
+          ModelOutputSearchEvent,
+          ModelOutputSearchItem
+        >({
+          itemLabel: labels.itemLabel,
+          items: (e) => filterOutputs(e.data.results, e.data.query),
+          renderEntry: (item) => renderOutputScrollback(item, undefined),
+          toError: (error) =>
+            carryModelWording(error, new UserError(error.message)),
+        });
+      }
       return new InkModelOutputSearchRenderer(fetchPreview, labels);
   }
 }

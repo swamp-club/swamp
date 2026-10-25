@@ -87,8 +87,14 @@ export async function workflowSearchAction(
         payload: { query },
       },
     );
-    const renderer = createWorkflowSearchRenderer(interactiveOutputMode(ctx));
-    renderer.handlers().completed({
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createWorkflowSearchRenderer(
+      interactiveOutputMode(ctx),
+      undefined,
+      { interactive: false },
+    );
+    await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as WorkflowSearchData,
     });

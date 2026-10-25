@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { outputSearchPickerLabels } from "./model_output_search.tsx";
+import {
+  createModelOutputSearchRenderer,
+  outputSearchPickerLabels,
+} from "./model_output_search.tsx";
+import { captureLog } from "./search_list_test_helpers.ts";
+import type { ModelOutputSearchItem } from "../../libswamp/models/output_search.ts";
 
 const LEGACY = { itemLabel: "outputs", commandName: undefined };
 
@@ -37,4 +42,51 @@ Deno.test("outputSearchPickerLabels: behavior history search lists runs under hi
     itemLabel: "runs",
     commandName: "history search",
   });
+});
+
+const OUTPUTS: ModelOutputSearchItem[] = [
+  {
+    id: "o1",
+    definitionId: "d1",
+    modelName: "web",
+    type: "command/shell",
+    methodName: "execute",
+    status: "succeeded",
+    startedAt: "2026-10-25T00:00:00.000Z",
+  },
+  {
+    id: "o2",
+    definitionId: "d2",
+    modelName: "db",
+    type: "swamp/echo",
+    methodName: "run",
+    status: "failed",
+    startedAt: "2026-10-25T00:00:00.000Z",
+  },
+];
+
+Deno.test("createModelOutputSearchRenderer: non-interactive log lists matching outputs under the command label", async () => {
+  for (
+    const [command, label] of [["output", "outputs"], [
+      "history",
+      "runs",
+    ]] as const
+  ) {
+    const renderer = createModelOutputSearchRenderer(
+      "log",
+      undefined,
+      outputSearchPickerLabels("behavior", command),
+      { interactive: false },
+    );
+    const lines = await captureLog(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        data: { query: "web", results: OUTPUTS },
+      })
+    );
+    assertEquals(lines.length, 3);
+    assertEquals(lines[0].startsWith("web - execute [succeeded]"), true);
+    assertEquals(lines[0].includes("db - run"), false);
+    assertEquals(lines[2], `${label}: 1`);
+  }
 });

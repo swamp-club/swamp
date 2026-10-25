@@ -26,7 +26,11 @@ import type {
   ModelSearchEvent,
   ModelSearchItem,
 } from "../../libswamp/models/search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { carryModelWording } from "../../domain/behavior_wording.ts";
@@ -213,11 +217,21 @@ export function createModelSearchRenderer(
   mode: OutputMode,
   fetchPreview?: ModelPreviewFetcher,
   surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
+  options: SearchRendererOptions = {},
 ): ModelSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonModelSearchRenderer(fetchPreview);
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<ModelSearchEvent, ModelSearchItem>({
+          itemLabel: modelSearchPickerLabels(surface).itemLabel,
+          items: (e) => filterModels(e.data.results, e.data.query),
+          renderEntry: (item) => renderModelScrollback(item, undefined),
+          toError: (error) =>
+            carryModelWording(error, new UserError(error.message)),
+        });
+      }
       return new InkModelSearchRenderer(fetchPreview, surface);
   }
 }

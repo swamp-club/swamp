@@ -276,7 +276,11 @@ export const dataSearchCommand = withRemoteOptions(
         },
       },
     );
-    const renderer = createDataSearchRenderer(effectiveMode);
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createDataSearchRenderer(effectiveMode, undefined, {
+      interactive: false,
+    });
     await consumeStream(
       (async function* () {
         yield {

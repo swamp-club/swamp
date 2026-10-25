@@ -69,8 +69,12 @@ export async function vaultTypeSearchAction(
         payload: { query },
       },
     );
-    const renderer = createVaultTypeSearchRenderer(effectiveMode);
-    renderer.handlers().completed({
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createVaultTypeSearchRenderer(effectiveMode, {
+      interactive: false,
+    });
+    await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as VaultTypeSearchData,
     });
