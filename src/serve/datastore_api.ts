@@ -276,7 +276,7 @@ class DatastoreApi {
     this.#deps = deps;
     this.#namespace = v3.namespace;
     this.#storageNamespace = storageNamespaceOf(namespaceOf(v3));
-    this.#resolver = serveResolver(deps.ctx, v3);
+    this.#resolver = memoized(serveResolver(deps.ctx, v3));
   }
 
   /** `POST chunks/has`. */
@@ -447,53 +447,16 @@ class DatastoreApi {
         message: authorization.message,
       }, { status: 403 });
     }
-    // Carried chunks count toward the caller's upload quota until a commit
-    // references them, as uploaded ones do: a commit that never lands must
-    // not leave unbounded content behind.
-    const now = this.#now();
-    const carried = envelope.chunks.reduce(
-      (sum, chunk) => sum + Math.max(0, chunk.size),
-      0,
-    );
-    if (
-      !this.#deps.ledger.admit(this.#caller.principal, carried, now).allowed
-    ) {
-      await reader.cancel();
-      return failure(
-        429,
-        "upload_quota_exceeded",
-        "Too many uploaded chunks are not referenced by any commit yet",
-      );
-    }
-    // The content arrives after the envelope, each chunk hashed as it is
-    // read; a mismatch fails the request before anything is committed.
+    // The content arrives after the envelope. Each chunk is admitted
+    // against the caller's upload quota, hashed as it is read, staged and
+    // recorded before the next is read, so the request holds one chunk at a
+    // time and the quota counts what it has sent so far. A mismatch fails
+    // the request before anything is committed.
     let provided: Set<string> | Response;
     try {
-      provided = await this.#withChunkSlot(async () => {
-        const chunks = [];
-        for (const declared of envelope.chunks) {
-          chunks.push(
-            await ingestChunk(
-              reader,
-              declared,
-              { maxChunkBytes: this.#maxChunkBytes() },
-              req.signal,
-            ),
-          );
-        }
-        await reader.assertEnd(req.signal);
-        await this.#store(chunks, req.signal);
-        for (const chunk of chunks) {
-          this.#deps.ledger.record(
-            this.#caller.principal,
-            this.#storageNamespace,
-            chunk.sha256,
-            chunk.bytes.length,
-            now,
-          );
-        }
-        return new Set(chunks.map((chunk) => chunk.sha256));
-      });
+      provided = await this.#withChunkSlot(() =>
+        this.#ingestCarried(reader, envelope.chunks, req.signal)
+      );
     } catch (error) {
       await reader.cancel();
       throw error;
@@ -502,15 +465,8 @@ class DatastoreApi {
       await reader.cancel();
       return provided;
     }
+    const carried = provided;
     const referenced = referencedChunks(ops);
-    for (const hash of referenced) {
-      if (provided.has(hash) || (await this.#mayReference(hash))) continue;
-      return failure(
-        403,
-        "chunk_not_provided",
-        `The commit names chunk ${hash}, which it neither carries nor may read`,
-      );
-    }
     // Authorised again under the datastore's forwarded-commit lock, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
@@ -523,6 +479,12 @@ class DatastoreApi {
         this.#writeAuthority(),
       );
       if (!recheck.ok) return recheck;
+      // Proof of possession under the lock too, so a read grant revoked
+      // during the upload no longer vouches for a chunk.
+      for (const hash of referenced) {
+        if (carried.has(hash) || (await this.#mayReference(hash))) continue;
+        return { notProvided: hash };
+      }
       const result = await commitForwarded(this.#v3, {
         partition,
         txnId: envelope.txnId,
@@ -533,6 +495,13 @@ class DatastoreApi {
       }, req.signal);
       return { result };
     });
+    if ("notProvided" in landed) {
+      return failure(
+        403,
+        "chunk_not_provided",
+        `The commit names chunk ${landed.notProvided}, which it neither carries nor may read`,
+      );
+    }
     if ("ok" in landed) {
       return Response.json({
         code: landed.reason === "forbidden" ? "forbidden" : "commit_refused",
@@ -754,6 +723,57 @@ class DatastoreApi {
     };
   }
 
+  /**
+   * Reads, verifies and stages a commit's carried chunks one at a time,
+   * recording each in the upload ledger, then makes them durable together.
+   * Resolves with their hashes, or a 429 once the caller's quota is spent.
+   */
+  async #ingestCarried(
+    reader: FramedReader,
+    declared: readonly { sha256: string; size: number }[],
+    signal: AbortSignal,
+  ): Promise<Set<string> | Response> {
+    const hashes = new Set<string>();
+    const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
+    try {
+      for (const chunk of declared) {
+        if (
+          !this.#deps.ledger.admit(
+            this.#caller.principal,
+            Math.max(0, chunk.size),
+            this.#now(),
+          ).allowed
+        ) {
+          return failure(
+            429,
+            "upload_quota_exceeded",
+            "Too many uploaded chunks are not referenced by any commit yet",
+          );
+        }
+        const verified = await ingestChunk(
+          reader,
+          chunk,
+          { maxChunkBytes: this.#maxChunkBytes() },
+          signal,
+        );
+        await batch.put(verified.sha256, verified.bytes, signal);
+        this.#deps.ledger.record(
+          this.#caller.principal,
+          this.#storageNamespace,
+          verified.sha256,
+          verified.size,
+          this.#now(),
+        );
+        hashes.add(verified.sha256);
+      }
+      await reader.assertEnd(signal);
+      if (hashes.size > 0) await batch.commit(signal);
+      return hashes;
+    } finally {
+      await batch.discard();
+    }
+  }
+
   async #store(
     chunks: readonly { sha256: string; bytes: Uint8Array }[],
     signal: AbortSignal,
@@ -841,6 +861,49 @@ class CatchUpCoalescer {
     });
     return this.#next;
   }
+}
+
+/**
+ * `resolver` with its aggregate lookups remembered for one request, so a
+ * changes page costs one lookup per aggregate, not per op. Key owners and
+ * restricted types are asked afresh.
+ */
+function memoized(
+  resolver: AggregateResourceResolver,
+): AggregateResourceResolver {
+  const models = new Map<
+    string,
+    ReturnType<AggregateResourceResolver["model"]>
+  >();
+  const workflows = new Map<
+    string,
+    ReturnType<AggregateResourceResolver["workflow"]>
+  >();
+  const tags = new Map<
+    string,
+    ReturnType<AggregateResourceResolver["definitionTags"]>
+  >();
+  const remember = <T>(map: Map<string, T>, key: string, load: () => T): T => {
+    let value = map.get(key);
+    if (value === undefined) {
+      value = load();
+      map.set(key, value);
+    }
+    return value;
+  };
+  return {
+    model: (ref) =>
+      remember(models, `${ref.type}\u0000${ref.id}`, () => resolver.model(ref)),
+    workflow: (id) => remember(workflows, id, () => resolver.workflow(id)),
+    definitionTags: (kind, name, type) =>
+      remember(
+        tags,
+        `${kind}\u0000${name}\u0000${type?.normalized ?? ""}`,
+        () => resolver.definitionTags(kind, name, type),
+      ),
+    keyOwner: (key) => resolver.keyOwner(key),
+    isRestrictedType: (type) => resolver.isRestrictedType(type),
+  };
 }
 
 /** The resolver serve's datastore API authorises against. */

@@ -6138,9 +6138,8 @@ resource is the same one serve's handlers check for the same write:
 | `run.create`, `run.update` | `run` on the workflow | `read` on the workflow |
 | `run.delete`, `run-snapshot.delete` | `write` on the workflow | `read` on the workflow |
 | `definition.delete`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
-| `definition.rename-from`, and a vault's `definition.rename-to` | `write` on both names the rename joins | `read` on it |
-| A vault definition's other puts | `write` on `vault:<name>` | `read` on it |
-| `definition.create`, `.edit`, `.rename-to` of a behavior or workflow; `evaluated-definition.save`, `evaluated-workflow.save`, `auto-definition.save`, `run-snapshot.save` | `admin` (below) | `read` by kind |
+| `definition.rename-from` | `write` on both names the rename joins | `read` on it |
+| `definition.create`, `.edit`, `.rename-to` of any definition kind; `evaluated-definition.save`, `evaluated-workflow.save`, `auto-definition.save`, `run-snapshot.save` | `admin` (below) | `read` by kind |
 | `auto-definition.delete` | `write` on the behavior | `read` on it |
 | `lockfile.write` | `admin` | any authenticated caller |
 
@@ -6152,7 +6151,10 @@ WebSocket edits check more than `write` on a definition. A retag needs `tag`,
 a rename needs `write` on the result, and the expressions and workflow steps
 an edit adds are authorised against what they reference (swamp-club#2755).
 Serve also reads back stored evaluated definitions when it runs a behavior,
-so a forged evaluated file could carry values that skip those checks.
+so a forged evaluated file could carry values that skip those checks. And a
+vault is found by the name its content declares
+(`YamlVaultConfigRepository.findByName`), not by the intent's, so a vault put
+authorised on one name could install a config under another.
 Forwarded commits cannot be checked that way yet, so those puts need `admin`.
 Content-level parity, after which they can need what serve's handlers need,
 is swamp-club#3922; it is needed before non-admins run methods through team
@@ -6179,12 +6181,14 @@ on its data and on the behavior, since the partition holds both.
 The upload ledger (`src/infrastructure/datastore_v3/upload_ledger.ts`) lives
 in memory and is bounded. It caps a principal's uploaded bytes no commit
 references at 2 GiB, and its entries per principal. Chunks a commit carries
-count too, until the commit lands, so a commit that is refused after its
-content arrived cannot leave unbounded content behind. A restart forgets it,
+count too: each is admitted before it is read and recorded once it is staged,
+so the quota counts what a request has sent so far, and a commit refused
+after its content arrived cannot leave unbounded content behind. A restart forgets it,
 so a client uploads again.
 
 **Memory and limits.** `storage/1` puts and gets whole chunks, so serve holds
-at most one chunk (16 MiB) per request, with at most 8 chunk requests per
+at most one chunk (16 MiB) per request (a commit's carried chunks are
+verified and staged one at a time), with at most 8 chunk requests per
 principal in flight. Streaming a chunk to storage without holding it needs a
 streaming `storage/1`, which the S3 and GCS stores would implement too. The
 other limits are constants, with no flags:

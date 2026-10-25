@@ -135,8 +135,9 @@ export interface RequiredAccess {
 /**
  * Puts whose content serve checks, or trusts, beyond the write itself: a
  * behavior or workflow definition (retags, renames, the expressions and
- * steps an edit adds), an auto-definition, and the evaluated files and run
- * snapshots serve reads back when it runs one. A forwarded commit cannot
+ * steps an edit adds), a vault config (a vault is found by the name its
+ * content declares, not the intent's), an auto-definition, and the
+ * evaluated files and run snapshots serve reads back when it runs one. A forwarded commit cannot
  * have its content checked as serve's handlers check it yet, so these need
  * admin (swamp-club#3915) until swamp-club#3922 adds that.
  */
@@ -306,10 +307,7 @@ export async function writeAccessOf(
   resolver: AggregateResourceResolver,
 ): Promise<RequiredAccess> {
   const intent = op.intent;
-  if (
-    op.kind === "put" && CONTENT_CHECKED_PUTS.has(intent.kind) &&
-    !("definition" in intent && intent.definition.kind === "vault")
-  ) {
+  if (op.kind === "put" && CONTENT_CHECKED_PUTS.has(intent.kind)) {
     return { action: "admin", resource: ADMIN_RESOURCE };
   }
   if ("model" in intent) {

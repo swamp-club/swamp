@@ -521,46 +521,56 @@ Deno.test("authorizeCommit: a rename-from naming another definition as its count
   assert((await authorizeCommit(mine, [tombstone], resolver, both)).ok);
 });
 
-Deno.test("authorizeCommit: a vault rename-to over another vault's config needs write on that vault too", async () => {
-  const mine = partitionOf({
+Deno.test("authorizeCommit: a vault config put needs admin, whatever the vault its content names", async () => {
+  const dev = partitionOf({
     kind: "config",
     definitionKind: "vault",
-    name: "mine",
+    name: "dev",
   });
-  const prod = partitionOf({
-    kind: "config",
-    definitionKind: "vault",
-    name: "prod",
-  });
-  const key = `config/vaults/local_encryption/${OTHER_ID}.yaml`;
   const resolver = new FakeResolver();
-  resolver.owners.set(key, { owner: prod.toString(), present: true });
-  const put = await putOp({
+  // A fresh uuid nobody owns, whose content names another vault.
+  const create = await putOp({
+    intent: createIntent({
+      kind: "definition.create",
+      definition: { kind: "vault", name: "dev" },
+    }),
+    key: RecordKey.create(
+      "config/vaults/local_encryption/00000000-0000-4000-8000-000000000000.yaml",
+    ),
+    inline: base64("name: prod\ntype: local_encryption\n"),
+    expect: "absent",
+  });
+  // And a rename-to over the other vault's own file.
+  const prodKey = `config/vaults/local_encryption/${OTHER_ID}.yaml`;
+  resolver.owners.set(prodKey, {
+    owner: partitionOf({
+      kind: "config",
+      definitionKind: "vault",
+      name: "prod",
+    })
+      .toString(),
+    present: true,
+  });
+  const rename = await putOp({
     intent: createIntent({
       kind: "definition.rename-to",
-      definition: { kind: "vault", name: "mine" },
+      definition: { kind: "vault", name: "dev" },
       from: "prod",
     }),
-    key: RecordKey.create(key),
+    key: RecordKey.create(prodKey),
     inline: base64("type: attacker"),
     expect: "absent",
   });
-  assertRefused(
-    await authorizeCommit(
-      mine,
-      [put],
-      resolver,
-      new FakeAuthority(["write vault:mine"]),
-    ),
-    "forbidden",
-    0,
-  );
-  assert(
-    (await authorizeCommit(
-      mine,
-      [put],
-      resolver,
-      new FakeAuthority(["write vault:mine", "write vault:prod"]),
-    )).ok,
-  );
+  const writers = new FakeAuthority(["write vault:dev", "write vault:prod"]);
+  for (const put of [create, rename]) {
+    assertRefused(
+      await authorizeCommit(dev, [put], resolver, writers),
+      "forbidden",
+      0,
+    );
+    assert(
+      (await authorizeCommit(dev, [put], resolver, new FakeAuthority(["*"])))
+        .ok,
+    );
+  }
 });
