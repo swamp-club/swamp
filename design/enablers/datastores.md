@@ -2344,10 +2344,10 @@ these.
   - the stream directories `audit/`, `telemetry/`, `logs/` and `files/`, and
     run logs, which stay repo-local (swamp-club#3278, "v3 stream
     directories").
-- **Authorisation requirements for the serve wiring.** Serve will authorise
-  each op on its intent, and the model leaves four bindings to that issue. Each
-  needs the per-repository audit of what every write stages, so none is
-  enforced yet:
+- **Authorisation requirements for the serve wiring.** Serve authorises each
+  forwarded op on its intent, and these bindings are enforced by
+  swamp-club#3915 ("Team mode: serve's datastore API" below), against the
+  write-path audit that the staging gates run:
   - **Key to aggregate.** A put's or tombstone's record key must fall under
     the projected paths of its intent's aggregate. Otherwise a principal
     allowed to save data on one behavior could write any other aggregate's
@@ -2671,7 +2671,35 @@ deferred `BEGIN` in WAL mode can fail on a stale snapshot even with
 A refusal rolls back and leaves the rebuilt partition unchanged. Any other
 failure rolls back and drops the rebuilt partition, which may be ahead of the
 file. Because the append is synchronous, it blocks the event loop for its
-`fsync`. That matters once serve writes through the store (Phase 5).
+`fsync`.
+
+**Group commit (swamp-club#3915).** Once serve writes for a team, many
+appends arrive together, so the store bounds the blocking per burst rather
+than per commit. Appends queued while a transaction runs share the next
+`BEGIN IMMEDIATE … COMMIT`, up to `GROUP_COMMIT_MAX_COMMITS` (64), and the
+group stops taking commits once rebuilding its partitions has taken
+`GROUP_COMMIT_MAX_WAIT_MS` (50 ms). Each commit runs in its own savepoint:
+
+- a refusal rolls back that commit alone, and a duplicate writes nothing;
+- a stale head, or any failure other than a refusal, ends the group at that
+  commit. The stale commit is retried alone through the head check below,
+  and the commits after it go to the next transaction, so order and cursors
+  are exactly those of one append at a time.
+
+Any other queued operation (a fence raise, compaction, truncation, a
+high-water read) closes the open group, so nothing is reordered around it. A
+group of one is today's path. The outbox's `prepare` (also
+`synchronous=FULL`) is grouped the same way: the prepares made in one
+microtask are written in one transaction, a savepoint each. A burst of N
+forwarded commits therefore pays two fsyncs, not 2N.
+`src/infrastructure/datastore_v3/sqlite_commit_store_group_commit_property_test.ts`
+appends random bursts (valid, duplicate, seq-gap, stale-fence, unfenced,
+expect-failed and failing-after-writing commits) concurrently to a grouped
+store and one at a time to an ungrouped one, and requires identical outcomes
+and identical rows. Measured on an Apple M5 Max
+(`scripts/bench_v3_serve_datastore_api.ts`, A/A spread 1.06×): a burst of 32
+appends takes 1.4 ms grouped and 3.5 ms ungrouped; a solo append is unchanged
+at about 0.09 ms. macOS `fsync` is cheap, so the gap is wider on Linux.
 
 **Rebuilding a partition.** Each store queues its appends one at a time. The
 queue rebuilds a partition, which is asynchronous because `Commit.fromJSON`
@@ -2710,10 +2738,12 @@ inside one.
   its first append to that partition, so the store snapshots.
 - **Cache.** Each store keeps rebuilt partitions in an LRU of 1,024 entries.
   Serve is long-lived and every workflow run is a new partition, so the
-  number of cached partitions is bounded. A cached partition still collects
-  the txnIds of every commit applied since its snapshot, so a very busy
-  partition cached for a long time grows. Phase 5 should bound that, for
-  example by re-restoring a partition from its newest snapshot.
+  number of cached partitions is bounded. When an append writes a snapshot,
+  the cached partition is replaced by one restored from it, so it holds at
+  most the snapshot interval of txnIds; older ones resolve through the
+  bounded lookup above (swamp-club#3915). A busy partition no longer grows
+  while it stays cached: after 5,000 appends with an interval of 1,000 it
+  holds at most 1,000 txnIds, where it held 5,000.
 - **Head check.** A cached partition whose seq differs from the head row was
   overtaken by another connection. The store drops it, rebuilds and retries
   once. A second writer is a bug the writer lease prevents, but the
@@ -5982,7 +6012,258 @@ the file comes back at the next catch-up: the end state is right, but the
 two recoveries disagree in between (swamp-club#3586).
 
 **Phase 5.** Team mode's outbox forwards commits to serve's leader. It fits
-the same `CommitSink` seam; nothing of it is built here.
+the same `CommitSink` seam. Serve's side, which appends a forwarded commit
+through this outbox, is "Team mode: serve's datastore API" below.
+
+### Team mode: serve's datastore API (datastore rework Phase 5)
+
+In team mode a team writes a v3 datastore through `swamp serve`, which holds
+the writer lease. Laptops and CI hold a serve token, not storage credentials.
+swamp-club#3915 adds serve's side, `src/serve/datastore_api.ts`. It is the
+security boundary for the rest of team mode: the CLI's serve upstream and
+`swamp datastore claim`/`release` are later issues and build on it.
+
+**The endpoints.** Every route is under `/api/v1/datastore/{namespace}/`.
+`{namespace}` is the storage namespace: the slug, or `_default` for an
+unnamespaced datastore. A mismatch is 404, and a server whose datastore is not
+v3 answers `409 datastore_not_v3`. Every request is authenticated with serve's
+bearer token, which OAuth mode mints too. In `--auth-mode none`, routes are
+open as the rest of `/api/v1/` is, behind the same origin checks, and commits
+are stamped `@anonymous`.
+
+| Route | Purpose |
+|---|---|
+| `POST chunks/has` | `{hashes}` (at most 1,024): the ones serve holds that the caller may reference, touched so GC keeps them |
+| `PUT chunks/{sha256}` | One chunk, hashed as it streams in, recorded in the upload ledger |
+| `GET chunks/{sha256}` | A chunk's bytes, with one `Range`; 404 to a caller who may not read it |
+| `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
+| `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
+| `GET changes?cursor=&limit=` | Commits after a feed cursor in this namespace, filtered to what the caller may read |
+
+`{p}` is a canonical partition key, percent-encoded once more in the path.
+
+**A commit request** is `application/vnd.swamp.commit+v1`: a 4-byte big-endian
+length, a JSON envelope `{expectedSeq, txnId, fence?, ops, chunks}`, then the
+bytes of each chunk in `chunks` (`{sha256, size}`), back to back. The envelope
+takes no other field. The principal, writer, namespace and seq are serve's,
+and an envelope naming any of them is refused. The partition is the path's,
+and every intent must belong to it.
+
+**Per commit, in order:**
+
+1. Authenticate, and rate-limit: a token bucket per principal
+   (`checkPrincipalRate`, 600 a minute with a burst of 200). The per-IP burst
+   and the failed-token limiter count only failed authentication, so one CI
+   host's chunk traffic is not capped at 50 requests a minute.
+2. Read and check the envelope. Its ops are built by `opFromJSON` and
+   `createIntent`, as stored commits are.
+3. Catch serve's read model up, then authorise every op with
+   `authorizeCommit` (`src/domain/datastore_v3/commit_authorization.ts`). Its
+   bindings are below.
+4. Ingest the carried chunks (`src/infrastructure/datastore_v3/chunk_ingest.ts`).
+   Each is hashed as it is read and refused when its bytes do not match, so
+   nothing is staged and nothing is committed. It is stored through a
+   `ChunkBatch`, whose barrier makes it durable before the commit.
+5. Proof of possession: see below.
+6. `commitForwarded` (`src/infrastructure/datastore_v3/forwarded_commit.ts`)
+   appends the commit through the v3 handle's `appendForwarded`, which uses
+   the same sink, partition lock, outbox prepare and settle as serve's own
+   units, and serve's writer, fence and namespace. Under the lock it checks
+   the head against `expectedSeq` and refuses a moved head rather than
+   rebuilding the commit. It lands at `expectedSeq + 1` under the client's
+   txnId. Serve's own units and forwarded commits queue on one lock, so they
+   never race on a head.
+7. Stamp: `principal` is the authenticated caller, and `writer` is serve's
+   `CommitWriter` (host, pid, instance), because serve is the process that
+   appends.
+8. Catch serve's checkout up (one catch-up at a time, shared by the commits
+   that wait for it), invalidate the query catalog, and reload the policy
+   snapshot when the partition is a control-plane behavior's. A revoked grant
+   or token is therefore refused on the next request, whatever
+   `--grant-reload` says. A failed catch-up is reported as a `warning` on a
+   success, since the commit has landed.
+9. Wait for replication (`confirmReplicated`), as a WebSocket write does.
+   Then reply `{seq}`.
+
+A retry under the same txnId answers with the landed seq (`duplicate: true`)
+when the landed commit has the same ops and principal, and
+`409 txn_id_reused` otherwise.
+
+**Binding rules** (`checkCommitBindings`, then `authorizeCommit`). The first
+refusal fails the whole commit with `403` and the op's index:
+
+- A `lease` op is refused: only the lease machinery writes leases.
+- Every put's and tombstone's intent belongs to the commit's partition.
+- **Key to aggregate** (`bindKey`, `src/domain/datastore_v3/intent_key_paths.ts`).
+  The key must be in the layout its aggregate's repository writes. A data
+  save or append owns its version's files and the name's latest marker. A
+  versioned removal owns only that version's files, and a version-less one
+  only the marker. A rename owns both names. A behavior definition's key
+  names its type directory, and a file named by a uuid is bound only when
+  ownership allows it. An output (`outputs/{type}/{method}/{modelId}-{stamp}.yaml`)
+  binds only to the behavior whose id names the file, which is how the output
+  repository finds a behavior's outputs: a behavior cannot create outputs
+  for another of its type.
+- **Op kind to intent kind**: a table of which intents ride a put and which a
+  tombstone. A version-less `data.delete`/`data.gc` may put the lowered marker
+  or tombstone it, and a move's old key is tombstoned under its create or edit
+  intent. Control-plane intents are puts.
+- **`data-version` ops** pair with a `data.save`, `data.append` or
+  `data.rename` put of their own metadata key, whose metadata names the
+  version that key holds. A rename records both names' versions.
+- **Definition kind and behavior type**: a behavior definition's type comes
+  from its record key, never its content, and every op of the commit must
+  agree on it.
+- **Key ownership**: a key whose file another partition owns now, as serve's
+  read model has it, is refused. The exceptions are the counterpart of a
+  definition rename, and a put of a key whose owner removed it. The other
+  name of a rename is the client's to choose, so each half of a rename also
+  needs `write` on that name (`writeAccessesOf`). Without that, a caller
+  with `write` on one definition could tombstone, or for a vault overwrite,
+  any other by naming it as the counterpart.
+
+`integration/datastore_v3_*_staging_test.ts` run every repository write on
+v3 through `withAuditedV3Env`. Each scenario's commits must pass these
+bindings, so a repository write a forwarded commit would be refused for fails
+its gate.
+
+**Every forwarded write needs admin for now.** A forwarded op can carry
+more than serve's handlers would let the same caller write: content, a
+removal's or rename's bytes, files whose owner only a lookup can tell. Until
+swamp-club#3922 checks a forwarded write the way serve's handlers check it,
+every put and tombstone also needs `admin` on `access:*`
+(`writeAccessesOf`). The rules below still apply, so a deny on the resource
+refuses an admin too, and they are what #3922 relaxes the admin requirement
+against. Reads are not affected: a non-admin's catch-up, changes feed and
+chunk reads are filtered as below.
+
+**Intents to actions.** Each op is decided with serve's decision service, its
+admin fallback included (`isCallerAuthorized`, audited on refusal). The
+resource is the same one serve's handlers check for the same write:
+
+| Intent | Write needs | Read (changes feed) needs |
+|---|---|---|
+| `data.save`, `data.append`, `output.save` on a behavior | `run` on `model:<name>`, as a method run that writes them is decided | `read` on `data:<name>`; outputs `read` on `model:<name>` |
+| `data.delete`, `data.rename` | `write` on `data:<name>`, as serve's `data.delete` and `data.rename` | `read` on `data:<name>` |
+| `data.gc` | `write` on `data:*`, decided for the whole kind (any data deny refuses), as serve's `data.gc` | `read` on `data:<name>` |
+| `output.delete`, `evaluated-definition.delete` | `write` on `model:<name>`, as a behavior delete that removes them | `read` on `model:<name>` |
+| Any intent on a control-plane behavior (`swamp/grant`, `swamp/group`, `swamp/server-token`, …), and the control-plane intent kinds | `admin`, on its `access:` record | `admin` |
+| Any intent on a `--restricted-model-types` type | `admin` | as its kind |
+| `run.create`, `run.update` | `run` on the workflow | `read` on the workflow |
+| `run.delete`, `run-snapshot.delete` | `write` on the workflow | `read` on the workflow |
+| `definition.delete`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
+| `definition.rename-from` | `write` on both names the rename joins | `read` on it |
+| `definition.create`, `.edit`, `.rename-to` of any definition kind; `evaluated-definition.save`, `evaluated-workflow.save`, `auto-definition.save`, `run-snapshot.save` | `admin` (below) | `read` by kind |
+| `auto-definition.delete` | `write` on the behavior | `read` on it |
+| `lockfile.write` | `admin` | any authenticated caller |
+
+A behavior no definition holds, or whose definition has another type, is
+decided as `model:<id>`, so only a wildcard grant matches it.
+
+The table was checked against every serve write handler's decision. Where
+the forwarded path differs it is stricter: the lockfile needs `admin` on
+`access:*` where extension commands check `admin` on `model:*`, and run
+records need `run` where approve, reject and signal check their own
+actions.
+
+**Puts whose content serve checks are admin-only for now.** Serve's
+WebSocket edits check more than `write` on a definition. A retag needs `tag`,
+a rename needs `write` on the result, and the expressions and workflow steps
+an edit adds are authorised against what they reference (swamp-club#2755).
+Serve also reads back stored evaluated definitions when it runs a behavior,
+so a forged evaluated file could carry values that skip those checks. And a
+vault is found by the name its content declares
+(`YamlVaultConfigRepository.findByName`), not by the intent's, so a vault put
+authorised on one name could install a config under another.
+Forwarded commits cannot be checked that way yet, so those puts need `admin`.
+Content-level parity, after which they can need what serve's handlers need,
+is swamp-club#3922; it is needed before non-admins run methods through team
+mode.
+
+**Proof of possession.** A commit may name a chunk only when one of these
+holds:
+
+- its bytes arrived and hashed in the same request;
+- the caller uploaded it with `PUT chunks/{sha256}` within the GC grace
+  window, as recorded in the upload ledger;
+- a partition the caller may read already references it.
+
+Otherwise the commit is refused (`chunk_not_provided`). Without this rule, a
+caller who knew only a hash could commit a reference to it and then read the
+bytes. `chunks/has` and `GET chunks/{sha256}` apply the same rule: an
+unreadable chunk reads as missing.
+
+`chunk_partitions` (`commits.db` schema 8, backfilled from `commits` and
+`base_records`) records which partitions reference each chunk, for
+`partitionsReferencing`. A chunk in a behavior's partition needs both `read`
+on its data and on the behavior, since the partition holds both.
+
+A whole partition (catch-up, and the partitions that vouch for a chunk) is
+read as conservatively as its identity allows (`partitionReadAccessOf`). A
+behavior definition's config partition names neither the behavior's type
+nor its tags, since same-named definitions of several types share it, so it
+is decided on a resource that carries neither: a deny conditioned on either
+fails closed. An auto-definition's partition names neither its type nor its
+name, so reading it needs admin.
+
+The upload ledger (`src/infrastructure/datastore_v3/upload_ledger.ts`) lives
+in memory and is bounded. It caps a principal's uploaded bytes no commit
+references at 2 GiB, and its entries per principal. Chunks a commit carries
+count too: each is admitted before it is read and recorded once it is staged,
+so the quota counts what a request has sent so far, and a commit refused
+after its content arrived cannot leave unbounded content behind. A restart forgets it,
+so a client uploads again.
+
+**Memory and limits.** `storage/1` puts and gets whole chunks, so serve holds
+at most one chunk (16 MiB) per request (a commit's carried chunks are
+verified and staged one at a time), with at most 8 chunk requests per
+principal in flight. Streaming a chunk to storage without holding it needs a
+streaming `storage/1`, which the S3 and GCS stores would implement too. The
+other limits are constants, with no flags:
+
+- an envelope of at most 4 MiB, read before anything else;
+- `MAX_COMMIT_OPS` ops and 1,024 carried chunks per commit, and a body of
+  at most 1 GiB; at most 1,024 named chunks it does not carry, since each is
+  checked under the forwarded-commit lock every caller shares;
+- pages of at most 1,000 commits;
+- at most 10,000 feed rows scanned per changes request. The returned cursor
+  moves past filtered rows, so a caller who may read nothing still advances.
+
+**Replies.**
+
+| Situation | Reply |
+|---|---|
+| The partition's head moved | `409 {code: stale_seq, seq}`: catch up and retry |
+| An op's `expect` failed | `409 {code: precondition_failed, key, seq, changedBy, changedAt}`, worded like a rejected `git push` |
+| A txnId landed as another commit | `409 txn_id_reused` |
+| A named chunk is not stored | `409 {code: chunk_missing, missing}` |
+| Fenced, or the lease lost | `409 datastore_v3_writer_fenced` |
+| Storage unreachable, partly committed, or replication unconfirmed | `503` with the code `replicationErrorForClient` keeps |
+| A cursor or seq below the compaction point | `410 {code: commits_compacted, point}` |
+| A binding or authorisation refusal | `403 {code, reason, opIndex}` |
+| A malformed envelope, op or chunk | `400`; an oversized one `413` |
+
+A commit with no put or tombstone (serve's own lease commits) is shown in
+the changes feed only to a caller who may read its partition.
+
+`changedBy` is the principal of the newest of the last 200 commits that
+touched the key (its writer's host when it has none). Any other failure is a
+`500` with no detail. Each route is reported in spans under its template
+(`src/serve/datastore_routes.ts`).
+
+**Testing.**
+
+- `integration/serve_datastore_api_test.ts` drives a port-0 server over a
+  real v3 repository with an in-process client, covering commit, has, Range,
+  catch-up, changes, stamping, every 409 shape, a hash mismatch, a hash-only
+  reference, a plain-data grant, the policy reload and a non-v3 server.
+- The mapped error codes are unit-tested in `src/serve/datastore_api_test.ts`.
+- The authoriser has unit tests for every intent kind and for each binding,
+  plus a property test that no key of another aggregate binds.
+
+When the CLI drives this API (the serve-upstream issue), its UAT should
+cover three adversarial cases: a forged principal, a hash-only chunk
+reference and a revoked grant.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 

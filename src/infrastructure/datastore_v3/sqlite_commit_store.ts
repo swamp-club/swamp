@@ -93,7 +93,7 @@ import {
 } from "../../domain/datastore_v3/partition.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
   addColumnsIfAbsent,
   runMigration,
@@ -339,6 +339,77 @@ const MIGRATIONS: readonly SqliteMigration[] = [
   addColumnsIfAbsent([
     { table: "base_records", column: "access", type: "TEXT" },
   ]),
+  // 7 → 8: which partitions name each chunk (swamp-club#3915), so serve can
+  // authorise a chunk read by the partitions a caller may read. Counted like
+  // chunk_refs, per partition: each stored commit and each compacted base
+  // record of the partition naming the chunk counts once, and the row goes
+  // when the count reaches zero. Backfilled in the migration's one
+  // transaction, by migration 1 → 2's rule for commits and the base's own
+  // rule for records (a blob's parts, else its sha256), so a crash part-way
+  // leaves the store at schema 7 and the next open starts the backfill
+  // again. It is one INSERT ... SELECT: SQLite groups in a temporary b-tree,
+  // so its memory does not grow with the store. A swamp at schema 7 would
+  // leave the index behind on every append, so it must refuse the store as
+  // newer. IF NOT EXISTS and the DELETE, as for 2 → 3.
+  `
+  CREATE TABLE IF NOT EXISTS chunk_partitions (
+    namespace TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    refs INTEGER NOT NULL,
+    PRIMARY KEY (namespace, sha256, partition)
+  ) STRICT, WITHOUT ROWID;
+  DELETE FROM chunk_partitions;
+  INSERT INTO chunk_partitions (namespace, sha256, partition, refs)
+    SELECT namespace, sha256, partition, COUNT(*) FROM (
+      SELECT DISTINCT 'commit' AS source, CAST(cursor AS TEXT) AS id,
+        namespace, partition, sha256 FROM (
+        SELECT c.cursor AS cursor, c.namespace AS namespace,
+          c.partition AS partition,
+          CASE WHEN part.value IS NULL
+            THEN json_extract(op.value, '$.blob.sha256')
+            ELSE json_extract(part.value, '$.sha256')
+          END AS sha256
+        FROM commits AS c,
+          json_each(CASE WHEN json_valid(c.body) THEN c.body ELSE '[]' END)
+            AS root,
+          json_each(
+            CASE WHEN root.key = 'ops' AND root.type = 'array'
+              THEN root.value ELSE '[]' END
+          ) AS op
+        LEFT JOIN json_each(
+          CASE WHEN op.type = 'object'
+              AND json_type(op.value, '$.blob.parts') = 'array'
+            THEN json_extract(op.value, '$.blob.parts') ELSE '[]' END
+        ) AS part
+        WHERE op.type = 'object'
+          AND json_extract(op.value, '$.kind') = 'put'
+          AND json_type(op.value, '$.blob') = 'object'
+          AND (part.value IS NULL OR part.type = 'object')
+      )
+      WHERE typeof(sha256) = 'text'
+      UNION ALL
+      SELECT DISTINCT 'record', record_key, namespace, partition, sha256 FROM (
+        SELECT r.namespace AS namespace, r.partition AS partition,
+          r.record_key AS record_key,
+          CASE WHEN part.value IS NULL
+            THEN json_extract(r.blob, '$.sha256')
+            ELSE json_extract(part.value, '$.sha256')
+          END AS sha256
+        FROM base_records AS r
+        LEFT JOIN json_each(
+          CASE WHEN json_valid(r.blob) THEN
+            CASE WHEN json_type(r.blob, '$.parts') = 'array'
+              THEN json_extract(r.blob, '$.parts') ELSE '[]' END
+          ELSE '[]' END
+        ) AS part
+        WHERE r.blob IS NOT NULL AND json_valid(r.blob)
+          AND (part.value IS NULL OR part.type = 'object')
+      )
+      WHERE typeof(sha256) = 'text'
+    )
+    GROUP BY namespace, sha256, partition;
+  `,
 ];
 
 /** Error code for a `commits.db` written by a newer swamp. */
@@ -365,6 +436,11 @@ export const COMPACTION_BATCH = 250;
 /** Hashes looked up per query by `referencedChunks`. */
 const REF_LOOKUP_PAGE = 500;
 
+/** Counts one more reference of a partition to a chunk. */
+const INCREMENT_PARTITION_REF_SQL =
+  "INSERT INTO chunk_partitions (namespace, sha256, partition, refs) VALUES (?, ?, ?, 1) " +
+  "ON CONFLICT (namespace, sha256, partition) DO UPDATE SET refs = refs + 1";
+
 /** Options for {@link SqliteCommitStore.open}. */
 export interface SqliteCommitStoreOptions {
   /** How many rebuilt partitions to keep; {@link DEFAULT_CACHED_PARTITIONS}. */
@@ -374,6 +450,62 @@ export interface SqliteCommitStoreOptions {
    * {@link DEFAULT_SNAPSHOT_INTERVAL}.
    */
   readonly snapshotInterval?: number;
+  /**
+   * Whether appends queued together share one transaction
+   * (swamp-club#3915); true by default. Turned off only by tests and
+   * benchmarks comparing the two.
+   */
+  readonly groupCommit?: boolean;
+  /**
+   * Whether a cached partition is restored from each snapshot it writes, so
+   * its in-memory txnIds stay within the snapshot interval
+   * (swamp-club#3915); true by default. Turned off only by tests and
+   * benchmarks.
+   */
+  readonly boundTxnIds?: boolean;
+  /**
+   * Called inside an append's transaction once its rows are written, just
+   * before it is reported appended. Tests throw from it to fail an append
+   * after it wrote (swamp-club#3915).
+   */
+  readonly afterAppendWrites?: (commit: Commit) => void;
+}
+
+/**
+ * The most commits one group commit appends in a transaction
+ * (swamp-club#3915).
+ */
+export const GROUP_COMMIT_MAX_COMMITS = 64;
+
+/**
+ * How long, in milliseconds, a group commit may spend rebuilding the
+ * partitions of the commits it takes before it stops taking more
+ * (swamp-club#3915): a commit already taken waits at most about this long
+ * for later ones to join its transaction. The rest wait for the next one.
+ */
+export const GROUP_COMMIT_MAX_WAIT_MS = 50;
+
+/** The savepoint each commit of a group commit runs in. */
+const GROUP_SAVEPOINT = "group_commit";
+
+/** An append waiting in a group (swamp-club#3915). */
+interface PendingAppend {
+  readonly commit: Commit;
+  readonly resolve: (result: CommitStoreAppendResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+/** An append a group commit has taken, with its partition rebuilt. */
+interface GroupedAppend {
+  readonly entry: PendingAppend;
+  readonly cacheKey: string;
+  readonly partition: Partition;
+}
+
+/** A partition snapshot an append wrote. */
+interface WrittenSnapshot {
+  readonly seq: number;
+  readonly body: string;
 }
 
 /** How a store stands against a published {@link HighWaterMark}. */
@@ -420,7 +552,11 @@ interface CommitRow {
  * transaction.
  *
  * An append is synchronous between `BEGIN IMMEDIATE` and `COMMIT`, so it
- * blocks the event loop for its `fsync` (`synchronous=FULL`).
+ * blocks the event loop for its `fsync` (`synchronous=FULL`). Appends queued
+ * while one runs share the next transaction (group commit,
+ * swamp-club#3915): a burst of them pays one `fsync`, each commit in a
+ * savepoint of its own so it keeps its own result or refusal. At most
+ * {@link GROUP_COMMIT_MAX_COMMITS} share one.
  */
 export class SqliteCommitStore implements CommitStore {
   readonly #db: DatabaseSync;
@@ -428,7 +564,17 @@ export class SqliteCommitStore implements CommitStore {
   readonly #snapshotInterval: number;
   /** Rebuilt partitions, least recently used first. */
   readonly #cache = new Map<string, Partition>();
+  readonly #groupCommit: boolean;
+  readonly #boundTxnIds: boolean;
+  readonly #afterAppendWrites: ((commit: Commit) => void) | undefined;
+  /** Append transactions committed; see {@link appendTransactions}. */
+  #appendTransactions = 0;
   #queue: Promise<unknown> = Promise.resolve();
+  /**
+   * The appends queued since the last other queued work, not yet started:
+   * appends queued now join them (swamp-club#3915).
+   */
+  #openGroup: PendingAppend[] | undefined;
   #closed = false;
 
   readonly #selectHead: StatementSync;
@@ -443,6 +589,8 @@ export class SqliteCommitStore implements CommitStore {
   readonly #selectSnapshot: StatementSync;
   readonly #upsertSnapshot: StatementSync;
   readonly #insertChunkRef: StatementSync;
+  readonly #insertChunkPartition: StatementSync;
+  readonly #selectChunkPartitions: StatementSync;
   /** `referencedChunks` for a full page of {@link REF_LOOKUP_PAGE} hashes. */
   readonly #selectRefPage: StatementSync;
   readonly #selectPoint: StatementSync;
@@ -456,10 +604,16 @@ export class SqliteCommitStore implements CommitStore {
     db: DatabaseSync,
     cachedPartitions: number,
     snapshotInterval: number,
+    groupCommit: boolean,
+    boundTxnIds: boolean,
+    afterAppendWrites: ((commit: Commit) => void) | undefined,
   ) {
     this.#db = db;
     this.#cachedPartitions = cachedPartitions;
     this.#snapshotInterval = snapshotInterval;
+    this.#groupCommit = groupCommit;
+    this.#boundTxnIds = boundTxnIds;
+    this.#afterAppendWrites = afterAppendWrites;
     this.#selectHead = db.prepare(
       "SELECT seq, highest_fence FROM partition_heads WHERE namespace = ? AND partition = ?",
     );
@@ -509,6 +663,10 @@ export class SqliteCommitStore implements CommitStore {
       "INSERT INTO chunk_refs (namespace, sha256, refs) VALUES (?, ?, 1) " +
         "ON CONFLICT (namespace, sha256) DO UPDATE SET refs = refs + 1",
     );
+    this.#insertChunkPartition = db.prepare(INCREMENT_PARTITION_REF_SQL);
+    this.#selectChunkPartitions = db.prepare(
+      "SELECT partition FROM chunk_partitions WHERE namespace = ? AND sha256 = ? ORDER BY partition LIMIT ?",
+    );
     this.#selectRefPage = db.prepare(selectRefsSql(REF_LOOKUP_PAGE));
     this.#selectPoint = db.prepare(
       "SELECT point FROM compaction WHERE id = 1",
@@ -544,7 +702,19 @@ export class SqliteCommitStore implements CommitStore {
       openCommitsDatabase(path),
       cachedPartitions,
       snapshotInterval,
+      options.groupCommit ?? true,
+      options.boundTxnIds ?? true,
+      options.afterAppendWrites,
     );
+  }
+
+  /**
+   * How many append transactions this store has committed: with group
+   * commit, fewer than the commits it appended (swamp-club#3915). For tests
+   * and benchmarks.
+   */
+  get appendTransactions(): number {
+    return this.#appendTransactions;
   }
 
   /** How many rebuilt partitions the store holds; for tests and diagnostics. */
@@ -575,7 +745,7 @@ export class SqliteCommitStore implements CommitStore {
         new Error(`A writer fence must be an integer from 1: ${fence}`),
       );
     }
-    const run = this.#queue.then(() => {
+    return this.#enqueue(() => {
       this.#db.exec("BEGIN IMMEDIATE");
       try {
         this.#checkWriterFence(fence);
@@ -589,8 +759,6 @@ export class SqliteCommitStore implements CommitStore {
         throw error;
       }
     });
-    this.#queue = run.catch(() => {});
-    return run;
   }
 
   #storedWriterFence(): number | undefined {
@@ -622,7 +790,7 @@ export class SqliteCommitStore implements CommitStore {
     name: string,
   ): Promise<number> {
     if (this.#closed) return Promise.reject(closedError());
-    const run = this.#queue.then(async () => {
+    return this.#enqueue(async () => {
       let partition = await this.#partition(namespace, key);
       const head = this.#selectHead.get(namespace, key.toString()) as
         | { seq: number }
@@ -633,15 +801,60 @@ export class SqliteCommitStore implements CommitStore {
       }
       return partition.highWater(name);
     });
-    this.#queue = run.catch(() => {});
-    return run;
   }
 
   append(commit: Commit): Promise<CommitStoreAppendResult> {
     if (this.#closed) return Promise.reject(closedError());
-    const run = this.#queue.then(() => this.#append(commit, false));
+    return new Promise<CommitStoreAppendResult>((resolve, reject) => {
+      const entry: PendingAppend = { commit, resolve, reject };
+      // Appends queued back to back, with nothing else queued between them,
+      // share one transaction (swamp-club#3915).
+      const open = this.#openGroup;
+      if (open !== undefined && open.length < GROUP_COMMIT_MAX_COMMITS) {
+        open.push(entry);
+        return;
+      }
+      const group = [entry];
+      this.#openGroup = this.#groupCommit ? group : undefined;
+      const run = this.#queue.then(() => {
+        // Appends queued from here on wait for the next group.
+        if (this.#openGroup === group) this.#openGroup = undefined;
+        return this.#drain(group);
+      });
+      this.#queue = run.catch(() => {});
+    });
+  }
+
+  /**
+   * Queues anything but an append behind the work queued so far. It closes
+   * the open group, so an append queued after it never lands before it.
+   */
+  #enqueue<T>(work: () => T | Promise<T>): Promise<T> {
+    this.#openGroup = undefined;
+    const run = this.#queue.then(work);
     this.#queue = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * Appends a group's commits, settling each one's promise. A group of one
+   * is a solo append, exactly as before grouping; a larger one goes in
+   * transactions of {@link #appendGroup}, in queue order.
+   */
+  async #drain(group: readonly PendingAppend[]): Promise<void> {
+    let rest = group;
+    while (rest.length > 0) {
+      if (rest.length === 1) {
+        const [{ commit, resolve, reject }] = rest;
+        try {
+          resolve(await this.#append(commit, false));
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+      rest = await this.#appendGroup(rest);
+    }
   }
 
   async #append(
@@ -656,10 +869,17 @@ export class SqliteCommitStore implements CommitStore {
     // Synchronous from BEGIN to COMMIT: nothing else runs in between.
     this.#db.exec("BEGIN IMMEDIATE");
     let outcome: CommitStoreAppendResult | "stale";
+    let snapshot: WrittenSnapshot | undefined;
     try {
-      outcome = this.#applyInTransaction(commit, partition, retried);
+      outcome = this.#applyInTransaction(
+        commit,
+        partition,
+        retried,
+        (written) => snapshot = written,
+      );
       if (outcome !== "stale" && outcome.kind === "appended") {
         this.#db.exec("COMMIT");
+        this.#appendTransactions++;
       } else {
         this.#db.exec("ROLLBACK");
       }
@@ -672,7 +892,12 @@ export class SqliteCommitStore implements CommitStore {
       throw error;
     }
 
-    if (outcome !== "stale") return outcome;
+    if (outcome !== "stale") {
+      if (snapshot !== undefined) {
+        this.#restoreFromSnapshot(commit, cacheKey, partition, snapshot);
+      }
+      return outcome;
+    }
     // Another connection wrote this partition: rebuild it from the file.
     this.#cache.delete(cacheKey);
     if (retried) {
@@ -683,10 +908,220 @@ export class SqliteCommitStore implements CommitStore {
     return await this.#append(commit, true);
   }
 
+  /**
+   * Group commit (swamp-club#3915): appends the leading commits of `entries`
+   * in one `BEGIN IMMEDIATE ... COMMIT`, so they pay one fsync, and returns
+   * the ones left for the next transaction.
+   *
+   * Their partitions are rebuilt first, outside the transaction, each once.
+   * Rebuilding stops taking commits once it has run
+   * {@link GROUP_COMMIT_MAX_WAIT_MS}, so the commits already taken are not
+   * held back by later ones. Inside the transaction each commit runs in a
+   * savepoint of its own, exactly as a solo append would run it: a refusal
+   * rolls back that commit alone and is that commit's result, and a
+   * duplicate writes nothing. A commit that leaves its partition in doubt,
+   * a stale head or a failure after the partition took it, ends the group
+   * there, so every commit after it is appended as it would have been
+   * after it alone: the stale one is retried by itself, as a solo append
+   * retries, and the rest go to the next transaction. Results are settled
+   * only once the transaction has committed; if it fails, every commit it
+   * tried fails with that error.
+   */
+  async #appendGroup(
+    entries: readonly PendingAppend[],
+  ): Promise<readonly PendingAppend[]> {
+    const started = performance.now();
+    const partitions = new Map<string, Partition>();
+    const batch: GroupedAppend[] = [];
+    let next = 0;
+    for (; next < entries.length; next++) {
+      if (
+        batch.length > 0 &&
+        performance.now() - started > GROUP_COMMIT_MAX_WAIT_MS
+      ) {
+        break;
+      }
+      const entry = entries[next];
+      const { namespace, partition: key } = entry.commit;
+      const cacheKey = cacheKeyOf(namespace, key.toString());
+      let partition = partitions.get(cacheKey);
+      if (partition === undefined) {
+        try {
+          partition = await this.#partition(namespace, key);
+        } catch (error) {
+          // As a solo append whose rebuild fails.
+          entry.reject(error);
+          continue;
+        }
+        partitions.set(cacheKey, partition);
+      }
+      batch.push({ entry, cacheKey, partition });
+    }
+
+    /** Settles each commit's promise, run once the transaction committed. */
+    const settle: (() => void)[] = [];
+    const snapshots: {
+      grouped: GroupedAppend;
+      snapshot: WrittenSnapshot;
+    }[] = [];
+    let tried = 0;
+    let stale: GroupedAppend | undefined;
+    try {
+      this.#db.exec("BEGIN IMMEDIATE");
+      for (const grouped of batch) {
+        const { entry, cacheKey, partition } = grouped;
+        tried++;
+        this.#db.exec(`SAVEPOINT ${GROUP_SAVEPOINT}`);
+        let outcome: CommitStoreAppendResult | "stale";
+        try {
+          outcome = this.#applyInTransaction(
+            entry.commit,
+            partition,
+            false,
+            (snapshot) => snapshots.push({ grouped, snapshot }),
+          );
+        } catch (error) {
+          this.#rollbackSavepoint();
+          if (error instanceof CommitRejectedError) {
+            settle.push(() => entry.reject(error));
+            continue;
+          }
+          // The partition may have taken the commit: it is ahead of the
+          // file, and the commits after this one wait for a rebuild.
+          settle.push(() => {
+            this.#cache.delete(cacheKey);
+            entry.reject(error);
+          });
+          break;
+        }
+        if (outcome === "stale") {
+          this.#rollbackSavepoint();
+          stale = grouped;
+          break;
+        }
+        if (outcome.kind === "appended") {
+          this.#db.exec(`RELEASE ${GROUP_SAVEPOINT}`);
+        } else {
+          this.#rollbackSavepoint();
+        }
+        const result = outcome;
+        settle.push(() => entry.resolve(result));
+      }
+      this.#db.exec("COMMIT");
+      this.#appendTransactions++;
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      // Every partition the group touched may be ahead of the file.
+      for (const { cacheKey } of batch) this.#cache.delete(cacheKey);
+      for (const { entry } of batch.slice(0, Math.max(tried, 1))) {
+        entry.reject(error);
+      }
+      return [
+        ...batch.slice(Math.max(tried, 1)).map(({ entry }) => entry),
+        ...entries.slice(next),
+      ];
+    }
+    for (const run of settle) run();
+    for (const { grouped, snapshot } of snapshots) {
+      this.#restoreFromSnapshot(
+        grouped.entry.commit,
+        grouped.cacheKey,
+        grouped.partition,
+        snapshot,
+      );
+    }
+    const rest = [
+      ...batch.slice(tried).map(({ entry }) => entry),
+      ...entries.slice(next),
+    ];
+    if (stale !== undefined) {
+      // As a solo append that found its partition stale.
+      this.#cache.delete(stale.cacheKey);
+      try {
+        stale.entry.resolve(await this.#append(stale.entry.commit, true));
+      } catch (error) {
+        stale.entry.reject(error);
+      }
+    }
+    return rest;
+  }
+
+  /** Rolls back the current group commit savepoint and ends it. */
+  #rollbackSavepoint(): void {
+    this.#db.exec(`ROLLBACK TO ${GROUP_SAVEPOINT}`);
+    this.#db.exec(`RELEASE ${GROUP_SAVEPOINT}`);
+  }
+
+  /**
+   * Bounds a cached partition's txnIds (swamp-club#3915): once an append
+   * has committed a snapshot of the partition, the cached partition is
+   * replaced by one restored from that snapshot, whose txnIds at or below it
+   * are looked up in the file, as a rebuild's are. So a partition never
+   * holds more txnIds than the snapshot interval, however long it stays
+   * cached. Skipped when the cached partition has moved past the snapshot
+   * (a later commit of its group) or is no longer the cached one.
+   */
+  #restoreFromSnapshot(
+    commit: Commit,
+    cacheKey: string,
+    partition: Partition,
+    snapshot: WrittenSnapshot,
+  ): void {
+    if (!this.#boundTxnIds) return;
+    if (
+      this.#cache.get(cacheKey) !== partition || partition.seq !== snapshot.seq
+    ) {
+      return;
+    }
+    try {
+      const restored = this.#restoreSnapshot(
+        commit.namespace,
+        commit.partition,
+        snapshot,
+      );
+      // Map.set keeps the entry's place in the LRU order.
+      this.#cache.set(cacheKey, restored);
+    } catch {
+      // The next use rebuilds it from the file and reports any damage.
+      this.#cache.delete(cacheKey);
+    }
+  }
+
+  /**
+   * A partition restored from a stored snapshot. The snapshot leaves out
+   * txnIds; those it covers are looked up in the commits table, only up to
+   * its seq, so the commits replayed after it are not taken for retries of
+   * themselves. The lookup uses this store's connection, so a restored
+   * partition must not outlive the store: close() clears the cache.
+   */
+  #restoreSnapshot(
+    namespace: string,
+    key: PartitionKey,
+    snapshot: WrittenSnapshot,
+  ): Partition {
+    const upTo = snapshot.seq;
+    return Partition.restore(
+      key,
+      JSON.parse(snapshot.body),
+      (txnId) =>
+        this.#selectTxnUpTo.get(namespace, key.toString(), txnId, upTo) !==
+          undefined,
+    );
+  }
+
+  /**
+   * How many txnIds the cached partition holds in memory, or undefined
+   * when it is not cached; for tests and benchmarks (swamp-club#3915).
+   */
+  cachedTxnIdCount(namespace: string, key: PartitionKey): number | undefined {
+    return this.#cache.get(cacheKeyOf(namespace, key.toString()))?.txnIdCount;
+  }
+
   #applyInTransaction(
     commit: Commit,
     partition: Partition,
     retried: boolean,
+    onSnapshot: (snapshot: WrittenSnapshot) => void,
   ): CommitStoreAppendResult | "stale" {
     const namespace = commit.namespace;
     const partitionKey = commit.partition.toString();
@@ -750,6 +1185,7 @@ export class SqliteCommitStore implements CommitStore {
     // leaves no reference behind.
     for (const sha256 of commit.chunkRefs()) {
       this.#insertChunkRef.run(namespace, sha256);
+      this.#insertChunkPartition.run(namespace, sha256, partitionKey);
     }
     // A lease op can raise the fence too, so take it from the partition.
     this.#upsertHead.run(
@@ -759,13 +1195,11 @@ export class SqliteCommitStore implements CommitStore {
       partition.highestFence ?? null,
     );
     if (partition.seq % this.#snapshotInterval === 0) {
-      this.#upsertSnapshot.run(
-        namespace,
-        partitionKey,
-        partition.seq,
-        JSON.stringify(partition.snapshot()),
-      );
+      const body = JSON.stringify(partition.snapshot());
+      this.#upsertSnapshot.run(namespace, partitionKey, partition.seq, body);
+      onSnapshot({ seq: partition.seq, body });
     }
+    this.#afterAppendWrites?.(commit);
     return applied;
   }
 
@@ -813,19 +1247,7 @@ export class SqliteCommitStore implements CommitStore {
       partition = Partition.empty(key);
     } else {
       try {
-        // The snapshot leaves out txnIds; those it covers are looked up in
-        // the commits table, only up to its seq, so the commits replayed
-        // after it are not taken for retries of themselves. The lookup uses
-        // this store's connection, so a restored partition must not outlive
-        // the store: close() clears the cache.
-        const upTo = snapshot.seq;
-        partition = Partition.restore(
-          key,
-          JSON.parse(snapshot.body),
-          (txnId) =>
-            this.#selectTxnUpTo.get(namespace, key.toString(), txnId, upTo) !==
-              undefined,
-        );
+        partition = this.#restoreSnapshot(namespace, key, snapshot);
       } catch (error) {
         throw new CommitStoreCorruptError(
           namespace,
@@ -911,6 +1333,40 @@ export class SqliteCommitStore implements CommitStore {
       for (const row of rows) found.add(row.sha256);
     }
     return Promise.resolve(found);
+  }
+
+  partitionsReferencing(
+    namespace: string,
+    sha256: string,
+    limit: number,
+  ): Promise<readonly PartitionKey[]> {
+    if (this.#closed) return Promise.reject(closedError());
+    try {
+      requirePositive(limit, "limit");
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const rows = this.#selectChunkPartitions.all(namespace, sha256, limit) as {
+      partition: string;
+    }[];
+    const keys: PartitionKey[] = [];
+    for (const row of rows) {
+      try {
+        keys.push(PartitionKey.parse(row.partition));
+      } catch (error) {
+        return Promise.reject(
+          new CommitStoreCorruptError(
+            namespace,
+            row.partition,
+            0,
+            `chunk_partitions names it for chunk ${sha256}, but it is not a partition key: ${
+              errorMessage(error)
+            }`,
+          ),
+        );
+      }
+    }
+    return Promise.resolve(keys);
   }
 
   async readPartition(
@@ -1100,9 +1556,7 @@ export class SqliteCommitStore implements CommitStore {
     options: SqliteCompactHistoryOptions = {},
   ): Promise<CompactionReport> {
     if (this.#closed) return Promise.reject(closedError());
-    const run = this.#queue.then(() => this.#compact(through, options));
-    this.#queue = run.catch(() => {});
-    return run;
+    return this.#enqueue(() => this.#compact(through, options));
   }
 
   /**
@@ -1381,9 +1835,7 @@ export class SqliteCommitStore implements CommitStore {
     } catch (error) {
       return Promise.reject(error);
     }
-    const run = this.#queue.then(() => this.#truncate(mark));
-    this.#queue = run.catch(() => {});
-    return run;
+    return this.#enqueue(() => this.#truncate(mark));
   }
 
   async #truncate(mark: HighWaterMark): Promise<{ removed: number }> {
@@ -1491,7 +1943,12 @@ export class SqliteCommitStore implements CommitStore {
         );
       }
       for (const commit of commits) {
-        this.#base.releaseRefs(commit.namespace, commit.chunkRefs(), now);
+        this.#base.releaseRefs(
+          commit.namespace,
+          commit.partition.toString(),
+          commit.chunkRefs(),
+          now,
+        );
       }
       this.#db.prepare("DELETE FROM commits WHERE cursor > ?").run(mark.cursor);
       for (const { namespace, partition, partitionState, snapshot } of heads) {
@@ -1577,9 +2034,7 @@ export class SqliteCommitStore implements CommitStore {
    */
   replaceContentFrom(path: string): Promise<void> {
     if (this.#closed) return Promise.reject(closedError());
-    const run = this.#queue.then(() => this.#replaceContent(path));
-    this.#queue = run.catch(() => {});
-    return run;
+    return this.#enqueue(() => this.#replaceContent(path));
   }
 
   #replaceContent(path: string): void {
@@ -1957,6 +2412,9 @@ class SqliteCompactedBase implements CompactedBaseWriter {
   readonly #incrementRef: StatementSync;
   readonly #decrementRef: StatementSync;
   readonly #deleteRef: StatementSync;
+  readonly #incrementPartitionRef: StatementSync;
+  readonly #decrementPartitionRef: StatementSync;
+  readonly #deletePartitionRef: StatementSync;
   readonly #upsertReleased: StatementSync;
   readonly #pruneReleased: StatementSync;
   readonly #insertCompactedTxn: StatementSync;
@@ -2045,6 +2503,13 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     this.#deleteRef = db.prepare(
       "DELETE FROM chunk_refs WHERE namespace = ? AND sha256 = ?",
     );
+    this.#incrementPartitionRef = db.prepare(INCREMENT_PARTITION_REF_SQL);
+    this.#decrementPartitionRef = db.prepare(
+      "UPDATE chunk_partitions SET refs = refs - 1 WHERE namespace = ? AND sha256 = ? AND partition = ? RETURNING refs",
+    );
+    this.#deletePartitionRef = db.prepare(
+      "DELETE FROM chunk_partitions WHERE namespace = ? AND sha256 = ? AND partition = ?",
+    );
     this.#upsertReleased = db.prepare(
       "INSERT INTO released_chunks (namespace, sha256, released_at) VALUES (?, ?, ?) " +
         "ON CONFLICT (namespace, sha256) DO UPDATE SET released_at = excluded.released_at",
@@ -2102,6 +2567,7 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     // never reaches zero.
     for (const sha256 of distinctChunks(blob)) {
       this.#incrementRef.run(namespace, sha256);
+      this.#incrementPartitionRef.run(namespace, sha256, partition);
     }
     this.#upsertRecord.run(
       namespace,
@@ -2112,13 +2578,13 @@ class SqliteCompactedBase implements CompactedBaseWriter {
       blob === undefined ? null : JSON.stringify(blob.toJSON()),
       record.access ?? null,
     );
-    for (const sha256 of before) this.#release(namespace, sha256);
+    for (const sha256 of before) this.#release(namespace, partition, sha256);
   }
 
   deleteRecord(namespace: string, partition: string, key: string): void {
     const before = this.#recordChunks(namespace, partition, key);
     this.#deleteRecord.run(namespace, partition, key);
-    for (const sha256 of before) this.#release(namespace, sha256);
+    for (const sha256 of before) this.#release(namespace, partition, sha256);
   }
 
   liveVersions(
@@ -2277,7 +2743,9 @@ class SqliteCompactedBase implements CompactedBaseWriter {
       row.txn_id,
       Number.isFinite(committedAt) ? committedAt : this.#now,
     );
-    for (const sha256 of chunkRefs) this.#release(row.namespace, sha256);
+    for (const sha256 of chunkRefs) {
+      this.#release(row.namespace, row.partition, sha256);
+    }
     this.#deleteCommit.run(row.cursor);
   }
 
@@ -2367,15 +2835,28 @@ class SqliteCompactedBase implements CompactedBaseWriter {
    */
   releaseRefs(
     namespace: string,
+    partition: string,
     chunkRefs: readonly string[],
     now: number,
   ): void {
     this.#now = now;
-    for (const sha256 of chunkRefs) this.#release(namespace, sha256);
+    for (const sha256 of chunkRefs) this.#release(namespace, partition, sha256);
   }
 
-  /** Drops one reference; at zero the chunk is released. */
-  #release(namespace: string, sha256: string): void {
+  /**
+   * Drops one reference of `partition`; at zero the partition no longer
+   * names the chunk, and at zero over the namespace the chunk is released.
+   */
+  #release(namespace: string, partition: string, sha256: string): void {
+    const own = this.#decrementPartitionRef.get(namespace, sha256, partition) as
+      | { refs: number }
+      | undefined;
+    // A missing row only narrows which partitions may read the chunk
+    // (swamp-club#3915): the index fails closed, so it never stops a
+    // compaction the namespace count allows.
+    if (own !== undefined && own.refs <= 0) {
+      this.#deletePartitionRef.run(namespace, sha256, partition);
+    }
     const row = this.#decrementRef.get(namespace, sha256) as
       | { refs: number }
       | undefined;

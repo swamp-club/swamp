@@ -84,7 +84,7 @@ import {
   readCatalog,
   readTree,
   type V3Env,
-  withV3Env,
+  withAuditedV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
 
 await initializeLogging({});
@@ -266,7 +266,7 @@ for (const namespace of ["", "infra"]) {
   const label = namespace === "" ? "an unnamespaced" : "a namespaced";
 
   Deno.test(`v3 config staging: managed-config definition writes match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
       const repo = writer.definitions();
 
@@ -337,7 +337,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 config staging: a legacy file moved to its name path, and a save across tiers, match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
       // A definition committed earlier at its legacy uuid path.
       const legacy = definition("legacy");
@@ -436,7 +436,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 config staging: auto-definitions and git-tracked definitions for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
       // Direct execution's repository over the auto-definitions directory.
       const auto = writer.autoDefinitions();
@@ -479,7 +479,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 config staging: managed-config workflow writes match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
       const repo = writer.workflows();
       const deploy = workflow("deploy");
@@ -506,7 +506,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 config staging: evaluated definition and workflow writes match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, namespace);
       const defs = writer.evaluatedDefinitions();
       const vpc = definition("vpc");
@@ -592,7 +592,7 @@ function refusing(env: V3Env, partition: PartitionKey): CommitSink {
 }
 
 Deno.test("v3 config staging: a rename lands the new name before the old name's tombstone", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new ConfigWriter(env, "");
     const vpc = definition("vpc");
     await writer.run(() => writer.definitions().save(TYPE, vpc));
@@ -608,7 +608,7 @@ Deno.test("v3 config staging: a rename lands the new name before the old name's 
 });
 
 Deno.test("v3 config staging: a crash between a rename's two commits keeps both names, and nothing is lost", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new ConfigWriter(env, "");
     const vpc = definition("vpc");
     await writer.run(() => writer.definitions().save(TYPE, vpc));
@@ -638,7 +638,7 @@ Deno.test("v3 config staging: a crash between a rename's two commits keeps both 
 });
 
 Deno.test("v3 config staging: a crash in a same-key rename leaves one file with the new name, and deleting it later removes it", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new ConfigWriter(env, "");
     const scoped = definition("@team/vpc");
     await writer.run(() => writer.definitions().save(TYPE, scoped));
@@ -669,7 +669,7 @@ Deno.test("v3 config staging: a crash in a same-key rename leaves one file with 
 });
 
 Deno.test("v3 config staging: a stale edit or a concurrent create is refused, and the store keeps the other writer's bytes", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const first = new ConfigWriter(env, "", "first");
     const second = new ConfigWriter(env, "", "second");
     const vpc = definition("vpc");
@@ -720,7 +720,7 @@ Deno.test("v3 config staging: a stale edit or a concurrent create is refused, an
 });
 
 Deno.test("v3 config staging: a local file out of step with the store refuses the next save, and a rename of a name v3 never saw refuses its second commit", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new ConfigWriter(env, "");
     const vpc = definition("vpc");
     await writer.run(() => writer.definitions().save(TYPE, vpc));
@@ -773,7 +773,7 @@ Deno.test("v3 config staging: a local file out of step with the store refuses th
 });
 
 Deno.test("v3 config staging: a workflow rename and a definition edit carry their intents and preconditions", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new ConfigWriter(env, "");
     const deploy = workflow("deploy");
     await writer.run(() => writer.workflows().save(deploy));
@@ -800,7 +800,7 @@ Deno.test({
   // Windows or as root.
   ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new ConfigWriter(env, "");
       const workflowsDir = join(writer.root, "config", "workflows");
       const evaluatedDir = join(writer.root, "workflows-evaluated");
@@ -898,7 +898,7 @@ async function seed(
 }
 
 Deno.test("v3 config staging: a delete keeps a same-id file of another definition, and tombstones a cached file by its real path", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new ConfigWriter(env, "");
     // Two definitions sharing an id (a copied file): one at its name path,
     // the other at the uuid path.

@@ -23,6 +23,7 @@
 // (swamp-club#3482) on a temp commits.db.
 
 import {
+  assert,
   assertEquals,
   assertGreater,
   assertRejects,
@@ -32,12 +33,14 @@ import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
-import { leaseOp } from "../../domain/datastore_v3/op.ts";
+import { createIntent, modelRef } from "../../domain/datastore_v3/intent.ts";
+import { leaseOp, putOp } from "../../domain/datastore_v3/op.ts";
 import {
   type PartitionKey,
   partitionOf,
 } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   blobPut,
   deleteVersion,
@@ -48,6 +51,7 @@ import {
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import {
+  COMMIT_STORE_SCHEMA_VERSION,
   CommitStoreTruncateRefusedError,
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
@@ -928,6 +932,334 @@ Deno.test("SqliteCommitStore.replaceContentFrom: an empty restored file empties 
       });
     } finally {
       await target.close();
+    }
+  });
+});
+
+// Which partitions name each chunk (swamp-club#3915).
+
+/** A put on the other partition's model of content stored as `blob`. */
+function otherBlobPut(name: string, blob: BlobRef) {
+  const id = "1e2d3c4b-5a69-4878-9a6b-5c4d3e2f1a0b";
+  return putOp({
+    intent: createIntent({
+      kind: "data.save",
+      model: modelRef(MODEL_TYPE, id),
+      name,
+      version: 1,
+    }),
+    key: RecordKey.create(`data/${MODEL_TYPE.normalized}/${id}/${name}/1/raw`),
+    blob,
+  });
+}
+
+async function referencing(
+  store: SqliteCommitStore,
+  sha256: string,
+  namespace = "",
+): Promise<string[]> {
+  return (await store.partitionsReferencing(namespace, sha256, 10)).map((
+    key,
+  ) => key.toString());
+}
+
+function chunkPartitions(path: string): Record<string, unknown>[] {
+  return rawRows(
+    path,
+    "SELECT namespace, sha256, partition, refs FROM chunk_partitions ORDER BY namespace, sha256, partition",
+  );
+}
+
+Deno.test("SqliteCommitStore.partitionsReferencing: an append indexes the partitions naming each chunk, per namespace", async () => {
+  await withStore(async (store) => {
+    const model = modelPartition().toString();
+    const other = otherPartition().toString();
+    await store.append(
+      modelCommit(1, [await blobPut("x", 1, TWO_CHUNKS)], { fence: 1 }),
+    );
+    await store.append(
+      modelCommit(1, [await otherBlobPut("y", OTHER_TWO)], {
+        partition: otherPartition(),
+        fence: 1,
+      }),
+    );
+    await store.append(
+      modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], {
+        namespace: "acme",
+        fence: 1,
+      }),
+    );
+    // A chunk's own digest is not a chunk once the content has parts.
+    assertEquals(await referencing(store, hash("b")), []);
+    assertEquals(await referencing(store, hash("c")), [model]);
+    // Shared by both partitions, listed in key order.
+    assertEquals(
+      await referencing(store, hash("d")),
+      [model, other].sort(),
+    );
+    assertEquals(await referencing(store, hash("e")), [other]);
+    // Namespaces are isolated.
+    assertEquals(await referencing(store, hash("a")), []);
+    assertEquals(await referencing(store, hash("a"), "acme"), [model]);
+    assertEquals(await referencing(store, hash("d"), "acme"), []);
+    // The limit bounds the answer.
+    assertEquals(
+      (await store.partitionsReferencing("", hash("d"), 1)).length,
+      1,
+    );
+    await assertRejects(
+      () => store.partitionsReferencing("", hash("d"), 0),
+      Error,
+      "limit must be a positive integer",
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.partitionsReferencing: compaction keeps a partition while a stored commit or base record names the chunk, and drops it after", async () => {
+  await withStore(async (store, path) => {
+    const model = modelPartition().toString();
+    // Two commits of one partition name chunk a; the base record x then
+    // holds TWO_CHUNKS.
+    await store.append(
+      modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], { fence: 1 }),
+    );
+    await store.append(
+      modelCommit(2, [await blobPut("w", 1, ONE_CHUNK)], { fence: 1 }),
+    );
+    await store.append(
+      modelCommit(3, [await blobPut("x", 1, TWO_CHUNKS)], { fence: 1 }),
+    );
+    assertEquals(
+      chunkPartitions(path).filter((row) => row.sha256 === hash("a")),
+      [{ namespace: "", sha256: hash("a"), partition: model, refs: 2 }],
+    );
+
+    // Folding commit 1: its base record x names a, and commit 2 still does.
+    await store.compactHistory(1);
+    assertEquals(await referencing(store, hash("a")), [model]);
+    // Folding everything: x now holds TWO_CHUNKS, but w still names a.
+    await store.compactHistory(3);
+    assertEquals(await referencing(store, hash("a")), [model]);
+    assertEquals(await referencing(store, hash("c")), [model]);
+    // Deleting w's content drops the last reference to a.
+    await store.append(
+      modelCommit(4, [deleteVersion("w", 1)], { fence: 1 }),
+    );
+    await store.compactHistory(4);
+    assertEquals(await referencing(store, hash("a")), []);
+    assertEquals(
+      chunkPartitions(path),
+      [
+        { namespace: "", sha256: hash("c"), partition: model, refs: 1 },
+        { namespace: "", sha256: hash("d"), partition: model, refs: 1 },
+      ],
+    );
+    // The namespace-wide count agrees.
+    assertEquals(
+      chunkRefs(path).map((row) => row.sha256),
+      [hash("c"), hash("d")],
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore.partitionsReferencing: a truncation drops the removed commits' references", async () => {
+  await withStore(async (store) => {
+    await store.append(
+      modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], { fence: 1 }),
+    );
+    const mark = store.highWaterMark();
+    await store.append(
+      modelCommit(2, [await blobPut("y", 1, TWO_CHUNKS)], { fence: 1 }),
+    );
+    assertEquals(await referencing(store, hash("c")), [
+      modelPartition().toString(),
+    ]);
+    await store.truncateAfter(mark);
+    assertEquals(await referencing(store, hash("c")), []);
+    assertEquals(await referencing(store, hash("a")), [
+      modelPartition().toString(),
+    ]);
+  });
+});
+
+Deno.test("SqliteCommitStore: migrating a schema-7 store backfills the chunk partitions a fresh store builds (swamp-club#3915)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(
+        modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], { fence: 1 }),
+      );
+      await store.append(
+        modelCommit(2, [await blobPut("x", 1, TWO_CHUNKS)], { fence: 1 }),
+      );
+      await store.append(
+        modelCommit(3, [await blobPut("y", 1, TWO_CHUNKS)], { fence: 1 }),
+      );
+      await store.append(
+        modelCommit(1, [await otherBlobPut("z", OTHER_TWO)], {
+          partition: otherPartition(),
+          fence: 1,
+        }),
+      );
+      await store.append(
+        modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)], {
+          namespace: "acme",
+          fence: 1,
+        }),
+      );
+      // Fold the first two commits, so the base holds records too.
+      await store.compactHistory(2);
+    } finally {
+      await store.close();
+    }
+    const built = chunkPartitions(path);
+    assertGreater(built.length, 0);
+
+    // Take the file back to schema 7, as a swamp before the index left it.
+    const db = new DatabaseSync(path);
+    try {
+      db.exec("DROP TABLE chunk_partitions; PRAGMA user_version=7");
+    } finally {
+      db.close();
+    }
+    const migrated = SqliteCommitStore.open(path);
+    await migrated.close();
+    assertEquals(chunkPartitions(path), built);
+    assertEquals(
+      rawRows(path, "PRAGMA user_version")[0].user_version,
+      COMMIT_STORE_SCHEMA_VERSION,
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore: a store with the chunk partition index is at a schema a schema-7 swamp refuses as newer (swamp-club#3915)", () => {
+  // A swamp at schema 7 appends without indexing chunk partitions, so it
+  // must see the store as newer and ask to be upgraded, not write it.
+  const LAST_SCHEMA_WITHOUT_CHUNK_PARTITIONS = 7;
+  assertGreater(
+    COMMIT_STORE_SCHEMA_VERSION,
+    LAST_SCHEMA_WITHOUT_CHUNK_PARTITIONS,
+  );
+});
+
+// Bounded txnIds in a cached partition (swamp-club#3915).
+
+Deno.test("SqliteCommitStore: a long-cached partition holds at most a snapshot interval of txnIds and still detects older duplicates", async () => {
+  await withStore(async (store) => {
+    const key = modelPartition();
+    for (let seq = 1; seq <= 23; seq++) {
+      assertEquals(await store.append(await save(seq)), {
+        kind: "appended",
+        seq,
+      });
+      const count = store.cachedTxnIdCount("", key);
+      assert(count !== undefined && count <= 5, `seq ${seq}: ${count}`);
+    }
+    // Restored at seq 20: three txnIds since.
+    assertEquals(store.cachedTxnIdCount("", key), 3);
+    // Retries of commits from below the snapshot, and from before the one
+    // before it, are still duplicates.
+    assertEquals(await store.append(await save(2)), {
+      kind: "duplicate",
+      seq: 2,
+    });
+    assertEquals(await store.append(await save(17)), {
+      kind: "duplicate",
+      seq: 17,
+    });
+    assertEquals(await store.append(await save(22)), {
+      kind: "duplicate",
+      seq: 22,
+    });
+    assertEquals(await store.append(await save(24)), {
+      kind: "appended",
+      seq: 24,
+    });
+  }, { snapshotInterval: 5 });
+});
+
+Deno.test("SqliteCommitStore: without the bound a cached partition keeps every txnId", async () => {
+  await withStore(async (store) => {
+    for (let seq = 1; seq <= 23; seq++) await store.append(await save(seq));
+    assertEquals(store.cachedTxnIdCount("", modelPartition()), 23);
+  }, { snapshotInterval: 5, boundTxnIds: false });
+});
+
+// Group commit (swamp-club#3915); the equivalence property is in
+// sqlite_commit_store_group_commit_property_test.ts.
+
+Deno.test("SqliteCommitStore.append: a solo append is one transaction, and a burst shares them", async () => {
+  await withStore(async (store) => {
+    await store.append(await save(1));
+    assertEquals(store.appendTransactions, 1);
+    // Built before any is appended: a commit whose build finished first
+    // would otherwise be appended out of order and refused as a seq gap.
+    const commits = await Promise.all([2, 3, 4, 5, 6].map((seq) => save(seq)));
+    const burst = await Promise.all(
+      commits.map((commit) => store.append(commit)),
+    );
+    assertEquals(burst.map((result) => result.seq), [2, 3, 4, 5, 6]);
+    // The first of the burst starts alone; the rest queue behind it.
+    assert(store.appendTransactions < 6, `${store.appendTransactions}`);
+  });
+});
+
+Deno.test("SqliteCommitStore.append: a refused commit in a burst fails alone", async () => {
+  await withStore(async (store) => {
+    await store.append(await save(1));
+    const commits = [await save(2), await save(9), await save(3)];
+    const settled = await Promise.allSettled(
+      commits.map((commit) => store.append(commit)),
+    );
+    assertEquals(settled[0], {
+      status: "fulfilled",
+      value: { kind: "appended", seq: 2 },
+    });
+    assertEquals(settled[1].status, "rejected");
+    assertEquals(
+      ((settled[1] as PromiseRejectedResult).reason as CommitRejectedError)
+        .reason,
+      "seq-gap",
+    );
+    assertEquals(settled[2], {
+      status: "fulfilled",
+      value: { kind: "appended", seq: 3 },
+    });
+  });
+});
+
+Deno.test("SqliteCommitStore.append: a burst whose partition another connection wrote rebuilds and retries that commit alone", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const grouped = SqliteCommitStore.open(path);
+    const other = SqliteCommitStore.open(path);
+    try {
+      await grouped.append(await save(1));
+      await other.append(await save(2));
+      // The grouped store's partition is at seq 1; the file is at seq 2.
+      const commits = [
+        leaseCommit(1, 1),
+        await save(3),
+        await save(4),
+        leaseCommit(2, 1),
+      ];
+      const results = await Promise.all(
+        commits.map((commit) => grouped.append(commit)),
+      );
+      assertEquals(results, [
+        { kind: "appended", seq: 1 },
+        { kind: "appended", seq: 3 },
+        { kind: "appended", seq: 4 },
+        { kind: "appended", seq: 2 },
+      ]);
+      assertEquals(await grouped.head("", modelPartition()), {
+        seq: 4,
+        highestFence: 1,
+      });
+    } finally {
+      await other.close();
+      await grouped.close();
     }
   });
 });

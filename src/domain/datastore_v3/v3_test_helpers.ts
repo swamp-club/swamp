@@ -620,3 +620,76 @@ export function emptyModel(): Model {
     removed: {},
   };
 }
+
+/** A workflow id and a run id for {@link sampleIntent}. */
+export const SAMPLE_WORKFLOW_ID = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+export const SAMPLE_RUN_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+
+/** One valid intent of each kind. */
+export function sampleIntent(kind: Intent["kind"]): Intent {
+  const control: Record<string, string> = {
+    grant: "@swamp/grant",
+    group: "@swamp/group",
+    token: "@swamp/server-token",
+    "worker-token": "@swamp/enrollment-token",
+    worker: "@swamp/worker",
+  };
+  const prefix = kind.split(".")[0];
+  const model = modelRef(
+    control[prefix] === undefined
+      ? MODEL_TYPE
+      : ModelType.create(control[prefix]),
+    MODEL_ID,
+  );
+  switch (kind) {
+    case "data.save":
+    case "data.append":
+      return createIntent({ kind, model, name: "vpc", version: 1 });
+    case "data.delete":
+    case "data.gc":
+      return createIntent({ kind, model, name: "vpc" });
+    case "data.rename":
+      return createIntent({ kind, model, name: "vpc", to: "net" });
+    case "output.save":
+    case "output.delete":
+      return createIntent({ kind, model, outputId: "o" });
+    case "run.create":
+    case "run.update":
+    case "run.delete":
+    case "run-snapshot.save":
+    case "run-snapshot.delete":
+      return createIntent({
+        kind,
+        run: { workflowId: SAMPLE_WORKFLOW_ID, runId: SAMPLE_RUN_ID },
+      });
+    case "definition.create":
+    case "definition.edit":
+    case "definition.delete":
+      return createIntent({ kind, definition: { kind: "model", name: "web" } });
+    case "evaluated-workflow.save":
+    case "evaluated-workflow.delete":
+      return createIntent({
+        kind,
+        definition: { kind: "workflow", name: "deploy" },
+      });
+    case "definition.rename-to":
+      return createIntent({
+        kind,
+        definition: { kind: "model", name: "web" },
+        from: "old",
+      });
+    case "definition.rename-from":
+      return createIntent({
+        kind,
+        definition: { kind: "model", name: "old" },
+        to: "web",
+      });
+    case "auto-definition.save":
+    case "auto-definition.delete":
+      return createIntent({ kind, autoDefinition: { id: MODEL_ID } });
+    case "lockfile.write":
+      return createIntent({ kind });
+    default:
+      return createIntent({ kind, model });
+  }
+}

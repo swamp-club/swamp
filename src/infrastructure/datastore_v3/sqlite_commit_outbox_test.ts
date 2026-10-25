@@ -575,3 +575,109 @@ Deno.test("SqliteCommitOutbox: records the preparing process's identity, and a l
     }
   });
 });
+
+// Grouped prepares (swamp-club#3915).
+
+Deno.test("SqliteCommitOutbox.prepare: prepares made together share one fsynced transaction", async () => {
+  await withTempDir(async (dir) => {
+    const modes: number[] = [];
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"), {
+      onWrite: (synchronous) => modes.push(synchronous),
+    });
+    const commits = await Promise.all(
+      [1, 2, 3, 4].map(async (seq) =>
+        modelCommit(seq, [await savePut("a", seq)])
+      ),
+    );
+    await Promise.all(commits.map((commit) =>
+      outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: commit.seq - 1, txnId: undefined },
+      })
+    ));
+    assertEquals(modes, [2], "one FULL transaction for the burst");
+    assertEquals(
+      (await outbox.entries()).entries.map((entry) => entry.commit.seq),
+      [1, 2, 3, 4],
+    );
+    await outbox.close();
+  });
+});
+
+Deno.test("SqliteCommitOutbox.prepare: a failing prepare in a group fails alone", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    const good = modelCommit(1, [await savePut("a", 1)]);
+    const other = modelCommit(2, [await savePut("a", 2)]);
+    // A commit whose body cannot be written: its prepare throws mid-group.
+    const broken = Object.create(other, {
+      txnId: { value: "txn-broken" },
+      toJSON: {
+        value: () => {
+          throw new Error("cannot serialise");
+        },
+      },
+    }) as typeof other;
+    const settled = await Promise.allSettled(
+      [good, broken, other].map((commit) =>
+        outbox.prepare({
+          commit,
+          unitId: "u",
+          base: { seq: 0, txnId: undefined },
+        })
+      ),
+    );
+    assertEquals(settled.map((s) => s.status), [
+      "fulfilled",
+      "rejected",
+      "fulfilled",
+    ]);
+    assertEquals(
+      (await outbox.entries()).entries.map((entry) => entry.commit.txnId),
+      ["txn-1", "txn-2"],
+    );
+    await outbox.close();
+  });
+});
+
+Deno.test("SqliteCommitOutbox.prepare: a write made while prepares wait sees them first", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    const commit = modelCommit(1, [await savePut("a", 1)]);
+    const prepared = outbox.prepare({
+      commit,
+      unitId: "u",
+      base: { seq: 0, txnId: undefined },
+    });
+    // Let the prepare reach the group before the discard is made.
+    await Promise.resolve();
+    const discarded = outbox.discard([outboxKeyOf(commit)]);
+    await prepared;
+    await discarded;
+    assertEquals(await outbox.hasEntries(), false);
+    await outbox.close();
+  });
+});
+
+Deno.test("SqliteCommitOutbox.prepare: ungrouped prepares each write their own transaction", async () => {
+  await withTempDir(async (dir) => {
+    const modes: number[] = [];
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"), {
+      onWrite: (synchronous) => modes.push(synchronous),
+      groupPrepares: false,
+    });
+    const commits = await Promise.all(
+      [1, 2, 3].map(async (seq) => modelCommit(seq, [await savePut("a", seq)])),
+    );
+    await Promise.all(commits.map((commit) =>
+      outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: commit.seq - 1, txnId: undefined },
+      })
+    ));
+    assertEquals(modes, [2, 2, 2]);
+    await outbox.close();
+  });
+});

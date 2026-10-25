@@ -268,6 +268,18 @@ export interface CommitStore {
   ): Promise<Set<string>>;
 
   /**
+   * The partitions of `namespace` whose stored commits or compacted base
+   * records name chunk `sha256`, at most `limit` of them, in key order
+   * (swamp-club#3915). Serve authorises a chunk read by them. A chunk that
+   * compaction released is named by none.
+   */
+  partitionsReferencing(
+    namespace: string,
+    sha256: string,
+    limit: number,
+  ): Promise<readonly PartitionKey[]>;
+
+  /**
    * The history a compaction may fold under `retention`, the newest commits
    * and recent ones kept (swamp-club#3258).
    */

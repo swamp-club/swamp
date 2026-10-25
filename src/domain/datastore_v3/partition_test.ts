@@ -351,6 +351,40 @@ Deno.test("Partition.append: a put with a stale expect is refused and changes no
   );
 });
 
+Deno.test("Partition.append: an expect-failed refusal names the failing record key, message unchanged (swamp-club#3915)", async () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [await savePut("vpc", 1, "a", "absent")]));
+  // Another reason carries no key.
+  const gap = assertThrows(
+    () => partition.append(modelCommit(5, [versionOp("vpc", 2)])),
+    CommitRejectedError,
+  );
+  assertEquals(gap.reason, "seq-gap");
+  assertEquals(gap.key, undefined);
+
+  const absentAgain = modelCommit(2, [await savePut("vpc", 1, "b", "absent")]);
+  const absent = assertThrows(
+    () => partition.append(absentAgain),
+    CommitRejectedError,
+  );
+  assertEquals(absent.reason, "expect-failed");
+  assertEquals(absent.key?.toString(), dataKey("vpc", 1).toString());
+  assertEquals(
+    absent.message,
+    `Record ${
+      dataKey("vpc", 1)
+    } in partition ${modelPartition()} is not absent`,
+  );
+
+  const present = assertThrows(
+    () =>
+      partition.append(modelCommit(2, [deleteVersion("vpc", 2, "present")])),
+    CommitRejectedError,
+  );
+  assertEquals(present.reason, "expect-failed");
+  assertEquals(present.key?.toString(), dataKey("vpc", 2).toString());
+});
+
 Deno.test("Partition.append: tombstone expect 'present'", async () => {
   const partition = Partition.empty(modelPartition());
   assertRejected(

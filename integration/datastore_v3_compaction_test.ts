@@ -710,6 +710,11 @@ class CompactingAfterFirstPage implements CommitStore {
   referencedChunks(...args: Parameters<CommitStore["referencedChunks"]>) {
     return this.inner.referencedChunks(...args);
   }
+  partitionsReferencing(
+    ...args: Parameters<CommitStore["partitionsReferencing"]>
+  ) {
+    return this.inner.partitionsReferencing(...args);
+  }
   compactionStatus(...args: Parameters<CommitStore["compactionStatus"]>) {
     return this.inner.compactionStatus(...args);
   }

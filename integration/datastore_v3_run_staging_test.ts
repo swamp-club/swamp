@@ -89,7 +89,7 @@ import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import {
   readTree,
   type V3Env,
-  withV3Env,
+  withAuditedV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
 
 await initializeLogging({});
@@ -185,7 +185,7 @@ for (const namespace of ["", "infra"]) {
   const label = namespace === "" ? "an unnamespaced" : "a namespaced";
 
   Deno.test(`v3 run staging: run record writes match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new RunWriter(env, namespace);
       const workflow = plainWorkflow();
       const wfId = workflow.id;
@@ -461,7 +461,7 @@ async function storedRun(
 }
 
 Deno.test("v3 run staging: a run's unit commits when it ends succeeded, failed, suspended or cancelled, with the record the run saved last", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const type = registerWriter();
     // A model per context: each run's reports write versions of their own.
     const definition = () => Definition.create({ name: "writer" });
@@ -512,7 +512,7 @@ Deno.test("v3 run staging: a run's unit commits when it ends succeeded, failed, 
 });
 
 Deno.test("v3 run staging: a run whose consumer stops before an outcome commits nothing; one that stops at completed (result()) commits", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const type = registerWriter();
     const definition = Definition.create({ name: "writer" });
     const stopped = await runContext(env, "stopped", type, definition, [
@@ -551,7 +551,7 @@ Deno.test("v3 run staging: a run whose consumer stops before an outcome commits 
 });
 
 Deno.test("v3 run staging: with checkpoints, a run whose consumer stops before an outcome keeps the record its last checkpoint committed (swamp-club#3587)", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const type = registerWriter();
     const definition = Definition.create({ name: "writer" });
     const stopped = await runContext(env, "stopped", type, definition, [
@@ -590,7 +590,7 @@ function refusingModels(
 
 for (const reason of ["version-live", "expect-failed"] as const) {
   Deno.test(`v3 run staging: after a ${reason} refusal, the run commits with the step that wrote the refused data failed, and never names it as a success`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const type = registerWriter();
       const definition = Definition.create({ name: "writer" });
       const steps = [writeStep("a")];
@@ -656,7 +656,7 @@ for (const reason of ["version-live", "expect-failed"] as const) {
 }
 
 Deno.test("v3 run staging: without onRefused, a refused data partition commits no run record", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const type = registerWriter();
     const definition = Definition.create({ name: "writer" });
     const context = await runContext(env, "plain", type, definition, [
@@ -677,7 +677,7 @@ Deno.test("v3 run staging: without onRefused, a refused data partition commits n
 });
 
 Deno.test("v3 run staging: with checkpoints, a refused data partition keeps only the run record checkpointed before it, which never names the refused data (swamp-club#3587)", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const type = registerWriter();
     const definition = Definition.create({ name: "writer" });
     const context = await runContext(env, "plain", type, definition, [

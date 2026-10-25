@@ -72,7 +72,7 @@ import {
   readCatalog,
   readTree,
   type V3Env,
-  withV3Env,
+  withAuditedV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
 
 await initializeLogging({});
@@ -226,7 +226,7 @@ for (const namespace of ["", "infra"]) {
   const label = namespace === "" ? "an unnamespaced" : "a namespaced";
 
   Deno.test(`v3 staging: every data write path matches the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, namespace);
       const repo = writer.data;
       const type = MODEL_TYPE;
@@ -331,7 +331,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 staging: deferred writes commit when promoted, out of order and through reclaim, for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, namespace);
       const repo = writer.data;
       const type = MODEL_TYPE;
@@ -410,7 +410,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 staging: a staging error stops no promotion and is thrown after every receipt, for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, namespace);
       const repo = writer.data;
       const receipts = await writer.run(async () => [
@@ -438,7 +438,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 staging: an append to a version v3 holds with other metadata is refused, for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, namespace);
       const repo = writer.data;
       const stream = data("s", { streaming: true });
@@ -464,7 +464,7 @@ for (const namespace of ["", "infra"]) {
   });
 
   Deno.test(`v3 staging: output records match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, namespace);
       const old = ModelOutput.create({
         definitionId: MODEL_ID as DefinitionId,
@@ -613,7 +613,7 @@ async function deleteChunksOf(env: V3Env, commit: Commit): Promise<number> {
 }
 
 Deno.test("v3 staging: a saved version's chunks a sweep deleted before the commit landed are restored from its file", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     let deleted = 0;
     await writer.run(
@@ -629,7 +629,7 @@ Deno.test("v3 staging: a saved version's chunks a sweep deleted before the commi
 });
 
 Deno.test("v3 staging: a changed file cannot restore a deleted chunk; the landed commit stands, with a warning (swamp-club#3586)", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const contentPath = join(
       writer.data.getDataNameDir(MODEL_TYPE, MODEL_ID, "big"),
@@ -660,7 +660,7 @@ for (
   ] as const
 ) {
   Deno.test(`v3 staging: a saved version's file ${what} before its unit commits is refused, and nothing lands (swamp-club#3564)`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, "");
       const contentPath = join(
         writer.data.getDataNameDir(MODEL_TYPE, MODEL_ID, "big"),
@@ -702,7 +702,7 @@ class FailingRollbackRepository extends FileSystemUnifiedDataRepository {
 }
 
 Deno.test("v3 staging: a failed write's rollback error reaches the caller on v2, and the write's own error on v3", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const build = (hook: typeof writer.hook | undefined) =>
       new FailingRollbackRepository(
@@ -742,7 +742,7 @@ Deno.test("v3 staging: a failed write's rollback error reaches the caller on v2,
 
 for (const where of ["root", "child"] as const) {
   Deno.test(`v3 staging: collectGarbage and delete above MAX_COMMIT_OPS split across commits, in a ${where} unit`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new V3Writer(env, "");
       // Two tombstones per version: more than MAX_COMMIT_OPS changes.
       const count = MAX_COMMIT_OPS / 2 + 2;
@@ -779,7 +779,7 @@ for (const where of ["root", "child"] as const) {
 // emptied of every version continues above its old high-water mark.
 
 Deno.test("v3 staging: a name emptied by data delete continues above its old high-water mark", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const repo = writer.data;
     const save = (content: string) =>
@@ -794,7 +794,7 @@ Deno.test("v3 staging: a name emptied by data delete continues above its old hig
 });
 
 Deno.test("v3 staging: a deleted top version is not given to the next save", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const repo = writer.data;
     const save = (content: string) =>
@@ -808,7 +808,7 @@ Deno.test("v3 staging: a deleted top version is not given to the next save", asy
 });
 
 Deno.test("v3 staging: a save, a delete of the name and a save again inside one unit", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const repo = writer.data;
     const save = (content: string) =>
@@ -827,7 +827,7 @@ Deno.test("v3 staging: a save, a delete of the name and a save again inside one 
 });
 
 Deno.test("v3 staging: retention emptying a name leaves its next write above the old versions", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new V3Writer(env, "");
     const repo = writer.data;
     const save = (content: string) =>
@@ -859,7 +859,7 @@ for (const emptied of [false, true]) {
       emptied ? " after it emptied the name" : ""
     }`,
     async () => {
-      await withV3Env(async (env) => {
+      await withAuditedV3Env(async (env) => {
         const first = new V3Writer(env, "");
         const save = (writer: V3Writer, content: string) =>
           writer.data.save(MODEL_TYPE, MODEL_ID, data("shared"), text(content));

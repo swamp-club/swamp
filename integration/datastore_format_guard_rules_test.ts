@@ -107,7 +107,9 @@ async function openingOwners(): Promise<string[]> {
  * acquireModelLocks checks its config itself as well.
  *
  * serveCommand: its first datastore access is requireInitializedRepoUnlocked;
- * its dedicated audit datastores are checked directly.
+ * its dedicated audit datastores are checked directly. The datastore API's
+ * v3 handle (swamp-club#3915) is the one that requireInitializedRepoUnlocked
+ * already opened.
  *
  * datastoreSetupExtension checks the target datastore through its
  * assertDatastoreFormat dep before building anything that writes.
@@ -177,7 +179,7 @@ const GUARDED_PINNED = [
   "src/cli/commands/doctor_datastores.ts:createRepairDeps",
   // swamp-club#3473: serve's retention pass compacts v3 history through the
   // handle of the config requireInitializedRepoUnlocked checked.
-  "src/cli/commands/serve.ts:serveCommand (x4)",
+  "src/cli/commands/serve.ts:serveCommand (x5)",
   // swamp-club#3473: the end-of-command retention pass opens the repository
   // through requireInitializedRepo and resolveDatastoreForRepo, then
   // compacts v3 history through that checked config.
