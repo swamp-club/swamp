@@ -2008,3 +2008,55 @@ Deno.test("auto_resolver_adapters: registeredModelCount counts the extension's r
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("auto_resolver_adapters: registeredModelCount finds rows stored under the symlink-resolved repo path", async () => {
+  // A repo reached through a symlink (macOS /tmp) has catalog rows under the
+  // resolved path; the count must not drop to 0 (swamp-club#3911).
+  const realDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const linkParent = await Deno.makeTempDir({ prefix: "swamp_test_link_" });
+  const linkDir = join(linkParent, "repo");
+  const type = `@fake/linked-${crypto.randomUUID()}`;
+  const catalog = new ExtensionCatalogStore(
+    join(realDir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    await Deno.symlink(realDir, linkDir, { type: "dir" });
+    await ensureDir(join(realDir, ".swamp", "pulled-extensions", "@fake"));
+    modelRegistry.register({
+      type: ModelType.create(type),
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {},
+    } as unknown as ModelDefinition);
+    catalog.upsert({
+      type_normalized: type,
+      kind: "model",
+      bundle_path: "",
+      source_path: canonicalizePath(
+        join(
+          Deno.realPathSync(realDir),
+          ".swamp/pulled-extensions/@fake/linked/models/a.ts",
+        ),
+      ),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+    });
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath: join(linkDir, "upstream_extensions.json"),
+      repoDir: linkDir,
+      denoRuntime: stubDenoRuntime,
+      repository: makeRepoForCatalog(catalog, linkDir),
+    });
+    assertEquals(adapter.registeredModelCount?.("@fake/linked"), 1);
+  } finally {
+    modelRegistry.invalidateType(type);
+    catalog.close();
+    await Deno.remove(linkParent, { recursive: true });
+    await Deno.remove(realDir, { recursive: true });
+  }
+});

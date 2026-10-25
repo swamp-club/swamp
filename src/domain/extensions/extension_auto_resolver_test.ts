@@ -2009,3 +2009,19 @@ Deno.test("ExtensionAutoResolver - runs the install through the install schedule
     "unlock",
   ]);
 });
+
+Deno.test("ExtensionAutoResolver - never reports fewer behaviors than its own hot-load registered", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  // The installer's catalog does not show the rows yet.
+  installer.registeredModelCount = () => 0;
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(output.calls.at(-1), "installed:@swamp/aws@2026.03.16.1:3");
+});

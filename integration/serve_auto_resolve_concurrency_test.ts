@@ -156,7 +156,7 @@ Deno.test("integration: serve requests for one uninstalled type share an install
     const bare = resolver.resolve(type.slice(1));
     // A run that needs no new extension checks local models meanwhile.
     const run = refreshLocalModelsForRun();
-    await Promise.resolve();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
     assertEquals(events, []);
 
     gate.resolve();

@@ -364,6 +364,7 @@ export class ExtensionAutoResolver {
         logger.debug`Skipping re-entrant resolution for ${normalizedType}`;
         return false;
       }
+      logger.debug`Waiting for the running resolution of ${normalizedType}`;
       return await running;
     }
 
@@ -616,13 +617,16 @@ export class ExtensionAutoResolver {
   }
 
   /**
-   * The behavior types `extensionName` has registered, or `loaded` when the
-   * installer port cannot tell.
+   * The behavior types `extensionName` has registered, and never fewer than
+   * the `loaded` this resolution's hot-load registered itself, in case the
+   * installer cannot see them in its catalog.
    */
   private registeredModelCount(extensionName: string, loaded: number): number {
-    return this.config.extensionInstaller.registeredModelCount?.(
-      extensionName,
-    ) ?? loaded;
+    return Math.max(
+      this.config.extensionInstaller.registeredModelCount?.(extensionName) ??
+        0,
+      loaded,
+    );
   }
 
   /** Hot-loads every kind; returns the number of models loaded. */
