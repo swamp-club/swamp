@@ -122,7 +122,7 @@ export class TxnIdReusedError extends Error {
 
 /** Chunks a forwarded commit names that the store does not hold. */
 export class ChunksMissingError extends Error {
-  readonly code = "chunk_not_provided";
+  readonly code = "chunk_missing";
   constructor(readonly missing: readonly string[]) {
     super(
       `The commit names ${missing.length} chunk(s) the server does not ` +

@@ -67,7 +67,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, SEPARATOR } from "@std/path";
+import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
   type CatalogProjection,
   projectCatalog,
@@ -1457,15 +1457,22 @@ export class SqliteReadModel implements ReadModel {
     if (path === undefined) return undefined;
 
     const owner = commit.partition.toString();
-    const decision = decideFile(
-      this.#state.fileOwnership(commit.namespace, key),
-      owner,
-      position,
-      change.put !== null,
-    );
+    const prior = this.#state.fileOwnership(commit.namespace, key);
+    const decision = decideFile(prior, owner, position, change.put !== null);
     if (decision.kind === "keep") return undefined;
     touched.add(key);
     const source = { partition: owner, seq: commit.seq };
+    // A tombstone of a key no put ever owned names no file of its own. On
+    // a case- or normalisation-insensitive filesystem its path can still
+    // resolve to another key's file (`WEB.yaml` to `web.yaml`), which the
+    // tombstone must not remove (swamp-club#3915).
+    if (
+      change.put === null && prior === undefined &&
+      await isAliasedSpelling(path, this.#cacheRoot(commit.namespace))
+    ) {
+      this.#stats?.bump("removals_skipped");
+      return decision.kind === "remove" ? decision.next : undefined;
+    }
     if (decision.kind === "remove" || change.put === null) {
       // Nothing of the key is on disk in a net replay (swamp-club#3803).
       if (this.#net?.skipsRemoval(commit.namespace, key, position) === true) {
@@ -3422,4 +3429,38 @@ function closedError(): Error {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Whether `path` reaches a file only under another spelling: some segment
+ * below `root` has no directory entry of exactly its name, and yet `lstat`
+ * finds the path, as on a case- or normalisation-insensitive filesystem
+ * (APFS, NTFS) where `VPC/1/raw` reaches `vpc/1/raw`. False when nothing is
+ * there, or when every segment is spelled exactly.
+ */
+export async function isAliasedSpelling(
+  path: string,
+  root: string,
+): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+  const rel = relative(root, path);
+  if (rel === "" || rel.startsWith("..")) return false;
+  let dir = root;
+  for (const segment of rel.split(SEPARATOR)) {
+    let exact = false;
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.name === segment) {
+        exact = true;
+        break;
+      }
+    }
+    if (!exact) return true;
+    dir = join(dir, segment);
+  }
+  return false;
 }

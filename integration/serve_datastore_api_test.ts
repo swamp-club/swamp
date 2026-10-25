@@ -737,3 +737,37 @@ Deno.test({
     }, ledger);
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a chunk upload without a length is 411, and a commit declaring a malformed chunk size is 400",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const sha = "a".repeat(64);
+      // A streamed body carries no Content-Length.
+      const upload = await fetch(`${server.url}/chunks/${sha}`, {
+        method: "PUT",
+        headers: { authorization: "Bearer alice-token" },
+        body: ReadableStream.from([new TextEncoder().encode("x")]),
+      });
+      assertEquals(upload.status, 411);
+      assertEquals((await upload.json()).code, "length_required");
+
+      for (const size of [-1, 1.5, "8"]) {
+        const refused = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: await blobSaveOps(server, "vpc", 1, new Uint8Array(0)),
+            chunks: [{ sha256: sha, size }],
+          }),
+        );
+        assertEquals(refused.status, 400, String(size));
+      }
+    });
+  },
+});

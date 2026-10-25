@@ -31,6 +31,7 @@ import {
   MODEL_ID,
   MODEL_TYPE,
   modelCommit,
+  modelIntent,
   modelPartition,
   savePut,
   versionOp,
@@ -43,9 +44,11 @@ import { readModelStateDir } from "./record_path_guard.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  isAliasedSpelling,
   SqliteReadModel,
   type SqliteReadModelOptions,
 } from "./sqlite_read_model.ts";
+import { tombstoneOp } from "../../domain/datastore_v3/op.ts";
 import { catalogRow } from "./v3_catalog.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 
@@ -628,4 +631,49 @@ Deno.test({
       }
     });
   },
+});
+
+Deno.test("SqliteReadModel: a tombstone of a key nothing owns leaves a file another spelling of the key reaches (swamp-club#3915)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+    // On a case-insensitive filesystem `VPC/1/raw` resolves to `vpc/1/raw`.
+    await env.append(2, "", [
+      tombstoneOp({
+        intent: modelIntent({ kind: "data.delete", name: "VPC", version: 1 }),
+        key: dataKey("VPC", 1),
+      }),
+    ]);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(env.contentPath("", "vpc", 1)), "vpc@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("isAliasedSpelling: only a file reached under another spelling of its name", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-aliased-spelling-" });
+  try {
+    await Deno.mkdir(join(dir, "models"));
+    await Deno.writeTextFile(join(dir, "models", "web.yaml"), "x");
+    const at = (...segments: string[]) =>
+      isAliasedSpelling(join(dir, ...segments), dir);
+    assertEquals(await at("models", "web.yaml"), false);
+    assertEquals(await at("models", "missing.yaml"), false);
+    // Where the filesystem folds case the upper-case spelling reaches the
+    // file and is an alias; where it does not, nothing is there.
+    let folds = true;
+    try {
+      await Deno.lstat(join(dir, "MODELS", "web.yaml"));
+    } catch {
+      folds = false;
+    }
+    // In a directory segment and in the file name alike.
+    assertEquals(await at("MODELS", "web.yaml"), folds);
+    assertEquals(await at("models", "WEB.yaml"), folds);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

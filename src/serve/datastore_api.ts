@@ -320,7 +320,8 @@ class DatastoreApi {
     if (!isSha256Hex(sha256)) {
       return failure(400, "invalid_request", "Not a SHA-256 hex digest");
     }
-    const size = Number(req.headers.get("content-length"));
+    const length = req.headers.get("content-length");
+    const size = length === null || length.trim() === "" ? NaN : Number(length);
     if (!Number.isSafeInteger(size) || size < 0) {
       return failure(411, "length_required", "Content-Length is required");
     }
@@ -429,13 +430,19 @@ class DatastoreApi {
     }
     // Key ownership is read from serve's read model: catch it up first, so
     // it includes everything serve itself committed.
-    await this.#catchUp();
-    const authorization = await authorizeCommit(
-      partition,
-      ops,
-      this.#resolver,
-      this.#writeAuthority(),
-    );
+    let authorization;
+    try {
+      await this.#catchUp();
+      authorization = await authorizeCommit(
+        partition,
+        ops,
+        this.#resolver,
+        this.#writeAuthority(),
+      );
+    } catch (error) {
+      await reader.cancel();
+      throw error;
+    }
     if (!authorization.ok) {
       await reader.cancel();
       return Response.json({
@@ -472,10 +479,13 @@ class DatastoreApi {
     // append, and a grant revoked during the upload applies.
     const landed = await withForwardedLock(this.#v3, async () => {
       await this.#catchUp();
+      // Looked up afresh: a definition retagged during the upload is judged
+      // as it is now.
+      const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
       const recheck = await authorizeCommit(
         partition,
         ops,
-        this.#resolver,
+        resolver,
         this.#writeAuthority(),
       );
       if (!recheck.ok) return recheck;
@@ -733,14 +743,18 @@ class DatastoreApi {
     declared: readonly { sha256: string; size: number }[],
     signal: AbortSignal,
   ): Promise<Set<string> | Response> {
-    const hashes = new Set<string>();
+    const staged = new Map<string, number>();
+    let pending = 0;
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
     try {
       for (const chunk of declared) {
+        // What this request staged counts too: it is recorded only once
+        // the batch is durable.
+        pending += chunk.size;
         if (
           !this.#deps.ledger.admit(
             this.#caller.principal,
-            Math.max(0, chunk.size),
+            pending,
             this.#now(),
           ).allowed
         ) {
@@ -757,18 +771,23 @@ class DatastoreApi {
           signal,
         );
         await batch.put(verified.sha256, verified.bytes, signal);
+        staged.set(verified.sha256, verified.size);
+      }
+      await reader.assertEnd(signal);
+      if (staged.size === 0) return new Set();
+      await batch.commit(signal);
+      // Recorded once durable: a batch discarded on a later failure leaves
+      // nothing counting toward the quota.
+      for (const [sha256, size] of staged) {
         this.#deps.ledger.record(
           this.#caller.principal,
           this.#storageNamespace,
-          verified.sha256,
-          verified.size,
+          sha256,
+          size,
           this.#now(),
         );
-        hashes.add(verified.sha256);
       }
-      await reader.assertEnd(signal);
-      if (hashes.size > 0) await batch.commit(signal);
-      return hashes;
+      return new Set(staged.keys());
     } finally {
       await batch.discard();
     }
@@ -1009,12 +1028,18 @@ function parseEnvelope(value: unknown): CommitEnvelope {
     throw new Error(`chunks must hold at most ${MAX_CHUNKS_PER_COMMIT} chunks`);
   }
   for (const chunk of declared) {
+    const { sha256, size } = (chunk ?? {}) as {
+      sha256?: unknown;
+      size?: unknown;
+    };
     if (
       typeof chunk !== "object" || chunk === null ||
-      typeof (chunk as { sha256?: unknown }).sha256 !== "string" ||
-      typeof (chunk as { size?: unknown }).size !== "number"
+      typeof sha256 !== "string" || !isSha256Hex(sha256) ||
+      typeof size !== "number" || !Number.isSafeInteger(size) || size < 0
     ) {
-      throw new Error("each chunk must be {sha256, size}");
+      throw new Error(
+        "each chunk must be {sha256, size}: a SHA-256 hex digest and a non-negative integer",
+      );
     }
   }
   return {

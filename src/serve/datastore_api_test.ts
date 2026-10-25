@@ -128,7 +128,7 @@ Deno.test("datastoreErrorResponse: conflicts are 409s a client can act on", asyn
   const missing = await reply(new ChunksMissingError(["c".repeat(64)]));
   assertEquals([missing.status, missing.body.code], [
     409,
-    "chunk_not_provided",
+    "chunk_missing",
   ]);
 });
 
