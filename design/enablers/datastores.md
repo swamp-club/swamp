@@ -5168,10 +5168,11 @@ leave every checkout with the same records.
   stores again from the file any committed chunk it alone still holds whole,
   verifying right-size parts on filesystem storage), then removes each file in the materialised
   directories that no commit owns and that changed since the marker's start.
-  It says on stderr, in both output modes and silenced by `-q`, that it is
+  It says on stderr, in log mode and silenced by `-q`, that it is
   recovering work an interrupted command left in this checkout, so the
   seconds it takes on a populated checkout never look like a hang
-  (swamp-club#3893).
+  (swamp-club#3893). JSON mode writes nothing there, so a failing command's
+  stderr stays one JSON document (swamp-club#3902).
   Never touched are the checkout's own files (`isCheckoutLocalKey`), each
   named exactly: an atomic write's temporary file (`.<uuid>.tmp`), a `.lock`
   file, a workflow's run index (`workflow-runs/<id>/.runs-index.json`), the
@@ -6562,6 +6563,12 @@ coordinator passes that scope as `slowLockScope`:
   stays silent.
 
 A registration without `slowLockScope` logs no advice (swamp-club#2941).
+
+**Progress lines.** Lock-wait and sync progress (`createLockProgressWriter`,
+` system │ Waiting for …`) goes to stderr in log mode only, and `-q` silences
+it. JSON mode has no console log output and a failing command's stderr must
+stay one JSON document (see `design/surfaces/auth-gate.md`), so the writer
+writes nothing there (swamp-club#3902).
 
 ### Lock Lifecycle
 

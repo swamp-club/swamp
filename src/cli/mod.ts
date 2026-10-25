@@ -283,6 +283,7 @@ import {
   enableV3RecoveryProgress,
   ensureManagedConfigBase,
   resolveManagedConfigPaths,
+  setLockProgressOutputMode,
   setLockProgressQuiet,
 } from "./repo_context.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
@@ -2765,6 +2766,7 @@ async function runInvocation(
       setConsoleGuardJsonMode(outputMode === "json");
       quietRequested = options.quiet ?? false;
       setLockProgressQuiet(quietRequested);
+      setLockProgressOutputMode(outputMode);
       enableV3RecoveryProgress();
 
       // The colour switch was already flipped at the top of `runCli`. This

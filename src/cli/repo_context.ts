@@ -208,6 +208,17 @@ export function setLockProgressQuiet(quiet: boolean): void {
   lockProgressQuiet = quiet;
 }
 
+// JSON mode has no console log output, and a failing command's stderr must
+// stay one JSON document (design/surfaces/auth-gate.md), so progress is
+// written in log mode only. Set once per invocation from the CLI's global
+// action (swamp-club#3902).
+let lockProgressJson = false;
+
+/** Tell lock-wait, sync and v3 recovery progress the invocation's output mode. */
+export function setLockProgressOutputMode(mode: OutputMode): void {
+  lockProgressJson = mode === "json";
+}
+
 const writeStderrLine = (line: string): void => console.error(line);
 
 /**
@@ -228,7 +239,7 @@ export function createLockProgressWriter(
   writeStderr: (line: string) => void = writeStderrLine,
 ): LockProgressWriter {
   return (message: string) => {
-    if (lockProgressQuiet) return;
+    if (lockProgressQuiet || lockProgressJson) return;
     writeStderr(`${labeledPrefix(label)} ${message}`);
   };
 }
