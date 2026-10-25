@@ -386,6 +386,7 @@ import {
   reloadAfterExtensionChange,
   seedPulledTypeSnapshot,
   serveReloadStatus,
+  withExtensionMutation,
 } from "../../serve/extension_reload.ts";
 import { refreshLocalModelsForRun } from "../../serve/local_model_refresh.ts";
 import {
@@ -3312,6 +3313,10 @@ export const serveCommand = new Command()
     // The first check of local models for edits records what they look
     // like now, so the first run does not pay for it (swamp-club#3284).
     await refreshLocalModelsForRun();
+    // An auto-install takes its turn with that refresh and hot-reload, so a
+    // run's refresh never rebundles a half-installed extension
+    // (swamp-club#3911).
+    getAutoResolver()?.setInstallScheduler(withExtensionMutation);
 
     // Restriction entries that cannot match restrict nothing; say so now
     // that the model registry is indexed (swamp-club#3129).

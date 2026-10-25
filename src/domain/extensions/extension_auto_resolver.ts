@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { getLogger } from "@logtape/logtape";
 import { withSpan } from "../../infrastructure/tracing/tracer.ts";
 import { CalVer } from "../models/calver.ts";
@@ -155,6 +156,14 @@ export interface ExtensionInstallerPort {
   withInstallLock<T>(fn: () => Promise<T>): Promise<T>;
   /** Whether `normalizedType` is registered in any type registry. */
   providesType(normalizedType: string): Promise<boolean>;
+  /**
+   * How many behavior types the named extension provides that are
+   * registered now, loaded or lazy, whoever loaded them; undefined when the
+   * installer cannot tell. Without an answer the installed line reports the
+   * types this resolution's hot-load loaded itself, which is 0 when another
+   * caller loaded them first (swamp-club#3911).
+   */
+  registeredModelCount?(extensionName: string): number | undefined;
 }
 
 /**
@@ -263,7 +272,22 @@ export interface ExtensionAutoResolverConfig {
  */
 export class ExtensionAutoResolver {
   private readonly config: ExtensionAutoResolverConfig;
-  private readonly resolving = new Set<string>();
+  /**
+   * Resolutions running now, keyed by type without its leading `@`, so the
+   * two spellings serve's direct-type path tries share one. A caller that
+   * finds its type here awaits it rather than failing (swamp-club#3911).
+   */
+  private readonly inFlight = new Map<string, Promise<boolean>>();
+  /** Set in the async chain of a running resolution. */
+  private readonly insideResolution = new AsyncLocalStorage<true>();
+  /**
+   * Runs the inspect, install and hot-load of an auto-install, once the
+   * install lock is held. `swamp serve` sets it so an install takes its
+   * turn with the per-run refresh of local models and hot-reload, which
+   * rebundle the same sources (swamp-club#3911).
+   */
+  private installScheduler: <T>(fn: () => Promise<T>) => Promise<T> = (fn) =>
+    fn();
   /**
    * Collectives already warned about as untrusted this process, so multiple
    * types from the same untrusted collective surface the
@@ -273,6 +297,12 @@ export class ExtensionAutoResolver {
 
   constructor(config: ExtensionAutoResolverConfig) {
     this.config = config;
+  }
+
+  setInstallScheduler(
+    scheduler: <T>(fn: () => Promise<T>) => Promise<T>,
+  ): void {
+    this.installScheduler = scheduler;
   }
 
   updateAllowedCollectives(collectives: string[]): void {
@@ -323,10 +353,18 @@ export class ExtensionAutoResolver {
    * false otherwise.
    */
   async resolve(normalizedType: string): Promise<boolean> {
-    // Re-entrancy guard
-    if (this.resolving.has(normalizedType)) {
-      logger.debug`Skipping re-entrant resolution for ${normalizedType}`;
-      return false;
+    const key = normalizedType.startsWith("@")
+      ? normalizedType.slice(1)
+      : normalizedType;
+    const running = this.inFlight.get(key);
+    if (running) {
+      // A call made from inside a resolution never waits for another: that
+      // one may be waiting on the install lock this chain holds.
+      if (this.insideResolution.getStore()) {
+        logger.debug`Skipping re-entrant resolution for ${normalizedType}`;
+        return false;
+      }
+      return await running;
     }
 
     // Check if the collective is allowlisted
@@ -357,11 +395,15 @@ export class ExtensionAutoResolver {
       return false;
     }
 
-    this.resolving.add(normalizedType);
+    const resolution = this.insideResolution.run(
+      true,
+      () => this.doResolve(normalizedType, collective),
+    );
+    this.inFlight.set(key, resolution);
     try {
-      return await this.doResolve(normalizedType, collective);
+      return await resolution;
     } finally {
-      this.resolving.delete(normalizedType);
+      this.inFlight.delete(key);
     }
   }
 
@@ -435,11 +477,13 @@ export class ExtensionAutoResolver {
     try {
       return await extensionInstaller.withInstallLock(() => {
         lockHeld = true;
-        return this.installAndLoadLocked(
-          extensionName,
-          normalizedType,
-          extInfo,
-          version,
+        return this.installScheduler(() =>
+          this.installAndLoadLocked(
+            extensionName,
+            normalizedType,
+            extInfo,
+            version,
+          )
         );
       });
     } catch (error) {
@@ -494,7 +538,7 @@ export class ExtensionAutoResolver {
         output.installed(
           extensionName,
           inspection.installedVersion ?? version,
-          adopted,
+          this.registeredModelCount(extensionName, adopted),
         );
         return true;
       }
@@ -562,9 +606,23 @@ export class ExtensionAutoResolver {
       return false;
     }
 
-    output.installed(extensionName, installResult.version, newModelsCount);
+    output.installed(
+      extensionName,
+      installResult.version,
+      this.registeredModelCount(extensionName, newModelsCount),
+    );
 
     return true;
+  }
+
+  /**
+   * The behavior types `extensionName` has registered, or `loaded` when the
+   * installer port cannot tell.
+   */
+  private registeredModelCount(extensionName: string, loaded: number): number {
+    return this.config.extensionInstaller.registeredModelCount?.(
+      extensionName,
+    ) ?? loaded;
   }
 
   /** Hot-loads every kind; returns the number of models loaded. */

@@ -375,6 +375,13 @@ takes the per-checkout pulled-extensions lock (see
 [Concurrency Safety](#concurrency-safety)), which serializes it against
 explicit installs and removals.
 
+In `swamp serve` the inspect, install and load also take their turn with
+hot-reload and the per-run refresh of local models
+(`withExtensionMutation` in `src/serve/extension_reload.ts`). Without it, a
+run's refresh pass sees the new lockfile entry and rebundles the extension
+alongside the install. Runs that start during an install wait for it in their
+refresh pass (swamp-club#3911).
+
 The registry calls one auto-install makes — for the extension and each
 dependency it pulls — share a single 150s deadline
 (`AUTO_RESOLVE_INSTALL_DEADLINE_MS` in `src/cli/auto_resolver_adapters.ts`), so
@@ -1886,8 +1893,12 @@ works as soon as auto-resolve pulls `@swamp/aws`, with no separate command.
 
 ### Re-Entrancy Guard
 
-If auto-resolution is already running for a type, further attempts for it are
-skipped, preventing infinite loops.
+A process runs one auto-resolution per type at a time. A caller that asks for
+a type already being resolved, for example a second `swamp serve` request,
+waits for that resolution and gets its result; the `@`-prefixed and bare
+spellings of a type count as one. A call made from inside a running
+resolution is refused at once instead, which prevents infinite loops and never
+waits on the install lock the caller's own chain holds (swamp-club#3911).
 
 ### Architecture
 
@@ -1898,7 +1909,9 @@ discovery.
 ### Output
 
 Auto-resolution always prints status: searching, installing, and a confirmation
-with the number of behaviors loaded.
+with the number of behaviors the extension has registered, counted from its
+catalog rows, so a caller that adopts an install another caller already loaded
+still reports the extension's full count (swamp-club#3911).
 
 ## Safety
 

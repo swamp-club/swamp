@@ -565,6 +565,29 @@ export function createAutoResolveInstallerAdapter(
       return webhookTypeRegistry.has(normalizedType);
     },
 
+    // Read from the catalog, since hot-loaded types are registered without
+    // the providing extension's name (swamp-club#3911).
+    registeredModelCount(extensionName: string): number | undefined {
+      if (!repository) return undefined;
+      const prefix = `${
+        canonicalizePath(
+          join(resolvePulledExtensionsRoot(repoDir), extensionName),
+        )
+      }/`;
+      const types = new Set<string>();
+      for (
+        const row of repository.getCatalogStore().findBySourcePathPrefix(prefix)
+      ) {
+        if (
+          row.kind === "model" && row.source_path.startsWith(prefix) &&
+          modelRegistry.has(row.type_normalized)
+        ) {
+          types.add(row.type_normalized);
+        }
+      }
+      return types.size;
+    },
+
     failedLocalSourceMatchesType(typeNormalized: string): boolean {
       if (!repository) return false;
       const paths = repository.getCatalogStore().getFailedLocalSourcePaths();

@@ -1954,3 +1954,57 @@ Deno.test("auto_resolver_adapters: install keeps a new dependency's skill out of
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("auto_resolver_adapters: registeredModelCount counts the extension's registered behavior types only", async () => {
+  // swamp-club#3911: another caller may have loaded the types, so the count
+  // comes from the catalog and the registry, not from this hot-load.
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const loaded = `@fake/count-${crypto.randomUUID()}`;
+  const catalog = new ExtensionCatalogStore(
+    join(tmpDir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    modelRegistry.register({
+      type: ModelType.create(loaded),
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {},
+    } as unknown as ModelDefinition);
+    const row = (type: string, kind: "model" | "extension", rel: string) =>
+      catalog.upsert({
+        type_normalized: type,
+        kind,
+        bundle_path: "",
+        source_path: canonicalizePath(join(tmpDir, rel)),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+      });
+    const root = ".swamp/pulled-extensions";
+    row(loaded, "model", `${root}/@fake/count/models/a.ts`);
+    // Indexed but unregistered, another kind, and a sibling extension.
+    row(
+      `@fake/gone-${crypto.randomUUID()}`,
+      "model",
+      `${root}/@fake/count/models/b.ts`,
+    );
+    row(loaded, "extension", `${root}/@fake/count/models/c.ts`);
+    row(loaded, "model", `${root}/@fake/count-other/models/a.ts`);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath: join(tmpDir, "upstream_extensions.json"),
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      repository: makeRepoForCatalog(catalog, tmpDir),
+    });
+    assertEquals(adapter.registeredModelCount?.("@fake/count"), 1);
+    assertEquals(adapter.registeredModelCount?.("@fake/none"), 0);
+  } finally {
+    modelRegistry.invalidateType(loaded);
+    catalog.close();
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
