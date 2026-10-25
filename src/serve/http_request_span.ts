@@ -21,6 +21,10 @@ import {
   SpanStatusCode,
   withServerSpan,
 } from "../infrastructure/tracing/mod.ts";
+import {
+  datastoreRouteTemplate,
+  matchDatastoreRoute,
+} from "./datastore_routes.ts";
 
 // Routes `swamp serve` answers at a fixed path. Kept in step with the request
 // handler in src/cli/commands/serve.ts.
@@ -57,6 +61,8 @@ export function resolveHttpRoute(pathname: string): string | undefined {
   if (EXACT_ROUTES.has(pathname)) return pathname;
   if (CANCEL_RUN_PATTERN.test(pathname)) return "/api/v1/cancel/{kind}/{id}";
   if (pathname.startsWith("/dashboard/")) return "/dashboard/*";
+  const datastore = matchDatastoreRoute(pathname);
+  if (datastore !== undefined) return datastoreRouteTemplate(datastore);
   // The data plane owns everything under these two roots (data_plane.ts).
   const root = DATA_PLANE_ROOT_PATTERN.exec(pathname)?.[1];
   if (root) return `/${root}/*`;

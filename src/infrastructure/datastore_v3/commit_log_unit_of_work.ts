@@ -363,6 +363,13 @@ interface Group {
    * this, so a refusal of one drops the splits after it.
    */
   readonly formation: number;
+  /**
+   * A forwarded commit's (swamp-club#3915): the head its client built on.
+   * The commit is refused rather than rebuilt when the head has moved.
+   */
+  readonly expectedSeq?: number;
+  /** A forwarded commit's caller, stamped by serve. */
+  readonly principal?: string;
 }
 
 /** What a commit-log unit exposes to its children. Adapter-private. */
@@ -1216,6 +1223,11 @@ async function appendGroup(
         );
         const head = base ??
           await options.sink.head(options.namespace, group.partition);
+        if (
+          group.expectedSeq !== undefined && head.seq !== group.expectedSeq
+        ) {
+          throw new StaleSeqError(group.partition, group.expectedSeq, head.seq);
+        }
         const commit = Commit.create({
           seq: head.seq + 1,
           partition: group.partition,
@@ -1223,6 +1235,9 @@ async function appendGroup(
           txnId: group.txnId,
           writer: options.writer,
           ...(options.fence === undefined ? {} : { fence: options.fence }),
+          ...(group.principal === undefined
+            ? {}
+            : { principal: group.principal }),
           at: clock().toISOString(),
           ops,
         });
@@ -1355,6 +1370,91 @@ async function storeGroup(
 }
 
 /** A unit's outbox bookkeeping. */
+/**
+ * A forwarded commit built on a head that has moved (swamp-club#3915): its
+ * client catches up and builds it again.
+ */
+export class StaleSeqError extends Error {
+  readonly code = "stale_seq";
+  constructor(
+    readonly partition: PartitionKey,
+    readonly expectedSeq: number,
+    /** The partition's head now. */
+    readonly seq: number,
+  ) {
+    super(
+      `Partition ${partition} is at seq ${seq}, not ${expectedSeq}: catch up and retry`,
+    );
+    this.name = "StaleSeqError";
+  }
+}
+
+/** A commit a client built, for serve to append (swamp-club#3915). */
+export interface ForwardedCommit {
+  readonly partition: PartitionKey;
+  /** The client's id for the commit; a retry carries the same one. */
+  readonly txnId: string;
+  /** The head the client built on: the commit lands at the next seq. */
+  readonly expectedSeq: number;
+  /** The authenticated caller. */
+  readonly principal: string;
+  readonly ops: readonly Op[];
+}
+
+/**
+ * Appends a forwarded commit through the same path a unit's commits take:
+ * the partition's lock, the outbox prepare, the append and its settle, with
+ * the writer, fence and namespace of `options`, never the client's. The
+ * head is checked against `expectedSeq` under the lock. Its content must
+ * already be stored. Resolves once the commit has landed; a commit refused
+ * or stale is discarded from the outbox.
+ *
+ * @throws StaleSeqError when the partition's head is not `expectedSeq`
+ * @throws CommitRejectedError when the partition refuses the commit
+ */
+export async function appendForwardedCommit(
+  options: CommitLogUnitOptions,
+  forwarded: ForwardedCommit,
+): Promise<void> {
+  const clock = options.clock ?? (() => new Date());
+  const group: Group = {
+    partition: forwarded.partition,
+    txnId: forwarded.txnId,
+    formedAt: clock().getTime(),
+    changes: forwarded.ops.map((op) => ({
+      partition: forwarded.partition,
+      op,
+    })),
+    formation: 0,
+    expectedSeq: forwarded.expectedSeq,
+    principal: forwarded.principal,
+  };
+  const unitOutbox: UnitOutbox = {
+    unitId: crypto.randomUUID(),
+    prepared: new Map(),
+  };
+  try {
+    await appendGroup(
+      group,
+      options,
+      clock,
+      new WeakMap(),
+      new WeakSet(),
+      unitOutbox,
+    );
+  } catch (error) {
+    // A refused or stale commit never lands: give up its entry. Any other
+    // failure keeps it, so recovery lands it once and a retry under the
+    // same txnId finds it.
+    if (
+      error instanceof CommitRejectedError || error instanceof StaleSeqError
+    ) {
+      await discardEntries(options, unitOutbox, [group]);
+    }
+    throw error;
+  }
+}
+
 interface UnitOutbox {
   readonly unitId: string;
   /** Entries prepared and not settled, by the group's txnId. */

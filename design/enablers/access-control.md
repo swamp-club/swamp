@@ -1014,6 +1014,13 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   whose cancel or attach arrives after its definition was deleted (the run
   records its behavior type) — and method run and create gate every
   control-plane type as admin.
+- **Forwarded commits.** Serve's datastore API (team mode, swamp-club#3915)
+  decides every op on a control-plane behavior, and every control-plane
+  intent (`grant.*`, `token.*`, …), as `admin` on the record, including a
+  grant written as plain data. A key that lands in a control-plane behavior's
+  paths under another behavior's intent is refused whoever sends it, and a
+  landed control-plane commit reloads the policy snapshot. See "Team mode:
+  serve's datastore API" in `design/enablers/datastores.md`.
 - **Decided as admin.** The decision service decides every action on a
   control-plane record as `admin`, whatever the request asked for
   (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or

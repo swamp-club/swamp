@@ -28,6 +28,8 @@ import { join, relative, SEPARATOR } from "@std/path";
 import { walk } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
+import { checkCommitBindings } from "../src/domain/datastore_v3/commit_authorization.ts";
+import { CommitsCompactedError } from "../src/domain/datastore_v3/commit_store.ts";
 import { Commit, type CommitProps } from "../src/domain/datastore_v3/commit.ts";
 import type { Op } from "../src/domain/datastore_v3/op.ts";
 import type {
@@ -257,4 +259,53 @@ function sortedJson(text: string): string {
       Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)),
     ),
   );
+}
+
+/**
+ * {@link withV3Env}, then checks that every commit the scenario landed
+ * passes the binding rules serve applies to a forwarded commit
+ * (swamp-club#3915): the write-path audit. The staging gates run through
+ * it, so a repository write whose key, op kind or data-version pairing a
+ * forwarded commit would be refused for fails its gate.
+ */
+export async function withAuditedV3Env(
+  fn: (env: V3Env) => Promise<void>,
+): Promise<void> {
+  await withV3Env(async (env) => {
+    await fn(env);
+    await assertCommitsBind(env.store);
+  });
+}
+
+/** Asserts every commit in `store` passes {@link checkCommitBindings}. */
+export async function assertCommitsBind(
+  store: SqliteCommitStore,
+): Promise<void> {
+  let cursor = 0;
+  for (;;) {
+    let page;
+    try {
+      page = await store.changesSince(cursor, 1_000);
+    } catch (error) {
+      // A scenario that compacted its history keeps no feed below the
+      // compaction point: what it left above it is still checked.
+      if (!(error instanceof CommitsCompactedError)) throw error;
+      cursor = error.point;
+      continue;
+    }
+    if (page.length === 0) return;
+    for (const { commit } of page) {
+      const result = checkCommitBindings(commit.partition, commit.ops);
+      if (!result.ok) {
+        throw new Error(
+          `A repository write would be refused when forwarded: ` +
+            `${result.reason}: ${result.message} in ${commit.partition}: ` +
+            JSON.stringify(
+              commit.toJSON().ops.map((op) => ({ ...op, inline: undefined })),
+            ),
+        );
+      }
+    }
+    cursor = page[page.length - 1].cursor;
+  }
 }

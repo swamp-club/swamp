@@ -853,6 +853,18 @@ export class SqliteReadModel implements ReadModel {
     });
   }
 
+  /**
+   * Which partition owns a record key's file, as of the last commit this
+   * read model applied (swamp-club#3915): serve checks a forwarded put
+   * against it, after catching up.
+   */
+  fileOwner(
+    namespace: string,
+    key: string,
+  ): Promise<FileOwnership | undefined> {
+    return this.#afterPage(() => this.#state.fileOwnership(namespace, key));
+  }
+
   chunksInUse(namespace: string): Promise<ReadonlySet<string>> {
     return this.#afterPage(() => {
       const chunks = this.#state.chunksInUseIfComplete(namespace);

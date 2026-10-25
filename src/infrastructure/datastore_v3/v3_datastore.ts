@@ -101,9 +101,11 @@ import type {
 } from "../persistence/repo_unit_of_work.ts";
 import { currentUnitOfWork } from "../persistence/unit_of_work_scope.ts";
 import {
+  appendForwardedCommit,
   checkpointFrom,
   commitLogParentFor,
   createCommitLogUnitOfWork,
+  type ForwardedCommit,
   type UnitTracker,
 } from "./commit_log_unit_of_work.ts";
 import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
@@ -649,6 +651,16 @@ export interface V3Datastore {
     },
   ): CommitLogEngine;
   /**
+   * Appends a commit a client built (swamp-club#3915) through this handle's
+   * sink, so it queues behind this process's own commits to the partition,
+   * with this handle's writer, fence and namespace. Its content must already
+   * be stored.
+   *
+   * @throws StaleSeqError when the partition's head is not the commit's
+   *   expected seq
+   */
+  appendForwarded(forwarded: ForwardedCommit): Promise<void>;
+  /**
    * Sweeps this datastore's unreferenced chunks in this checkout's namespace
    * past the default grace period (`swamp datastore gc`). Run it only while
    * this process holds the writer lock. With `verify`, first reads and
@@ -981,6 +993,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     forgetDroppedWork() {
       units.droppedSince = undefined;
       units.droppedDirs.clear();
+    },
+    appendForwarded(forwarded) {
+      const fence = options.writerFence?.();
+      return appendForwardedCommit({
+        sink,
+        chunkStore,
+        namespace: unitNamespace,
+        writer,
+        signal: lifetime.signal,
+        ...(fence === undefined ? {} : { fence }),
+      }, forwarded);
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const fenced = () => {

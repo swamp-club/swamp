@@ -17,11 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   checkIpBurst,
+  checkPrincipalRate,
   checkRateLimit,
   clearRateLimit,
+  MAX_PRINCIPAL_RATE_BUCKETS,
+  PRINCIPAL_RATE_BURST,
+  PRINCIPAL_RATE_PER_MINUTE,
+  principalRateBucketCount,
   rateLimitKey,
   resetRateLimitState,
 } from "./rate_limiter.ts";
@@ -184,4 +189,116 @@ Deno.test("checkIpBurst: prevents bypass via token name enumeration", () => {
     checkIpBurst(ip);
   }
   assertEquals(checkIpBurst(ip).allowed, false);
+});
+
+// ── checkPrincipalRate ──────────────────────────────────────────────────
+
+Deno.test("checkPrincipalRate: allows the burst, then refuses with a retry hint", () => {
+  resetRateLimitState();
+  const now = 1_000_000;
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    assertEquals(checkPrincipalRate("p-burst", now).allowed, true);
+  }
+  const refused = checkPrincipalRate("p-burst", now);
+  assertEquals(refused.allowed, false);
+  if (!refused.allowed) {
+    // One token refills in 60 000 / 600 = 100 ms, rounded up to 1 s.
+    assertEquals(refused.retryAfterSeconds, 1);
+  }
+});
+
+Deno.test("checkPrincipalRate: refills at the sustained rate", () => {
+  resetRateLimitState();
+  const now = 5_000_000;
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("p-refill", now);
+  }
+  assertEquals(checkPrincipalRate("p-refill", now).allowed, false);
+  const perToken = 60_000 / PRINCIPAL_RATE_PER_MINUTE;
+  assertEquals(
+    checkPrincipalRate("p-refill", now + perToken - 1).allowed,
+    false,
+  );
+  assertEquals(checkPrincipalRate("p-refill", now + perToken).allowed, true);
+  assertEquals(checkPrincipalRate("p-refill", now + perToken).allowed, false);
+  // A full minute refills the burst cap, not more.
+  const later = now + 10 * 60_000;
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    assertEquals(checkPrincipalRate("p-refill", later).allowed, true);
+  }
+  assertEquals(checkPrincipalRate("p-refill", later).allowed, false);
+});
+
+Deno.test("checkPrincipalRate: principals are independent", () => {
+  resetRateLimitState();
+  const now = 9_000_000;
+  for (let i = 0; i <= PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("p-a", now);
+  }
+  assertEquals(checkPrincipalRate("p-a", now).allowed, false);
+  assertEquals(checkPrincipalRate("p-b", now).allowed, true);
+});
+
+Deno.test("checkPrincipalRate: a clock going backward does not mint tokens", () => {
+  resetRateLimitState();
+  const now = 20_000_000;
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("p-back", now);
+  }
+  assertEquals(checkPrincipalRate("p-back", now - 60_000).allowed, false);
+  assertEquals(checkPrincipalRate("p-back", now).allowed, false);
+});
+
+Deno.test("checkPrincipalRate: is cleared by resetRateLimitState", () => {
+  resetRateLimitState();
+  const now = 30_000_000;
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("p-reset", now);
+  }
+  assertEquals(checkPrincipalRate("p-reset", now).allowed, false);
+  resetRateLimitState();
+  assertEquals(principalRateBucketCount(), 0);
+  assertEquals(checkPrincipalRate("p-reset", now).allowed, true);
+});
+
+Deno.test("checkPrincipalRate: does not touch the auth-failure or IP limiters", () => {
+  resetRateLimitState();
+  const now = 40_000_000;
+  for (let i = 0; i <= PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("token:shared", now);
+  }
+  assertEquals(checkRateLimit("token:shared").allowed, true);
+  assertEquals(checkIpBurst("token:shared").allowed, true);
+});
+
+Deno.test("checkPrincipalRate: the bucket map stays bounded, evicting idle buckets first", () => {
+  resetRateLimitState();
+  const now = 50_000_000;
+  // An active bucket, drained, used before the flood.
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("p-active", now);
+  }
+  for (let i = 0; i < MAX_PRINCIPAL_RATE_BUCKETS + 50; i++) {
+    checkPrincipalRate(`p-flood-${i}`, now);
+    assert(principalRateBucketCount() <= MAX_PRINCIPAL_RATE_BUCKETS);
+  }
+  assertEquals(principalRateBucketCount(), MAX_PRINCIPAL_RATE_BUCKETS);
+  resetRateLimitState();
+
+  // Idle buckets (refilled to the burst) are swept before a busy one goes.
+  for (let i = 0; i < MAX_PRINCIPAL_RATE_BUCKETS - 1; i++) {
+    checkPrincipalRate(`p-idle-${i}`, now);
+  }
+  const later = now + 60_000;
+  for (let i = 0; i < PRINCIPAL_RATE_BURST; i++) {
+    checkPrincipalRate("p-busy", later - 1_000);
+  }
+  assertEquals(principalRateBucketCount(), MAX_PRINCIPAL_RATE_BUCKETS);
+  assertEquals(checkPrincipalRate("p-new", later).allowed, true);
+  assertEquals(principalRateBucketCount(), 2);
+  // p-busy kept its drained bucket: 1 s refilled 10 tokens, not a burst.
+  for (let i = 0; i < 10; i++) {
+    assertEquals(checkPrincipalRate("p-busy", later).allowed, true);
+  }
+  assertEquals(checkPrincipalRate("p-busy", later).allowed, false);
 });

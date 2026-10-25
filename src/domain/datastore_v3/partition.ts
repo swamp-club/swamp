@@ -70,9 +70,20 @@ export type CommitRejection =
 
 /** A commit the partition refused. The partition is unchanged. */
 export class CommitRejectedError extends Error {
-  constructor(readonly reason: CommitRejection, message: string) {
+  /**
+   * The record whose `expect` did not hold, for reason `expect-failed`
+   * (swamp-club#3915); undefined for every other reason.
+   */
+  readonly key?: RecordKey;
+
+  constructor(
+    readonly reason: CommitRejection,
+    message: string,
+    key?: RecordKey,
+  ) {
     super(message);
     this.name = "CommitRejectedError";
+    if (key !== undefined) this.key = key;
   }
 }
 
@@ -369,6 +380,15 @@ export class Partition {
     return this.#leaseHolder;
   }
 
+  /**
+   * How many txnIds the partition holds in memory: those applied since it
+   * was created or restored. The ones before a snapshot are looked up
+   * instead. For bounding a long-cached partition (swamp-club#3915).
+   */
+  get txnIdCount(): number {
+    return this.#txnIds.size;
+  }
+
   /** Whether a commit with this txnId has applied. */
   hasTxn(txnId: string): boolean {
     return this.#txnIds.has(txnId) || this.#priorTxn(txnId);
@@ -542,12 +562,12 @@ export class Partition {
           const key = op.key.toString();
           const existing = current(key);
           if (op.expect === "absent" && existing !== undefined) {
-            throw this.#expectFailed(key, "absent");
+            throw this.#expectFailed(op.key, "absent");
           }
           if (
             typeof op.expect === "object" && existing !== op.expect.sha256
           ) {
-            throw this.#expectFailed(key, `sha256 ${op.expect.sha256}`);
+            throw this.#expectFailed(op.key, `sha256 ${op.expect.sha256}`);
           }
           records.set(key, op.sha256);
           break;
@@ -555,7 +575,7 @@ export class Partition {
         case "tombstone": {
           const key = op.key.toString();
           if (op.expect === "present" && current(key) === undefined) {
-            throw this.#expectFailed(key, "present");
+            throw this.#expectFailed(op.key, "present");
           }
           records.set(key, null);
           const intent = op.intent;
@@ -627,10 +647,11 @@ export class Partition {
     return fence;
   }
 
-  #expectFailed(key: string, expected: string): CommitRejectedError {
+  #expectFailed(key: RecordKey, expected: string): CommitRejectedError {
     return new CommitRejectedError(
       "expect-failed",
       `Record ${key} in partition ${this.key} is not ${expected}`,
+      key,
     );
   }
 }

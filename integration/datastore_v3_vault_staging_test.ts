@@ -60,7 +60,7 @@ import {
   readCatalog,
   readTree,
   type V3Env,
-  withV3Env,
+  withAuditedV3Env,
 } from "./datastore_v3_read_model_helpers.ts";
 
 await initializeLogging({});
@@ -181,7 +181,7 @@ for (const namespace of ["", "infra"]) {
   const label = namespace === "" ? "an unnamespaced" : "a namespaced";
 
   Deno.test(`v3 vault staging: vault config writes match the read model for ${label} datastore`, async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new VaultWriter(env, namespace);
       const repo = writer.vaults();
 
@@ -237,7 +237,7 @@ for (const namespace of ["", "infra"]) {
 }
 
 Deno.test("v3 vault staging: a secret stored through the vault provider, and a repo-local vault config as repo init writes it, commit nothing", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const writer = new VaultWriter(env, "");
     await writer.run(() => writer.vaults().save(vault("keys")));
     const before = await feedPartitions(env);
@@ -266,7 +266,7 @@ Deno.test("v3 vault staging: a secret stored through the vault provider, and a r
 });
 
 Deno.test("v3 vault staging: a stale edit from another checkout is refused, and the store keeps the other writer's bytes", async () => {
-  await withV3Env(async (env) => {
+  await withAuditedV3Env(async (env) => {
     const first = new VaultWriter(env, "", "first");
     const second = new VaultWriter(env, "", "second");
     const prod = vault("prod");
@@ -308,7 +308,7 @@ Deno.test({
   // Windows or as root.
   ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
-    await withV3Env(async (env) => {
+    await withAuditedV3Env(async (env) => {
       const writer = new VaultWriter(env, "");
       const prod = vault("prod");
       const path = writer.vaults(undefined).getPath(prod.type, prod.id);

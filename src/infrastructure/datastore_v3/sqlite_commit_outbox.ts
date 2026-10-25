@@ -141,6 +141,28 @@ export interface SqliteCommitOutboxOptions {
    * (swamp-club#3564); none by default.
    */
   readonly writerProcess?: () => Promise<ProcessIdentity | undefined>;
+  /**
+   * Whether prepares made together share one transaction (swamp-club#3915);
+   * true by default. Turned off only by tests and benchmarks.
+   */
+  readonly groupPrepares?: boolean;
+}
+
+/**
+ * The most prepares one transaction writes (swamp-club#3915), as the commit
+ * store's group commit caps its appends.
+ */
+export const GROUP_PREPARE_MAX = 64;
+
+/** The savepoint each prepare of a group runs in. */
+const PREPARE_SAVEPOINT = "group_prepare";
+
+/** A prepare waiting for its group's transaction. */
+interface PendingPrepare {
+  readonly preparation: OutboxPreparation;
+  readonly process: ProcessIdentity | undefined;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
 }
 
 interface EntryRow {
@@ -170,14 +192,19 @@ export class SqliteCommitOutbox implements CommitOutbox {
   readonly #writerProcess:
     | (() => Promise<ProcessIdentity | undefined>)
     | undefined;
+  readonly #groupPrepares: boolean;
   #db: DatabaseSync | undefined;
   #closed = false;
+  /** Prepares waiting for the next group transaction (swamp-club#3915). */
+  #pending: PendingPrepare[] = [];
+  #flushScheduled = false;
 
   constructor(path: string, options: SqliteCommitOutboxOptions = {}) {
     this.#path = path;
     this.#clock = options.clock ?? (() => new Date());
     this.#onWrite = options.onWrite;
     this.#writerProcess = options.writerProcess;
+    this.#groupPrepares = options.groupPrepares ?? true;
   }
 
   /** The outbox file's path. */
@@ -185,39 +212,114 @@ export class SqliteCommitOutbox implements CommitOutbox {
     return this.#path;
   }
 
+  /**
+   * Prepares made together share one transaction, so a burst pays one fsync
+   * (swamp-club#3915): a prepare waits for the end of the current microtask
+   * turn, when every prepare made by then is written, each in a savepoint of
+   * its own so a failing one fails alone. Every other read or write writes
+   * the waiting prepares first, so the outbox sees its calls in the order
+   * they were made. A prepare resolves once its entry is durable, as before.
+   */
   async prepare(preparation: OutboxPreparation): Promise<void> {
     const process = await this.#writerProcess?.();
-    return await this.#write((db) => {
-      const { commit, unitId, base } = preparation;
-      // A prepare again is a new preparation: no recovery left it since.
-      const row = db.prepare(
-        "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
-          "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
-          "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL " +
-          "RETURNING sequence",
-      ).get(
-        commit.namespace,
-        commit.partition.toString(),
-        commit.txnId,
-        unitId,
-        base.seq,
-        base.txnId ?? null,
-        this.#clock().getTime(),
-        JSON.stringify(commit.toJSON()),
-        process !== undefined ? JSON.stringify(process) : null,
-      ) as { sequence: number };
-      db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
-        row.sequence,
+    if (!this.#groupPrepares) {
+      return await this.#write((db) =>
+        this.#insertEntry(db, preparation, process)
       );
-      const insert = db.prepare(
-        "INSERT OR IGNORE INTO outbox_chunks (sequence, namespace, sha256) VALUES (?, ?, ?)",
-      );
-      for (const sha256 of commit.chunkRefs()) {
-        insert.run(row.sequence, commit.namespace, sha256);
+    }
+    return await new Promise<void>((resolve, reject) => {
+      this.#pending.push({ preparation, process, resolve, reject });
+      if (this.#pending.length >= GROUP_PREPARE_MAX) {
+        this.#flushPrepares();
+      } else if (!this.#flushScheduled) {
+        this.#flushScheduled = true;
+        queueMicrotask(() => {
+          this.#flushScheduled = false;
+          this.#flushPrepares();
+        });
       }
     });
+  }
+
+  /**
+   * Writes every waiting prepare, settling each one's promise: one alone as
+   * a prepare was always written, more in transactions of up to
+   * {@link GROUP_PREPARE_MAX}, settled once the transaction commits.
+   */
+  #flushPrepares(): void {
+    while (this.#pending.length > 0) {
+      const group = this.#pending.splice(0, GROUP_PREPARE_MAX);
+      if (group.length === 1) {
+        const [{ preparation, process, resolve, reject }] = group;
+        try {
+          this.#writeSync((db) => this.#insertEntry(db, preparation, process));
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+        continue;
+      }
+      const failed = new Map<PendingPrepare, unknown>();
+      try {
+        this.#writeSync((db) => {
+          for (const pending of group) {
+            db.exec(`SAVEPOINT ${PREPARE_SAVEPOINT}`);
+            try {
+              this.#insertEntry(db, pending.preparation, pending.process);
+              db.exec(`RELEASE ${PREPARE_SAVEPOINT}`);
+            } catch (error) {
+              db.exec(`ROLLBACK TO ${PREPARE_SAVEPOINT}`);
+              db.exec(`RELEASE ${PREPARE_SAVEPOINT}`);
+              failed.set(pending, error);
+            }
+          }
+        });
+      } catch (error) {
+        for (const { reject } of group) reject(error);
+        continue;
+      }
+      for (const pending of group) {
+        if (failed.has(pending)) pending.reject(failed.get(pending));
+        else pending.resolve();
+      }
+    }
+  }
+
+  /** Writes one prepared entry and the chunks it names. */
+  #insertEntry(
+    db: DatabaseSync,
+    preparation: OutboxPreparation,
+    process: ProcessIdentity | undefined,
+  ): void {
+    const { commit, unitId, base } = preparation;
+    // A prepare again is a new preparation: no recovery left it since.
+    const row = db.prepare(
+      "INSERT INTO outbox_entries (namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, writer_process) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (namespace, partition, txn_id) DO UPDATE SET unit_id = excluded.unit_id, " +
+        "base_seq = excluded.base_seq, base_txn_id = excluded.base_txn_id, body = excluded.body, " +
+        "writer_process = excluded.writer_process, left_at_fence = NULL, abandoned_at = NULL " +
+        "RETURNING sequence",
+    ).get(
+      commit.namespace,
+      commit.partition.toString(),
+      commit.txnId,
+      unitId,
+      base.seq,
+      base.txnId ?? null,
+      this.#clock().getTime(),
+      JSON.stringify(commit.toJSON()),
+      process !== undefined ? JSON.stringify(process) : null,
+    ) as { sequence: number };
+    db.prepare("DELETE FROM outbox_chunks WHERE sequence = ?").run(
+      row.sequence,
+    );
+    const insert = db.prepare(
+      "INSERT OR IGNORE INTO outbox_chunks (sequence, namespace, sha256) VALUES (?, ?, ?)",
+    );
+    for (const sha256 of commit.chunkRefs()) {
+      insert.run(row.sequence, commit.namespace, sha256);
+    }
   }
 
   settle(keys: readonly OutboxKey[]): Promise<void> {
@@ -469,49 +571,65 @@ export class SqliteCommitOutbox implements CommitOutbox {
   }
 
   close(): Promise<void> {
+    // Prepares made before the close are written, as they were before
+    // grouping.
+    if (!this.#closed) this.#flushPrepares();
     this.#closed = true;
     this.#db?.close();
     this.#db = undefined;
     return Promise.resolve();
   }
 
-  /** Runs `body` in a write transaction, creating the file unless told not to. */
+  /**
+   * Runs `body` in a write transaction, creating the file unless told not
+   * to. The waiting prepares are written first.
+   */
   #write<T>(
     body: (db: DatabaseSync) => T,
     options: { readonly create?: boolean; readonly durable?: boolean } = {},
   ): Promise<T> {
     try {
-      const db = this.#connection(options.create ?? true);
-      if (db === undefined) return Promise.resolve(undefined as T);
-      // A write that need not survive a power cut skips the fsync.
-      const relaxed = options.durable === false;
-      if (relaxed) db.exec("PRAGMA synchronous=NORMAL");
-      try {
-        db.exec("BEGIN IMMEDIATE");
-        try {
-          if (this.#onWrite !== undefined) {
-            const row = db.prepare("PRAGMA synchronous").get() as
-              | { synchronous: number }
-              | undefined;
-            this.#onWrite(row?.synchronous ?? -1);
-          }
-          const result = body(db);
-          db.exec("COMMIT");
-          return Promise.resolve(result);
-        } catch (error) {
-          rollbackQuietly(db);
-          throw error;
-        }
-      } finally {
-        if (relaxed) db.exec("PRAGMA synchronous=FULL");
-      }
+      this.#flushPrepares();
+      return Promise.resolve(this.#writeSync(body, options));
     } catch (error) {
       return Promise.reject(error);
     }
   }
 
+  /** {@link #write}'s transaction, synchronously; throws its error. */
+  #writeSync<T>(
+    body: (db: DatabaseSync) => T,
+    options: { readonly create?: boolean; readonly durable?: boolean } = {},
+  ): T {
+    const db = this.#connection(options.create ?? true);
+    if (db === undefined) return undefined as T;
+    // A write that need not survive a power cut skips the fsync.
+    const relaxed = options.durable === false;
+    if (relaxed) db.exec("PRAGMA synchronous=NORMAL");
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (this.#onWrite !== undefined) {
+          const row = db.prepare("PRAGMA synchronous").get() as
+            | { synchronous: number }
+            | undefined;
+          this.#onWrite(row?.synchronous ?? -1);
+        }
+        const result = body(db);
+        db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        rollbackQuietly(db);
+        throw error;
+      }
+    } finally {
+      if (relaxed) db.exec("PRAGMA synchronous=FULL");
+    }
+  }
+
   /** Runs `body` in a read transaction; undefined while the file does not exist. */
   #read<T>(body: (db: DatabaseSync) => T): T | undefined {
+    this.#flushPrepares();
     const db = this.#connection(false);
     if (db === undefined) return undefined;
     db.exec("BEGIN");

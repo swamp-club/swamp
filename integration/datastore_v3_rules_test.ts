@@ -275,6 +275,22 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#3803: a reader that waited too long for another process's
   // catch-up gets the temporary-failure exit code.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
+  // swamp-club#3915, team mode: serve's datastore API authorises forwarded
+  // commits on their intents, ingests their chunks and commits them through
+  // serve's own v3 writer; serve keeps the API's upload ledger.
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/blob_ref.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/chunk_store.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit_authorization.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/commit_store.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/op.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/partition.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/chunk_ingest.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/forwarded_commit.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
+  "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

@@ -163,6 +163,9 @@ import {
   hasJsonContentType,
   matchSignalRoute,
 } from "../../serve/signal_http.ts";
+import { handleDatastoreRequest } from "../../serve/datastore_api.ts";
+import { matchDatastoreRoute } from "../../serve/datastore_routes.ts";
+import { UploadLedger } from "../../infrastructure/datastore_v3/upload_ledger.ts";
 import {
   parsePrincipal,
   type Principal,
@@ -3100,6 +3103,9 @@ export const serveCommand = new Command()
       ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, v3Location))
       : undefined;
     v3Maintenance?.start();
+    // The chunks each caller uploaded through the datastore API, so a later
+    // commit may name them (swamp-club#3915).
+    const datastoreApiLedger = new UploadLedger();
     // Its Litestream sidecar, kept while serve holds the lease; nothing
     // while the datastore does not replicate (swamp-club#3416).
     const v3Replication =
@@ -6409,6 +6415,31 @@ export const serveCommand = new Command()
           return new Response(`Forbidden: ${requestTrust.reason}`, {
             status: 403,
           });
+        }
+
+        // Datastore API: team mode's commits, chunks and catch-up
+        // (authenticated; authorized per op on its intent, swamp-club#3915)
+        const datastoreRoute = matchDatastoreRoute(apiUrl.pathname);
+        if (datastoreRoute !== undefined) {
+          return await handleDatastoreRequest(
+            req,
+            datastoreRoute,
+            clientAddress(),
+            {
+              ctx: connectionCtx,
+              v3: v3Location !== undefined
+                ? v3DatastoreFor(resolvedRepoDir, v3Location)
+                : undefined,
+              ledger: datastoreApiLedger,
+              authenticate: (token, sourceIp) =>
+                authenticateServerToken(token, resolvedRepoDir, repoContext, {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp,
+                  ingress: "http-datastore",
+                }),
+            },
+          );
         }
 
         // Cancel endpoint (authenticated + authorized)
