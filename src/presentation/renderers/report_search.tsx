@@ -26,7 +26,11 @@ import type {
   StoredReportDetail,
   StoredReportSummary,
 } from "../../libswamp/reports/report_views.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
@@ -163,11 +167,22 @@ export function createReportSearchRenderer(
   mode: OutputMode,
   query: string,
   fetchPreview?: ReportPreviewFetcher,
+  options: SearchRendererOptions = {},
 ): ReportSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonReportSearchRenderer(query);
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<ReportSearchEvent, StoredReportSummary>(
+          {
+            itemLabel: "reports",
+            items: (e) => filterReports(e.data.reports, query),
+            renderEntry: (item) => renderReportScrollback(item, undefined),
+            toError: (error) => new UserError(error.message),
+          },
+        );
+      }
       return new InkReportSearchRenderer(query, fetchPreview);
   }
 }

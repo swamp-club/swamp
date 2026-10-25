@@ -28,3 +28,12 @@ import type { Renderer } from "../renderer.ts";
 export interface SearchRenderer<E extends StreamEvent, T> extends Renderer<E> {
   selectedItem(): T | undefined;
 }
+
+/** How a search renderer factory builds its log-mode renderer. */
+export interface SearchRendererOptions {
+  /**
+   * False prints a plain list instead of the interactive picker. Remote
+   * (`--server`) searches pass false: they never start the picker.
+   */
+  interactive?: boolean;
+}

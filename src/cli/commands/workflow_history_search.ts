@@ -114,7 +114,13 @@ export async function workflowHistorySearchAction(
         },
       },
     );
-    const renderer = createWorkflowHistorySearchRenderer(effectiveMode);
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createWorkflowHistorySearchRenderer(
+      effectiveMode,
+      undefined,
+      { interactive: false },
+    );
     await consumeStream(
       (async function* () {
         yield {

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { captureLog } from "./search_list_test_helpers.ts";
 import type { ModelGetData } from "../../libswamp/models/get.ts";
 import type {
   ModelSearchData,
@@ -251,4 +252,29 @@ Deno.test("modelSearchPickerLabels: the behavior picker lists behaviors under be
     itemLabel: "behaviors",
     commandName: "behavior search",
   });
+});
+
+Deno.test("createModelSearchRenderer: non-interactive log lists matching models under the surface label", async () => {
+  const results: ModelSearchItem[] = [
+    { id: "id-1", name: "web", type: "command/shell" },
+    { id: "id-2", name: "db", type: "swamp/echo" },
+  ];
+  for (
+    const [surface, label] of [["model", "models"], [
+      "behavior",
+      "behaviors",
+    ]] as const
+  ) {
+    const renderer = createModelSearchRenderer("log", undefined, surface, {
+      interactive: false,
+    });
+    const lines = await captureLog(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        data: { query: "web", results },
+      })
+    );
+    assertEquals(lines, ["web (command/shell)", "", `${label}: 1`]);
+    assertEquals(modelSearchPickerLabels(surface).itemLabel, label);
+  }
 });

@@ -100,7 +100,11 @@ export async function vaultSearchAction(
         payload: { query },
       },
     );
-    const renderer = createVaultSearchRenderer(effectiveMode);
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createVaultSearchRenderer(effectiveMode, undefined, {
+      interactive: false,
+    });
     await consumeStream(
       (async function* () {
         yield {

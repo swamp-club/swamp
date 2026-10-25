@@ -105,8 +105,12 @@ export async function typeSearchAction(
       { server, token },
       { type: "model.type.search", payload: { query } },
     );
-    const renderer = createTypeSearchRenderer(effectiveMode);
-    renderer.handlers().completed({
+    // A remote search prints a plain list and never starts the picker
+    // (swamp-club#3917).
+    const renderer = createTypeSearchRenderer(effectiveMode, undefined, {
+      interactive: false,
+    });
+    await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as TypeSearchData,
     });

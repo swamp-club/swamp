@@ -26,7 +26,11 @@ import type {
   VaultTypeSearchEvent,
   VaultTypeSearchItem,
 } from "../../libswamp/vaults/type_search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
@@ -115,11 +119,23 @@ class InkVaultTypeSearchRenderer implements VaultTypeSearchRenderer {
 
 export function createVaultTypeSearchRenderer(
   mode: OutputMode,
+  options: SearchRendererOptions = {},
 ): VaultTypeSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonVaultTypeSearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return createSearchListRenderer<
+          VaultTypeSearchEvent,
+          VaultTypeSearchItem
+        >({
+          itemLabel: "vault types",
+          items: (e) => filterVaultTypes(e.data.results, e.data.query),
+          renderEntry: (item) => renderVaultTypeScrollback(item, undefined),
+          toError: (error) => new UserError(error.message),
+        });
+      }
       return new InkVaultTypeSearchRenderer();
   }
 }

@@ -25,7 +25,11 @@ import type {
   ExtensionSearchEvent,
   ExtensionSearchItem,
 } from "../../libswamp/extensions/search.ts";
-import type { SearchRenderer } from "./search_renderer.ts";
+import type {
+  SearchRenderer,
+  SearchRendererOptions,
+} from "./search_renderer.ts";
+import { createSearchListRenderer } from "./search_result_list.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
@@ -113,11 +117,26 @@ class InkExtensionSearchRenderer implements ExtensionSearchRenderer {
 
 export function createExtensionSearchRenderer(
   mode: OutputMode,
+  options: SearchRendererOptions = {},
 ): ExtensionSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonExtensionSearchRenderer();
     case "log":
+      if (options.interactive === false) {
+        return {
+          ...createSearchListRenderer<
+            ExtensionSearchEvent,
+            ExtensionSearchItem
+          >({
+            itemLabel: "extensions",
+            items: (e) => e.data.results,
+            renderEntry: (item) => renderExtensionScrollback(item, undefined),
+            toError: (error) => new UserError(error.message),
+          }),
+          selectedAction: () => undefined,
+        };
+      }
       return new InkExtensionSearchRenderer();
   }
 }
