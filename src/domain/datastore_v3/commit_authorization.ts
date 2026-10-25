@@ -243,25 +243,57 @@ export async function authorizeCommit(
         `Op ${index}'s key ${op.key} belongs to another aggregate`,
       );
     }
-    const required = await writeAccessOf(op, resolver);
-    // Ops of one intent share a decision, so a commit of many versions
-    // asks once.
-    const memo = JSON.stringify(required);
-    let allowed = decided.get(memo);
-    if (allowed === undefined) {
-      allowed = authority.allows(required.action, required.resource);
-      decided.set(memo, allowed);
-    }
-    if (!allowed) {
-      return refuse(
-        "forbidden",
-        index,
-        `Not authorized to ${required.action} ${required.resource.kind}:` +
-          `${required.resource.name} (${op.intent.kind})`,
-      );
+    for (const required of await writeAccessesOf(op, resolver)) {
+      // Ops of one intent share a decision, so a commit of many versions
+      // asks once.
+      const memo = JSON.stringify(required);
+      let allowed = decided.get(memo);
+      if (allowed === undefined) {
+        allowed = authority.allows(required.action, required.resource);
+        decided.set(memo, allowed);
+      }
+      if (!allowed) {
+        return refuse(
+          "forbidden",
+          index,
+          `Not authorized to ${required.action} ${required.resource.kind}:` +
+            `${required.resource.name} (${op.intent.kind})`,
+        );
+      }
     }
   }
   return { ok: true };
+}
+
+/**
+ * Every access a put or tombstone needs: {@link writeAccessOf}, and for a
+ * half of a definition rename the same write on the other name. A rename
+ * may write a key the other name's partition owns, and its other name is
+ * the client's to choose, so a caller must be able to change both
+ * definitions the rename joins.
+ */
+export async function writeAccessesOf(
+  op: PutOp | TombstoneOp,
+  resolver: AggregateResourceResolver,
+): Promise<readonly RequiredAccess[]> {
+  const required = [await writeAccessOf(op, resolver)];
+  const intent = op.intent;
+  if (
+    intent.kind === "definition.rename-to" ||
+    intent.kind === "definition.rename-from"
+  ) {
+    const other = intent.kind === "definition.rename-to"
+      ? intent.from
+      : intent.to;
+    required.push(
+      await definitionAccessOf(
+        op,
+        { kind: intent.definition.kind, name: other },
+        resolver,
+      ),
+    );
+  }
+  return required;
 }
 
 /**

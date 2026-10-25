@@ -6115,7 +6115,11 @@ refusal fails the whole commit with `403` and the op's index:
   agree on it.
 - **Key ownership**: a key whose file another partition owns now, as serve's
   read model has it, is refused. The exceptions are the counterpart of a
-  definition rename, and a put of a key whose owner removed it.
+  definition rename, and a put of a key whose owner removed it. The other
+  name of a rename is the client's to choose, so each half of a rename also
+  needs `write` on that name (`writeAccessesOf`). Without that, a caller
+  with `write` on one definition could tombstone, or for a vault overwrite,
+  any other by naming it as the counterpart.
 
 `integration/datastore_v3_*_staging_test.ts` run every repository write on
 v3 through `withAuditedV3Env`. Each scenario's commits must pass these
@@ -6133,8 +6137,9 @@ resource is the same one serve's handlers check for the same write:
 | Any intent on a `--restricted-model-types` type | `admin` | as its kind |
 | `run.create`, `run.update` | `run` on the workflow | `read` on the workflow |
 | `run.delete`, `run-snapshot.delete` | `write` on the workflow | `read` on the workflow |
-| `definition.delete`, `definition.rename-from`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
-| A vault definition's put | `write` on `vault:<name>` | `read` on it |
+| `definition.delete`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
+| `definition.rename-from`, and a vault's `definition.rename-to` | `write` on both names the rename joins | `read` on it |
+| A vault definition's other puts | `write` on `vault:<name>` | `read` on it |
 | `definition.create`, `.edit`, `.rename-to` of a behavior or workflow; `evaluated-definition.save`, `evaluated-workflow.save`, `auto-definition.save`, `run-snapshot.save` | `admin` (below) | `read` by kind |
 | `auto-definition.delete` | `write` on the behavior | `read` on it |
 | `lockfile.write` | `admin` | any authenticated caller |
@@ -6173,8 +6178,10 @@ on its data and on the behavior, since the partition holds both.
 
 The upload ledger (`src/infrastructure/datastore_v3/upload_ledger.ts`) lives
 in memory and is bounded. It caps a principal's uploaded bytes no commit
-references at 2 GiB, and its entries per principal. A restart forgets it, so
-a client uploads again.
+references at 2 GiB, and its entries per principal. Chunks a commit carries
+count too, until the commit lands, so a commit that is refused after its
+content arrived cannot leave unbounded content behind. A restart forgets it,
+so a client uploads again.
 
 **Memory and limits.** `storage/1` puts and gets whole chunks, so serve holds
 at most one chunk (16 MiB) per request, with at most 8 chunk requests per

@@ -485,3 +485,82 @@ function expectedWrite(intent: Intent, opKind: string): string {
   }
   return "admin access";
 }
+
+Deno.test("authorizeCommit: a rename-from naming another definition as its counterpart needs write on that definition too", async () => {
+  const mine = partitionOf({
+    kind: "config",
+    definitionKind: "workflow",
+    name: "mine",
+  });
+  const victim = partitionOf({
+    kind: "config",
+    definitionKind: "workflow",
+    name: "victim",
+  });
+  const key = "config/workflows/workflow-victim.yaml";
+  const resolver = new FakeResolver();
+  resolver.owners.set(key, { owner: victim.toString(), present: true });
+  // Tombstoning the victim's file under a rename-from of `mine`.
+  const tombstone = tombstoneOp({
+    intent: createIntent({
+      kind: "definition.rename-from",
+      definition: { kind: "workflow", name: "mine" },
+      to: "victim",
+    }),
+    key: RecordKey.create(key),
+    expect: "present",
+  });
+  const onlyMine = new FakeAuthority(["write workflow:mine"]);
+  const refused = await authorizeCommit(mine, [tombstone], resolver, onlyMine);
+  assertRefused(refused, "forbidden", 0);
+  assert(!refused.ok && refused.message.includes("workflow:victim"));
+  const both = new FakeAuthority([
+    "write workflow:mine",
+    "write workflow:victim",
+  ]);
+  assert((await authorizeCommit(mine, [tombstone], resolver, both)).ok);
+});
+
+Deno.test("authorizeCommit: a vault rename-to over another vault's config needs write on that vault too", async () => {
+  const mine = partitionOf({
+    kind: "config",
+    definitionKind: "vault",
+    name: "mine",
+  });
+  const prod = partitionOf({
+    kind: "config",
+    definitionKind: "vault",
+    name: "prod",
+  });
+  const key = `config/vaults/local_encryption/${OTHER_ID}.yaml`;
+  const resolver = new FakeResolver();
+  resolver.owners.set(key, { owner: prod.toString(), present: true });
+  const put = await putOp({
+    intent: createIntent({
+      kind: "definition.rename-to",
+      definition: { kind: "vault", name: "mine" },
+      from: "prod",
+    }),
+    key: RecordKey.create(key),
+    inline: base64("type: attacker"),
+    expect: "absent",
+  });
+  assertRefused(
+    await authorizeCommit(
+      mine,
+      [put],
+      resolver,
+      new FakeAuthority(["write vault:mine"]),
+    ),
+    "forbidden",
+    0,
+  );
+  assert(
+    (await authorizeCommit(
+      mine,
+      [put],
+      resolver,
+      new FakeAuthority(["write vault:mine", "write vault:prod"]),
+    )).ok,
+  );
+});

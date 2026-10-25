@@ -69,6 +69,7 @@ interface Server {
 async function withServer(
   grants: Grant[],
   fn: (server: Server) => Promise<void>,
+  ledger = new UploadLedger(),
 ): Promise<void> {
   resetRateLimitState();
   await withV3RowRepos({}, async (repos) => {
@@ -108,7 +109,6 @@ async function withServer(
         },
       ),
     } as ConnectionContext;
-    const ledger = new UploadLedger();
     const http = Deno.serve(
       { port: 0, hostname: "127.0.0.1", onListen: () => {} },
       async (req) => {
@@ -710,5 +710,30 @@ Deno.test({
       const refused = results.find((r) => r.status === 403)!;
       assertEquals(refused.json.reason, "key-owned-elsewhere");
     });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: chunks a commit carries count toward the caller's upload quota",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ maxUnreferencedBytesPerPrincipal: 8 });
+    await withServer(writer(), async (server) => {
+      const content = new TextEncoder().encode("sixteen bytes!!!");
+      const refused = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, "vpc", 1, content),
+          chunks: [{ sha256: await sha256Hex(content), size: content.length }],
+        }, [content]),
+      );
+      assertEquals(refused.status, 429);
+      assertEquals(refused.json.code, "upload_quota_exceeded");
+    }, ledger);
   },
 });

@@ -42,7 +42,7 @@
  *
  * A key a repository names by a uuid rather than a name belongs to whichever
  * definition holds that id, which only a lookup can tell: the binding
- * returns the id, and the caller checks its owner.
+ * returns the id, and the authoriser's key-ownership rule guards the key.
  * `integration/v3_write_path_authorization_test.ts` runs every repository
  * write through these rules, so the two cannot drift.
  *
@@ -67,13 +67,15 @@ export type KeyBinding =
   | {
     readonly ok: true;
     /**
-     * The id a definition file is named by, when it is named by one: the
-     * caller must check that no other definition holds it.
+     * The id a definition file is named by, when it is named by one. The
+     * layout alone cannot tie it to the intent's definition: authorisation
+     * relies on key ownership (a key another partition owns is refused) and,
+     * for the puts whose content serve checks, on admin.
      */
     readonly fileId?: string;
     /**
      * The name a file of an aggregate whose intent carries only an id is
-     * named by: the caller must check that the aggregate has that name.
+     * named by. As for {@link fileId}, ownership guards it, not the name.
      */
     readonly fileName?: string;
     /**

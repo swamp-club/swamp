@@ -447,25 +447,61 @@ class DatastoreApi {
         message: authorization.message,
       }, { status: 403 });
     }
+    // Carried chunks count toward the caller's upload quota until a commit
+    // references them, as uploaded ones do: a commit that never lands must
+    // not leave unbounded content behind.
+    const now = this.#now();
+    const carried = envelope.chunks.reduce(
+      (sum, chunk) => sum + Math.max(0, chunk.size),
+      0,
+    );
+    if (
+      !this.#deps.ledger.admit(this.#caller.principal, carried, now).allowed
+    ) {
+      await reader.cancel();
+      return failure(
+        429,
+        "upload_quota_exceeded",
+        "Too many uploaded chunks are not referenced by any commit yet",
+      );
+    }
     // The content arrives after the envelope, each chunk hashed as it is
     // read; a mismatch fails the request before anything is committed.
-    const provided = await this.#withChunkSlot(async () => {
-      const chunks = [];
-      for (const declared of envelope.chunks) {
-        chunks.push(
-          await ingestChunk(
-            reader,
-            declared,
-            { maxChunkBytes: this.#maxChunkBytes() },
-            req.signal,
-          ),
-        );
-      }
-      await reader.assertEnd(req.signal);
-      await this.#store(chunks, req.signal);
-      return new Set(chunks.map((chunk) => chunk.sha256));
-    });
-    if (provided instanceof Response) return provided;
+    let provided: Set<string> | Response;
+    try {
+      provided = await this.#withChunkSlot(async () => {
+        const chunks = [];
+        for (const declared of envelope.chunks) {
+          chunks.push(
+            await ingestChunk(
+              reader,
+              declared,
+              { maxChunkBytes: this.#maxChunkBytes() },
+              req.signal,
+            ),
+          );
+        }
+        await reader.assertEnd(req.signal);
+        await this.#store(chunks, req.signal);
+        for (const chunk of chunks) {
+          this.#deps.ledger.record(
+            this.#caller.principal,
+            this.#storageNamespace,
+            chunk.sha256,
+            chunk.bytes.length,
+            now,
+          );
+        }
+        return new Set(chunks.map((chunk) => chunk.sha256));
+      });
+    } catch (error) {
+      await reader.cancel();
+      throw error;
+    }
+    if (provided instanceof Response) {
+      await reader.cancel();
+      return provided;
+    }
     const referenced = referencedChunks(ops);
     for (const hash of referenced) {
       if (provided.has(hash) || (await this.#mayReference(hash))) continue;
@@ -495,7 +531,7 @@ class DatastoreApi {
         principal: this.#caller.principal,
         ops,
       }, req.signal);
-      return { result, warning: await this.#afterCommit(partition) };
+      return { result };
     });
     if ("ok" in landed) {
       return Response.json({
@@ -505,8 +541,11 @@ class DatastoreApi {
         message: landed.message,
       }, { status: 403 });
     }
-    const { result, warning } = landed;
+    const { result } = landed;
     this.#deps.ledger.release(this.#storageNamespace, referenced);
+    // Outside the lock: the next forwarded commit catches up before it
+    // authorises anyway, so holding the lock for this one gains nothing.
+    const warning = await this.#afterCommit(partition);
     if (this.#deps.ctx.confirmReplicated !== undefined) {
       try {
         await this.#deps.ctx.confirmReplicated();
