@@ -69,7 +69,10 @@ import { datastoreTypeRegistry } from "../src/domain/datastore/datastore_type_re
 import type { DatastoreProvider } from "../src/domain/datastore/datastore_provider.ts";
 import type { V3ReplicaTarget } from "../src/domain/datastore/replica_target.ts";
 import { V3_BUCKET_MIN_EXTENSION_VERSION } from "../src/domain/datastore/v3_hosting.ts";
-import { WriterFencedError } from "../src/domain/datastore_v3/writer_lease.ts";
+import {
+  V3_STORAGE_UNREACHABLE_CODE,
+  WriterFencedError,
+} from "../src/domain/datastore_v3/writer_lease.ts";
 import {
   AutoDefinitionChanges,
   recordKeyOf,
@@ -121,7 +124,10 @@ import {
   lineageRegistryFor,
   prepareV3WriterLineage,
   publishV3Head,
+  setV3RestoreDeadlineForTesting,
 } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
+import { setV3RestoreWatchForTesting } from "../src/infrastructure/datastore_v3/litestream/restore_watch.ts";
+import { CATCH_UP_UNREACHABLE_CODE } from "../src/domain/datastore_v3/read_model.ts";
 import { inspectV3KeptLineages } from "../src/infrastructure/datastore_v3/v3_content_inspection.ts";
 import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 import { replicationPathsFor } from "../src/infrastructure/datastore_v3/litestream/replication_files.ts";
@@ -1349,6 +1355,100 @@ Deno.test({
     });
   },
 });
+
+/**
+ * How Litestream meets a replica listing the storage drops: on S3 it
+ * retries for about two minutes (a restore that never ends here, stopped by
+ * the watch); on GCS it fails within seconds, before the watch lists.
+ */
+const CUT_RESTORES = {
+  "retried": {
+    script: "exec sleep 600",
+    graceMs: 0,
+    list: () => new Promise<string[]>(() => {}),
+  },
+  "failing fast": {
+    script: "echo 'cannot calc restore plan' >&2; exit 1",
+    // Over before the watch lists: only the listing after the failure
+    // finds the replica unreachable.
+    graceMs: 60_000,
+    list: () =>
+      Promise.reject(
+        Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+      ),
+  },
+} as const;
+
+for (const [kind, cut] of Object.entries(CUT_RESTORES)) {
+  Deno.test({
+    name:
+      `v3 bucket: a lagging checkout whose replica cannot be listed, its restore ${kind}, fails its read with catch_up_unreachable instead of reading on (swamp-club#3893)`,
+    ignore: SIDECAR_TESTS_IGNORED,
+    async fn() {
+      await withRoot(async (root, bucket) => {
+        const first = join(root, "first");
+        await initRepo(first);
+        assertEquals(errorOf(await setupBucket(first, bucket)), undefined);
+        const second = join(root, "second");
+        await cloneRepo(first, second);
+        await withSidecar(root, async () => {
+          await writeIn(first, 2);
+          assertEquals(await restoredCommits(second), 2);
+          // The second checkout is behind now.
+          await writeIn(first, 1);
+        });
+        // Exec, so killing a restore that never ends ends the process
+        // holding its stderr.
+        const hung = join(root, "cut-litestream");
+        await Deno.writeTextFile(hung, `#!/bin/sh\n${cut.script}\n`);
+        await Deno.chmod(hung, 0o755);
+        setV3ReplicationForTesting({
+          privateRoot: join(root, "priv"),
+          timings: TEST_TIMINGS,
+          resolveBinary: () => Promise.resolve(hung),
+        });
+        // Bounds the case where nothing watches the restore: a released swamp
+        // fails it at this deadline and reads its old copy as it is.
+        setV3RestoreDeadlineForTesting(5_000);
+        setV3RestoreWatchForTesting({
+          timing: { graceMs: cut.graceMs, probeMs: 100, intervalMs: 0 },
+          replicaPaths: {
+            list: cut.list,
+            removePath: () => Promise.reject(new Error("never removes")),
+          },
+        });
+        try {
+          await withMockedEnv(
+            {
+              [V3_REPLICA_ENV]: JSON.stringify({
+                type: "file",
+                path: join(root, "replica"),
+              }),
+            },
+            async () => {
+              const refused = await assertRejects(
+                () => restoredCommits(second),
+                UserError,
+              );
+              assertEquals(refused.code, CATCH_UP_UNREACHABLE_CODE);
+              // A writer's restore stops the same way, with the storage's code.
+              const cutOff = await assertRejects(
+                () => writeIn(second, 1),
+                UserError,
+              );
+              assertEquals(cutOff.code, V3_STORAGE_UNREACHABLE_CODE);
+            },
+          );
+        } finally {
+          setV3RestoreWatchForTesting(undefined);
+          setV3RestoreDeadlineForTesting(undefined);
+          await closeV3Datastores().catch(() => {});
+          setV3ReplicationForTesting(undefined);
+        }
+      });
+    },
+  });
+}
 
 const S3_ENDPOINT = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_ENDPOINT");
 

@@ -40,6 +40,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
+import { beginOutcome, holdFromOutcome } from "../committed_output.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import {
@@ -112,40 +113,50 @@ export const dataPruneCommand = withRemoteOptions(
 
   // Pushes and releases the global lock when the command ends, as the
   // teardown flush did (swamp-club#3055).
-  await runInCoordinatorRoot(repoContext, async () => {
-    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-    const deps = createDataPruneDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.unifiedDataRepo,
-    );
-
-    // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
-    if (
-      cliCtx.outputMode === "log" && !options.yes && !options.force &&
-      !options.dryRun
-    ) {
-      const preview = await dataPrunePreview(ctx, deps);
-      if (preview.items.length === 0) {
-        console.log("No orphaned data to reclaim.");
-        return;
-      }
-
-      renderDataPrunePreview(preview, cliCtx.outputMode);
-      const confirmed = await promptConfirmation(
-        "Reclaim this orphaned data?",
+  await runInCoordinatorRoot(
+    repoContext,
+    async () => {
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
+      const deps = createDataPruneDeps(
+        repoDir,
+        datastoreResolver,
+        repoContext.unifiedDataRepo,
       );
-      if (!confirmed) {
-        renderDataPruneCancelled(cliCtx.outputMode);
-        return;
-      }
-    }
 
-    // Phase 2: Execute prune
-    const renderer = createDataPruneRenderer(cliCtx.outputMode);
-    await consumeStream(
-      dataPrune(ctx, deps, { dryRun: !!options.dryRun }),
-      renderer.handlers(),
-    );
-  });
+      // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
+      if (
+        cliCtx.outputMode === "log" && !options.yes && !options.force &&
+        !options.dryRun
+      ) {
+        const preview = await dataPrunePreview(ctx, deps);
+        if (preview.items.length === 0) {
+          beginOutcome();
+          console.log("No orphaned data to reclaim.");
+          return;
+        }
+
+        renderDataPrunePreview(preview, cliCtx.outputMode);
+        const confirmed = await promptConfirmation(
+          "Reclaim this orphaned data?",
+        );
+        if (!confirmed) {
+          beginOutcome();
+          renderDataPruneCancelled(cliCtx.outputMode);
+          return;
+        }
+      }
+
+      // Phase 2: Execute prune
+      const renderer = createDataPruneRenderer(cliCtx.outputMode);
+      await consumeStream(
+        dataPrune(ctx, deps, { dryRun: !!options.dryRun }),
+        holdFromOutcome(renderer.handlers()),
+      );
+    },
+    // Status lines stream in log mode; the result waits for the commit
+    // (swamp-club#3893).
+    cliCtx.outputMode === "log" ? "live-until-outcome" : "held",
+  );
 });

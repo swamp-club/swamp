@@ -51,6 +51,7 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../src/domain/datastore_v3/read_model.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
@@ -71,6 +72,7 @@ import {
   payloadCommitted,
   registerBigWriter,
   registerMidStepCutter,
+  saveInRoot,
   seedModel,
   seedWorkflow,
   withFaults,
@@ -562,3 +564,88 @@ Deno.test({
     });
   },
 });
+
+/**
+ * Leaves orphaned data in A: a big-writer model whose `write` committed its
+ * payload, then its definition deleted.
+ */
+async function seedOrphanedData(repos: RowRepos): Promise<string> {
+  const type = registerBigWriter(false);
+  const definition = Definition.create({
+    name: `big-${crypto.randomUUID().slice(0, 8)}`,
+    globalArguments: {},
+  });
+  await saveInRoot(
+    repos,
+    () => repos.a.repoContext.definitionRepo.save(type, definition),
+  );
+  const run = await runCliCapturing({
+    args: [
+      "model",
+      "method",
+      "run",
+      definition.name,
+      "write",
+      "--repo-dir",
+      repos.repoA,
+      "--json",
+    ],
+  });
+  assertEquals(run.error, undefined);
+  await saveInRoot(
+    repos,
+    () => repos.a.repoContext.definitionRepo.delete(type, definition.id),
+  );
+  return type.normalized;
+}
+
+Deno.test({
+  name:
+    "v3 output after commit: data prune streams its status line in log mode and prints its result after the commit (swamp-club#3893)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withFaults(async (repos) => {
+      await seedOrphanedData(repos);
+      const result = await runCliCapturing({
+        args: ["data", "prune", "--force", "--repo-dir", repos.repoA],
+      });
+      assertEquals(result.error, undefined);
+      const text = result.stdout.join("\n");
+      const status = text.indexOf("Looking for orphaned data to reclaim");
+      const complete = text.indexOf("Prune complete");
+      assert(status >= 0 && complete > status, text);
+    });
+  },
+});
+
+for (const mode of ["json", "log"] as const) {
+  Deno.test({
+    name:
+      `v3 output after commit: a data prune whose commit fails prints no result (${mode}), and in log mode its status line still streamed (swamp-club#3893)`,
+    ignore: Deno.build.os === "windows",
+    async fn() {
+      await withFaults(async (repos) => {
+        await seedOrphanedData(repos);
+        faults.appendFails = true;
+        const result = await runCliCapturing({
+          args: [
+            "data",
+            "prune",
+            "--force",
+            "--repo-dir",
+            repos.repoA,
+            ...(mode === "json" ? ["--json"] : []),
+          ],
+        });
+        assert(result.error !== undefined, "the prune succeeded");
+        const text = result.stdout.join("\n");
+        assert(!text.includes("Prune complete"), text);
+        if (mode === "log") {
+          assertStringIncludes(text, "Looking for orphaned data to reclaim");
+        } else {
+          assertEquals(result.stdout, [], "--json printed before the commit");
+        }
+      });
+    },
+  });
+}

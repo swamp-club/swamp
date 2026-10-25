@@ -113,6 +113,12 @@ import {
 } from "./v3_replication.ts";
 import { withSpan } from "../../tracing/tracer.ts";
 import type { V3ReplicaPaths } from "./replica_target_resolver.ts";
+import {
+  replicaUnreachableAfterFailure,
+  restoreWatchStoreOverride,
+  restoreWhileWatched,
+  V3ReplicaUnreachableError,
+} from "./restore_watch.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "replication"]);
 
@@ -358,26 +364,38 @@ async function makeV3CopyCurrentNow(
       padFence(decision.lineage.fence)
     }`;
     const restoreStarted = Date.now();
+    const watched = watchedReplicaPaths(copy.datastorePath, root);
     let restored: V3RestoreResult;
     try {
       restored = await withSpan("swamp.datastore.v3.restore", {
         "swamp.datastore.v3.lineage": decision.lineage.fence,
         "swamp.datastore.v3.decision": decision.kind,
       }, async () =>
-        await restoreV3Copy({
-          binary: await resolveV3LitestreamBinary(),
-          replica,
-          head: decision.lineage.head,
-          target,
-          configDir: paths.privateDir,
-          install,
-          deadlineMs: restoreDeadlineMs,
-        }));
+        await restoreWhileWatched(
+          watched,
+          async (signal) =>
+            await restoreV3Copy({
+              binary: await resolveV3LitestreamBinary(),
+              replica,
+              head: decision.lineage.head,
+              target,
+              configDir: paths.privateDir,
+              install,
+              deadlineMs: restoreDeadlineMs,
+              ...(signal === undefined ? {} : { signal }),
+            }),
+        ));
     } catch (error) {
-      // A reader whose restore fails (the replica unreachable, or the
-      // lineage collected while it read) reads a copy restored before as it
-      // is; a writer fails, its copy unchanged, and so does a reader of a
-      // copy that never was: it would read as an empty datastore.
+      // A replica that cannot be listed is the storage cut off: the read
+      // fails with its code, and the next command restores (swamp-club#3893),
+      // whether the watch stopped the restore or Litestream gave up first.
+      if (error instanceof V3ReplicaUnreachableError) throw error;
+      const unreachable = await replicaUnreachableAfterFailure(watched);
+      if (unreachable !== undefined) throw unreachable;
+      // A reader whose restore fails otherwise (the lineage collected while
+      // it read) reads a copy restored before as it is; a writer fails, its
+      // copy unchanged, and so does a reader of a copy that never was: it
+      // would read as an empty datastore.
       if (options.mode === "read" && !neverRestored) {
         return refuseOrSkip("read", copy, messageOf(error), { cause: error });
       }
@@ -1296,6 +1314,23 @@ async function removeReplicaPath(
       if (attempt >= 3) throw error;
     }
   }
+}
+
+/**
+ * The replica paths a restore of the bucket datastore at `datastorePath`
+ * is watched through: the provider's, when bound to the replica's `root`.
+ * Undefined, and the restore unwatched, otherwise.
+ */
+function watchedReplicaPaths(
+  datastorePath: string,
+  root: ReplicaRoot,
+): ReplicaPathStore | undefined {
+  const override = restoreWatchStoreOverride();
+  if (override !== undefined) return override;
+  const paths = v3BucketBindingAt(datastorePath)?.replicaPaths;
+  return paths !== undefined && root.matches(paths.root)
+    ? paths.store
+    : undefined;
 }
 
 function messageOf(error: unknown): string {

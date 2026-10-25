@@ -201,6 +201,8 @@ export async function restoreV3Copy(
     return { exactTxid, truncated };
   } catch (error) {
     if (error instanceof UserError) throw error;
+    // The caller stopped the restore, and says why (swamp-club#3893).
+    if (request.signal?.aborted === true) throw request.signal.reason;
     if (timeout.aborted) {
       throw new V3RestoreError(
         `it did not finish within ${Math.round(request.deadlineMs / 1000)}s`,

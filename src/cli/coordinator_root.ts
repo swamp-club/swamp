@@ -29,7 +29,7 @@ import {
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { pushGlobalLockAtEnd } from "../infrastructure/persistence/push_paths.ts";
-import { openOutputHold } from "./committed_output.ts";
+import { openOutputHold, type OutputHoldMode } from "./committed_output.ts";
 
 /**
  * Runs `fn`, the rest of a command that opened its repository with
@@ -45,14 +45,17 @@ import { openOutputHold } from "./committed_output.ts";
  * logged at warn by the coordinator and never thrown.
  *
  * On v3, what the command prints waits for the root's commit and is dropped
- * when it does not land (swamp-club#3759).
+ * when it does not land (swamp-club#3759). `output` "live-until-outcome"
+ * lets a command's status lines stream until its outcome, which then waits
+ * the same way (swamp-club#3893).
  */
 export async function runInCoordinatorRoot<T>(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   fn: (root: RootUnitOfWork) => Promise<T>,
+  output: OutputHoldMode = "held",
 ): Promise<T> {
   const hold = commitsThroughCommitLog(repoContext)
-    ? openOutputHold("held")
+    ? openOutputHold(output)
     : undefined;
   let committed = false;
   try {

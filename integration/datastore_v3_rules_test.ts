@@ -255,6 +255,9 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // .swamp holds records, and `doctor datastores --repair` moves them aside.
   "src/cli/commands/doctor_datastores.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_checkout_join.ts",
+  // swamp-club#3893: the CLI has a checkout's recovery of an interrupted
+  // writer say on stderr that it is running.
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/interrupted_writer_recovery.ts",
   // swamp-club#3759: a commit that could not reach the storage. The runs
   // word it for steps that ran, the error renderer and serve give it its
   // code, and the CLI's failed teardown tells the close the storage is

@@ -573,3 +573,59 @@ for (const net of [true, false]) {
     },
   );
 }
+
+Deno.test({
+  name:
+    "SqliteReadModel.recover: the replay keeps a file that already holds its committed inline bytes, and rewrites one that does not (swamp-club#3893)",
+  // Windows reports no link counts, and file symlinks need a privilege.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withEnv(async (env) => {
+      const names = ["a", "b", "c", "d"];
+      await env.append(
+        1,
+        "",
+        [
+          ...await Promise.all(names.map((name) => savePut(name, 1))),
+          ...names.map((name) => versionOp(name, 1)),
+        ] as Op[],
+      );
+      const readModel = env.open();
+      try {
+        await readModel.catchUp(signal());
+        // The dead writer overwrote b; c was replaced by a link to a file
+        // holding its very bytes, which is not the committed file.
+        await Deno.writeTextFile(env.contentPath("", "b", 1), "uncommitted");
+        const c = env.contentPath("", "c", 1);
+        const elsewhere = `${c}.elsewhere`;
+        await Deno.writeTextFile(elsewhere, "c@1");
+        await Deno.remove(c);
+        await Deno.symlink(elsewhere, c, { type: "file" });
+        // d holds its bytes but is hard-linked from outside the checkout.
+        const d = env.contentPath("", "d", 1);
+        const linked = `${d}.linked`;
+        await Deno.link(d, linked);
+        await withCapturedSpans(async (spans) => {
+          await readModel.recover("", {
+            since: 0,
+            admits: datastoreKeyFilter(undefined, undefined),
+            signal: signal(),
+          });
+          const span = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
+          assertEquals(span.attributes["swamp.datastore.v3.writes_kept"], 1);
+          assertEquals(span.attributes["swamp.datastore.v3.files_written"], 3);
+        });
+        for (const name of names) {
+          assertEquals(
+            await readOrAbsent(env.contentPath("", name, 1)),
+            `${name}@1`,
+          );
+        }
+        assertEquals((await Deno.lstat(c)).isSymlink, false);
+        assertEquals((await Deno.lstat(d)).nlink, 1);
+      } finally {
+        await readModel.close();
+      }
+    });
+  },
+});
