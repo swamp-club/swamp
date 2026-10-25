@@ -1954,3 +1954,109 @@ Deno.test("auto_resolver_adapters: install keeps a new dependency's skill out of
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("auto_resolver_adapters: registeredModelCount counts the extension's registered behavior types only", async () => {
+  // swamp-club#3911: another caller may have loaded the types, so the count
+  // comes from the catalog and the registry, not from this hot-load.
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const loaded = `@fake/count-${crypto.randomUUID()}`;
+  const catalog = new ExtensionCatalogStore(
+    join(tmpDir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    modelRegistry.register({
+      type: ModelType.create(loaded),
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {},
+    } as unknown as ModelDefinition);
+    const row = (type: string, kind: "model" | "extension", rel: string) =>
+      catalog.upsert({
+        type_normalized: type,
+        kind,
+        bundle_path: "",
+        source_path: canonicalizePath(join(tmpDir, rel)),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+      });
+    const root = ".swamp/pulled-extensions";
+    row(loaded, "model", `${root}/@fake/count/models/a.ts`);
+    // Indexed but unregistered, another kind, and a sibling extension.
+    row(
+      `@fake/gone-${crypto.randomUUID()}`,
+      "model",
+      `${root}/@fake/count/models/b.ts`,
+    );
+    row(loaded, "extension", `${root}/@fake/count/models/c.ts`);
+    row(loaded, "model", `${root}/@fake/count-other/models/a.ts`);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath: join(tmpDir, "upstream_extensions.json"),
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      repository: makeRepoForCatalog(catalog, tmpDir),
+    });
+    assertEquals(adapter.registeredModelCount?.("@fake/count"), 1);
+    assertEquals(adapter.registeredModelCount?.("@fake/none"), 0);
+  } finally {
+    modelRegistry.invalidateType(loaded);
+    catalog.close();
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: registeredModelCount finds rows stored under the symlink-resolved repo path", async () => {
+  // A repo reached through a symlink (macOS /tmp) has catalog rows under the
+  // resolved path; the count must not drop to 0 (swamp-club#3911).
+  const realDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const linkParent = await Deno.makeTempDir({ prefix: "swamp_test_link_" });
+  const linkDir = join(linkParent, "repo");
+  const type = `@fake/linked-${crypto.randomUUID()}`;
+  const catalog = new ExtensionCatalogStore(
+    join(realDir, ".swamp", "_extension_catalog.db"),
+  );
+  try {
+    await Deno.symlink(realDir, linkDir, { type: "dir" });
+    await ensureDir(join(realDir, ".swamp", "pulled-extensions", "@fake"));
+    modelRegistry.register({
+      type: ModelType.create(type),
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {},
+    } as unknown as ModelDefinition);
+    catalog.upsert({
+      type_normalized: type,
+      kind: "model",
+      bundle_path: "",
+      source_path: canonicalizePath(
+        join(
+          Deno.realPathSync(realDir),
+          ".swamp/pulled-extensions/@fake/linked/models/a.ts",
+        ),
+      ),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+    });
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath: join(linkDir, "upstream_extensions.json"),
+      repoDir: linkDir,
+      denoRuntime: stubDenoRuntime,
+      repository: makeRepoForCatalog(catalog, linkDir),
+    });
+    assertEquals(adapter.registeredModelCount?.("@fake/linked"), 1);
+  } finally {
+    modelRegistry.invalidateType(type);
+    catalog.close();
+    await Deno.remove(linkParent, { recursive: true });
+    await Deno.remove(realDir, { recursive: true });
+  }
+});

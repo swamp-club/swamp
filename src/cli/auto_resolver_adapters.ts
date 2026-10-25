@@ -26,7 +26,10 @@ import {
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import { assertContainedPath } from "../infrastructure/persistence/safe_path.ts";
-import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
+import {
+  canonicalizePath,
+  realCanonicalPath,
+} from "../infrastructure/persistence/canonicalize_path.ts";
 import { recordedSkillsDirs } from "../domain/repo/skill_dirs.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { join, resolve } from "@std/path";
@@ -563,6 +566,33 @@ export function createAutoResolveInstallerAdapter(
       if (datastoreTypeRegistry.has(normalizedType)) return true;
       await webhookTypeRegistry.ensureTypeLoaded(normalizedType);
       return webhookTypeRegistry.has(normalizedType);
+    },
+
+    // Read from the catalog, since hot-loaded types are registered without
+    // the providing extension's name (swamp-club#3911). Rows carry the
+    // symlink-resolved source path, which differs from the configured root
+    // when the repo sits under a symlink (macOS /tmp), so look under both.
+    registeredModelCount(extensionName: string): number | undefined {
+      if (!repository) return undefined;
+      const pulledRoot = resolvePulledExtensionsRoot(repoDir);
+      const prefixes = new Set(
+        [canonicalizePath(pulledRoot), realCanonicalPath(pulledRoot)].map((
+          root,
+        ) => `${canonicalizePath(join(root, extensionName))}/`),
+      );
+      const catalog = repository.getCatalogStore();
+      const types = new Set<string>();
+      for (const prefix of prefixes) {
+        for (const row of catalog.findBySourcePathPrefix(prefix)) {
+          if (
+            row.kind === "model" && row.source_path.startsWith(prefix) &&
+            modelRegistry.has(row.type_normalized)
+          ) {
+            types.add(row.type_normalized);
+          }
+        }
+      }
+      return types.size;
     },
 
     failedLocalSourceMatchesType(typeNormalized: string): boolean {
