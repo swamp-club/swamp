@@ -573,16 +573,20 @@ export class SqliteReadModel implements ReadModel {
       readonly droppedDirs?: readonly string[];
     },
   ): Promise<string[]> {
-    return this.#exclusive(async () => {
-      // Every namespace's rows are judged by this checkout's filter: the
-      // replay below rebuilds every namespace, and a checkout writes one.
-      const generation = this.#catalog.clear(options.admits);
-      this.#reset(generation);
-      this.#catalog.markPopulated(generation);
-      await this.#retryAtRiskCopies(options.signal);
-      await this.#catchUpFeed(options.signal);
-      return await this.#sweepUnowned(namespace, options);
-    }, options.signal);
+    return this.#exclusive(
+      () =>
+        this.#counted("swamp.datastore.v3.readmodel.recover", async () => {
+          // Every namespace's rows are judged by this checkout's filter: the
+          // replay below rebuilds every namespace, and a checkout writes one.
+          const generation = this.#catalog.clear(options.admits);
+          this.#reset(generation);
+          this.#catalog.markPopulated(generation);
+          await this.#retryAtRiskCopies(options.signal);
+          await this.#catchUpFeed(options.signal);
+          return await this.#sweepUnowned(namespace, options);
+        }),
+      options.signal,
+    );
   }
 
   /**
@@ -1993,6 +1997,22 @@ export class SqliteReadModel implements ReadModel {
       await this.#syncFile(path);
       batch.touch(dirname(path));
     };
+    // A replay runs over files already there (a recovery rewrites every
+    // committed file, swamp-club#3893): one already holding its inline
+    // bytes, read and compared, and its access stays as it is. Chunked
+    // content is compared by the guard below.
+    if (
+      "inline" in content && this.#replaying &&
+      await this.#time(
+        "guard",
+        () => holdsBytes(path, decodeBase64(content.inline)),
+      ) &&
+      await hasAccess(path, content.access)
+    ) {
+      this.#stats?.bump("writes_kept");
+      await keep();
+      return;
+    }
     let wrongAccess = false;
     if (
       await this.#time("guard", () =>
@@ -3193,6 +3213,30 @@ async function pathConflict(
     }
   }
   return {};
+}
+
+/**
+ * Whether `path` is a regular file holding exactly `bytes` (swamp-club#3893).
+ * Stat first, as the guard reads a file ({@link SqliteReadModel}'s
+ * `#readGuarded`): a link, a directory or a file hard-linked from elsewhere
+ * there never holds them.
+ */
+async function holdsBytes(path: string, bytes: Uint8Array): Promise<boolean> {
+  let held: Uint8Array;
+  try {
+    const info = await Deno.lstat(path);
+    // A file linked from elsewhere is replaced, as a write replaces it.
+    if (!info.isFile || (info.nlink ?? 1) > 1) return false;
+    if (info.size !== bytes.length) return false;
+    held = await Deno.readFile(path);
+  } catch {
+    return false;
+  }
+  if (held.length !== bytes.length) return false;
+  for (let i = 0; i < held.length; i++) {
+    if (held[i] !== bytes[i]) return false;
+  }
+  return true;
 }
 
 /**

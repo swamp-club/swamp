@@ -66,8 +66,10 @@ const PINNED_USE_CASES_WITHOUT_CLI_ROOT: readonly string[] = [
 ];
 
 // Commands whose progress streams in log mode and whose result alone waits
-// for the commit ("live-until-outcome").
+// for the commit ("live-until-outcome"). `data prune` streams its status
+// lines, which ran 6-10 s on populated buckets (swamp-club#3893).
 const PINNED_LIVE_UNTIL_OUTCOME: readonly string[] = [
+  "src/cli/commands/data_prune.ts",
   "src/cli/commands/model_method_run.ts",
   "src/cli/commands/workflow_resume.ts",
   "src/cli/commands/workflow_run.ts",
@@ -154,8 +156,9 @@ Deno.test("v3 output after commit: only the streaming commands print live until 
     live,
     PINNED_LIVE_UNTIL_OUTCOME,
     "commands printing live until their outcome",
-    "Only a command whose progress must stream (a run) prints before its\n" +
-      "commit, and it wraps its handlers in holdFromOutcome.",
+    "Only a command whose progress must stream (a run, or data prune's\n" +
+      "status lines) prints before its commit, and it wraps its handlers in\n" +
+      "holdFromOutcome.",
   );
 });
 

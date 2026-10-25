@@ -5160,10 +5160,18 @@ leave every checkout with the same records.
   rebuild, and keeping the catalog marked populated, so no reader backfills
   it from disk; it then resets
   the state, replays every commit, which puts back the committed version of
-  any file the writer overwrote (through the checkout-copy guard, which first
+  any file the writer overwrote and keeps a file that already holds its
+  committed bytes, read and compared, and access (swamp-club#3893: rewriting
+  every file was most of a recovery's cost on a populated checkout; inline
+  content is compared here, chunked content by the checkout-copy guard,
+  which first
   stores again from the file any committed chunk it alone still holds whole,
   verifying right-size parts on filesystem storage), then removes each file in the materialised
   directories that no commit owns and that changed since the marker's start.
+  It says on stderr, in both output modes and silenced by `-q`, that it is
+  recovering work an interrupted command left in this checkout, so the
+  seconds it takes on a populated checkout never look like a hang
+  (swamp-club#3893).
   Never touched are the checkout's own files (`isCheckoutLocalKey`), each
   named exactly: an atomic write's temporary file (`.<uuid>.tmp`), a `.lock`
   file, a workflow's run index (`workflow-runs/<id>/.runs-index.json`), the
@@ -5455,7 +5463,9 @@ reports a `local` deployment mode on a v3 bucket datastore.
   and write it out only if the root committed. A commit that fails prints
   only its error. A run in log mode streams its progress, and holding starts
   at its outcome. In log mode, a non-streaming command's status lines now print
-  with its result. A v2 root holds nothing. This is the issue's option 2 (a
+  with its result, except `data prune`'s, which stream as a run's do: on a
+  populated bucket it ran 6–10 s before any output (swamp-club#3893). A v2
+  root holds nothing. This is the issue's option 2 (a
   held presenter) rather than rendering after the root in each command:
   stdout is written from about 1,100 places, and holding at the root seam
   covers every command, a new one included. Serve holds a request's replies

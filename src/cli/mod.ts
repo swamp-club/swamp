@@ -280,6 +280,7 @@ import {
 export { resolveModelsDir };
 import { modelsDirEnvConflict } from "../infrastructure/persistence/resolve_models_dir.ts";
 import {
+  enableV3RecoveryProgress,
   ensureManagedConfigBase,
   resolveManagedConfigPaths,
   setLockProgressQuiet,
@@ -2764,6 +2765,7 @@ async function runInvocation(
       setConsoleGuardJsonMode(outputMode === "json");
       quietRequested = options.quiet ?? false;
       setLockProgressQuiet(quietRequested);
+      enableV3RecoveryProgress();
 
       // The colour switch was already flipped at the top of `runCli`. This
       // value feeds the two things that are not the switch: the `NO_COLOR` that

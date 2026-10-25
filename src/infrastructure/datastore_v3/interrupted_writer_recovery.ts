@@ -81,6 +81,21 @@ import {
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
+/** Where a recovery says it is running; nowhere by default. */
+let recoveryProgress: ((message: string) => void) | undefined;
+
+/**
+ * Has each recovery of an interrupted writer say on `write`, as it starts,
+ * that it is running (swamp-club#3893): on a populated checkout it takes
+ * seconds, and a command silent that long looks hung. The CLI writes it to
+ * stderr, so `--json` stdout stays clean. Undefined says nothing.
+ */
+export function setV3RecoveryProgress(
+  write: ((message: string) => void) | undefined,
+): void {
+  recoveryProgress = write;
+}
+
 /** The marker's file in the checkout's read-model state directory. */
 export const WRITER_MARKER_FILE = "writer.json";
 
@@ -386,9 +401,9 @@ async function recover(
     }, which this process cannot judge, and the writer lease is no longer that writer's`;
   }
   const since = file.kind === "marker" ? file.marker.since : file.since;
-  const writer = file.kind === "marker"
-    ? `swamp process ${file.marker.pid}`
-    : "a swamp process";
+  recoveryProgress?.(
+    "Recovering work an interrupted command left in this checkout…",
+  );
   let removed: string[];
   try {
     removed = await handle.recoverInterruptedWriter(since, signal);
@@ -396,13 +411,21 @@ async function recover(
     // The replay may have rewritten run records before any failure.
     await removeStaleRunIndexes(repoDir);
   }
-  if (removed.length > 0) {
-    const files = removed.length === 1 ? "file" : "files";
+  // The writer is named in the template's text, where a string
+  // interpolated as a value would be quoted (swamp-club#3893).
+  const pid = file.kind === "marker" ? file.marker.pid : undefined;
+  if (removed.length > 0 && pid !== undefined) {
     logger
-      .warn`Recovered ${repoDir} after ${writer} ended without finishing its v3 datastore writes: removed ${removed.length} uncommitted ${files}`;
+      .warn`Recovered ${repoDir} after swamp process ${pid} ended without finishing its v3 datastore writes; uncommitted files removed: ${removed.length}`;
+  } else if (removed.length > 0) {
+    logger
+      .warn`Recovered ${repoDir} after a swamp process ended without finishing its v3 datastore writes; uncommitted files removed: ${removed.length}`;
+  } else if (pid !== undefined) {
+    logger
+      .debug`Recovered ${repoDir} after swamp process ${pid} ended without tearing down; nothing was uncommitted`;
   } else {
     logger
-      .debug`Recovered ${repoDir} after ${writer} ended without tearing down; nothing was uncommitted`;
+      .debug`Recovered ${repoDir} after a swamp process ended without tearing down; nothing was uncommitted`;
   }
   await Deno.remove(writerMarkerPath(repoDir));
   return removed;

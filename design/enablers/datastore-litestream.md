@@ -810,15 +810,17 @@ home are the same order (560–850 MB against 610–620 MB).
 - `datastore setup filesystem --format 3` fails with `unable to open database
   file` when the path goes through a symlinked directory.
 - A checkout behind the writer that reads during a Litestream cut hangs about
-  112 s, then exits 0 (measured in swamp-club#3882's verification).
+  112 s, then exits 0 (measured in swamp-club#3882's verification). Since
+  swamp-club#3893 its restore is watched and the read fails with
+  `datastore_v3_catch_up_unreachable` within about 10 s.
 - A SIGKILLed workflow's per-model lock outlives `workflow recover`, so the next
   `data gc` waits out the lock's 30 s TTL (v2 too).
 
 **Deferred.** Lazy content (only if clones are still over target after the
-compaction policy), the full-replay crash bug (Phase 7), and the long silent
-waits: crash recovery after a writer is killed mid-method (about 24 s on a
-14,000-file checkout), `data prune` (6–10 s before any output) and the 112 s
-read above.
+compaction policy) and the full-replay crash bug (Phase 7). The long silent
+waits this phase found (crash recovery after a writer is killed mid-method,
+`data prune` before any output, and the 112 s read above) were addressed in
+swamp-club#3893.
 
 **Not measured.** Real S3 and GCS, and SSO, instance and workload identity.
 
@@ -1155,7 +1157,21 @@ sidecar is stopped for the restore (`LitestreamReplicator.quiesce`, which
 holds `use.lock` exclusively so none starts meanwhile). A read-only command
 that cannot get either within the lock timeout, or whose restore fails,
 reads a copy that was restored before as it is, and warns that it shows
-the checkout's last restored state; a writer fails. So does a reader of a
+the checkout's last restored state; a writer fails. The exception is a
+replica the storage cannot list (swamp-club#3893): Litestream retries a
+dropped listing for about two minutes on S3, so while a restore runs swamp
+lists the replica's lineage paths itself through the provider's
+`replicaPaths()` store, after 2 s and then every 2 s, each listing bounded
+by 4 s. Two that fail on the network in a row stop the restore, within about
+10 s; a restore that fails on its own first (GCS answers the same cut
+within seconds) is followed by one such listing. Either way the command
+fails: a reader with
+`datastore_v3_catch_up_unreachable` (the next command finishes the
+catch-up), a writer with `datastore_v3_storage_unreachable`. A stale read
+would be silent in `--json`, which carries no warnings. One failed listing
+never stops a restore, and once a listing has answered during a restore,
+one that only runs past its bound does not count: a slow replica is not a
+cut one. A refusal still counts. So does a reader of a
 copy that was never restored (no `commits.db`, or neither `copy.json` nor
 its own writer's `lineage.json`), with `datastore_v3_restore_failed`: that
 copy would read as an empty datastore (swamp-club#3642). A reader in a

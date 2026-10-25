@@ -210,6 +210,15 @@ export function setLockProgressQuiet(quiet: boolean): void {
 
 const writeStderrLine = (line: string): void => console.error(line);
 
+/**
+ * Has a v3 checkout's recovery of an interrupted writer say on stderr that
+ * it is running, as lock and sync progress does (swamp-club#3893). Set once
+ * per invocation from the CLI's global action.
+ */
+export function enableV3RecoveryProgress(): void {
+  setV3RecoveryProgress(createLockProgressWriter("system"));
+}
+
 function defaultLockWriter(message: string): void {
   createLockProgressWriter("system")(message);
 }
@@ -230,6 +239,7 @@ import {
   isV2CustomDatastore,
 } from "../infrastructure/persistence/datastore_format_guard.ts";
 import { lockingConfigOf } from "../infrastructure/persistence/datastore_lock_target.ts";
+import { setV3RecoveryProgress } from "../infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import {
   holdV3Writer,

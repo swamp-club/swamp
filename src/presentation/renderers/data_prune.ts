@@ -31,7 +31,10 @@ class LogDataPruneRenderer implements Renderer<DataPruneEvent> {
   handlers(): EventHandlers<DataPruneEvent> {
     const logger = getSwampLogger(["data", "prune"]);
     return {
-      collecting: () => {},
+      // Streams before the commit in log mode (swamp-club#3893).
+      collecting: () => {
+        logger.info`Looking for orphaned data to reclaim`;
+      },
       completed: (e) => {
         if (e.data.dryRun) {
           logger

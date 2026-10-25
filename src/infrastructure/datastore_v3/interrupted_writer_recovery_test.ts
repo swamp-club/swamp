@@ -30,6 +30,7 @@ import {
   recoverInterruptedWriter,
   recoverySince,
   removeOwnWriterMarker,
+  setV3RecoveryProgress,
   writerMarkerPath,
   writerMarkerState,
   writeWriterMarker,
@@ -341,4 +342,30 @@ Deno.test("recoverInterruptedWriter: a marker file that changed by the time the 
       assertEquals(await Deno.readTextFile(path), after, name);
     });
   }
+});
+
+Deno.test("recoverInterruptedWriter: says it is recovering before the replay starts, and says nothing when there is nothing to recover (swamp-club#3893)", async () => {
+  await withTempDir(async (dir) => {
+    const events: string[] = [];
+    setV3RecoveryProgress((message) => events.push(`progress: ${message}`));
+    try {
+      const handle = {
+        datastorePath: dir,
+        recoverInterruptedWriter: () => {
+          events.push("replay");
+          return Promise.resolve([]);
+        },
+      } as unknown as V3Datastore;
+      await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
+      assertEquals(events, [], "no marker, no recovery, no line");
+      await writeRaw(dir, "");
+      await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
+      assertEquals(events, [
+        "progress: Recovering work an interrupted command left in this checkout…",
+        "replay",
+      ]);
+    } finally {
+      setV3RecoveryProgress(undefined);
+    }
+  });
 });
