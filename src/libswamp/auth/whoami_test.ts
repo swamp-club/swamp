@@ -27,7 +27,9 @@ import {
   type AuthWhoamiEvent,
   createAuthDeps,
   entitlementsOf,
+  rollUpPlanName,
   whoami,
+  type WhoamiIdentity,
 } from "./whoami.ts";
 
 function makeDeps(overrides: {
@@ -612,4 +614,86 @@ Deno.test("whoami: SWAMP_API_KEY takes precedence over a login, reporting the en
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// --- rollUpPlanName (swamp-club#3947) ---
+
+function rollUpIdentity(
+  plan: string | undefined,
+  entitlements: WhoamiIdentity["collectiveEntitlements"],
+): WhoamiIdentity {
+  return {
+    serverUrl: "https://club.example.com",
+    id: "user-1",
+    username: "alice",
+    email: "alice@example.com",
+    name: "Alice",
+    ...(plan ? { plan } : {}),
+    ...(entitlements ? { collectiveEntitlements: entitlements } : {}),
+  };
+}
+
+Deno.test("rollUpPlanName: no plan from the server rolls up to nothing", () => {
+  assertEquals(rollUpPlanName(rollUpIdentity(undefined, undefined)), undefined);
+});
+
+Deno.test("rollUpPlanName: free is not a plan, so it rolls up to nothing", () => {
+  assertEquals(
+    rollUpPlanName(
+      rollUpIdentity("free", [{
+        slug: "keeb",
+        plan: "free",
+        planName: "Free",
+      }]),
+    ),
+    undefined,
+  );
+});
+
+Deno.test("rollUpPlanName: admin borrows the matching collective's plan name", () => {
+  assertEquals(
+    rollUpPlanName(
+      rollUpIdentity("admin", [
+        { slug: "acme", plan: "team", planName: "Team" },
+        { slug: "swamp", plan: "admin", planName: "Admin" },
+      ]),
+    ),
+    "Admin",
+  );
+});
+
+Deno.test("rollUpPlanName: personal borrows the Personal License name", () => {
+  assertEquals(
+    rollUpPlanName(
+      rollUpIdentity("personal", [
+        {
+          slug: "alice",
+          plan: "personal",
+          planName: "Personal License",
+          subscriptionStatus: null,
+          trial: null,
+        },
+      ]),
+    ),
+    "Personal License",
+  );
+});
+
+Deno.test("rollUpPlanName: no matching collective falls back to the plan id", () => {
+  assertEquals(
+    rollUpPlanName(
+      rollUpIdentity("team", [{
+        slug: "keeb",
+        plan: "free",
+        planName: "Free",
+      }]),
+    ),
+    "team",
+  );
+  assertEquals(
+    rollUpPlanName(
+      rollUpIdentity("team", [{ slug: "acme", plan: "team" }]),
+    ),
+    "team",
+  );
 });

@@ -429,7 +429,7 @@ const PINNED: ReadonlyArray<
     ],
   },
   {
-    file: "src/presentation/renderers/auth_whoami.ts",
+    file: "src/presentation/renderers/collective_standing.ts",
     reason: "collectives of one account",
     calls: [
       "Math.max(...entitlements.map((c) => c.slug.length))",

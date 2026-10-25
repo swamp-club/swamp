@@ -64,6 +64,7 @@ export {
   type AuthDeps,
   type AuthWhoamiEvent,
   createAuthDeps,
+  rollUpPlanName,
   whoami,
   type WhoamiCollectiveEntitlement,
   type WhoamiIdentity,

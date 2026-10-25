@@ -182,6 +182,18 @@ export function entitlementsOf(
 }
 
 /**
+ * Display name for the top-level roll-up, borrowed from a matching collective.
+ * None when the strongest plan is free, which is not a plan.
+ */
+export function rollUpPlanName(identity: WhoamiIdentity): string | undefined {
+  if (!identity.plan || identity.plan === "free") return undefined;
+  const match = identity.collectiveEntitlements?.find(
+    (c) => c.plan === identity.plan && c.planName,
+  );
+  return match?.planName ?? identity.plan;
+}
+
+/**
  * One collective's source hosting from a whoami response, or undefined when
  * the server did not report it for that collective — an older server, a
  * failed lookup on its side, or a collective the caller is not in.
