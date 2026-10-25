@@ -677,3 +677,18 @@ Deno.test("isAliasedSpelling: only a file reached under another spelling of its 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("SqliteReadModel: a put of a key nothing owns does not overwrite a file another spelling of the key reaches (swamp-club#3915)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+    // On a case-insensitive filesystem `VPC/1/raw` resolves to `vpc/1/raw`.
+    await env.append(2, "", [await savePut("VPC", 1, "forged")]);
+    const readModel = env.open();
+    try {
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(env.contentPath("", "vpc", 1)), "vpc@1");
+    } finally {
+      await readModel.close();
+    }
+  });
+});

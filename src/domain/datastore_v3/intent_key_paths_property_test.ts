@@ -65,10 +65,9 @@ const modelAggregate: fc.Arbitrary<Aggregate> = fc.record({
       `${base}/${version}/metadata.yaml`,
       `${base}/latest`,
       `definitions-evaluated/${type}/${id}.yaml`,
+      `outputs/${type}/create/${id}-2026-01-01T00-00-00-000Z.yaml`,
     ],
-    // Outputs name only their type, so behaviors of one type share them;
-    // the key-ownership check guards them instead.
-    shared: [`outputs/${type}/create/o.yaml`],
+    shared: [],
   };
 });
 

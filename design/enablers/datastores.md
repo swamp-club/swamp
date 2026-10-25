@@ -6100,9 +6100,10 @@ refusal fails the whole commit with `403` and the op's index:
   versioned removal owns only that version's files, and a version-less one
   only the marker. A rename owns both names. A behavior definition's key
   names its type directory, and a file named by a uuid is bound only when
-  ownership allows it. Outputs (`outputs/{type}/{method}/{file}`) name no
-  behavior id, so any behavior of a type binds them. Key ownership guards
-  them.
+  ownership allows it. An output (`outputs/{type}/{method}/{modelId}-{stamp}.yaml`)
+  binds only to the behavior whose id names the file, which is how the output
+  repository finds a behavior's outputs: a behavior cannot create outputs
+  for another of its type.
 - **Op kind to intent kind**: a table of which intents ride a put and which a
   tombstone. A version-less `data.delete`/`data.gc` may put the lowered marker
   or tombstone it, and a move's old key is tombstoned under its create or edit
@@ -6121,10 +6122,10 @@ refusal fails the whole commit with `403` and the op's index:
   with `write` on one definition could tombstone, or for a vault overwrite,
   any other by naming it as the counterpart.
 - **Spellings that alias.** On a case- or normalisation-insensitive
-  filesystem (APFS, NTFS), a tombstone of a key nothing owns could reach
-  another key's file: `VPC/1/raw` reaches `vpc/1/raw`. The read model skips
-  the removal of such a tombstone when some segment of its path has no
-  directory entry of exactly its name (`isAliasedSpelling`). This applies to
+  filesystem (APFS, NTFS), a key nothing owns could reach another key's
+  file: `VPC/1/raw` reaches `vpc/1/raw`. The read model neither removes nor
+  writes through such a key when some segment of its path has no directory
+  entry of exactly its name (`isAliasedSpelling`). This applies to
   every checkout, solo ones included, since the same replay runs everywhere.
 
 `integration/datastore_v3_*_staging_test.ts` run every repository write on
@@ -6219,6 +6220,9 @@ other limits are constants, with no flags:
 | A cursor or seq below the compaction point | `410 {code: commits_compacted, point}` |
 | A binding or authorisation refusal | `403 {code, reason, opIndex}` |
 | A malformed envelope, op or chunk | `400`; an oversized one `413` |
+
+A commit with no put or tombstone (serve's own lease commits) is shown in
+the changes feed only to a caller who may read its partition.
 
 `changedBy` is the principal of the newest of the last 200 commits that
 touched the key (its writer's host when it has none). Any other failure is a

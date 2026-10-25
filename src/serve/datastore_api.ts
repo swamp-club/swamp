@@ -616,7 +616,10 @@ class DatastoreApi {
         next = change.cursor;
         if (
           change.commit.namespace === this.#namespace &&
-          (await this.#mayReadCommit(change.commit.ops))
+          (await this.#mayReadCommit(
+            change.commit.partition,
+            change.commit.ops,
+          ))
         ) {
           kept.push({ cursor: change.cursor, commit: change.commit.toJSON() });
           if (kept.length >= limit) break;
@@ -695,11 +698,25 @@ class DatastoreApi {
     return false;
   }
 
-  async #mayReadCommit(ops: readonly Op[]): Promise<boolean> {
+  async #mayReadCommit(
+    partition: PartitionKey,
+    ops: readonly Op[],
+  ): Promise<boolean> {
     const required: RequiredAccess[] = [];
+    let intents = 0;
     for (const op of ops) {
+      if (op.kind === "put" || op.kind === "tombstone") intents++;
       const access = await readAccessOf(op, this.#resolver);
       if (access !== undefined) required.push(access);
+    }
+    // A commit with no intent-bearing op (serve's own lease commits) still
+    // names its partition: it is read as the partition is.
+    if (intents === 0) {
+      for (
+        const access of await partitionReadAccessOf(partition, this.#resolver)
+      ) {
+        required.push(access);
+      }
     }
     return this.#mayRead(required);
   }

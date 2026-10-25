@@ -97,11 +97,20 @@ Deno.test("bindKey: a data rename owns both names' keys", () => {
   assert(!bound(rename, `${DATA}/c/1/raw`));
 });
 
-Deno.test("bindKey: an output names its type across segments, and no other type", () => {
+Deno.test("bindKey: an output names its type across segments and its own behavior's id, and no other", () => {
   const output = intent({ kind: "output.save", model: MODEL, outputId: "o" });
-  assert(bound(output, "outputs/@swamp/aws-ec2/create/o-1.yaml"));
-  assert(!bound(output, "outputs/@swamp/aws-s3/create/o-1.yaml"));
-  assert(!bound(output, "outputs/@swamp/create/o-1.yaml"));
+  const file = `${ID}-2026-01-01T00-00-00-000Z.yaml`;
+  assert(bound(output, `outputs/@swamp/aws-ec2/create/${file}`));
+  assert(!bound(output, `outputs/@swamp/aws-s3/create/${file}`));
+  assert(!bound(output, `outputs/@swamp/create/${file}`));
+  // Another behavior of the same type's output, or a name of no output.
+  assert(
+    !bound(
+      output,
+      `outputs/@swamp/aws-ec2/create/${OTHER_ID}-2026-01-01T00-00-00-000Z.yaml`,
+    ),
+  );
+  assert(!bound(output, "outputs/@swamp/aws-ec2/create/o-1.yaml"));
   assert(!bound(output, `${DATA}/vpc/latest`));
 });
 

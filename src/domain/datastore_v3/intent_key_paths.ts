@@ -29,7 +29,7 @@
  *
  * - `data/{type}/{modelId}/{name}/{version}/raw|metadata.yaml` and
  *   `data/{type}/{modelId}/{name}/latest`;
- * - `outputs/{type}/{method}/{file}`, which names no model id;
+ * - `outputs/{type}/{method}/{modelId}-{stamp}.yaml`;
  * - `definitions-evaluated/{type}/{name|id}.yaml`;
  * - `workflow-runs/{workflowId}/workflow-run-{runId}.yaml` and
  *   `workflows-evaluated/runs/{runId}/evaluated-workflow.yaml`;
@@ -198,11 +198,13 @@ function bindSegments(
       return dataKey(intent.model, segments);
     case "output.save":
     case "output.delete":
-      // An output key names its behavior's type, never its id:
-      // `outputs/{type}/{method}/{file}`, where the type may span segments.
+      // `outputs/{type}/{method}/{modelId}-{stamp}.yaml`, where the type may
+      // span segments: the file is named by its behavior's id, which the
+      // output repository finds a behavior's outputs by.
       return segments.length >= 4 && segments[0] === "outputs" &&
           typeUnder(segments, 1, segments.length - 2)?.normalized ===
-            intent.model.type
+            intent.model.type &&
+          isOutputFileOf(segments[segments.length - 1], intent.model.id)
         ? { ok: true }
         : undefined;
     case "evaluated-definition.save":
@@ -297,6 +299,13 @@ function dataKey(
     return undefined;
   }
   return { ok: true };
+}
+
+/** An output file name, `<definitionId>-<stamp>.yaml` as the repository writes it. */
+const OUTPUT_FILE = /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
+
+function isOutputFileOf(file: string, modelId: string): boolean {
+  return OUTPUT_FILE.exec(file)?.[1] === modelId;
 }
 
 /** A managed-config definition's file, by its kind's layout. */

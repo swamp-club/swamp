@@ -1462,16 +1462,18 @@ export class SqliteReadModel implements ReadModel {
     if (decision.kind === "keep") return undefined;
     touched.add(key);
     const source = { partition: owner, seq: commit.seq };
-    // A tombstone of a key no put ever owned names no file of its own. On
-    // a case- or normalisation-insensitive filesystem its path can still
-    // resolve to another key's file (`WEB.yaml` to `web.yaml`), which the
-    // tombstone must not remove (swamp-club#3915).
+    // A key no put ever owned names no file of its own. On a case- or
+    // normalisation-insensitive filesystem its path can still resolve to
+    // another key's file (`WEB.yaml` to `web.yaml`), which neither its
+    // tombstone may remove nor its put overwrite (swamp-club#3915).
     if (
-      change.put === null && prior === undefined &&
+      prior === undefined &&
       await isAliasedSpelling(path, this.#cacheRoot(commit.namespace))
     ) {
       this.#stats?.bump("removals_skipped");
-      return decision.kind === "remove" ? decision.next : undefined;
+      return change.put === null && decision.kind === "remove"
+        ? decision.next
+        : undefined;
     }
     if (decision.kind === "remove" || change.put === null) {
       // Nothing of the key is on disk in a net replay (swamp-club#3803).

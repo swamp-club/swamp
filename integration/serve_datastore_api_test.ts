@@ -662,22 +662,65 @@ Deno.test({
 
 Deno.test({
   name:
-    "datastore API: two commits racing for one key from different behaviors land one, and refuse the other as owned elsewhere",
+    "datastore API: two commits racing for one key from different partitions land one, and refuse the other as owned elsewhere",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const admin = grant({
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    });
+    await withServer([admin], async (server) => {
+      const type = server.modelType.normalized;
+      // A definition file named by a uuid binds to any definition of its
+      // kind: only key ownership tells two partitions apart.
+      const key = `config/models/${type}/${crypto.randomUUID()}.yaml`;
+      const definitionCommit = (name: string) =>
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: [{
+            kind: "put",
+            intent: {
+              kind: "definition.create",
+              definition: { kind: "model", name },
+            },
+            key,
+            inline: btoa(`name: ${name}`),
+          }],
+          chunks: [],
+        });
+      const configPath = (name: string) =>
+        `${server.url}/partitions/${
+          encodeURIComponent(
+            partitionOf({ kind: "config", definitionKind: "model", name })
+              .toString(),
+          )
+        }/commits`;
+      const results = await Promise.all([
+        post(configPath("one"), "alice-token", definitionCommit("one")),
+        post(configPath("two"), "alice-token", definitionCommit("two")),
+      ]);
+      const statuses = results.map((r) => r.status).sort();
+      assertEquals(statuses, [200, 403], JSON.stringify(results));
+      const refused = results.find((r) => r.status === 403)!;
+      assertEquals(refused.json.reason, "key-owned-elsewhere");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: an output named for another behavior of the same type is refused",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     await withServer(writer(), async (server) => {
-      const other = Definition.create({ name: "other", globalArguments: {} });
-      await runInRootUnitOfWork(
-        server.ctx.repoContext,
-        { flush: undefined },
-        () =>
-          server.ctx.repoContext.definitionRepo.save(server.modelType, other),
-      );
       const type = server.modelType.normalized;
-      // Outputs name only their behavior's type, so both behaviors bind it.
-      const key = `outputs/${type}/create/shared.yaml`;
-      const outputCommit = (modelId: string) =>
+      const victim = crypto.randomUUID();
+      const forged = await post(
+        partitionPath(server),
+        "alice-token",
         commitBody({
           expectedSeq: 0,
           txnId: crypto.randomUUID(),
@@ -685,30 +728,17 @@ Deno.test({
             kind: "put",
             intent: {
               kind: "output.save",
-              model: { type, id: modelId },
+              model: { type, id: server.model.id },
               outputId: "o",
             },
-            key,
-            inline: btoa(modelId),
+            key: `outputs/${type}/run/${victim}-2099-01-01T00-00-00-000Z.yaml`,
+            inline: btoa(`definitionId: ${victim}`),
           }],
           chunks: [],
-        });
-      const results = await Promise.all([
-        post(
-          partitionPath(server),
-          "alice-token",
-          outputCommit(server.model.id),
-        ),
-        post(
-          partitionPath(server, other.id),
-          "alice-token",
-          outputCommit(other.id),
-        ),
-      ]);
-      const statuses = results.map((r) => r.status).sort();
-      assertEquals(statuses, [200, 403], JSON.stringify(results));
-      const refused = results.find((r) => r.status === 403)!;
-      assertEquals(refused.json.reason, "key-owned-elsewhere");
+        }),
+      );
+      assertEquals(forged.status, 403);
+      assertEquals(forged.json.reason, "key-outside-aggregate");
     });
   },
 });

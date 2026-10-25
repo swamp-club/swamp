@@ -423,7 +423,9 @@ async function opFor(intent: Intent): Promise<PutOp | TombstoneOp | undefined> {
 function keyFor(intent: Intent): string {
   if ("model" in intent) {
     const type = intent.model.type;
-    if (intent.kind.startsWith("output.")) return `outputs/${type}/m/o.yaml`;
+    if (intent.kind.startsWith("output.")) {
+      return `outputs/${type}/m/${MODEL_ID}-2026-01-01T00-00-00-000Z.yaml`;
+    }
     if (intent.kind.startsWith("evaluated-definition.")) {
       return `definitions-evaluated/${type}/${MODEL_ID}.yaml`;
     }
