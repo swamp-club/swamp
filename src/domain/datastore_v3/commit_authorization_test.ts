@@ -271,13 +271,14 @@ Deno.test("authorizeCommit: a data save needs run on the behavior, by name, as a
     "forbidden",
     0,
   );
-  const allowed = new FakeAuthority(["run model:web"]);
+  const allowed = new FakeAuthority(["run model:web", "admin access:*"]);
   assert(
     (await authorizeCommit(modelPartition(), await save(), resolver, allowed))
       .ok,
   );
-  // Both puts share one intent, so the caller is asked once.
-  assertEquals(allowed.asked.length, 1);
+  // Both puts share one intent, so the caller is asked once for each
+  // access: run on the behavior, and admin.
+  assertEquals(allowed.asked.length, 2);
 });
 
 Deno.test("authorizeCommit: a grant record written as plain data needs admin, and a non-admin is refused", async () => {
@@ -544,6 +545,7 @@ Deno.test("authorizeCommit: a rename-from naming another definition as its count
   const both = new FakeAuthority([
     "write workflow:mine",
     "write workflow:victim",
+    "admin access:*",
   ]);
   assert((await authorizeCommit(mine, [tombstone], resolver, both)).ok);
 });
@@ -626,7 +628,7 @@ Deno.test("authorizeCommit: a data delete or rename needs write on the behavior'
       "forbidden",
       0,
     );
-    const writer = new FakeAuthority(["write data:web"]);
+    const writer = new FakeAuthority(["write data:web", "admin access:*"]);
     assert(
       (await authorizeCommit(modelPartition(), [op], resolver, writer)).ok,
     );
@@ -639,7 +641,7 @@ Deno.test("authorizeCommit: data garbage collection needs write on all data, dec
     intent: modelIntent({ kind: "data.gc", name: "vpc", version: 1 }),
     key: RecordKey.create(`${DATA}/vpc/1/raw`),
   });
-  const authority = new FakeAuthority(["write data:*"]);
+  const authority = new FakeAuthority(["write data:*", "admin access:*"]);
   assert(
     (await authorizeCommit(
       modelPartition(),
@@ -661,4 +663,22 @@ Deno.test("authorizeCommit: data garbage collection needs write on all data, dec
     "forbidden",
     0,
   );
+});
+
+Deno.test("authorizeCommit: every forwarded write needs admin until swamp-club#3922, whatever else the caller holds", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  const member = new FakeAuthority([
+    "run model:*",
+    "write model:*",
+    "write data:*",
+  ]);
+  const refused = await authorizeCommit(
+    modelPartition(),
+    await save(),
+    resolver,
+    member,
+  );
+  assertRefused(refused, "forbidden", 0);
+  assert(!refused.ok && refused.message.includes("admin access:*"));
 });

@@ -259,12 +259,22 @@ async function getJson(
   return { status: response.status, json: await response.json() };
 }
 
-const writer = (): Grant[] => [
+/** A team member's grants: run, write and read, but not admin. */
+const member = (): Grant[] => [
   grant({
     actions: ["read", "write", "run"],
     resource: { kind: "model", pattern: "*" },
   }),
   grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+];
+
+/**
+ * An admin's grants. Every forwarded write needs admin until
+ * swamp-club#3922, so commits that should land are sent as one.
+ */
+const writer = (): Grant[] => [
+  ...member(),
+  grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
 ];
 
 Deno.test({
@@ -481,8 +491,9 @@ Deno.test({
           chunks: [],
         }),
       );
+      // Refused: Bob is no admin, and a commit naming a chunk it neither
+      // carries nor may read is refused in any case.
       assertEquals(stolen.status, 403);
-      assertEquals(stolen.json.code, "chunk_not_provided");
 
       const read = await fetch(`${server.url}/chunks/${sha}`, {
         headers: { authorization: "Bearer bob-token" },
@@ -586,7 +597,7 @@ Deno.test({
       resource: { kind: "access", pattern: "*" },
     });
     for (
-      const [grants, allowed] of [[writer(), false], [[admin], true]] as const
+      const [grants, allowed] of [[member(), false], [[admin], true]] as const
     ) {
       await withServer([...grants], async (server) => {
         const grantType = ModelType.create("@swamp/grant");
@@ -880,5 +891,29 @@ Deno.test({
         assertEquals(result.status, status, JSON.stringify(result.json));
       });
     }
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a team member who is not an admin cannot forward a write until swamp-club#3922",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(member(), async (server) => {
+      const content = new TextEncoder().encode("x");
+      const refused = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, "vpc", 1, content),
+          chunks: [{ sha256: await sha256Hex(content), size: 1 }],
+        }, [content]),
+      );
+      assertEquals(refused.status, 403);
+      assertEquals(refused.json.code, "forbidden");
+    });
   },
 });

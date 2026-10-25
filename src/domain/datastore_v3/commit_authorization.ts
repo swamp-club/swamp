@@ -277,8 +277,8 @@ export async function authorizeCommit(
 }
 
 /**
- * Every access a put or tombstone needs: {@link writeAccessOf}, and for a
- * half of a definition rename the same write on the other name. A rename
+ * Every access a put or tombstone needs: {@link writeAccessOf}, for a half
+ * of a definition rename the same write on the other name, and admin. A rename
  * may write a key the other name's partition owns, and its other name is
  * the client's to choose, so a caller must be able to change both
  * definitions the rename joins.
@@ -304,6 +304,12 @@ export async function writeAccessesOf(
       ),
     );
   }
+  // Until swamp-club#3922 checks a forwarded write's content as serve's
+  // handlers check it, every forwarded write needs admin as well: a
+  // non-admin's write could reach further through a forwarded op than
+  // serve's handlers let it. The checks above still apply, so a deny on
+  // the resource refuses an admin too.
+  required.push({ action: "admin", resource: ADMIN_RESOURCE });
   return required;
 }
 

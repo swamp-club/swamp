@@ -6127,6 +6127,16 @@ v3 through `withAuditedV3Env`. Each scenario's commits must pass these
 bindings, so a repository write a forwarded commit would be refused for fails
 its gate.
 
+**Every forwarded write needs admin for now.** A forwarded op can carry
+more than serve's handlers would let the same caller write: content, a
+removal's or rename's bytes, files whose owner only a lookup can tell. Until
+swamp-club#3922 checks a forwarded write the way serve's handlers check it,
+every put and tombstone also needs `admin` on `access:*`
+(`writeAccessesOf`). The rules below still apply, so a deny on the resource
+refuses an admin too, and they are what #3922 relaxes the admin requirement
+against. Reads are not affected: a non-admin's catch-up, changes feed and
+chunk reads are filtered as below.
+
 **Intents to actions.** Each op is decided with serve's decision service, its
 admin fallback included (`isCallerAuthorized`, audited on refusal). The
 resource is the same one serve's handlers check for the same write:
