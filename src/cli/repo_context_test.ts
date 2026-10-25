@@ -63,6 +63,7 @@ import {
   runRecordCurrencyOver,
   runsLiveInDatastore,
   runUnderModelLocks,
+  setLockProgressOutputMode,
   setLockProgressQuiet,
   signalWaitsOf,
   waitForPerModelLocks,
@@ -1949,6 +1950,65 @@ Deno.test(
       assertStringIncludes(captured[0], "loud message");
     } finally {
       setLockProgressQuiet(false);
+    }
+  },
+);
+
+Deno.test(
+  "createLockProgressWriter - writes nothing in JSON mode (swamp-club#3902)",
+  () => {
+    const captured: string[] = [];
+    const writer = createLockProgressWriter("system", (line) => {
+      captured.push(line);
+    });
+    try {
+      setLockProgressOutputMode("json");
+      writer("Recovering work an interrupted command left in this checkout…");
+      assertEquals(captured, []);
+
+      setLockProgressOutputMode("log");
+      writer("log message");
+      assertEquals(captured.length, 1);
+      assertStringIncludes(captured[0], "log message");
+
+      setLockProgressQuiet(true);
+      writer("quiet message");
+      assertEquals(captured.length, 1);
+    } finally {
+      setLockProgressOutputMode("log");
+      setLockProgressQuiet(false);
+    }
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - default progress writer is silent in JSON mode (swamp-club#3902)",
+  async () => {
+    const sequence = [1, 0];
+    let i = 0;
+    const scanner = (): Promise<PerModelLockScan> => {
+      const next = sequence[Math.min(i, sequence.length - 1)];
+      i++;
+      return Promise.resolve(heldCount(next));
+    };
+
+    const captured: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      captured.push(String(args[0]));
+    };
+    try {
+      setLockProgressOutputMode("json");
+      await waitForPerModelLocks(
+        "/unused/datastore/path",
+        undefined,
+        { findModelLocks: scanner, pollIntervalMs: 1 },
+      );
+      assertEquals(i, 2);
+      assertEquals(captured, []);
+    } finally {
+      console.error = originalError;
+      setLockProgressOutputMode("log");
     }
   },
 );
