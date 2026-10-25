@@ -506,20 +506,25 @@ export async function partitionReadAccessOf(
             resource: vaultKindResource(identity.name),
           }];
         case "model":
-          // The partition names no behavior type: a deny that needs one
-          // fails closed.
+          // The partition names no behavior type, and same-named
+          // definitions of several types share it, so neither their type
+          // nor their tags is known: the resource carries neither, and a
+          // deny conditioned on either fails closed.
           return [{
             action: "read",
-            resource: unresolvedAccessResource("model", identity.name),
+            resource: {
+              kind: "model",
+              name: identity.name,
+              fields: { name: identity.name },
+            },
           }];
       }
       return [{ action: "admin", resource: ADMIN_RESOURCE }];
     }
     case "definition":
-      return [{
-        action: "read",
-        resource: unresolvedAccessResource("model", identity.id),
-      }];
+      // An auto-definition's partition names neither its behavior type nor
+      // its name, so it cannot be told from a control-plane one: admin.
+      return [{ action: "admin", resource: ADMIN_RESOURCE }];
     case "lockfile":
       return [];
   }

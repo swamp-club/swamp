@@ -474,6 +474,18 @@ class DatastoreApi {
     }
     const carried = provided;
     const referenced = referencedChunks(ops);
+    // Every chunk named and not carried is checked under the forwarded
+    // lock, which every caller's commits share: bound that work.
+    if (
+      referenced.filter((hash) => !carried.has(hash)).length >
+        MAX_CHUNKS_PER_COMMIT
+    ) {
+      return failure(
+        413,
+        "too_many_chunks",
+        `A commit may name at most ${MAX_CHUNKS_PER_COMMIT} chunks it does not carry`,
+      );
+    }
     // Authorised again under the datastore's forwarded-commit lock, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
@@ -492,7 +504,9 @@ class DatastoreApi {
       // Proof of possession under the lock too, so a read grant revoked
       // during the upload no longer vouches for a chunk.
       for (const hash of referenced) {
-        if (carried.has(hash) || (await this.#mayReference(hash))) continue;
+        if (carried.has(hash) || (await this.#mayReference(hash, resolver))) {
+          continue;
+        }
         return { notProvided: hash };
       }
       const result = await commitForwarded(this.#v3, {
@@ -670,7 +684,10 @@ class DatastoreApi {
    * Whether the caller may name `sha256` in a commit or read it: it sent
    * it within the grace window, or a partition it may read references it.
    */
-  async #mayReference(sha256: string): Promise<boolean> {
+  async #mayReference(
+    sha256: string,
+    resolver: AggregateResourceResolver = this.#resolver,
+  ): Promise<boolean> {
     if (
       this.#deps.ledger.holds(
         this.#caller.principal,
@@ -688,9 +705,7 @@ class DatastoreApi {
     );
     for (const partition of partitions) {
       if (
-        await this.#mayRead(
-          await partitionReadAccessOf(partition, this.#resolver),
-        )
+        await this.#mayRead(await partitionReadAccessOf(partition, resolver))
       ) {
         return true;
       }

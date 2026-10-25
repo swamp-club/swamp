@@ -6185,6 +6185,14 @@ unreadable chunk reads as missing.
 `partitionsReferencing`. A chunk in a behavior's partition needs both `read`
 on its data and on the behavior, since the partition holds both.
 
+A whole partition (catch-up, and the partitions that vouch for a chunk) is
+read as conservatively as its identity allows (`partitionReadAccessOf`). A
+behavior definition's config partition names neither the behavior's type
+nor its tags, since same-named definitions of several types share it, so it
+is decided on a resource that carries neither: a deny conditioned on either
+fails closed. An auto-definition's partition names neither its type nor its
+name, so reading it needs admin.
+
 The upload ledger (`src/infrastructure/datastore_v3/upload_ledger.ts`) lives
 in memory and is bounded. It caps a principal's uploaded bytes no commit
 references at 2 GiB, and its entries per principal. Chunks a commit carries
@@ -6201,8 +6209,9 @@ streaming `storage/1`, which the S3 and GCS stores would implement too. The
 other limits are constants, with no flags:
 
 - an envelope of at most 4 MiB, read before anything else;
-- `MAX_COMMIT_OPS` ops and 1,024 chunks per commit, and a body of at most
-  1 GiB;
+- `MAX_COMMIT_OPS` ops and 1,024 carried chunks per commit, and a body of
+  at most 1 GiB; at most 1,024 named chunks it does not carry, since each is
+  checked under the forwarded-commit lock every caller shares;
 - pages of at most 1,000 commits;
 - at most 10,000 feed rows scanned per changes request. The returned cursor
   moves past filtered rows, so a caller who may read nothing still advances.

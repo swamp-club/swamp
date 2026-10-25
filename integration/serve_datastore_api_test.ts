@@ -801,3 +801,35 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a tag-conditioned deny hides a behavior definition's config partition from catch-up",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const configPath = (server: Server) =>
+      `${server.url}/partitions/${
+        encodeURIComponent(
+          partitionOf({ kind: "config", definitionKind: "model", name: "db" })
+            .toString(),
+        )
+      }/commits?after=0`;
+    // The partition names no behavior type or tags, so a deny on tags
+    // must fail closed rather than read as matching nothing.
+    const deny = grant({
+      effect: "deny",
+      actions: ["read"],
+      resource: { kind: "model", pattern: "*" },
+      condition: 'tags.env == "prod"',
+    });
+    await withServer([...writer(), deny], async (server) => {
+      const read = await getJson(configPath(server), "alice-token");
+      assertEquals(read.status, 404);
+    });
+    await withServer(writer(), async (server) => {
+      const read = await getJson(configPath(server), "alice-token");
+      assertEquals(read.status, 200);
+    });
+  },
+});
