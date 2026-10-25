@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { validateNoAuthHttpRequest } from "./origin.ts";
+import {
+  validateNoAuthHttpRequest,
+  validateWebSocketOrigin,
+} from "./origin.ts";
 
 Deno.test("validateNoAuthHttpRequest: rejects an untrusted browser origin on loopback", () => {
   const result = validateNoAuthHttpRequest(
@@ -62,6 +65,116 @@ Deno.test("validateNoAuthHttpRequest: admits a configured trusted proxy authorit
       "127.0.0.1",
       true,
       ["serve.example.com"],
+    ),
+    { allowed: true },
+  );
+});
+
+Deno.test("validateWebSocketOrigin: a host:port trusted host admits that exact origin", () => {
+  assertEquals(
+    validateWebSocketOrigin(
+      "https://swamp.example.ts.net:9443",
+      "swamp.example.ts.net:9443",
+      "127.0.0.1",
+      false,
+      ["swamp.example.ts.net:9443"],
+    ),
+    { allowed: true },
+  );
+});
+
+Deno.test("validateWebSocketOrigin: a host:port trusted host rejects the host on another port", () => {
+  for (
+    const origin of [
+      "https://swamp.example.ts.net",
+      "https://swamp.example.ts.net:8443",
+    ]
+  ) {
+    const result = validateWebSocketOrigin(
+      origin,
+      "swamp.example.ts.net:9443",
+      "127.0.0.1",
+      false,
+      ["swamp.example.ts.net:9443"],
+    );
+    assertEquals(result.allowed, false);
+    assertStringIncludes(result.reason!, "untrusted origin");
+  }
+});
+
+Deno.test("validateWebSocketOrigin: a host:443 trusted host admits the port-less https origin", () => {
+  assertEquals(
+    validateWebSocketOrigin(
+      "https://swamp.example.test",
+      null,
+      "127.0.0.1",
+      false,
+      ["swamp.example.test:443"],
+    ),
+    { allowed: true },
+  );
+});
+
+Deno.test("validateWebSocketOrigin: a host:port trusted host matches regardless of case", () => {
+  assertEquals(
+    validateWebSocketOrigin(
+      "https://swamp.example.ts.net:9443",
+      null,
+      "127.0.0.1",
+      false,
+      ["Swamp.Example.TS.net:9443"],
+    ),
+    { allowed: true },
+  );
+});
+
+Deno.test("validateWebSocketOrigin: a bare trusted host still admits the host on any port", () => {
+  for (
+    const origin of [
+      "https://swamp.example.ts.net",
+      "https://swamp.example.ts.net:9443",
+      "http://swamp.example.ts.net:9090",
+    ]
+  ) {
+    assertEquals(
+      validateWebSocketOrigin(origin, null, "127.0.0.1", false, [
+        "swamp.example.ts.net",
+      ]),
+      { allowed: true },
+    );
+  }
+});
+
+Deno.test("validateWebSocketOrigin: a host:port trusted host admits its hostname as Host off loopback", () => {
+  for (
+    const host of ["swamp.example.test:9443", "swamp.example.test"]
+  ) {
+    assertEquals(
+      validateWebSocketOrigin(null, host, "0.0.0.0", true, [
+        "swamp.example.test:9443",
+      ]),
+      { allowed: true },
+    );
+  }
+  const result = validateWebSocketOrigin(
+    null,
+    "rebind.attacker.example:9443",
+    "0.0.0.0",
+    true,
+    ["swamp.example.test:9443"],
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted host");
+});
+
+Deno.test("validateNoAuthHttpRequest: admits a proxy authority configured as host:port", () => {
+  assertEquals(
+    validateNoAuthHttpRequest(
+      "https://swamp.example.ts.net:9443",
+      "swamp.example.ts.net:9443",
+      "127.0.0.1",
+      false,
+      ["swamp.example.ts.net:9443"],
     ),
     { allowed: true },
   );

@@ -19,12 +19,41 @@
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
+/**
+ * Parses a `--trusted-hosts` entry as `hostname` or `hostname:port`. Returns
+ * null for an entry that is not exactly such an authority (a path, user info,
+ * an unbracketed IPv6 literal, a non-ASCII name), which keeps its historic
+ * literal comparison.
+ */
+function parseTrustedHost(
+  entry: string,
+): { hostname: string; port?: string } | null {
+  let url: URL;
+  try {
+    url = new URL(`http://${entry}`);
+  } catch {
+    return null;
+  }
+  // URL drops http's default port, so read an explicit port from the entry.
+  const port = /^(?:\[[^\]]*\]|[^:]*):(\d+)$/.exec(entry)?.[1];
+  const hostname = url.hostname.toLowerCase();
+  const authority = port === undefined ? hostname : `${hostname}:${port}`;
+  if (authority !== entry.toLowerCase()) return null;
+  return { hostname, port };
+}
+
+/**
+ * Browser origins this server trusts. `anyPort` holds `protocol//hostname`
+ * bases matched on every port: loopback, the TLS bind host and trusted host
+ * entries without a port. `exact` holds the full origins of entries that name
+ * a port, so `host:9443` trusts only that public origin.
+ */
 function trustedOrigins(
   bindHost: string,
   tlsEnabled: boolean,
   trustedHosts?: readonly string[],
-): Set<string> {
-  const origins = new Set([
+): { anyPort: Set<string>; exact: Set<string> } {
+  const anyPort = new Set([
     "http://127.0.0.1",
     "http://localhost",
     "https://127.0.0.1",
@@ -32,17 +61,25 @@ function trustedOrigins(
     "http://[::1]",
     "https://[::1]",
   ]);
+  const exact = new Set<string>();
   if (tlsEnabled) {
-    origins.add(`https://${bindHost.toLowerCase()}`);
+    anyPort.add(`https://${bindHost.toLowerCase()}`);
   }
   if (trustedHosts) {
     for (const host of trustedHosts) {
+      const parsed = parseTrustedHost(host);
+      if (parsed?.port !== undefined) {
+        const authority = `${parsed.hostname}:${parsed.port}`;
+        exact.add(new URL(`http://${authority}`).origin);
+        exact.add(new URL(`https://${authority}`).origin);
+        continue;
+      }
       const normalizedHost = host.toLowerCase();
-      origins.add(`http://${normalizedHost}`);
-      origins.add(`https://${normalizedHost}`);
+      anyPort.add(`http://${normalizedHost}`);
+      anyPort.add(`https://${normalizedHost}`);
     }
   }
-  return origins;
+  return { anyPort, exact };
 }
 
 function validateOrigin(
@@ -54,14 +91,17 @@ function validateOrigin(
   // Native HTTP clients do not generally attach Origin. It is only a browser
   // boundary, not authentication for local processes.
   if (origin === null) return { allowed: true };
-  let originBase: string;
+  let originUrl: URL;
   try {
-    const originUrl = new URL(origin);
-    originBase = `${originUrl.protocol}//${originUrl.hostname}`;
+    originUrl = new URL(origin);
   } catch {
     return { allowed: false, reason: `malformed origin: ${origin}` };
   }
-  if (!trustedOrigins(bindHost, tlsEnabled, trustedHosts).has(originBase)) {
+  const originBase = `${originUrl.protocol}//${originUrl.hostname}`;
+  const trusted = trustedOrigins(bindHost, tlsEnabled, trustedHosts);
+  if (
+    !trusted.anyPort.has(originBase) && !trusted.exact.has(originUrl.origin)
+  ) {
     return { allowed: false, reason: `untrusted origin: ${origin}` };
   }
   return { allowed: true };
@@ -85,7 +125,12 @@ function validateHost(
   const trusted = new Set([
     ...LOOPBACK_HOSTS,
     bindHost.toLowerCase(),
-    ...(trustedHosts?.map((host) => host.toLowerCase()) ?? []),
+    // The Host check guards against DNS rebinding, which turns on the
+    // hostname alone, so an entry's port does not narrow it.
+    ...(trustedHosts?.map((host) =>
+      parseTrustedHost(host)?.hostname.replace(/^\[|\]$/g, "") ??
+        host.toLowerCase()
+    ) ?? []),
   ]);
   if (!trusted.has(hostName)) {
     return { allowed: false, reason: `untrusted host: ${hostHeader}` };

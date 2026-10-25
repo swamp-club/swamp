@@ -1894,7 +1894,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host validation, including no-auth HTTP APIs behind reverse proxies (env: SWAMP_TRUSTED_HOSTS)",
+    "Comma-separated hostnames or host:port authorities to trust for Host and browser Origin validation, including no-auth HTTP APIs behind reverse proxies; give a public address on a port other than 443 as host:port (env: SWAMP_TRUSTED_HOSTS)",
   )
   .option(
     "--dispatch-env-allow <names:string>",
@@ -2708,7 +2708,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--trusted-hosts <hosts:string>",
-    "Comma-separated hostnames to trust for Host validation when binding off-loopback or serving no-auth HTTP APIs through a reverse proxy " +
+    "Comma-separated hostnames or host:port authorities to trust for Host and browser Origin validation when binding off-loopback or serving through a reverse proxy; give a public address on a port other than 443 as host:port " +
       "(e.g. host.docker.internal,host.minikube.internal). " +
       "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections " +
       "(env: SWAMP_TRUSTED_HOSTS)",

@@ -494,6 +494,24 @@ Deno.test("validateDashboardSessionOrigin: requires the exact configured trusted
   }
 });
 
+Deno.test("validateDashboardSessionOrigin: a host:port trusted host passes both browser origin checks", () => {
+  const trustedHosts = ["swamp.example.ts.net:9443"];
+  const origin = "https://swamp.example.ts.net:9443";
+  const host = "swamp.example.ts.net:9443";
+  const request = new Request(
+    "http://127.0.0.1:9090/auth/dashboard/session",
+    { headers: { host, origin } },
+  );
+  assertEquals(
+    validateDashboardSessionOrigin(request, false, false, trustedHosts).allowed,
+    true,
+  );
+  assertEquals(
+    validateWebSocketOrigin(origin, host, "127.0.0.1", false, trustedHosts),
+    { allowed: true },
+  );
+});
+
 Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () => {
   const result = validateWebSocketOrigin(
     "http://evil.com",

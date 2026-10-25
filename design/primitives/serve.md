@@ -217,7 +217,12 @@ Everything below shares the one listener, dispatched in table order
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
-bind host and `--trusted-hosts` (`validateWebSocketOrigin`). Two rate limits
+bind host and `--trusted-hosts` (`validateWebSocketOrigin`). A `--trusted-hosts`
+entry is a hostname or `host:port`. A bare hostname admits that host's origin on
+any port; a `host:port` entry admits only that exact origin, so a public address
+on a port other than 443 is listed as `host:port`, the same form the dashboard
+session check needs. The Host check compares hostnames only, so both forms
+trust the entry's hostname there. Two rate limits
 also apply to every upgrade (`src/serve/rate_limiter.ts`): 50 upgrades per IP
 per minute, and 5 failed auth attempts per minute per token name (per IP if the
 token is malformed; cleared on success). A connection allows at most
