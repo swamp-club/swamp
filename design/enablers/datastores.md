@@ -6121,12 +6121,6 @@ refusal fails the whole commit with `403` and the op's index:
   needs `write` on that name (`writeAccessesOf`). Without that, a caller
   with `write` on one definition could tombstone, or for a vault overwrite,
   any other by naming it as the counterpart.
-- **Spellings that alias.** On a case- or normalisation-insensitive
-  filesystem (APFS, NTFS), a key nothing owns could reach another key's
-  file: `VPC/1/raw` reaches `vpc/1/raw`. The read model neither removes nor
-  writes through such a key when some segment of its path has no directory
-  entry of exactly its name (`isAliasedSpelling`). This applies to
-  every checkout, solo ones included, since the same replay runs everywhere.
 
 `integration/datastore_v3_*_staging_test.ts` run every repository write on
 v3 through `withAuditedV3Env`. Each scenario's commits must pass these
