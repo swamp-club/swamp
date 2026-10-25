@@ -123,13 +123,19 @@ export interface AggregateResourceResolver {
  * answers it as it answers every request, including its admin fallback.
  */
 export interface CallerAuthority {
-  allows(action: Action, resource: AccessResource): boolean;
+  /**
+   * With `every`, the decision covers every resource of the kind, as
+   * serve's kind-wide operations decide it: any deny for the kind refuses.
+   */
+  allows(action: Action, resource: AccessResource, every?: boolean): boolean;
 }
 
 /** Everything a write needs authorised on, besides the ops' bindings. */
 export interface RequiredAccess {
   readonly action: Action;
   readonly resource: AccessResource;
+  /** Decided for every resource of the kind (`resource` is `<kind>:*`). */
+  readonly every?: true;
 }
 
 /**
@@ -250,7 +256,11 @@ export async function authorizeCommit(
       const memo = JSON.stringify(required);
       let allowed = decided.get(memo);
       if (allowed === undefined) {
-        allowed = authority.allows(required.action, required.resource);
+        allowed = authority.allows(
+          required.action,
+          required.resource,
+          required.every === true,
+        );
         decided.set(memo, allowed);
       }
       if (!allowed) {
@@ -324,13 +334,7 @@ export async function writeAccessOf(
     if (resolver.isRestrictedType(type)) {
       return { action: "admin", resource: ADMIN_RESOURCE };
     }
-    const lookup = await resolver.model(intent.model);
-    return {
-      action: "write",
-      resource: lookup === undefined
-        ? unresolvedModelResource(type, intent.model.id, "model")
-        : modelAccessResource(lookup, "model"),
-    };
+    return await modelWriteAccessOf(intent, type, resolver);
   }
   if ("run" in intent) {
     const workflow = await resolver.workflow(intent.run.workflowId);
@@ -373,6 +377,47 @@ export async function writeAccessOf(
     };
   }
   return { action: "admin", resource: ADMIN_RESOURCE };
+}
+
+/**
+ * The access a write to a behavior's partition needs, as serve's handlers
+ * decide the same write:
+ * - data and outputs are saved only by running a method, decided as `run`
+ *   on the behavior (`model.method.run`);
+ * - a data delete or rename is `write` on the behavior's data
+ *   (`data.delete`, `data.rename`);
+ * - data garbage collection is `write` on all data, decided for the whole
+ *   kind (`data.gc`);
+ * - an output or evaluated definition removed, as a behavior delete
+ *   removes them, is `write` on the behavior.
+ */
+async function modelWriteAccessOf(
+  intent: Intent & { readonly model: ModelRef },
+  type: ModelType,
+  resolver: AggregateResourceResolver,
+): Promise<RequiredAccess> {
+  const lookup = await resolver.model(intent.model);
+  const resourceAs = (kind: "model" | "data") =>
+    lookup === undefined
+      ? unresolvedModelResource(type, intent.model.id, kind)
+      : modelAccessResource(lookup, kind);
+  switch (intent.kind) {
+    case "data.save":
+    case "data.append":
+    case "output.save":
+      return { action: "run", resource: resourceAs("model") };
+    case "data.delete":
+    case "data.rename":
+      return { action: "write", resource: resourceAs("data") };
+    case "data.gc":
+      return {
+        action: "write",
+        resource: { kind: "data", name: "*", fields: { name: "*" } },
+        every: true,
+      };
+    default:
+      return { action: "write", resource: resourceAs("model") };
+  }
 }
 
 /**

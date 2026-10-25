@@ -1512,6 +1512,30 @@ export function isCallerAuthorized(
   );
 }
 
+/**
+ * {@link isAuthorizedForAll} for a caller with no socket: `action` on every
+ * resource of `kind`, any deny for the kind refusing, a refusal audited the
+ * same way, and nothing sent.
+ */
+export function isCallerAuthorizedForAll(
+  caller: AccessCaller,
+  requestId: string,
+  action: Action,
+  kind: ResourceKind,
+  ctx: ConnectionContext,
+): boolean {
+  const resource: AccessResource = { kind, name: "*", fields: { name: "*" } };
+  return auditCallerRefusal(
+    caller,
+    requestId,
+    caller.principal,
+    action,
+    resource,
+    ctx,
+    decideForCaller(caller, action, resource, ctx, true),
+  );
+}
+
 /** Whether `outcome` allows; a refusal is audited, nothing is sent. */
 function auditRefusal(
   socket: WebSocket,

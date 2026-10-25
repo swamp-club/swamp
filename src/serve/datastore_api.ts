@@ -88,6 +88,7 @@ import {
   type ConnectionContext,
   isAdminOnlyModelType,
   isCallerAuthorized,
+  isCallerAuthorizedForAll,
   replicationErrorForClient,
 } from "./handlers/shared.ts";
 import {
@@ -754,14 +755,22 @@ class DatastoreApi {
 
   #writeAuthority(): CallerAuthority {
     return {
-      allows: (action, resource) =>
-        isCallerAuthorized(
-          this.#caller.access,
-          this.#requestId,
-          action,
-          resource,
-          this.#deps.ctx,
-        ),
+      allows: (action, resource, every) =>
+        every === true
+          ? isCallerAuthorizedForAll(
+            this.#caller.access,
+            this.#requestId,
+            action,
+            resource.kind,
+            this.#deps.ctx,
+          )
+          : isCallerAuthorized(
+            this.#caller.access,
+            this.#requestId,
+            action,
+            resource,
+            this.#deps.ctx,
+          ),
     };
   }
 

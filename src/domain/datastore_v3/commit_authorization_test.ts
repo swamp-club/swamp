@@ -94,10 +94,14 @@ class FakeResolver implements AggregateResourceResolver {
 
 /** An authority that allows exactly the (action, kind:name) pairs given. */
 class FakeAuthority implements CallerAuthority {
-  readonly asked: { action: Action; resource: AccessResource }[] = [];
+  readonly asked: {
+    action: Action;
+    resource: AccessResource;
+    every: boolean;
+  }[] = [];
   constructor(private readonly allowed: readonly string[]) {}
-  allows(action: Action, resource: AccessResource): boolean {
-    this.asked.push({ action, resource });
+  allows(action: Action, resource: AccessResource, every = false): boolean {
+    this.asked.push({ action, resource, every });
     return this.allowed.includes(
       `${action} ${resource.kind}:${resource.name}`,
     ) ||
@@ -243,7 +247,7 @@ Deno.test("checkCommitBindings: a behavior definition's ops must agree on the ty
   );
 });
 
-Deno.test("authorizeCommit: a data save needs write on the behavior, by name", async () => {
+Deno.test("authorizeCommit: a data save needs run on the behavior, by name, as a method run does", async () => {
   const resolver = new FakeResolver();
   resolver.definitions.set(MODEL_ID, web());
   const denied = new FakeAuthority([]);
@@ -252,11 +256,22 @@ Deno.test("authorizeCommit: a data save needs write on the behavior, by name", a
     "forbidden",
     0,
   );
-  assertEquals(denied.asked[0].action, "write");
+  assertEquals(denied.asked[0].action, "run");
   assertEquals(denied.asked[0].resource.kind, "model");
   assertEquals(denied.asked[0].resource.name, "web");
   assertEquals(denied.asked[0].resource.fields.tags, { team: "infra" });
-  const allowed = new FakeAuthority(["write model:web"]);
+  // Write on the behavior is not run: it edits the definition only.
+  assertRefused(
+    await authorizeCommit(
+      modelPartition(),
+      await save(),
+      resolver,
+      new FakeAuthority(["write model:web"]),
+    ),
+    "forbidden",
+    0,
+  );
+  const allowed = new FakeAuthority(["run model:web"]);
   assert(
     (await authorizeCommit(modelPartition(), await save(), resolver, allowed))
       .ok,
@@ -468,9 +483,19 @@ function expectedWrite(intent: Intent, opKind: string): string {
     return "admin access";
   }
   if ("model" in intent) {
-    return intent.model.type === MODEL_TYPE.normalized
-      ? "write model"
-      : "admin access";
+    if (intent.model.type !== MODEL_TYPE.normalized) return "admin access";
+    switch (intent.kind) {
+      case "data.save":
+      case "data.append":
+      case "output.save":
+        return "run model";
+      case "data.delete":
+      case "data.rename":
+      case "data.gc":
+        return "write data";
+      default:
+        return "write model";
+    }
   }
   if ("run" in intent) {
     return intent.kind.endsWith(".delete") ? "write workflow" : "run workflow";
@@ -575,4 +600,65 @@ Deno.test("authorizeCommit: a vault config put needs admin, whatever the vault i
         .ok,
     );
   }
+});
+
+Deno.test("authorizeCommit: a data delete or rename needs write on the behavior's data, not the behavior", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  const remove = tombstoneOp({
+    intent: modelIntent({ kind: "data.delete", name: "vpc", version: 1 }),
+    key: RecordKey.create(`${DATA}/vpc/1/raw`),
+  });
+  const rename = await putOp({
+    intent: modelIntent({ kind: "data.rename", name: "vpc", to: "net" }),
+    key: RecordKey.create(`${DATA}/net/latest`),
+    inline: base64("1"),
+  });
+  for (const op of [remove, rename]) {
+    // Write on the behavior lets a caller edit it, not destroy its data.
+    assertRefused(
+      await authorizeCommit(
+        modelPartition(),
+        [op],
+        resolver,
+        new FakeAuthority(["write model:*", "run model:*"]),
+      ),
+      "forbidden",
+      0,
+    );
+    const writer = new FakeAuthority(["write data:web"]);
+    assert(
+      (await authorizeCommit(modelPartition(), [op], resolver, writer)).ok,
+    );
+    assertEquals(writer.asked[0].resource.kind, "data");
+  }
+});
+
+Deno.test("authorizeCommit: data garbage collection needs write on all data, decided for the whole kind", async () => {
+  const gc = tombstoneOp({
+    intent: modelIntent({ kind: "data.gc", name: "vpc", version: 1 }),
+    key: RecordKey.create(`${DATA}/vpc/1/raw`),
+  });
+  const authority = new FakeAuthority(["write data:*"]);
+  assert(
+    (await authorizeCommit(
+      modelPartition(),
+      [gc],
+      new FakeResolver(),
+      authority,
+    ))
+      .ok,
+  );
+  assertEquals(authority.asked[0].every, true);
+  assertEquals(authority.asked[0].resource.name, "*");
+  assertRefused(
+    await authorizeCommit(
+      modelPartition(),
+      [gc],
+      new FakeResolver(),
+      new FakeAuthority(["write data:web", "write model:*"]),
+    ),
+    "forbidden",
+    0,
+  );
 });

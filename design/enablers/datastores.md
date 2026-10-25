@@ -6139,7 +6139,10 @@ resource is the same one serve's handlers check for the same write:
 
 | Intent | Write needs | Read (changes feed) needs |
 |---|---|---|
-| `data.*`, `output.*`, `evaluated-definition.delete` on a behavior | `write` on `model:<name>` | `read` on `data:<name>`; outputs and evaluated definitions `read` on `model:<name>` |
+| `data.save`, `data.append`, `output.save` on a behavior | `run` on `model:<name>`, as a method run that writes them is decided | `read` on `data:<name>`; outputs `read` on `model:<name>` |
+| `data.delete`, `data.rename` | `write` on `data:<name>`, as serve's `data.delete` and `data.rename` | `read` on `data:<name>` |
+| `data.gc` | `write` on `data:*`, decided for the whole kind (any data deny refuses), as serve's `data.gc` | `read` on `data:<name>` |
+| `output.delete`, `evaluated-definition.delete` | `write` on `model:<name>`, as a behavior delete that removes them | `read` on `model:<name>` |
 | Any intent on a control-plane behavior (`swamp/grant`, `swamp/group`, `swamp/server-token`, …), and the control-plane intent kinds | `admin`, on its `access:` record | `admin` |
 | Any intent on a `--restricted-model-types` type | `admin` | as its kind |
 | `run.create`, `run.update` | `run` on the workflow | `read` on the workflow |
@@ -6152,6 +6155,12 @@ resource is the same one serve's handlers check for the same write:
 
 A behavior no definition holds, or whose definition has another type, is
 decided as `model:<id>`, so only a wildcard grant matches it.
+
+The table was checked against every serve write handler's decision. Where
+the forwarded path differs it is stricter: the lockfile needs `admin` on
+`access:*` where extension commands check `admin` on `model:*`, and run
+records need `run` where approve, reject and signal check their own
+actions.
 
 **Puts whose content serve checks are admin-only for now.** Serve's
 WebSocket edits check more than `write` on a definition. A retag needs `tag`,

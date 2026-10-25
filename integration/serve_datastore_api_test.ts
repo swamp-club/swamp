@@ -445,7 +445,7 @@ Deno.test({
       ...writer(),
       grant({
         subject: { kind: "user", name: "bob" },
-        actions: ["write"],
+        actions: ["run"],
         resource: { kind: "model", pattern: "bobs" },
       }),
     ];
@@ -831,5 +831,54 @@ Deno.test({
       const read = await getJson(configPath(server), "alice-token");
       assertEquals(read.status, 200);
     });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a deny on a behavior's data refuses a forwarded data delete that write on the behavior would allow",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // Team members may edit and run behaviors; nobody may destroy web's data.
+    const deny = grant({
+      effect: "deny",
+      actions: ["write"],
+      resource: { kind: "data", pattern: "web" },
+    });
+    const writeData = grant({
+      actions: ["write"],
+      resource: { kind: "data", pattern: "*" },
+    });
+    for (
+      const [grants, status] of [
+        [[...writer(), writeData, deny], 403],
+        [[...writer(), writeData], 200],
+      ] as const
+    ) {
+      await withServer([...grants], async (server) => {
+        const type = server.modelType.normalized;
+        const result = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: [{
+              kind: "tombstone",
+              intent: {
+                kind: "data.delete",
+                model: { type, id: server.model.id },
+                name: "vpc",
+                version: 1,
+              },
+              key: `data/${type}/${server.model.id}/vpc/1/raw`,
+            }],
+            chunks: [],
+          }),
+        );
+        assertEquals(result.status, status, JSON.stringify(result.json));
+      });
+    }
   },
 });
