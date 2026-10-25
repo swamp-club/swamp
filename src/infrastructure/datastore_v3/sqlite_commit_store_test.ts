@@ -1193,8 +1193,11 @@ Deno.test("SqliteCommitStore.append: a solo append is one transaction, and a bur
   await withStore(async (store) => {
     await store.append(await save(1));
     assertEquals(store.appendTransactions, 1);
+    // Built before any is appended: a commit whose build finished first
+    // would otherwise be appended out of order and refused as a seq gap.
+    const commits = await Promise.all([2, 3, 4, 5, 6].map((seq) => save(seq)));
     const burst = await Promise.all(
-      [2, 3, 4, 5, 6].map((seq) => save(seq).then((c) => store.append(c))),
+      commits.map((commit) => store.append(commit)),
     );
     assertEquals(burst.map((result) => result.seq), [2, 3, 4, 5, 6]);
     // The first of the burst starts alone; the rest queue behind it.
