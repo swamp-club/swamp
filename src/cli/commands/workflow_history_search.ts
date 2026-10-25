@@ -169,9 +169,11 @@ export async function workflowHistorySearchAction(
   let resultCount = 0;
   const handlers = renderer.handlers();
   const origCompleted = handlers.completed;
-  handlers.completed = (e) => {
+  // Await the picker: an unawaited picker lets the command end under it
+  // (swamp-club#3917).
+  handlers.completed = async (e) => {
     resultCount = e.data.results.length;
-    origCompleted(e);
+    await origCompleted(e);
   };
 
   await consumeStream(

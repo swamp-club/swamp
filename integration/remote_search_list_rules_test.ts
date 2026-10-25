@@ -98,6 +98,32 @@ Deno.test("remote search: the pinned commands are the ones with a --server searc
   );
 });
 
+Deno.test("search commands: a wrapped completed handler awaits the handler it wraps", async () => {
+  // The local workflow history search wrapped the picker handler without
+  // await, so the command ended under the picker (swamp-club#3917).
+  const wrapped: string[] = [];
+  for await (const filePath of productionSourceFiles(COMMANDS_DIR)) {
+    const source = await Deno.readTextFile(filePath);
+    for (const m of source.matchAll(/handlers\.completed = /g)) {
+      const body = source.slice(m.index, source.indexOf("\n  };", m.index));
+      wrapped.push(repoRelative(filePath));
+      assert(
+        /^handlers\.completed = async \(/.test(body) &&
+          /await orig\w*\(/.test(body),
+        `${repoRelative(filePath)}: it replaces handlers.completed with a ` +
+          `wrapper that does not await the original handler, so the command ` +
+          `can end before the picker or output finishes.`,
+      );
+    }
+  }
+  assertPinnedSet(
+    wrapped.sort(),
+    ["src/cli/commands/workflow_history_search.ts"],
+    "Search commands that wrap their completed handler",
+    "Make the wrapper async and await the original handler, then pin the file.",
+  );
+});
+
 Deno.test("remote search: every --server branch prints a plain list and waits for it", async () => {
   const branches = await remoteSearchBranches();
   for (const [file, branch] of branches) {
