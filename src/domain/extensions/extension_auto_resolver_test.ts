@@ -1759,3 +1759,269 @@ Deno.test("ExtensionAutoResolver.describeTypeInRegistry - describes a search-fou
   );
   assertEquals(installer.installCalls, []);
 });
+
+// ---------------------------------------------------------------------------
+// Concurrent resolutions in one process (swamp-club#3911)
+// ---------------------------------------------------------------------------
+
+/** An installer whose install waits until `release` is called. */
+function createGatedInstaller(): ReturnType<typeof createMockInstaller> & {
+  release: () => void;
+  installStarted: Promise<void>;
+} {
+  const installer = createMockInstaller();
+  const gate = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const install = installer.install;
+  installer.install = async (name: string) => {
+    started.resolve();
+    await gate.promise;
+    return await install(name);
+  };
+  return Object.assign(installer, {
+    release: () => gate.resolve(),
+    installStarted: started.promise,
+  });
+}
+
+/** Lets settled promises run their callbacks. */
+async function drainMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
+Deno.test("ExtensionAutoResolver - a concurrent caller for the same type waits for the running resolution", async () => {
+  const output = createMockOutput();
+  const installer = createGatedInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const first = resolver.resolve("@swamp/aws/ec2/instance");
+  await installer.installStarted;
+  const second = resolver.resolve("@swamp/aws/ec2/instance");
+  installer.release();
+
+  assertEquals(await Promise.all([first, second]), [true, true]);
+  assertEquals(installer.installCalls, ["@swamp/aws"]);
+  assertEquals(output.calls, [
+    "searching:@swamp/aws/ec2/instance",
+    "installing:@swamp/aws@2026.03.16.1",
+    "installed:@swamp/aws@2026.03.16.1:3",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - the @-prefixed and bare spellings of a type share one resolution", async () => {
+  const installer = createGatedInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+
+  const first = resolver.resolve("@swamp/aws/ec2/instance");
+  await installer.installStarted;
+  const second = resolver.resolve("swamp/aws/ec2/instance");
+  installer.release();
+
+  assertEquals(await Promise.all([first, second]), [true, true]);
+  assertEquals(installer.installCalls, ["@swamp/aws"]);
+});
+
+Deno.test("ExtensionAutoResolver - a failed resolution fails its waiting callers and is not remembered", async () => {
+  const installer = createGatedInstaller();
+  let installSucceeds = false;
+  const install = installer.install;
+  installer.install = async (name: string) => {
+    const result = await install(name);
+    return installSucceeds ? result : null;
+  };
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+
+  const first = resolver.resolve("@swamp/aws/ec2/instance");
+  await installer.installStarted;
+  const second = resolver.resolve("@swamp/aws/ec2/instance");
+  installer.release();
+  assertEquals(await Promise.all([first, second]), [false, false]);
+  assertEquals(installer.installCalls.length, 1);
+
+  installSucceeds = true;
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(installer.installCalls.length, 2);
+});
+
+Deno.test("ExtensionAutoResolver - a recursive call for the type being resolved is refused at once", async () => {
+  const installer = createMockInstaller();
+  let nested: boolean | undefined;
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+  const install = installer.install;
+  installer.install = async (name: string) => {
+    nested = await resolver.resolve("@swamp/aws/ec2/instance");
+    return await install(name);
+  };
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(nested, false);
+  assertEquals(installer.installCalls, ["@swamp/aws"]);
+});
+
+Deno.test("ExtensionAutoResolver - a call from inside a resolution does not wait for another chain's resolution", async () => {
+  // Chain B holds the install lock and, inside it, asks for the type chain A
+  // is resolving; A waits for that lock. Waiting for A would never end.
+  let lockChain = Promise.resolve();
+  const lockTaken = Promise.withResolvers<void>();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    {
+      state: "missing",
+    },
+    [],
+    { providesType: true },
+  );
+  installer.withInstallLock = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const previous = lockChain;
+    let release = () => {};
+    lockChain = new Promise((resolve) => release = resolve);
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
+  const lookup = createMockLookup({
+    ...AWS_LOOKUP,
+    "@swamp/gcp": { description: "GCP models", latestVersion: "2026.03.16.1" },
+  });
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: lookup,
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+  let nested: Promise<boolean> | undefined;
+  const aStarted = Promise.withResolvers<void>();
+  const install = installer.install;
+  installer.install = async (name: string) => {
+    if (name === "@swamp/gcp") {
+      lockTaken.resolve();
+      await aStarted.promise;
+      nested = resolver.resolve("@swamp/aws/ec2/instance");
+      await drainMicrotasks();
+    }
+    return await install(name);
+  };
+
+  const b = resolver.resolve("@swamp/gcp/compute/instance");
+  await lockTaken.promise;
+  const a = resolver.resolve("@swamp/aws/ec2/instance");
+  await drainMicrotasks();
+  aStarted.resolve();
+
+  assertEquals(await b, true);
+  assertEquals(await nested, false);
+  assertEquals(await a, true);
+});
+
+Deno.test("ExtensionAutoResolver - reports the extension's registered behavior count, not only what its hot-load loaded", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    {
+      state: "intact",
+      path: "/fake/pulled-extensions/@swamp/aws",
+      installedVersion: "2026.03.16.1",
+      loadFailures: false,
+    },
+    [],
+    { providesType: true },
+  );
+  // Another caller already loaded every type, so this hot-load loads none.
+  installer.hotLoadModels = () => Promise.resolve(0);
+  installer.registeredModelCount = (name) => name === "@swamp/aws" ? 10 : 0;
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(output.calls.at(-1), "installed:@swamp/aws@2026.03.16.1:10");
+});
+
+Deno.test("ExtensionAutoResolver - a fresh install reports the extension's registered behavior count", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  installer.hotLoadModels = () => Promise.resolve(0);
+  installer.registeredModelCount = () => 10;
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(output.calls.at(-1), "installed:@swamp/aws@2026.03.16.1:10");
+});
+
+Deno.test("ExtensionAutoResolver - runs the install through the install scheduler, inside the install lock", async () => {
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output: createMockOutput(),
+  });
+  resolver.setInstallScheduler(async <T>(fn: () => Promise<T>) => {
+    installer.events.push("turn");
+    try {
+      return await fn();
+    } finally {
+      installer.events.push("end turn");
+    }
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(installer.events, [
+    "lock",
+    "turn",
+    "inspect",
+    "install",
+    "hotLoadModels",
+    "end turn",
+    "unlock",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - never reports fewer behaviors than its own hot-load registered", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  // The installer's catalog does not show the rows yet.
+  installer.registeredModelCount = () => 0;
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(AWS_LOOKUP),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(output.calls.at(-1), "installed:@swamp/aws@2026.03.16.1:3");
+});
