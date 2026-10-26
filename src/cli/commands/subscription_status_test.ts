@@ -48,10 +48,10 @@ Deno.test("subscriptionStatusCommand: has an example", async () => {
   );
 });
 
-Deno.test("subscriptionCommand: lists status", async () => {
+Deno.test("subscriptionCommand: lists status and start", async () => {
   const { subscriptionCommand } = await import("./subscription.ts");
   assertEquals(
     subscriptionCommand.getCommands(false).map((c) => c.getName()),
-    ["status"],
+    ["status", "start"],
   );
 });

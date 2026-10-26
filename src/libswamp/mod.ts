@@ -78,6 +78,15 @@ export {
   type SubscriptionStatusEvent,
   type SubscriptionStatusView,
 } from "./subscription/status.ts";
+export {
+  createSubscriptionStartDeps,
+  subscriptionStart,
+  type SubscriptionStartBrowser,
+  type SubscriptionStartDeps,
+  type SubscriptionStartEvent,
+  type SubscriptionStartInput,
+  type SubscriptionStartResult,
+} from "./subscription/start.ts";
 
 // Workflow operations
 export {

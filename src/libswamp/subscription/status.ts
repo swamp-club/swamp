@@ -60,9 +60,16 @@ export type SubscriptionStatusEvent =
   | { kind: "completed"; status: SubscriptionStatusView }
   | { kind: "error"; error: SwampError };
 
-/** The server's billing page, never with a doubled slash. */
-export function billingUrl(serverUrl: string): string {
-  return `${serverUrl.replace(/\/+$/, "")}/billing`;
+/**
+ * The server's billing page, or a collective's, never with a doubled slash.
+ * A personal collective's page redirects to `/billing` on the server, so the
+ * caller never needs to know which collectives are personal.
+ */
+export function billingUrl(serverUrl: string, collective?: string): string {
+  const base = serverUrl.replace(/\/+$/, "");
+  return collective === undefined
+    ? `${base}/billing`
+    : `${base}/o/${encodeURIComponent(collective)}/billing`;
 }
 
 function toView(identity: WhoamiIdentity): SubscriptionStatusView {

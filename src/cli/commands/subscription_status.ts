@@ -33,7 +33,7 @@ export const subscriptionStatusCommand = new Command()
   .name("status")
   .description(
     "Show the plan and billing standing of the signed-in user and each " +
-      "collective they belong to, with the swamp-club billing link.",
+      "collective they belong to, and how to open swamp-club billing.",
   )
   .example("Show subscription standing", "swamp subscription status")
   .example(

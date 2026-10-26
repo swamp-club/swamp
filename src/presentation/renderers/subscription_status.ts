@@ -29,6 +29,9 @@ import { UserError } from "../../domain/errors.ts";
 import { bold, cyan } from "@std/fmt/colors";
 import { collectiveLines } from "./collective_standing.ts";
 
+/** The command that opens the billing page `status` points at. */
+const SUBSCRIPTION_START_COMMAND = "swamp subscription start";
+
 /** Plans with nothing to bill: the next step is to buy one. */
 const UPGRADE_PLANS: ReadonlySet<string> = new Set(["free", "personal"]);
 
@@ -76,7 +79,7 @@ class LogSubscriptionStatusRenderer
         const label = callToActionLabel(status.plan);
         if (label) {
           writeOutput("");
-          writeOutput(`${label}  ${status.billingUrl}`);
+          writeOutput(`${label}  ${SUBSCRIPTION_START_COMMAND}`);
         }
       },
       error: (e) => {
