@@ -46,6 +46,7 @@ import {
   readLineage,
   replicationPathsFor,
   writeLineage,
+  writeReplicaVerification,
 } from "./replication_files.ts";
 import { BlobRef } from "../../../domain/datastore_v3/blob_ref.ts";
 import {
@@ -62,7 +63,9 @@ import {
   prepareV3WriterLineage,
   pruneV3Heads,
   publishV3Head,
+  quickCheck,
   recordV3LeaseFence,
+  restartsBrokenLineage,
   V3_HEAD_PRUNE_EVERY,
   type V3Copy,
   v3KeptLineages,
@@ -1014,5 +1017,52 @@ Deno.test({
         await Deno.chmod(lineageDir, 0o755);
       }
     });
+  },
+});
+
+Deno.test({
+  name:
+    "restartsBrokenLineage: restarts only a lineage found broken, and never from a copy that fails its own check (swamp-club#3935)",
+  ignore: !UNIX,
+  async fn() {
+    const dir = await Deno.realPath(
+      await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-broken-" }),
+    );
+    try {
+      const commitsDb = join(dir, "commits.db");
+      const store = SqliteCommitStore.open(commitsDb);
+      await store.close();
+      const paths = await replicationPathsFor(commitsDb, join(dir, "priv"));
+      await ensureSharedDir(paths);
+      const lineage = {
+        replicaRoot: "file:/r",
+        lineageFence: 4,
+        lastFence: 6,
+        previousLineages: [],
+      };
+      const verdict = {
+        lineageFence: 4,
+        txid: "0000000000000009",
+        checkedAt: AT,
+        ok: false,
+        error: "the restored database failed SQLite's integrity check",
+      };
+      // No verdict, a passing one, or one on another lineage: continue.
+      assertEquals(await restartsBrokenLineage(paths, lineage), false);
+      await writeReplicaVerification(paths, { ...verdict, ok: true });
+      assertEquals(await restartsBrokenLineage(paths, lineage), false);
+      await writeReplicaVerification(paths, { ...verdict, lineageFence: 3 });
+      assertEquals(await restartsBrokenLineage(paths, lineage), false);
+      // Broken, from an intact copy: restart.
+      await writeReplicaVerification(paths, verdict);
+      assertEquals(quickCheck(commitsDb), "ok");
+      assertEquals(await restartsBrokenLineage(paths, lineage), true);
+      // Broken, but the copy is damaged too: a restart would only spread it.
+      await Deno.writeFile(commitsDb, new TextEncoder().encode("not sqlite"));
+      assert(quickCheck(commitsDb) !== "ok");
+      assertEquals(await restartsBrokenLineage(paths, lineage), false);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   },
 });

@@ -28,6 +28,7 @@
  */
 
 import { defaultLitestreamBinaryProvider } from "./litestream_binary_provider.ts";
+import { verifyReplica } from "./replica_verifier.ts";
 import { litestreamChildEnv } from "./sidecar_env.ts";
 import {
   type LitestreamChild,
@@ -42,10 +43,10 @@ export { isSupervisorInvocation } from "./litestream_processes.ts";
 export function hostSupervisorDeps(
   stopRequested: Promise<void>,
 ): SupervisorDeps {
+  const resolveBinary = async () =>
+    (await defaultLitestreamBinaryProvider().resolve()).path;
   return {
-    async resolveBinary() {
-      return (await defaultLitestreamBinaryProvider().resolve()).path;
-    },
+    resolveBinary,
     startLitestream(binary, configPath, replicaType): LitestreamChild {
       const child = new Deno.Command(binary, {
         // Paths in the config are taken literally, never expanded.
@@ -77,6 +78,13 @@ export function hostSupervisorDeps(
     now: () => Date.now(),
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
     stopRequested,
+    async verifyReplica(request) {
+      return await verifyReplica({
+        ...request,
+        binary: await resolveBinary(),
+        now: () => Date.now(),
+      });
+    },
   };
 }
 

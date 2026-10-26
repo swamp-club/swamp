@@ -398,3 +398,29 @@ Deno.test("createPreV3RecordsRepairRenderer: both modes fail with the error's me
   });
   assertEquals(log.overallStatus, "pass");
 });
+
+Deno.test("createDoctorDatastoresRenderer: json mode carries the replica check's finding, null without one (swamp-club#3935)", () => {
+  const finding = {
+    status: "broken" as const,
+    lineageFence: 1570,
+    txid: "0000000000000070",
+    checkedAt: "2026-10-25T18:30:00.000Z",
+    error: "integrity check failed",
+    copyCheck: "ok",
+  };
+  const render = (d: DoctorDatastoresData) =>
+    JSON.parse(
+      captureStdout(() =>
+        createDoctorDatastoresRenderer("json").handlers().completed({
+          kind: "completed",
+          data: d,
+        })
+      ),
+    );
+  assertEquals(
+    render({ ...data(), v3ReplicaRestorableFinding: finding })
+      .v3ReplicaRestorableFinding,
+    finding,
+  );
+  assertEquals(render(data()).v3ReplicaRestorableFinding, null);
+});

@@ -112,6 +112,17 @@ export class V3RestoreError extends UserError {
 }
 
 /**
+ * A restored database that failed SQLite's integrity check: the lineage
+ * cannot be restored, unlike a restore that could not run (swamp-club#3935).
+ */
+export class V3RestoredDatabaseCorruptError extends V3RestoreError {
+  constructor(message: string) {
+    super(message);
+    this.name = "V3RestoredDatabaseCorruptError";
+  }
+}
+
+/**
  * Restores `request.head`'s lineage over `request.target`.
  *
  * @throws V3RestoreError
@@ -145,45 +156,16 @@ export async function restoreV3Copy(
       ),
       { mode: 0o600 },
     );
-    let exactTxid = true;
-    const exact = await runRestoreAttempt(
-      request.binary,
+    const { exactTxid } = await restoreAndCheck({
+      binary: request.binary,
       config,
+      source: temp,
       temp,
+      txid: request.head.txid,
+      lineageFence: request.head.fence,
+      replicaType: request.replica.type,
       signal,
-      ["-txid", request.head.txid],
-      request.replica.type,
-    );
-    if (exact.kind === "unavailable") {
-      exactTxid = false;
-      await removeDatabase(temp);
-      const latest = await runRestoreAttempt(
-        request.binary,
-        config,
-        temp,
-        signal,
-        [],
-        request.replica.type,
-      );
-      if (latest.kind !== "ok") {
-        throw new V3RestoreError(
-          `litestream could not restore lineage ${
-            padFence(request.head.fence)
-          }: ${latest.kind === "failed" ? latest.message : "no backup files"}`,
-        );
-      }
-    } else if (exact.kind === "failed") {
-      throw new V3RestoreError(
-        `litestream could not restore lineage ${
-          padFence(request.head.fence)
-        }: ${exact.message}`,
-      );
-    }
-    await withSpan(
-      "swamp.datastore.v3.restore.integrity_check",
-      {},
-      () => Promise.resolve(checkDatabase(temp)),
-    );
+    });
     const truncated = await withSpan(
       "swamp.datastore.v3.restore.truncate",
       {},
@@ -214,6 +196,73 @@ export async function restoreV3Copy(
     await removeDatabase(temp).catch(() => {});
     await Deno.remove(config).catch(() => {});
   }
+}
+
+/** What {@link restoreAndCheck} restores, and where. */
+export interface RestoreAndCheckRequest {
+  readonly binary: string;
+  /** A Litestream config naming `source` and its one replica. */
+  readonly config: string;
+  /** The database path the config names; the restore never touches it. */
+  readonly source: string;
+  /** Where the restored file is written; it must not exist. */
+  readonly temp: string;
+  /** The TXID to restore, as the lineage's writer acknowledged it. */
+  readonly txid: string;
+  /** The lineage, for messages. */
+  readonly lineageFence: number;
+  readonly replicaType: LitestreamReplicaType;
+  readonly signal: AbortSignal;
+}
+
+/**
+ * Restores a lineage into `temp` as a reader does, and checks it
+ * (swamp-club#3935, shared by a reader's restore and the writer's check of
+ * its own replica): at `txid`, or the latest state when compaction merged
+ * that TXID's files away, then SQLite's integrity check and a schema this
+ * swamp reads. Resolves with whether `txid` was restored exactly.
+ *
+ * @throws V3RestoreError
+ */
+export async function restoreAndCheck(
+  request: RestoreAndCheckRequest,
+): Promise<{ readonly exactTxid: boolean }> {
+  const attempt = (extra: readonly string[]) =>
+    runRestoreAttempt(
+      request.binary,
+      request.config,
+      request.source,
+      request.temp,
+      request.signal,
+      extra,
+      request.replicaType,
+    );
+  let exactTxid = true;
+  const exact = await attempt(["-txid", request.txid]);
+  if (exact.kind === "unavailable") {
+    exactTxid = false;
+    await removeDatabase(request.temp);
+    const latest = await attempt([]);
+    if (latest.kind !== "ok") {
+      throw new V3RestoreError(
+        `litestream could not restore lineage ${
+          padFence(request.lineageFence)
+        }: ${latest.kind === "failed" ? latest.message : "no backup files"}`,
+      );
+    }
+  } else if (exact.kind === "failed") {
+    throw new V3RestoreError(
+      `litestream could not restore lineage ${
+        padFence(request.lineageFence)
+      }: ${exact.message}`,
+    );
+  }
+  await withSpan(
+    "swamp.datastore.v3.restore.integrity_check",
+    {},
+    () => Promise.resolve(checkDatabase(request.temp)),
+  );
+  return { exactTxid };
 }
 
 /**
@@ -271,6 +320,7 @@ type RestoreOutcome =
 function runRestoreAttempt(
   binary: string,
   config: string,
+  source: string,
   temp: string,
   signal: AbortSignal,
   extra: readonly string[],
@@ -284,6 +334,7 @@ function runRestoreAttempt(
     const outcome = await runRestore(
       binary,
       config,
+      source,
       temp,
       signal,
       extra,
@@ -297,6 +348,7 @@ function runRestoreAttempt(
 async function runRestore(
   binary: string,
   config: string,
+  source: string,
   temp: string,
   signal: AbortSignal,
   extra: readonly string[],
@@ -311,7 +363,7 @@ async function runRestore(
       "-o",
       temp,
       ...extra,
-      temp,
+      source,
     ],
     stdin: "null",
     stdout: "null",
@@ -332,15 +384,38 @@ async function runRestore(
   };
 }
 
-/** Refuses a restored file that is damaged or newer than this swamp reads. */
+/** SQLite's result codes for a damaged file: SQLITE_CORRUPT, SQLITE_NOTADB. */
+const DAMAGED_FILE_CODES = new Set([11, 26]);
+
+/**
+ * Refuses a restored file that is damaged or newer than this swamp reads.
+ * SQLite reports damage either as rows from its integrity check or, when
+ * it cannot walk the file, by failing the check with SQLITE_CORRUPT or
+ * SQLITE_NOTADB (swamp-club#3935); both are a corrupt restore.
+ */
 function checkDatabase(path: string): void {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
-    const rows = db.prepare("PRAGMA integrity_check").all() as {
-      integrity_check: string;
-    }[];
+    let rows: { integrity_check: string }[];
+    try {
+      rows = db.prepare("PRAGMA integrity_check").all() as {
+        integrity_check: string;
+      }[];
+    } catch (error) {
+      const code = (error as { errcode?: unknown }).errcode;
+      // Extended codes (SQLITE_CORRUPT_INDEX, …) keep the primary code in
+      // their low byte.
+      if (typeof code === "number" && DAMAGED_FILE_CODES.has(code & 0xff)) {
+        throw new V3RestoredDatabaseCorruptError(
+          `the restored database failed SQLite's integrity check: ${
+            messageOf(error)
+          }`,
+        );
+      }
+      throw error;
+    }
     if (rows.length !== 1 || rows[0].integrity_check !== "ok") {
-      throw new V3RestoreError(
+      throw new V3RestoredDatabaseCorruptError(
         `the restored database failed SQLite's integrity check: ${
           rows.map((row) => row.integrity_check).join("; ")
         }`,
@@ -401,9 +476,13 @@ async function truncateToMark(
   }
 }
 
-/** Removes a SQLite database and its WAL and shared-memory files. */
+/**
+ * Removes a SQLite database, its WAL and shared-memory files, and the
+ * `.tmp` file Litestream restores into before renaming it, which a restore
+ * stopped part way leaves behind.
+ */
 async function removeDatabase(path: string): Promise<void> {
-  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+  for (const file of [path, `${path}-wal`, `${path}-shm`, `${path}.tmp`]) {
     try {
       await Deno.remove(file);
     } catch (error) {

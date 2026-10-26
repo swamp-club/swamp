@@ -126,6 +126,8 @@ interface Held {
   renewing?: Promise<void>;
   /** A fresh lease being taken for a lost hold, which callers share. */
   retaking?: Promise<void>;
+  /** A move to the next fence, which callers share (swamp-club#3935). */
+  advancing?: Promise<number | undefined>;
   /** How this hold takes the lease. */
   take?: {
     readonly ttlMs: number;
@@ -308,6 +310,66 @@ async function retakeLease(
     await lost.release().catch(() => {});
     await notifyHoldRetaken(datastorePath, hold.fence);
   }
+}
+
+/**
+ * Moves this process's shared hold of the v3 datastore at `datastorePath`
+ * to the next fence without letting the lease go (swamp-club#3935), then
+ * tells the listeners as a retake: serve, which holds one fence for its
+ * whole life, uses it to start a new replication lineage at a fence it
+ * never used. Commits made under the old fence are refused from then on,
+ * as after any retake. Resolves with the new fence, or undefined when the
+ * process holds no current lease (the renewal deals with a lost one).
+ */
+export function advanceV3WriterLease(
+  datastorePath: string,
+): Promise<number | undefined> {
+  const entry = held.get(resolve(datastorePath));
+  if (entry === undefined || entry.take === undefined) {
+    return Promise.resolve(undefined);
+  }
+  // Callers at once share one move: two would each move the same hold.
+  return entry.advancing ??= advanceHold(entry, datastorePath).finally(() => {
+    entry.advancing = undefined;
+  });
+}
+
+async function advanceHold(
+  entry: Held,
+  datastorePath: string,
+): Promise<number | undefined> {
+  // One at a time with the renewal, which would read the advance as the
+  // hold being lost.
+  await entry.renewing;
+  const hold = entry.hold;
+  if (hold === undefined || hold.lost !== undefined) return undefined;
+  const take = entry.take!;
+  let advanced: number | undefined;
+  const move = (async () => {
+    const lease = await writerLease(datastorePath, take.ttlMs);
+    const next = await lease.advance(hold);
+    if (next === undefined) return;
+    try {
+      await take.fenceStore?.raiseWriterFence(next.fence);
+    } catch (error) {
+      await next.release().catch(() => {});
+      throw error;
+    }
+    entry.hold = next;
+    advanced = next.fence;
+  })();
+  // `renewing` never rejects: `endHold` awaits it before it releases the
+  // lease, and a failed move must not keep the lease from being released.
+  entry.renewing = move.then(() => {}, () => {}).finally(() => {
+    entry.renewing = undefined;
+  });
+  await move;
+  if (advanced === undefined) return undefined;
+  logger
+    .info`This process moved its writer lease of the v3 datastore at ${datastorePath} to fence ${advanced}`;
+  await notifyLeaseTaken(datastorePath, advanced);
+  await notifyHoldRetaken(datastorePath, advanced);
+  return advanced;
 }
 
 /** Called once this process's shared hold is the lease again, at `fence`. */

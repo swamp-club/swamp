@@ -63,7 +63,12 @@ import type { ReplicaRoot } from "../../../domain/datastore_v3/replica_root.ts";
 import {
   decideLineage,
   replicaPathFor,
+  type ReplicationLineage,
 } from "../../../domain/datastore_v3/replication_lineage.ts";
+import {
+  isLineageBroken,
+  type ReplicaVerification,
+} from "../../../domain/datastore_v3/replica_verification.ts";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import {
   parseReplicaPathFence,
@@ -95,6 +100,7 @@ import {
   ensureSharedDir,
   readCopyState,
   readLineage,
+  readReplicaVerification,
   type ReplicationPaths,
   replicationPathsFor,
   writeCopyState,
@@ -328,7 +334,7 @@ async function makeV3CopyCurrentNow(
     const target = paths.commitsDb;
     const openStore = options.openStore;
     const intoExisting = async (temp: string) => {
-      const store = SqliteCommitStore.open(target);
+      const store = SqliteCommitStore.open(target, { replicated: true });
       try {
         await store.replaceContentFrom(temp);
       } finally {
@@ -532,7 +538,9 @@ async function seedFromSharedDatabase(
     if (options.openStore !== undefined) {
       await options.openStore.replaceContentFrom(shared);
     } else {
-      const store = SqliteCommitStore.open(paths.commitsDb);
+      const store = SqliteCommitStore.open(paths.commitsDb, {
+        replicated: true,
+      });
       try {
         await store.replaceContentFrom(shared);
       } finally {
@@ -579,6 +587,84 @@ function commitsIn(path: string): number {
       ),
       [path],
     );
+  } finally {
+    db?.close();
+  }
+}
+
+/** What a copy's sidecar last found about the lineage the copy replicates. */
+export interface V3ReplicaCheck {
+  /** The lineage the copy replicates. */
+  readonly lineageFence: number;
+  /** The last verdict recorded beside the copy, on any lineage. */
+  readonly verdict: ReplicaVerification | undefined;
+}
+
+/**
+ * Reads what the copy's sidecar last found about its lineage
+ * (swamp-club#3935), changing nothing: undefined when the copy has never
+ * replicated.
+ */
+export async function v3ReplicaCheckOf(
+  copy: V3Copy,
+): Promise<V3ReplicaCheck | undefined> {
+  let paths: ReplicationPaths;
+  try {
+    paths = await replicationPathsFor(copy.commitsDb, v3PrivateRoot());
+  } catch {
+    return undefined;
+  }
+  const lineage = await readLineage(paths);
+  if (lineage === undefined) return undefined;
+  return {
+    lineageFence: lineage.lineageFence,
+    verdict: await readReplicaVerification(paths),
+  };
+}
+
+/**
+ * Whether a writer restarts the lineage it would continue because its
+ * sidecar found the lineage cannot be restored (swamp-club#3935). The new
+ * lineage is a full snapshot of the copy, so the copy must pass SQLite's
+ * quick check first: from a damaged copy the restart would only replace one
+ * broken replica with another, so the lineage is kept, and `doctor
+ * datastores` reports both. Exported for tests.
+ */
+export async function restartsBrokenLineage(
+  paths: ReplicationPaths,
+  previous: ReplicationLineage,
+): Promise<boolean> {
+  const verdict = await readReplicaVerification(paths);
+  if (!isLineageBroken(verdict, previous.lineageFence)) return false;
+  const copyCheck = quickCheck(paths.commitsDb);
+  if (copyCheck !== "ok") {
+    logger
+      .error`Replication lineage ${
+      padFence(previous.lineageFence)
+    } cannot be restored, and this checkout's copy of the v3 datastore at ${paths.commitsDb} fails SQLite's quick check too (${copyCheck}), so the lineage is not restarted from it. Run swamp doctor datastores.`;
+    return false;
+  }
+  logger
+    .warn`Replication lineage ${
+    padFence(previous.lineageFence)
+  } cannot be restored (${
+    verdict!.error
+  }). Starting a new lineage from this checkout's copy, which holds every commit; other checkouts restore from it once it is confirmed.`;
+  return true;
+}
+
+/** SQLite's quick check of the database at `path`: "ok", or what it found. */
+export function quickCheck(path: string): string {
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    db.exec("PRAGMA busy_timeout=5000");
+    const rows = db.prepare("PRAGMA quick_check").all() as {
+      quick_check: string;
+    }[];
+    return rows.map((row) => row.quick_check).join("; ");
+  } catch (error) {
+    return messageOf(error);
   } finally {
     db?.close();
   }
@@ -844,7 +930,10 @@ export async function prepareV3WriterLineage(
       let lineages: PublishedLineage[] | undefined;
       if (!options.restored) {
         lineages = await registry.read(root);
-        if (mayContinueLineage(previous, lineages, root)) {
+        if (
+          mayContinueLineage(previous, lineages, root) &&
+          !await restartsBrokenLineage(paths, previous!)
+        ) {
           const decided = decideLineage(previous, root, fence);
           if (decided.kind === "continue") {
             await writeLineage(paths, decided.lineage);
@@ -903,6 +992,15 @@ export async function recordV3LeaseFence(
       const previous = await readLineage(paths);
       const lineages = await lineageRegistryFor(copy.datastorePath).read(root);
       if (!mayContinueLineage(previous, lineages, root)) return;
+      // Left for the writer, which restarts it from its copy.
+      if (
+        isLineageBroken(
+          await readReplicaVerification(paths),
+          previous!.lineageFence,
+        )
+      ) {
+        return;
+      }
       const decided = decideLineage(previous, root, fence);
       if (decided.kind === "continue") {
         await writeLineage(paths, decided.lineage);

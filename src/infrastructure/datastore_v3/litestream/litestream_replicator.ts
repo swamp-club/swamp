@@ -35,7 +35,7 @@
  * @module
  */
 
-import { dirname, fromFileUrl, join } from "@std/path";
+import { basename, dirname, fromFileUrl, join } from "@std/path";
 import { padFence } from "../../../domain/datastore_v3/writer_lease.ts";
 import { normalizeTxid } from "../../../domain/datastore_v3/published_lineage.ts";
 import { WriterFencedError } from "../../../domain/datastore_v3/writer_lease.ts";
@@ -70,14 +70,18 @@ import {
   ensureSharedDir,
   isMarkedForReplacement,
   litestreamReplicaPath,
+  litestreamStateDirName,
   markForReplacement,
   type PresenceRecord,
+  readCopyState,
   readLineage,
+  readLitestreamStateOwner,
   readPresence,
   renderLitestreamConfig,
   type ReplicationPaths,
   replicationPathsFor,
   writeLineage,
+  writeLitestreamStateOwner,
 } from "./replication_files.ts";
 import { replicaRootOf, type V3ReplicaSetting } from "./replica_setting.ts";
 import {
@@ -107,6 +111,11 @@ export interface ReplicatorTimings {
   readonly probeMs: number;
   /** How often a waiting command looks again. */
   readonly pollMs: number;
+  /**
+   * How often, at most, the sidecar checks its replica can be restored
+   * (swamp-club#3935); the supervisor's default when absent.
+   */
+  readonly verifyIntervalMs?: number;
 }
 
 /** The production timings: a five-minute idle sidecar. */
@@ -205,6 +214,40 @@ export function hostSupervisorCommand(): SupervisorCommand {
   return /[\\/]deno(\.exe)?$/.test(execPath)
     ? sourceSupervisorCommand()
     : { command: execPath, prefixArgs: [] };
+}
+
+/**
+ * Starts Litestream with fresh local state when that state belongs to
+ * another lineage than `lineageFence` (swamp-club#3935), and records which
+ * lineage it belongs to from now on. Litestream 0.5 keeps one local position
+ * per database, not per replica: a sidecar on a new lineage would resume the
+ * old lineage's position against an empty replica path, and fail to sync
+ * once that lineage's early L0 files have expired. Started fresh, it uploads
+ * a snapshot as the new lineage's first file, as after a restore. State a
+ * sidecar left on this same lineage is kept, even if no head was published
+ * on it yet. A copy from before the record goes by the lineage of its last
+ * published head. Called only while no sidecar runs on the database.
+ */
+export async function resetForeignLitestreamState(
+  paths: Pick<ReplicationPaths, "commitsDb" | "copy" | "litestreamState">,
+  lineageFence: number,
+): Promise<void> {
+  const owner = await readLitestreamStateOwner(paths) ??
+    (await readCopyState(paths))?.lineageFence;
+  if (owner !== lineageFence) {
+    try {
+      await Deno.remove(
+        join(
+          dirname(paths.commitsDb),
+          litestreamStateDirName(basename(paths.commitsDb)),
+        ),
+        { recursive: true },
+      );
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  await writeLitestreamStateOwner(paths, lineageFence);
 }
 
 /**
@@ -541,6 +584,7 @@ export class LitestreamReplicator {
   ): Promise<void> {
     // Fails here, in the command, when the binary cannot be had.
     await this.deps.resolveBinary();
+    await resetForeignLitestreamState(paths, lineageFence);
     await Deno.writeTextFile(
       paths.config,
       renderLitestreamConfig(paths, replica, replicaPath),
@@ -561,6 +605,9 @@ export class LitestreamReplicator {
           idleMs: timings.idleMs,
           stopWaitMs: timings.stopWaitMs,
           tickMs: timings.tickMs,
+          ...(timings.verifyIntervalMs !== undefined
+            ? { verifyIntervalMs: timings.verifyIntervalMs }
+            : {}),
         }),
       ],
       // Outside any repo, so nothing in one is loaded.

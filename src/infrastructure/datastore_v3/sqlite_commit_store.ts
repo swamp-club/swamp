@@ -37,10 +37,11 @@
  *   per-process cache. Each append checks the cached seq against the head
  *   row inside its transaction, so a write from another connection is
  *   noticed rather than trusted away.
- * - **Checkpoints.** SQLite's default auto-checkpoint is left alone and no
- *   checkpoint is ever forced: Litestream replicates the WAL, and forcing a
- *   `TRUNCATE` checkpoint made its replica 11 times larger
- *   (`design/enablers/datastore-litestream.md`).
+ * - **Checkpoints.** No checkpoint is ever forced: Litestream replicates the
+ *   WAL, and forcing a `TRUNCATE` checkpoint made its replica 11 times larger
+ *   (`design/enablers/datastore-litestream.md`). A copy Litestream replicates
+ *   turns SQLite's auto-checkpoint off, so only Litestream checkpoints
+ *   (swamp-club#3935); any other `commits.db` keeps SQLite's default.
  *
  * @module
  */
@@ -469,6 +470,15 @@ export interface SqliteCommitStoreOptions {
    * after it wrote (swamp-club#3915).
    */
   readonly afterAppendWrites?: (commit: Commit) => void;
+  /**
+   * Litestream replicates this `commits.db`, so SQLite's auto-checkpoint is
+   * turned off and only Litestream checkpoints it (swamp-club#3935).
+   * Litestream 0.5.17 can lose its read lock after a sync request, and an
+   * auto-checkpoint then restarts the WAL before Litestream has read its
+   * newest frames: those writes never reach the replica, and every restore
+   * from that point fails SQLite's integrity check.
+   */
+  readonly replicated?: boolean;
 }
 
 /**
@@ -699,7 +709,7 @@ export class SqliteCommitStore implements CommitStore {
       DEFAULT_SNAPSHOT_INTERVAL;
     requirePositive(snapshotInterval, "snapshotInterval");
     return new SqliteCommitStore(
-      openCommitsDatabase(path),
+      openCommitsDatabase(path, { replicated: options.replicated === true }),
       cachedPartitions,
       snapshotInterval,
       options.groupCommit ?? true,
@@ -2104,11 +2114,15 @@ export class SqliteCommitStore implements CommitStore {
 /**
  * Opens `commits.db` at `path` the way the store uses it, creating the file
  * and its schema when absent: WAL, `synchronous=FULL` so a commit is durable
- * when append returns, a busy timeout, and SQLite's default auto-checkpoint.
- * Exported for tests, which check these settings on the store's own
- * connection.
+ * when append returns, a busy timeout, and SQLite's default auto-checkpoint,
+ * off when Litestream replicates the file
+ * ({@link SqliteCommitStoreOptions.replicated}). Exported for tests, which
+ * check these settings on the store's own connection.
  */
-export function openCommitsDatabase(path: string): DatabaseSync {
+export function openCommitsDatabase(
+  path: string,
+  options: { readonly replicated?: boolean } = {},
+): DatabaseSync {
   ensureDirSync(dirname(path));
   const db = new DatabaseSync(path);
   try {
@@ -2120,6 +2134,7 @@ export function openCommitsDatabase(path: string): DatabaseSync {
       | undefined;
     if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
     db.exec("PRAGMA synchronous=FULL");
+    if (options.replicated === true) db.exec("PRAGMA wal_autocheckpoint=0");
     migrate(db);
     return db;
   } catch (error) {

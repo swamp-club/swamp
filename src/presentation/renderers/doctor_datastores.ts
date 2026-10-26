@@ -308,6 +308,8 @@ class JsonDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
               retentionFinding: data.retentionFinding ?? null,
               v3ContentFinding: data.v3ContentFinding ?? null,
               v3KeptLineagesFinding: data.v3KeptLineagesFinding ?? null,
+              v3ReplicaRestorableFinding: data.v3ReplicaRestorableFinding ??
+                null,
             },
             null,
             2,

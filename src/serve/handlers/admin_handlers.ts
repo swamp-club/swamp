@@ -261,6 +261,7 @@ import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.t
 import {
   inspectV3Content,
   inspectV3KeptLineages,
+  inspectV3ReplicaRestorable,
 } from "../../infrastructure/datastore_v3/v3_content_inspection.ts";
 import {
   v3DatastoreConfigOf,
@@ -1765,6 +1766,9 @@ export async function handleDoctorDatastores(
           // The datastore's lineage records only (swamp-club#3801).
           checkV3KeptLineages: (config: DatastoreConfig) =>
             inspectV3KeptLineages({ repoDir, datastoreConfig: config }),
+          // The checkout's own copy only (swamp-club#3935).
+          checkV3ReplicaRestorable: (config: DatastoreConfig) =>
+            inspectV3ReplicaRestorable({ repoDir, datastoreConfig: config }),
         }
         : {}),
     };

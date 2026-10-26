@@ -154,6 +154,55 @@ export function keptLineagesFindingMessage(
     `as ${KEPT_LINEAGES_RECOVERY_DOC} describes.`;
 }
 
+/**
+ * Whether this checkout's replication lineage can be restored, as its
+ * sidecar last found (swamp-club#3935).
+ */
+export interface V3ReplicaRestorableFinding {
+  status: "verified" | "unverified" | "broken" | "broken-copy-damaged";
+  lineageFence?: number;
+  txid?: string;
+  checkedAt?: string;
+  error?: string;
+  copyCheck?: string;
+}
+
+/** Whether the replica check passes: anything but a broken lineage. */
+export function replicaRestorablePassed(
+  finding: V3ReplicaRestorableFinding,
+): boolean {
+  return finding.status === "verified" || finding.status === "unverified";
+}
+
+/** The one-line message of the replica check. */
+export function replicaRestorableFindingMessage(
+  finding: V3ReplicaRestorableFinding,
+): string {
+  const error = finding.error ?? "its restore failed SQLite's integrity check";
+  const lineage = finding.lineageFence === undefined
+    ? "this checkout's replication lineage"
+    : `replication lineage ${String(finding.lineageFence).padStart(12, "0")}`;
+  switch (finding.status) {
+    case "verified":
+      return `The replica of ${lineage} restored cleanly at TXID ` +
+        `${finding.txid} (checked ${finding.checkedAt})`;
+    case "unverified":
+      return `The replica of ${lineage} has not been checked yet; this ` +
+        `checkout's Litestream sidecar checks it after it replicates`;
+    case "broken":
+      return `The replica of ${lineage} cannot be restored: ${error}. ` +
+        `Other checkouts cannot clone or refresh from it. This checkout's ` +
+        `copy is intact, so the next write command, or a running swamp ` +
+        `serve, starts a new lineage from it`;
+    case "broken-copy-damaged":
+      return `The replica of ${lineage} cannot be restored: ${error}. ` +
+        `This checkout's own copy fails SQLite's quick check too ` +
+        `(${finding.copyCheck}), so no new lineage is started from it. ` +
+        `Restore this checkout from an older lineage or a backup, as ` +
+        `${KEPT_LINEAGES_RECOVERY_DOC} describes`;
+  }
+}
+
 /** Outcome of a `doctor datastores` scan. */
 export interface DoctorDatastoresData {
   datastoreType: string;
@@ -168,6 +217,8 @@ export interface DoctorDatastoresData {
   v3ContentFinding?: V3ContentSummary;
   /** Present when lineages are kept for recovery (swamp-club#3801). */
   v3KeptLineagesFinding?: V3KeptLineageFinding[];
+  /** Present when the replica check failed (swamp-club#3935). */
+  v3ReplicaRestorableFinding?: V3ReplicaRestorableFinding;
 }
 
 /** Options for a `doctor datastores` scan. */
@@ -230,6 +281,15 @@ export interface DoctorDatastoresDeps {
   checkV3KeptLineages?: (
     config: DatastoreConfig,
   ) => Promise<V3KeptLineageFinding[]>;
+  /**
+   * Whether this checkout's replication lineage can be restored, as its
+   * sidecar last found (swamp-club#3935), or undefined while the datastore
+   * does not replicate; given only on a v3 datastore. Read-only, from the
+   * checkout's own copy.
+   */
+  checkV3ReplicaRestorable?: (
+    config: DatastoreConfig,
+  ) => Promise<V3ReplicaRestorableFinding | undefined>;
 }
 
 /** Whether the v3 content check found nothing. */
@@ -338,6 +398,7 @@ export async function* doctorDatastores(
       let retentionFinding: RetentionCheckSummary | undefined;
       let v3ContentFinding: V3ContentSummary | undefined;
       let v3KeptLineagesFinding: V3KeptLineageFinding[] | undefined;
+      let v3ReplicaRestorableFinding: V3ReplicaRestorableFinding | undefined;
 
       // Health check
       const { healthy, message } = await deps.checkHealth(config);
@@ -561,6 +622,33 @@ export async function* doctorDatastores(
         });
       }
 
+      // The writer's check of its own replica (swamp-club#3935).
+      if (deps.checkV3ReplicaRestorable && !v3FilterRefused) {
+        let finding: V3ReplicaRestorableFinding | undefined;
+        let failure: string | undefined;
+        try {
+          finding = await deps.checkV3ReplicaRestorable(config);
+        } catch (error) {
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        if (failure !== undefined) {
+          healthFindings.push({
+            check: "v3_replica_restorable",
+            passed: false,
+            message:
+              `Could not read whether this checkout's replica can be restored: ${failure}`,
+          });
+        } else if (finding !== undefined) {
+          const passed = replicaRestorablePassed(finding);
+          if (!passed) v3ReplicaRestorableFinding = finding;
+          healthFindings.push({
+            check: "v3_replica_restorable",
+            passed,
+            message: replicaRestorableFindingMessage(finding),
+          });
+        }
+      }
+
       // Vault mismatch check — only relevant for custom (remote) datastores
       if (isCustom) {
         const vaults = await deps.getVaultConfigs();
@@ -586,6 +674,7 @@ export async function* doctorDatastores(
           ...(retentionFinding ? { retentionFinding } : {}),
           ...(v3ContentFinding ? { v3ContentFinding } : {}),
           ...(v3KeptLineagesFinding ? { v3KeptLineagesFinding } : {}),
+          ...(v3ReplicaRestorableFinding ? { v3ReplicaRestorableFinding } : {}),
         },
       };
     })(),

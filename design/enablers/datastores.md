@@ -2763,10 +2763,13 @@ that.
 
 - WAL, `synchronous=FULL` (a commit is durable when append returns), a
   5-second `busy_timeout`, and no foreign keys (the schema has none).
-- SQLite's default auto-checkpoint, and never a forced checkpoint. Litestream
-  replicates the WAL, and `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made
-  the replica 11 times larger (`datastore-litestream.md`). A fitness rule
-  refuses `wal_checkpoint` and `wal_autocheckpoint` in v3 code.
+- Never a forced checkpoint: Litestream replicates the WAL, and
+  `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made the replica 11 times
+  larger (`datastore-litestream.md`). A replicated copy turns auto-checkpoint
+  off, so only Litestream checkpoints it (swamp-club#3935, "Verifying the
+  replica" in `datastore-litestream.md`); any other `commits.db` keeps
+  SQLite's default. A fitness rule refuses `wal_checkpoint` and
+  `wal_autocheckpoint` in v3 code but for that one pinned site.
 - Solo mode keeps one idle Litestream sidecar across write commands. A
   sidecar per command never compacts, so a day's replica of 252 objects took
   18–121 s to restore against 1.1–5.7 s compacted. A writer closes

@@ -38,12 +38,14 @@
  *    implementation has no production importers, and no production code
  *    calls a provider's `storage()`. Both pinned lists are empty; the v3
  *    opt-in adds its edges here.
- * 4. **No forced checkpoints.** `commits.db` keeps SQLite's default
- *    auto-checkpoint and never forces one: Litestream replicates the WAL, and
- *    a forced `TRUNCATE` checkpoint made its replica 11 times larger
- *    (`design/enablers/datastore-litestream.md`). No v3 file may mention
- *    `wal_checkpoint` or `wal_autocheckpoint`. `catalog_store.ts` checkpoints
- *    `_catalog.db` on purpose, so the rule covers the v3 directories only.
+ * 4. **No forced checkpoints.** `commits.db` never forces a checkpoint:
+ *    Litestream replicates the WAL, and a forced `TRUNCATE` checkpoint made
+ *    its replica 11 times larger (`design/enablers/datastore-litestream.md`).
+ *    The one pinned site turns auto-checkpoint off on a replicated copy, so
+ *    only Litestream checkpoints it (swamp-club#3935). No other v3 file may
+ *    mention `wal_checkpoint` or `wal_autocheckpoint`. `catalog_store.ts`
+ *    checkpoints `_catalog.db` on purpose, so the rule covers the v3
+ *    directories only.
  * 5. **The commit-log unit is dormant** (swamp-club#3240). The commit-log
  *    unit and its root (`commit_log_unit_of_work.ts`, `commit_log_root.ts`
  *    in `src/infrastructure/datastore_v3/`) have no importers outside the v3
@@ -339,7 +341,10 @@ Deno.test("datastore v3: no production code outside v3 imports the commit-log un
 const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
-const PINNED_V3_CHECKPOINTS: readonly string[] = [];
+const PINNED_V3_CHECKPOINTS: readonly string[] = [
+  // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2137",
+];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
   const found: string[] = [];
@@ -355,8 +360,8 @@ Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () 
     found.sort(),
     PINNED_V3_CHECKPOINTS,
     "WAL checkpoint pragmas in v3 code",
-    "commits.db keeps SQLite's default auto-checkpoint and never forces a\n" +
-      "checkpoint: Litestream replicates the WAL. See\n" +
+    "commits.db never forces a checkpoint, and only a replicated copy turns\n" +
+      "auto-checkpoint off: Litestream replicates the WAL. See\n" +
       "design/enablers/datastore-litestream.md.",
   );
 });
