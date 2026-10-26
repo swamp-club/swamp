@@ -66,6 +66,7 @@ export function standing(entitlement: WhoamiCollectiveEntitlement): string {
 export function collectiveLines(
   entitlements: WhoamiCollectiveEntitlement[],
 ): string[] {
+  if (entitlements.length === 0) return [];
   const slugWidth = Math.max(...entitlements.map((c) => c.slug.length));
 
   return entitlements.map((c) => {
