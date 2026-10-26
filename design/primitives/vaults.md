@@ -1000,10 +1000,13 @@ file record under a file spec sharing a sensitive resource spec's name. The
 stamp closes both routes for every record written since, and `specName` is now
 refused from every user source like a `_swamp.` key (swamp-club#3684). Records
 without the stamp, whether written before the change or by an older swamp
-binary sharing the datastore, still take the fallback with whatever `specName`
-and `type` they carry, which cannot be told apart from the writer's own.
+binary sharing the datastore, still take the fallback when their `type` tag is
+`resource`, trusting whatever `specName` they carry, which cannot be told apart
+from the writer's own.
 `swamp data query 'tags.type == "resource" && !("_swamp.kind" in tags) && !("_swamp.sensitiveFields" in tags)'`
-lists them, to review against the spec each one names.
+lists them, to review against the spec each one names. An unstamped record
+whose `type` tag a user source overrode no longer takes the fallback, so
+reference text in its sensitive fields reads back unresolved.
 
 `resolveSensitiveVaultRefs()` does the resolution and
 `parseSensitiveFieldsTag()` parses the three tags, both in

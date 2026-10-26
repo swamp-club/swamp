@@ -389,7 +389,7 @@ Deno.test("remote context: readResource leaves an untagged record unresolved wit
       UNTAGGED_STATE,
       undefined,
       undefined,
-      { specName: "state" },
+      { type: "resource", specName: "state" },
     );
     assertEquals(await h.context.readResource!("state-main"), UNTAGGED_STATE);
     assertEquals(h.calls.filter((c) => c.method === "resolveSecret"), []);
