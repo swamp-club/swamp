@@ -67,7 +67,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, SEPARATOR } from "@std/path";
+import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
   type CatalogProjection,
   projectCatalog,
@@ -1544,13 +1544,22 @@ export class SqliteReadModel implements ReadModel {
     const existing = target.existing;
     if (
       prior === undefined && existing !== undefined &&
+      !this.#foldsNothing(commit.namespace) &&
       await this.#time(
-        "target",
-        () => this.#reachesAnotherSpelling(commit.namespace, key, existing),
+        "alias",
+        () =>
+          this.#reachesAnotherKeysFile(
+            commit.namespace,
+            key,
+            existing,
+            touched,
+          ),
       )
     ) {
       logger
         .warn`Not materialising ${key} from ${from}: its path reaches another key's file on a filesystem that folds case or Unicode normalisation`;
+      this.#paths.takeAbsent(path);
+      this.#paths.takeExisting(path);
       this.#stats?.bump("aliased_skipped");
       return change.put === null && decision.kind === "remove"
         ? decision.next
@@ -1783,7 +1792,10 @@ export class SqliteReadModel implements ReadModel {
     const existing = missingFrom === undefined;
     if (existing) {
       resolved = await this.#paths.resolve(path);
-      if (isPut) this.#paths.noteAbsent(path, []);
+      if (isPut) {
+        this.#paths.noteAbsent(path, []);
+        this.#paths.noteExisting(path);
+      }
     } else {
       resolved = join(
         await this.#paths.resolveDirectory(
@@ -1809,34 +1821,65 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
-   * Whether the file of `key`, whose real path is `existing`, is reached
-   * only under another spelling of `key` (swamp-club#3939): some segment
-   * below the cache root has no directory entry of exactly its name, as on a
-   * case- or normalisation-insensitive filesystem (APFS, NTFS) where
-   * `VPC/1/raw` reaches `vpc/1/raw`. Where the filesystem folds nothing this
-   * is false without a look; where `realPath` gives the spelling on disk, a
-   * real path spelt as the key needs no listing either.
+   * Whether the file of `key`, whose real path is `existing`, is another
+   * key's (swamp-club#3939): on a case- or normalisation-insensitive
+   * filesystem (APFS, NTFS) `VPC/1/raw` reaches `vpc/1/raw`. The file's
+   * spelling on disk is read from its real path where `realPath` gives it,
+   * and from the directory listings otherwise. The file is another key's
+   * when that spelling, as listed or composed (NFC), is a key other than
+   * `key` whose file is present, or one this commit already decided
+   * (`decided`). A key reached through another spelling of a directory
+   * only, as `vpc/2` under `VPC/`, names no other key's file and is
+   * written. Where the filesystem folds nothing this is false without a
+   * look.
    */
-  async #reachesAnotherSpelling(
+  async #reachesAnotherKeysFile(
     namespace: string,
     key: string,
     existing: string,
+    decided: ReadonlySet<string>,
   ): Promise<boolean> {
     const root = this.#cacheRoot(namespace);
     const folding = await this.#foldingOf(root);
     if (folding === "off") return false;
-    if (folding === "canonical") {
-      const realRoot = await this.#paths.resolveDirectory(root);
-      if (existing === join(realRoot, ...key.split("/"))) return false;
-    }
+    const onDisk = folding === "canonical"
+      ? relative(await this.#paths.resolveDirectory(root), existing)
+        .split(SEPARATOR).join("/")
+      : await this.#listedSpelling(root, key);
+    // No listed name matches a segment as the filesystem might fold it.
+    if (onDisk === undefined) return true;
+    if (onDisk === key) return false;
+    return [...new Set([onDisk, onDisk.normalize("NFC")])].some((spelling) =>
+      spelling !== key &&
+      (decided.has(spelling) ||
+        this.#state.fileOwnership(namespace, spelling)?.present === true)
+    );
+  }
+
+  /**
+   * The spelling `key`'s file has on disk under `root`, from the directory
+   * listings: each segment as listed, or the listed name it matches
+   * case-folded and composed. Undefined when some segment matches none.
+   */
+  async #listedSpelling(
+    root: string,
+    key: string,
+  ): Promise<string | undefined> {
+    const names: string[] = [];
     let dir = root;
     for (const segment of key.split("/")) {
-      if (!await this.#paths.hasEntry(dir, segment, this.#readDir)) {
-        return true;
-      }
+      const name = await this.#paths.listedName(dir, segment, this.#readDir);
+      if (name === undefined) return undefined;
+      names.push(name);
       dir = join(dir, segment);
     }
-    return false;
+    return names.join("/");
+  }
+
+  /** Whether `namespace`'s cache root is known to fold no spelling. */
+  #foldsNothing(namespace: string): boolean {
+    return (this.#forcedFolding ??
+      this.#rootFolding.get(this.#cacheRoot(namespace))) === "off";
   }
 
   /**
@@ -2238,6 +2281,7 @@ export class SqliteReadModel implements ReadModel {
     }
     const root = this.#cacheRoot(namespace);
     const absentDirectories = this.#paths.takeAbsent(path);
+    const existed = this.#paths.takeExisting(path);
     const written: { info?: Deno.FileInfo } = {};
     const stats = this.#stats;
     const started = performance.now();
@@ -2307,9 +2351,11 @@ export class SqliteReadModel implements ReadModel {
     // the ones it created are real directories under their parents.
     for (const dir of [...absentDirectories ?? []].reverse()) {
       this.#paths.markCreated(dir);
-      this.#paths.forgetListing(dirname(dir));
     }
-    this.#paths.forgetListing(dirname(path));
+    // A new name in some directory, under whichever spelling it was listed.
+    if (!existed || (absentDirectories?.length ?? 0) > 0) {
+      this.#paths.forgetListings();
+    }
     for (
       let dir = dirname(path);
       dir !== root && dir.startsWith(root + SEPARATOR);
@@ -3507,6 +3553,18 @@ function within(path: string, dir: string): boolean {
   return path === dir || path.startsWith(dir + SEPARATOR);
 }
 
+/** One directory's names, for {@link PathCache.listedName}. */
+interface ListedNames {
+  readonly exact: ReadonlySet<string>;
+  /** Each folded spelling ({@link foldSpelling}) and a name listed so. */
+  readonly folded: ReadonlyMap<string, string>;
+}
+
+/** A name as a case-insensitive, normalising filesystem compares it. */
+function foldSpelling(name: string): string {
+  return name.normalize("NFC").toLowerCase();
+}
+
 /**
  * What the key guards learned about directories in one exclusive section,
  * so a page of a thousand files under one directory resolves and stats it
@@ -3522,12 +3580,14 @@ class PathCache {
   readonly #resolved = new Map<string, string>();
   /** Absent directories above a path just checked, for its write. */
   readonly #absent = new Map<string, readonly string[]>();
+  /** Paths the key guards found a file at, for the write that follows. */
+  readonly #existing = new Set<string>();
   /**
-   * Directories' entry names, exactly as listed, for the aliased-spelling
-   * guard (swamp-club#3939). Kept for one page at most, and forgotten for a
-   * directory a write adds an entry to.
+   * Directories' entry names for the aliased-spelling guard
+   * (swamp-club#3939), each folded spelling with the names listed so. Kept
+   * for one page at most, and forgotten whenever a write adds a name.
    */
-  readonly #listings = new Map<string, ReadonlySet<string>>();
+  readonly #listings = new Map<string, ListedNames>();
 
   isDirectory(path: string): boolean {
     return this.#directories.has(path);
@@ -3593,27 +3653,38 @@ class PathCache {
     return real;
   }
 
-  /**
-   * Whether `dir` lists an entry named exactly `name`, listing it through
-   * `readDir` only the first time it is asked about.
-   */
-  async hasEntry(
-    dir: string,
-    name: string,
-    readDir: (dir: string) => AsyncIterable<Deno.DirEntry>,
-  ): Promise<boolean> {
-    let names = this.#listings.get(dir);
-    if (names === undefined) {
-      const listed = new Set<string>();
-      for await (const entry of readDir(dir)) listed.add(entry.name);
-      names = listed;
-      this.#listings.set(dir, names);
-    }
-    return names.has(name);
+  noteExisting(path: string): void {
+    this.#existing.add(path);
   }
 
-  forgetListing(dir: string): void {
-    this.#listings.delete(dir);
+  /** Whether {@link noteExisting} recorded `path`, once. */
+  takeExisting(path: string): boolean {
+    return this.#existing.delete(path);
+  }
+
+  /**
+   * The name `dir` lists for `segment`: itself when listed so, or else the
+   * listed name it matches case-folded and composed; undefined when none
+   * does. `dir` is listed through `readDir` only the first time.
+   */
+  async listedName(
+    dir: string,
+    segment: string,
+    readDir: (dir: string) => AsyncIterable<Deno.DirEntry>,
+  ): Promise<string | undefined> {
+    let listed = this.#listings.get(dir);
+    if (listed === undefined) {
+      const exact = new Set<string>();
+      const folded = new Map<string, string>();
+      for await (const entry of readDir(dir)) {
+        exact.add(entry.name);
+        folded.set(foldSpelling(entry.name), entry.name);
+      }
+      listed = { exact, folded };
+      this.#listings.set(dir, listed);
+    }
+    if (listed.exact.has(segment)) return segment;
+    return listed.folded.get(foldSpelling(segment));
   }
 
   forgetListings(): void {
@@ -3624,6 +3695,7 @@ class PathCache {
     this.#directories.clear();
     this.#resolved.clear();
     this.#absent.clear();
+    this.#existing.clear();
     this.#listings.clear();
   }
 }

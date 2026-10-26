@@ -3892,11 +3892,15 @@ tombstone under a file has nothing to remove.
 **Spellings that alias** (swamp-club#3939). On a case- or
 normalisation-insensitive filesystem (APFS, NTFS), a key nothing owns can
 reach another key's file: `VPC/1/raw` reaches `vpc/1/raw`. The read model
-neither removes nor writes through such a key: a put or tombstone of a key
-with no file ownership, whose file exists but some segment of whose path has
-no directory entry of exactly its name, is logged and skipped, and stays
-indexed (`aliased_skipped` in the catch-up span). This holds for every
-checkout, solo ones included, since the same replay runs everywhere.
+neither removes nor writes through such a key. For a put or tombstone of a
+key with no file ownership whose file exists, it reads the spelling that file
+has on disk. If that spelling, as found or composed (NFC), is another key
+whose file is present, or one the same commit already decided, the change is
+logged and skipped, and stays indexed (`aliased_skipped` in the catch-up
+span). A key reached through another spelling of a directory only, such as
+`vpc/2` under `VPC/`, names no other key's file and is written, so a recovery
+replay gives it back its ownership. This holds for every checkout, solo ones
+included, since the same replay runs everywhere.
 
 The check costs nothing where nothing folds. The read model probes its state
 directory once, inside its exclusive section (`spelling_folding.ts`), and
@@ -3905,19 +3909,19 @@ each cache root on the same device takes the result:
 - `off`: neither an upper-case nor a decomposed spelling reaches the probe
   file. The check is skipped, so a replay on Linux is unchanged.
 - `canonical`: a spelling reaches it, and `realPath` gives the name on
-  disk. A key whose file's real path is spelt as the key needs no listing;
-  only a mismatch, an alias or a symlinked directory, is checked against
-  the directory listings.
-- `list`: a spelling reaches it but `realPath` echoes the spelling given, the
-  probe failed, or the root is on another device. Every unowned key whose
-  file exists is checked against the listings.
+  disk. The spelling on disk is the file's real path below the root, which
+  the key guards already resolved, so nothing is listed.
+- `list`: a spelling reaches it but `realPath` echoes the spelling given (as
+  on HFS+, which stores names decomposed), the probe failed, or the root is
+  on another device. The spelling on disk is read from the directory
+  listings, each segment matched as listed or case-folded and composed.
 
-Listings are cached for one apply page and forgotten for a directory a write
-adds to, so a page lists each directory once at most. Two limits remain. A
-compacted base load writes keys that own their files, so it is not checked,
-and two owned keys that differ only in case inside one base still share a
-file on such a filesystem. Per-directory casefolding below a cache root
-(ext4's `chattr +F`) is not detected.
+Listings are cached for one apply page and dropped whenever a write adds a
+name, so a replay over files already on disk lists each directory once at
+most. Two limits remain. A compacted base load writes keys that own their
+files, so it is not checked, and two owned keys that differ only in case
+inside one base still share a file on such a filesystem. Per-directory
+casefolding below a cache root (ext4's `chattr +F`) is not detected.
 
 **Failures.** Any other failure throws `ReadModelApplyError`, naming the
 namespace, partition and seq, and leaves the cursor before the commit, so the

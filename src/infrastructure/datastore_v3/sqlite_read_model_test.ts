@@ -857,6 +857,63 @@ for (const spellingFolding of FORCED_MODES) {
     });
   });
 
+  Deno.test(`SqliteReadModel: a recovery replay gives back ownership of a key written through another spelling of its directory (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
+      await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
+      const first = env.open({ spellingFolding });
+      try {
+        await first.catchUp(signal());
+      } finally {
+        await first.close();
+      }
+      // The state is lost: vpc@2 replays unowned over its own file.
+      const replay = env.open({
+        spellingFolding,
+        stateDir: join(dirname(env.repoDir), "recovered-state"),
+        netReplay: false,
+      });
+      try {
+        const attributes = await catchUpAttributes(replay);
+        assertEquals(attributes[ALIASED], undefined);
+        await env.append(3, "", [dataTombstone("vpc", 2)]);
+        await replay.catchUp(signal());
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 2)),
+          undefined,
+        );
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "VPC", 1)),
+          "VPC@1",
+        );
+      } finally {
+        await replay.close();
+      }
+    });
+  });
+
+  Deno.test(`SqliteReadModel: a put of another spelling in the same commit does not overwrite the key's file (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [
+        await savePut("vpc", 1),
+        versionOp("vpc", 1),
+        await savePut("VPC", 1, "forged"),
+      ]);
+      const readModel = env.open({ spellingFolding });
+      try {
+        const attributes = await catchUpAttributes(readModel);
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 1)),
+          "vpc@1",
+        );
+        const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+        assertEquals(attributes[ALIASED], folds ? 1 : undefined);
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
   Deno.test(`SqliteReadModel: a recovery replay over the files on disk keeps what an incremental catch-up kept (${mode}, swamp-club#3939)`, async () => {
     await withEnv(async (env) => {
       await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
@@ -988,4 +1045,34 @@ Deno.test("SqliteReadModel: a full replay over files spelt as their keys lists n
       }
     });
   }
+});
+
+Deno.test("SqliteReadModel: a recovery replay where names are listed decomposed gives back a composed key its own file (swamp-club#3939)", async () => {
+  await withEnv(async (env) => {
+    const name = "caf\u00e9";
+    await env.append(1, "", [await savePut(name, 1), versionOp(name, 1)]);
+    const first = env.open();
+    try {
+      await first.catchUp(signal());
+    } finally {
+      await first.close();
+    }
+    // As on HFS+, which lists every name decomposed and whose realPath
+    // the probe cannot trust.
+    const replay = env.open({
+      spellingFolding: "list",
+      readDir: decomposedReadDir,
+      stateDir: join(dirname(env.repoDir), "recovered-state"),
+      netReplay: false,
+    });
+    try {
+      const attributes = await catchUpAttributes(replay);
+      assertEquals(attributes[ALIASED], undefined);
+      await env.append(2, "", [dataTombstone(name, 1)]);
+      await replay.catchUp(signal());
+      assertEquals(await readOrAbsent(env.contentPath("", name, 1)), undefined);
+    } finally {
+      await replay.close();
+    }
+  });
 });
