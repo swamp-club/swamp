@@ -26,7 +26,7 @@ import {
   commentFormFor,
   type CommentSites,
   commentSites,
-  directiveSpan,
+  directiveSpans,
   fileRelativeToManifest,
   invalidAcceptanceFinding,
   MAX_ACCEPTANCE_REASON_LENGTH,
@@ -166,20 +166,183 @@ Deno.test("parseAcceptanceDirectives: an apostrophe in Markdown prose does not h
   });
 });
 
-Deno.test("directiveSpan and withoutDirective: cover exactly the recognised comment, never text inside a string", () => {
+/** `line` with the directive span `directiveSpans` gives it removed. */
+function stripped(line: string, file: string): string {
+  return withoutDirective(line, directiveSpans(line, file).get(1));
+}
+
+Deno.test("parseAcceptanceDirectives: a reason may carry an apostrophe, a double quote or a backtick in source (swamp-club#3846)", () => {
+  for (
+    const reason of [
+      "butler is itch.io's documented upload tool",
+      'the "vendor" CLI',
+      "runs `git` for the tag",
+    ]
+  ) {
+    const trailing = parseAcceptanceDirectives(
+      `new Deno.Command(cmd); // swamp-quality-ignore deno-command: ${reason}\n`,
+      TS,
+    );
+    assertEquals(trailing.invalid, [], reason);
+    assertEquals(trailing.directives.length, 1, reason);
+    assertEquals(trailing.directives[0].reason, reason);
+    assertEquals(trailing.directives[0].target, {
+      kind: "line",
+      file: TS,
+      line: 1,
+    });
+    const above = parseAcceptanceDirectives(
+      `  // swamp-quality-ignore deno-command: ${reason}\n  new Deno.Command(cmd);\n`,
+      TS,
+    );
+    assertEquals(above.invalid, [], reason);
+    assertEquals(above.directives[0].reason, reason);
+    assertEquals(above.directives[0].target, {
+      kind: "line",
+      file: TS,
+      line: 2,
+    });
+  }
+});
+
+Deno.test("parseAcceptanceDirectives: a directive after an earlier comment holding an apostrophe is read (swamp-club#3153)", () => {
+  const parsed = parseAcceptanceDirectives(
+    "new Deno.Command(cmd); // don't inline // swamp-quality-ignore deno-command\n",
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives.length, 1);
+  assertEquals(parsed.directives[0].ruleId, "deno-command");
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: TS,
+    line: 1,
+  });
+});
+
+Deno.test("parseAcceptanceDirectives: keyword text in a string after a regex literal holding two slashes is not a directive (swamp-club#3107)", () => {
+  const source =
+    'const re = /a\\//; const s = "it\'s // swamp-quality-ignore deno-command";\n';
+  const parsed = parseAcceptanceDirectives(source, TS);
+  assertEquals(parsed.directives, []);
+  assertEquals(parsed.invalid, []);
+  assertEquals(directiveSpans(source, TS).size, 0);
+});
+
+Deno.test("parseAcceptanceDirectives: keyword text inside a multi-line template literal is not a directive, even where a backtick closes it", () => {
+  const source = [
+    "const t = `",
+    'x // swamp-quality-ignore deno-command: y`; new Deno.Command("sh");',
+  ].join("\n");
+  const parsed = parseAcceptanceDirectives(source, TS);
+  assertEquals(parsed.directives, []);
+  assertEquals(parsed.invalid, []);
+});
+
+Deno.test("parseAcceptanceDirectives: the keyword after a block comment opener is neither a directive nor invalid", () => {
+  const parsed = parseAcceptanceDirectives(
+    "/* swamp-quality-ignore deno-command */ new Deno.Command(x);\n",
+    TS,
+  );
+  assertEquals(parsed.directives, []);
+  assertEquals(parsed.invalid, []);
+});
+
+Deno.test("parseAcceptanceDirectives: every directive in a source file that does not parse is invalid, naming the cause", () => {
+  const parsed = parseAcceptanceDirectives(
+    [
+      "const = ;",
+      "new Deno.Command(x); // swamp-quality-ignore deno-command: vendor",
+      "// swamp-quality-ignore deno-command",
+      "new Deno.Command(y);",
+    ].join("\n"),
+    TS,
+  );
+  assertEquals(parsed.directives, []);
+  assertEquals(parsed.invalid.map((i) => i.line), [2, 3]);
+  for (const i of parsed.invalid) {
+    assertStringIncludes(i.problem, "the file does not parse");
+  }
+});
+
+Deno.test("parseAcceptanceDirectives: an invalid directive in a stack still counts, so the valid ones keep their target", () => {
+  const parsed = parseAcceptanceDirectives(
+    [
+      "// swamp-quality-ignore deno-command",
+      "// swamp-quality-ignore not-a-rule",
+      "// swamp-quality-ignore long-line: wraps Deno.Command( here",
+      "new Deno.Command(x);",
+    ].join("\n"),
+    TS,
+  );
+  assertEquals(parsed.invalid.map((i) => i.line), [2, 3]);
+  assertEquals(parsed.directives.length, 1);
+  assertEquals(parsed.directives[0].target, {
+    kind: "line",
+    file: TS,
+    line: 4,
+  });
+});
+
+Deno.test("parseAcceptanceDirectives: a CRLF file reads the reason without the carriage return", () => {
+  const parsed = parseAcceptanceDirectives(
+    "new Deno.Command(x); // swamp-quality-ignore deno-command: it's vendored\r\nfoo();\r\n",
+    TS,
+  );
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives[0].reason, "it's vendored");
+});
+
+Deno.test("parseAcceptanceDirectives: JavaScript the TypeScript plugin refuses still has its directives read", () => {
+  // In TypeScript `(b) : c => d` reads as an arrow with a return type, so
+  // the conditional does not parse; in JavaScript it is a conditional.
+  const js =
+    "const r = a ? (b) : c => d; // swamp-quality-ignore long-line: chain\n";
+  const parsed = parseAcceptanceDirectives(js, "/ext/models/thing.js");
+  assertEquals(parsed.invalid, []);
+  assertEquals(parsed.directives.length, 1);
+  assertStringIncludes(
+    parseAcceptanceDirectives(js, TS).invalid[0].problem,
+    "the file does not parse",
+  );
+});
+
+Deno.test("directiveSpans and withoutDirective: cover exactly the recognised comment, never text inside a string", () => {
   const ts =
     'const c = new Deno.Command("x"); // swamp-quality-ignore deno-command: vendor';
-  assertEquals(withoutDirective(ts, TS), 'const c = new Deno.Command("x"); ');
+  assertEquals(stripped(ts, TS), 'const c = new Deno.Command("x"); ');
   const quoted = 'const t = "// swamp-quality-ignore"; new Deno.Command("sh");';
-  assertEquals(directiveSpan(quoted, TS), undefined);
-  assertEquals(withoutDirective(quoted, TS), quoted);
+  assertEquals(directiveSpans(quoted, TS).size, 0);
+  assertEquals(stripped(quoted, TS), quoted);
   const md =
     "Host 10.0.0.1 <!-- swamp-quality-ignore ipv4-address-literals: lab 10.0.0.2 --> tail";
-  assertEquals(withoutDirective(md, MD), "Host 10.0.0.1  tail");
+  assertEquals(stripped(md, MD), "Host 10.0.0.1  tail");
+  assertEquals(stripped("plain 10.0.0.1", "/ext/hosts.txt"), "plain 10.0.0.1");
+});
+
+Deno.test("directiveSpans: a source span holding a quote is removed, since the parser found the comment", () => {
+  const line =
+    "new Deno.Command(cmd); // swamp-quality-ignore deno-command: butler is itch.io's upload tool";
+  assertEquals(stripped(line, TS), "new Deno.Command(cmd); ");
+});
+
+Deno.test("directiveSpans: none in a source file that does not parse, or for a directive closed by a block comment", () => {
   assertEquals(
-    withoutDirective("plain 10.0.0.1", "/ext/hosts.txt"),
-    "plain 10.0.0.1",
+    directiveSpans("const = ; // swamp-quality-ignore long-line: x\n", TS).size,
+    0,
   );
+  assertEquals(
+    directiveSpans(
+      "/* // swamp-quality-ignore long-line: x */ new Deno.Command(y);\n",
+      TS,
+    ).size,
+    0,
+  );
+});
+
+Deno.test("directiveSpans: a line comment ends at a U+2028, so code after it is not discounted", () => {
+  const line = "a(); // swamp-quality-ignore long-line: x\u2028b();";
+  assertEquals(stripped(line, TS), "a(); \u2028b();");
 });
 
 Deno.test("parseAcceptanceDirectives: a directive inside a block comment that closes on the line is invalid", () => {
@@ -191,10 +354,9 @@ Deno.test("parseAcceptanceDirectives: a directive inside a block comment that cl
   assertStringIncludes(parsed.invalid[0].problem, "must end its line");
 });
 
-Deno.test("parseAcceptanceDirectives: a reason may not carry a quote, Deno.Command( or a base64 run in source", () => {
+Deno.test("parseAcceptanceDirectives: a reason may not carry Deno.Command( or a base64 run in source", () => {
   for (
     const [reason, problem] of [
-      ['y"; new Deno.Command("sh")', "quote"],
       ["wraps Deno.Command( for the CLI", "Deno.Command("],
       ["A".repeat(100), "base64"],
     ]
@@ -215,10 +377,10 @@ Deno.test("parseAcceptanceDirectives: a reason may not carry a quote, Deno.Comma
   assertEquals(md.directives.length, 1);
 });
 
-Deno.test("withoutDirective: leaves a span holding a quote in place, so a fooled opener hides nothing", () => {
+Deno.test("withoutDirective: keyword text in a string after a regex literal holding a quote is not a directive, so nothing is removed", () => {
   const line =
     '/"/.test(s) + "// swamp-quality-ignore long-line: y"; new Deno.Command("sh");';
-  assertEquals(withoutDirective(line, TS), line);
+  assertEquals(stripped(line, TS), line);
 });
 
 Deno.test("parseAcceptanceDirectives: directive text inside a Markdown fenced block or a source block comment is documentation, not a directive", () => {
@@ -379,7 +541,7 @@ Deno.test("parseAcceptanceDirectives: the keyword inside a string literal is sti
     const parsed = parseAcceptanceDirectives(`${line}\n`, TS);
     assertEquals(parsed.directives, [], line);
     assertEquals(parsed.invalid, [], line);
-    assertEquals(directiveSpan(line, TS), undefined, line);
+    assertEquals(directiveSpans(line, TS).size, 0, line);
   }
 });
 
@@ -824,17 +986,69 @@ Deno.test("commentSites: no Markdown line inside a fenced block, through the clo
   assertEquals(commentSites(md, MD, [2, 4, 5, 6]), { 2: "", 6: "  " });
 });
 
-Deno.test("commentSites: no line the parser would read as inside a block comment, even where the tokenizer disagrees", () => {
-  // The parser reads `/*` in a regex literal as an open block comment and
-  // ignores directives until a `*/`; a comment offered there would do
-  // nothing.
+Deno.test("commentSites: a /* inside a regex literal hides no line, since the parser reads the same comments as the tokenizer", () => {
   const source = [
     "const re = /[/*]/;", // 1
     "new Deno.Command(x);", // 2
     "// */", // 3
     "new Deno.Command(y);", // 4
   ].join("\n");
-  assertEquals(commentSites(source, TS, [2, 4]), { 4: "" });
+  assertEquals(commentSites(source, TS, [2, 4]), { 2: "", 4: "" });
+});
+
+Deno.test("commentSites: every offered source site, applied, parses back as a directive aimed at its line", () => {
+  const source = [
+    "// swamp-quality-ignore deno-command", // 1
+    "// swamp-quality-ignore credentials-sensitive-field: stacked", // 2
+    "new Deno.Command(a);", // 3
+    "const s = `x", // 4
+    "y`; new Deno.Command(b);", // 5
+    "new Deno.Command(c); // don't inline", // 6
+    "  // swamp-quality-ignore not-a-rule", // 7
+  ].join("\n");
+  const sites = commentSites(source, TS, [1, 2, 3, 5, 6, 7]);
+  // A standalone directive line takes no comment above it: the stack would
+  // skip it. A line inside the template literal takes none either.
+  assertEquals(sites, { 3: "", 6: "" });
+  for (const [line, indent] of Object.entries(sites)) {
+    const n = Number(line);
+    const lines = source.split("\n");
+    lines.splice(n - 1, 0, `${indent}// swamp-quality-ignore deno-command`);
+    const parsed = parseAcceptanceDirectives(lines.join("\n"), TS);
+    assertEquals(
+      parsed.directives.some((d) =>
+        d.declaredAt.line === n && d.target.kind === "line" &&
+        d.target.line === n + 1
+      ),
+      true,
+      line,
+    );
+  }
+});
+
+Deno.test("commentSites: no source site once the directives above reach the cap", () => {
+  const lines: string[] = [];
+  for (let i = 0; i < MAX_DIRECTIVES_PER_FILE; i++) {
+    lines.push(`f${i}(); // swamp-quality-ignore deno-command`);
+  }
+  lines.push("new Deno.Command(x);");
+  assertEquals(
+    commentSites(lines.join("\n"), TS, [MAX_DIRECTIVES_PER_FILE + 1]),
+    {},
+  );
+  assertEquals(commentSites(lines.join("\n"), TS, [1]), { 1: "" });
+});
+
+Deno.test("commentSites: no line inside JSX children, which a comment would turn into text", () => {
+  const tsx = [
+    "export const C = () => (", // 1
+    "  <div>", // 2
+    "    hello", // 3
+    "    <span>{new Deno.Command(x)}</span>", // 4
+    "  </div>", // 5
+    ");", // 6
+  ].join("\n");
+  assertEquals(commentSites(tsx, "/ext/ui/c.tsx", [1, 3, 4]), { 1: "" });
 });
 
 Deno.test("commentSites: no Markdown line inside a multi-line HTML comment", () => {

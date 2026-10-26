@@ -724,6 +724,30 @@ Deno.test("analyzeExtensionSafety: an acceptance directive never triggers the ru
   );
 });
 
+Deno.test("analyzeExtensionSafety: a directive whose reason holds a quote is still discounted from the long-line count (swamp-club#3846)", async () => {
+  const long = "x-".repeat(200);
+  const reason = `it's the "vendor" table ${"r-".repeat(100)}`;
+  await withTempFiles(
+    {
+      "a.ts": [
+        `const s = "${long}"; // swamp-quality-ignore long-line: ${reason}`,
+        // The same text inside a string literal is code, so it counts.
+        `const t = "${long}"; const u = "// swamp-quality-ignore long-line: ${
+          "r-".repeat(100)
+        }";`,
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.warnings.map((w) => `${w.ruleId}@${w.line}`),
+        ["long-line@2"],
+      );
+    },
+  );
+});
+
 Deno.test("analyzeExtensionSafety: a directive with no reason hides nothing on its line", async () => {
   const blob = "Q".repeat(120);
   await withTempFiles(

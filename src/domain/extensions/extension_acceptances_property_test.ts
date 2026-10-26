@@ -35,8 +35,11 @@ const siteRuleIds = RULE_CATALOG.filter((r) =>
   r.acceptable && r.scope === "site"
 ).map((r) => r.id);
 
-/** A reason: printable, no newline, within the cap, trimmed non-empty. */
-const reasonArb = fc.stringMatching(/^[a-zA-Z0-9 ,.()-]{1,200}$/)
+/**
+ * A reason: printable, no newline, within the cap, trimmed non-empty. Quotes
+ * included: a source directive is read from a comment, so they are harmless.
+ */
+const reasonArb = fc.stringMatching(/^[a-zA-Z0-9 ,.()'"`-]{1,200}$/)
   .map((s) => s.trim())
   .filter((s) =>
     s.length > 0 && s.length <= MAX_ACCEPTANCE_REASON_LENGTH &&
@@ -134,6 +137,33 @@ Deno.test("acceptance property: a reason over the cap is always rejected", () =>
         );
         assertEquals(parsed.directives, []);
         assertEquals(parsed.invalid.length, 1);
+      },
+    ),
+  );
+});
+
+Deno.test("acceptance property: directive text inside a string or template literal is never a directive", () => {
+  const literal = (text: string, quote: string): string => {
+    const escaped = text.replaceAll("\\", "\\\\").replaceAll(
+      quote,
+      `\\${quote}`,
+    );
+    return quote +
+      (quote === "`" ? escaped.replaceAll("${", "\\${") : escaped) +
+      quote;
+  };
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...siteRuleIds),
+      reasonArb,
+      fc.constantFrom('"', "'", "`"),
+      fc.constantFrom("", "// it's ", "/a\\// + "),
+      (ruleId, reason, quote, prefix) => {
+        const text = `${prefix}// ${ACCEPTANCE_DIRECTIVE} ${ruleId}: ${reason}`;
+        const source = `const s = ${literal(text, quote)}; doThing(s);\n`;
+        const parsed = parseAcceptanceDirectives(source, FILE);
+        assertEquals(parsed.directives, [], source);
+        assertEquals(parsed.invalid, [], source);
       },
     ),
   );
