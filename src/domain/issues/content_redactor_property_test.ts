@@ -396,3 +396,71 @@ Deno.test("redactIssueContent: redaction stays idempotent over git ids and addre
     }),
   );
 });
+
+// An IPv4 address the redactor does not keep on purpose: never loopback,
+// link-local, a documentation range, 0.0.0.0 or 255.255.255.255.
+const arbIpv4 = fc.tuple(
+  fc.integer({ min: 0, max: 255 }),
+  fc.integer({ min: 0, max: 255 }),
+  fc.integer({ min: 0, max: 255 }),
+  fc.integer({ min: 0, max: 255 }),
+).filter(([a, b, c, d]) =>
+  a !== 127 &&
+  !(a === 169 && b === 254) &&
+  !(a === 192 && b === 0 && c === 2) &&
+  !(a === 198 && b === 51 && c === 100) &&
+  !(a === 203 && b === 0 && c === 113) &&
+  !(a === 0 && b === 0 && c === 0 && d === 0) &&
+  !(a === 255 && b === 255 && c === 255 && d === 255)
+).map((parts) => parts.join("."));
+
+// What can follow an address: punctuation, a port, a prefix length, a range
+// hyphen and digit, a DNS label after a dot, or the end of the text.
+const arbIpv4After = fc.constantFrom(
+  " end",
+  ".",
+  ",",
+  ")",
+  ":8080",
+  "/24",
+  "-1",
+  "-10.0.0.9",
+  ".nip.io",
+  "",
+);
+
+Deno.test("redactIssueContent: an IPv4 address never survives whole", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("addr ", "(", "ip=", ""),
+      arbIpv4,
+      arbIpv4After,
+      (before, address, after) => {
+        const result = redactIssueContent(`${before}${address}${after}`);
+        assert(!result.text.includes(address), result.text);
+        assert(result.summary.totalRedactions >= 1, result.text);
+      },
+    ),
+  );
+});
+
+// A version with four dotted groups and a release suffix, such as the WSL2
+// kernel release 6.18.33.2-microsoft-standard-WSL2.
+const arbSuffixedVersion = fc.tuple(
+  fc.array(fc.integer({ min: 0, max: 999 }), { minLength: 4, maxLength: 4 }),
+  fc.stringMatching(/^[A-Za-z][A-Za-z0-9-]{0,15}$/),
+).map(([groups, suffix]) => `${groups.join(".")}-${suffix}`);
+
+Deno.test("redactIssueContent: a four-part version with a release suffix survives", () => {
+  fc.assert(
+    fc.property(arbSuffixedVersion, (version) => {
+      // Three groups of three or more digits read as a phone number to the
+      // phone pass, which runs before the IP pass and is out of scope here.
+      fc.pre(!/\d{2,4}\.\d{3,4}\.\d{3,4}\b/.test(version));
+      const input = `Kernel: ${version} end`;
+      const result = redactIssueContent(input);
+      assertEquals(result.text, input);
+      assertEquals(result.summary.totalRedactions, 0);
+    }),
+  );
+});

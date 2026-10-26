@@ -695,6 +695,38 @@ Deno.test("redactIssueContent: real IPv4 addresses are still redacted", () => {
   assertEquals(result.text.includes("52.14.88.201"), false);
 });
 
+Deno.test("redactIssueContent: a four-part version that runs on is not an IP address", () => {
+  for (
+    const input of [
+      "Kernel: 6.18.33.2-microsoft-standard-WSL2",
+      "- Linux 5.15.167.4-microsoft-standard-WSL2 (WSL2), filesystem datastore",
+      "version 1.2.3.4.5",
+      "OID 1.3.6.1.4.1.2021 not found",
+      "build 1.2.3.400",
+    ]
+  ) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input, input);
+    assertEquals(result.summary.totalRedactions, 0, input);
+  }
+});
+
+Deno.test("redactIssueContent: an IPv4 address is still redacted whatever follows it", () => {
+  for (
+    const [input, expected] of [
+      ["range 10.0.0.1-10.0.0.5", "range [IP-1]-[IP-2]"],
+      ["peer 10.0.0.1-1 down", "peer [IP-1]-1 down"],
+      ["resolve 10.0.0.5.nip.io", "resolve [IP-1].nip.io"],
+      ["IP 10.0.0.5.", "IP [IP-1]."],
+      ["dial 10.0.0.5:8080", "dial [IP-1]:8080"],
+      ["hosts 10.0.0.5, 10.0.0.6", "hosts [IP-1], [IP-2]"],
+      ["(10.0.0.5)", "([IP-1])"],
+    ]
+  ) {
+    assertEquals(redactIssueContent(input).text, expected, input);
+  }
+});
+
 Deno.test("redactIssueContent: IPv6 localhost and link-local are not redacted", () => {
   const r1 = redactIssueContent("listening on ::1 port 8080");
   assertStringIncludes(r1.text, "::1");
