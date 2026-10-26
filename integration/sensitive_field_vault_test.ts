@@ -24,17 +24,36 @@
  * vault storage → data has vault references instead of plaintext.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { basename, dirname, join } from "@std/path";
-import { walk } from "@std/fs";
+import { ensureDir, walk } from "@std/fs";
 import { z } from "zod";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type { ResourceOutputSpec } from "../src/domain/models/model.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import {
+  createResourceReader,
+  createResourceWriter,
   processSensitiveResourceData,
   resolveVaultRefsInData,
+  SENSITIVE_FIELD_JSON_TAG,
+  SENSITIVE_FIELD_KEYS_TAG,
+  SENSITIVE_FIELDS_TAG,
 } from "../src/domain/models/data_writer.ts";
+import {
+  getNestedValue,
+  setNestedValue,
+} from "../src/domain/models/sensitive_field_extractor.ts";
+import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { fromData } from "../src/domain/data/data_record_mapper.ts";
+import { SecretRedactor } from "../src/domain/secrets/mod.ts";
+import { adaptDataRecord } from "../src/infrastructure/cel/sensitive_record_adapter.ts";
+import { runInFaultScope } from "../src/infrastructure/cel/secret_fault_context.ts";
+import {
+  isSecret,
+  secretParts,
+} from "../src/infrastructure/cel/secret_value.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import "../src/domain/models/models.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
@@ -736,4 +755,402 @@ Deno.test("Integration: a step in a nested workflow stores in the repo's default
     nested: true,
   }));
   assertEquals(stored, target);
+});
+
+// --- fields inside arrays, records and unions (swamp-club#3038) ---
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-sensitive-elements-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+/** A resource shaped like a generated cloud app spec. */
+const appSpec: ResourceOutputSpec = {
+  schema: z.object({
+    spec: z.object({
+      services: z.array(z.object({
+        name: z.string(),
+        image: z.object({
+          registry_credentials: z.string().meta({ sensitive: true }),
+        }),
+        // Not strings: they must read back as a number and an object.
+        port: z.number().meta({ sensitive: true }),
+        env: z.record(z.string(), z.string()).meta({ sensitive: true }),
+      })),
+    }),
+    tokens: z.record(z.string(), z.string().meta({ sensitive: true })),
+    auth: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("basic"),
+        password: z.string().meta({ sensitive: true }),
+      }),
+      z.object({ kind: z.literal("none") }),
+    ]),
+    // Not sensitive: a reference-shaped string here must stay as written.
+    notes: z.record(z.string(), z.unknown()),
+  }),
+  lifetime: "infinite",
+  garbageCollection: 10,
+};
+
+const SECRETS = [
+  "registry-zero",
+  "registry-one",
+  "token-prod",
+  "token-eu",
+  "basic-password",
+  "env-web",
+  "env-worker",
+];
+
+function appData(): Record<string, unknown> {
+  return {
+    spec: {
+      services: [
+        {
+          name: "web",
+          image: { registry_credentials: "registry-zero" },
+          port: 8080,
+          env: { API_KEY: "env-web" },
+        },
+        {
+          name: "worker",
+          image: { registry_credentials: "registry-one" },
+          port: 9090,
+          env: { API_KEY: "env-worker" },
+        },
+      ],
+    },
+    tokens: { prod: "token-prod", "eu.west": "token-eu" },
+    auth: { kind: "basic", password: "basic-password" },
+    // Where a dot split of tokens.eu.west would land, were it written so.
+    notes: { eu: { west: "${{ vault.get('test-vault', 'planted') }}" } },
+  };
+}
+
+async function writeApp(dir: string) {
+  await ensureDir(join(dir, ".swamp", "data"));
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "test-vault", type: "mock", config: {} });
+  await vaultService.put("test-vault", "planted", "planted-secret");
+  const modelType = ModelType.create("test/sensitive-elements");
+  const modelId = crypto.randomUUID();
+  const { writeResource } = createResourceWriter(
+    dataRepo,
+    modelType,
+    modelId,
+    { app: appSpec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  let handle, record, content;
+  try {
+    handle = await writeResource("app", "main", appData());
+    record = await dataRepo.findByName(modelType, modelId, "main");
+    content = await dataRepo.getContent(modelType, modelId, "main");
+  } catch (error) {
+    // The caller closes the catalog only once it has this fixture.
+    catalog.close();
+    throw error;
+  }
+  return {
+    catalog,
+    dataRepo,
+    vaultService,
+    modelType,
+    modelId,
+    handle,
+    record: record!,
+    stored: new TextDecoder().decode(content!),
+  };
+}
+
+type AppServices = {
+  services: { image: unknown; port: unknown; env: unknown }[];
+};
+
+function assertResolved(data: Record<string, unknown> | null | undefined) {
+  const app = data as ReturnType<typeof appData>;
+  const services = (app.spec as AppServices).services;
+  assertEquals(services.map((s) => s.image), [
+    { registry_credentials: "registry-zero" },
+    { registry_credentials: "registry-one" },
+  ]);
+  assertEquals(services.map((s) => [s.port, s.env]), [
+    [8080, { API_KEY: "env-web" }],
+    [9090, { API_KEY: "env-worker" }],
+  ]);
+  assertEquals(app.tokens, { prod: "token-prod", "eu.west": "token-eu" });
+  assertEquals(app.auth, { kind: "basic", password: "basic-password" });
+  assertEquals(app.notes, appData().notes);
+}
+
+Deno.test("Integration: sensitive fields inside arrays, records and unions are stored in a vault and read back", async () => {
+  await withTempDir(async (dir) => {
+    const w = await writeApp(dir);
+    try {
+      for (const secret of SECRETS) {
+        assertEquals(w.stored.includes(secret), false, secret);
+      }
+      assertEquals(JSON.parse(w.record.tags[SENSITIVE_FIELDS_TAG]), [
+        "spec.services.0.image.registry_credentials",
+        "spec.services.0.port",
+        "spec.services.0.env",
+        "spec.services.1.image.registry_credentials",
+        "spec.services.1.port",
+        "spec.services.1.env",
+        "tokens.prod",
+        "auth.password",
+      ]);
+      assertEquals(JSON.parse(w.record.tags[SENSITIVE_FIELD_KEYS_TAG]), [
+        ["tokens", "eu.west"],
+      ]);
+      assertEquals(JSON.parse(w.record.tags[SENSITIVE_FIELD_JSON_TAG]), [
+        ["spec", "services", 0, "port"],
+        ["spec", "services", 0, "env"],
+        ["spec", "services", 1, "port"],
+        ["spec", "services", 1, "env"],
+      ]);
+
+      // readResource, as a method sees prior state.
+      const redactor = new SecretRedactor();
+      const readResource = createResourceReader(
+        w.dataRepo,
+        w.modelType,
+        w.modelId,
+        w.vaultService,
+        redactor,
+      );
+      assertResolved(await readResource("main"));
+      assertEquals(
+        redactor.redact("creds registry-one and token-eu"),
+        "creds *** and ***",
+      );
+
+      // data get, through the data record mapper.
+      const mapped = await fromData(
+        w.record,
+        w.modelType,
+        w.modelId,
+        w.dataRepo,
+        { vaultService: w.vaultService },
+      );
+      assertResolved(mapped?.attributes);
+    } finally {
+      w.catalog.close();
+    }
+  });
+});
+
+Deno.test("Integration: CEL reads every vaulted place of an array, record and union field as a Secret, a key-list place included", async () => {
+  await withTempDir(async (dir) => {
+    const w = await writeApp(dir);
+    try {
+      // As data.latest() reads it: the stored record, references in place,
+      // through the typed-secret accessor adapter.
+      const stored = await fromData(
+        w.record,
+        w.modelType,
+        w.modelId,
+        w.dataRepo,
+      );
+      const keyOf = (value: unknown): string => {
+        assert(isSecret(value));
+        return (secretParts(value)![0] as { reference: { key: string } })
+          .reference.key;
+      };
+      runInFaultScope((scope) => {
+        const view = adaptDataRecord(stored, undefined, "data.latest") as {
+          attributes: ReturnType<typeof appData>;
+        };
+        const app = view.attributes;
+        const services = (app.spec as AppServices).services;
+        const storedKeys = new Set<string>();
+        for (const service of services) {
+          storedKeys.add(
+            keyOf(
+              (service.image as Record<string, unknown>).registry_credentials,
+            ),
+          );
+          storedKeys.add(keyOf(service.port));
+          storedKeys.add(keyOf(service.env));
+        }
+        const tokens = app.tokens as Record<string, unknown>;
+        storedKeys.add(keyOf(tokens.prod));
+        storedKeys.add(keyOf(tokens["eu.west"]));
+        storedKeys.add(keyOf((app.auth as Record<string, unknown>).password));
+        // Nine distinct vault keys, every one the record holds.
+        assertEquals(storedKeys.size, 9);
+        assertEquals(
+          [...scope.sensitiveReferences.values()].map((r) => r.key).sort(),
+          [...storedKeys].sort(),
+        );
+        // Text that only looks like a reference, where nothing was vaulted,
+        // stays text.
+        assertEquals(app.notes, appData().notes);
+      });
+    } finally {
+      w.catalog.close();
+    }
+  });
+});
+
+Deno.test("Integration: a sensitive container holding sensitive fields reads in CEL as an object of Secrets, and through readResource as an object of their values", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, ".swamp", "data"));
+    const catalog = new CatalogStore(
+      join(dir, ".swamp", "data", "_catalog.db"),
+    );
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        dir,
+        undefined,
+        catalog,
+      );
+      const vaultService = new VaultService();
+      vaultService.registerVault({
+        name: "test-vault",
+        type: "mock",
+        config: {},
+      });
+      const modelType = ModelType.create("test/sensitive-container");
+      const modelId = crypto.randomUUID();
+      const spec: ResourceOutputSpec = {
+        schema: z.object({
+          credentials: z.object({
+            apiKey: z.string().meta({
+              sensitive: true,
+              vaultKey: "prod-api-key",
+            }),
+            region: z.string(),
+            db: z.object({
+              host: z.string(),
+              password: z.string().meta({ sensitive: true }),
+            }),
+          }).meta({ sensitive: true }),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      };
+      const { writeResource } = createResourceWriter(
+        dataRepo,
+        modelType,
+        modelId,
+        { app: spec },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        vaultService,
+        "create",
+      );
+      await writeResource("app", "main", {
+        credentials: {
+          apiKey: "key-value",
+          region: "us-east-1",
+          db: { host: "db.internal", password: "db-pass" },
+        },
+      });
+      assertEquals(
+        await vaultService.get("test-vault", "prod-api-key"),
+        "key-value",
+      );
+      const record = await dataRepo.findByName(modelType, modelId, "main");
+      assert(record);
+
+      // As data.latest() and model.<name>.resource read it.
+      const stored = await fromData(record, modelType, modelId, dataRepo);
+      runInFaultScope((scope) => {
+        const view = adaptDataRecord(stored, undefined, "data.latest") as {
+          attributes: Record<string, Record<string, unknown>>;
+        };
+        const credentials = view.attributes.credentials;
+        assert(!isSecret(credentials));
+        const keyOf = (value: unknown): string => {
+          assert(isSecret(value));
+          return (secretParts(value)![0] as { reference: { key: string } })
+            .reference.key;
+        };
+        assertEquals(keyOf(credentials.apiKey), "prod-api-key");
+        keyOf((credentials.db as Record<string, unknown>).password);
+        assertEquals(scope.faults, []);
+      });
+
+      // As a method reads its prior state.
+      const readResource = createResourceReader(
+        dataRepo,
+        modelType,
+        modelId,
+        vaultService,
+      );
+      assertEquals((await readResource("main"))?.credentials, {
+        apiKey: "key-value",
+        db: { password: "db-pass" },
+      });
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("Integration: a release that reads only the dot-path tag resolves every element path it lists", async () => {
+  await withTempDir(async (dir) => {
+    const w = await writeApp(dir);
+    try {
+      // How swamp releases before swamp-club#3038 resolve a record: the dot
+      // paths of _swamp.sensitiveFields, through getNestedValue and
+      // setNestedValue, and nothing from the key-list tag.
+      const data = JSON.parse(w.stored) as Record<string, unknown>;
+      for (const path of JSON.parse(w.record.tags[SENSITIVE_FIELDS_TAG])) {
+        const ref = getNestedValue(data, path) as string;
+        const match = /vault\.get\('([^']+)', '([^']+)'\)/.exec(ref);
+        setNestedValue(
+          data,
+          path,
+          await w.vaultService.get(match![1], match![2]),
+        );
+      }
+      const app = data as ReturnType<typeof appData>;
+      const services = (app.spec as AppServices).services;
+      assertEquals(services.map((s) => s.image), [
+        { registry_credentials: "registry-zero" },
+        { registry_credentials: "registry-one" },
+      ]);
+      // Such a release ignores the JSON tag and reads values that were not
+      // strings as their JSON text, as it reads top-level ones.
+      assertEquals(services.map((s) => [s.port, s.env]), [
+        ["8080", '{"API_KEY":"env-web"}'],
+        ["9090", '{"API_KEY":"env-worker"}'],
+      ]);
+      assertEquals((app.tokens as Record<string, string>).prod, "token-prod");
+      assertEquals(app.auth, { kind: "basic", password: "basic-password" });
+      // The value under a key holding a dot stays a reference for such a
+      // release, and nothing reached the reference-shaped note.
+      assertStringIncludes(
+        (app.tokens as Record<string, string>)["eu.west"],
+        "vault.get",
+      );
+      assertEquals(app.notes, appData().notes);
+    } finally {
+      w.catalog.close();
+    }
+  });
 });

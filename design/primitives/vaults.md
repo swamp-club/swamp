@@ -623,6 +623,44 @@ Supported `.meta()` properties:
 - `vaultKey?: string`: custom vault key (defaults to a generated path)
 - `vaultName?: string`: vault to use (overrides the spec or default vault)
 
+A marked field is found wherever it sits: in nested objects, array elements,
+tuple items, record values, `.catchall()` keys and union members
+(swamp-club#3038). The writer walks the schema and the resource data together
+(`findValuesWithMetadata` in `src/domain/models/zod_field_metadata.ts`), so a
+field inside an array is stored once per element.
+
+When a marked container also holds marked fields outside any array element or
+record value, the whole container is stored under its own key, and the data
+holds an object of its marked fields' references, as it did before
+swamp-club#3038. For example, with `credentials: z.object({ apiKey:
+z.string().meta({ sensitive: true, vaultKey: "prod-api-key" }), region:
+z.string() }).meta({ sensitive: true })`, the data holds
+`credentials: { apiKey: <reference to prod-api-key> }`, and the tag lists
+`credentials` and `credentials.apiKey`. `readResource` and `data get` return
+`{ apiKey }`, and an expression reads `credentials` as an object whose `apiKey`
+is a `Secret`. The unmarked `region` is held only in the container's own vault
+value, not in the data, as before; reading that key returns the whole
+container.
+
+A marked container inside an array element or record value, a marked container
+that holds no marked field, and each top-level value of a `sensitiveOutput`
+spec are stored as one reference. A marked field inside such a value is not
+stored again when it sits in an array element or record value; it is still
+stored under its own key otherwise.
+
+A place is resolved once. A field tagged beside its container is resolved as
+the container is walked, and a tagged place inside a restored value (a field
+the schema marks inside an element object read back from
+`_swamp.sensitiveFieldJson`, below) holds no reference the writer made, so no
+reader resolves one there: what the method wrote, reference-shaped text
+included, reads back as written. The writer tags such a field beside its
+element object, though nothing is stored there, so that a reader restoring the
+object registers the field's value with the run's redactor. The restored object
+is registered as the text it was stored as; nothing else inside it is
+registered on its own, so an unmarked field such as a region or a user name
+stays readable in logs and in later records. Mark a field to have it masked
+wherever it appears.
+
 ### Spec-Level `sensitiveOutput`
 
 If a whole resource output is sensitive, set `sensitiveOutput: true` on the
@@ -693,6 +731,46 @@ Set a custom key with `vaultKey` in field metadata:
 ```typescript
 apiKey: z.string().meta({ sensitive: true, vaultKey: "my-api-key" }),
 ```
+
+A field inside an array element, tuple item, record value or `.catchall()` key
+gets a key per element. Its place is encoded from the object keys and array
+indexes that lead to it, joined with dots (`spec.services.0.image.token`).
+Record keys come from resource data, so in a key holding anything but lowercase
+letters, digits, `_` and `-`, each run of characters other than letters, digits,
+`_` and `-` becomes `-`, and the first 12 hex digits of the SHA-256 of the exact
+keys are appended. That keeps quotes, slashes and `..` out of the vault key, and
+keeps apart two record keys that differ only in those characters or only in case
+(`Token` and `token`), which a case-insensitive vault would otherwise store as
+one. With no `vaultKey`, the encoded place takes the field path's spot in the
+generated key. With a `vaultKey`, the encoded place is appended after a dot
+(`registry-creds.spec.services.0.image.token`), so elements never share one key.
+
+Keys follow the array index, and like every sensitive-field key they hold the
+value of the latest write. Two consequences follow:
+
+- **Older versions can resolve another element's secret.** `readResource` of an
+  older version resolves the current value at each key. So does a read of the
+  previous version after a deferred write was rolled back. After the array was
+  reordered or shrunk, that value can belong to a different element. CEL
+  `data.version()` and `swamp data get --version` return the references
+  unresolved.
+- **Removed elements' secrets stay in the vault.** A dropped element or record
+  key leaves its secret behind, as a deleted instance or a garbage-collected
+  version does, until it is removed with `swamp vault delete`.
+
+Versioned keys and cleanup on data removal are swamp-club#3478. Varied
+instances sharing keys is swamp-club#3479. An element key longer than 200
+characters is cut and ends in a hash of the whole key. A write in which two
+values would get the same vault key is refused before anything is stored.
+
+A vault grant conditioned on a declared `vaultKey` should match element keys
+with `key.startsWith("<vaultKey>.")`. The pre-run check cannot know element
+keys, so a grant on them decides at the put, before any field is stored. The
+200-character cut keeps the first 183 characters, so the `"<vaultKey>."`
+prefix survives it for any declared `vaultKey` of up to 182 characters. A
+longer declared key loses the prefix on cut element keys, and such a grant no
+longer matches them: keep a declared `vaultKey` well under that length when
+grants are written against it.
 
 ### Vault Reference Format
 
@@ -830,7 +908,19 @@ read what it holds.
 
 - Values are snapshotted before processing, so several sensitive fields do
   not contaminate each other.
-- Non-string values are JSON-stringified before they are stored.
+- Non-string values are JSON-stringified before they are stored. Through
+  `readResource` and `data get`, a value swamp-club#3038 newly vaults is read
+  back as the value written (a number, an object): one inside an array element
+  or record value, a union member's field, or a field under a `z.lazy()`
+  schema. Its place is listed in a third tag, `_swamp.sensitiveFieldJson`, and
+  those readers parse the JSON text back. A non-string value at a field the
+  earlier writer already vaulted, top-level or nested only in objects, keeps
+  reading back as its JSON text (swamp-club#3480). Releases before
+  swamp-club#3038 ignore the third tag and read those values as text too. An
+  expression reads every vaulted place as a `Secret`, which delivers the stored
+  text, so such a value delivered from an expression is its JSON text as
+  well (see
+  [Values Read Through Expressions](#values-read-through-expressions)).
 - Fields with `null` or `undefined` values are skipped.
 - If there are sensitive fields but no vault, swamp throws an error that says
   to create a vault.
@@ -845,12 +935,31 @@ secrets. A non-sensitive field holding a vault-reference-shaped string stays
 literal text.
 
 A `_swamp.sensitiveFields` tag written at save time lists the dot-paths of
-vaulted fields, or `*` for `sensitiveOutput: true`. Read sites parse it to pick
-the fields to resolve. A record is untagged when it was written before the tag
-existed, or when nothing was vaulted at write time (the writer sets the tag
-only after vaulting a field). For an untagged record, call sites with schema
-access fall back to `extractSensitiveFields()` on the resource spec the
-record's `specName` tag names; those without skip resolution (secure default).
+vaulted fields, or `*` for `sensitiveOutput: true`. An array index is written as
+its digits (`spec.services.0.image.token`): every swamp release resolves such a
+path, because its readers walk an array by its index keys. A path a dot path
+cannot name for those readers — one reaching a value through a key holding a
+dot, an empty key, or `__proto__`, `constructor` or `prototype`, which the
+strict reading below refuses — is written only to a second tag,
+`_swamp.sensitiveFieldKeys`, as a JSON list of key lists
+(`[["tokens","eu.west"]]`). Writing it as a dot path would let an older reader
+split it into other keys and resolve a reference somewhere the writer never
+vaulted. Releases before swamp-club#3038 ignore the second tag, so they leave
+those values as references. The second tag is read only alongside the first, and
+a malformed one is ignored whole. The same holds for
+`_swamp.sensitiveFieldJson`, which only marks places the other two tags already
+list. Both path tags also list the marked fields inside a stored value, which
+hold no reference (see [Schema Metadata](#schema-metadata)). `readResource` and
+the typed-secrets accessor adapter read the first tag strictly, as below, and
+add the key lists of the second as more paths (`readSensitiveFieldPlaces()`);
+`readResource` and `data get` also parse the places the third names back.
+
+Read sites parse the tags to pick the fields to resolve. A record is untagged
+when it was written before the tag existed, or when nothing was vaulted at write
+time (the writer sets the tag only after vaulting a field). For an untagged
+record, call sites with schema access fall back to `extractSensitiveFields()` on
+the resource spec the record's `specName` tag names; those without skip
+resolution (secure default).
 The fallback's trust in `specName`, which workflow tags and `--tag` can
 override, is tracked as swamp-club#3684.
 
@@ -858,9 +967,9 @@ override, is tracked as swamp-club#3684.
 `getSensitiveFieldsForResolution()` decides the fields, and the worker builds
 the same `createResourceReader()` over its proxies with the verified bundle's
 resource specs, since the dispatch carries only spec descriptions
-(swamp-club#3530). The tag is read strictly there, with the
-`readSensitiveFieldsTag()` the typed-secrets accessor adapter uses: a present
-tag the writer could not have produced is not the vaulting step's, so
+(swamp-club#3530). The tag is read strictly there, with
+`readSensitiveFieldsTag()`, as the typed-secrets accessor adapter reads it: a
+present tag the writer could not have produced is not the vaulting step's, so
 `readResource` refuses the read on both executors with
 `secret_reference_invalid` (`ResourceSensitiveFieldsInvalidError` in
 `src/domain/vaults/secret_reference_errors.ts`, naming the record and wrapping
@@ -869,8 +978,8 @@ accessors still read a malformed tag as absent through
 `parseSensitiveFieldsTag()` ([typed-secrets](../enablers/typed-secrets.md)
 Section 6.1).
 
-Only the vaulting step writes the tag. The `_swamp.` tag prefix is reserved, and
-a user-supplied key under it is refused from every source: definition, spec
+Only the vaulting step writes these tags. The `_swamp.` tag prefix is reserved,
+and a user-supplied key under it is refused from every source: definition, spec
 defaults, method write overrides, workflow tags, `--tag` and data output
 overrides (see [data.md](data.md)). Otherwise a forged tag could mark a plain
 field sensitive, and reference-shaped text that arrived as method output would
@@ -882,7 +991,7 @@ wrote. `swamp data query '"_swamp.sensitiveFields" in tags'` lists the records
 that carry it, to review against their specs' sensitive fields.
 
 `resolveSensitiveVaultRefs()` does the resolution and
-`parseSensitiveFieldsTag()` parses the tag, both in
+`parseSensitiveFieldsTag()` parses the three tags, both in
 `src/domain/models/data_writer.ts`.
 
 ### Values Read Through Expressions
@@ -890,8 +999,14 @@ that carry it, to review against their specs' sensitive fields.
 An own-namespace tagged field read through any expression accessor is a `Secret`,
 including `data.latest`, version/set/query reads, `model.<name>.resource` and
 live, reconstructed or child step outputs. The adapter checks tags and references
-and authorizes reads before using the result. Foreign-namespace references stay
-inert. No accessor loads a plaintext secret into CEL.
+and authorizes reads before using the result. A place only
+`_swamp.sensitiveFieldKeys` names, under a record key holding a dot, an empty
+key or a prototype property's name, is a `Secret` the same way. A `Secret`
+delivers its vault value as text: a non-string value `_swamp.sensitiveFieldJson`
+lists (an array element, record value or union member's field), which
+`readResource` returns as a number or object, is delivered from an expression as
+its JSON text. Foreign-namespace references stay inert. No
+accessor loads a plaintext secret into CEL.
 
 A secret can be passed, concatenated with text or another secret, tested against
 `null`, and observed with `type` (which exposes only `Secret`). Comparisons to

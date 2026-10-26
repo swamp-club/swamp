@@ -157,7 +157,9 @@ export function findFieldMetadata(
  * Walks the schema's object shape recursively. Fields nested inside
  * non-object schemas (records, arrays, unions) are not visited, and a schema
  * wrapped in `.transform()` is not unwrapped, so metadata must sit on the
- * field itself.
+ * field itself. To reach those fields, walk a value with
+ * {@link findValuesWithMetadata}, or read the schema alone with
+ * {@link collectFieldMetadata}.
  *
  * @param schema - A Zod schema (typically an object schema)
  * @param matches - Decides whether a field's metadata marks it
@@ -1040,6 +1042,119 @@ export function findFieldsWhere(
     }
   };
   visit(schema, "", true);
+  return found;
+}
+
+/**
+ * Metadata a schema node carries, and where in a value that node sits.
+ */
+export interface MetadataOccurrence {
+  /** The metadata that matched */
+  meta: FieldMetadata;
+  /**
+   * Whether the node sits inside an array element, tuple item, record value
+   * or `.catchall()` key, and so occurs once per element of a value rather
+   * than once per schema.
+   */
+  perElement: boolean;
+}
+
+/**
+ * Collects the matching metadata on every schema reachable from `schema`,
+ * reading the schema alone. It reaches every place
+ * {@link findValuesWithMetadata} can report — object fields, array elements,
+ * tuple items, record values, `.catchall()` keys, union members,
+ * intersections, both sides of a `.pipe()`, and wrapped and `z.lazy()`
+ * schemas — and, like that walk, leaves out metadata on the root schema and
+ * its wrappers. Each metadata is returned once per `perElement` answer.
+ *
+ * @param schema - A Zod schema (typically an object schema)
+ * @param matches - Decides whether a node's metadata marks it
+ * @returns The matching metadata, in first-seen order
+ */
+export function collectFieldMetadata(
+  schema: z.ZodTypeAny,
+  matches: (meta: FieldMetadata) => boolean,
+): MetadataOccurrence[] {
+  const found: MetadataOccurrence[] = [];
+  const reported = new Map<FieldMetadata, Set<boolean>>();
+  const visited = new Map<z.ZodTypeAny, Set<string>>();
+  const pending: {
+    schema: z.ZodTypeAny;
+    perElement: boolean;
+    atRoot: boolean;
+  }[] = [
+    { schema, perElement: false, atRoot: true },
+  ];
+  while (pending.length > 0) {
+    const { schema: current, perElement, atRoot } = pending.pop()!;
+    const state = `${perElement}:${atRoot}`;
+    let states = visited.get(current);
+    if (!states) {
+      states = new Set();
+      visited.set(current, states);
+    }
+    if (states.has(state)) {
+      continue;
+    }
+    states.add(state);
+
+    const meta = readMetadata(current);
+    if (!atRoot && meta && matches(meta)) {
+      let answers = reported.get(meta);
+      if (!answers) {
+        answers = new Set();
+        reported.set(meta, answers);
+      }
+      if (!answers.has(perElement)) {
+        answers.add(perElement);
+        found.push({ meta, perElement });
+      }
+    }
+
+    const def = getSchemaDef(current);
+    if (!def?.type) {
+      continue;
+    }
+    const children: typeof pending = [];
+    // The same place in a value: wrappers, union members, intersections.
+    for (
+      const child of [
+        def.innerType,
+        def.schema,
+        def.type === "lazy" ? innerSchema(current) : undefined,
+        def.in,
+        def.out,
+        ...(def.options ?? []),
+        def.left,
+        def.right,
+      ]
+    ) {
+      if (child) children.push({ schema: child, perElement, atRoot });
+    }
+    // A place once per object: the declared fields.
+    for (const child of Object.values(def.shape ?? {})) {
+      if (child) children.push({ schema: child, perElement, atRoot: false });
+    }
+    // A place once per element.
+    for (
+      const child of [
+        def.catchall,
+        def.valueType,
+        def.element,
+        ...(def.items ?? []),
+        def.rest,
+      ]
+    ) {
+      if (child) {
+        children.push({ schema: child, perElement: true, atRoot: false });
+      }
+    }
+    // Pushed in reverse, so schemas are visited in declaration order.
+    for (let i = children.length - 1; i >= 0; i--) {
+      pending.push(children[i]);
+    }
+  }
   return found;
 }
 

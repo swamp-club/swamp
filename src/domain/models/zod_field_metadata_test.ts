@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import {
   codeAroundMetadata,
+  collectFieldMetadata,
   extractFieldsWithMetadata,
   type FieldMetadata,
   findFieldMetadata,
@@ -1228,4 +1229,82 @@ Deno.test("codeAroundMetadata: a refinement, a node-level error map or a pipe on
   // The answer is kept per schema.
   const kept = z.object({ a: marked }).superRefine(() => {});
   assertEquals(code(kept), code(kept));
+});
+
+Deno.test("collectFieldMetadata: reaches arrays, records, catchall, tuples, unions, intersections, pipes and lazy", () => {
+  const mark = (note: string) => ({ marked: true, note });
+  const schema = z.object({
+    plain: z.string().meta(mark("plain")),
+    nested: z.object({ inner: z.string().meta(mark("nested")) }),
+    list: z.array(z.object({ item: z.string().meta(mark("array")) })),
+    map: z.record(z.string(), z.string().meta(mark("record"))),
+    loose: z.object({}).catchall(z.string().meta(mark("catchall"))),
+    pair: z.tuple([z.string().meta(mark("tuple"))]),
+    either: z.union([
+      z.object({ a: z.string().meta(mark("union")) }),
+      z.string(),
+    ]),
+    both: z.intersection(
+      z.object({ l: z.string().meta(mark("left")) }),
+      z.object({ r: z.string() }),
+    ),
+    piped: z.string().transform((v) => v.length).pipe(
+      z.number().meta(mark("pipe")),
+    ),
+    later: z.lazy(() => z.object({ deep: z.string().meta(mark("lazy")) })),
+    skipped: z.string().meta({ other: true }),
+  });
+
+  const found = collectFieldMetadata(schema, isMarked).map((
+    { meta, perElement },
+  ) => [meta.note, perElement]);
+  assertEquals(found, [
+    ["plain", false],
+    ["nested", false],
+    ["array", true],
+    ["record", true],
+    ["catchall", true],
+    ["tuple", true],
+    ["union", false],
+    ["left", false],
+    ["pipe", false],
+    ["lazy", false],
+  ]);
+});
+
+Deno.test("collectFieldMetadata: leaves out metadata on the root schema and its wrappers", () => {
+  const schema = z.object({ a: z.string().meta({ marked: true }) })
+    .meta({ marked: true, root: true })
+    .optional();
+  assertEquals(
+    collectFieldMetadata(schema, isMarked).map(({ meta }) => meta.root),
+    [undefined],
+  );
+});
+
+Deno.test("collectFieldMetadata: a reused field schema is returned once per element answer", () => {
+  const secret = z.string().meta({ marked: true });
+  const schema = z.object({
+    a: secret,
+    b: secret,
+    list: z.array(secret),
+  });
+  assertEquals(
+    collectFieldMetadata(schema, isMarked).map(({ perElement }) => perElement),
+    [false, true],
+  );
+});
+
+Deno.test("collectFieldMetadata: ends on a recursive schema", () => {
+  type Node = { secret?: string; children: Node[] };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({
+      secret: z.string().meta({ marked: true }).optional(),
+      children: z.array(node),
+    })
+  );
+  assertEquals(
+    collectFieldMetadata(node, isMarked).map(({ perElement }) => perElement),
+    [false, true],
+  );
 });

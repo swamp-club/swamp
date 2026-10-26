@@ -45,6 +45,8 @@ import {
   resolveSensitiveVaultRefsLeavingUnread,
   resolveVaultRefsInData,
   sanitizeVaultKey,
+  SENSITIVE_FIELD_JSON_TAG,
+  SENSITIVE_FIELD_KEYS_TAG,
   SENSITIVE_FIELDS_ALL,
   SENSITIVE_FIELDS_TAG,
   SENSITIVE_FIELDS_VERSION,
@@ -4082,7 +4084,8 @@ Deno.test("processSensitiveResourceData: under sensitiveOutput a top-level key h
     "all",
     "main",
   );
-  assertEquals(vaulted.sort(), ["a.b", "note"]);
+  // The dotted own key is named by its keys, never as a dot path.
+  assertEquals(vaulted.paths, ["note", ["a.b"]]);
   assertEquals(Object.keys(data).sort(), ["a.b", "note"]);
   // The crafted text is a value the vault holds, behind a reference the
   // writer made; the key is never written as a nested path.
@@ -4350,5 +4353,1475 @@ Deno.test("recordSensitiveVaultRefsUnread: records every tagged reference with t
       ["a", "k1", "first", "vault config unreadable"],
       ["b", "k2", "nested.second", "vault config unreadable"],
     ],
+  );
+});
+
+// --- sensitive fields inside arrays, records and unions (swamp-club#3038) ---
+
+const elementSpec: ResourceOutputSpec = {
+  schema: z.object({
+    name: z.string(),
+    services: z.array(z.object({
+      image: z.object({
+        creds: z.string().meta({ sensitive: true }),
+        tag: z.string(),
+      }),
+    })),
+    accounts: z.record(
+      z.string(),
+      z.object({ token: z.string().meta({ sensitive: true }) }),
+    ),
+    auth: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("password"),
+        password: z.string().meta({ sensitive: true }),
+      }),
+      z.object({ kind: z.literal("none") }),
+    ]),
+  }),
+  lifetime: "infinite",
+  garbageCollection: 10,
+};
+
+function elementData(): Record<string, unknown> {
+  return {
+    name: "app",
+    services: [
+      { image: { creds: "creds-zero", tag: "v1" } },
+      { image: { creds: "creds-one", tag: "v2" } },
+    ],
+    accounts: {
+      prod: { token: "token-prod" },
+      "eu.west": { token: "token-eu" },
+    },
+    auth: { kind: "password", password: "pw-value" },
+  };
+}
+
+const elementKeyPrefix = `swamp-test-${modelId}-create-creds-main`;
+
+/** The keys a test stored, without the ones the mock vault starts with. */
+async function storedKeys(vaultService: VaultService): Promise<string[]> {
+  const seeded = new Set(await createTestVaultService().list("test-vault"));
+  return (await vaultService.list("test-vault")).filter((k) => !seeded.has(k));
+}
+
+Deno.test("processSensitiveResourceData: vaults fields inside array elements, record values and union members", async () => {
+  const data = elementData();
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    elementSpec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+
+  const stored = JSON.stringify(data);
+  for (
+    const secret of [
+      "creds-zero",
+      "creds-one",
+      "token-prod",
+      "token-eu",
+      "pw-value",
+    ]
+  ) {
+    assertEquals(stored.includes(secret), false, secret);
+  }
+  const services = data.services as { image: Record<string, unknown> }[];
+  assertEquals(services[0].image.tag, "v1");
+  assertEquals(
+    services[0].image.creds,
+    `\${{ vault.get('test-vault', '${elementKeyPrefix}-services.0.image.creds') }}`,
+  );
+  assertEquals(
+    await vaultService.get(
+      "test-vault",
+      `${elementKeyPrefix}-services.1.image.creds`,
+    ),
+    "creds-one",
+  );
+  assertEquals(
+    await vaultService.get(
+      "test-vault",
+      `${elementKeyPrefix}-accounts.prod.token`,
+    ),
+    "token-prod",
+  );
+  // A field in a union member sits once per object, so its key is unchanged.
+  assertEquals(
+    await vaultService.get("test-vault", `${elementKeyPrefix}-auth.password`),
+    "pw-value",
+  );
+});
+
+Deno.test("processSensitiveResourceData: returns dot paths, and key lists for keys holding a dot", async () => {
+  const data = elementData();
+  const { paths } = await processSensitiveResourceData(
+    data,
+    elementSpec,
+    createTestVaultService(),
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  assertEquals(paths, [
+    "services.0.image.creds",
+    "services.1.image.creds",
+    "accounts.prod.token",
+    ["accounts", "eu.west", "token"],
+    "auth.password",
+  ]);
+});
+
+Deno.test("processSensitiveResourceData: a record key outside plain characters gets a safe, distinct vault key", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      accounts: z.record(
+        z.string(),
+        z.object({ token: z.string().meta({ sensitive: true }) }),
+      ),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const data: Record<string, unknown> = {
+    accounts: {
+      "a'b/c\\..d": { token: "first" },
+      "a-b-c-d": { token: "second" },
+      "": { token: "third" },
+    },
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  const keys = await storedKeys(vaultService);
+  assertEquals(keys.length, 3);
+  for (const key of keys) {
+    assertEquals(/['"/\\\0]|\.\./.test(key), false, key);
+  }
+  const accounts = data.accounts as Record<string, Record<string, string>>;
+  // Each reference is one the readers match, and names its own value.
+  const refPattern = /^\$\{\{ vault\.get\('test-vault', '([^']+)'\) \}\}$/;
+  const resolved = await Promise.all(
+    Object.values(accounts).map((account) => {
+      const match = refPattern.exec(account.token);
+      return vaultService.get("test-vault", match![1]);
+    }),
+  );
+  assertEquals(resolved, ["first", "second", "third"]);
+});
+
+Deno.test("processSensitiveResourceData: an element key stays the same from write to write", async () => {
+  const keysOf = async () => {
+    const vaultService = createTestVaultService();
+    await processSensitiveResourceData(
+      elementData(),
+      elementSpec,
+      vaultService,
+      modelType,
+      modelId,
+      "create",
+      "creds",
+      "main",
+    );
+    return (await storedKeys(vaultService)).sort();
+  };
+  assertEquals(await keysOf(), await keysOf());
+});
+
+Deno.test("processSensitiveResourceData: a declared vaultKey on an array field gets one key per element", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      users: z.array(z.object({
+        password: z.string().meta({ sensitive: true, vaultKey: "user-pw" }),
+      })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const data: Record<string, unknown> = {
+    users: [{ password: "alpha" }, { password: "beta" }],
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  assertEquals(
+    await vaultService.get("test-vault", "user-pw.users.0.password"),
+    "alpha",
+  );
+  assertEquals(
+    await vaultService.get("test-vault", "user-pw.users.1.password"),
+    "beta",
+  );
+});
+
+Deno.test("processSensitiveResourceData: refuses before storing when an element value would share a key with another field", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      other: z.string().meta({
+        sensitive: true,
+        vaultKey: "k.list.0.token",
+      }),
+      list: z.array(z.object({
+        token: z.string().meta({ sensitive: true, vaultKey: "k" }),
+      })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const data: Record<string, unknown> = {
+    other: "one",
+    list: [{ token: "two" }],
+  };
+  const vaultService = createTestVaultService();
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        "create",
+        "creds",
+        "main",
+      ),
+    Error,
+    "Sensitive fields 'other' and 'list[0].token' target the same vault key in 'test-vault'",
+  );
+  assertEquals(await storedKeys(vaultService), []);
+  assertEquals(data.other, "one");
+});
+
+Deno.test("processSensitiveResourceData: a sensitive container holding a sensitive field is stored whole, and the data holds an object of the field's reference, as before swamp-club#3038", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }).meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const data: Record<string, unknown> = {
+    credentials: { apiKey: "key-value", region: "us-east-1" },
+  };
+  const vaultService = createTestVaultService();
+  const { paths, jsonKeys } = await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  assertEquals(paths, ["credentials", "credentials.apiKey"]);
+  assertEquals(jsonKeys, []);
+  // The unmarked field is held only in the container's vault value.
+  assertEquals(data.credentials, {
+    apiKey:
+      `\${{ vault.get('test-vault', '${elementKeyPrefix}-credentials.apiKey') }}`,
+  });
+  assertEquals(
+    JSON.parse(
+      await vaultService.get("test-vault", `${elementKeyPrefix}-credentials`),
+    ),
+    { apiKey: "key-value", region: "us-east-1" },
+  );
+  assertEquals(
+    await vaultService.get(
+      "test-vault",
+      `${elementKeyPrefix}-credentials.apiKey`,
+    ),
+    "key-value",
+  );
+});
+
+Deno.test("processSensitiveResourceData: a declared vaultKey inside a sensitiveOutput spec is still written", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      creds: z.object({
+        apiKey: z.string().meta({ sensitive: true, vaultKey: "prod-api-key" }),
+      }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    sensitiveOutput: true,
+  };
+  const data: Record<string, unknown> = { creds: { apiKey: "rotated" } };
+  const vaultService = createTestVaultService();
+  const { paths } = await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  assertEquals(await vaultService.get("test-vault", "prod-api-key"), "rotated");
+  // The data holds the reference to the whole value, not a nested one.
+  assertEquals(
+    data.creds,
+    `\${{ vault.get('test-vault', '${elementKeyPrefix}-creds') }}`,
+  );
+  assertEquals(paths, ["creds.apiKey", "creds"]);
+});
+
+Deno.test("processSensitiveResourceData: an element value inside a stored container is not stored again", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      creds: z.object({
+        keys: z.array(z.string().meta({ sensitive: true })),
+      }).meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    { creds: { keys: ["a", "b"] } },
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  assertEquals(await storedKeys(vaultService), [`${elementKeyPrefix}-creds`]);
+});
+
+Deno.test("processSensitiveResourceData: a long element key is cut and ends in a hash of the whole", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      items: z.record(
+        z.string(),
+        z.string().meta({ sensitive: true, vaultKey: "declared" }),
+      ),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const long = (c: string) => c.repeat(300);
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    { items: { [long("a") + "x"]: "first", [long("a") + "y"]: "second" } },
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  const keys = await storedKeys(vaultService);
+  assertEquals(keys.length, 2);
+  for (const key of keys) {
+    assertEquals(key.length, 200, key);
+    assertEquals(key.startsWith("declared.items."), true, key);
+  }
+});
+
+Deno.test("processSensitiveResourceData: a long element path keeps a valid key", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      a: z.array(z.array(z.array(z.object({
+        deeply_nested_field_name: z.record(
+          z.string(),
+          z.string().meta({ sensitive: true }),
+        ),
+      })))),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const data: Record<string, unknown> = {
+    a: [[[{ deeply_nested_field_name: { ["k.".repeat(40)]: "deep" } }]]],
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  const [key] = await storedKeys(vaultService);
+  assertEquals(/['"/\\\0]|\.\./.test(key), false, key);
+  assertEquals(await vaultService.get("test-vault", key), "deep");
+});
+
+Deno.test("processSensitiveResourceData: no-vault error names element paths", async () => {
+  const data = elementData();
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        elementSpec,
+        new VaultService(),
+        modelType,
+        modelId,
+        "create",
+        "creds",
+        "main",
+      ),
+    Error,
+    "'services[0].image.creds'",
+  );
+});
+
+Deno.test("modelRequiresVault: true for a spec whose only sensitive field sits in an array", () => {
+  assertEquals(
+    modelRequiresVault({
+      r: {
+        schema: z.object({
+          list: z.array(z.object({
+            apiKey: z.string().meta({ sensitive: true }),
+          })),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    }),
+    true,
+  );
+});
+
+Deno.test("createResourceWriter: throws for an array-only sensitive spec with no vaultService", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: elementSpec },
+  );
+  await assertRejects(
+    () => writeResource("creds", "main", elementData()),
+    Error,
+    "no vault is configured",
+  );
+});
+
+Deno.test("createResourceWriter: records element dot paths and the key-list tag", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: elementSpec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    createTestVaultService(),
+    "create",
+  );
+  const handle = await writeResource("creds", "main", elementData());
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELDS_TAG]), [
+    "services.0.image.creds",
+    "services.1.image.creds",
+    "accounts.prod.token",
+    "auth.password",
+  ]);
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELD_KEYS_TAG]), [
+    ["accounts", "eu.west", "token"],
+  ]);
+});
+
+Deno.test("createResourceWriter: object-nested sensitive fields write no key-list tag", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    {
+      creds: {
+        schema: z.object({
+          credentials: z.object({
+            apiKey: z.string().meta({ sensitive: true }),
+          }),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    createTestVaultService(),
+    "create",
+  );
+  const handle = await writeResource("creds", "main", {
+    credentials: { apiKey: "k" },
+  });
+  assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], '["credentials.apiKey"]');
+  assertEquals(handle.tags[SENSITIVE_FIELD_KEYS_TAG], undefined);
+});
+
+Deno.test("resolveSensitiveVaultRefs: resolves element dot paths and key lists, and leaves untagged references", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k0", "zero");
+  await vaultService.put("test-vault", "ke", "eu");
+  await vaultService.put("test-vault", "planted", "should-not-resolve");
+  const ref = (key: string) => `\${{ vault.get('test-vault', '${key}') }}`;
+  const data: Record<string, unknown> = {
+    services: [{ image: { creds: ref("k0") } }, { note: ref("planted") }],
+    accounts: {
+      "eu.west": { token: ref("ke") },
+      // Where a dot split of accounts.eu.west.token would land.
+      eu: { west: { token: ref("planted") } },
+    },
+  };
+  await resolveSensitiveVaultRefs(
+    data,
+    ["services.0.image.creds", ["accounts", "eu.west", "token"]],
+    vaultService,
+  );
+  const services = data.services as Record<string, Record<string, unknown>>[];
+  const note = (services[1] as Record<string, unknown>).note;
+  assertEquals(services[0].image.creds, "zero");
+  assertEquals(note, ref("planted"));
+  const accounts = data.accounts as Record<string, Record<string, unknown>>;
+  assertEquals(accounts["eu.west"].token, "eu");
+  assertEquals(
+    (accounts.eu.west as Record<string, unknown>).token,
+    ref("planted"),
+  );
+});
+
+Deno.test("resolveSensitiveVaultRefs: a key list naming no place creates nothing", async () => {
+  const data: Record<string, unknown> = { a: {} };
+  await resolveSensitiveVaultRefs(
+    data,
+    [["a", "b", "c"], ["__proto__", "polluted"]],
+    createTestVaultService(),
+  );
+  assertEquals(data, { a: {} });
+  assertEquals(({} as Record<string, unknown>).polluted, undefined);
+});
+
+Deno.test("parseSensitiveFieldsTag: adds the key lists from the key-list tag", () => {
+  const tags = {
+    [SENSITIVE_FIELDS_TAG]: '["services.0.image.creds"]',
+    [SENSITIVE_FIELD_KEYS_TAG]: '[["accounts","eu.west","token"]]',
+  };
+  assertEquals(parseSensitiveFieldsTag(tags), [
+    "services.0.image.creds",
+    ["accounts", "eu.west", "token"],
+  ]);
+});
+
+Deno.test("parseSensitiveFieldsTag: ignores a malformed key-list tag whole", () => {
+  for (
+    const raw of [
+      "not-json",
+      '{"a":1}',
+      '[["ok"],"flat"]',
+      "[[]]",
+      '[["a",-1]]',
+      '[["a",1.5]]',
+      '[["a",null]]',
+    ]
+  ) {
+    const tags = {
+      [SENSITIVE_FIELDS_TAG]: '["x"]',
+      [SENSITIVE_FIELD_KEYS_TAG]: raw,
+    };
+    assertEquals(parseSensitiveFieldsTag(tags), ["x"], raw);
+  }
+});
+
+Deno.test("parseSensitiveFieldsTag: a key-list tag alone is not read", () => {
+  const tags = { [SENSITIVE_FIELD_KEYS_TAG]: '[["a","b.c"]]' };
+  assertEquals(parseSensitiveFieldsTag(tags), null);
+});
+
+Deno.test("createResourceWriter: no-vault error says some fields when it cannot name them", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    {
+      creds: {
+        schema: z.object({
+          list: z.array(z.object({ k: z.string().meta({ sensitive: true }) })),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+  );
+  await assertRejects(
+    () => writeResource("creds", "main", { list: [] }),
+    Error,
+    "Cannot persist data: some fields in resource 'creds' are marked as sensitive",
+  );
+});
+
+const plantedTags = {
+  [SENSITIVE_FIELD_KEYS_TAG]: '[["notes","x"]]',
+  [SENSITIVE_FIELD_JSON_TAG]: '[["notes","x"]]',
+};
+
+Deno.test("createResourceWriter: refuses a supplied key-list or JSON tag, as every reserved tag (swamp-club#3635)", async () => {
+  for (const [key, value] of Object.entries(plantedTags)) {
+    const { writeResource } = createResourceWriter(
+      createMockRepo(),
+      modelType,
+      modelId,
+      testResources,
+      undefined,
+      undefined,
+      undefined,
+      { [key]: value },
+    );
+    await assertRejects(
+      () => writeResource("item", "main", { value: "v" }),
+      Error,
+      `Tag '${key}' from --tag is reserved`,
+    );
+  }
+});
+
+Deno.test("createFileWriterFactory: refuses a supplied key-list or JSON tag, as every reserved tag (swamp-club#3635)", () => {
+  for (const [key, value] of Object.entries(plantedTags)) {
+    const { createFileWriter } = createFileWriterFactory(
+      createMockRepo(),
+      modelType,
+      modelId,
+      testFiles,
+      { [key]: value },
+    );
+    assertThrows(
+      () => createFileWriter("log", "main"),
+      Error,
+      `Tag '${key}' from the workflow's tags is reserved`,
+    );
+  }
+});
+
+// --- element values read back with their original type ---
+
+const typedSpec: ResourceOutputSpec = {
+  schema: z.object({
+    port: z.number().meta({ sensitive: true }),
+    services: z.array(z.object({
+      name: z.string(),
+      port: z.number().meta({ sensitive: true }),
+      token: z.string().meta({ sensitive: true }),
+      creds: z.object({ user: z.string(), password: z.string() }).meta({
+        sensitive: true,
+      }),
+    })),
+    "by.host": z.record(z.string(), z.number().meta({ sensitive: true })),
+  }),
+  lifetime: "infinite",
+  garbageCollection: 10,
+};
+
+function typedData(): Record<string, unknown> {
+  return {
+    port: 5432,
+    services: [
+      {
+        name: "web",
+        port: 8080,
+        token: "tok-web",
+        creds: { user: "admin", password: "hunter22" },
+      },
+    ],
+    "by.host": { "db.internal": 6543 },
+  };
+}
+
+async function writeTyped(
+  vaultService: VaultService,
+  spec: ResourceOutputSpec = typedSpec,
+) {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: spec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  return await writeResource("creds", "main", typedData());
+}
+
+Deno.test("createResourceWriter: lists element values that were not strings in the JSON tag", async () => {
+  const handle = await writeTyped(createTestVaultService());
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELD_JSON_TAG]), [
+    ["services", 0, "port"],
+    ["services", 0, "creds"],
+    ["by.host", "db.internal"],
+  ]);
+});
+
+Deno.test("createResourceWriter: a sensitiveOutput spec writes no JSON tag", async () => {
+  const handle = await writeTyped(createTestVaultService(), {
+    ...typedSpec,
+    sensitiveOutput: true,
+  });
+  assertEquals(handle.tags[SENSITIVE_FIELDS_TAG], SENSITIVE_FIELDS_ALL);
+  assertEquals(handle.tags[SENSITIVE_FIELD_JSON_TAG], undefined);
+});
+
+const unionSpec: ResourceOutputSpec = {
+  schema: z.object({
+    port: z.number().meta({ sensitive: true }),
+    auth: z.discriminatedUnion("type", [
+      z.object({
+        type: z.literal("basic"),
+        creds: z.object({ user: z.string(), pass: z.string() }).meta({
+          sensitive: true,
+        }),
+        port: z.number().meta({ sensitive: true }),
+      }),
+      z.object({
+        type: z.literal("token"),
+        token: z.string().meta({ sensitive: true }),
+      }),
+    ]),
+    lazy: z.lazy(() =>
+      z.object({ retries: z.number().meta({ sensitive: true }) })
+    ),
+  }),
+  lifetime: "infinite",
+  garbageCollection: 10,
+};
+
+async function writeUnion(vaultService: VaultService) {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: unionSpec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  return await writeResource("creds", "main", {
+    port: 5432,
+    auth: { type: "basic", creds: { user: "u", pass: "p4ss" }, port: 6543 },
+    lazy: { retries: 3 },
+  });
+}
+
+Deno.test("createResourceWriter: lists newly vaulted non-string union and lazy fields in the JSON tag, not fields vaulted before", async () => {
+  const handle = await writeUnion(createTestVaultService());
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELD_JSON_TAG]), [
+    ["auth", "creds"],
+    ["auth", "port"],
+    ["lazy", "retries"],
+  ]);
+});
+
+Deno.test("resolveSensitiveVaultRefs: union and lazy fields read back as written, a field vaulted before as its JSON text", async () => {
+  const vaultService = createTestVaultService();
+  const handle = await writeUnion(vaultService);
+  const data = structuredClone(handle.attributes) as Record<string, unknown>;
+  await resolveSensitiveVaultRefs(
+    data,
+    parseSensitiveFieldsTag(handle.tags) as SensitiveFieldPathList,
+    vaultService,
+  );
+  assertEquals(data.port, "5432");
+  assertEquals(data.auth, {
+    type: "basic",
+    creds: { user: "u", pass: "p4ss" },
+    port: 6543,
+  });
+  assertEquals(data.lazy, { retries: 3 });
+});
+
+Deno.test("resolveSensitiveVaultRefs: a union member's container holding a marked field stays an object of resolved references", async () => {
+  const vaultService = createTestVaultService();
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      auth: z.union([
+        z.object({
+          creds: z.object({
+            apiKey: z.string().meta({ sensitive: true }),
+            region: z.string(),
+          }).meta({ sensitive: true }),
+        }),
+        z.string(),
+      ]),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: spec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  const handle = await writeResource("creds", "main", {
+    auth: { creds: { apiKey: "k-123", region: "us" } },
+  });
+  assertEquals(handle.tags[SENSITIVE_FIELD_JSON_TAG], undefined);
+  const data = structuredClone(handle.attributes) as Record<string, unknown>;
+  await resolveSensitiveVaultRefs(
+    data,
+    parseSensitiveFieldsTag(handle.tags) as SensitiveFieldPathList,
+    vaultService,
+  );
+  assertEquals(data.auth, { creds: { apiKey: "k-123" } });
+});
+
+Deno.test("resolveSensitiveVaultRefs: element values read back as written, top-level ones as before", async () => {
+  const vaultService = createTestVaultService();
+  const handle = await writeTyped(vaultService);
+  const data = structuredClone(handle.attributes) as Record<string, unknown>;
+  const redactor = new SecretRedactor();
+  await resolveSensitiveVaultRefs(
+    data,
+    parseSensitiveFieldsTag(handle.tags) as SensitiveFieldPathList,
+    vaultService,
+    redactor,
+  );
+  // A top-level value keeps reading back as its JSON text, as on main.
+  assertEquals(data.port, "5432");
+  const [service] = data.services as Record<string, unknown>[];
+  assertEquals(service.port, 8080);
+  assertEquals(service.token, "tok-web");
+  assertEquals(service.creds, { user: "admin", password: "hunter22" });
+  assertEquals(data["by.host"], { "db.internal": 6543 });
+  // A restored object is registered as the text it was stored as, never
+  // field by field: what the schema does not mark inside it stays readable.
+  assertEquals(
+    redactor.redact('{"user":"admin","password":"hunter22"}'),
+    "***",
+  );
+  assertEquals(redactor.redact("login admin"), "login admin");
+  // A marked value is registered as itself.
+  assertEquals(
+    redactor.redact("port 8080, token tok-web"),
+    "port ***, token ***",
+  );
+});
+
+Deno.test("resolveSensitiveVaultRefs: registers the fields marked inside a restored element object, and nothing else in it", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      services: z.array(z.object({
+        image: z.object({
+          registry_type: z.string(),
+          username: z.string(),
+          token: z.string().meta({ sensitive: true }),
+        }).meta({ sensitive: true }),
+      })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: spec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  const handle = await writeResource("creds", "main", {
+    services: [{
+      image: {
+        registry_type: "DOCKER_HUB",
+        username: "deploy",
+        token: "tok-registry",
+      },
+    }],
+  });
+  // The token is tagged beside its element object, and not stored again.
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELDS_TAG]), [
+    "services.0.image",
+    "services.0.image.token",
+  ]);
+  assertEquals((await storedKeys(vaultService)).length, 1);
+
+  const data = structuredClone(handle.attributes) as Record<string, unknown>;
+  const redactor = new SecretRedactor();
+  await resolveSensitiveVaultRefs(
+    data,
+    parseSensitiveFieldsTag(handle.tags) as SensitiveFieldPathList,
+    vaultService,
+    redactor,
+  );
+  assertEquals((data.services as Record<string, unknown>[])[0].image, {
+    registry_type: "DOCKER_HUB",
+    username: "deploy",
+    token: "tok-registry",
+  });
+  assertEquals(
+    redactor.redact("pushing to DOCKER_HUB as deploy"),
+    "pushing to DOCKER_HUB as deploy",
+  );
+  assertEquals(redactor.redact("token tok-registry"), "token ***");
+});
+
+Deno.test("createResourceWriter: a plain resource written after a container was read keeps its ordinary values", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }).meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const plain: ResourceOutputSpec = {
+    schema: z.object({ region: z.string(), note: z.string() }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  const redactor = new SecretRedactor();
+  const written: string[] = [];
+  const repo: UnifiedDataRepository = {
+    ...createMockRepo(),
+    save: (_type, _modelId, _data, content) => {
+      written.push(new TextDecoder().decode(content));
+      return Promise.resolve({ version: 1 });
+    },
+  };
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    { creds: spec, out: plain },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+    undefined,
+    redactor,
+  );
+  const handle = await writeResource("creds", "main", {
+    credentials: { apiKey: "key-value", region: "us-east-1" },
+  });
+
+  // A method reads its prior state, as readResource does ...
+  const prior = structuredClone(handle.attributes) as Record<string, unknown>;
+  await resolveSensitiveVaultRefs(
+    prior,
+    parseSensitiveFieldsTag(handle.tags) as SensitiveFieldPathList,
+    vaultService,
+    redactor,
+  );
+  const credentials = prior.credentials as Record<string, string>;
+  // ... and writes a plain resource from it and its own ordinary values.
+  const out = await writeResource("out", "out", {
+    region: "us-east-1",
+    note: `key ${credentials.apiKey}`,
+  });
+  const persisted = JSON.parse(written.at(-1)!);
+  assertEquals(persisted.region, "us-east-1");
+  assertEquals(persisted.note, "key ***");
+  assertEquals(out.attributes?.region, "us-east-1");
+});
+
+type SensitiveFieldPathList = Exclude<
+  ReturnType<typeof parseSensitiveFieldsTag>,
+  null | "*"
+>;
+
+Deno.test("parseSensitiveFieldsTag: marks only the places the other tags name", () => {
+  const tags = {
+    [SENSITIVE_FIELDS_TAG]: '["services.0.port","token"]',
+    [SENSITIVE_FIELD_KEYS_TAG]: '[["by.host","db.internal"]]',
+    [SENSITIVE_FIELD_JSON_TAG]:
+      '[["services",0,"port"],["by.host","db.internal"],["untagged",0]]',
+  };
+  assertEquals(parseSensitiveFieldsTag(tags), [
+    { keys: ["services", 0, "port"], json: true },
+    "token",
+    { keys: ["by.host", "db.internal"], json: true },
+  ]);
+});
+
+Deno.test("parseSensitiveFieldsTag: ignores a malformed JSON tag, and one alone", () => {
+  for (const raw of ["not-json", '["flat"]', "[[]]", '[["a",-1]]']) {
+    assertEquals(
+      parseSensitiveFieldsTag({
+        [SENSITIVE_FIELDS_TAG]: '["a"]',
+        [SENSITIVE_FIELD_JSON_TAG]: raw,
+      }),
+      ["a"],
+      raw,
+    );
+  }
+  assertEquals(
+    parseSensitiveFieldsTag({ [SENSITIVE_FIELD_JSON_TAG]: '[["a"]]' }),
+    null,
+  );
+});
+
+Deno.test("resolveSensitiveVaultRefs: a JSON place keeps text that does not parse, and skips a value that is not a reference", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k", "not json");
+  const data: Record<string, unknown> = {
+    a: ["${{ vault.get('test-vault', 'k') }}"],
+    b: ["[1,2]"],
+  };
+  await resolveSensitiveVaultRefs(
+    data,
+    [{ keys: ["a", 0], json: true }, { keys: ["b", 0], json: true }],
+    vaultService,
+  );
+  assertEquals(data, { a: ["not json"], b: ["[1,2]"] });
+});
+
+Deno.test("createResourceWriter: a record key the strict tag reading refuses as a path segment goes in the key-list tag, and readResource resolves it", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      tokens: z.record(z.string(), z.string().meta({ sensitive: true })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: spec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  const handle = await writeResource("creds", "main", {
+    tokens: { plain: "p", constructor: "c", prototype: "t", "": "e" },
+  });
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELDS_TAG]), [
+    "tokens.plain",
+  ]);
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELD_KEYS_TAG]), [
+    ["tokens", "constructor"],
+    ["tokens", "prototype"],
+    ["tokens", ""],
+  ]);
+
+  const encoded = new TextEncoder().encode(JSON.stringify(handle.attributes));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(createMockDataEntity(handle.tags)),
+  };
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  assertEquals((await readResource("main"))?.tokens, {
+    plain: "p",
+    constructor: "c",
+    prototype: "t",
+    "": "e",
+  });
+});
+
+Deno.test("sensitiveVaultReferences: names the references at key-list and JSON places", () => {
+  const data = {
+    tokens: { "eu.west": "${{ vault.get('v', 'a') }}" },
+    services: [{ port: "${{ vault.get('v', 'b') }}" }],
+  };
+  assertEquals(
+    sensitiveVaultReferences(data, [
+      ["tokens", "eu.west"],
+      { keys: ["services", 0, "port"], json: true },
+    ]),
+    [{ vaultName: "v", key: "a" }, { vaultName: "v", key: "b" }],
+  );
+});
+
+Deno.test("resolveSensitiveVaultRefsLeavingUnread: a failing read at a key-list or JSON place is recorded and left as stored", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "port", "8080");
+  const missing = "${{ vault.get('test-vault', 'missing') }}";
+  const data: Record<string, unknown> = {
+    tokens: { "eu.west": missing },
+    services: [{ port: "${{ vault.get('test-vault', 'port') }}" }, {
+      port: missing,
+    }],
+  };
+  const sink = recordingSink();
+
+  await resolveSensitiveVaultRefsLeavingUnread(
+    data,
+    [
+      ["tokens", "eu.west"],
+      { keys: ["services", 0, "port"], json: true },
+      { keys: ["services", 1, "port"], json: true },
+    ],
+    vaultService,
+    sink,
+  );
+
+  assertEquals(data, {
+    tokens: { "eu.west": missing },
+    services: [{ port: 8080 }, { port: missing }],
+  });
+  assertEquals(sink.unread.map((r) => r.fieldPath), [
+    "tokens.eu.west",
+    "services.1.port",
+  ]);
+});
+
+Deno.test("createResourceReader: a sensitive container holding sensitive fields reads back as an object of those fields, at any depth, as before swamp-club#3038", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({
+        apiKey: z.string().meta({ sensitive: true, vaultKey: "prod-api-key" }),
+        region: z.string(),
+        db: z.object({
+          host: z.string(),
+          password: z.string().meta({ sensitive: true }),
+        }),
+      }).meta({ sensitive: true }),
+      plain: z.object({ token: z.string() }).meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: spec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  const handle = await writeResource("creds", "main", {
+    credentials: {
+      apiKey: "key-value",
+      region: "us-east-1",
+      db: { host: "db.internal", password: "db-pass" },
+    },
+    plain: { token: "tok" },
+  });
+  assertEquals(JSON.parse(handle.tags[SENSITIVE_FIELDS_TAG]), [
+    "credentials",
+    "credentials.apiKey",
+    "credentials.db.password",
+    "plain",
+  ]);
+  assertEquals(handle.tags[SENSITIVE_FIELD_JSON_TAG], undefined);
+  // The declared key keeps getting the current value, and the container's
+  // own key holds all of it.
+  assertEquals(
+    await vaultService.get("test-vault", "prod-api-key"),
+    "key-value",
+  );
+  assertEquals(
+    JSON.parse(
+      await vaultService.get("test-vault", `${elementKeyPrefix}-credentials`),
+    ).db,
+    { host: "db.internal", password: "db-pass" },
+  );
+
+  const encoded = new TextEncoder().encode(JSON.stringify(handle.attributes));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(createMockDataEntity(handle.tags)),
+  };
+  const redactor = new SecretRedactor();
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+    redactor,
+  );
+  const prior = await readResource("main");
+  assertEquals(prior?.credentials, {
+    apiKey: "key-value",
+    db: { password: "db-pass" },
+  });
+  // A container holding no stored field reads back as JSON text, as it
+  // always has (swamp-club#3480).
+  assertEquals(prior?.plain, '{"token":"tok"}');
+  assertEquals(
+    redactor.redact("key-value db-pass us-east-1 db.internal"),
+    "*** *** us-east-1 db.internal",
+  );
+});
+
+Deno.test("createResourceReader: a record written before swamp-club#3038 with an object of a container's field references still reads", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k-api", "key-value");
+  const data = {
+    credentials: { apiKey: "${{ vault.get('test-vault', 'k-api') }}" },
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () =>
+      Promise.resolve(createMockDataEntity({
+        [SENSITIVE_FIELDS_TAG]: '["credentials","credentials.apiKey"]',
+      })),
+  };
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  assertEquals((await readResource("main"))?.credentials, {
+    apiKey: "key-value",
+  });
+});
+
+Deno.test("createResourceReader: reference-shaped text written in a marked field inside a restored container reads back as written, never from a vault", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }).meta({ sensitive: true }),
+      services: z.array(z.object({
+        image: z.object({
+          token: z.string().meta({ sensitive: true }),
+        }).meta({ sensitive: true }),
+      })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "planted", "planted-secret");
+  const planted = "${{ vault.get('test-vault', 'planted') }}";
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { creds: spec },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vaultService,
+    "create",
+  );
+  const handle = await writeResource("creds", "main", {
+    credentials: { apiKey: planted, region: "us-east-1" },
+    services: [{ image: { token: planted } }],
+  });
+  const encoded = new TextEncoder().encode(JSON.stringify(handle.attributes));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(createMockDataEntity(handle.tags)),
+  };
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const prior = await readResource("main");
+  // The field's own reference is resolved, to the text that was written.
+  assertEquals(prior?.credentials, { apiKey: planted });
+  assertEquals(prior?.services, [{ image: { token: planted } }]);
+});
+
+Deno.test("resolveSensitiveVaultRefs: a field tagged beside its container is resolved once, whichever comes first in the tag", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "planted", "planted-secret");
+  const planted = "${{ vault.get('test-vault', 'planted') }}";
+  await vaultService.put("test-vault", "k-api", planted);
+  for (
+    const tag of [
+      ["credentials", "credentials.apiKey"],
+      ["credentials.apiKey", "credentials"],
+    ]
+  ) {
+    const data: Record<string, unknown> = {
+      credentials: { apiKey: "${{ vault.get('test-vault', 'k-api') }}" },
+    };
+    await resolveSensitiveVaultRefs(data, tag, vaultService);
+    // The value read from the vault is the text that was written, never a
+    // reference to read again.
+    assertEquals(data.credentials, { apiKey: planted }, tag.join(","));
+  }
+});
+
+Deno.test("processSensitiveResourceData: record keys that differ only in case get vault keys a case-insensitive vault keeps apart", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      env: z.record(z.string(), z.string().meta({ sensitive: true })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const data: Record<string, unknown> = {
+    env: { Token: "alpha", token: "beta", TOKEN: "gamma" },
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+    "creds",
+    "main",
+  );
+  const keys = await storedKeys(vaultService);
+  assertEquals(keys.length, 3);
+  // Folded to lowercase, as Azure Key Vault or a case-insensitive file
+  // system stores them, the keys are still three.
+  assertEquals(new Set(keys.map((key) => key.toLowerCase())).size, 3);
+  // A lowercase key is kept as written.
+  assert(keys.includes(`${elementKeyPrefix}-env.token`));
+});
+
+Deno.test("createResourceWriter: an update that reads its prior state and writes it back keeps an unmarked value that an element object marked as a whole also holds", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      stage: z.string(),
+      services: z.array(z.object({
+        port: z.number(),
+        env: z.record(z.string(), z.string()).meta({ sensitive: true }),
+      })),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = createTestVaultService();
+  const written: string[] = [];
+  const repo: UnifiedDataRepository = {
+    ...createMockRepo(),
+    save: (_type, _modelId, _data, content) => {
+      written.push(new TextDecoder().decode(content));
+      return Promise.resolve({ version: 1 });
+    },
+  };
+  const writerFor = (redactor: SecretRedactor) =>
+    createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      { app: spec },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      vaultService,
+      "update",
+      undefined,
+      redactor,
+    );
+  const first = await writerFor(new SecretRedactor()).writeResource(
+    "app",
+    "main",
+    {
+      stage: "production",
+      services: [{
+        port: 8080,
+        env: { NODE_ENV: "production", API_KEY: "sk-live-123" },
+      }],
+    },
+  );
+
+  // The next run reads its prior state ...
+  const redactor = new SecretRedactor();
+  const prior = structuredClone(first.attributes) as Record<string, unknown>;
+  await resolveSensitiveVaultRefs(
+    prior,
+    parseSensitiveFieldsTag(first.tags) as SensitiveFieldPathList,
+    vaultService,
+    redactor,
+  );
+  const services = prior.services as Record<string, unknown>[];
+  assertEquals(services[0].env, {
+    NODE_ENV: "production",
+    API_KEY: "sk-live-123",
+  });
+  // ... and writes it back with one change.
+  services[0].port = 9090;
+  await writerFor(redactor).writeResource("app", "main", prior);
+
+  const persisted = JSON.parse(written.at(-1)!);
+  assertEquals(persisted.stage, "production");
+  assertEquals(persisted.services[0].port, 9090);
+  assertStringIncludes(persisted.services[0].env, "vault.get");
+  assertEquals(
+    redactor.redact("deploying stage production"),
+    "deploying stage production",
   );
 });

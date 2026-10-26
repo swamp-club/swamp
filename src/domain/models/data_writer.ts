@@ -66,8 +66,9 @@ import {
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import {
   extractSensitiveFields,
+  findSensitiveResourceValues,
   getNestedValue,
-  type SensitiveFieldInfo,
+  schemaHoldsSensitiveFields,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
 
@@ -452,7 +453,8 @@ async function vaultKeySegment(suffix: string): Promise<string> {
 
 /**
  * Returns true if any resource output spec in the model requires a vault
- * (has fields marked `{ sensitive: true }` or `sensitiveOutput: true`).
+ * (has fields marked `{ sensitive: true }`, wherever they sit in the schema,
+ * or `sensitiveOutput: true`).
  */
 export function modelRequiresVault(
   resources: Record<string, ResourceOutputSpec> | undefined,
@@ -460,19 +462,408 @@ export function modelRequiresVault(
   if (!resources) return false;
   for (const spec of Object.values(resources)) {
     if (spec.sensitiveOutput) return true;
-    if (extractSensitiveFields(spec.schema).length > 0) return true;
+    if (schemaHoldsSensitiveFields(spec.schema)) return true;
   }
   return false;
 }
 
 /**
+ * Where a vaulted value sits in resource data. A string is a dot-separated
+ * path (`spec.services.0.image.token`, an array index written as its digits),
+ * the form every swamp release reads from {@link SENSITIVE_FIELDS_TAG}. An
+ * array lists the object keys and array indexes that lead to the value, for a
+ * place a dot path cannot name (see {@link SENSITIVE_FIELD_KEYS_TAG}).
+ */
+export type SensitiveFieldPath =
+  | string
+  | (string | number)[]
+  | JsonSensitiveField;
+
+/**
+ * A vaulted place whose vault value is JSON text written for a value that was
+ * not a string (see {@link SENSITIVE_FIELD_JSON_TAG}): it is parsed back to
+ * that value once resolved.
+ */
+export interface JsonSensitiveField {
+  keys: (string | number)[];
+  json: true;
+}
+
+/** What {@link processSensitiveResourceData} stored. */
+export interface VaultedFields {
+  /**
+   * Where each value whose reference the data now holds sits, and each
+   * stored sensitive field inside one of them, whose value readers register
+   * as a secret once the outer value is restored: a dot path where one names
+   * it for every swamp release, else its keys.
+   */
+  paths: (string | (string | number)[])[];
+  /**
+   * The keys of each value that was not a string, and so is stored as JSON
+   * text, that the writer before swamp-club#3038 did not vault: one inside an
+   * array element or record value, a union member's field, a field under a
+   * lazy schema.
+   */
+  jsonKeys: (string | number)[][];
+}
+
+/** A value in resource data to be stored in a vault. */
+interface SensitiveTarget {
+  /** The object keys and array indexes that lead to the value. */
+  keys: (string | number)[];
+  /** The path shown in messages and events. */
+  path: string;
+  vaultName?: string;
+  vaultKey?: string;
+  /**
+   * Whether the value sits inside an array element or record value, and so
+   * needs a vault key of its own per element.
+   */
+  perElement: boolean;
+  /** The value before any reference replaced it. */
+  originalValue: unknown;
+  /**
+   * Whether the value sits inside another value being stored. It is still
+   * stored under its own key, as it always has been, so a reader of that
+   * key keeps getting the current value, but the data keeps the outer
+   * reference in its place.
+   */
+  insideStored?: boolean;
+  /**
+   * Whether another value being stored sits inside this one, marked
+   * `insideStored`: outside a `sensitiveOutput` spec the data then holds an
+   * object of those values' references here, not one reference.
+   */
+  holdsStored?: boolean;
+  /**
+   * Whether the value is a top-level value of a `sensitiveOutput` spec, read
+   * and written by its own key, never as a dot path (swamp-club#3529).
+   */
+  ownKey?: boolean;
+}
+
+/**
+ * Finds the values in `data` to store in a vault: every value under a field
+ * marked `{ sensitive: true }` wherever it sits — nested objects, array
+ * elements, record values, union members — and, for a `sensitiveOutput`
+ * spec, every top-level value. Absent and null values are left out. A value
+ * inside another one being stored is carried by the outer value: one outside
+ * any array element or record value is still stored under its own key
+ * (marked `insideStored`), one inside an element is not stored again.
+ *
+ * @returns The values to store, and the keys of every value found, those
+ *   carried by an outer value included, in the order found
+ */
+function findSensitiveTargets(
+  data: Record<string, unknown>,
+  spec: ResourceOutputSpec,
+): { stored: SensitiveTarget[]; found: (string | number)[][] } {
+  // Values are read from a snapshot, so that replacing one value with its
+  // reference never changes another one stored after it.
+  const snapshot = structuredClone(data);
+  const targets: SensitiveTarget[] = findSensitiveResourceValues(
+    spec.schema,
+    snapshot,
+  ).map((found) => ({
+    keys: found.keys,
+    path: found.perElement ? found.path : found.keys.join("."),
+    vaultName: found.vaultName,
+    vaultKey: found.vaultKey,
+    perElement: found.perElement,
+    originalValue: found.value,
+  }));
+
+  if (spec.sensitiveOutput) {
+    const topLevel = new Set<string | number>();
+    for (const target of targets) {
+      if (target.keys.length === 1) {
+        target.ownKey = true;
+        topLevel.add(target.keys[0]);
+      }
+    }
+    for (const [key, value] of Object.entries(snapshot)) {
+      if (value === undefined || value === null) continue;
+      if (!topLevel.has(key)) {
+        targets.push({
+          keys: [key],
+          path: key,
+          perElement: false,
+          originalValue: value,
+          ownKey: true,
+        });
+      }
+    }
+  }
+
+  // Looked up by each target's ancestors, so a resource with many elements
+  // is checked in time proportional to its targets, not their square.
+  const stored = new Set(targets.map((target) => JSON.stringify(target.keys)));
+  const kept: SensitiveTarget[] = [];
+  const holders = new Set<string>();
+  for (const target of targets) {
+    const ancestor = outermostStoredAncestor(target.keys, stored);
+    if (ancestor === undefined) {
+      kept.push(target);
+    } else if (!target.perElement) {
+      kept.push({ ...target, insideStored: true });
+      holders.add(ancestor);
+    }
+  }
+  for (const target of kept) {
+    if (!target.insideStored && holders.has(JSON.stringify(target.keys))) {
+      target.holdsStored = true;
+    }
+  }
+  return { stored: kept, found: targets.map((target) => target.keys) };
+}
+
+/**
+ * Whether the writer before swamp-club#3038 stored the value `keys` lead to
+ * in a vault: a field it found by walking nested objects alone
+ * ({@link extractSensitiveFields}), looked up by a dot path, so through keys
+ * holding no dot. Such a value has always read back as its JSON text when it
+ * was not a string (swamp-club#3480); any other is newly vaulted, and reads
+ * back as written.
+ */
+function vaultedBefore3038(
+  spec: ResourceOutputSpec,
+): (keys: (string | number)[]) => boolean {
+  const paths = new Set(extractSensitiveFields(spec.schema).map((f) => f.path));
+  return (keys) =>
+    keys.every((key) => typeof key === "string" && !key.includes(".")) &&
+    paths.has(keys.join("."));
+}
+
+/**
+ * The JSON of the shortest strict prefix of `keys` that is one of the
+ * `stored` key lists, or undefined when there is none. That prefix has no
+ * stored ancestor itself, so the data holds its reference.
+ */
+function outermostStoredAncestor(
+  keys: (string | number)[],
+  stored: Set<string>,
+): string | undefined {
+  for (let length = 1; length < keys.length; length++) {
+    const prefix = JSON.stringify(keys.slice(0, length));
+    if (stored.has(prefix)) {
+      return prefix;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Names the sensitive fields of a spec for an error message: the fields in
+ * nested objects, else the values found in `data` inside array elements,
+ * record values and union members.
+ */
+function sensitiveFieldList(
+  spec: ResourceOutputSpec,
+  data: Record<string, unknown>,
+): string {
+  let paths = extractSensitiveFields(spec.schema).map((f) => f.path);
+  if (paths.length === 0) {
+    paths = findSensitiveResourceValues(spec.schema, data).map((f) => f.path);
+  }
+  return paths.length > 0
+    ? `fields ${paths.map((p) => `'${p}'`).join(", ")}`
+    : "some fields";
+}
+
+/**
+ * A record key kept as written in an element vault key: lowercase only, since
+ * capitals fold onto lowercase in a case-insensitive vault (Azure Key Vault,
+ * or local_encryption on a case-insensitive file system), as
+ * {@link vaultKeySegment} keeps a vary suffix.
+ */
+const PLAIN_KEY = /^[a-z0-9_-]+$/;
+
+/** The first `hexDigits` hex digits of the SHA-256 of `text`. */
+async function shortHash(text: string, hexDigits: number): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("").slice(0, hexDigits);
+}
+
+/**
+ * The longest vault key given to a value inside an element. Vault providers
+ * map keys to file and secret names, which have length limits of their own.
+ */
+const MAX_ELEMENT_VAULT_KEY_LENGTH = 200;
+
+/**
+ * Encodes the place of a value inside an array element or record value for a
+ * vault key: keys and indexes joined with dots, each run of other characters
+ * in a key turned into `-`. Record keys come from resource data, so this
+ * keeps quotes, slashes and `..` out of the key. When a key is not
+ * {@link PLAIN_KEY} (it holds a capital or another character), the first 12
+ * hex digits of the SHA-256 of the exact keys are appended, so two keys that
+ * differ only in such characters, or only in case, still get distinct vault
+ * keys in a case-insensitive vault, and every element keeps the same vault
+ * key from write to write.
+ */
+async function encodeElementKeys(keys: (string | number)[]): Promise<string> {
+  let changed = false;
+  const encoded = keys.map((key) => {
+    if (typeof key === "number" || PLAIN_KEY.test(key)) {
+      return String(key);
+    }
+    changed = true;
+    return key.replace(/[^A-Za-z0-9_-]+/g, "-") || "-";
+  }).join(".");
+  if (!changed) {
+    return encoded;
+  }
+  return `${encoded}-${await shortHash(JSON.stringify(keys), 12)}`;
+}
+
+/**
+ * The vault key a target is stored under. A value outside any element keeps
+ * the key swamp has always given it: the field's `vaultKey`, or one derived
+ * from the model, method, spec, instance and field path (for a dotted own
+ * key of a `sensitiveOutput` spec, a hash of its name). A value inside an
+ * element gets one key per element: its encoded place is appended to the
+ * field's `vaultKey`, or derived the same way, so elements never share a key.
+ * Such a key longer than {@link MAX_ELEMENT_VAULT_KEY_LENGTH} is cut, and ends
+ * in a hash of the whole key.
+ */
+async function vaultKeyFor(
+  target: SensitiveTarget,
+  prefix: string,
+): Promise<string> {
+  if (!target.perElement) {
+    if (target.vaultKey !== undefined) return target.vaultKey;
+    // A literal dotted key is a different identity from a schema dot-path.
+    // Hash its exact name so sanitizing a.b and a..b cannot merge them.
+    const field = target.ownKey && String(target.keys[0]).includes(".")
+      ? `own-${await vaultKeySegment(String(target.keys[0]))}`
+      : target.keys.join(".");
+    return sanitizeVaultKey(`${prefix}/${field}`);
+  }
+  const element = await encodeElementKeys(target.keys);
+  const key = target.vaultKey !== undefined
+    ? `${target.vaultKey}.${element}`
+    : sanitizeVaultKey(`${prefix}/${element}`);
+  if (key.length <= MAX_ELEMENT_VAULT_KEY_LENGTH) {
+    return key;
+  }
+  // Cut, and told apart from every other cut key by the hash of the whole.
+  const hash = await shortHash(key, 16);
+  return `${
+    key.slice(0, MAX_ELEMENT_VAULT_KEY_LENGTH - hash.length - 1)
+  }-${hash}`;
+}
+
+/**
+ * Whether a dot path names exactly the place `keys` lead to for every swamp
+ * release reading it: no key holds a dot, which those readers would split
+ * on, and none is empty or one of {@link UNSAFE_PATH_SEGMENTS}, which
+ * {@link readSensitiveFieldsTag} refuses.
+ */
+function writableAsDotPath(keys: (string | number)[]): boolean {
+  return keys.every((key) =>
+    typeof key === "number" ||
+    (key !== "" && !key.includes(".") && !UNSAFE_PATH_SEGMENTS.has(key))
+  );
+}
+
+/**
+ * Reads the value `keys` lead to in `data`, following own properties only.
+ */
+function getValueAtKeys(
+  data: Record<string, unknown>,
+  keys: (string | number)[],
+): unknown {
+  let current: unknown = data;
+  for (const key of keys) {
+    if (
+      current === null || typeof current !== "object" ||
+      !Object.hasOwn(current, key)
+    ) {
+      return undefined;
+    }
+    current = (current as Record<string | number, unknown>)[key];
+  }
+  return current;
+}
+
+/**
+ * Replaces the value `keys` lead to in `data`. Nothing is written when that
+ * place does not exist: no container is created, and a key is only ever
+ * written as an own property (never through `__proto__`).
+ */
+function setValueAtKeys(
+  data: Record<string, unknown>,
+  keys: (string | number)[],
+  value: unknown,
+): void {
+  const parent = getValueAtKeys(data, keys.slice(0, -1));
+  const last = keys.at(-1);
+  if (
+    last === undefined || parent === null || typeof parent !== "object" ||
+    !Object.hasOwn(parent, last)
+  ) {
+    return;
+  }
+  Object.defineProperty(parent, last, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
+ * Sets the value `keys` lead to in `data`, replacing each missing or
+ * non-object step on the way with an empty object, as {@link setNestedValue}
+ * does, but writing every key as an own property.
+ */
+function setValueCreatingAtKeys(
+  data: Record<string, unknown>,
+  keys: (string | number)[],
+  value: unknown,
+): void {
+  let current: Record<string | number, unknown> = data;
+  for (const key of keys.slice(0, -1)) {
+    const next = Object.hasOwn(current, key) ? current[key] : undefined;
+    if (next === null || typeof next !== "object") {
+      Object.defineProperty(current, key, {
+        value: {},
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    current = current[key] as Record<string | number, unknown>;
+  }
+  const last = keys.at(-1);
+  if (last === undefined) return;
+  Object.defineProperty(current, last, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
  * Processes sensitive fields in resource data before persistence.
  *
- * For each field marked with `{ sensitive: true }` metadata in the schema
- * (or all fields when `sensitiveOutput` is true on the spec):
+ * For each value under a field marked with `{ sensitive: true }` metadata in
+ * the schema — in nested objects, array elements, record values and union
+ * members — or every top-level value when `sensitiveOutput` is true on the
+ * spec:
  * 1. Snapshots original values before any mutation
  * 2. Prepares vault references and validates all write targets
  * 3. Stores the snapshotted values in the vault
+ *
+ * A value inside an array element or record value is stored under a vault
+ * key of its own per element (see {@link vaultKeyFor}).
  *
  * @param data - The resource data to process (mutated in place)
  * @param spec - The resource output specification
@@ -480,6 +871,9 @@ export function modelRequiresVault(
  * @param modelType - The model type (for vault key generation)
  * @param modelId - The model ID (for vault key generation)
  * @param methodName - The method name (for vault key generation)
+ * @returns The places to tag, each value whose reference the data now
+ *   holds and each marked field inside one of them, and which of those
+ *   values are stored as JSON text
  */
 export async function processSensitiveResourceData(
   data: Record<string, unknown>,
@@ -491,7 +885,7 @@ export async function processSensitiveResourceData(
   specName: string,
   instanceName: string,
   callbacks?: DataWriterCallbacks,
-): Promise<string[]> {
+): Promise<VaultedFields> {
   const prepared = await prepareSensitiveResourceData(
     data,
     spec,
@@ -504,11 +898,10 @@ export async function processSensitiveResourceData(
     callbacks,
   );
   await prepared.store();
-  return prepared.paths;
+  return { paths: prepared.paths, jsonKeys: prepared.jsonKeys };
 }
 
-interface PreparedSensitiveResourceData {
-  paths: string[];
+interface PreparedSensitiveResourceData extends VaultedFields {
   store(): Promise<void>;
 }
 
@@ -529,43 +922,10 @@ async function prepareSensitiveResourceData(
   instanceName: string,
   callbacks?: DataWriterCallbacks,
 ): Promise<PreparedSensitiveResourceData> {
-  const sensitiveFields = extractSensitiveFields(spec.schema);
-
-  // Under sensitiveOutput every top-level key is sensitive. Each is read and
-  // written by its own name, never as a dot path: a key holding a dot would
-  // otherwise be looked up as a nested path, skipped, and persisted as
-  // written under the `*` tag that promises every field was vaulted
-  // (swamp-club#3529). A key with a dot is added even when the schema names
-  // that path, since the schema path means the nested field.
-  const ownKeys = new Set<SensitiveFieldInfo>();
-  if (spec.sensitiveOutput) {
-    const existingPaths = new Set(sensitiveFields.map((f) => f.path));
-    for (const key of Object.keys(data)) {
-      if (!existingPaths.has(key) || key.includes(".")) {
-        const field = { path: key };
-        sensitiveFields.push(field);
-        ownKeys.add(field);
-      }
-    }
-  }
-
-  // Snapshot values before mutation and filter out undefined/null
-  const snapshot = structuredClone(data);
-  const fieldsWithValues: {
-    field: SensitiveFieldInfo;
-    originalValue: unknown;
-  }[] = [];
-  for (const field of sensitiveFields) {
-    const value = ownKeys.has(field)
-      ? snapshot[field.path]
-      : getNestedValue(snapshot, field.path);
-    if (value !== undefined && value !== null) {
-      fieldsWithValues.push({ field, originalValue: value });
-    }
-  }
+  const { stored: fieldsWithValues, found } = findSensitiveTargets(data, spec);
 
   if (fieldsWithValues.length === 0) {
-    return { paths: [], store: () => Promise.resolve() };
+    return { paths: [], jsonKeys: [], store: () => Promise.resolve() };
   }
 
   // Validate vault availability. Reserved vaults (such as the _token-secrets
@@ -573,9 +933,7 @@ async function prepareSensitiveResourceData(
   // vaults count.
   const userVaultNames = vaultService.getUserVaultNames();
   if (userVaultNames.length === 0) {
-    const fieldList = fieldsWithValues.map((f) => `'${f.field.path}'`).join(
-      ", ",
-    );
+    const fieldList = fieldsWithValues.map((f) => `'${f.path}'`).join(", ");
     throw new Error(
       `Cannot persist data: fields ${fieldList} are marked as sensitive ` +
         `but no vault is configured. Create a vault using: swamp vault create <type> <name>`,
@@ -586,29 +944,22 @@ async function prepareSensitiveResourceData(
   // access with the key the put will name, before the first value is stored,
   // so a refusal (including one from a grant revoked mid-run, or a grant
   // conditioned on the key) leaves no earlier field's value orphaned.
-  const targets = await Promise.all(
-    fieldsWithValues.map(async ({ field, originalValue }) => {
-      const targetVault = resolveSensitiveOutputVault(
-        { fieldVaultName: field.vaultName, specVaultName: spec.vaultName },
-        vaultService,
-      ) ?? userVaultNames[0];
-      if (isReservedVaultName(targetVault)) {
-        throw new Error(
-          `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
-        );
-      }
-      // A literal dotted key is a different identity from a schema dot-path.
-      // Hash its exact name so sanitizing a.b and a..b cannot merge them.
-      const keyField = ownKeys.has(field) && field.path.includes(".")
-        ? `own-${await vaultKeySegment(field.path)}`
-        : field.path;
-      const vaultKey = field.vaultKey ??
-        sanitizeVaultKey(
-          `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}/${keyField}`,
-        );
-      return { field, originalValue, targetVault, vaultKey };
-    }),
-  );
+  const keyPrefix =
+    `${modelType.normalized}/${modelId}/${methodName}/${specName}/${instanceName}`;
+  const targets = [];
+  for (const field of fieldsWithValues) {
+    const targetVault = resolveSensitiveOutputVault(
+      { fieldVaultName: field.vaultName, specVaultName: spec.vaultName },
+      vaultService,
+    ) ?? userVaultNames[0];
+    if (isReservedVaultName(targetVault)) {
+      throw new Error(
+        `Cannot store sensitive field '${field.path}': vault '${targetVault}' is reserved for internal use`,
+      );
+    }
+    const vaultKey = await vaultKeyFor(field, keyPrefix);
+    targets.push({ field, targetVault, vaultKey });
+  }
   const targetFields = new Map<string, string>();
   for (const { field, targetVault, vaultKey } of targets) {
     const fieldName = field.path;
@@ -632,36 +983,61 @@ async function prepareSensitiveResourceData(
     }
   }
 
-  const writes = targets.map((
-    { field, originalValue, targetVault, vaultKey },
-  ) => ({
+  const writes = targets.map(({ field, targetVault, vaultKey }) => ({
     field,
     targetVault,
     vaultKey,
-    value: typeof originalValue === "string"
-      ? originalValue
-      : JSON.stringify(originalValue),
+    value: typeof field.originalValue === "string"
+      ? field.originalValue
+      : JSON.stringify(field.originalValue),
   }));
+  const refOf = (targetVault: string, vaultKey: string) =>
+    `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
+  // A container that holds another stored field keeps the shape it has
+  // always had: an object of those fields' references, the whole container
+  // stored under its own key as well. Expressions read each field as a
+  // Secret, through the container. Its unmarked fields are not in the data,
+  // as before swamp-club#3038; the vault holds them in the container's value.
+  // A sensitiveOutput spec keeps each top-level value as one reference.
+  const asObject = (field: SensitiveTarget) =>
+    field.holdsStored === true && !spec.sensitiveOutput;
   for (const { field, targetVault, vaultKey } of writes) {
-    // Wildcard output stores each original top-level value as a whole.
-    // Nested fields still populate their configured vault keys, but must
-    // not replace an already-vaulted parent's reference with an object.
-    if (
-      spec.sensitiveOutput && !ownKeys.has(field) && field.path.includes(".")
-    ) continue;
-
-    const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
-
-    // Apply vault reference to data
-    if (!ownKeys.has(field) && field.path.includes(".")) {
-      setNestedValue(data, field.path, vaultRef);
-    } else {
-      data[field.path] = vaultRef;
+    if (!field.insideStored) {
+      setValueAtKeys(
+        data,
+        field.keys,
+        asObject(field) ? {} : refOf(targetVault, vaultKey),
+      );
+    }
+  }
+  if (!spec.sensitiveOutput) {
+    // Outer fields first, so a deeper field's reference replaces an outer
+    // one's, as setting dot paths in order always has.
+    const inside = writes
+      .filter(({ field }) => field.insideStored)
+      .sort((a, b) => a.field.keys.length - b.field.keys.length);
+    for (const { field, targetVault, vaultKey } of inside) {
+      setValueCreatingAtKeys(data, field.keys, refOf(targetVault, vaultKey));
     }
   }
 
+  const referenced = fieldsWithValues.filter((f) => !f.insideStored);
+  const vaultedBefore = vaultedBefore3038(spec);
   return {
-    paths: fieldsWithValues.map((f) => f.field.path),
+    // A field inside a stored value holds no reference, so every reader
+    // finds nothing to resolve there; a reader that restores the outer value
+    // registers the field's value as a secret.
+    paths: found.map((keys) => writableAsDotPath(keys) ? keys.join(".") : keys),
+    // Before this release such a value was not vaulted, so it read back as
+    // itself, not as text: an element, a union member's field, a field under
+    // a lazy schema. A container that holds a stored field is an object of
+    // references, not one, so it is never listed.
+    jsonKeys: referenced
+      .filter((f) =>
+        typeof f.originalValue !== "string" && !f.holdsStored &&
+        (f.perElement || !vaultedBefore(f.keys))
+      )
+      .map((f) => f.keys),
     store: async () => {
       for (const { field, targetVault, vaultKey, value } of writes) {
         await vaultService.put(targetVault, vaultKey, value);
@@ -700,7 +1076,7 @@ async function prepareSensitiveResourceData(
  */
 function redactOutsideVaultReferences(
   data: Record<string, unknown>,
-  vaultedPaths: string[],
+  vaultedPaths: VaultedFields["paths"],
   redactor: SecretRedactor,
   sensitiveOutput: boolean,
 ): string {
@@ -735,7 +1111,11 @@ function redactOutsideVaultReferences(
   const references = new Set<string>();
   const candidates = sensitiveOutput && vaultedPaths.length > 0
     ? Object.values(data)
-    : vaultedPaths.map((path) => getNestedValue(data, path));
+    : vaultedPaths.map((path) =>
+      typeof path === "string"
+        ? getNestedValue(data, path)
+        : getValueAtKeys(data, path)
+    );
   for (const reference of candidates) {
     if (typeof reference === "string") references.add(reference);
   }
@@ -1000,19 +1380,19 @@ export function createResourceWriter(
 
     // Process sensitive fields before serialization
     const hasSensitiveFields = effectiveSpec.sensitiveOutput ||
-      extractSensitiveFields(effectiveSpec.schema).length > 0;
+      schemaHoldsSensitiveFields(effectiveSpec.schema);
     if (hasSensitiveFields && !vaultService) {
-      const fields = extractSensitiveFields(effectiveSpec.schema)
-        .map((f) => `'${f.path}'`).join(", ");
       const detail = effectiveSpec.sensitiveOutput
         ? `resource '${specName}' is marked sensitiveOutput`
-        : `fields ${fields} in resource '${specName}' are marked as sensitive`;
+        : `${
+          sensitiveFieldList(effectiveSpec, data)
+        } in resource '${specName}' are marked as sensitive`;
       throw new Error(
         `Cannot persist data: ${detail} but no vault is configured. ` +
           `Create a vault using: swamp vault create <type> <name>`,
       );
     }
-    let vaultedPaths: string[] = [];
+    let vaultedPaths: VaultedFields["paths"] = [];
     let sensitiveWrite: PreparedSensitiveResourceData | undefined;
     if (vaultService && methodName && hasSensitiveFields) {
       sensitiveWrite = await prepareSensitiveResourceData(
@@ -1032,9 +1412,24 @@ export function createResourceWriter(
       );
       vaultedPaths = sensitiveWrite.paths;
       if (vaultedPaths.length > 0) {
-        resolvedTags[SENSITIVE_FIELDS_TAG] = effectiveSpec.sensitiveOutput
-          ? SENSITIVE_FIELDS_ALL
-          : JSON.stringify(vaultedPaths);
+        if (effectiveSpec.sensitiveOutput) {
+          resolvedTags[SENSITIVE_FIELDS_TAG] = SENSITIVE_FIELDS_ALL;
+        } else {
+          // Dot paths go where every swamp release reads them; the rest only
+          // in the tag that names keys exactly.
+          resolvedTags[SENSITIVE_FIELDS_TAG] = JSON.stringify(
+            vaultedPaths.filter((p) => typeof p === "string"),
+          );
+          const keyPaths = vaultedPaths.filter((p) => Array.isArray(p));
+          if (keyPaths.length > 0) {
+            resolvedTags[SENSITIVE_FIELD_KEYS_TAG] = JSON.stringify(keyPaths);
+          }
+          if (sensitiveWrite.jsonKeys.length > 0) {
+            resolvedTags[SENSITIVE_FIELD_JSON_TAG] = JSON.stringify(
+              sensitiveWrite.jsonKeys,
+            );
+          }
+        }
       }
     }
 
@@ -1318,14 +1713,67 @@ function writeTagsGuard(
 }
 
 /**
- * Parses the `_swamp.sensitiveFields` tag from a data record's tags.
+ * Tag key recording vaulted places a dot path cannot name for every swamp
+ * release — a place reached through a key holding a dot, or through
+ * `__proto__` — as a JSON array of key lists
+ * (`[["accounts","eu.west","token"]]`). Releases that predate it ignore it
+ * and leave those references unresolved; it is read only alongside
+ * {@link SENSITIVE_FIELDS_TAG}.
+ */
+export const SENSITIVE_FIELD_KEYS_TAG = "_swamp.sensitiveFieldKeys";
+
+/**
+ * Tag key recording vaulted places whose value was not a string and that the
+ * writer before swamp-club#3038 did not vault (inside array elements and
+ * record values, union members' fields), as a JSON array of key lists. Their
+ * vault value is the JSON text of that value, which readers parse back so it
+ * reads as it was written (a number, an object). Releases that
+ * predate it ignore it and read the JSON text; it is read only alongside
+ * {@link SENSITIVE_FIELDS_TAG}, and only for places that tag lists.
+ */
+export const SENSITIVE_FIELD_JSON_TAG = "_swamp.sensitiveFieldJson";
+
+function isKeyPath(value: unknown): value is (string | number)[] {
+  return Array.isArray(value) && value.length > 0 &&
+    value.every((key) =>
+      typeof key === "string" ||
+      (typeof key === "number" && Number.isSafeInteger(key) && key >= 0)
+    );
+}
+
+/**
+ * Reads a tag holding key lists ({@link SENSITIVE_FIELD_KEYS_TAG},
+ * {@link SENSITIVE_FIELD_JSON_TAG}). A tag that is not a list of key lists is
+ * ignored whole, so nothing is read from it.
+ */
+function parseKeyListTag(
+  tags: Record<string, string>,
+  tag: string,
+): (string | number)[][] {
+  const raw = tags[tag];
+  if (raw === undefined) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every(isKeyPath) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Parses the `_swamp.sensitiveFields` tag from a data record's tags, with the
+ * places {@link SENSITIVE_FIELD_KEYS_TAG} adds to it. A place
+ * {@link SENSITIVE_FIELD_JSON_TAG} lists comes back as a
+ * {@link JsonSensitiveField}; one it lists that neither of the other tags
+ * names is ignored.
  *
- * @returns A string array of dot-paths, `"*"` when all fields are sensitive,
- *          or `null` when the tag is absent (legacy data).
+ * @returns The vaulted places (dot paths, then key lists), `"*"` when all
+ *          fields are sensitive, or `null` when the tag is absent (legacy
+ *          data).
  */
 export function parseSensitiveFieldsTag(
   tags: Record<string, string>,
-): string[] | "*" | null {
+): SensitiveFieldPath[] | "*" | null {
   const raw = tags[SENSITIVE_FIELDS_TAG];
   if (raw === undefined) return null;
   if (raw === SENSITIVE_FIELDS_ALL) return SENSITIVE_FIELDS_ALL;
@@ -1335,12 +1783,43 @@ export function parseSensitiveFieldsTag(
       Array.isArray(parsed) &&
       parsed.every((v) => typeof v === "string")
     ) {
-      return parsed as string[];
+      return markJsonPlaces(
+        [
+          ...(parsed as string[]),
+          ...parseKeyListTag(tags, SENSITIVE_FIELD_KEYS_TAG),
+        ],
+        parseKeyListTag(tags, SENSITIVE_FIELD_JSON_TAG),
+      );
     }
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Replaces each place in `places` that `jsonKeys` lists with a
+ * {@link JsonSensitiveField}. A dot path matches the keys it joins; a key
+ * list matches the same keys.
+ */
+function markJsonPlaces(
+  places: (string | (string | number)[])[],
+  jsonKeys: (string | number)[][],
+): SensitiveFieldPath[] {
+  if (jsonKeys.length === 0) return places;
+  const json = new Map<string, (string | number)[]>();
+  for (const keys of jsonKeys) {
+    json.set(JSON.stringify(keys), keys);
+    if (writableAsDotPath(keys)) {
+      json.set(keys.join("."), keys);
+    }
+  }
+  return places.map((place) => {
+    const keys = json.get(
+      typeof place === "string" ? place : JSON.stringify(place),
+    );
+    return keys ? { keys, json: true } : place;
+  });
 }
 
 /**
@@ -1443,6 +1922,34 @@ export function readSensitiveFieldsTag(
 }
 
 /**
+ * The vaulted places of a record as the expression-facing accessors read
+ * them: {@link readSensitiveFieldsTag}, strictly, with each key list
+ * {@link SENSITIVE_FIELD_KEYS_TAG} adds to a path list as one more path of
+ * segments, an array index written as its digits. The key-list tag is read as
+ * {@link parseSensitiveFieldsTag} reads it, only alongside a path list and a
+ * malformed one ignored whole, so its places stay as stored text. Its segments
+ * may be empty or name a prototype property: they are object keys, never a
+ * dot path, and must be read and written as own properties.
+ * {@link SENSITIVE_FIELD_JSON_TAG} adds nothing here: a place it lists is
+ * already a path of one of the other two tags.
+ */
+export function readSensitiveFieldPlaces(
+  tags: Record<string, string>,
+): SensitiveFieldsTag {
+  const tag = readSensitiveFieldsTag(tags);
+  if (tag.kind !== "paths") return tag;
+  const keyLists = parseKeyListTag(tags, SENSITIVE_FIELD_KEYS_TAG);
+  if (keyLists.length === 0) return tag;
+  return {
+    kind: "paths",
+    paths: [
+      ...tag.paths,
+      ...keyLists.map((keys) => keys.map((key) => String(key))),
+    ],
+  };
+}
+
+/**
  * Recursively walks an object/array and resolves any string values that match
  * the vault expression pattern `${{ vault.get('name', 'key') }}`.
  *
@@ -1509,7 +2016,7 @@ async function walkAndResolve(
  */
 export async function resolveSensitiveVaultRefs(
   data: Record<string, unknown>,
-  sensitiveFields: string[] | "*",
+  sensitiveFields: SensitiveFieldPath[] | "*",
   vaultService: VaultService,
   redactor?: SecretSink,
 ): Promise<void> {
@@ -1532,7 +2039,7 @@ export async function resolveSensitiveVaultRefs(
  */
 export async function resolveSensitiveVaultRefsLeavingUnread(
   data: Record<string, unknown>,
-  sensitiveFields: string[] | "*",
+  sensitiveFields: SensitiveFieldPath[] | "*",
   vaultService: VaultService,
   redactor?: SecretSink,
 ): Promise<void> {
@@ -1554,7 +2061,7 @@ export async function resolveSensitiveVaultRefsLeavingUnread(
  */
 export async function recordSensitiveVaultRefsUnread(
   data: Record<string, unknown>,
-  sensitiveFields: string[] | "*",
+  sensitiveFields: SensitiveFieldPath[] | "*",
   error: unknown,
   redactor?: SecretSink,
 ): Promise<void> {
@@ -1579,7 +2086,7 @@ function vaultReadOf(vaultService: VaultService): VaultRead {
 
 async function resolveSensitiveLocations(
   data: Record<string, unknown>,
-  sensitiveFields: string[] | "*",
+  sensitiveFields: SensitiveFieldPath[] | "*",
   read: VaultRead,
   redactor: SecretSink | undefined,
   leaveUnread: boolean,
@@ -1597,7 +2104,40 @@ async function resolveSensitiveLocations(
     }
     return;
   }
-  for (const fieldPath of sensitiveFields) {
+  // Each JSON place restored to a value, by its keys, with the reference
+  // it was read from.
+  const restored = new Map<string, SecretReference>();
+  // Every place already resolved. A place is resolved once: under a place
+  // resolved before it, what is there is a value read from a vault,
+  // reference-shaped text included, never a reference to read again. A
+  // container tagged beside its fields resolves their references as it is
+  // walked; inside a restored JSON place a tagged field is only registered,
+  // below. Outer places come first, so each is resolved before its fields.
+  const done = new Set<string>();
+  const outerFirst = [...sensitiveFields].sort((a, b) =>
+    placeKeysOf(a).length - placeKeysOf(b).length
+  );
+  for (const fieldPath of outerFirst) {
+    const keys = placeKeysOf(fieldPath);
+    let underResolved = false;
+    for (let length = 1; length < keys.length && !underResolved; length++) {
+      underResolved = done.has(placeId(keys.slice(0, length)));
+    }
+    done.add(placeId(keys));
+    if (underResolved) continue;
+    if (typeof fieldPath !== "string") {
+      const reference = await resolveAtKeys(
+        data,
+        fieldPath,
+        read,
+        redactor,
+        leaveUnread,
+      );
+      if (reference !== undefined) {
+        restored.set(placeId(placeKeys(fieldPath)), reference);
+      }
+      continue;
+    }
     const value = getNestedValue(data, fieldPath);
     const resolved = await resolveValueAtPath(
       value,
@@ -1614,13 +2154,121 @@ async function resolveSensitiveLocations(
       }
     }
   }
+  if (restored.size > 0 && redactor) {
+    registerFieldsInsideRestored(data, sensitiveFields, restored, redactor);
+  }
+}
+
+/** Identifies a place by its keys, an array index and its digits alike. */
+function placeId(keys: readonly (string | number)[]): string {
+  return JSON.stringify(keys.map(String));
+}
+
+/** The keys of any vaulted place, a dot path split at its dots. */
+function placeKeysOf(place: SensitiveFieldPath): (string | number)[] {
+  return typeof place === "string" ? place.split(".") : placeKeys(place);
+}
+
+/**
+ * The reference of the restored JSON place a strict prefix of `keys` names,
+ * or undefined when no prefix is one.
+ */
+function restoredAncestor(
+  keys: readonly (string | number)[],
+  restored: ReadonlyMap<string, SecretReference>,
+): SecretReference | undefined {
+  for (let length = 1; length < keys.length; length++) {
+    const reference = restored.get(placeId(keys.slice(0, length)));
+    if (reference !== undefined) return reference;
+  }
+  return undefined;
+}
+
+/**
+ * Registers with `redactor` the value of each tagged place inside a JSON
+ * place that was restored: a sensitive field the schema marks inside a
+ * stored container, which the writer tags beside the container. The rest of
+ * a restored value is registered only as the whole text it was stored as,
+ * as any non-string sensitive value is: registering every string inside it
+ * would mask ordinary text (a region, a user name) wherever it appears for
+ * the rest of the run, in logs and in the records the run persists.
+ */
+function registerFieldsInsideRestored(
+  data: Record<string, unknown>,
+  sensitiveFields: SensitiveFieldPath[],
+  restored: ReadonlyMap<string, SecretReference>,
+  redactor: SecretSink,
+): void {
+  for (const fieldPath of sensitiveFields) {
+    const keys = placeKeysOf(fieldPath);
+    const reference = restoredAncestor(keys, restored);
+    if (reference === undefined) continue;
+    const value = getValueAtKeys(data, keys);
+    if (value === undefined || value === null) continue;
+    redactor.addSecret(
+      typeof value === "string" ? value : JSON.stringify(value),
+      reference,
+    );
+  }
+}
+
+/**
+ * The object keys and array indexes of a vaulted place named by its keys.
+ */
+function placeKeys(
+  place: Exclude<SensitiveFieldPath, string>,
+): (string | number)[] {
+  return Array.isArray(place) ? place : place.keys;
+}
+
+/**
+ * Resolves the vault reference at a place named by its keys. At a
+ * {@link JsonSensitiveField} only a reference is resolved, and the secret is
+ * parsed back from the JSON text it was stored as; text that does not parse
+ * is kept as the secret. The secret is registered with `redactor` as the
+ * text it was stored as, as every resolved reference is.
+ *
+ * @returns The reference a JSON place was restored from, else undefined
+ */
+async function resolveAtKeys(
+  data: Record<string, unknown>,
+  place: Exclude<SensitiveFieldPath, string>,
+  read: VaultRead,
+  redactor: SecretSink | undefined,
+  leaveUnread: boolean,
+): Promise<SecretReference | undefined> {
+  const keys = placeKeys(place);
+  const json = !Array.isArray(place);
+  const value = getValueAtKeys(data, keys);
+  if (json && typeof value !== "string") return undefined;
+  const resolved = await resolveValueAtPath(
+    value,
+    keys.join("."),
+    read,
+    redactor,
+    leaveUnread,
+  );
+  if (resolved === value) return undefined;
+  if (!json || typeof resolved !== "string") {
+    setValueAtKeys(data, keys, resolved);
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(resolved);
+  } catch {
+    setValueAtKeys(data, keys, resolved);
+    return undefined;
+  }
+  setValueAtKeys(data, keys, parsed);
+  return parseStoredVaultReference(value as string);
 }
 
 /**
  * The vault references a record's sensitive fields hold, in the shape
  * {@link processSensitiveResourceData} leaves them: one whole-string
  * reference exactly at each tagged location, which is the value at each
- * path the sensitive-fields tag lists, or the value of each top-level key
+ * path the sensitive-fields tags list, or the value of each top-level key
  * by its own name for the `*` tag. Listed in document order without
  * repeats, so serve can authorize a worker's read of a tagged field
  * against the record itself (swamp-club#3529). A null `sensitiveFields`
@@ -1642,7 +2290,7 @@ async function resolveSensitiveLocations(
  */
 export function sensitiveVaultReferences(
   data: Record<string, unknown>,
-  sensitiveFields: string[] | "*" | null,
+  sensitiveFields: SensitiveFieldPath[] | "*" | null,
 ): SecretReference[] {
   const references: SecretReference[] = [];
   const seen = new Set<string>();
@@ -1661,7 +2309,11 @@ export function sensitiveVaultReferences(
     for (const key of Object.keys(data)) collect(data[key]);
   } else {
     for (const fieldPath of sensitiveFields) {
-      collect(getNestedValue(data, fieldPath));
+      collect(
+        typeof fieldPath === "string"
+          ? getNestedValue(data, fieldPath)
+          : getValueAtKeys(data, placeKeys(fieldPath)),
+      );
     }
   }
   return references;
@@ -1841,7 +2493,7 @@ export function getSensitiveFieldsForResolution(
   tags: Record<string, string>,
   resourceSpecs: Record<string, ResourceOutputSpec> | undefined,
   instanceName: string,
-): string[] | "*" | null {
+): SensitiveFieldPath[] | "*" | null {
   let tag: SensitiveFieldsTag;
   try {
     tag = readSensitiveFieldsTag(tags);
@@ -1853,7 +2505,9 @@ export function getSensitiveFieldsForResolution(
   }
   if (tag.kind === "all") return SENSITIVE_FIELDS_ALL;
   if (tag.kind === "paths") {
-    return tag.paths.map((segments) => segments.join("."));
+    // The strict reading passed, so the lenient one names the same dot paths,
+    // with the places the key-list and JSON tags add.
+    return parseSensitiveFieldsTag(tags) ?? [];
   }
 
   if (!resourceSpecs) return null;

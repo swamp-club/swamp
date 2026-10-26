@@ -237,3 +237,39 @@ Deno.test("reliesOnVaultFallback: true only when a sensitive output names no vau
   );
   assertEquals(reliesOnVaultFallback(undefined, undefined), false);
 });
+
+Deno.test("sensitiveOutputTargets: sees vaults named by fields in arrays, records and unions, with no key per element", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    app: {
+      schema: z.object({
+        services: z.array(z.object({
+          creds: z.string().meta({
+            sensitive: true,
+            vaultName: "registry",
+            vaultKey: "registry-creds",
+          }),
+        })),
+        tokens: z.record(
+          z.string(),
+          z.string().meta({ sensitive: true, vaultName: "tokens" }),
+        ),
+        auth: z.union([
+          z.object({
+            password: z.string().meta({ sensitive: true, vaultName: "auth" }),
+          }),
+          z.string(),
+        ]),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  };
+  assertEquals(
+    sensitiveOutputTargets(resources, undefined, vaults(undefined, ["u"])),
+    [
+      { vaultName: "registry" },
+      { vaultName: "tokens" },
+      { vaultName: "auth" },
+    ],
+  );
+});

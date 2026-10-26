@@ -492,7 +492,9 @@ Deno.test("sensitive-fields tag: a JSON array of paths round-trips through both 
     fc.property(fc.string(), (raw) => {
       const tags = { specName: "creds", [SENSITIVE_FIELDS_TAG]: raw };
       const lenient = parseSensitiveFieldsTag(tags);
-      let strict: string[] | "*" | null | undefined;
+      let strict:
+        | ReturnType<typeof getSensitiveFieldsForResolution>
+        | undefined;
       let refused = false;
       try {
         strict = getSensitiveFieldsForResolution(tags, specs, "inst");

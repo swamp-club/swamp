@@ -26,7 +26,7 @@
  */
 
 import type { ResourceOutputSpec } from "./model.ts";
-import { extractSensitiveFields } from "./sensitive_field_extractor.ts";
+import { collectSensitiveFieldMetadata } from "./sensitive_field_extractor.ts";
 
 /** The vault configuration the resolver falls back to. */
 export interface SensitiveOutputVaultConfig {
@@ -83,7 +83,8 @@ export interface SensitiveOutputTarget {
   vaultName: string;
   /**
    * The field's own `vaultKey`. Absent when the key is generated at write
-   * time (from the instance name), so it is not known before the run.
+   * time (from the instance name, and per element for a field inside an
+   * array element or record value), so it is not known before the run.
    */
   vaultKey?: string;
 }
@@ -91,9 +92,12 @@ export interface SensitiveOutputTarget {
 /**
  * Every vault, and key where a field fixes one, that the sensitive outputs of
  * `resources` may be stored under, given the data output overrides in force:
- * one per field naming its own vault, plus the spec-level target for fields
- * that do not (and for every field of a `sensitiveOutput` spec, whose fields
- * are only known at write time). Each vault and key pair appears once, in
+ * one per field naming its own vault, wherever the field sits in the schema
+ * (nested objects, array elements, record values, union members), plus the
+ * spec-level target for fields that do not (and for every field of a
+ * `sensitiveOutput` spec, whose fields are only known at write time). A field
+ * inside an array element or record value has a key per element, so its
+ * target names no key. Each vault and key pair appears once, in
  * first-seen order; a target that resolves to no vault is left out (the
  * no-vault check reports it).
  */
@@ -157,7 +161,7 @@ function sensitiveOutputChoices(
 ): { choice: SensitiveOutputVaultChoice; key?: string }[] {
   const choices: { choice: SensitiveOutputVaultChoice; key?: string }[] = [];
   for (const [specName, spec] of Object.entries(resources ?? {})) {
-    const fields = extractSensitiveFields(spec.schema);
+    const fields = collectSensitiveFieldMetadata(spec.schema);
     if (!spec.sensitiveOutput && fields.length === 0) continue;
     const overrideVaultName = dataOutputOverrides?.find((o) =>
       o.specName === specName
@@ -169,7 +173,9 @@ function sensitiveOutputChoices(
           overrideVaultName,
           specVaultName: spec.vaultName,
         },
-        key: field.vaultKey,
+        // A field inside an array element or record value is stored under a
+        // key per element, which is only known at write time.
+        key: field.perElement ? undefined : field.vaultKey,
       });
     }
     if (spec.sensitiveOutput) {

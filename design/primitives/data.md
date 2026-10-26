@@ -194,11 +194,14 @@ reserved key.
 **Sensitive fields.** For a resource spec with `{ sensitive: true }` fields or
 `sensitiveOutput: true`, `processSensitiveResourceData` stores each value in a
 vault and replaces it in the payload with
-`${{ vault.get('<vault>', '<key>') }}`. The key is `field.vaultKey` or the
-derived `type/modelId/method/spec/instance/field.path`, where `instance` is the
-data name plus any vary suffix in its key form: kept as written when it is at
-most 32 lowercase letters, digits and `-`, hashed otherwise
-([vaults.md §Vault Key Naming](./vaults.md#vault-key-naming)). The vault is
+`${{ vault.get('<vault>', '<key>') }}`. Marked fields are found wherever they
+sit: nested objects, array elements, record values and union members. The key
+is `field.vaultKey` or the derived `type/modelId/method/spec/instance/field.path`,
+where `instance` is the data name plus any vary suffix in its key form: kept as
+written when it is at most 32 lowercase letters, digits and `-`, hashed
+otherwise ([vaults.md §Vault Key Naming](./vaults.md#vault-key-naming)). A field
+inside an array element or record value gets a key per element, named there
+too. The vault is
 `field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`. The
 default vault is the one `defaultVault` in `.swamp.yaml` names, when it is
 registered. The first user vault is the first in load order: vault configs are

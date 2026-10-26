@@ -172,3 +172,34 @@ Deno.test({
       ],
     }),
 });
+
+Deno.test({
+  name:
+    "serve run vault scope keys: a deny on an array field's declared key prefix refuses at the put before any field is stored",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      const frames = await runMethodAs(f, "minter", "mint", BOT);
+      const message = methodError(frames) ?? "";
+      assertStringIncludes(message, "Writing vault 'outputs' is refused");
+      // Each replica's key extends the declared one and is only known at
+      // write time, so the method ran ...
+      assertEquals(f.sideEffects.count, 1);
+      // ... and nothing was stored ahead of the refusal.
+      assertEquals(await (await f.vaults()).list("outputs"), []);
+      assertEquals(
+        vaultDenials(f.audits).map((d) => [d.resourceName, d.action]),
+        [["outputs", "vault.write"]],
+      );
+    }, {
+      mintReplicaKey: "replica-secret",
+      grants: [
+        ...runnerGrants("user:bot"),
+        grant("user:bot", "vault", "outputs", ["read", "write"]),
+        withCondition(
+          grant("user:bot", "vault", "outputs", ["write"], "deny"),
+          'key.startsWith("replica-secret.")',
+        ),
+      ],
+    }),
+});
