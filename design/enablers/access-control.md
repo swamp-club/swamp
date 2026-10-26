@@ -948,8 +948,11 @@ Serve finds an id's owners through a definition index it keeps between
 requests (`DefinitionIdIndex`, swamp-club#3968), instead of reading every
 definition, auto-definitions included, on each request. The index records only
 which file declares which id. Each request first checks the stat of every
-definition directory. A directory whose stat moved, or is less than 2 s old, is
-listed again, and only its files whose own stat moved are read. The request
+definition directory. A directory whose stat moved, or was less than 2 s old
+when it was last listed, is listed again, and only its files whose own stat
+moved (or was that recent when read) are read. Deciding when a stat is taken
+keeps a write that lands in the same clock tick as a listing from hiding
+behind a stat that only later looks old. The request
 then reads each owner's file itself, so owners are judged on the names and tags
 stored now. Creating, removing or renaming a definition file moves its
 directory's stat, so a change by any process is seen by the next request:

@@ -26,6 +26,7 @@ import {
   DefinitionIdIndex,
 } from "./definition_id_index.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
+import { statRecord } from "./workflow_run_index.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -399,6 +400,35 @@ Deno.test("DefinitionIdIndex: a directory whose stat is too recent to trust is l
     const settled = counter.reads;
     await index.begin();
     assertEquals(counter.reads, settled);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a directory listed while its stat was too recent is listed again once that stat looks old, so a file added in the same tick is found", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, repo } = fixture(dir);
+    let now = Date.now() + 60_000;
+    const typeDir = join(primary, "test", "a");
+    // The directory's stat as a coarse clock reports it: taken within the
+    // window, and not moved by the second file, which lands in the same tick.
+    const frozen = {
+      mtimeMs: now - 500,
+      size: 4096,
+      ctimeMs: now - 500,
+      ino: 1,
+    };
+    const index = new DefinitionIdIndex(repo, {
+      now: () => now,
+      stat: (path) =>
+        path === typeDir ? Promise.resolve(frozen) : statRecord(path),
+    });
+    const first = crypto.randomUUID();
+    const second = crypto.randomUUID();
+    await writeDefinition(join(typeDir, "a.yaml"), first, "a");
+    assertEquals((await owners(index, first)).map((o) => o.name), ["a"]);
+
+    await writeDefinition(join(typeDir, "b.yaml"), second, "b");
+    now += 60_000;
+    assertEquals((await owners(index, second)).map((o) => o.name), ["b"]);
   });
 });
 

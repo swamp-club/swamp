@@ -28,6 +28,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import { withSpan } from "../tracing/mod.ts";
 import { RUN_INDEX_RACY_WINDOW_MS } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
+import { Semaphore } from "../stream/semaphore.ts";
 import { comparePathsBySegment, readDirSorted } from "./sorted_dir_entries.ts";
 import { warnUnreadableLeftOut } from "./unreadable_records.ts";
 import {
@@ -36,8 +37,15 @@ import {
   statRecord,
 } from "./workflow_run_index.ts";
 
-/** How many files of one directory are stat'ed or read at once. */
+/** How many files of one directory a listing stat's or reads at once. */
 const FILE_CONCURRENCY = 64;
+
+/**
+ * How many files an index's listings stat or read at once, together: right
+ * after a write, overlapping requests may each list the same directory, and
+ * must not open a descriptor per file each.
+ */
+const MAX_OPEN_FILES = 32;
 
 type FoundDefinition = { definition: Definition; type: ModelType };
 
@@ -59,13 +67,22 @@ export interface DefinitionFileSource {
 export interface DefinitionIdIndexOptions {
   racyWindowMs?: number;
   now?: () => number;
+  /**
+   * Stats a directory or file, following symlinks: null when it is gone,
+   * undefined when the platform gives no mtime. Defaults to `statRecord`.
+   */
+  stat?: (path: string) => Promise<RecordFingerprint | undefined | null>;
 }
 
 /** A definition file as last listed. */
 interface IndexedFile {
   /** The id it declared when last read; undefined when it did not parse. */
   id: string | undefined;
-  /** Undefined when the platform gives no mtime, or it must be read again. */
+  /**
+   * Its stat when read, kept only when old enough to rule out a change
+   * within the same clock tick. Undefined when there was none to keep, or a
+   * lookup found it rewritten: such a file is stat'ed on every check.
+   */
   fingerprint: RecordFingerprint | undefined;
   readonly isSymlink: boolean;
 }
@@ -75,7 +92,10 @@ interface IndexedDir {
   readonly root: number;
   /** Its path below its root: the type of a file in it that declares none. */
   readonly segments: readonly string[];
-  /** Its stat when listed; undefined when there was no mtime to compare. */
+  /**
+   * Its stat when listed, kept only when old enough to rule out a change
+   * within the same clock tick; undefined otherwise, so it is listed again.
+   */
   readonly stamp: RecordFingerprint | undefined;
   /** The listing's ticket: a listing never replaces a later one. */
   readonly ticket: number;
@@ -98,8 +118,9 @@ interface ValidationCounts {
  * declared the id now, so its name and tags are current, and moves a file
  * that no longer declares it. {@link begin} checks every directory's stat,
  * as {@link RunIndexCache} does a run index: a directory whose stat moved,
- * or is too recent to rule out a change within the same clock tick, is
- * listed again, and of its files only those whose own stat moved are read.
+ * or was too recent when it was listed to rule out a change within the same
+ * clock tick, is listed again, and of its files only those whose own stat
+ * moved, or was too recent when read, are read again.
  * Creating, removing or renaming a file moves its directory's stat, so any
  * writer — this process, a CLI, a datastore pull — is seen by the next
  * request. A file that failed to parse, a file a lookup found rewritten,
@@ -123,13 +144,18 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   readonly #source: DefinitionFileSource;
   readonly #racyWindowMs: number;
   readonly #now: () => number;
+  readonly #stat: (
+    path: string,
+  ) => Promise<RecordFingerprint | undefined | null>;
   readonly #dirs = new Map<string, IndexedDir>();
   readonly #pathsById = new Map<string, Set<string>>();
   #definitions = 0;
+  readonly #openFiles = new Semaphore(MAX_OPEN_FILES);
   readonly #listing = new Map<
     string,
     {
       ticket: number;
+      /** The stat it lists from, when it was settled as it was taken. */
       stamp: RecordFingerprint | undefined;
       read: SharedIndexRead<number>;
     }
@@ -143,6 +169,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     this.#source = source;
     this.#racyWindowMs = options.racyWindowMs ?? RUN_INDEX_RACY_WINDOW_MS;
     this.#now = options.now ?? Date.now;
+    this.#stat = options.stat ?? statRecord;
   }
 
   /**
@@ -195,7 +222,8 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     // Any listing started from here on reads what was stored before this
     // check began, so it may be shared whatever its stat.
     const checkedAt = ++this.#ticket;
-    const stamp = await statRecord(path);
+    const statAt = this.#now();
+    const stamp = this.#settled(await this.#stat(path), statAt);
     signal?.throwIfAborted();
     if (stamp === null) {
       this.#drop(path);
@@ -291,44 +319,66 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     }
     let parsed = 0;
     await inBatches(yamlFiles, signal, async (entry) => {
-      const filePath = join(path, entry.name);
-      const fingerprint = await statRecord(filePath);
-      if (fingerprint === null) {
-        // A symlink whose target is missing stays listed, so its target is
-        // stat'ed on each check and read once it appears: the link's own
-        // directory need not change when it does.
-        if (entry.isSymlink) {
-          files.set(entry.name, {
-            id: undefined,
-            fingerprint: undefined,
-            isSymlink: true,
-          });
-        }
-        return;
+      await this.#openFiles.acquire(signal);
+      try {
+        parsed += await this.#listFile(
+          path,
+          entry,
+          segments,
+          previous,
+          files,
+        );
+      } finally {
+        this.#openFiles.release();
       }
-      const known = previous?.files.get(entry.name);
-      if (
-        known?.id !== undefined && fingerprint &&
-        this.#trusted(known.fingerprint, fingerprint)
-      ) {
-        files.set(entry.name, known);
-        return;
-      }
-      const found = await this.#source.readDefinitionFile(
-        filePath,
-        [...segments],
-        entry.isSymlink,
-      );
-      parsed++;
-      files.set(entry.name, {
-        id: found?.definition.id,
-        fingerprint,
-        isSymlink: entry.isSymlink,
-      });
     });
     signal.throwIfAborted();
     this.#commit(path, { root, segments, stamp, ticket, files, dirs });
     return parsed;
+  }
+
+  /** Lists one file of a directory into `files`; 1 when it was read. */
+  async #listFile(
+    path: string,
+    entry: Deno.DirEntry,
+    segments: readonly string[],
+    previous: IndexedDir | undefined,
+    files: Map<string, IndexedFile>,
+  ): Promise<number> {
+    const filePath = join(path, entry.name);
+    const statAt = this.#now();
+    const fingerprint = this.#settled(await this.#stat(filePath), statAt);
+    if (fingerprint === null) {
+      // A symlink whose target is missing stays listed, so its target is
+      // stat'ed on each check and read once it appears: the link's own
+      // directory need not change when it does.
+      if (entry.isSymlink) {
+        files.set(entry.name, {
+          id: undefined,
+          fingerprint: undefined,
+          isSymlink: true,
+        });
+      }
+      return 0;
+    }
+    const known = previous?.files.get(entry.name);
+    if (
+      known?.id !== undefined && this.#trusted(known.fingerprint, fingerprint)
+    ) {
+      files.set(entry.name, known);
+      return 0;
+    }
+    const found = await this.#source.readDefinitionFile(
+      filePath,
+      [...segments],
+      entry.isSymlink,
+    );
+    files.set(entry.name, {
+      id: found?.definition.id,
+      fingerprint,
+      isSymlink: entry.isSymlink,
+    });
+    return 1;
   }
 
   /**
@@ -351,11 +401,10 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       }
       signal?.throwIfAborted();
       const filePath = join(path, name);
-      const fingerprint = await statRecord(filePath);
+      const statAt = this.#now();
+      const fingerprint = this.#settled(await this.#stat(filePath), statAt);
       if (fingerprint === null) continue;
-      if (fingerprint && this.#trusted(file.fingerprint, fingerprint)) {
-        continue;
-      }
+      if (this.#trusted(file.fingerprint, fingerprint)) continue;
       const found = await this.#source.readDefinitionFile(
         filePath,
         [...dir.segments],
@@ -383,7 +432,9 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     for (const { path, dir } of paths) {
       signal?.throwIfAborted();
       const file = dir?.files.get(basename(path));
-      if (!dir || !file) {
+      // Gone since it was listed (the view lasts the whole request): it owns
+      // nothing, and is no broken definition to warn about.
+      if (!dir || !file || (await this.#stat(path)) === null) {
         this.#unindex(id, path);
         continue;
       }
@@ -407,10 +458,30 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 
   /**
-   * Whether a stored stat still describes what `current` describes, and is
-   * old enough to rule out a change within the same clock tick. A time in
-   * the future is never trusted. The ctime counts as well as the mtime: a
-   * rewrite that sets the mtime back moves only the ctime.
+   * `stat` when it was old enough, as it was taken at `statAt`, to rule out
+   * a change within the same clock tick, else undefined; null (gone) as is.
+   * Deciding when a stat is taken, not when it is compared, is what keeps a
+   * change made in the tick after a listing from hiding behind a stat that
+   * only later looks old (the racy-git problem). A time in the future is
+   * never settled. The ctime counts as well as the mtime: a rewrite that sets
+   * the mtime back moves only the ctime.
+   */
+  #settled(
+    stat: RecordFingerprint | undefined | null,
+    statAt: number,
+  ): RecordFingerprint | undefined | null {
+    if (!stat) return stat;
+    const threshold = statAt - this.#racyWindowMs;
+    return stat.mtimeMs <= threshold &&
+        (stat.ctimeMs === undefined || stat.ctimeMs <= threshold)
+      ? stat
+      : undefined;
+  }
+
+  /**
+   * Whether a stored stat, settled when it was taken, still describes what
+   * `current` describes, and is old enough to rule out a change within the
+   * same clock tick.
    */
   #trusted(
     stored: RecordFingerprint | undefined,

@@ -160,7 +160,12 @@ function describe(
   ) => [f.type.normalized, f.definition.name, f.definition.tags]);
 }
 
-Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-place edits, answers every id as a scan of every definition does", async () => {
+/**
+ * After any sequence of writes, removals and in-place edits, the index
+ * answers every id as a scan of every definition does, with its clock at
+ * `clockAhead` ms past the real one.
+ */
+async function assertMatchesScan(clockAhead: number, numRuns: number) {
   await fc.assert(
     fc.asyncProperty(
       fc.array(opArb, { minLength: 1, maxLength: 12 }),
@@ -178,7 +183,7 @@ Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-plac
             roots[1],
           );
           const index = new DefinitionIdIndex(repo, {
-            now: () => Date.now() + 60_000,
+            now: () => Date.now() + clockAhead,
           });
           for (const op of ops) {
             await apply(roots, op);
@@ -202,8 +207,17 @@ Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-plac
         }
       },
     ),
-    { numRuns: 50 },
+    { numRuns },
   );
+}
+
+Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-place edits, answers every id as a scan of every definition does", async () => {
+  await assertMatchesScan(60_000, 50);
+});
+
+Deno.test("DefinitionIdIndex: answers as a scan does while every stat is too recent to trust", async () => {
+  // On the real clock the ctime each write sets is within the window.
+  await assertMatchesScan(0, 20);
 });
 
 Deno.test("DefinitionIdIndex: a regular file overwritten in place to declare another id is not an owner of it until its directory changes", async () => {
