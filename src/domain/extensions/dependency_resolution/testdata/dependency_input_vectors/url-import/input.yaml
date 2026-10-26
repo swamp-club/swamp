@@ -1,0 +1,13 @@
+description: "A URL import."
+files:
+  "extensions/models/m.ts": |
+    import { remote } from "{{ORIGIN}}/url/mod.ts";
+
+    export const model = [remote];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

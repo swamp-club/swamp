@@ -1,0 +1,72 @@
+{
+  "project": {
+    "config": "deno.json",
+    "packageDir": null,
+    "lock": null,
+    "flags": [
+      "--config",
+      "<root>/deno.json",
+      "--no-lock"
+    ]
+  },
+  "bareImports": [
+    {
+      "importer": "extensions/models/m.ts",
+      "specifier": "@vec/lib",
+      "target": "jsr:@vec/lib@1.0.0"
+    }
+  ],
+  "fmt": {
+    "config": "deno.json"
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import { lib } from \"jsr:@vec/lib@1.0.0\";\n\nexport const model = [lib];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": [
+      {
+        "registry": "jsr",
+        "name": "@vec/lib",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "exact"
+      }
+    ]
+  },
+  "audited": [
+    {
+      "registry": "jsr",
+      "name": "@vec/lib",
+      "version": "1.0.0",
+      "sourceFile": "extensions/models/m.ts",
+      "importedAs": "@vec/lib"
+    }
+  ],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": true,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

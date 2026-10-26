@@ -1,0 +1,66 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": null,
+    "lock": null,
+    "flags": [
+      "--no-lock",
+      "--node-modules-dir=none"
+    ]
+  },
+  "bareImports": [],
+  "fmt": {
+    "config": null
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "export const model = () => import(\"npm:vecpkg@1.0.0\");\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": [
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "exact"
+      }
+    ]
+  },
+  "audited": [
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "1.0.0",
+      "sourceFile": "extensions/models/m.ts"
+    }
+  ],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [
+    "fmt-lint: Extension has formatting or lint issues. Run 'swamp extension fmt <manifest-path>' to fix."
+  ],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": false,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

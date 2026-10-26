@@ -1,0 +1,33 @@
+description: "An importMap file whose scope maps a name differently for one directory."
+files:
+  "deno.json": |
+    {
+      "importMap": "./import_map.json"
+    }
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "extensions/models/scoped/s.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "import_map.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@1.1.0"
+      },
+      "scopes": {
+        "./extensions/models/scoped/": {
+          "vecpkg": "npm:vecpkg@1.0.0"
+        }
+      }
+    }
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+      - scoped/s.ts

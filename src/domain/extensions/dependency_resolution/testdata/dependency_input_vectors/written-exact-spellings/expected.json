@@ -1,0 +1,24 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": null,
+    "lock": null,
+    "flags": [
+      "--no-lock",
+      "--node-modules-dir=none"
+    ]
+  },
+  "bareImports": [],
+  "fmt": {
+    "config": null
+  },
+  "pushError": "validation_failed: Bundle compilation failed. Fix the errors above and try again.",
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": false,
+      "zod4": [],
+      "bundle": "deno bundle failed for <root>/extensions/models/m.ts: ⚠️  deno bundle is experimental and subject to changes\nDownload {{ORIGIN}}/vecpkg\nerror: Plugin \"deno\" returned a non-absolute path: npm:vecpkg@=1.0.0 (set a namespace if this is not a file path)\n    at file://<root>/extensions/models/m.ts:1:14\nerror: Could not find constraint 'vecpkg@v1.0.0' in the list of packages.\n    at file://<root>/extensions/models/m.ts:2:14\nerror: bundling failed"
+    }
+  }
+}

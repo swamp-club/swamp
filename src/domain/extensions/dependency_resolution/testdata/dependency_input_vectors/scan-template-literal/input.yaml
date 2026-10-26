@@ -1,0 +1,15 @@
+description: "npm: text inside a template literal of generated code."
+files:
+  "extensions/models/m.ts": |
+    import value from "npm:vecpkg@1.0.0";
+
+    export const generated = `import other from "npm:vecpkg@1.1.0";`;
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

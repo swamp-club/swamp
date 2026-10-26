@@ -1,0 +1,29 @@
+description: "deno.json and package.json side by side; deno.json wins."
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@^1"
+      }
+    }
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"

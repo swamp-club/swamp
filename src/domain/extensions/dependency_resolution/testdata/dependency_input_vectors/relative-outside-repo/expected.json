@@ -1,0 +1,3 @@
+{
+  "resolveError": "Local module <root>/outside.ts (imported from <root>/repo/extensions/models/m.ts) resolves to <root>/outside.ts, outside the repository and the extensions root, so push cannot include it in the archive. Move it inside the repository."
+}

@@ -1,0 +1,24 @@
+description: "zod 4, written and mapped, is the host's."
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "zod": "npm:zod@^4.1.0"
+      }
+    }
+  "extensions/models/m.ts": |
+    import { z } from "zod";
+
+    export const model = [z];
+  "extensions/models/w.ts": |
+    import { z } from "npm:zod@4.1.0";
+
+    export const model = [z];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+      - w.ts

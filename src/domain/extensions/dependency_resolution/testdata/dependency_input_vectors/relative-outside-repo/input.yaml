@@ -1,0 +1,16 @@
+description: "A relative import of a module outside the repository."
+repo: repo
+files:
+  "outside.ts": |
+    export const outside = 1;
+  "repo/extensions/models/m.ts": |
+    import { outside } from "../../../outside.ts";
+
+    export const model = [outside];
+  "repo/manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

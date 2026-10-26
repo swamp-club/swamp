@@ -1,0 +1,13 @@
+description: "Two imports on one line, the first a URL."
+files:
+  "extensions/models/m.ts": |
+    import { remote } from "{{ORIGIN}}/url/mod.ts"; import value from "npm:vecpkg@1.0.0";
+
+    export const model = [remote, value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

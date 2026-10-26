@@ -1,0 +1,13 @@
+description: "A written zod 3 import."
+files:
+  "extensions/models/m.ts": |
+    import { z } from "npm:zod@3.23.0";
+
+    export const model = [z];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

@@ -1,0 +1,28 @@
+description: "A written npm: range beside the installed copy of the same package (#3793)."
+files:
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "extensions/models/w.ts": |
+    import value from "npm:vecpkg@^1.0.0";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+      - w.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"
