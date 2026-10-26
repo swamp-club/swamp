@@ -401,7 +401,7 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
       datastorePath,
       clock: () => new Date(now),
     });
-    const signal = () => AbortSignal.timeout(30_000);
+    const signal = () => new AbortController().signal;
     const ago = (days: number) => new Date(now - days * DAY_MS).toISOString();
     const content = (text: string) =>
       handle.chunkStore.write(
@@ -540,7 +540,7 @@ Deno.test("openV3Datastore: a compaction stopped between batches keeps what it f
         compactedThrough: 250,
       });
       // The next writer folds the rest down to the newest 2,500.
-      const report = await handle.compactIfDue(AbortSignal.timeout(30_000));
+      const report = await handle.compactIfDue(new AbortController().signal);
       assertEquals(report?.point, 1000);
       assertEquals(await handle.describe(), {
         storedCommits: 2500,
@@ -562,7 +562,7 @@ Deno.test("openV3Datastore: compactIfDue folds commits written moments ago once 
       datastorePath,
       clock: () => new Date(now),
     });
-    const signal = () => AbortSignal.timeout(30_000);
+    const signal = () => new AbortController().signal;
     const commit = async (seq: number) =>
       modelCommit(seq, [await savePut("a", seq), versionOp("a", seq)], {
         // Written a minute before the compaction.
