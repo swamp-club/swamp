@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
+  deliveredJsonValue,
   holdsValue,
   isIssuedEntry,
   jsonEscaped,
@@ -234,4 +235,26 @@ Deno.test("restoreScalar: restores a number or boolean, and a rotated value fail
   }
   assertEquals(jsonEscaped('a"b\\c'), 'a\\"b\\\\c');
   assertEquals(SECRET_ENCODINGS, ["raw", "json", "number", "boolean"]);
+});
+
+Deno.test("deliveredJsonValue: the number or boolean canonical JSON text holds, and the text itself for an object, a list, a string, null, a non-canonical number or text that is not JSON (swamp-club#3967)", () => {
+  assertEquals(deliveredJsonValue("8080"), 8080);
+  assertEquals(deliveredJsonValue("-1.5"), -1.5);
+  assertEquals(deliveredJsonValue("true"), true);
+  assertEquals(deliveredJsonValue("false"), false);
+  for (
+    const text of [
+      '{"a":["b",1]}',
+      "[1,2]",
+      '"text"',
+      "null",
+      "8080.0",
+      "1e3",
+      " 8080",
+      "not json",
+      "",
+    ]
+  ) {
+    assertEquals(deliveredJsonValue(text), text, text);
+  }
 });

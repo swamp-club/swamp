@@ -79,6 +79,7 @@ import {
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
 import {
   parseStoredVaultReference,
+  readSensitiveFieldJsonPlaces,
   readSensitiveFieldPlaces,
   type SensitiveFieldsTag,
   SensitiveFieldsTagInvalidError,
@@ -227,12 +228,17 @@ const pathKey = (path: readonly string[]): string => JSON.stringify(path);
 class Validation {
   private readonly root: PathNode = { children: new Map() };
   private readonly location: string;
+  /** The places whose vault value is JSON text, by {@link pathKey}. */
+  private readonly jsonPlaces: ReadonlySet<string>;
 
   constructor(
     private readonly record: RecordLike,
     private readonly accessor: DataAccessor,
   ) {
     this.location = `${accessor} of ${describeRecord(record, accessor)}`;
+    this.jsonPlaces = new Set(
+      readSensitiveFieldJsonPlaces(record.tags).map(pathKey),
+    );
   }
 
   private refuse(reason: string): never {
@@ -249,6 +255,7 @@ class Validation {
     nodeAt(this.root, path).secret = dataReferenceSecret(
       reference,
       `${this.location}, field '${path.join(".")}'`,
+      this.jsonPlaces.has(pathKey(path)),
     );
   }
 

@@ -4972,6 +4972,32 @@ Deno.test("executeWorkflow - placed step ships its secret bag and unresolved arg
   assertEquals(request.secretReferences, [{ vaultName: "v", key: "token" }]);
 });
 
+Deno.test("executeWorkflow - a placed step ships a JSON-value data reference with its mark, delivers the value in the resolved args and its text for redaction (swamp-club#3967)", async () => {
+  const secretBag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = secretBag.addDataReference(
+    { vaultName: "v", key: "port" },
+    "data.latest of model 'app' record r1 version 1 (data.latest), field 'spec.services.0.port'",
+    true,
+  );
+  const { loader } = mockLoader({ port: "8080" });
+
+  const request = await captureRemoteRequest(secretBag, {
+    counter: sentinel,
+    value: `p-${sentinel}`,
+  }, loader);
+
+  assertEquals(request.methodArgs.counter, 8080);
+  assertEquals(request.methodArgs.value, "p-8080");
+  assertEquals(request.unresolvedMethodArgs?.counter, sentinel);
+  assertEquals(request.secretBag, [{
+    sentinel,
+    value: "8080",
+    dataOrigin: true,
+    jsonValue: true,
+  }]);
+  assertEquals(request.secretValues?.includes("8080"), true);
+});
+
 Deno.test("executeWorkflow - placed step without secrets ships no bag fields", async () => {
   const request = await captureRemoteRequest(undefined, { value: "plain" });
   assertEquals(request.methodArgs.value, "plain");

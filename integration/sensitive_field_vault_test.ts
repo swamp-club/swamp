@@ -80,6 +80,15 @@ import {
 } from "../src/libswamp/workflows/approve.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { initializeTestRepo } from "./test_helpers.ts";
+import { SecretBoundary } from "../src/infrastructure/cel/secret_boundary.ts";
+import { SecretBagRegistry } from "../src/domain/vaults/secret_bag_registry.ts";
+import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
+import { SecretLoader } from "../src/domain/vaults/secret_loader.ts";
+import {
+  rehydrateReferences,
+  toPersistedForm,
+} from "../src/domain/secrets/persisted_sensitive_form.ts";
+import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 
@@ -1006,6 +1015,70 @@ Deno.test("Integration: CEL reads every vaulted place of an array, record and un
         // stays text.
         assertEquals(app.notes, appData().notes);
       });
+    } finally {
+      w.catalog.close();
+    }
+  });
+});
+
+Deno.test("Integration: a number the JSON tag lists reaches a step as a number at a whole value, an object as its JSON text, and both as text inside text, also after a persisted round trip (swamp-club#3967)", async () => {
+  await withTempDir(async (dir) => {
+    const w = await writeApp(dir);
+    try {
+      // As data.latest() reads it, released from CEL into a run's bag.
+      const stored = await fromData(
+        w.record,
+        w.modelType,
+        w.modelId,
+        w.dataRepo,
+      );
+      const values = new RunSensitiveValues(
+        undefined,
+        new SecretBagRegistry(),
+      );
+      const bag = new VaultSecretBag(values.sentinels);
+      const args = runInFaultScope(() => {
+        const view = adaptDataRecord(stored, undefined, "data.latest") as {
+          attributes: ReturnType<typeof appData>;
+        };
+        const service = (view.attributes.spec as AppServices).services[0];
+        const boundary = new SecretBoundary(bag);
+        const port = boundary.release(service.port) as string;
+        const env = boundary.release(service.env) as string;
+        const token = boundary.release(
+          (service.image as Record<string, unknown>).registry_credentials,
+        ) as string;
+        return {
+          port,
+          nested: { env, list: [port] },
+          token,
+          text: `port=${port} env=${env}`,
+        };
+      });
+      const loader = new SecretLoader(() => Promise.resolve(w.vaultService));
+      // The port as the number written; the env map as its JSON text, which
+      // is what the run's redactor holds.
+      const expected = {
+        port: 8080,
+        nested: { env: '{"API_KEY":"env-web"}', list: [8080] },
+        token: "registry-zero",
+        text: 'port=8080 env={"API_KEY":"env-web"}',
+      };
+      assertEquals((await loader.load(bag, args)).resolveDeep(args), expected);
+
+      // A resumed run restores the references with their marks.
+      const form = toPersistedForm(args, values);
+      const resumed = new VaultSecretBag(new SecretBagRegistry());
+      const restored = rehydrateReferences(
+        form.data,
+        form.writtenReferences,
+        resumed,
+        "run-1",
+      );
+      assertEquals(
+        (await loader.load(resumed, restored)).resolveDeep(restored),
+        expected,
+      );
     } finally {
       w.catalog.close();
     }

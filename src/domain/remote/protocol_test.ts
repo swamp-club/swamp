@@ -160,6 +160,29 @@ Deno.test("DispatchParamsSchema: carries the unresolved args and secret bag (swa
   assertEquals(parsed.execution.methodArgs, { run: "echo s3cret" });
 });
 
+Deno.test("DispatchParamsSchema: a secret bag entry carries its JSON-value mark, which a worker that predates it drops (swamp-club#3967)", () => {
+  const sentinel = `__SWAMP_VSEC_${"0a1b2c3d".repeat(4)}_0__`;
+  const dispatch = {
+    ...dispatchWithSecretBag(sentinel),
+    secretBag: [{ sentinel, value: "8080", dataOrigin: true, jsonValue: true }],
+  };
+  const parsed = DispatchParamsSchema.parse(
+    JSON.parse(JSON.stringify(dispatch)),
+  );
+  assertEquals(parsed.secretBag, [{
+    sentinel,
+    value: "8080",
+    dataOrigin: true,
+    jsonValue: true,
+  }]);
+  assertThrows(() =>
+    DispatchParamsSchema.parse({
+      ...dispatch,
+      secretBag: [{ sentinel, value: "8080", dataOrigin: true, jsonValue: 1 }],
+    })
+  );
+});
+
 Deno.test("DispatchParamsSchema: rejects a malformed secret bag sentinel", () => {
   assertThrows(() =>
     DispatchParamsSchema.parse(dispatchWithSecretBag("$(touch /tmp/x)"))

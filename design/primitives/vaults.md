@@ -917,10 +917,11 @@ read what it holds.
   earlier writer already vaulted, top-level or nested only in objects, keeps
   reading back as its JSON text (swamp-club#3480). Releases before
   swamp-club#3038 ignore the third tag and read those values as text too. An
-  expression reads every vaulted place as a `Secret`, which delivers the stored
-  text, so such a value delivered from an expression is its JSON text as
-  well (see
-  [Values Read Through Expressions](#values-read-through-expressions)).
+  expression reads every vaulted place as a `Secret`; one at a place the third
+  tag lists that holds a number or boolean is delivered as that number or
+  boolean when the expression's result is that whole value. An object or list
+  there, and any such value inside other text, is delivered as its JSON text
+  (see [Values Read Through Expressions](#values-read-through-expressions)).
 - Fields with `null` or `undefined` values are skipped.
 - If there are sensitive fields but no vault, swamp throws an error that says
   to create a vault.
@@ -1020,11 +1021,27 @@ live, reconstructed or child step outputs. The adapter checks tags and reference
 and authorizes reads before using the result. A place only
 `_swamp.sensitiveFieldKeys` names, under a record key holding a dot, an empty
 key or a prototype property's name, is a `Secret` the same way. A `Secret`
-delivers its vault value as text: a non-string value `_swamp.sensitiveFieldJson`
-lists (an array element, record value or union member's field), which
-`readResource` returns as a number or object, is delivered from an expression as
-its JSON text. Foreign-namespace references stay inert. No
-accessor loads a plaintext secret into CEL.
+delivers its vault value as text, with one exception for a non-string value
+`_swamp.sensitiveFieldJson` lists (an array element, record value or union
+member's field). Its `Secret` is marked as JSON text (swamp-club#3967). Where an
+argument is exactly that `Secret`, alone or inside an object or array, and its
+text is a number or boolean, it reaches the method as that number or boolean: a
+port as `8080`. An object or list, such as an `env` map, reaches it as its JSON
+text, as it does on the swamp-club#3038 release: the run's redactor matches
+text, and a parsed object prints in layouts no registered text predicts, so
+delivering it as text keeps it masked in every log. Interpolated into other
+text, or in a shell command, any of them is its JSON text. A field inside it
+cannot be selected in the expression (`env.API_KEY` finds no key), since a
+`Secret` has none. Foreign-namespace references stay inert. No accessor loads
+a plaintext secret into CEL.
+
+Upgrading from a release that carries swamp-club#3038 but not swamp-club#3967:
+those releases delivered such a number or boolean as its text. A definition
+that passes it whole into a `z.string()` argument now fails that argument's
+parse, and one that reads it through `z.unknown()` gets a number or boolean. To
+keep the text, interpolate the value into other text. Objects and lists are
+delivered as before. A definition written before swamp-club#3038 receives a
+number or boolean as it did then.
 
 A secret can be passed, concatenated with text or another secret, tested against
 `null`, and observed with `type` (which exposes only `Secret`). Comparisons to

@@ -21,6 +21,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
 import { planShellPlacement, VaultSecretBag } from "./vault_secret_bag.ts";
 import {
+  deliveredJsonValue,
   holdsValue,
   isIssuedEntry,
   type RegistryEntry,
@@ -461,6 +462,34 @@ Deno.test("planShellPlacement: the plan and the resolution agree on every occurr
           plan.refused.length > 0,
           dataOrigin && placements.includes("heredoc-literal"),
         );
+      },
+    ),
+  );
+});
+
+Deno.test("VaultSecretBag.resolveDeep: a sentinel delivers its text everywhere but a whole value of a JSON-value entry, which delivers the number or boolean its text holds (swamp-club#3967)", () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(
+        fc.string(),
+        fc.jsonValue().map((value) => JSON.stringify(value)),
+      ),
+      fc.boolean(),
+      fc.string(),
+      (text, jsonValue, prefix) => {
+        const bag = new VaultSecretBag(new SecretBagRegistry());
+        const sentinel = bag.addDataReference(REF, "field", jsonValue);
+        const view = bag.withLoaded(new Map([[sentinel, text]]));
+        const delivered = view.resolveDeep({
+          whole: sentinel,
+          list: [sentinel],
+          embedded: `${prefix}${sentinel}!`,
+        }) as Record<string, unknown>;
+        const whole = jsonValue ? deliveredJsonValue(text) : text;
+        assertEquals(delivered.whole, whole);
+        assertEquals(delivered.list, [whole]);
+        assertEquals(delivered.embedded, `${prefix}${text}!`);
+        assertEquals(view.resolveRaw(sentinel), text);
       },
     ),
   );

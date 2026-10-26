@@ -86,6 +86,8 @@ export interface SecretBagEntry {
   value: string;
   /** True when the secret reached the step through a data read. */
   dataOrigin: boolean;
+  /** See {@link DataReferenceEntry.jsonValue}. */
+  jsonValue?: true;
 }
 
 /**
@@ -130,6 +132,14 @@ export interface DataReferenceEntry {
   dataOrigin: true;
   /** The record and field the reference was read from, for a load's errors. */
   location: string;
+  /**
+   * Set when the vault value is the JSON text of a value that is not a
+   * string (a place `_swamp.sensitiveFieldJson` lists). It describes the
+   * value, not where the sentinel stands, so it sits beside the encoding: a
+   * sentinel that is a whole value delivers the number or boolean its text
+   * holds ({@link deliveredJsonValue}).
+   */
+  jsonValue?: true;
 }
 
 /** An issued entry that holds no value, so a delivery loads one. */
@@ -155,6 +165,39 @@ export function isIssuedEntry(
   entry: RegistryEntry,
 ): entry is IssuedSecretBagEntry {
   return "reference" in entry;
+}
+
+/**
+ * Whether an entry's vault value is the JSON text of a value that is not a
+ * string ({@link DataReferenceEntry.jsonValue}). Only a data-origin entry is.
+ */
+export function isJsonValueEntry(entry: RegistryEntry): boolean {
+  return entry.dataOrigin && "jsonValue" in entry && entry.jsonValue === true;
+}
+
+/**
+ * What a whole-value JSON-value entry delivers for its loaded `text`: the
+ * number or boolean the text holds, so a port arrives as `8080`, and `text`
+ * itself for anything else. An object or list stays its JSON text, as the
+ * releases since swamp-club#3038 deliver it: the run's redactor matches text,
+ * and a parsed object prints in layouts and key orders no registered text
+ * predicts, while a number or boolean prints as exactly the text the loader
+ * registered (swamp-club#3967). So a scalar is parsed only when it prints
+ * back as exactly `text`, as the writer's own JSON text does: `8080.0` or
+ * `1e3` stays text. Text that is not JSON, after a rotation, stays text, as
+ * `readResource` keeps it.
+ */
+export function deliveredJsonValue(text: string): string | number | boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  return (typeof value === "number" || typeof value === "boolean") &&
+      String(value) === text
+    ? value
+    : text;
 }
 
 /** Whether an entry holds its value, which a reference-only entry never does. */

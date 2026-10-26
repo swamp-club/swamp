@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import {
+  isJsonValueEntry,
   SECRET_ENCODINGS,
   type SecretEncoding,
 } from "../vaults/secret_bag_registry.ts";
@@ -50,6 +51,12 @@ export interface WrittenReference {
   encoding: SecretEncoding;
   /** Whether the value reached the file through a data read. */
   dataOrigin: boolean;
+  /**
+   * Set when the vault value is the JSON text of a value that is not a
+   * string, so a whole-value delivery parses it. Optional, so a reader that
+   * predates it drops it and delivers the text, as it always did.
+   */
+  jsonValue?: true;
 }
 
 /** Validates `writtenReferences` read back from a repo-local file. */
@@ -60,6 +67,7 @@ export const WrittenReferenceSchema = z.object({
   key: z.string().min(1),
   encoding: z.enum(SECRET_ENCODINGS),
   dataOrigin: z.boolean(),
+  jsonValue: z.literal(true).optional(),
 });
 
 /**
@@ -118,6 +126,7 @@ export function toPersistedForm<T>(
       key: entry.reference.key,
       encoding: entry.encoding,
       dataOrigin: entry.dataOrigin,
+      ...(isJsonValueEntry(entry) ? { jsonValue: true as const } : {}),
     };
   };
 
@@ -228,6 +237,7 @@ export function rehydrateReferences<T>(
       entry.encoding,
       sensitiveFormat < 3 || entry.dataOrigin,
       `${label}: ${spellPath(entry.path)}`,
+      entry.jsonValue === true,
     );
     replaceAt(restored, entry, vaultReferenceText(entry), sentinel);
   }

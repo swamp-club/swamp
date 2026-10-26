@@ -28,6 +28,7 @@ import {
   rehydrateReferences,
   toPersistedForm,
   type WrittenReference,
+  WrittenReferenceSchema,
 } from "./persisted_sensitive_form.ts";
 import {
   RunSensitiveValues,
@@ -333,4 +334,76 @@ Deno.test("toPersistedForm: a sentinel becomes its reference while a coincidenta
     toPersistedForm(data, empty).data === data,
     true,
   );
+});
+
+Deno.test("toPersistedForm and rehydrateReferences: a JSON-value data reference persists with its mark and is restored with it, so a resumed run delivers the value (swamp-club#3967)", () => {
+  const { values, bag } = typedRun();
+  const port = { vaultName: "prod", key: "port" };
+  const sentinel = bag.addDataReference(
+    port,
+    "data.latest of model 'app' record r1 version 1 (data.latest), field 'spec.services.0.port'",
+    true,
+  );
+  const plain = bag.addDataReference(source, "field password");
+  const form = toPersistedForm({ port: sentinel, password: plain }, values);
+  assertEquals(form.writtenReferences, [
+    {
+      path: ["port"],
+      occurrence: 0,
+      vaultName: "prod",
+      key: "port",
+      encoding: "raw",
+      dataOrigin: true,
+      jsonValue: true,
+    },
+    {
+      path: ["password"],
+      occurrence: 0,
+      vaultName: "prod",
+      key: "db-password",
+      encoding: "raw",
+      dataOrigin: true,
+    },
+  ]);
+  for (const entry of form.writtenReferences) {
+    assertEquals(WrittenReferenceSchema.parse(entry), entry);
+  }
+
+  const resumed = typedRun();
+  const restored = rehydrateReferences(
+    form.data,
+    form.writtenReferences,
+    resumed.bag,
+    "run-1",
+  );
+  const view = resumed.bag.withLoaded(
+    new Map([[restored.port, "8080"], [restored.password, secret]]),
+  );
+  assertEquals(view.resolveDeep(restored), { port: 8080, password: secret });
+  // And it persists back as it was read.
+  assertEquals(
+    toPersistedForm(restored, resumed.values).writtenReferences,
+    form.writtenReferences,
+  );
+});
+
+Deno.test("WrittenReferenceSchema: the JSON-value mark is optional and only true, and a reader that predates it drops it (swamp-club#3967)", () => {
+  const entry: WrittenReference = {
+    path: ["port"],
+    occurrence: 0,
+    vaultName: "prod",
+    key: "port",
+    encoding: "raw",
+    dataOrigin: true,
+  };
+  assertEquals(WrittenReferenceSchema.parse(entry), entry);
+  assertEquals(
+    WrittenReferenceSchema.parse({ ...entry, jsonValue: true }).jsonValue,
+    true,
+  );
+  assertThrows(() =>
+    WrittenReferenceSchema.parse({ ...entry, jsonValue: false })
+  );
+  const older = WrittenReferenceSchema.omit({ jsonValue: true });
+  assertEquals(older.parse({ ...entry, jsonValue: true }), entry);
 });

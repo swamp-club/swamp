@@ -187,6 +187,32 @@ Deno.test("otel_log_sink: redacts active-run secrets in body and string attribut
   }
 });
 
+Deno.test("otel_log_sink: masks a number or boolean attribute whose text is a registered secret, and keeps one that only contains it (swamp-club#3967)", async () => {
+  const { exporter, provider } = newCapture();
+  const sink = createOtelLogRecordSink(provider);
+
+  const dir = await Deno.makeTempDir();
+  const redactor = new SecretRedactor();
+  redactor.addSecret("8080");
+  const handle = await runFileSink.register([], `${dir}/run.log`, redactor);
+
+  try {
+    sink(makeRecord("info", ["listening"], {
+      port: 8080,
+      other: 18080,
+      ok: false,
+    }));
+
+    const rec = exporter.getFinishedLogRecords()[0];
+    assertEquals(rec.attributes.port, "***");
+    assertEquals(rec.attributes.other, 18080);
+    assertEquals(rec.attributes.ok, false);
+  } finally {
+    runFileSink.unregister(handle);
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("otel_log_sink: imports nothing from the tracing module (no import cycle)", async () => {
   const source = await Deno.readTextFile(
     fromFileUrl(new URL("./otel_log_sink.ts", import.meta.url)),
