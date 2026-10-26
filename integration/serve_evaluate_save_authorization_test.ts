@@ -229,3 +229,35 @@ Deno.test("serve evaluate: run granted only for a named method evaluates but doe
     assertEquals(await cachedDefinition(repo, model), null);
   });
 });
+
+Deno.test("serve evaluate: a restricted behavior type saves only for a caller with admin, as its runs are decided", async () => {
+  await withServeRepo(async (repo) => {
+    const model = await saveModel(repo, "target");
+    const restrictedModelTypes = [repo.modelType.normalized];
+
+    const runner = createServeCtx(repo, RUNNER, { restrictedModelTypes });
+    const ran = replyData(
+      await sendRequest(
+        runner,
+        request("model.evaluate", { modelIdOrName: "target" }),
+      ),
+      "runner evaluate",
+    );
+    assertEquals(ran.saved, false);
+    assertEquals(await cachedDefinition(repo, model), null);
+
+    const admin = createServeCtx(repo, [
+      ...RUNNER,
+      grant({ actions: ["admin"], resource: { kind: "access", pattern: "*" } }),
+    ], { restrictedModelTypes });
+    const administered = replyData(
+      await sendRequest(
+        admin,
+        request("model.evaluate", { modelIdOrName: "target" }),
+      ),
+      "admin evaluate",
+    );
+    assertEquals(administered.saved, undefined);
+    assert(await cachedDefinition(repo, model));
+  });
+});

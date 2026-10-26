@@ -955,7 +955,8 @@ resources is authorized as `*` (swamp-club#2675):
   orders them all in one dependency graph, but returns only the readable ones.
 - `model.evaluate` and `workflow.evaluate` are admitted on `read` but save an
   evaluation only when the caller may `run` the behavior or workflow, as the
-  runs that write the same files are decided (swamp-club#3940). A
+  runs that write the same files are decided (swamp-club#3940): `admin` for a
+  restricted or control-plane behavior type. A
   `--last-evaluated` run replays the saved file, and a workflow's records the
   inputs it was evaluated with, so a reader could otherwise choose what a
   runner executes. A reader gets the evaluation back with `saved: false` and no

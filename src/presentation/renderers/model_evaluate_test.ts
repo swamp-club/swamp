@@ -99,10 +99,10 @@ Deno.test("LogModelEvaluateRenderer: an unsaved evaluation says why it was not s
   assertEquals(render(unsaved, "behavior"), [
     'Evaluated behavior definition: "my-server" ("aws-ec2")',
     "  Expressions evaluated",
-    "  Not saved: saving needs run on the behavior",
+    "  Not saved: saving needs the run permission on this behavior",
   ]);
   assertEquals(
     render({ items: [unsaved], total: 1, evaluated: 1 })[2],
-    "    Not saved: saving needs run on the model",
+    "    Not saved: saving needs the run permission on this model",
   );
 });

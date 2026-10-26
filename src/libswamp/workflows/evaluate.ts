@@ -349,7 +349,8 @@ async function evaluateWorkflowInternal(
 
   const inputsProvenance = workflowInputsProvenance(coercedInputs, workflow);
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
-    // No expressions and no inputs - still save for consistency
+    // No expressions and no inputs - still saved for consistency, unless
+    // the caller may not run it
     if (!save) {
       return {
         id: workflow.id,

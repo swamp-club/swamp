@@ -2494,12 +2494,22 @@ export async function handleModelEvaluate(
     model = targetArgument(target, modelIdOrName);
   }
   // A later --last-evaluated run replays what evaluate saves, so it saves
-  // only what the caller may run, as the runs that write the same file are
-  // decided (swamp-club#3940). A caller who may only read gets the
-  // evaluation back unsaved.
+  // only what the caller may run, decided as resolvedRunAllowed decides a
+  // run: admin for a restricted or control-plane type, otherwise run
+  // (swamp-club#3940). A caller who may only read gets the evaluation back
+  // unsaved.
   const runnable = resourceDecider(socket, principal, "run", ctx);
-  const persist = (entry: DefinitionLookupResult) =>
-    runnable(modelAccessResource(entry, "model"));
+  const administrable = resourceDecider(socket, principal, "admin", ctx);
+  const persist = (entry: DefinitionLookupResult) => {
+    const resource = modelAccessResource(entry, "model");
+    return isAdminOnlyModelType(
+        undefined,
+        entry.type.normalized,
+        ctx.authConfig.restrictedModelTypes,
+      )
+      ? administrable({ kind: "access", name: "*", fields: resource.fields })
+      : runnable(resource);
+  };
 
   try {
     const libCtx = handlerLibSwampContext(ctx);

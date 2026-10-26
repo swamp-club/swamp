@@ -348,14 +348,15 @@ async function* evaluateSingle(
   }
 
   const { definition, type } = lookupResult;
+  // Decided on the stored definition, the one that would be saved, before
+  // evaluation can touch it.
+  const save = persist(lookupResult);
   const sensitiveValues = new RunSensitiveValues();
   const result = await deps.evaluateDefinition(
     definition,
     type,
     sensitiveValues,
   );
-  // Decided on the definition looked up, the one that would be saved.
-  const save = persist(lookupResult);
   if (save) {
     await saveWithoutSecrets(deps, result, sensitiveValues, definition);
   }
