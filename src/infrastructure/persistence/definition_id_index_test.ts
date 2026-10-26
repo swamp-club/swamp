@@ -320,6 +320,25 @@ Deno.test("DefinitionIdIndex: a symlinked definition whose target in another dir
   });
 });
 
+Deno.test("DefinitionIdIndex: a symlinked definition listed before its target exists is read once the target appears", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    const typeDir = join(primary, "test", "a");
+    const target = join(dir, "shared", "prod.yaml");
+    const id = crypto.randomUUID();
+    await ensureDir(typeDir);
+    await Deno.symlink(target, join(typeDir, "prod.yaml"), { type: "file" });
+    await bump(typeDir);
+    assertEquals(await owners(index, id), []);
+
+    // The link's own directory does not change.
+    await writeDefinition(target, id, "prod", { env: "prod" });
+    assertEquals(await owners(index, id), [
+      { name: "prod", type: "test/a", tags: { env: "prod" } },
+    ]);
+  });
+});
+
 Deno.test("DefinitionIdIndex: a file that did not parse is read again once fixed in place", async () => {
   await withTempDir(async (dir) => {
     const { primary, index } = fixture(dir);
@@ -408,7 +427,7 @@ Deno.test("DefinitionIdIndex: a listing that fails leaves the index as it was, a
   });
 });
 
-Deno.test("DefinitionIdIndex: a cancelled request stops at once, and a listing another request waits on goes on", async () => {
+Deno.test("DefinitionIdIndex: a cancelled request stops at once without stopping another request's check", async () => {
   await withTempDir(async (dir) => {
     const { primary, index } = fixture(dir);
     const id = crypto.randomUUID();

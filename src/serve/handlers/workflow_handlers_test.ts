@@ -778,12 +778,6 @@ Deno.test("handleWorkflowHistoryGet: leaves out outputs of models the principal 
 
 // ── definition index (swamp-club#3968) ─────────────────────────────────
 
-/**
- * `makeHistoryCtx` with serve's definition index over real definition files:
- * `writer` (tagged `env: dev`), `secrets`, and `unrelated` definitions that
- * own nothing the run wrote. Reads of definition files are counted, and a
- * scan of every definition through the repository fails the test.
- */
 /** A definition named `name` that declares `id`. */
 function definitionOf(
   id: string,
@@ -796,6 +790,12 @@ function definitionOf(
   });
 }
 
+/**
+ * `makeHistoryCtx` with serve's definition index over real definition files:
+ * `writer` (tagged `env: dev`), `secrets`, and `unrelated` definitions that
+ * own nothing the run wrote. Reads of definition files are counted, and a
+ * scan of every definition through the repository fails the test.
+ */
 async function makeIndexedHistoryCtx(
   dir: string,
   workflow: Workflow,

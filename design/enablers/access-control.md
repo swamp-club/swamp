@@ -964,9 +964,9 @@ hand, or by a datastore extension that overwrites files in place). Until then
 the file is not an owner of its new id, which fails open: a deny that this copy
 would bring, by its name or its tags, does not apply. Making that change needs
 write access to the definitions, which can change any owner's file itself, so
-it grants nothing more. A filesystem that does not
-update directory mtimes would hide new files until serve restarts; no supported
-datastore is known to. Outside serve (the CLI, tests) each request still scans.
+it grants nothing more. A filesystem that does not update directory mtimes
+would hide new files until serve restarts; no supported datastore is known to.
+Outside serve (the CLI, tests) each request still scans.
 
 A `*` resource name never matches a name-scoped deny, so no request over many
 resources is authorized as `*` (swamp-club#2675):

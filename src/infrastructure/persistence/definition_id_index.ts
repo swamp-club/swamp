@@ -293,7 +293,19 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     await inBatches(yamlFiles, signal, async (entry) => {
       const filePath = join(path, entry.name);
       const fingerprint = await statRecord(filePath);
-      if (fingerprint === null) return;
+      if (fingerprint === null) {
+        // A symlink whose target is missing stays listed, so its target is
+        // stat'ed on each check and read once it appears: the link's own
+        // directory need not change when it does.
+        if (entry.isSymlink) {
+          files.set(entry.name, {
+            id: undefined,
+            fingerprint: undefined,
+            isSymlink: true,
+          });
+        }
+        return;
+      }
       const known = previous?.files.get(entry.name);
       if (
         known?.id !== undefined && fingerprint &&
@@ -350,6 +362,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         file.isSymlink,
       );
       parsed++;
+      if (!this.#isCurrent(filePath, file)) continue;
       file.fingerprint = fingerprint;
       this.#reassign(filePath, file, found?.definition.id);
     }
@@ -384,7 +397,9 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         continue;
       }
       // Rewritten since it was listed: index it under what it declares now,
-      // and read it again on the next check.
+      // and read it again on the next check. A listing that replaced the
+      // entry while this read ran already says what the file declares.
+      if (!this.#isCurrent(path, file)) continue;
       file.fingerprint = undefined;
       this.#reassign(path, file, read?.definition.id);
     }
@@ -441,6 +456,11 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       this.#unindex(file.id, join(path, name));
     }
     for (const name of dir.dirs) this.#drop(join(path, name));
+  }
+
+  /** Whether `file` is still the entry the index keeps for `path`. */
+  #isCurrent(path: string, file: IndexedFile): boolean {
+    return this.#dirs.get(dirname(path))?.files.get(basename(path)) === file;
   }
 
   #reassign(path: string, file: IndexedFile, id: string | undefined): void {
