@@ -104,6 +104,8 @@ type DispatchBehavior = (
 function createHarness(options?: {
   workers?: WorkerSnapshot[];
   queueTimeoutMs?: number;
+  /** Settles each transition when it settles; resolved at once when absent. */
+  holdTransition?: (methodName: string) => Promise<void>;
 }) {
   const pool = new Map<string, WorkerSnapshot>(
     (options?.workers ?? [snapshot({ name: "w1" })]).map((w) => [w.name, w]),
@@ -161,7 +163,7 @@ function createHarness(options?: {
         inputs: input.inputs,
       });
       transitionScopes.push(currentVaultAccess());
-      return Promise.resolve();
+      return options?.holdTransition?.(input.methodName) ?? Promise.resolve();
     },
     captureEnvironment: () => ({ SHIPPED: "yes" }),
   });
@@ -739,6 +741,44 @@ Deno.test("DispatchService: abort during queue wait rejects", async () => {
   await new Promise((r) => setTimeout(r, 10));
   controller.abort();
   await assertRejects(() => pending, DOMException);
+});
+
+Deno.test("DispatchService: settled waits for the queue records a step writes without waiting (swamp-club#3954)", async () => {
+  let openEnqueue = () => {};
+  const enqueueGate = new Promise<void>((resolve) => {
+    openEnqueue = resolve;
+  });
+  const h = createHarness({
+    workers: [],
+    holdTransition: (methodName) =>
+      methodName === "enqueue" ? enqueueGate : Promise.resolve(),
+  });
+  const controller = new AbortController();
+  const pending = h.service.executeRemote(
+    stepRequest({ signal: controller.signal }),
+  );
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "enqueue"),
+    "the step to queue",
+  );
+  controller.abort();
+  await assertRejects(() => pending, DOMException);
+
+  const order: string[] = [];
+  const settling = h.service.settled().then(() => order.push("settled"));
+  // A full turn, so every microtask settled() could resolve on has run.
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(order, []);
+
+  openEnqueue();
+  await settling;
+  assertEquals(order, ["settled"]);
+  assertEquals(
+    h.transitions.map((t) => t.methodName).filter((m) =>
+      m === "enqueue" || m === "cancel"
+    ),
+    ["enqueue", "cancel"],
+  );
 });
 
 Deno.test("DispatchService: cancelled dispatch fails the lease and rejects with AbortError", async () => {
