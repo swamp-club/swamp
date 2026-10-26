@@ -46,11 +46,21 @@ export function isReservedDataName(name: string): boolean {
 
 /**
  * Prefix of the tag keys swamp writes itself, such as the
- * `_swamp.sensitiveFields` tag the data writer sets after vaulting. A key
- * under it is never accepted from a definition, spec, method, workflow or
- * `--tag` (swamp-club#3635): readers trust these tags as swamp's own.
+ * `_swamp.sensitiveFields` tag the data writer sets after vaulting and the
+ * `_swamp.kind` tag it stamps on every record. A key under it is never
+ * accepted from a definition, spec, method, workflow or `--tag`
+ * (swamp-club#3635): readers trust these tags as swamp's own.
  */
 export const RESERVED_TAG_PREFIX = "_swamp.";
+
+/**
+ * Tag keys outside {@link RESERVED_TAG_PREFIX} that the data writers set
+ * themselves and readers trust: `specName` names the spec that wrote a
+ * record, and the resource reader once chose which fields resolve vault
+ * references by it (swamp-club#3684). Refused from every user source, like a
+ * key under the prefix.
+ */
+export const RESERVED_TAG_KEYS: readonly string[] = ["specName"];
 
 /**
  * Returns true if the tag key is reserved for swamp. Comparison is
@@ -58,7 +68,7 @@ export const RESERVED_TAG_PREFIX = "_swamp.";
  * case variant is an ordinary tag.
  */
 export function isReservedTagKey(key: string): boolean {
-  return key.startsWith(RESERVED_TAG_PREFIX);
+  return key.startsWith(RESERVED_TAG_PREFIX) || RESERVED_TAG_KEYS.includes(key);
 }
 
 /** Returns the first reserved key in `tags`, or undefined when there is none. */

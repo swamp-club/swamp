@@ -39,6 +39,7 @@ import type {
   ResourceOutputSpec,
 } from "../domain/models/model.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../domain/vaults/secret_reference_errors.ts";
+import { RECORD_KIND_TAG } from "../domain/models/data_writer.ts";
 import { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchParams,
@@ -340,7 +341,7 @@ const UNTAGGED_STATE = {
   refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}",
 };
 
-Deno.test("remote context: readResource resolves an untagged record from the bundle's resource schema (swamp-club#3530)", async () => {
+Deno.test("remote context: readResource resolves an untagged legacy record from the bundle's resource schema (swamp-club#3530)", async () => {
   await withScratch(async (dir) => {
     const h = harness(
       dir,
@@ -348,7 +349,7 @@ Deno.test("remote context: readResource resolves an untagged record from the bun
       UNTAGGED_STATE,
       undefined,
       undefined,
-      { specName: "state" },
+      { type: "resource", specName: "state" },
       STATE_SPECS,
     );
     const value = await h.context.readResource!("state-main");
@@ -364,6 +365,22 @@ Deno.test("remote context: readResource resolves an untagged record from the bun
   });
 });
 
+Deno.test("remote context: readResource leaves an untagged record the writer stamped unresolved (swamp-club#3684)", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(
+      dir,
+      undefined,
+      UNTAGGED_STATE,
+      undefined,
+      undefined,
+      { type: "resource", specName: "state", [RECORD_KIND_TAG]: "resource" },
+      STATE_SPECS,
+    );
+    assertEquals(await h.context.readResource!("state-main"), UNTAGGED_STATE);
+    assertEquals(h.calls.filter((c) => c.method === "resolveSecret"), []);
+  });
+});
+
 Deno.test("remote context: readResource leaves an untagged record unresolved without resource specs", async () => {
   await withScratch(async (dir) => {
     const h = harness(
@@ -372,7 +389,7 @@ Deno.test("remote context: readResource leaves an untagged record unresolved wit
       UNTAGGED_STATE,
       undefined,
       undefined,
-      { specName: "state" },
+      { type: "resource", specName: "state" },
     );
     assertEquals(await h.context.readResource!("state-main"), UNTAGGED_STATE);
     assertEquals(h.calls.filter((c) => c.method === "resolveSecret"), []);

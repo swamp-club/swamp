@@ -40,6 +40,7 @@ import {
   parseStoredVaultReference,
   processSensitiveResourceData,
   readSensitiveFieldsTag,
+  RECORD_KIND_TAG,
   recordSensitiveVaultRefsUnread,
   resolveSensitiveVaultRefs,
   resolveSensitiveVaultRefsLeavingUnread,
@@ -2600,30 +2601,87 @@ Deno.test("getSensitiveFieldsForResolution: a present tag wins over the schema",
   );
 });
 
-Deno.test("getSensitiveFieldsForResolution: an absent tag falls back to the spec schema", () => {
+/** Tags of a resource record written before the writers stamped their kind. */
+function legacyTags(specName?: string): Record<string, string> {
+  return { type: "resource", ...(specName ? { specName } : {}) };
+}
+
+Deno.test("getSensitiveFieldsForResolution: an absent tag on a legacy resource record falls back to the spec schema", () => {
   assertEquals(
-    getSensitiveFieldsForResolution({ specName: "creds" }, fallbackSpecs, "i"),
+    getSensitiveFieldsForResolution(legacyTags("creds"), fallbackSpecs, "i"),
     ["secret"],
   );
   assertEquals(
-    getSensitiveFieldsForResolution({ specName: "all" }, fallbackSpecs, "i"),
+    getSensitiveFieldsForResolution(legacyTags("all"), fallbackSpecs, "i"),
     SENSITIVE_FIELDS_ALL,
   );
 });
 
 Deno.test("getSensitiveFieldsForResolution: an absent tag resolves nothing without specs, a spec name, a matching spec or a sensitive field", () => {
   assertEquals(
-    getSensitiveFieldsForResolution({ specName: "creds" }, undefined, "i"),
-    null,
-  );
-  assertEquals(getSensitiveFieldsForResolution({}, fallbackSpecs, "i"), null);
-  assertEquals(
-    getSensitiveFieldsForResolution({ specName: "other" }, fallbackSpecs, "i"),
+    getSensitiveFieldsForResolution(legacyTags("creds"), undefined, "i"),
     null,
   );
   assertEquals(
-    getSensitiveFieldsForResolution({ specName: "item" }, testResources, "i"),
+    getSensitiveFieldsForResolution(legacyTags(), fallbackSpecs, "i"),
     null,
+  );
+  assertEquals(
+    getSensitiveFieldsForResolution(legacyTags("other"), fallbackSpecs, "i"),
+    null,
+  );
+  assertEquals(
+    getSensitiveFieldsForResolution(legacyTags("item"), testResources, "i"),
+    null,
+  );
+});
+
+Deno.test("getSensitiveFieldsForResolution: a record the writer stamped never falls back to its specName (swamp-club#3684)", () => {
+  for (const kind of ["resource", "file"]) {
+    for (const specName of ["creds", "all"]) {
+      assertEquals(
+        getSensitiveFieldsForResolution(
+          { ...legacyTags(specName), [RECORD_KIND_TAG]: kind },
+          fallbackSpecs,
+          "i",
+        ),
+        null,
+        `${kind} ${specName}`,
+      );
+    }
+  }
+});
+
+Deno.test("getSensitiveFieldsForResolution: a legacy record that is not a resource does not fall back", () => {
+  for (const type of ["file", "", "Resource"]) {
+    assertEquals(
+      getSensitiveFieldsForResolution(
+        { type, specName: "all" },
+        fallbackSpecs,
+        "i",
+      ),
+      null,
+      type,
+    );
+  }
+  assertEquals(
+    getSensitiveFieldsForResolution({ specName: "all" }, fallbackSpecs, "i"),
+    null,
+  );
+});
+
+Deno.test("getSensitiveFieldsForResolution: a stamped record still resolves the fields its sensitive-fields tag names", () => {
+  assertEquals(
+    getSensitiveFieldsForResolution(
+      {
+        ...legacyTags("creds"),
+        [RECORD_KIND_TAG]: "resource",
+        [SENSITIVE_FIELDS_TAG]: JSON.stringify(["secret"]),
+      },
+      fallbackSpecs,
+      "i",
+    ),
+    ["secret"],
   );
 });
 
@@ -2719,6 +2777,44 @@ Deno.test("createResourceReader: legacy data without tag uses schema fallback", 
   assertEquals(result?.secret, "secret-value");
   assertEquals(result?.name, "public");
 });
+
+for (
+  const [label, tags] of [
+    [
+      "an untagged record the resource writer stamped",
+      { specName: "creds", [RECORD_KIND_TAG]: "resource" },
+    ],
+    [
+      "a file record under a file spec named like a sensitive resource spec",
+      { type: "file", specName: "creds", [RECORD_KIND_TAG]: "file" },
+    ],
+  ] as const
+) {
+  Deno.test(`createResourceReader: ${label} resolves nothing (swamp-club#3684)`, async () => {
+    const vaultService = createTestVaultService();
+    await vaultService.put("test-vault", "k1", "secret-value");
+    const data = {
+      name: "public",
+      secret: "${{ vault.get('test-vault', 'k1') }}",
+    };
+    const encoded = new TextEncoder().encode(JSON.stringify(data));
+    const repo = {
+      ...createMockRepo(),
+      getContent: () => Promise.resolve(encoded),
+      findByName: () => Promise.resolve(createMockDataEntity(tags)),
+    };
+
+    const readResource = createResourceReader(
+      repo,
+      modelType,
+      modelId,
+      vaultService,
+      undefined,
+      fallbackSpecs,
+    );
+    assertEquals(await readResource("my-instance"), data);
+  });
+}
 
 Deno.test("createResourceReader: a malformed tag fails the read before any vault read, even when the spec could resolve the field (swamp-club#3530)", async () => {
   const vaultService = createTestVaultService();
@@ -3594,9 +3690,38 @@ Deno.test("createFileWriter: the portability check covers the vary suffix", asyn
 const FORGED_TAG_VALUE = JSON.stringify(["value"]);
 const FORGED_TAG = { [SENSITIVE_FIELDS_TAG]: FORGED_TAG_VALUE };
 
+/** A reserved tag key a source forges, and how the refusal explains it. */
+interface ForgedTag {
+  key: string;
+  value: string;
+  reason: string;
+}
+
+const FORGED_TAGS: ForgedTag[] = [
+  {
+    key: SENSITIVE_FIELDS_TAG,
+    value: FORGED_TAG_VALUE,
+    reason: "tag keys starting with '_swamp.' are written by swamp alone",
+  },
+  {
+    key: RECORD_KIND_TAG,
+    value: "forged-kind",
+    reason: "tag keys starting with '_swamp.' are written by swamp alone",
+  },
+  // swamp-club#3684: a forged specName pointed an untagged record at a
+  // sensitive spec, so readResource resolved reference text in it.
+  {
+    key: "specName",
+    value: "forged-spec",
+    reason:
+      "swamp writes the 'specName' tag itself to record which spec wrote the data",
+  },
+];
+
 /** Where a reserved tag enters one write, and how the refusal names it. */
 interface ReservedTagSource {
   label: string;
+  forged: ForgedTag;
   definitionTags?: Record<string, string>;
   specTags?: Record<string, string>;
   overrideTags?: Record<string, string>;
@@ -3607,47 +3732,57 @@ interface ReservedTagSource {
   expected: (kind: "resource" | "file", specName: string) => string[];
 }
 
-const RESERVED_TAG_SOURCES: ReservedTagSource[] = [
-  {
-    label: "definition tags",
-    definitionTags: FORGED_TAG,
-    expected: () => ["from the behavior definition's tags", "Remove it."],
+const RESERVED_TAG_SOURCES: ReservedTagSource[] = FORGED_TAGS.flatMap(
+  (forged) => {
+    const tag = { [forged.key]: forged.value };
+    const sources: Omit<ReservedTagSource, "forged">[] = [
+      {
+        label: "definition tags",
+        definitionTags: tag,
+        expected: () => ["from the behavior definition's tags", "Remove it."],
+      },
+      {
+        label: "spec default tags",
+        specTags: tag,
+        expected: (kind, specName) => [
+          `from the default tags of ${kind} spec '${specName}' in behavior type 'swamp/test'`,
+          "The behavior type's author must remove it.",
+        ],
+      },
+      {
+        label: "method write overrides",
+        overrideTags: tag,
+        expected: (kind, specName) => [
+          `from the write overrides of ${kind} spec '${specName}' in behavior type 'swamp/test'`,
+          "The behavior type's author must remove it.",
+        ],
+      },
+      {
+        label: "workflow tags",
+        tagOverrides: { workflow: "wf", ...tag },
+        expected: () => ["from the workflow's tags", "Remove it."],
+      },
+      {
+        label: "runtime tags",
+        runtimeTags: tag,
+        expected: () => ["from --tag", "Remove it."],
+      },
+      {
+        label: "data output override tags",
+        dataOutputTags: tag,
+        expected: (_kind, specName) => [
+          `from the data output override for spec '${specName}'`,
+          "Remove it.",
+        ],
+      },
+    ];
+    return sources.map((source) => ({
+      ...source,
+      label: `${forged.key} in ${source.label}`,
+      forged,
+    }));
   },
-  {
-    label: "spec default tags",
-    specTags: FORGED_TAG,
-    expected: (kind, specName) => [
-      `from the default tags of ${kind} spec '${specName}' in behavior type 'swamp/test'`,
-      "The behavior type's author must remove it.",
-    ],
-  },
-  {
-    label: "method write overrides",
-    overrideTags: FORGED_TAG,
-    expected: (kind, specName) => [
-      `from the write overrides of ${kind} spec '${specName}' in behavior type 'swamp/test'`,
-      "The behavior type's author must remove it.",
-    ],
-  },
-  {
-    label: "workflow tags",
-    tagOverrides: { workflow: "wf", ...FORGED_TAG },
-    expected: () => ["from the workflow's tags", "Remove it."],
-  },
-  {
-    label: "runtime tags",
-    runtimeTags: FORGED_TAG,
-    expected: () => ["from --tag", "Remove it."],
-  },
-  {
-    label: "data output override tags",
-    dataOutputTags: FORGED_TAG,
-    expected: (_kind, specName) => [
-      `from the data output override for spec '${specName}'`,
-      "Remove it.",
-    ],
-  },
-];
+);
 
 function assertReservedTagRefusal(
   error: Error,
@@ -3657,14 +3792,14 @@ function assertReservedTagRefusal(
 ): void {
   assertStringIncludes(
     error.message,
-    `Tag '${SENSITIVE_FIELDS_TAG}' `,
+    `Tag '${source.forged.key}' `,
   );
-  assertStringIncludes(error.message, "tag keys starting with '_swamp.'");
+  assertStringIncludes(error.message, source.forged.reason);
   for (const text of source.expected(kind, specName)) {
     assertStringIncludes(error.message, text);
   }
   // The value may be sensitive; the refusal never repeats it.
-  assertEquals(error.message.includes(FORGED_TAG_VALUE), false);
+  assertEquals(error.message.includes(source.forged.value), false);
 }
 
 for (const source of RESERVED_TAG_SOURCES) {
@@ -3786,6 +3921,75 @@ Deno.test("createResourceWriter: a forged sensitive-fields tag cannot make refer
   assertEquals(repo.writes(), 0);
 });
 
+Deno.test("createResourceWriter: a forged specName cannot point an untagged record at a sensitive spec", async () => {
+  // swamp-club#3684: nothing in `item` is sensitive, so the record carried no
+  // sensitive-fields tag, and readResource chose its fields by the specName
+  // tag a --tag flag had overwritten with a sensitiveOutput spec's name.
+  const repo = createCountingRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    { ...testResources, ...fallbackSpecs },
+    undefined,
+    undefined,
+    undefined,
+    { specName: "all" },
+    undefined,
+    createTestVaultService(),
+    "fetch",
+  );
+
+  await assertRejects(
+    () =>
+      writeResource("item", "response", {
+        value: "${{ vault.get('test-vault', 'db-password') }}",
+      }),
+    Error,
+    "Tag 'specName' from --tag is reserved",
+  );
+  assertEquals(repo.writes(), 0);
+});
+
+Deno.test("createResourceWriter: stamps the record kind after every tag source", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testResources,
+    { workflow: "wf", type: "workflow-type" },
+    [{ specName: "item", tags: { type: "override-type" } }],
+    { type: "definition-type" },
+    { type: "runtime-type" },
+    "my-def",
+  );
+
+  const handle = await writeResource("item", "main", { value: "v" });
+  assertEquals(handle.tags[RECORD_KIND_TAG], "resource");
+  assertEquals(handle.tags["specName"], "item");
+  // The plain type tag stays a user tag.
+  assertEquals(handle.tags["type"], "override-type");
+});
+
+Deno.test("createFileWriterFactory: stamps the record kind after every tag source", async () => {
+  const { createFileWriter } = createFileWriterFactory(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testFiles,
+    { workflow: "wf", type: "workflow-type" },
+    [{ specName: "log", tags: { type: "override-type" } }],
+    undefined,
+    { type: "definition-type" },
+    { type: "runtime-type" },
+  );
+
+  const handle = await createFileWriter("log", "main").writeText("hello");
+  assertEquals(handle.tags[RECORD_KIND_TAG], "file");
+  assertEquals(handle.tags["specName"], "log");
+  assertEquals(handle.tags["type"], "override-type");
+});
+
 Deno.test("createResourceWriter: the writer still sets its own sensitive-fields tag after vaulting", async () => {
   const resources: Record<string, ResourceOutputSpec> = {
     creds: {
@@ -3829,6 +4033,8 @@ Deno.test("createResourceWriter: tag keys that only look reserved are persisted 
     "_swampx": "b",
     "_SWAMP.sensitiveFields": "c",
     "my._swamp.key": "d",
+    "SpecName": "e",
+    "specNames": "f",
   };
 
   const { writeResource } = createResourceWriter(

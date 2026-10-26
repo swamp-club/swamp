@@ -24,6 +24,7 @@ import {
   createResourceWriter,
   getSensitiveFieldsForResolution,
   parseSensitiveFieldsTag,
+  RECORD_KIND_TAG,
   resolveSensitiveVaultRefs,
   SENSITIVE_FIELDS_TAG,
   SENSITIVE_FIELDS_VERSION,
@@ -363,11 +364,16 @@ Deno.test("createResourceWriter: distinct dotted own keys retain distinct values
   );
 });
 
-/** Tag keys a user might write: ordinary ones, and keys under `_swamp.`. */
+/**
+ * Tag keys a user might write: ordinary ones, keys under `_swamp.`, and the
+ * reserved `specName` the writer sets itself (swamp-club#3684).
+ */
 const arbTagKey = fc.oneof(
   fc.string({ minLength: 1, maxLength: 12 }),
   fc.string({ maxLength: 12 }).map((rest) => `_swamp.${rest}`),
   fc.constant(SENSITIVE_FIELDS_TAG),
+  fc.constant(RECORD_KIND_TAG),
+  fc.constant("specName"),
 );
 const arbTags = fc.option(
   fc.dictionary(arbTagKey, fc.string({ maxLength: 8 }), { maxKeys: 3 }),
@@ -444,17 +450,57 @@ Deno.test("createResourceWriter: a user-supplied reserved tag is always refused,
           return;
         }
         assert(!forged, "a reserved tag was accepted");
-        const reserved = Object.keys(tags).filter(isReservedTagKey);
+        const reserved = Object.keys(tags).filter(isReservedTagKey).sort();
         assertEquals(
           reserved,
-          drawn.sensitive
-            ? [SENSITIVE_FIELDS_TAG, SENSITIVE_FIELDS_VERSION_TAG]
-            : [],
+          [
+            "specName",
+            RECORD_KIND_TAG,
+            ...(drawn.sensitive
+              ? [SENSITIVE_FIELDS_TAG, SENSITIVE_FIELDS_VERSION_TAG]
+              : []),
+          ].sort(),
         );
+        assertEquals(tags["specName"], "r");
+        assertEquals(tags[RECORD_KIND_TAG], "resource");
         assertEquals(
           tags[SENSITIVE_FIELDS_VERSION_TAG],
           drawn.sensitive ? SENSITIVE_FIELDS_VERSION : undefined,
         );
+      },
+    ),
+  );
+});
+
+Deno.test("getSensitiveFieldsForResolution: a stamped record without a sensitive-fields tag resolves nothing, whatever its other tags and the specs say (swamp-club#3684)", () => {
+  const arbSpecs = fc.dictionary(
+    fc.oneof(fc.constantFrom("creds", "all"), fc.string({ maxLength: 6 })),
+    fc.constantFrom<ResourceOutputSpec>(
+      spec,
+      { ...spec, sensitiveOutput: true },
+    ),
+    { maxKeys: 3 },
+  );
+  const arbOtherTags = fc.dictionary(
+    fc.oneof(
+      fc.constantFrom("specName", "type", "modelName"),
+      fc.string({ maxLength: 8 }),
+    ).filter((key) => key !== SENSITIVE_FIELDS_TAG && key !== RECORD_KIND_TAG),
+    fc.oneof(
+      fc.constantFrom("creds", "all", "resource", "file"),
+      fc.string({ maxLength: 8 }),
+    ),
+    { maxKeys: 4 },
+  );
+
+  fc.assert(
+    fc.property(
+      arbOtherTags,
+      fc.string({ maxLength: 8 }),
+      arbSpecs,
+      (other, kind, specs) => {
+        const tags = { ...other, [RECORD_KIND_TAG]: kind };
+        assertEquals(getSensitiveFieldsForResolution(tags, specs, "i"), null);
       },
     ),
   );

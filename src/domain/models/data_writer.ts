@@ -1370,6 +1370,9 @@ export function createResourceWriter(
       }
     }
 
+    // Stamped after every override, so only the writer sets it.
+    resolvedTags[RECORD_KIND_TAG] = "resource";
+
     checkDataNamePortability(
       instanceName,
       modelType,
@@ -1536,6 +1539,16 @@ export const SENSITIVE_FIELDS_VERSION_TAG = "_swamp.sensitiveFieldsVersion";
 export const SENSITIVE_FIELDS_VERSION = "1";
 
 /**
+ * Tag key recording which writer made a record: `resource` or `file`. Both
+ * writers stamp it after every override, and it sits under
+ * {@link RESERVED_TAG_PREFIX}, so no user source can set it. A record that
+ * carries it was written by a writer that tags every field it vaults with
+ * {@link SENSITIVE_FIELDS_TAG}, so {@link getSensitiveFieldsForResolution}
+ * keeps the schema fallback for records without it (swamp-club#3684).
+ */
+export const RECORD_KIND_TAG = "_swamp.kind";
+
+/**
  * Sentinel value for the {@link SENSITIVE_FIELDS_TAG} tag when all fields
  * are sensitive (`sensitiveOutput: true` on the resource spec).
  */
@@ -1546,9 +1559,10 @@ const typeAuthorRemedy = (w: BehaviorWords) =>
   `The ${w.noun} type's author must remove it.`;
 
 /**
- * The refusal of a tag key under {@link RESERVED_TAG_PREFIX} from a source
- * swamp does not control (swamp-club#3635), or undefined when `tags` holds
- * none. Readers trust `_swamp.*` tags as swamp's own, and
+ * The refusal of a reserved tag key (`isReservedTagKey`: one under
+ * {@link RESERVED_TAG_PREFIX}, or `specName`) from a source swamp does not
+ * control (swamp-club#3635, swamp-club#3684), or undefined when `tags` holds
+ * none. Readers trust these tags as swamp's own, and
  * {@link SENSITIVE_FIELDS_TAG} chooses which fields resolve vault references,
  * so the vaulting step must be the only way one reaches a record. The message
  * names the key and its source, never the value, which may be sensitive.
@@ -1565,9 +1579,11 @@ export function reservedTagRefusal(
   if (!tags) return undefined;
   const key = findReservedTagKey(tags);
   if (key === undefined) return undefined;
+  const reason = key.startsWith(RESERVED_TAG_PREFIX)
+    ? `tag keys starting with '${RESERVED_TAG_PREFIX}' are written by swamp alone`
+    : `swamp writes the '${key}' tag itself to record which spec wrote the data`;
   return wordedText((w) =>
-    `Tag '${key}' from ${source(w)} is reserved: tag keys starting with ` +
-    `'${RESERVED_TAG_PREFIX}' are written by swamp alone. ${remedy(w)}`
+    `Tag '${key}' from ${source(w)} is reserved: ${reason}. ${remedy(w)}`
   );
 }
 
@@ -2392,8 +2408,9 @@ async function resolveValueAtPath(
  * returning the parsed JSON object or null if no data exists.
  * When a VaultService is provided, vault reference expressions are resolved
  * only in the fields {@link getSensitiveFieldsForResolution} chooses: those
- * the `_swamp.sensitiveFields` tag names, or, for an untagged record, those
- * the resource spec schema marks sensitive. A malformed tag fails the read.
+ * the `_swamp.sensitiveFields` tag names, or, for an untagged record written
+ * before the writers stamped {@link RECORD_KIND_TAG}, those the resource spec
+ * schema marks sensitive. A malformed tag fails the read.
  * The worker's remote method context builds the same reader over its proxies
  * with the verified bundle's specs, so both executors read alike
  * (swamp-club#3530).
@@ -2484,10 +2501,14 @@ export function createResourceReader(
  * ({@link readSensitiveFieldsTag}): a present tag names the fields, and a tag
  * the writer could not have produced fails the read with
  * {@link ResourceSensitiveFieldsInvalidError}, naming the record, rather than
- * being read as absent. An absent tag (a record written before the tag
- * existed, or with nothing vaulted at write time) falls back to the resource
- * spec's schema, found by the record's `specName` tag; without specs, a spec
- * name or a matching spec nothing resolves, the secure default.
+ * being read as absent. Without the tag, a record carrying
+ * {@link RECORD_KIND_TAG} had nothing vaulted at write time, so nothing
+ * resolves: its `specName` and `type` tags are never consulted, since user
+ * tag sources could once overwrite them (swamp-club#3684). Only a record
+ * written before the writers stamped their kind falls back to the resource
+ * spec's schema, found by the record's `specName` tag, and only when its
+ * `type` tag says it is a resource; without specs, a spec name or a matching
+ * spec nothing resolves, the secure default.
  */
 export function getSensitiveFieldsForResolution(
   tags: Record<string, string>,
@@ -2510,6 +2531,8 @@ export function getSensitiveFieldsForResolution(
     return parseSensitiveFieldsTag(tags) ?? [];
   }
 
+  if (tags[RECORD_KIND_TAG] !== undefined) return null;
+  if (tags["type"] !== "resource") return null;
   if (!resourceSpecs) return null;
   const specName = tags["specName"];
   if (!specName) return null;
@@ -2688,6 +2711,8 @@ export function createFileWriterFactory(
         }
       }
     }
+
+    resolvedTags[RECORD_KIND_TAG] = "file";
 
     checkDataNamePortability(
       instanceName,

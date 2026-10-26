@@ -861,7 +861,8 @@ reference text, since every reference is authorized under the run's access
 and names only content the datastore holds.
 
 Extension `readResource` is a trusted plaintext API. It keeps resolving tagged
-fields, including the resource-schema fallback for untagged records, on both
+fields, including the resource-schema fallback for untagged records written
+before the writers stamped `_swamp.kind` (swamp-club#3684), on both
 executors: the worker builds the same reader with the verified bundle's specs,
 and a malformed present tag already fails it with `secret_reference_invalid`
 (swamp-club#3530). Expression-facing accessors add no fallback. The accessors
@@ -1155,8 +1156,8 @@ Phase 5 removes plaintext from dispatch:
   allowlist off because every reference reaches serve as a reference.
 - `readResource` keeps its own authorization, the resource claim serve verifies
   against the record's tagged fields (swamp-club#3529), and uses the same route
-  for those fields and the resource-schema fallback for an untagged record
-  from the verified bundle's definition (swamp-club#3530).
+  for those fields and the resource-schema fallback for a legacy untagged
+  record from the verified bundle's definition (swamp-club#3530).
 
 Redaction stays after the trusted boundary. Worker result errors are already
 scrubbed on both hops, by the runner before the result frame and by serve
