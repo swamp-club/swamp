@@ -554,6 +554,7 @@ import {
   V3MaintenanceTimer,
   v3ReplicatesAt,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
+import { v3EvaluationTrust } from "../../infrastructure/datastore_v3/trusted_evaluations.ts";
 import { pushChangedToRemote } from "../../serve/handlers/shared.ts";
 import {
   DEFAULT_RETENTION_GC_INITIAL_DELAY_MS,
@@ -3741,6 +3742,14 @@ export const serveCommand = new Command()
         v3: v3Location,
       },
     );
+    // Only serve's own evaluations run with --last-evaluated on a v3
+    // datastore, which team members' clients forward to (swamp-club#3922).
+    if (v3Location !== undefined) {
+      repoContext.evaluationTrust = v3EvaluationTrust(
+        v3DatastoreFor(resolvedRepoDir, v3Location),
+        repoContext,
+      );
+    }
     repoContext.retentionWatermarks = resolveRetentionWatermarks(
       datastoreConfig,
       syncService,

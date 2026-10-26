@@ -90,7 +90,47 @@ Deno.test("ReadModelState: a schema-5 state migrates to the checkout filter tabl
     } finally {
       check.close();
     }
-    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 7);
+    assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 8);
+  });
+});
+
+Deno.test("ReadModelState.liveRecord: records who wrote each record, and a schema-7 row reads as unknown (swamp-club#3922)", async () => {
+  await withStatePath((path) => {
+    const state = ReadModelState.open(path);
+    const apply = (seq: number, key: string, writer: string) =>
+      state.recordApplied({
+        namespace: "",
+        partition: "p",
+        seq,
+        records: new Map([[key, { sha256: "a".repeat(64), writer }]]),
+        live: new Map(),
+      });
+    try {
+      apply(1, "serve.yaml", "");
+      apply(2, "forwarded.yaml", "user:ana");
+      assertEquals(state.liveRecord("", "p", "serve.yaml")?.writer, "");
+      assertEquals(
+        state.liveRecord("", "p", "forwarded.yaml")?.writer,
+        "user:ana",
+      );
+      assertEquals(state.liveRecord("", "p", "absent.yaml"), undefined);
+      assertEquals(state.holdsRecordsUnder("", "p"), true);
+      assertEquals(state.holdsRecordsUnder("", "q"), false);
+    } finally {
+      state.close();
+    }
+    // A state from before the writer column: its rows' writers are unknown.
+    const db = new DatabaseSync(path);
+    db.exec(
+      "ALTER TABLE live_records DROP COLUMN writer; PRAGMA user_version=7",
+    );
+    db.close();
+    const reopened = ReadModelState.open(path);
+    try {
+      assertEquals(reopened.liveRecord("", "p", "serve.yaml")?.writer, null);
+    } finally {
+      reopened.close();
+    }
   });
 });
 

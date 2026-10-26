@@ -5048,13 +5048,14 @@ export class WorkflowExecutionService {
       const workflowProvenance = evaluated.provenance;
 
       // Re-register the log file sink so resume output is captured.
-      // Append to preserve records from earlier attempts.
-      const workflowLogPath = existingRun.logFile ??
-        join(
-          swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
-          workflow.id,
-          `workflow-run-${existingRun.id}.log`,
-        );
+      // Append to preserve records from earlier attempts. The path is the
+      // one a run's start gives it, derived again rather than read from the
+      // record, whose writer may not be this process (swamp-club#3922).
+      const workflowLogPath = join(
+        swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+        workflow.id,
+        `workflow-run-${existingRun.id}.log`,
+      );
       const workflowLogHandle = await runFileSink.register(
         [],
         workflowLogPath,

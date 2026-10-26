@@ -27,7 +27,6 @@
  */
 
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
-import type { Principal } from "../../domain/access/principal.ts";
 import { celString } from "../../domain/data/data_query_command.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import type { AnalyzedExpression } from "../../domain/expressions/expression_references.ts";
@@ -39,11 +38,7 @@ import {
   modelAccessResource,
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
-import {
-  type ConnectionContext,
-  isAuthorized,
-  isAuthorizedForAll,
-} from "./shared.ts";
+import type { ConnectionContext, RequestAuthority } from "./shared.ts";
 
 /**
  * Most distinct models the expressions of one request may name. Each is a
@@ -68,15 +63,14 @@ export interface ExpressionRefusal {
 }
 
 /**
- * Checks `expressions` against `principal`. Returns the refusal for the
- * first expression that reads something the principal may not read, or
- * undefined when every one is allowed. Every refusal is audited; nothing is
- * sent, so the caller replies in its own error shape.
+ * Checks `expressions` against the principal `authority` decides for.
+ * Returns the refusal for the first expression that reads something the
+ * principal may not read, or undefined when every one is allowed. Every
+ * refusal is audited; nothing is sent, so the caller replies in its own
+ * error shape.
  */
 export async function authorizeExpressionReferences(
-  socket: WebSocket,
-  requestId: string,
-  principal: Principal | null,
+  authority: RequestAuthority,
   ctx: ConnectionContext,
   expressions: readonly AnalyzedExpression[],
   env: EnvAccess,
@@ -87,24 +81,10 @@ export async function authorizeExpressionReferences(
   const checked = new Map<string, Promise<boolean>>();
   let allDataReadable: boolean | undefined;
   const readsAllData = () =>
-    allDataReadable ??= isAuthorizedForAll(
-      socket,
-      requestId,
-      principal,
-      "read",
-      "data",
-      ctx,
-    );
+    allDataReadable ??= authority.allowsAll("read", "data");
   let allModelsReadable: boolean | undefined;
   const readsAllModels = () =>
-    allModelsReadable ??= isAuthorizedForAll(
-      socket,
-      requestId,
-      principal,
-      "read",
-      "model",
-      ctx,
-    );
+    allModelsReadable ??= authority.allowsAll("read", "model");
   const distinct = new Set<string>();
   for (const { references } of expressions) {
     for (const t of references.dataTargets) distinct.add(`data:${t}`);
@@ -148,16 +128,7 @@ export async function authorizeExpressionReferences(
       allowed = await memo(
         checked,
         `data:${target}`,
-        () =>
-          dataReadable(
-            socket,
-            requestId,
-            principal,
-            ctx,
-            owners,
-            definitions,
-            target,
-          ),
+        () => dataReadable(authority, ctx, owners, definitions, target),
       );
     }
     for (const target of tooMany ? [] : references.modelTargets) {
@@ -165,8 +136,7 @@ export async function authorizeExpressionReferences(
       allowed = await memo(
         checked,
         `model:${target}`,
-        () =>
-          modelReadable(socket, requestId, principal, ctx, definitions, target),
+        () => modelReadable(authority, definitions, target),
       );
     }
     if (!allowed) {
@@ -178,6 +148,33 @@ export async function authorizeExpressionReferences(
     }
   }
   return undefined;
+}
+
+/**
+ * Checks run inputs' expressions against the caller passing them
+ * (swamp-club#2755, swamp-club#2786): data they read must be readable by the
+ * caller, and `env` needs write on `runOn` (the behavior the inputs run),
+ * as authoring it in the definition would. `runOn` is the resource run is
+ * decided on; its `methodName` field is dropped for the write decision.
+ */
+export async function authorizeRunInputExpressions(
+  authority: RequestAuthority,
+  ctx: ConnectionContext,
+  expressions: readonly AnalyzedExpression[],
+  runOn: AccessResource,
+): Promise<ExpressionRefusal | undefined> {
+  if (expressions.length === 0) return undefined;
+  const { methodName: _methodName, ...fields } = runOn.fields;
+  // Decided only when an input reads env, so a refusal is audited exactly
+  // when it decides the request.
+  const writable = !expressions.some((e) => e.references.usesEnv) ||
+    authority.allows("write", { ...runOn, fields });
+  return await authorizeExpressionReferences(
+    authority,
+    ctx,
+    expressions,
+    writable ? "allowed" : { refusedFor: runOn.name },
+  );
 }
 
 /** Longest expression text quoted in a refusal. */
@@ -211,9 +208,7 @@ function memo(
  * on all data. Deny wins.
  */
 async function dataReadable(
-  socket: WebSocket,
-  requestId: string,
-  principal: Principal | null,
+  authority: RequestAuthority,
   ctx: ConnectionContext,
   owners: CanonicalResources,
   definitions: DefinitionIndex,
@@ -261,26 +256,14 @@ async function dataReadable(
   if (resources.length === 0) {
     // Nothing owns the name yet, so the reference will read whatever is
     // stored under it later, by anyone: judge it as reading any data.
-    return isAuthorizedForAll(
-      socket,
-      requestId,
-      principal,
-      "read",
-      "data",
-      ctx,
-    );
+    return authority.allowsAll("read", "data");
   }
-  return resources.every((resource) =>
-    isAuthorized(socket, requestId, principal, "read", resource, ctx)
-  );
+  return resources.every((resource) => authority.allows("read", resource));
 }
 
 /** Whether the principal may read the definition `model.<target>` exposes. */
 async function modelReadable(
-  socket: WebSocket,
-  requestId: string,
-  principal: Principal | null,
-  ctx: ConnectionContext,
+  authority: RequestAuthority,
   definitions: DefinitionIndex,
   target: string,
 ): Promise<boolean> {
@@ -289,9 +272,7 @@ async function modelReadable(
   const resources = named.length > 0
     ? named.map((definition) => modelAccessResource(definition, "model"))
     : [unresolvedAccessResource("model", target)];
-  return resources.every((resource) =>
-    isAuthorized(socket, requestId, principal, "read", resource, ctx)
-  );
+  return resources.every((resource) => authority.allows("read", resource));
 }
 
 /**

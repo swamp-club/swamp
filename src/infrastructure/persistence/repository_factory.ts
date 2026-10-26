@@ -51,6 +51,7 @@
  */
 
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
+import type { EvaluationTrust } from "../datastore_v3/trusted_evaluations.ts";
 import type {
   ContinuationClaims,
   RunRecordCurrency,
@@ -531,6 +532,13 @@ export interface RepositoryContext {
    * reads, or for a read-only command on a custom datastore.
    */
   retentionWatermarks?: RetentionWatermarkRepository;
+  /**
+   * The evaluations a run with `--last-evaluated` may use (swamp-club#3922).
+   * Serve sets it on a v3 datastore, where a team member's client forwards
+   * the evaluations its own runs write: only serve's own are run. Unset, the
+   * evaluated repositories are read directly.
+   */
+  evaluationTrust?: EvaluationTrust;
 }
 
 /**

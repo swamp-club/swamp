@@ -32,7 +32,11 @@ import {
   MAX_SHOWN,
   shown,
 } from "./expression_reference_authorization.ts";
-import { type ConnectionContext, setConnectionCollectives } from "./shared.ts";
+import {
+  type ConnectionContext,
+  setConnectionCollectives,
+  socketAuthority,
+} from "./shared.ts";
 
 function grant(overrides: Partial<Grant>): Grant {
   return {
@@ -115,9 +119,7 @@ function check(
   env: "allowed" | { refusedFor: string } = "allowed",
 ) {
   return authorizeExpressionReferences(
-    socket(),
-    "req-1",
-    { kind: "user", id: "adam" },
+    socketAuthority(socket(), "req-1", { kind: "user", id: "adam" }, ctx),
     ctx,
     analyzeContentExpressions(content),
     env,

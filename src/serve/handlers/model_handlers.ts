@@ -50,7 +50,6 @@ import {
 import {
   createModelMethodHistoryLogsDeps,
   modelMethodHistoryLogs,
-  type ModelMethodHistoryLogsDeps,
 } from "../../libswamp/models/method_history_logs.ts";
 import {
   createModelOutputDataDeps,
@@ -180,6 +179,7 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  socketAuthority,
   subscribeUntilDetach,
   wasRequestErrored,
 } from "./shared.ts";
@@ -200,12 +200,7 @@ import {
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
-import {
-  assertSafePath,
-  PathTraversalError,
-} from "../../infrastructure/persistence/safe_path.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import { RUN_LOG_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
+import { containedLogFileReader } from "./log_file_containment.ts";
 import {
   isUnpublishedDataError,
   type WrittenVersion,
@@ -215,7 +210,10 @@ import {
   definitionRetargetSourcesChanged,
   expressionsAddedByEdit,
 } from "../../domain/expressions/expression_references.ts";
-import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
+import {
+  authorizeExpressionReferences,
+  authorizeRunInputExpressions,
+} from "./expression_reference_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 
@@ -540,21 +538,11 @@ async function authorizeRunInputs(
   const expressions = analyzeContentExpressions(payload.inputs ?? {});
   if (expressions.length === 0) return true;
   const runOn = target.run?.resource ?? target.resource;
-  const { methodName: _methodName, ...fields } = runOn.fields;
-  // Decided only when an input reads env, so a refusal is audited exactly
-  // when it decides the request.
-  const writable = !expressions.some((e) => e.references.usesEnv) ||
-    isAuthorized(socket, requestId, principal, "write", {
-      ...runOn,
-      fields,
-    }, ctx);
-  const refusal = await authorizeExpressionReferences(
-    socket,
-    requestId,
-    principal,
+  const refusal = await authorizeRunInputExpressions(
+    socketAuthority(socket, requestId, principal, ctx),
     ctx,
     expressions,
-    writable ? "allowed" : { refusedFor: runOn.name },
+    runOn,
   );
   if (!refusal) return true;
   sendError(socket, requestId, "unauthorized", refusal.message);
@@ -1445,9 +1433,7 @@ export async function handleModelCreate(
   // Every expression in a new model is added by this writer
   // (swamp-club#2755).
   const refusal = await authorizeExpressionReferences(
-    socket,
-    requestId,
-    principal,
+    socketAuthority(socket, requestId, principal, ctx),
     ctx,
     analyzeContentExpressions(payload.globalArguments ?? {}),
     "allowed",
@@ -2146,31 +2132,6 @@ export async function handleModelMethodHistoryGet(
   }
 }
 
-/**
- * Reads a run log only from the repo's own run-log directories: a method
- * run logs under outputs, a workflow step under its workflow run. The path
- * comes from the output record, which may have been written by another
- * datastore writer, so a path outside them is answered as a missing log
- * rather than read and sent to the client (swamp-club#3729).
- */
-function containedLogFileReader(
-  repoDir: string,
-  read: ModelMethodHistoryLogsDeps["readLogFile"],
-): ModelMethodHistoryLogsDeps["readLogFile"] {
-  const logDirs = RUN_LOG_SUBDIRS.map((subdir) => swampPath(repoDir, subdir));
-  return async (path, options) => {
-    for (const logDir of logDirs) {
-      try {
-        await assertSafePath(path, logDir);
-        return await read(path, options);
-      } catch (error) {
-        if (!(error instanceof PathTraversalError)) throw error;
-      }
-    }
-    return { lines: [], path };
-  };
-}
-
 export async function handleModelMethodHistoryLogs(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2712,9 +2673,7 @@ export async function handleModelEdit(
               // An edit to what self or inputs read can retarget a stored
               // reference computed from them.
               const refusal = await authorizeExpressionReferences(
-                socket,
-                requestId,
-                principal,
+                socketAuthority(socket, requestId, principal, ctx),
                 ctx,
                 expressionsAddedByEdit(
                   analyzeContentExpressions(beforeData),

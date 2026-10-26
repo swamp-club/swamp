@@ -28,8 +28,10 @@ import {
   type CallerAuthority,
   checkCommitBindings,
   type CommitAuthorization,
+  type ContentAuthority,
   definitionRecordReadAccessOf,
   type KeyOwnership,
+  partitionWriteAccessOf,
   readAccessOf,
   writeAccessOf,
 } from "./commit_authorization.ts";
@@ -59,6 +61,19 @@ import {
 } from "./v3_test_helpers.ts";
 
 const DATA = `data/${MODEL_TYPE.normalized}/${MODEL_ID}`;
+
+/** A content check that allows every put: these tests decide base access. */
+const PASSES: ContentAuthority = { check: () => Promise.resolve(undefined) };
+
+/** {@link authorizeCommit} with every put's content allowed. */
+function authorizeBase(
+  partition: Parameters<typeof authorizeCommit>[0],
+  ops: readonly Op[],
+  resolver: AggregateResourceResolver,
+  authority: CallerAuthority,
+): Promise<CommitAuthorization> {
+  return authorizeCommit(partition, ops, resolver, authority, PASSES);
+}
 const OTHER_ID = "11111111-2222-4333-8444-555555555555";
 
 /** A resolver over fixed aggregates; every lookup is recorded. */
@@ -253,7 +268,7 @@ Deno.test("authorizeCommit: a data save needs run on the behavior, by name, as a
   resolver.definitions.set(MODEL_ID, web());
   const denied = new FakeAuthority([]);
   assertRefused(
-    await authorizeCommit(modelPartition(), await save(), resolver, denied),
+    await authorizeBase(modelPartition(), await save(), resolver, denied),
     "forbidden",
     0,
   );
@@ -263,7 +278,7 @@ Deno.test("authorizeCommit: a data save needs run on the behavior, by name, as a
   assertEquals(denied.asked[0].resource.fields.tags, { team: "infra" });
   // Write on the behavior is not run: it edits the definition only.
   assertRefused(
-    await authorizeCommit(
+    await authorizeBase(
       modelPartition(),
       await save(),
       resolver,
@@ -272,14 +287,14 @@ Deno.test("authorizeCommit: a data save needs run on the behavior, by name, as a
     "forbidden",
     0,
   );
-  const allowed = new FakeAuthority(["run model:web", "admin access:*"]);
+  // Run alone is enough: a forwarded write needs no admin (swamp-club#3922).
+  const allowed = new FakeAuthority(["run model:web"]);
   assert(
-    (await authorizeCommit(modelPartition(), await save(), resolver, allowed))
+    (await authorizeBase(modelPartition(), await save(), resolver, allowed))
       .ok,
   );
-  // Both puts share one intent, so the caller is asked once for each
-  // access: run on the behavior, and admin.
-  assertEquals(allowed.asked.length, 2);
+  // Both puts share one intent, so the caller is asked once.
+  assertEquals(allowed.asked.length, 1);
 });
 
 Deno.test("authorizeCommit: a grant record written as plain data needs admin, and a non-admin is refused", async () => {
@@ -305,14 +320,14 @@ Deno.test("authorizeCommit: a grant record written as plain data needs admin, an
   const resolver = new FakeResolver();
   const writer = new FakeAuthority(["write model:*", "write data:*"]);
   assertRefused(
-    await authorizeCommit(partition, ops, resolver, writer),
+    await authorizeBase(partition, ops, resolver, writer),
     "forbidden",
   );
   assertEquals(writer.asked[0].action, "admin");
   assertEquals(writer.asked[0].resource.kind, "access");
   assertEquals(writer.asked[0].resource.name, "swamp/grant");
   assert(
-    (await authorizeCommit(partition, ops, resolver, new FakeAuthority(["*"])))
+    (await authorizeBase(partition, ops, resolver, new FakeAuthority(["*"])))
       .ok,
   );
 });
@@ -322,7 +337,7 @@ Deno.test("authorizeCommit: a restricted behavior type needs admin", async () =>
   resolver.restricted.add(MODEL_TYPE.normalized);
   const authority = new FakeAuthority(["write model:*"]);
   assertRefused(
-    await authorizeCommit(modelPartition(), await save(), resolver, authority),
+    await authorizeBase(modelPartition(), await save(), resolver, authority),
     "forbidden",
   );
   assertEquals(authority.asked[0].action, "admin");
@@ -336,7 +351,7 @@ Deno.test("authorizeCommit: a key another aggregate owns is refused, and a remov
   });
   const authority = new FakeAuthority(["*"]);
   assertRefused(
-    await authorizeCommit(modelPartition(), await save(), resolver, authority),
+    await authorizeBase(modelPartition(), await save(), resolver, authority),
     "key-owned-elsewhere",
     0,
   );
@@ -345,7 +360,7 @@ Deno.test("authorizeCommit: a key another aggregate owns is refused, and a remov
     present: false,
   });
   assert(
-    (await authorizeCommit(modelPartition(), await save(), resolver, authority))
+    (await authorizeBase(modelPartition(), await save(), resolver, authority))
       .ok,
   );
 });
@@ -375,7 +390,7 @@ Deno.test("authorizeCommit: a definition rename may write the key its old name o
     expect: "absent",
   });
   const authority = new FakeAuthority(["*"]);
-  assert((await authorizeCommit(newName, [put], resolver, authority)).ok);
+  assert((await authorizeBase(newName, [put], resolver, authority)).ok);
   // The same put under a plain create is another aggregate's key.
   const create = await putOp({
     intent: createIntent({
@@ -386,7 +401,7 @@ Deno.test("authorizeCommit: a definition rename may write the key its old name o
     inline: base64("w"),
   });
   assertRefused(
-    await authorizeCommit(newName, [create], resolver, authority),
+    await authorizeBase(newName, [create], resolver, authority),
     "key-owned-elsewhere",
   );
 });
@@ -469,27 +484,14 @@ function keyFor(intent: Intent): string {
   return LOCKFILE_RECORD_KEY;
 }
 
-/** Puts serve checks the content of, which need admin for now. */
-const CONTENT_PUTS = [
-  "definition.create",
-  "definition.edit",
-  "definition.rename-to",
-  "evaluated-workflow.save",
-  "evaluated-definition.save",
-  "auto-definition.save",
-  "run-snapshot.save",
-];
-
-function expectedWrite(intent: Intent, opKind: string): string {
-  if (opKind === "put" && CONTENT_PUTS.includes(intent.kind)) {
-    return "admin access";
-  }
+function expectedWrite(intent: Intent, _opKind: string): string {
   if ("model" in intent) {
     if (intent.model.type !== MODEL_TYPE.normalized) return "admin access";
     switch (intent.kind) {
       case "data.save":
       case "data.append":
       case "output.save":
+      case "evaluated-definition.save":
         return "run model";
       case "data.delete":
       case "data.rename":
@@ -503,6 +505,7 @@ function expectedWrite(intent: Intent, opKind: string): string {
     return intent.kind.endsWith(".delete") ? "write workflow" : "run workflow";
   }
   if ("definition" in intent) {
+    if (intent.kind === "evaluated-workflow.save") return "run workflow";
     return intent.definition.kind === "workflow"
       ? "write workflow"
       : "write model";
@@ -540,69 +543,94 @@ Deno.test("authorizeCommit: a rename-from naming another definition as its count
     expect: "present",
   });
   const onlyMine = new FakeAuthority(["write workflow:mine"]);
-  const refused = await authorizeCommit(mine, [tombstone], resolver, onlyMine);
+  const refused = await authorizeBase(mine, [tombstone], resolver, onlyMine);
   assertRefused(refused, "forbidden", 0);
   assert(!refused.ok && refused.message.includes("workflow:victim"));
   const both = new FakeAuthority([
     "write workflow:mine",
     "write workflow:victim",
-    "admin access:*",
   ]);
-  assert((await authorizeCommit(mine, [tombstone], resolver, both)).ok);
+  assert((await authorizeBase(mine, [tombstone], resolver, both)).ok);
 });
 
-Deno.test("authorizeCommit: a vault config put needs admin, whatever the vault its content names", async () => {
+Deno.test("authorizeCommit: a vault config put needs write on the vault, and a vault config removal needs admin", async () => {
   const dev = partitionOf({
     kind: "config",
     definitionKind: "vault",
     name: "dev",
   });
   const resolver = new FakeResolver();
-  // A fresh uuid nobody owns, whose content names another vault.
+  const key =
+    "config/vaults/local_encryption/00000000-0000-4000-8000-000000000000.yaml";
   const create = await putOp({
     intent: createIntent({
       kind: "definition.create",
       definition: { kind: "vault", name: "dev" },
     }),
-    key: RecordKey.create(
-      "config/vaults/local_encryption/00000000-0000-4000-8000-000000000000.yaml",
-    ),
-    inline: base64("name: prod\ntype: local_encryption\n"),
+    key: RecordKey.create(key),
+    inline: base64("name: dev\ntype: local_encryption\n"),
     expect: "absent",
   });
-  // And a rename-to over the other vault's own file.
-  const prodKey = `config/vaults/local_encryption/${OTHER_ID}.yaml`;
-  resolver.owners.set(prodKey, {
+  const writer = new FakeAuthority(["write vault:dev"]);
+  assert((await authorizeBase(dev, [create], resolver, writer)).ok);
+  assertRefused(
+    await authorizeBase(dev, [create], resolver, new FakeAuthority([])),
+    "forbidden",
+    0,
+  );
+  // Serve's API never removes a vault config: a delete needs admin.
+  const remove = tombstoneOp({
+    intent: createIntent({
+      kind: "definition.delete",
+      definition: { kind: "vault", name: "dev" },
+    }),
+    key: RecordKey.create(key),
+  });
+  resolver.owners.set(key, { owner: dev.toString(), present: true });
+  assertRefused(
+    await authorizeBase(dev, [remove], resolver, writer),
+    "forbidden",
+    0,
+  );
+  assert(
+    (await authorizeBase(dev, [remove], resolver, new FakeAuthority(["*"])))
+      .ok,
+  );
+});
+
+Deno.test("authorizeCommit: a vault rename's removal lands only once its rename-to owns the key", async () => {
+  const prod = partitionOf({
+    kind: "config",
+    definitionKind: "vault",
+    name: "prod",
+  });
+  const key = `config/vaults/local_encryption/${OTHER_ID}.yaml`;
+  const resolver = new FakeResolver();
+  const removal = tombstoneOp({
+    intent: createIntent({
+      kind: "definition.rename-from",
+      definition: { kind: "vault", name: "prod" },
+      to: "staging",
+    }),
+    key: RecordKey.create(key),
+  });
+  const writer = new FakeAuthority(["write vault:prod", "write vault:staging"]);
+  // The key is still the old name's: the rename-to has not landed.
+  resolver.owners.set(key, { owner: prod.toString(), present: true });
+  assertRefused(
+    await authorizeBase(prod, [removal], resolver, writer),
+    "forbidden",
+    0,
+  );
+  resolver.owners.set(key, {
     owner: partitionOf({
       kind: "config",
       definitionKind: "vault",
-      name: "prod",
-    })
-      .toString(),
+      name: "staging",
+    }).toString(),
     present: true,
   });
-  const rename = await putOp({
-    intent: createIntent({
-      kind: "definition.rename-to",
-      definition: { kind: "vault", name: "dev" },
-      from: "prod",
-    }),
-    key: RecordKey.create(prodKey),
-    inline: base64("type: attacker"),
-    expect: "absent",
-  });
-  const writers = new FakeAuthority(["write vault:dev", "write vault:prod"]);
-  for (const put of [create, rename]) {
-    assertRefused(
-      await authorizeCommit(dev, [put], resolver, writers),
-      "forbidden",
-      0,
-    );
-    assert(
-      (await authorizeCommit(dev, [put], resolver, new FakeAuthority(["*"])))
-        .ok,
-    );
-  }
+  assert((await authorizeBase(prod, [removal], resolver, writer)).ok);
 });
 
 Deno.test("authorizeCommit: a data delete or rename needs write on the behavior's data, not the behavior", async () => {
@@ -620,7 +648,7 @@ Deno.test("authorizeCommit: a data delete or rename needs write on the behavior'
   for (const op of [remove, rename]) {
     // Write on the behavior lets a caller edit it, not destroy its data.
     assertRefused(
-      await authorizeCommit(
+      await authorizeBase(
         modelPartition(),
         [op],
         resolver,
@@ -629,9 +657,9 @@ Deno.test("authorizeCommit: a data delete or rename needs write on the behavior'
       "forbidden",
       0,
     );
-    const writer = new FakeAuthority(["write data:web", "admin access:*"]);
+    const writer = new FakeAuthority(["write data:web"]);
     assert(
-      (await authorizeCommit(modelPartition(), [op], resolver, writer)).ok,
+      (await authorizeBase(modelPartition(), [op], resolver, writer)).ok,
     );
     assertEquals(writer.asked[0].resource.kind, "data");
   }
@@ -642,9 +670,9 @@ Deno.test("authorizeCommit: data garbage collection needs write on all data, dec
     intent: modelIntent({ kind: "data.gc", name: "vpc", version: 1 }),
     key: RecordKey.create(`${DATA}/vpc/1/raw`),
   });
-  const authority = new FakeAuthority(["write data:*", "admin access:*"]);
+  const authority = new FakeAuthority(["write data:*"]);
   assert(
-    (await authorizeCommit(
+    (await authorizeBase(
       modelPartition(),
       [gc],
       new FakeResolver(),
@@ -655,7 +683,7 @@ Deno.test("authorizeCommit: data garbage collection needs write on all data, dec
   assertEquals(authority.asked[0].every, true);
   assertEquals(authority.asked[0].resource.name, "*");
   assertRefused(
-    await authorizeCommit(
+    await authorizeBase(
       modelPartition(),
       [gc],
       new FakeResolver(),
@@ -666,22 +694,67 @@ Deno.test("authorizeCommit: data garbage collection needs write on all data, dec
   );
 });
 
-Deno.test("authorizeCommit: every forwarded write needs admin until swamp-club#3922, whatever else the caller holds", async () => {
+Deno.test("authorizeCommit: a content check refuses the commit at the put it refuses, and only runs when content is given", async () => {
   const resolver = new FakeResolver();
   resolver.definitions.set(MODEL_ID, web());
-  const member = new FakeAuthority([
-    "run model:*",
-    "write model:*",
-    "write data:*",
-  ]);
+  const runner = new FakeAuthority(["run model:web"]);
+  const ops = await save();
+  const checked: number[] = [];
+  const refusing: ContentAuthority = {
+    check: (op, commit) => {
+      checked.push(commit.indexOf(op));
+      return Promise.resolve(
+        op.key.toString().endsWith("metadata.yaml")
+          ? { message: "names a vault reference the caller may not read" }
+          : undefined,
+      );
+    },
+  };
   const refused = await authorizeCommit(
     modelPartition(),
-    await save(),
+    ops,
     resolver,
-    member,
+    runner,
+    refusing,
   );
-  assertRefused(refused, "forbidden", 0);
-  assert(!refused.ok && refused.message.includes("admin access:*"));
+  assertRefused(refused, "content-refused", 1);
+  assertEquals(checked, [0, 1]);
+  // Deferred: the pass before content arrives decides access alone.
+  checked.length = 0;
+  assert(
+    (await authorizeCommit(
+      modelPartition(),
+      ops,
+      resolver,
+      runner,
+      "deferred",
+    )).ok,
+  );
+  assertEquals(checked, []);
+});
+
+Deno.test("authorizeCommit: content is checked only after access, so a caller without access learns nothing from it", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  let checks = 0;
+  const counting: ContentAuthority = {
+    check: () => {
+      checks++;
+      return Promise.resolve(undefined);
+    },
+  };
+  assertRefused(
+    await authorizeCommit(
+      modelPartition(),
+      await save(),
+      resolver,
+      new FakeAuthority([]),
+      counting,
+    ),
+    "forbidden",
+    0,
+  );
+  assertEquals(checks, 0);
 });
 
 Deno.test("definitionRecordReadAccessOf: decides a definition record by the type its key names", async () => {
@@ -706,4 +779,65 @@ Deno.test("definitionRecordReadAccessOf: decides a definition record by the type
   ) {
     assertEquals((await access(key)).action, "admin", key);
   }
+});
+
+Deno.test("partitionWriteAccessOf: an upload needs the least write a partition takes, and admin where its partition names no type", async () => {
+  const resolver = new FakeResolver();
+  resolver.definitions.set(MODEL_ID, web());
+  resolver.workflows.set(SAMPLE_WORKFLOW_ID, { name: "deploy" });
+  const decided = async (
+    partition: Parameters<typeof partitionWriteAccessOf>[0],
+  ) => {
+    const { action, resource } = await partitionWriteAccessOf(
+      partition,
+      resolver,
+    );
+    return `${action} ${resource.kind}:${resource.name}`;
+  };
+  assertEquals(await decided(modelPartition()), "run model:web");
+  assertEquals(
+    await decided(
+      partitionOf({
+        kind: "run",
+        workflowId: SAMPLE_WORKFLOW_ID,
+        runId: SAMPLE_RUN_ID,
+      }),
+    ),
+    "run workflow:deploy",
+  );
+  assertEquals(
+    await decided(
+      partitionOf({
+        kind: "config",
+        definitionKind: "workflow",
+        name: "deploy",
+      }),
+    ),
+    "write workflow:deploy",
+  );
+  assertEquals(
+    await decided(
+      partitionOf({ kind: "config", definitionKind: "vault", name: "dev" }),
+    ),
+    "write vault:dev",
+  );
+  for (
+    const partition of [
+      partitionOf({ kind: "config", definitionKind: "model", name: "web" }),
+      partitionOf({ kind: "definition", id: MODEL_ID }),
+      partitionOf({ kind: "lockfile" }),
+      partitionOf({
+        kind: "model",
+        type: ModelType.create("@swamp/grant"),
+        id: MODEL_ID,
+      }),
+    ]
+  ) {
+    assert(
+      (await decided(partition)).startsWith("admin "),
+      partition.toString(),
+    );
+  }
+  resolver.restricted.add(MODEL_TYPE.normalized);
+  assertEquals(await decided(modelPartition()), "admin access:*");
 });

@@ -113,7 +113,9 @@ const CacheMetadataSchema = z.object({
   persistedProvenance: z.unknown().optional(),
 });
 
-function parseCache(content: string): EvaluatedDefinitionCache | null {
+export function parseEvaluatedDefinitionCache(
+  content: string,
+): EvaluatedDefinitionCache | null {
   const data = parseYaml(content) as DefinitionData | null;
   if (!data) return null;
   const metadata = CacheMetadataSchema.parse(data);
@@ -216,7 +218,7 @@ export class YamlEvaluatedDefinitionRepository {
     const legacyPath = this.getLegacyPath(type, id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const cached = parseCache(content);
+      const cached = parseEvaluatedDefinitionCache(content);
       if (cached) {
         const { definition } = cached;
         this.idToActualPath.set(id, legacyPath);
@@ -233,7 +235,7 @@ export class YamlEvaluatedDefinitionRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const cached = parseCache(content);
+        const cached = parseEvaluatedDefinitionCache(content);
         if (cached) return cached.definition;
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
@@ -277,7 +279,7 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const cached = parseCache(content);
+          const cached = parseEvaluatedDefinitionCache(content);
           if (!cached) continue;
           const { definition } = cached;
           this.idToActualPath.set(definition.id as DefinitionId, path);
@@ -315,7 +317,7 @@ export class YamlEvaluatedDefinitionRepository {
       const namePath = this.getNamePath(type, name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const cached = parseCache(content);
+        const cached = parseEvaluatedDefinitionCache(content);
         if (cached) {
           const { definition } = cached;
           if (definition.name !== name) {
@@ -381,7 +383,7 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, check if it matches the name
           const content = await Deno.readTextFile(fullPath);
-          const cached = parseCache(content);
+          const cached = parseEvaluatedDefinitionCache(content);
           if (!cached) continue;
           const { definition } = cached;
 
@@ -443,7 +445,7 @@ export class YamlEvaluatedDefinitionRepository {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, add it to results
           const content = await Deno.readTextFile(fullPath);
-          const cached = parseCache(content);
+          const cached = parseEvaluatedDefinitionCache(content);
           if (!cached) continue;
           const { definition } = cached;
 

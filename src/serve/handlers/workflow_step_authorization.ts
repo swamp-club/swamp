@@ -26,12 +26,19 @@
  */
 
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
-import type { Principal } from "../../domain/access/principal.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { expressionsAddedByEdit } from "../../domain/expressions/expression_references.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
+  analyzeWorkflowExpressions,
+  changedStepTargets,
   isComputedStepTarget,
+  readsSelfOrInputs,
+  stepRetargetSourcesChanged,
   type StepTarget,
+  stepTargetKey,
+  workflowStepTargets,
 } from "../../domain/workflows/step_targets.ts";
 import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
 import {
@@ -42,21 +49,21 @@ import {
 import {
   type ConnectionContext,
   isAdminOnlyModelType,
-  isAuthorized,
-  isAuthorizedForAll,
+  type RequestAuthority,
 } from "./shared.ts";
-import { shown } from "./expression_reference_authorization.ts";
+import {
+  authorizeExpressionReferences,
+  shown,
+} from "./expression_reference_authorization.ts";
 
 /**
- * Checks each target against `principal`. Returns a refusal message for the
+ * Checks each target against the principal `authority` decides for. Returns a refusal message for the
  * first one the principal may not run, worded the same whether the target
  * exists or is denied, or undefined when all are allowed. Refusals are
  * audited; nothing is sent.
  */
 export async function authorizeStepTargets(
-  socket: WebSocket,
-  requestId: string,
-  principal: Principal | null,
+  authority: RequestAuthority,
   ctx: ConnectionContext,
   targets: readonly StepTarget[],
   computedModelRun?: { raw: string; unanalyzable: boolean },
@@ -65,11 +72,7 @@ export async function authorizeStepTargets(
   // ...)`) can run any model, as a computed step target can.
   if (
     computedModelRun !== undefined &&
-    !isAuthorized(socket, requestId, principal, "admin", {
-      kind: "access",
-      name: "*",
-      fields: {},
-    }, ctx)
+    !authority.allows("admin", { kind: "access", name: "*", fields: {} })
   ) {
     return computedModelRun.unanalyzable
       ? `Access denied: expression ${
@@ -81,7 +84,7 @@ export async function authorizeStepTargets(
       } runs a model method it computes, which needs admin`;
   }
   for (const target of targets) {
-    if (!await stepAllowed(socket, requestId, principal, ctx, target)) {
+    if (!await stepAllowed(authority, ctx, target)) {
       return `Access denied: a workflow step added here runs ${
         describe(target)
       }`;
@@ -100,9 +103,7 @@ export async function authorizeStepTargets(
  * added. Returns a refusal message, or undefined when all are allowed.
  */
 export async function authorizeChangedSteps(
-  socket: WebSocket,
-  requestId: string,
-  principal: Principal | null,
+  authority: RequestAuthority,
   ctx: ConnectionContext,
   targets: readonly StepTarget[],
 ): Promise<string | undefined> {
@@ -111,11 +112,7 @@ export async function authorizeChangedSteps(
     const fields = await adminOnlyStepFields(ctx, target);
     if (
       fields &&
-      !isAuthorized(socket, requestId, principal, "admin", {
-        kind: "access",
-        name: "*",
-        fields,
-      }, ctx)
+      !authority.allows("admin", { kind: "access", name: "*", fields })
     ) {
       return `Access denied: a workflow step changed here runs ${
         describe(target)
@@ -175,14 +172,12 @@ function describe(target: StepTarget): string {
 }
 
 async function stepAllowed(
-  socket: WebSocket,
-  requestId: string,
-  principal: Principal | null,
+  authority: RequestAuthority,
   ctx: ConnectionContext,
   target: StepTarget,
 ): Promise<boolean> {
   const allowed = (action: "run" | "admin", resource: AccessResource) =>
-    isAuthorized(socket, requestId, principal, action, resource, ctx);
+    authority.allows(action, resource);
   const restricted = ctx.authConfig.restrictedModelTypes;
 
   if (isComputedStepTarget(target)) {
@@ -190,14 +185,7 @@ async function stepAllowed(
     // workflow; a model can be any model, a restricted or control-plane one
     // included, which the engine does not gate, so it needs admin.
     return target.kind === "workflow"
-      ? isAuthorizedForAll(
-        socket,
-        requestId,
-        principal,
-        "run",
-        "workflow",
-        ctx,
-      )
+      ? authority.allowsAll("run", "workflow")
       : allowed("admin", { kind: "access", name: "*", fields: {} });
   }
 
@@ -279,4 +267,78 @@ function normalizedType(typeArg: string): string {
   } catch {
     return typeArg;
   }
+}
+
+/**
+ * The refusal for a workflow edit, or undefined when the writer may add
+ * everything it adds: expressions that read only what they may read, and
+ * steps that run only what they may run. A change to the workflow's inputs
+ * or a step's forEach re-checks computed targets that read `inputs` or
+ * `self`, since those are what can retarget them.
+ */
+export async function authorizeWorkflowEdit(
+  authority: RequestAuthority,
+  ctx: ConnectionContext,
+  before: Workflow,
+  after: Workflow,
+): Promise<string | undefined> {
+  // A workflow's inputs.* and self.* come from its input defaults and its
+  // steps' forEach, so only a change there can retarget what is stored.
+  const retargetable = stepRetargetSourcesChanged(before, after);
+  // A step now running a different target sends its inputs somewhere new,
+  // so every expression in it is checked again.
+  const storedAt = new Map(
+    workflowStepTargets(before).map((t) => [t.location, stepTargetKey(t)]),
+  );
+  const retargetedSteps = workflowStepTargets(after)
+    .filter((t) => storedAt.get(t.location) !== stepTargetKey(t))
+    .flatMap((t) => (t.location ? [t.location] : []));
+  const added = expressionsAddedByEdit(
+    analyzeWorkflowExpressions(before),
+    analyzeWorkflowExpressions(after),
+    retargetable,
+    retargetedSteps,
+  );
+  const refusal = await authorizeExpressionReferences(
+    authority,
+    ctx,
+    added,
+    "allowed",
+  );
+  if (refusal) return refusal.message;
+  const stored = new Set(workflowStepTargets(before).map(stepTargetKey));
+  // A guard or assert that calls model.method runs that method as a step
+  // does, so it is held to the same check.
+  const expressionRuns: StepTarget[] = added.flatMap(({ references }) =>
+    references.runTargets.map(({ model, method }) => ({
+      kind: "model" as const,
+      modelIdOrName: model,
+      methodName: method,
+    }))
+  );
+  const checked = workflowStepTargets(after).filter((target) =>
+    !stored.has(stepTargetKey(target)) ||
+    (retargetable && isComputedStepTarget(target) &&
+      readsSelfOrInputs(target))
+  );
+  const stepRefusal = await authorizeStepTargets(
+    authority,
+    ctx,
+    [...checked, ...expressionRuns],
+    ((computed) =>
+      computed && {
+        raw: computed.raw,
+        unanalyzable: computed.references.unanalyzable,
+      })(added.find(({ references }) => references.runsComputed)),
+  );
+  if (stepRefusal) return stepRefusal;
+  // A stored step whose inputs, method or conditions change keeps its
+  // target, so the check above passes it; what it runs with changed
+  // (swamp-club#3131).
+  const checkedAt = new Set(checked.map((t) => t.location));
+  return await authorizeChangedSteps(
+    authority,
+    ctx,
+    changedStepTargets(before, after).filter((t) => !checkedAt.has(t.location)),
+  );
 }

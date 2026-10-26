@@ -39,7 +39,7 @@ import type {
   WorkflowRunInput,
   WorkflowTelemetrySink,
 } from "../libswamp/workflows/run.ts";
-import { errorPaths, markErrorPaths } from "../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import type { WorkflowTriggerSource } from "../domain/telemetry/mod.ts";
 import { createRunTelemetry, type RunTelemetry } from "./telemetry.ts";
 import { createLibSwampContext } from "../libswamp/context.ts";
@@ -285,8 +285,23 @@ export async function createWorkflowRunDeps(
         return runs.filter((r): r is WorkflowRun => r !== null);
       },
       findEvaluatedWorkflow: (runId) => evaluatedWorkflows().findByRunId(runId),
-      evaluatedCache: (name) =>
-        evaluatedWorkflows().findByNameWithProvenance(name),
+      // On a v3 datastore only serve's own evaluations run: none trusted
+      // refuses rather than falling back to the file (swamp-club#3922).
+      evaluatedCache: async (name) => {
+        const trust = repoContext.evaluationTrust;
+        if (trust === undefined) {
+          return await evaluatedWorkflows().findByNameWithProvenance(name);
+        }
+        const cache = await trust.workflow(name);
+        if (cache === null) {
+          throw new UserError(
+            `No previously evaluated workflow found for "${name}" that this ` +
+              `server evaluated.\n\nEvaluate the workflow first:\n` +
+              `  swamp workflow evaluate ${name}`,
+          );
+        }
+        return cache;
+      },
       // Superseded runs are locally owned, so a local approve, reject or
       // cancel can be deciding one at the same moment.
       runClaims: createWorkflowRunClaims(datastoreConfig),
@@ -334,7 +349,11 @@ export async function createModelMethodRunDeps(
       );
     },
     loadEvaluatedDefinition: (type, name) =>
-      repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(type, name),
+      repoContext.evaluationTrust?.definition(type, name) ??
+        repoContext.evaluatedDefinitionRepo.findByNameWithProvenance(
+          type,
+          name,
+        ),
     saveEvaluatedDefinition: (
       type,
       definition,

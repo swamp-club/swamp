@@ -293,6 +293,25 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/forwarded_commit.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3922: serve checks a forwarded commit's content as its
+  // handlers check the same write, and runs only the evaluations it wrote,
+  // which the read model's writers tell; serve gives its repository context
+  // that trust on a v3 datastore.
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
+  "src/infrastructure/persistence/repository_factory.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/chunk_store.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/commit_authorization.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/content_bindings.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/intent_key_paths.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/op.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/forwarded_content_authorization.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  "src/serve/forwarded_data_content.ts -> src/domain/datastore_v3/commit_authorization.ts",
+  "src/serve/forwarded_data_content.ts -> src/domain/datastore_v3/op.ts",
+  "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/commit_authorization.ts",
+  "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/content_bindings.ts",
+  "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/op.ts",
+  "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/partition_key.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

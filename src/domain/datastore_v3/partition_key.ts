@@ -225,6 +225,15 @@ export function partitionOf(identity: AggregateIdentity): PartitionKey {
   }
 }
 
+/**
+ * What the key of every run partition of a workflow starts with, for a
+ * range over them: whether any run of a workflow id still has records
+ * (swamp-club#3922). Throws when the id is not a UUID.
+ */
+export function runPartitionsPrefix(workflowId: string): string {
+  return `run--${canonicalUuid(workflowId, "workflow id")}--`;
+}
+
 function format(identity: PartitionIdentity): string {
   switch (identity.kind) {
     case "model":
