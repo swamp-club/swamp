@@ -316,3 +316,35 @@ Deno.test("InstanceHeartbeatService.parseRecord: rejects a stoppedAt that is not
   }));
   assertEquals(InstanceHeartbeatService.parseRecord(data), null);
 });
+
+Deno.test("InstanceHeartbeatService: a periodic write in flight at stop cannot replace the stopped record", async () => {
+  const store = createInMemoryStore();
+  const service = new InstanceHeartbeatService(store, "race-stop", {
+    intervalMs: 5,
+  });
+  await service.start();
+  const put = store.put;
+  let release: (() => void) | undefined;
+  let held = false;
+  store.put = (key, data) => {
+    if (held) return put(key, data);
+    held = true;
+    // The next periodic write is held until released, then lands.
+    return new Promise<void>((resolve) => {
+      release = () => put(key, data).then(resolve);
+    });
+  };
+  await waitFor(() => release !== undefined, "the next periodic write");
+
+  const stopping = service.stop({ leaveStoppedRecord: true });
+  // One macrotask yield: a stopped write that does not wait for the held
+  // write has gone out by then, and the held write lands after it.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  release!();
+  await stopping;
+
+  const record = InstanceHeartbeatService.parseRecord(
+    store.entries.get("heartbeats/race-stop")!,
+  );
+  assertExists(record?.stoppedAt);
+});

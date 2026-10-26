@@ -64,6 +64,8 @@ export class InstanceHeartbeatService {
   readonly #address: string | undefined;
   readonly #staleTtlMs: number | undefined;
   #timer: ReturnType<typeof setInterval> | null = null;
+  /** The periodic writes in flight; none of them rejects. */
+  readonly #ticks = new Set<Promise<void>>();
 
   constructor(
     store: ControlPlaneStore,
@@ -89,11 +91,14 @@ export class InstanceHeartbeatService {
     await this.#write();
     this.#timer = runDetached(() =>
       setInterval(() => {
-        this.#write().catch((err) => {
-          logger.warn("Heartbeat write failed: {error}", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
+        const tick: Promise<void> = this.#write()
+          .catch((err) => {
+            logger.warn("Heartbeat write failed: {error}", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          })
+          .finally(() => this.#ticks.delete(tick));
+        this.#ticks.add(tick);
       }, this.#intervalMs)
     );
     Deno.unrefTimer(this.#timer);
@@ -128,7 +133,12 @@ export class InstanceHeartbeatService {
   }
 
   async #writeStopped(timeoutMs: number): Promise<void> {
-    const write = this.#write(new Date().toISOString());
+    // After the periodic writes in flight, so none of them can land last
+    // and take the stopped record's place. The bound covers both.
+    const stoppedAt = new Date().toISOString();
+    const write = Promise.all([...this.#ticks]).then(() =>
+      this.#write(stoppedAt)
+    );
     // Handled here as well, so a write that outlives the bound never
     // rejects unhandled.
     write.catch(() => {});

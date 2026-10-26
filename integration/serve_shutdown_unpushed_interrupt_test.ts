@@ -426,3 +426,37 @@ for (
     });
   });
 }
+
+Deno.test("shutdown with an unpushed interrupt: a restarted checkout reconciling its previous instance keeps its local interrupt", async () => {
+  await withTempDir(async (dir) => {
+    const owner = checkout(join(dir, "owner"));
+    const remote = datastore(join(dir, "remote"));
+    const control = inMemoryControlPlane();
+    try {
+      const { wf, run, heartbeat } = await startRun(owner, remote, control);
+      await stopWithSlowDatastore(owner, run, heartbeat);
+      const refreshes: string[] = [];
+
+      // The restarted serve's boot reconcile claims the stopped heartbeat
+      // its previous instance left in this same checkout.
+      await reconcileRemoteInterruptedRuns({
+        controlPlaneStore: control,
+        instanceId: "restarted-instance",
+        runTracker: owner.tracker,
+        workflowRunRepo: owner.runs,
+        refreshRunRecord: (workflowId, runId) => {
+          refreshes.push(runId);
+          return remote.refreshInto(owner, workflowId, runId);
+        },
+        pushReaped: () => remote.pushFrom(owner),
+      });
+
+      assertEquals(refreshes, []);
+      const local = await owner.runs.findById(wf.id, run.id);
+      assertEquals(local?.status, "interrupted");
+      assertEquals(local?.tags["interrupt_reason"], "server_shutdown");
+    } finally {
+      owner.tracker.close();
+    }
+  });
+});

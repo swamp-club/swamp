@@ -4804,6 +4804,9 @@ export const serveCommand = new Command()
         );
       }
       : undefined;
+    // A scheduled run's active-run record names its workflow only by name.
+    const resolveWorkflowId = async (name: string) =>
+      (await repoContext.workflowRepo.findByName(name))?.id;
     // The interrupted runs the previous serve in this checkout could not
     // push at its shutdown, pushed once here.
     const unpushedMarkerPath = swampPath(
@@ -7474,6 +7477,7 @@ export const serveCommand = new Command()
         outputRepo: repoContext.outputRepo,
         ...(refreshRunRecord !== undefined && { refreshRunRecord }),
         ...(pushSettledRuns !== undefined && { pushReaped: pushSettledRuns }),
+        resolveWorkflowId,
       });
       if (remoteReaped > 0) {
         logger
@@ -7555,6 +7559,7 @@ export const serveCommand = new Command()
             ...(refreshRunRecord !== undefined && { refreshRunRecord }),
             ...(pushSettledRuns !== undefined &&
               { pushReaped: pushSettledRuns }),
+            resolveWorkflowId,
           });
           if (reaped > 0) {
             logger

@@ -2579,3 +2579,84 @@ Deno.test("reconcileRemoteInterruptedRuns: a failed push of the reaped runs is l
     true,
   );
 });
+
+Deno.test("reconcileRemoteInterruptedRuns: a claimed run the cache already holds is read, never refreshed over", async () => {
+  // A restarted checkout claims its own previous instance: the cache holds
+  // the interrupt that instance could not push.
+  const runId = crypto.randomUUID();
+  const workflowId = crypto.randomUUID();
+  const h = createReconcileHarness(
+    { "prev-inst": makeHeartbeat("prev-inst", { stale: true }) },
+    [],
+  );
+  await h.controlPlaneStore.put(
+    `active-runs/prev-inst/${runId}`,
+    activeRunRecord("prev-inst", { resourceId: workflowId }),
+  );
+  const refreshes: string[] = [];
+  const cachedRun = {
+    id: runId,
+    instanceId: "prev-inst",
+    status: "interrupted",
+    interruptOrphaned: () => {
+      throw new Error("an interrupted run is not interrupted again");
+    },
+  };
+  h.deps.workflowRunRepo = {
+    findGlobalByStatus: () => Promise.resolve([]),
+    findById: () => Promise.resolve(cachedRun),
+    save: () => {
+      throw new Error("nothing is saved");
+    },
+  } as unknown as ReconcileRemoteInterruptedRunsDeps["workflowRunRepo"];
+  h.deps.refreshRunRecord = (_wid, rid) => {
+    refreshes.push(rid);
+    return Promise.resolve();
+  };
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 0);
+  assertEquals(refreshes, []);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a scheduled run's record, naming its workflow only by name, is resolved and refreshed", async () => {
+  const runId = crypto.randomUUID();
+  const workflowId = crypto.randomUUID();
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [],
+  );
+  await h.controlPlaneStore.put(
+    `active-runs/dead-inst/${runId}`,
+    activeRunRecord("dead-inst", { resourceName: "nightly" }),
+  );
+  const runs = refreshableRunRepo([], [{
+    id: runId,
+    instanceId: "dead-inst",
+    workflowId,
+  }]);
+  h.deps.workflowRunRepo = runs.repo;
+  h.deps.refreshRunRecord = runs.refresh;
+  h.deps.resolveWorkflowId = (name) =>
+    Promise.resolve(name === "nightly" ? workflowId : undefined);
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(runs.events[0], `refresh ${workflowId} ${runId}`);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a workflow name that does not resolve skips that record only", async () => {
+  const h = createReconcileHarness(
+    { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
+    [],
+  );
+  await h.controlPlaneStore.put(
+    `active-runs/dead-inst/${crypto.randomUUID()}`,
+    activeRunRecord("dead-inst", { resourceName: "gone" }),
+  );
+  const runs = refreshableRunRepo([], []);
+  h.deps.workflowRunRepo = runs.repo;
+  h.deps.refreshRunRecord = runs.refresh;
+  h.deps.resolveWorkflowId = () => Promise.reject(new Error("unreadable"));
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 0);
+  assertEquals(runs.events, []);
+});

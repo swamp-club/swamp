@@ -1263,10 +1263,13 @@ instance once the claim expires.
 This instance's cache holds a peer's run only if it hydrated after the run
 started: the runtime data poller pulls `data/` and `auto-definitions/`, never
 run records. So before deleting the claimed peer's `active-runs/` records the
-pass reads them, and brings each workflow run they name from the datastore
-into the cache (`hydrateFile`, in the pull lane of the shared sync gate,
-bounded by 10 s). It interrupts those runs with the ones the cache held, and on
-a synced datastore pushes once what it interrupted (swamp-club#3958).
+pass reads them; a scheduled run's record names its workflow only by name,
+which is resolved. Each workflow run they name that the cache lacks is brought
+from the datastore (`hydrateFile`, in the pull lane of the shared sync gate,
+bounded by 10 s). A record the cache already holds is never replaced: a
+restarted checkout claims its own previous instance, whose unpushed interrupt
+is in the cache. The pass interrupts those runs with the ones the cache held,
+and on a synced datastore pushes once what it interrupted (swamp-club#3958).
 
 The run tracker is local and a run record is not pushed until the run ends, so
 the claiming peer finds nothing to interrupt for a run that crashed mid-step,

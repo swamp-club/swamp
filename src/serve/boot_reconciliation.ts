@@ -579,10 +579,16 @@ export interface ReconcileRemoteInterruptedRunsDeps {
   /** This process's pid. Defaults to `Deno.pid`. */
   selfPid?: number;
   /**
+   * Resolves a workflow name to its id, for an active-run record that names
+   * its workflow only by name (a scheduled run's).
+   */
+  resolveWorkflowId?: (name: string) => Promise<string | undefined>;
+  /**
    * Brings one workflow run record of a claimed instance into the cache
-   * from the remote datastore. This instance's cache holds another
-   * instance's run only if it hydrated after the run started, so without
-   * it only the runs the cache holds are settled (swamp-club#3958).
+   * from the remote datastore, when the cache holds none. This instance's
+   * cache holds another instance's run only if it hydrated after the run
+   * started, so without it only the runs the cache holds are settled
+   * (swamp-club#3958).
    */
   refreshRunRecord?: (
     workflowId: WorkflowId,
@@ -733,7 +739,7 @@ export async function reconcileRemoteInterruptedRuns(
     workflowId: WorkflowId;
     runId: WorkflowRunId;
   }[] = [];
-  if (deps.workflowRunRepo && deps.refreshRunRecord) {
+  if (deps.workflowRunRepo) {
     for (const claimedId of claimedInstanceIds) {
       try {
         const records = await listActiveRunsForInstance(
@@ -742,11 +748,17 @@ export async function reconcileRemoteInterruptedRuns(
         );
         for (const { runId, record } of records) {
           if (record.runKind === "method-run") continue;
+          // A scheduled run's record names its workflow only by name.
+          const workflowId = record.resourceId ??
+            (deps.resolveWorkflowId && typeof record.resourceName === "string"
+              ? await deps.resolveWorkflowId(record.resourceName).catch(
+                () => undefined,
+              )
+              : undefined);
           // Both ids name a file in the cache, and the record comes from a
           // store other writers can reach.
           if (
-            record.resourceId === undefined || !isUuid(record.resourceId) ||
-            !isUuid(runId)
+            workflowId === undefined || !isUuid(workflowId) || !isUuid(runId)
           ) {
             logger.info(
               "Not refreshing workflow run {runId} of instance {instanceId}: its active-run record names no workflow id",
@@ -755,7 +767,7 @@ export async function reconcileRemoteInterruptedRuns(
             continue;
           }
           claimedWorkflowRuns.push({
-            workflowId: createWorkflowId(record.resourceId),
+            workflowId: createWorkflowId(workflowId),
             runId: createWorkflowRunId(runId),
           });
         }
@@ -789,8 +801,15 @@ export async function reconcileRemoteInterruptedRuns(
     const refreshed: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
     for (const { workflowId, runId } of claimedWorkflowRuns) {
       try {
-        await deps.refreshRunRecord!(workflowId, runId);
-        const run = await workflowRunRepo.findById(workflowId, runId);
+        // A record the cache holds is never replaced: it may carry a change
+        // not pushed yet, such as the interrupt a restarted checkout's
+        // previous instance could not push. It is still read by id, since
+        // the status index may not name it.
+        let run = await workflowRunRepo.findById(workflowId, runId);
+        if (!run && deps.refreshRunRecord) {
+          await deps.refreshRunRecord(workflowId, runId);
+          run = await workflowRunRepo.findById(workflowId, runId);
+        }
         if (run) refreshed.push({ run, workflowId });
       } catch (err: unknown) {
         logger.warn(
