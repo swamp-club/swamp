@@ -905,12 +905,14 @@ Rules, enforced by construction:
 - A comment naming an unknown, error-level or otherwise non-acceptable rule
   (`bare-specifiers`, the `adversarial-review-report` family), text after the
   rule id with no colon, or more than 50 per file, is a blocking
-  `invalid-acceptance` error naming the comment. A reason, when given, is capped
-  at 200 characters, and in source files may not contain a quote character,
-  `Deno.Command(` or a base64 run: the long-line and base64 checks scan every
-  line as written, and `deno-command` does too in a file that does not parse, so
-  a directive can never trigger or hide a finding. An empty `reason:` in
-  `quality.yaml` is a schema error; omit the key instead.
+  `invalid-acceptance` error naming the comment. So is every comment in a source
+  file that does not parse: fix the syntax error first. A reason, when given, is
+  capped at 200 characters, and in source files may not contain `Deno.Command(`
+  or a base64 run: the long-line and base64 checks scan every line as written,
+  so a directive can never trigger or hide a finding. Quotes are fine
+  (`// swamp-quality-ignore deno-command: butler is itch.io's upload tool`);
+  releases before this one refuse them. An empty `reason:` in `quality.yaml` is
+  a schema error; omit the key instead.
 - An acceptance whose rule no longer fires there is a `stale-acceptance` warning
   at the comment, so acceptances do not accumulate.
 - A malformed `quality.yaml` blocks the push before any gate runs, like a

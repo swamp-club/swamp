@@ -28,7 +28,7 @@ import {
 } from "./dynamic_code_detector.ts";
 import { parseExtensionSource } from "./extension_source_ast.ts";
 import { remediationFor } from "./extension_rule_catalog.ts";
-import { withoutDirective } from "./extension_acceptances.ts";
+import { directiveSpans, withoutDirective } from "./extension_acceptances.ts";
 
 /** A safety issue found during analysis. */
 export interface SafetyIssue {
@@ -382,16 +382,18 @@ export async function analyzeExtensionSafety(
         denoCommandByLine.set(finding.line, onLine);
       }
       const lines = content.split("\n");
+      const spans = directiveSpans(content, file);
       for (let i = 0; i < lines.length; i++) {
         // The long-line and base64 checks scan the line as written, so
         // nothing can hide behind a directive (a directive's reason may not
-        // carry a quote, Deno.Command( or a base64 run, so it cannot trigger
-        // these rules). Only the long-line count discounts the directive's
-        // own text. deno-command reads the syntax tree, where a directive is
-        // a comment; only its text fallback, for a file that does not
-        // parse, scans the line as written.
+        // carry Deno.Command( or a base64 run, so it cannot trigger these
+        // rules). Only the long-line count discounts the directive's own
+        // text. deno-command reads the syntax tree, where a directive is a
+        // comment; only its text fallback, for a file that does not parse,
+        // scans the line as written.
         const line = lines[i];
-        const stripped = withoutDirective(line, file).replace(/\s/g, "");
+        const stripped = withoutDirective(line, spans.get(i + 1))
+          .replace(/\s/g, "");
         if (stripped.length > LONG_LINE_THRESHOLD) {
           warnings.push(issue(
             "long-line",
@@ -439,11 +441,10 @@ export async function analyzeExtensionSafety(
         // may quote an address) must not trigger the rule it accepts. Inside
         // a fenced code block a directive is documentation, not parsed, so
         // its text is scanned as written.
-        let fenced = false;
-        const scanned = content.split("\n").map((l) => {
-          if (/^\s*(```|~~~)/.test(l)) fenced = !fenced;
-          return fenced ? l : withoutDirective(l, file);
-        }).join("\n");
+        const spans = directiveSpans(content, file);
+        const scanned = content.split("\n").map((l, i) =>
+          withoutDirective(l, spans.get(i + 1))
+        ).join("\n");
         for (const rule of matchingRules) {
           for (const detected of rule.detect(scanned, file)) {
             const detection: ContentDetection = typeof detected === "string"

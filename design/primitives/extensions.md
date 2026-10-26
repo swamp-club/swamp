@@ -1606,19 +1606,26 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   `// swamp-quality-ignore <rule-id>`, with an optional `: <reason>`, on the
   finding's line or the line directly above, or `<!-- … -->` on the line above in Markdown; the
   same comment anywhere in a file accepts the file-scoped
-  `testing-completeness`. The parser reads raw lines; the review rules strip
-  comments, and the safety checks scan every source line as written, so
-  nothing can hide behind a directive, on push or on pull. A directive's
-  reason, when given, may not contain a quote character, `Deno.Command(` or a base64 run,
-  so a directive cannot trigger the rule it accepts; only the long-line
-  count discounts the directive's own text (at most about 230 characters,
-  and never a span holding a quote). A standalone directive targets the next
+  `testing-completeness`. In source the parser reads directives from the
+  comments Babel finds, so the keyword inside a string, template or regex
+  literal is never a directive, and a quote in an earlier comment cannot
+  hide one (swamp-club#3846, swamp-club#3153); every directive in a source
+  file that does not parse is a blocking `invalid-acceptance`, since there
+  a comment cannot be told from a string. Markdown is read line by line.
+  The review rules strip comments, and the safety checks scan every source
+  line as written, so nothing can hide behind a directive, on push or on
+  pull. A directive's reason, when given, may not contain `Deno.Command(` or
+  a base64 run, so a directive cannot trigger the rule it accepts; a quote
+  is allowed, since it sits in a comment the parser found. Only the
+  long-line count discounts the directive's own text (at most about 230
+  characters; in Markdown never a span holding a quote), using the same
+  directive spans as the parser (`directiveSpans`). A standalone directive targets the next
   line, or the one after a single blank line, so a formatter's blank line
   after an HTML comment is harmless; stacked directives share a target.
   Directive text inside a Markdown fenced code block or a source `/* ... */`
   block is documentation and is not parsed. Text after the rule id with no
   colon, an unknown, error-level or otherwise non-acceptable
-  rule (with its remediation), an extension-scoped rule, a `*/` after the directive on its line (a block comment that would
+  rule (with its remediation), an extension-scoped rule, a `//` directive inside a block comment that closes on its line (which would
   hide code from the safety scan), or more than 50 directives in a file is a
   blocking `invalid-acceptance` finding naming the comment; reasons are
   capped at 200 characters and rejected, never truncated.

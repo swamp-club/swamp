@@ -437,6 +437,46 @@ Deno.test("declared acceptances: every acceptance a dry run reports applies mech
   });
 });
 
+Deno.test("declared acceptances: a reason with an apostrophe, and a directive after an earlier comment, accept their findings (swamp-club#3846, swamp-club#3153)", async () => {
+  await withFindingsExtension(async (root, input) => {
+    const reason = `butler is itch.io's documented upload tool${
+      " and more".repeat(12)
+    }`;
+    await Deno.writeTextFile(
+      join(root, "model.ts"),
+      [
+        `export const model = { type: "@test/thing", version: "2026.01.01.1" };`,
+        "export function run() {",
+        // Long only with the directive's own text, which is discounted.
+        `  new Deno.Command("butler", { args: ["${
+          "x-".repeat(175)
+        }"] }); // swamp-quality-ignore deno-command: ${reason}`,
+        `  return new Deno.Command("vendor"); // don't inline // swamp-quality-ignore deno-command`,
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const prepared = await extensionPushPrepare(
+      createLibSwampContext(),
+      findingsDeps(root),
+      input,
+    );
+    assertEquals(prepared.reviewRulesResult.errors, []);
+    assertEquals(
+      prepared.safetyWarnings.filter((w) =>
+        w.ruleId === "deno-command" || w.ruleId === "long-line"
+      ),
+      [],
+    );
+    assertEquals(
+      prepared.acceptances.accepted
+        .filter((a) => a.ruleId === "deno-command")
+        .map((a) => [a.line, a.reason]),
+      [[3, reason], [4, undefined]],
+    );
+  });
+});
+
 Deno.test("declared acceptances: an error-level rule with no reason is still a blocking invalid-acceptance", async () => {
   await withFindingsExtension(async (root, input) => {
     await Deno.writeTextFile(
