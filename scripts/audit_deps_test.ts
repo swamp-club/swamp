@@ -25,6 +25,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
 import {
   ACCEPTED_ADVISORIES,
+  type AcceptedAdvisory,
   fetchVulnDetails,
   formatVuln,
   isAcceptedAdvisory,
@@ -203,11 +204,20 @@ Deno.test("fetchVulnDetails: runs exactly `concurrency` lookups at once", async 
 
 const ZOD_ADVISORY = { id: "GHSA-mrhx-c7xc-m3w5", aliases: ["CVE-2023-54404"] };
 
+const ACCEPTED: AcceptedAdvisory[] = [{
+  id: "GHSA-mrhx-c7xc-m3w5",
+  package: "zod",
+  versions: ["4.4.3"],
+  reason: "test fixture",
+  reviewBy: "2027-01-23",
+}];
+
 Deno.test("isAcceptedAdvisory: accepts the listed advisory on the listed version before its review date", () => {
   const accepted = isAcceptedAdvisory(
     { name: "zod", version: "4.4.3" },
     ZOD_ADVISORY,
     "2026-10-23",
+    ACCEPTED,
   );
   assertEquals(accepted?.id, "GHSA-mrhx-c7xc-m3w5");
 });
@@ -217,6 +227,7 @@ Deno.test("isAcceptedAdvisory: matches an accepted id given as an alias", () => 
     { name: "zod", version: "4.4.3" },
     { id: "OSV-0000", aliases: ["GHSA-mrhx-c7xc-m3w5"] },
     "2026-10-23",
+    ACCEPTED,
   );
   assertEquals(accepted?.package, "zod");
 });
@@ -224,11 +235,21 @@ Deno.test("isAcceptedAdvisory: matches an accepted id given as an alias", () => 
 Deno.test("isAcceptedAdvisory: another version, package or advisory still fails", () => {
   const today = "2026-10-23";
   assertEquals(
-    isAcceptedAdvisory({ name: "zod", version: "4.4.4" }, ZOD_ADVISORY, today),
+    isAcceptedAdvisory(
+      { name: "zod", version: "4.4.4" },
+      ZOD_ADVISORY,
+      today,
+      ACCEPTED,
+    ),
     undefined,
   );
   assertEquals(
-    isAcceptedAdvisory({ name: "zed", version: "4.4.3" }, ZOD_ADVISORY, today),
+    isAcceptedAdvisory(
+      { name: "zed", version: "4.4.3" },
+      ZOD_ADVISORY,
+      today,
+      ACCEPTED,
+    ),
     undefined,
   );
   assertEquals(
@@ -236,15 +257,21 @@ Deno.test("isAcceptedAdvisory: another version, package or advisory still fails"
       { name: "zod", version: "4.4.3" },
       { id: "GHSA-0000-0000-0000" },
       today,
+      ACCEPTED,
     ),
     undefined,
   );
 });
 
 Deno.test("isAcceptedAdvisory: lapses on its review date", () => {
-  const [{ reviewBy }] = ACCEPTED_ADVISORIES;
+  const [{ reviewBy }] = ACCEPTED;
   assertEquals(
-    isAcceptedAdvisory({ name: "zod", version: "4.4.3" }, ZOD_ADVISORY, reviewBy),
+    isAcceptedAdvisory(
+      { name: "zod", version: "4.4.3" },
+      ZOD_ADVISORY,
+      reviewBy,
+      ACCEPTED,
+    ),
     undefined,
   );
 });

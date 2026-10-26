@@ -36,7 +36,7 @@
     "@std/streams": "jsr:@std/streams@^1.1.0",
     "@std/tar": "jsr:@std/tar@^0.1.10",
     "@std/yaml": "jsr:@std/yaml@^1.1.0",
-    "zod": "npm:zod@^4.4.3",
+    "zod": "npm:zod@^4.6.7",
     "@cliffy/command": "jsr:@cliffy/command@^1.0.1",
     "@logtape/logtape": "jsr:@logtape/logtape@^2.0.7",
     "fzf": "npm:fzf@0.5.2",
