@@ -256,18 +256,20 @@ function makeEntitledIdentity(
 function captureLog(
   identity: WhoamiIdentity,
   mode: OutputMode,
-  options?: { effectiveServeUrl?: string },
+  options?: { effectiveServeUrl?: string; raw?: boolean },
 ): string {
+  const { raw, ...rendererOptions } = options ?? {};
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
   try {
-    const renderer = createAuthWhoamiRenderer(mode, options);
+    const renderer = createAuthWhoamiRenderer(mode, rendererOptions);
     renderer.handlers().completed({ kind: "completed", identity });
   } finally {
     console.log = originalLog;
   }
-  return stripAnsiCode(logs.join("\n"));
+  const output = logs.join("\n");
+  return raw ? output : stripAnsiCode(output);
 }
 
 Deno.test("LogAuthWhoamiRenderer - no entitlement renders the pre-entitlement output", () => {
@@ -794,21 +796,6 @@ const adminEntitlements: WhoamiCollectiveEntitlement[] = [
   },
 ];
 
-function captureRaw(identity: WhoamiIdentity, mode: OutputMode): string {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-  try {
-    createAuthWhoamiRenderer(mode).handlers().completed({
-      kind: "completed",
-      identity,
-    });
-  } finally {
-    console.log = originalLog;
-  }
-  return logs.join("\n");
-}
-
 Deno.test("LogAuthWhoamiRenderer - an Admin roll-up names the plan above every standing", () => {
   const output = captureLog(
     makeEntitledIdentity(adminEntitlements, "admin"),
@@ -835,9 +822,10 @@ Deno.test("LogAuthWhoamiRenderer - an Admin roll-up names the plan above every s
 Deno.test("LogAuthWhoamiRenderer - standing output keeps its colours", () => {
   // Built from the same colour functions, so it holds with colour on or off
   // while still pinning which style wraps which text.
-  const output = captureRaw(
+  const output = captureLog(
     makeEntitledIdentity(adminEntitlements, "admin"),
     "log",
+    { raw: true },
   );
 
   assertEquals(
