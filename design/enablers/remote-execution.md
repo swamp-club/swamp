@@ -479,14 +479,29 @@ positional `<name>` given to `swamp worker token create`) and its
 Enrollments are recorded one at a time on the gateway's transition tail, so a
 worker's control socket can close while its enrollment waits or is being
 recorded: its enroll call times out and it gives up on that socket. One that
-closed before its turn is skipped without being recorded. One that closed
-while it was being recorded is not admitted as connected: it is treated as a
-disconnect, with the usual reconnection grace window. The worker's next
-connection then enrolls normally, and the scheduler never offers a worker on
-a dead socket. Serve's control-plane runs (token redeem, worker enroll and
-status) look up their definitions by type, in `models/<type>` and then the
-auto-definitions directory, so enrollment does not slow down as a repository
-gains definitions (swamp-club#3405).
+closed before its turn is skipped without being recorded, and so is one whose
+socket closed or whose call was cancelled while its token was being redeemed:
+it stops before the pool or the worker's definition changes. Redeem has bound
+the machine by then, so the worker's next attempt re-authenticates without
+spending another enrollment (swamp-club#3984). One that closed while it was
+being recorded is not admitted as connected: it is treated as a disconnect,
+with the usual reconnection grace window. The worker's next connection then
+enrolls normally, and the scheduler never offers a worker on a dead socket.
+
+Serve's control-plane runs (token redeem, worker enroll and status) look up
+their definitions by type, in `models/<type>` and then the auto-definitions
+directory, so enrollment does not slow down as a repository gains definitions
+of other types (swamp-club#3405). A worker name already stored is read
+directly at its name-derived path. A name with no definition yet, which every
+fleet member without a stable `--cache-dir` brings, is answered from a name
+index of the auto-definitions directory that serve keeps between lookups
+(swamp-club#3984). The first such lookup after serve starts reads every stored
+worker definition once. After that, a lookup lists the directory again only
+when it changed, and reads only the files new since, plus any stored under an
+id rather than a name. It is not constant time: during a burst of new workers
+the directory changes with each one, so each new name costs one or two
+directory listings on the gateway's transition tail, but no longer a read and
+parse of every worker definition.
 
 A worker needs no swamp-club credential. `gatePass` is the serve's auth gate
 pass, and a worker without a key of its own passes the gate on it. Such a
