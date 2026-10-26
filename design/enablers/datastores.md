@@ -3889,6 +3889,47 @@ Retrying would block every later commit, and with them chunk GC, so a put
 that conflicts is logged and skipped like a refused key, and stays indexed. A
 tombstone under a file has nothing to remove.
 
+**Spellings that alias** (swamp-club#3939). On a case- or
+normalisation-insensitive filesystem (APFS, NTFS), a key nothing owns can
+reach another key's file: `VPC/1/raw` reaches `vpc/1/raw`. The read model
+neither removes nor writes through such a key. For a put or tombstone of a
+key with no file of its own on disk (no put of it owned one, or its own
+tombstone removed it) whose path nonetheless reaches a file, it reads the
+spelling that file has on disk. Every key that folds to that spelling
+(case-folded and composed, NFC) reaches the same file, whichever spelling
+created it, so the file is another key's when such a key, other than this
+one, has a present file or the same commit already decided one. The change
+is then logged and skipped, and stays indexed (`aliased_skipped` in the
+catch-up span). The present keys are looked up by folded spelling in the
+read model state, through an index built on first use and kept in step as
+commits are applied. A key reached through another spelling of a directory
+only, such as `vpc/2` under `VPC/`, names no other key's file and is written,
+so a recovery replay gives it back its ownership. This holds for every
+checkout, solo ones included, since the same replay runs everywhere.
+
+The check costs nothing where nothing folds. The read model probes its state
+directory once, inside its exclusive section (`spelling_folding.ts`), and
+each cache root on the same device takes the result:
+
+- `off`: neither an upper-case nor a decomposed spelling reaches the probe
+  file. The check is skipped, so a replay on Linux is unchanged.
+- `canonical`: a spelling reaches it, and `realPath` gives the name on
+  disk. The spelling on disk is the file's real path below the root, which
+  the key guards already resolved, so nothing is listed.
+- `list`: a spelling reaches it but `realPath` echoes the spelling given (as
+  on HFS+, which stores names decomposed), the probe failed, or the root is
+  on another device. The spelling on disk is read from the directory
+  listings, each segment matched as listed or case-folded and composed.
+
+Listings are cached for one apply page and dropped whenever a write adds a
+name, so a replay over files already on disk lists each directory once at
+most. Two limits remain. A compacted base load writes keys that own their
+files, so it is not checked, and two owned keys that differ only in case
+inside one base still share a file on such a filesystem. Case folding set per
+directory below a cache root (ext4's `chattr +F`, NTFS's `fsutil file
+setCaseSensitiveInfo`) is not detected: the probe of the state directory
+answers for the whole device.
+
 **Failures.** Any other failure throws `ReadModelApplyError`, naming the
 namespace, partition and seq, and leaves the cursor before the commit, so the
 next catch-up tries it again. Causes are a `BlobRef` with a `legacyKey` (no
@@ -6167,6 +6208,10 @@ refusal fails the whole commit with `403` and the op's index:
   needs `write` on that name (`writeAccessesOf`). Without that, a caller
   with `write` on one definition could tombstone, or for a vault overwrite,
   any other by naming it as the counterpart.
+- **Spellings that alias.** An aliased spelling of a key nothing owns
+  reaches no other key's file on a case- or normalisation-insensitive
+  filesystem: the read model skips it (see "Spellings that alias" under the
+  v3 read model).
 
 `integration/datastore_v3_*_staging_test.ts` run every repository write on
 v3 through `withAuditedV3Env`. Each scenario's commits must pass these
