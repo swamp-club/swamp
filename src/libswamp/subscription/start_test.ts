@@ -202,3 +202,32 @@ Deno.test("createSubscriptionStartDeps: the default server without credentials",
 
   assertEquals(serverUrl, DEFAULT_SWAMP_CLUB_URL);
 });
+
+Deno.test("subscriptionStart: an empty collective is no collective", async () => {
+  const { deps, opened } = makeDeps();
+
+  const events = await run(deps, { collective: "" });
+
+  assertEquals(opened, ["https://swamp-club.com/billing"]);
+  assertEquals(events.at(-1), {
+    kind: "completed",
+    result: {
+      url: "https://swamp-club.com/billing",
+      collective: null,
+      browser: "opened",
+    },
+  });
+});
+
+Deno.test("createSubscriptionStartDeps: an empty stored server falls back to the default", async () => {
+  const deps = createSubscriptionStartDeps({
+    loadCredentials: () => Promise.resolve({ ...credentials, serverUrl: "" }),
+  });
+
+  const serverUrl = await withMockedEnv(
+    { SWAMP_CLUB_URL: undefined },
+    () => deps.resolveServerUrl(),
+  );
+
+  assertEquals(serverUrl, DEFAULT_SWAMP_CLUB_URL);
+});

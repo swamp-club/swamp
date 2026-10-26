@@ -67,9 +67,10 @@ export type SubscriptionStatusEvent =
  */
 export function billingUrl(serverUrl: string, collective?: string): string {
   const base = serverUrl.replace(/\/+$/, "");
-  return collective === undefined
-    ? `${base}/billing`
-    : `${base}/o/${encodeURIComponent(collective)}/billing`;
+  // An empty slug means no collective, so the URL never holds `/o//`.
+  return collective
+    ? `${base}/o/${encodeURIComponent(collective)}/billing`
+    : `${base}/billing`;
 }
 
 function toView(identity: WhoamiIdentity): SubscriptionStatusView {

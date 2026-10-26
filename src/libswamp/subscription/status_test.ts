@@ -323,4 +323,8 @@ Deno.test("billingUrl: a collective opens its own billing page, slug encoded", (
     billingUrl("https://swamp-club.com", "a b&c"),
     "https://swamp-club.com/o/a%20b%26c/billing",
   );
+  assertEquals(
+    billingUrl("https://swamp-club.com", ""),
+    "https://swamp-club.com/billing",
+  );
 });

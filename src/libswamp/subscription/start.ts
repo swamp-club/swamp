@@ -76,7 +76,7 @@ export function createSubscriptionStartDeps(
       const override = Deno.env.get("SWAMP_CLUB_URL");
       if (override) return override;
       const credentials = await loadCredentials();
-      return credentials?.serverUrl ?? DEFAULT_SWAMP_CLUB_URL;
+      return credentials?.serverUrl || DEFAULT_SWAMP_CLUB_URL;
     },
     openBrowser: async (url: string): Promise<boolean> => {
       try {
@@ -102,7 +102,7 @@ export async function* subscriptionStart(
 ): AsyncIterable<SubscriptionStartEvent> {
   const serverUrl = await deps.resolveServerUrl();
   const url = billingUrl(serverUrl, input.collective);
-  const collective = input.collective ?? null;
+  const collective = input.collective || null;
 
   if (input.noBrowser) {
     yield {
