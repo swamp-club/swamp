@@ -421,7 +421,11 @@ export class WorkerGateway {
             // Authentication is server-owned; only an accepted peer may link
             // its context into the enrollment trace.
             ctx.responseTrace = observation.carrier;
-            const result = await this.#handleEnroll(state, params);
+            const result = await this.#handleEnroll(
+              state,
+              params,
+              ctx.signal,
+            );
             return await observeExecutionWork(
               "enrollment.accepted",
               {},
@@ -718,6 +722,7 @@ export class WorkerGateway {
   async #handleEnroll(
     state: SocketState,
     rawParams: unknown,
+    signal: AbortSignal,
   ): Promise<EnrollResult> {
     const params = EnrollParamsSchema.parse(rawParams);
 
@@ -757,7 +762,8 @@ export class WorkerGateway {
       // The worker gave up on this attempt while it waited for its turn (its
       // enroll call timed out). Nothing is recorded yet, so skip it rather
       // than delay the live enrollments queued behind it (swamp-club#3405).
-      if (state.channel.closed) {
+      // The channel aborts the call's signal on its cancel and on close.
+      if (state.channel.closed || signal.aborted) {
         throw new ChannelClosedError(
           "control socket closed before enrollment began",
         );
@@ -792,6 +798,17 @@ export class WorkerGateway {
       const workerName = maxEnrollments === 1
         ? name
         : `${name}-${await fleetMemberSuffix(params.machineId)}`;
+
+      // The worker gave up while its token was redeemed. Stop before the
+      // pool or the worker's definition changes, so an abandoned attempt
+      // does not pay for recording a worker nobody is waiting for
+      // (swamp-club#3984). Redeem bound its machine, which re-authenticates
+      // on the worker's next attempt without spending another enrollment.
+      if (state.channel.closed || signal.aborted) {
+        throw new ChannelClosedError(
+          "control socket closed before enrollment was recorded",
+        );
+      }
 
       const existing = this.#workers.get(workerName);
       if (

@@ -50,8 +50,8 @@ export const RUBRIC_VERSION = 5;
  *   missing     → none
  *   pending     → not scored yet (a version the registry has not analysed)
  *   provisional → before publish, a factor only the registry can award and
- *                 that it is expected to; its points are left out of the
- *                 percentage
+ *                 that it is expected to; it earns nothing until the
+ *                 registry awards it
  */
 export type FactorStatus =
   | "earned"
@@ -125,9 +125,12 @@ export interface RubricScore {
   earnedPoints: number;
   /** Every row's points, provisional ones included. */
   maxPoints: number;
-  /** Points of provisional rows, left out of the percentage. */
+  /** Points of provisional rows, pending the registry; not in `earnedPoints`. */
   provisionalPoints: number;
-  /** floor(earned × 100 / (max − provisional)), within 0 to 100. */
+  /**
+   * floor(earned × 100 / max), within 0 to 100: the registry's formula, so
+   * provisional points count as not earned yet.
+   */
   percentage: number;
 }
 
@@ -142,6 +145,24 @@ export function gradeForPercentage(percentage: number): ScoreGrade {
   if (clamped >= 60) return "C";
   if (clamped >= 40) return "D";
   return "F";
+}
+
+/**
+ * The percentage the registry shows if it awards every provisional row:
+ * floor((earned + provisional) × 100 / max), within 0 to 100. Equals
+ * `percentage` when nothing is provisional.
+ */
+export function percentageIfProvisionalEarned(
+  score: Pick<RubricScore, "earnedPoints" | "maxPoints" | "provisionalPoints">,
+): number {
+  return percentageOf(
+    score.earnedPoints + score.provisionalPoints,
+    score.maxPoints,
+  );
+}
+
+function percentageOf(earned: number, max: number): number {
+  return max === 0 ? 0 : clampPercentage(Math.floor((earned * 100) / max));
 }
 
 const RICH_README_MIN_LENGTH = 500;
@@ -243,16 +264,13 @@ export function composeScore(inputs: RubricInputs): RubricScore {
   const provisional = rows
     .filter((r) => r.status === "provisional")
     .reduce((s, r) => s + r.maxPoints, 0);
-  const scored = max - provisional;
   return {
     rubricVersion: RUBRIC_VERSION,
     factors: rows,
     earnedPoints: earned,
     maxPoints: max,
     provisionalPoints: provisional,
-    percentage: scored === 0
-      ? 0
-      : clampPercentage(Math.floor((earned * 100) / scored)),
+    percentage: percentageOf(earned, max),
   };
 }
 

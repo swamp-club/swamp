@@ -15,11 +15,19 @@ and the registry apply the same rules.
 
 ## Score and grade
 
-`percentage = floor(earned × 100 / (16 − provisional points))`. On the registry
-nothing is provisional, so the divisor is 16. Before publish,
-`swamp extension quality` cannot confirm `repository-verified`; when the
-registry is expected to award it, its 2 points are provisional and the divisor
-is 14.
+`percentage = floor(earned × 100 / 16)`, and the grade comes from the
+percentage. `swamp extension quality` and the registry use the same formula, so
+the local percentage and grade are the registry's for the points already
+confirmed.
+
+Before publish, `swamp extension quality` cannot confirm `repository-verified`.
+When the registry is expected to award it, its 2 points are provisional: not
+earned yet, reported in `provisionalPoints`, and still in the divisor. The text
+output names what they would raise the score to, e.g.
+`14/16 points (87%, grade B, +2 pending server verification: 100% (A) if the registry verifies them, ...)`.
+In `--json`, `percentage` and `grade` count confirmed points only; add
+`provisionalPoints` to `earnedPoints` for the registry's score once it verifies
+the repository.
 
 | Grade | Range |
 | ----- | ----- |
@@ -36,13 +44,13 @@ points), v3 no `secret-safe-docs` (15).
 
 ## Statuses
 
-| Status        | Meaning                                                           |
-| ------------- | ----------------------------------------------------------------- |
-| `earned`      | All points                                                        |
-| `partial`     | Some points (`dependency-trust` at 1/2)                           |
-| `missing`     | No points; the row carries a `remediation`                        |
-| `provisional` | Before publish, a factor only the registry awards and is expected |
-| `pending`     | Registry only: the version has not been analysed yet              |
+| Status        | Meaning                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `earned`      | All points                                                                                    |
+| `partial`     | Some points (`dependency-trust` at 1/2)                                                       |
+| `missing`     | No points; the row carries a `remediation`                                                    |
+| `provisional` | Before publish, a factor only the registry awards and is expected to; no points until it does |
+| `pending`     | Registry only: the version has not been analysed yet                                          |
 
 ## Per-factor reference
 
@@ -210,4 +218,5 @@ behaviors:
 | repository-verified | 2/2    | Public github.com repository             |
 
 Registry: 16/16 = 100% (A). Before publish, `swamp extension quality` shows
-14/14 = 100% with 2 points provisional.
+14/16 = 87% (B) with 2 points pending server verification, and 100% (A) if the
+registry verifies them.

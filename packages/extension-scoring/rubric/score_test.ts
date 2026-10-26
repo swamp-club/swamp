@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   composeScore,
   gradeForPercentage,
+  percentageIfProvisionalEarned,
   RUBRIC_VERSION,
   type RubricInputs,
   type VersionAnalysis,
@@ -214,7 +215,7 @@ Deno.test("composeScore: a confirmed repository earns through a public repositor
   }
 });
 
-Deno.test("composeScore: a predicted repository is provisional and left out of the percentage", () => {
+Deno.test("composeScore: a predicted repository is provisional and counts as not earned yet", () => {
   const score = composeScore(
     inputs({
       repository: {
@@ -227,7 +228,9 @@ Deno.test("composeScore: a predicted repository is provisional and left out of t
   assertEquals(byId(score).get("repository-verified")?.status, "provisional");
   assertEquals(score.provisionalPoints, 2);
   assertEquals([score.earnedPoints, score.maxPoints], [14, 16]);
-  assertEquals(score.percentage, 100);
+  // the registry divides by every row's points, so the divisor stays 16
+  assertEquals(score.percentage, 87);
+  assertEquals(percentageIfProvisionalEarned(score), 100);
 
   const attested = composeScore(
     inputs({
@@ -288,5 +291,39 @@ Deno.test("gradeForPercentage: thresholds at 90, 75, 60 and 40", () => {
       gradeForPercentage,
     ),
     ["A", "A", "B", "B", "C", "C", "D", "D", "F", "F", "F"],
+  );
+});
+
+Deno.test("gradeForPercentage: a fraction below a threshold takes the lower grade", () => {
+  assertEquals(
+    [89.99, 90, 75, 74.99, 60, 59.99, 40, 39.99, 150].map(gradeForPercentage),
+    ["B", "A", "B", "C", "C", "D", "D", "F", "A"],
+  );
+});
+
+Deno.test("percentageIfProvisionalEarned: adds the provisional points to the earned ones", () => {
+  assertEquals(
+    percentageIfProvisionalEarned({
+      earnedPoints: 13,
+      maxPoints: 16,
+      provisionalPoints: 2,
+    }),
+    93,
+  );
+  assertEquals(
+    percentageIfProvisionalEarned({
+      earnedPoints: 13,
+      maxPoints: 16,
+      provisionalPoints: 0,
+    }),
+    81,
+  );
+  assertEquals(
+    percentageIfProvisionalEarned({
+      earnedPoints: 0,
+      maxPoints: 0,
+      provisionalPoints: 0,
+    }),
+    0,
   );
 });
