@@ -234,3 +234,55 @@ Deno.test("checkRunSnapshot: a snapshot declares the workflow its run's intent n
     ) !== undefined,
   );
 });
+
+Deno.test("checkRunRecord: a nested workflow output must be a child run whose record links back to this step, and readable", async () => {
+  const childWorkflow = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
+  const childRun = "88888888-9999-4aaa-8bbb-cccccccccccc";
+  const childKey =
+    `workflow-runs/${childWorkflow}/workflow-run-${childRun}.yaml`;
+  const output = {
+    type: "workflow",
+    workflowId: childWorkflow,
+    runId: childRun,
+  };
+  const completed = record({
+    jobs: [{
+      jobName: "main",
+      status: "succeeded",
+      steps: [{ stepName: "call", status: "succeeded", output }],
+    }],
+  });
+  const child = (parentRunId: string, stepName = "call") =>
+    yaml({
+      ...record({
+        id: childRun,
+        workflowId: childWorkflow,
+        status: "succeeded",
+      }),
+      parentRun: {
+        workflowId: WORKFLOW,
+        workflowName: "deploy",
+        runId: parentRunId,
+        jobName: "main",
+        stepName,
+        nestingDepth: 1,
+        ancestorWorkflowNames: ["deploy"],
+      },
+    });
+  const op = await runPut("run.create", completed);
+  const judged = async (
+    stored: Record<string, Uint8Array>,
+    allowed = ["run", "read"],
+  ) => await checkRunRecord(context(stored, allowed).context, op);
+  assertEquals(await judged({ [childKey]: child(RUN) }), undefined);
+  // Another run's child, another step's, no child, or an unreadable workflow.
+  assert(
+    await judged({
+      [childKey]: child("99999999-aaaa-4bbb-8ccc-dddddddddddd"),
+    }) !==
+      undefined,
+  );
+  assert(await judged({ [childKey]: child(RUN, "other") }) !== undefined);
+  assert(await judged({}) !== undefined);
+  assert(await judged({ [childKey]: child(RUN) }, ["run"]) !== undefined);
+});

@@ -202,6 +202,7 @@ export async function checkRunRecord(
   for (const added of judgement.addedOutputs) {
     const outputRefusal = await outputRefusalOf(
       context,
+      intent.run,
       targets,
       added.jobName,
       after.data.jobs
@@ -312,6 +313,7 @@ function storedReferences(
  */
 async function outputRefusalOf(
   context: ContentCheckContext,
+  run: { readonly workflowId: string; readonly runId: string },
   targets: readonly StepTarget[],
   jobName: string,
   step: StepRunData | undefined,
@@ -323,17 +325,7 @@ async function outputRefusalOf(
     output !== null && typeof output === "object" &&
     (output as { type?: unknown }).type === "workflow"
   ) {
-    const child = output as { workflowId?: unknown; runId?: unknown };
-    const link = step?.nestedRun as
-      | { workflowId?: unknown; runId?: unknown }
-      | undefined;
-    if (
-      link === undefined || child.workflowId !== link.workflowId ||
-      child.runId !== link.runId
-    ) {
-      return "a nested workflow output is not the child run its step links";
-    }
-    return undefined;
+    return await childOutputRefusal(context, run, jobName, step, output);
   }
   const target = step === undefined ? undefined : literalTarget(
     targets,
@@ -390,6 +382,79 @@ async function outputRefusalOf(
     }
   }
   return undefined;
+}
+
+/**
+ * Why a nested workflow output may not stand, or undefined. Serve reads the
+ * child run's outputs into later steps when it resumes the run, so the
+ * child must be this step's own, as the nested-run cascade decides it: the
+ * child's record exists and its parent link names this run, job and step,
+ * and a link on the step, if any, names that child. The caller must also be
+ * able to read the child's workflow, whose outputs it exposes. A link either
+ * record holds alone proves nothing: a forwarded record may set it.
+ */
+async function childOutputRefusal(
+  context: ContentCheckContext,
+  run: { readonly workflowId: string; readonly runId: string },
+  jobName: string,
+  step: StepRunData | undefined,
+  output: object,
+): Promise<string | undefined> {
+  const child = output as { workflowId?: unknown; runId?: unknown };
+  const refusal = "a nested workflow output is not this step's child run";
+  if (
+    step === undefined || typeof child.workflowId !== "string" ||
+    typeof child.runId !== "string"
+  ) {
+    return refusal;
+  }
+  const link = step.nestedRun as
+    | { workflowId?: unknown; runId?: unknown }
+    | undefined;
+  if (
+    link !== undefined &&
+    (link.workflowId !== child.workflowId || link.runId !== child.runId)
+  ) {
+    return refusal;
+  }
+  let partition;
+  try {
+    partition = partitionOf({
+      kind: "run",
+      workflowId: child.workflowId,
+      runId: child.runId,
+    });
+  } catch {
+    return refusal;
+  }
+  const record = await context.prior(
+    partition,
+    `workflow-runs/${child.workflowId.toLowerCase()}/workflow-run-${child.runId.toLowerCase()}.yaml`,
+  );
+  if (record.kind !== "present") return refusal;
+  const parsed = WorkflowRunSchema.safeParse(parseRecord(record.bytes));
+  if (!parsed.success) return refusal;
+  const parent = parseParentRunLink(parsed.data.parentRun);
+  if (
+    parent?.kind !== "valid" ||
+    parent.ref.workflowId.toLowerCase() !== run.workflowId ||
+    parent.ref.runId.toLowerCase() !== run.runId ||
+    parent.ref.jobName !== jobName ||
+    parent.ref.stepName !== (step.forEachTemplate ?? step.stepName) &&
+      parent.ref.stepName !== step.stepName
+  ) {
+    return refusal;
+  }
+  const workflow = await findWorkflowById(
+    context.deps.ctx.repoContext.workflowRepo,
+    child.workflowId,
+  );
+  const resource = workflow === null
+    ? unresolvedAccessResource("workflow", child.workflowId)
+    : workflowAccessResource(workflow);
+  return context.authority.allows("read", resource)
+    ? undefined
+    : `not authorized to read workflow:${resource.name}`;
 }
 
 /** The stored step's target when it names its behavior literally. */
