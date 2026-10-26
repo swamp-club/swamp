@@ -3595,10 +3595,26 @@ in a full replay, and the path checks run for every change. A key skips writes
 only when its top directory was absent before the catch-up and no other key
 the first pass read is its path prefix or lies under it, so its file can never
 decide another key's file and directory conflict. A recovery, a partition
-catch-up and the rest of a catch-up that meets a compacted base replay in
-full, and so does one resumed after a crash: from the bound on, every file is
-where a full replay leaves it. On the dogfood repos a clone wrote 13.7k files
-instead of 40-48k.
+catch-up and the rest of a catch-up that meets a compacted base after it has
+applied commits replay in full, and so does one resumed after a crash: from
+the bound on, every file is where a full replay leaves it. On the dogfood
+repos a clone wrote 13.7k files instead of 40-48k.
+
+**Netted base load (swamp-club#3916).** A net catch-up that meets a compacted
+base before applying anything plans the base and the tail after it together.
+After staging the base, it seeds a `NetReplayPlanner` with each staged file's
+ownership (`seed`), reads the tail once from the point to a bound, and lets
+the load leave off disk each base file a later tail change replaces or
+removes, under the same directory and prefix rules. The same plan is the
+tail replay's net plan, so the replay also skips the removal of a file the
+load never wrote. The state, index and catalog take the whole base as
+before. A skipped file always has a later tail change at or below the bound,
+which the replay applies after the load: a crash in between resumes the
+replay at the point, where that change still is. A load retried after a
+crash finds its own written directories present, and loads those in full. A
+property test (`datastore_v3_net_replay_property_test.ts`) holds a netted
+base load plus tail to a full one, with crashes at the load's barrier and in
+the tail.
 
 **Readers of a checkout another process writes.** A reader skips catch-up
 there, since the writer's files are newer than the commits it would replay,
@@ -4522,8 +4538,18 @@ production compacted until the opt-in wired it into the writer
      checkout-copy guard never stores a released chunk again.
 5. **When it runs.**
    - `CompactionPolicy` (`compaction_policy.ts`) is pure. By default it
-     folds at least 10,000 commits at a time, and keeps the newest 10,000
-     and the last 7 days.
+     folds at least 500 commits at a time and keeps the newest 2,500, so a
+     fresh clone replays at most about 3,000 commits after the base
+     (swamp-club#3916). 2,500 sits just under where a base load costs what
+     a replay does: on a filesystem v3 repo a base load took 10-14 s and
+     replay about 4.5 ms a commit, so a checkout up to 2,500 behind
+     replays and is never slower than before. Ordinary compaction keeps commits by count only:
+     retries need no time window (**v3 commit outbox**, "Retry age").
+   - `retainMs` (1 day) applies only to a retention pass
+     (swamp-club#3473), which asks to fold everything before the pass and
+     drops the count floor: it never folds a commit written in the last
+     day. Content a remove at time T took away is gone at the first pass
+     after T + max(retention period, 1 day) + 24 hours.
    - `CommitStore.compactionStatus(retention)` measures the history the
      retention allows, by count and by commit `at`. Everything from the
      first commit written at or after `since` is kept, so a writer's slow
@@ -5996,8 +6022,25 @@ plus a day for clock skew) before it, except the compaction point's own,
 which a high-water mark check reads. Each compacted txnId's commit time is
 kept in `compacted_txn_times` (schema 5); txnIds compacted before schema 5
 count from the migration. A retry inside the bound therefore always finds
-its txnId and lands once. The same bound is the retention compaction already
-keeps (`DEFAULT_COMPACTION_POLICY.retainMs`).
+its txnId and lands once.
+
+Compaction needs no time window of its own for this (swamp-club#3916). Every
+store lookup that decides whether a commit landed reads `compacted_txns` as
+well as `commits`: the duplicate check of an append, the cold rebuild of a
+partition from its snapshot, and the outbox recovery's landed check. So a
+commit folded a moment after it landed is as findable as a stored one:
+
+- a retry of it, cached or rebuilt cold, is a `duplicate` at its own seq;
+- an outbox entry for it settles rather than dropping as `head-moved`;
+- a retry whose first attempt never landed is rebuilt at the current head,
+  above the point, and lands once.
+
+The proof is in tests that fold young commits through the policy's own path
+(`compactIfDue` in `v3_datastore_test.ts`), the outbox recovery after a fold
+(`datastore_v3_outbox_test.ts`), and the outbox model property test, which
+compacts through the newest commit at any step and fails if an entry whose
+commit landed is ever dropped. Each was mutation-checked against removing
+`compacted_txns` from the lookup it relies on.
 
 **What each mechanism covers.**
 

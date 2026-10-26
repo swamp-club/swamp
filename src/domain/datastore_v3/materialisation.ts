@@ -236,6 +236,26 @@ export class NetReplayPlanner {
     readonly ignored: (namespace: string, key: string) => boolean,
   ) {}
 
+  /**
+   * Seeds one file of a compacted base, before any commit is read
+   * (swamp-club#3916): the key starts from the base's ownership, as the
+   * replay after the base load does, and a present file counts as a write
+   * at its mark, which a later commit of the tail may replace or remove.
+   */
+  seed(namespace: string, key: string, ownership: FileOwnership): void {
+    if (this.ignored(namespace, key)) return;
+    const keys = this.#keys.get(namespace) ?? new Set<string>();
+    keys.add(key);
+    this.#keys.set(namespace, keys);
+    const id = idOf(namespace, key);
+    this.#ownership.set(id, ownership);
+    if (ownership.present) {
+      const writes = this.#writes.get(id) ?? [];
+      writes.push(ownership.mark);
+      this.#writes.set(id, writes);
+    }
+  }
+
   /** Reads one commit, in feed order. */
   add(commit: NetReplayCommit): void {
     this.#bound = Math.max(this.#bound, commit.position);

@@ -1466,7 +1466,9 @@ export async function closeV3Datastores(
   // A writer folds history the policy no longer retains before it lets go
   // of the lock: compaction is the single writer's (swamp-club#3258).
   for (const handle of unreachable ? [] : handles) {
-    if (holdsV3WriterLock(handle.datastorePath)) await compactQuietly(handle);
+    if (holdsV3WriterLock(handle.datastorePath)) {
+      await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
+    }
   }
   // One sync per datastore confirms every commit this process made,
   // compaction's included (swamp-club#3416). It comes before the stores
@@ -1973,24 +1975,40 @@ export function startV3ReplicationUpkeep(
   };
 }
 
-/** How long a writer's closing compaction may run. */
-const CLOSING_COMPACTION_TIMEOUT_MS = 60_000;
+/**
+ * How long a CLI writer's closing compaction may run (swamp-club#3916).
+ * Each batch commits on its own, so a backlog an upgrade leaves, thousands
+ * of commits, is folded a budget at a time over the next writers rather
+ * than at the end of one command.
+ */
+export const CLOSING_COMPACTION_BUDGET_MS = 2_000;
+
+/** How long serve's hourly maintenance compaction may run. */
+export const SERVE_COMPACTION_TIMEOUT_MS = 60_000;
 
 /**
- * Runs `handle`'s due compaction, logging rather than throwing a failure:
- * the command's own work is already committed, and the next writer
- * compacts again.
+ * Runs `handle`'s due compaction within `budgetMs`, logging rather than
+ * throwing a failure: the command's own work is already committed, and the
+ * next writer compacts again. Running out of budget is not a failure: the
+ * batches folded so far stay folded, and the next writer goes on.
  */
-export async function compactQuietly(handle: V3Datastore): Promise<void> {
+export async function compactQuietly(
+  handle: V3Datastore,
+  budgetMs: number,
+): Promise<void> {
+  const signal = AbortSignal.timeout(budgetMs);
   try {
-    const report = await handle.compactIfDue(
-      AbortSignal.timeout(CLOSING_COMPACTION_TIMEOUT_MS),
-    );
+    const report = await handle.compactIfDue(signal);
     if (report !== undefined) {
       logger
         .debug`Compacted ${report.compacted} commits of the v3 datastore at ${handle.datastorePath}`;
     }
   } catch (error) {
+    if (signal.aborted && error === signal.reason) {
+      logger
+        .debug`Compacting the v3 datastore at ${handle.datastorePath} used its ${budgetMs} ms budget; the next writer goes on`;
+      return;
+    }
     logger
       .warn`Compacting the v3 datastore at ${handle.datastorePath} failed; the next writer retries: ${error}`;
   }
@@ -2071,7 +2089,7 @@ const RETENTION_COMPACTION_TIMEOUT_MS = 10 * 60 * 1000;
 export interface RetentionCompaction {
   /**
    * Commits written before this instant are folded out of history: the
-   * earlier of the retention cutoff and the 7-day safety window.
+   * earlier of the retention cutoff and the policy's last day.
    */
   readonly bound: Date;
   /** The compaction point after it: the last commit cursor folded. */
@@ -2093,13 +2111,13 @@ export interface RetentionCompaction {
  *
  * The effective guarantee is weaker than the cutoff: the content a remove
  * took away stays in history until the remove itself is folded, and no
- * commit newer than the cutoff or inside the 7-day safety window (the
- * outbox's retry bound) is folded. A released chunk is then deleted only
- * past the sweep's 24-hour grace (`DEFAULT_CHUNK_GRACE_MS`). Content a
- * remove at time T took away is gone from the datastore at the first pass
- * after T + max(retention period, 7 days) + 24 hours, so call this on every
- * pass, not only on those that deleted something: the pass that deletes an
- * item can never fold its own remove.
+ * commit newer than the cutoff or inside the policy's last day
+ * (`DEFAULT_COMPACTION_POLICY.retainMs`) is folded. A released chunk is then
+ * deleted only past the sweep's 24-hour grace (`DEFAULT_CHUNK_GRACE_MS`).
+ * Content a remove at time T took away is gone from the datastore at the
+ * first pass after T + max(retention period, 1 day) + 24 hours, so call
+ * this on every pass, not only on those that deleted something: the pass
+ * that deletes an item can never fold its own remove.
  *
  * Run it only while this process holds the writer lock: compaction passes
  * the writer's fence, which the commit store checks, and the sweep refuses
@@ -2148,8 +2166,8 @@ export interface V3RetentionHistory {
   readonly oldestCommitAt: string | null;
   /**
    * Commits written before this are folded by each retention pass
-   * ({@link compactRetentionQuietly} with the pass's own time): the 7-day
-   * safety window always binds.
+   * ({@link compactRetentionQuietly} with the pass's own time): the policy's
+   * last day always binds.
    */
   readonly compactionBound: Date;
 }
@@ -2221,7 +2239,7 @@ export class V3MaintenanceTimer {
   tick(): void {
     if (this.#running !== undefined) return;
     this.#running = (async () => {
-      await compactQuietly(this.handle);
+      await compactQuietly(this.handle, SERVE_COMPACTION_TIMEOUT_MS);
       await collectChunksQuietly(
         this.handle,
         SERVE_CHUNK_GC_TIMEOUT_MS,

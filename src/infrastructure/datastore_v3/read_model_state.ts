@@ -324,6 +324,13 @@ export interface LoadKey {
   readonly record_key: string;
 }
 
+/** A file of a staged base, with the ownership it shows (swamp-club#3916). */
+export interface StagedFile extends LoadKey {
+  readonly owner: string;
+  readonly mark: number;
+  readonly present: boolean;
+}
+
 /** A data name whose catalog rows a load replaces. */
 export interface LoadName {
   readonly namespace: string;
@@ -865,6 +872,20 @@ export class ReadModelState {
       return { blob: BlobRef.fromJSON(JSON.parse(row.blob)), ...access };
     }
     return row.inline === null ? undefined : { inline: row.inline, ...access };
+  }
+
+  /** Every staged file of the base, present or not, with its ownership. */
+  stagedFiles(): StagedFile[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT namespace, record_key, owner, mark, present FROM load_files ORDER BY 1, 2",
+    ).all() as {
+      namespace: string;
+      record_key: string;
+      owner: string;
+      mark: number;
+      present: number;
+    }[]).map((row) => ({ ...row, present: row.present === 1 }));
   }
 
   /** The staged ownership of a file a load writes. */

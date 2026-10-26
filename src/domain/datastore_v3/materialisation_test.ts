@@ -223,3 +223,72 @@ Deno.test("NetReplayPlanner: keys that differ only by case or composition, or wh
   assertEquals(plan.skipsWrite("", "config/café", 3), false);
   assertEquals(plan.keptForPrefix, plan.replaceable);
 });
+
+/** A plan of a base of `seeds` and the tail after it, at positions 11 on. */
+function basePlanOf(
+  seeds: [key: string, owner: string, mark: number, present: boolean][],
+  tail: [partition: string, changes: KeyChange[]][],
+  options: { readonly present?: readonly string[] } = {},
+): NetReplayPlan {
+  const planner = new NetReplayPlanner(() => false);
+  for (const [key, owner, mark, present] of seeds) {
+    planner.seed("", key, { owner, mark, present });
+  }
+  tail.forEach(([partition, changes], i) =>
+    planner.add({ namespace: "", partition, position: i + 11, changes })
+  );
+  const present = new Set(options.present ?? []);
+  return planner.finish((_, segment) => !present.has(segment));
+}
+
+Deno.test("NetReplayPlanner.seed: a base file the tail replaces or its owner removes is skipped, one it leaves is not (swamp-club#3916)", () => {
+  const plan = basePlanOf(
+    [
+      ["data/replaced", "p", 3, true],
+      ["data/removed", "p", 4, true],
+      ["data/kept", "p", 5, true],
+    ],
+    [
+      ["p", [change("data/replaced", true)]],
+      ["p", [change("data/removed", false)]],
+    ],
+  );
+  assertEquals(plan.skipsWrite("", "data/replaced", 3), true);
+  assertEquals(plan.skipsWrite("", "data/replaced", 11), false);
+  assertEquals(plan.skipsWrite("", "data/removed", 4), true);
+  // Its file was never written, so neither is its removal.
+  assertEquals(plan.skipsRemoval("", "data/removed", 12), true);
+  assertEquals(plan.skipsWrite("", "data/kept", 5), false);
+  assertEquals(plan.replaceable, 2);
+});
+
+Deno.test("NetReplayPlanner.seed: starts from the base's ownership, so another partition's tombstone leaves the base file (swamp-club#3916)", () => {
+  const plan = basePlanOf(
+    [["config/a", "p", 3, true]],
+    [["q", [change("config/a", false)]]],
+  );
+  assertEquals(plan.skipsWrite("", "config/a", 3), false);
+  assertEquals(plan.replaceable, 0);
+});
+
+Deno.test("NetReplayPlanner.seed: a base file whose directory was there, or that is a tail key's path prefix, is written (swamp-club#3916)", () => {
+  const directory = basePlanOf(
+    [["data/x", "p", 3, true]],
+    [["p", [change("data/x", true)]]],
+    { present: ["data"] },
+  );
+  assertEquals(directory.skipsWrite("", "data/x", 3), false);
+  assertEquals(directory.keptForDirectory, 1);
+  const prefix = basePlanOf(
+    [["data/a", "p", 3, true]],
+    [["p", [change("data/a", false), change("data/a/b", true)]]],
+  );
+  assertEquals(prefix.skipsWrite("", "data/a", 3), false);
+  assertEquals(prefix.keptForPrefix, 1);
+});
+
+Deno.test("NetReplayPlanner.seed: with no tail nothing is skipped (swamp-club#3916)", () => {
+  const plan = basePlanOf([["data/x", "p", 3, true]], []);
+  assertEquals(plan.skipsWrite("", "data/x", 3), false);
+  assertEquals(plan.bound, 0);
+});

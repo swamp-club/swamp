@@ -44,11 +44,13 @@ import {
 import type { CommitLogUnitOfWork } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   closeV3Datastores,
+  CLOSING_COMPACTION_BUDGET_MS,
   collectChunksQuietly,
   compactQuietly,
   compactRetentionQuietly,
   holdV3Writer,
   SERVE_CHUNK_VERIFY_BYTES,
+  SERVE_COMPACTION_TIMEOUT_MS,
   V3_RESERVED_NAMESPACE_CODE,
   v3CommandCommits,
   v3DatastoreFor,
@@ -279,7 +281,56 @@ Deno.test("compactQuietly: a failing compaction is logged, not thrown", async ()
     datastorePath: "/fake",
     compactIfDue: () => Promise.reject(new Error("disk full")),
   } as unknown as V3Datastore;
-  await compactQuietly(handle);
+  await compactQuietly(handle, 60_000);
+});
+
+Deno.test("compactQuietly: a compaction that runs out of its budget stops at debug; a failure warns (swamp-club#3916)", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["datastore", "v3"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const datastorePath = `/fake-${crypto.randomUUID()}`;
+    const levelsOf = () =>
+      records.filter((record) =>
+        record.message.map(String).join("").includes(datastorePath)
+      ).map((record) => record.level);
+    await compactQuietly(
+      {
+        datastorePath,
+        compactIfDue: (signal: AbortSignal) =>
+          new Promise((_, reject) =>
+            signal.addEventListener("abort", () => reject(signal.reason))
+          ),
+      } as unknown as V3Datastore,
+      1,
+    );
+    assertEquals(levelsOf(), ["debug"]);
+    await compactQuietly(
+      {
+        datastorePath,
+        compactIfDue: () => Promise.reject(new Error("disk full")),
+      } as unknown as V3Datastore,
+      60_000,
+    );
+    assertEquals(levelsOf(), ["debug", "warning"]);
+  } finally {
+    await reset();
+  }
+});
+
+Deno.test("CLOSING_COMPACTION_BUDGET_MS: a CLI writer's teardown folds for at most 2 s; serve's maintenance keeps a minute (swamp-club#3916)", () => {
+  assertEquals(CLOSING_COMPACTION_BUDGET_MS, 2_000);
+  assertEquals(SERVE_COMPACTION_TIMEOUT_MS, 60_000);
 });
 
 Deno.test("compactRetentionQuietly: compacts before the cutoff, then sweeps, and reports both (swamp-club#3473)", async () => {
@@ -357,7 +408,7 @@ Deno.test("v3RepositoryFactoryConfig: managedConfig with the config tier left ou
   });
 });
 
-Deno.test("v3RetentionHistory: an empty history and the 7-day bound retention compacts before (swamp-club#3473)", async () => {
+Deno.test("v3RetentionHistory: an empty history and the 1-day bound retention compacts before (swamp-club#3473, swamp-club#3916)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
@@ -369,7 +420,7 @@ Deno.test("v3RetentionHistory: an empty history and the 7-day bound retention co
     );
     assertEquals(history, {
       oldestCommitAt: null,
-      compactionBound: new Date("2026-10-08T00:00:00.000Z"),
+      compactionBound: new Date("2026-10-14T00:00:00.000Z"),
     });
   });
 });

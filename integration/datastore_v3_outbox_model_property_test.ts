@@ -249,6 +249,8 @@ const coverage = {
   recoveryCuts: 0,
   /** Units that reported their commits may land (swamp-club#3586). */
   mayLand: 0,
+  /** Settles of an entry whose commit was folded (swamp-club#3916). */
+  settledFolded: 0,
   drops: {} as Record<string, number>,
 };
 
@@ -331,6 +333,25 @@ async function runModel(commands: readonly Command[]): Promise<void> {
 
   const landedSeq = (txnId: string, run: boolean) =>
     store.landedSeq("", run ? runPartition() : partitionFor(txnId), txnId);
+  /**
+   * Where a txnId is stored, read from commits.db itself rather than through
+   * the store's own lookups (swamp-club#3916).
+   */
+  const storedAs = (txnId: string): "commit" | "folded" | undefined => {
+    const db = new DatabaseSync(join(dir, "commits.db"), { readOnly: true });
+    try {
+      if (
+        db.prepare("SELECT 1 FROM commits WHERE txn_id = ?").get(txnId) !==
+          undefined
+      ) return "commit";
+      return db.prepare("SELECT 1 FROM compacted_txns WHERE txn_id = ?")
+          .get(txnId) !== undefined
+        ? "folded"
+        : undefined;
+    } finally {
+      db.close();
+    }
+  };
   const partitionOfTxn = new Map<string, PartitionKey>();
   const partitionFor = (txnId: string) => partitionOfTxn.get(txnId)!;
 
@@ -603,6 +624,8 @@ async function runModel(commands: readonly Command[]): Promise<void> {
   };
 
   const recover = async () => {
+    const before = new Map<string, "commit" | "folded" | undefined>();
+    for (const txnId of groups.keys()) before.set(txnId, storedAs(txnId));
     recovering = true;
     const report = await recoverCommitOutbox(
       { outbox, commitStore: store, chunkStore },
@@ -615,7 +638,20 @@ async function runModel(commands: readonly Command[]): Promise<void> {
     ).finally(() => recovering = false);
     coverage.landed += report.landed;
     coverage.settled += report.settled;
+    if (report.settled > 0 && [...before.values()].includes("folded")) {
+      coverage.settledFolded++;
+    }
     for (const drop of report.drops) {
+      // A landed entry settles, never drops, its commit folded or not
+      // (swamp-club#3586, swamp-club#3916). An expired one's txnId may
+      // have been pruned, so it is not judged.
+      if (drop.reason !== "expired") {
+        assertEquals(
+          before.get(drop.entry.commit.txnId),
+          undefined,
+          `${drop.entry.commit.txnId} had landed, and was dropped (${drop.reason})`,
+        );
+      }
       coverage.drops[drop.reason] = (coverage.drops[drop.reason] ?? 0) + 1;
       if (drop.entry.commit.partition.kind === "run") continue;
       const record = groups.get(drop.entry.commit.txnId);
@@ -910,6 +946,7 @@ Deno.test("v3 outbox (model): the interleavings take every path the invariants g
   // A unit-dropped run entry needs a failed run commit and a later data
   // commit of one unit both left behind; the recovery unit tests pin it.
   assert(coverage.mayLand > 0, reached);
+  assert(coverage.settledFolded > 0, reached);
   for (const reason of ["stale-fence", "head-moved", "expired", "abandoned"]) {
     assert((coverage.drops[reason] ?? 0) > 0, `${reason}: ${reached}`);
   }

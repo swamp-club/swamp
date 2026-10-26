@@ -363,7 +363,7 @@ Deno.test("scanRetention: shows each kind's watermark", async () => {
   });
 });
 
-Deno.test("scanRetention: fails v3 history only past the 7-day bound plus a day's grace", async () => {
+Deno.test("scanRetention: fails v3 history only past the compaction bound plus a day's grace", async () => {
   await withTempDir(async (dir) => {
     const at = (daysAgo: number) =>
       new Date(NOW.getTime() - daysAgo * DAY_MS).toISOString();
@@ -373,22 +373,22 @@ Deno.test("scanRetention: fails v3 history only past the 7-day bound plus a day'
           v3History: (now) =>
             Promise.resolve({
               oldestCommitAt: oldest,
-              compactionBound: new Date(now.getTime() - 7 * DAY_MS),
+              compactionBound: new Date(now.getTime() - DAY_MS),
             }),
         }),
         policy,
         NOW,
       );
 
-    const within = await scan(at(7.5));
+    const within = await scan(at(1.5));
     assertEquals(within.v3History?.overdue, false);
     assertEquals(retentionCheckFailed(within), false);
     assertEquals(
       within.v3History?.compactionBound,
-      new Date(NOW.getTime() - 7 * DAY_MS).toISOString(),
+      new Date(NOW.getTime() - DAY_MS).toISOString(),
     );
 
-    const past = await scan(at(9));
+    const past = await scan(at(3));
     assertEquals(past.v3History?.overdue, true);
     assertEquals(retentionCheckFailed(past), true);
 

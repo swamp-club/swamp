@@ -28,6 +28,11 @@
  * replaced version's), a checkout that already holds a file under a key's
  * directory, and a net catch-up that crashes at a page's barrier and is
  * resumed by the next one.
+ *
+ * With a compacted history (swamp-club#3916) the catch-up loads the base
+ * first, and a net one leaves off disk each base file the tail after it
+ * replaces or removes. A crash then lands at the base load's barrier, after
+ * its files and before the state moves, or at a page of the tail after it.
  */
 
 import { assertEquals } from "@std/assert";
@@ -310,6 +315,8 @@ interface Scenario {
   readonly stray: "none" | "key" | "beside";
   /** The first catch-up's page whose barrier crashes, if any. */
   readonly crashAt: number | undefined;
+  /** The feed position history is compacted through, if any. */
+  readonly compactAt: number | undefined;
 }
 
 /** What the net replays skipped, summed over a run's catch-ups. */
@@ -317,6 +324,10 @@ interface Skipped {
   writes: number;
   chunked: number;
   removals: number;
+  /** Base files a load left off disk (swamp-club#3916). */
+  base: number;
+  /** Catch-ups that loaded a compacted base. */
+  loads: number;
 }
 
 function skippedIn(spans: readonly ReadableSpan[]): Skipped {
@@ -332,6 +343,11 @@ function skippedIn(spans: readonly ReadableSpan[]): Skipped {
     writes: sum("writes_skipped"),
     chunked: sum("chunked_writes_skipped"),
     removals: sum("removals_skipped"),
+    base: sum("base_writes_skipped"),
+    loads:
+      spans.filter((span) =>
+        span.name === "swamp.datastore.v3.readmodel.load_base"
+      ).length,
   };
 }
 
@@ -353,6 +369,9 @@ async function runNow(scenario: Scenario, net: boolean): Promise<unknown> {
   let result: unknown;
   await withV3Env(async (env) => {
     await append(env, scenario.history);
+    if (scenario.compactAt !== undefined) {
+      await env.store.compactHistory(scenario.compactAt);
+    }
     if (scenario.stray !== "none") {
       const stray = scenario.stray === "key"
         ? join(env.cacheRoot(""), ...KEYS[2].split("/"))
@@ -419,6 +438,9 @@ Deno.test("read model: a net replay ends where a full replay of the same feed en
     skippedMissing: 0,
     crashed: 0,
     unreadableEnds: 0,
+    baseLoads: 0,
+    baseSkipped: 0,
+    baseSkippedCrashed: 0,
   };
   await fc.assert(
     fc.asyncProperty(
@@ -431,10 +453,19 @@ Deno.test("read model: a net replay ends where a full replay of the same feed en
           "beside" as const,
         ),
         crashAt: fc.option(fc.integer({ min: 1, max: 6 }), { nil: undefined }),
+        compactAt: fc.option(fc.integer({ min: 1, max: 14 }), {
+          nil: undefined,
+        }),
       }),
       async (scenario) => {
         const full = await run(scenario, false);
-        const skipped = { writes: 0, chunked: 0, removals: 0 };
+        const skipped = {
+          writes: 0,
+          chunked: 0,
+          removals: 0,
+          base: 0,
+          loads: 0,
+        };
         const net = await run(scenario, true, skipped);
         assertEquals(net, full);
         coverage.runs++;
@@ -443,6 +474,11 @@ Deno.test("read model: a net replay ends where a full replay of the same feed en
         if (skipped.removals > 0) coverage.skippedRemovals++;
         if (replacesMissing(scenario)) coverage.skippedMissing++;
         if (scenario.crashAt !== undefined) coverage.crashed++;
+        if (skipped.loads > 0) coverage.baseLoads++;
+        if (skipped.base > 0) {
+          coverage.baseSkipped++;
+          if (scenario.crashAt !== undefined) coverage.baseSkippedCrashed++;
+        }
         if ((full as { unreadable: unknown[] }).unreadable.length > 0) {
           coverage.unreadableEnds++;
         }

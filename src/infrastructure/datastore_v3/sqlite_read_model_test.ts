@@ -574,6 +574,81 @@ for (const net of [true, false]) {
   );
 }
 
+for (const net of [true, false]) {
+  Deno.test(
+    `SqliteReadModel.catchUp: a fresh checkout ${
+      net ? "leaves off disk" : "writes"
+    } each base file the tail after a compacted base removes (swamp-club#3916)`,
+    async () => {
+      await withEnv(async (env) => {
+        const blob = await env.chunkStore.write(
+          SOLO_NAMESPACE,
+          new Uint8Array(20_000).fill(5),
+          signal(),
+        );
+        await env.append(1, "", [
+          await blobPut("a", 1, blob),
+          versionOp("a", 1),
+        ]);
+        await env.append(2, "", [await savePut("b", 1), versionOp("b", 1)]);
+        await env.store.compactHistory(2);
+        // The tail removes a@1, which the base shows present.
+        await env.append(3, "", [deleteVersion("a", 1)]);
+        await env.append(4, "", [await savePut("c", 1), versionOp("c", 1)]);
+        const readModel = env.open({ netReplay: net });
+        try {
+          await withCapturedSpans(async (spans) => {
+            await readModel.catchUp(signal());
+            const load = findSpan(
+              spans,
+              "swamp.datastore.v3.readmodel.catchup",
+            );
+            assertEquals(load.attributes["swamp.datastore.v3.base_writes"], 2);
+            if (net) {
+              // a@1 is never fetched nor written, and its removal is skipped.
+              assertEquals(
+                load.attributes["swamp.datastore.v3.base_writes_skipped"],
+                1,
+              );
+              assertEquals(
+                load.attributes[
+                  "swamp.datastore.v3.base_chunked_writes_skipped"
+                ],
+                1,
+              );
+              assertEquals(
+                load.attributes["swamp.datastore.v3.chunks_fetched"],
+                0,
+              );
+              assertEquals(
+                load.attributes["swamp.datastore.v3.removals_skipped"],
+                1,
+              );
+            } else {
+              assertEquals(
+                load.attributes["swamp.datastore.v3.base_writes_skipped"],
+                undefined,
+              );
+              assertEquals(
+                load.attributes["swamp.datastore.v3.chunks_fetched"],
+                1,
+              );
+            }
+          });
+          assertEquals(
+            await readOrAbsent(env.contentPath("", "a", 1)),
+            undefined,
+          );
+          assertEquals(await readOrAbsent(env.contentPath("", "b", 1)), "b@1");
+          assertEquals(await readOrAbsent(env.contentPath("", "c", 1)), "c@1");
+        } finally {
+          await readModel.close();
+        }
+      });
+    },
+  );
+}
+
 Deno.test({
   name:
     "SqliteReadModel.recover: the replay keeps a file that already holds its committed inline bytes, and rewrites one that does not (swamp-club#3893)",
