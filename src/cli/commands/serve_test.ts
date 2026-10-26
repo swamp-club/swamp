@@ -36,6 +36,7 @@ import {
   cancelExecution,
   cancelSuccessBody,
   collectServeExtraArgs,
+  legacyHealthBody,
   MAX_CANCEL_BODY_BYTES,
   parseContinuationSweepInterval,
   parseDatastorePollInterval,
@@ -1476,6 +1477,12 @@ Deno.test("readCancelRequestReason: refuses an oversized body with 413", async (
   );
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.status, 413);
+});
+
+// --- legacyHealthBody ---
+
+Deno.test("legacyHealthBody: names no schedule, webhook or setting", () => {
+  assertEquals(legacyHealthBody(), { status: "ok", version: "1" });
 });
 
 // --- cancelSuccessBody ---

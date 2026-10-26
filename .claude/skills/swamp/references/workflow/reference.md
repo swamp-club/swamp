@@ -97,8 +97,9 @@ modifying, or removing a schedule takes effect without restart.
   [execution-semantics.md](references/execution-semantics.md#webhook-delivery)
 - No catch-up: missed schedules while serve was down are not fired on startup
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
-- Health endpoint (`/health`) reports scheduled workflows, next fire times and
-  queue state per schedule: `queued`, `oldestQueuedAt`, `lastQueueDelayMs`
+- The serve dashboard and `/api/v1/health` (needs a token unless auth mode is
+  `none`) report scheduled workflows, next fire times and queue state per
+  schedule: `queued`, `oldestQueuedAt`, `lastQueueDelayMs`
 
 ### Trigger inputs
 

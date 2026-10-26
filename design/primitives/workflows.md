@@ -2700,7 +2700,7 @@ jobs:
   fire that arrives while the same workflow is still queued waits behind it.
   At the default, scheduled runs go one at a time in fire order. Each
   schedule's queue state (`queued`, `oldestQueuedAt`, `lastQueueDelayMs`) is
-  reported in health and on `/health`.
+  reported in the health snapshot (`/api/v1/health`) and the dashboard.
 - **No catch-up:** serve does not fire schedules it missed while it was down.
   On startup it waits for the next natural cron tick.
 - `--no-schedule` on `swamp serve` turns off scheduled execution.
