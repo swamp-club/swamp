@@ -34,7 +34,10 @@ function controlledRequest() {
   };
 }
 
-/** Waits until `count` requests have been sent: a refresh's read starts once the read before it settles. */
+/**
+ * Waits until `count` requests have been sent: a refresh's read starts once
+ * the read before it settles.
+ */
 function waitForReplies(
   req: ReturnType<typeof controlledRequest>,
   count: number,
