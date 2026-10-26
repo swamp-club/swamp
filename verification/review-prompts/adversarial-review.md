@@ -47,8 +47,8 @@ dimensions:
 - Path traversal — can user input escape intended directories? Are `..`
   components, absolute paths, and symlink targets validated? Does the code use
   the codebase's existing primitives (`assertSafePath`, `assertContainedPath`,
-  `validateNoSymlinkEscape`) for untrusted paths? New file-handling code that
-  skips these is CRITICAL.
+  the archive entry gate `archiveEntryRefusal`) for untrusted paths? New
+  file-handling code that skips these is CRITICAL.
 - Symlink escape — are symlinks from untrusted sources (extension dirs,
   archives, copied skill directories) detected with lstat and validated to stay
   within the expected root?

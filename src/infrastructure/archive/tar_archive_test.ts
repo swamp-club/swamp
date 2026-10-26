@@ -27,7 +27,9 @@ import {
   createTarGz,
   extractTarGz,
   listTarGzEntries,
+  type TarEntryKind,
 } from "./tar_archive.ts";
+import { buildRawTarGz } from "./raw_tar_test_helpers.ts";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "tar-archive-test-" });
@@ -368,6 +370,44 @@ Deno.test({
       );
     });
   },
+});
+
+Deno.test("extractTarGz: reports each entry's kind from its typeflag, not from whether it has a body", async () => {
+  await withTempDir(async (root) => {
+    // The symlink comes last and stops extraction before it is written, so
+    // the test needs no symlink privilege on Windows.
+    const bytes = await buildRawTarGz([
+      { path: "x/", typeflag: "5" },
+      { path: "x/file", typeflag: "0", body: "f" },
+      { path: "x/contiguous", typeflag: "7", body: "c" },
+      { path: "x/hard", typeflag: "1", linkname: "x/file" },
+      { path: "x/chr", typeflag: "3" },
+      { path: "x/blk", typeflag: "4" },
+      { path: "x/fifo", typeflag: "6" },
+      { path: "x/odd", typeflag: "Z", body: "z" },
+      { path: "x/sym", typeflag: "2", linkname: "file" },
+    ]);
+    const kinds: Record<string, TarEntryKind> = {};
+    const stop = new Error("stop before the symlink is written");
+    const error = await assertRejects(() =>
+      extractTarGz(streamFromBytes(bytes), join(root, "dst"), (entry) => {
+        kinds[entry.archivePath] = entry.kind;
+        if (entry.kind === "symlink") throw stop;
+      })
+    );
+    assertEquals(error, stop);
+    assertEquals(kinds, {
+      "x/": "directory",
+      "x/file": "file",
+      "x/contiguous": "file",
+      "x/hard": "hardlink",
+      "x/chr": "character-device",
+      "x/blk": "block-device",
+      "x/fifo": "fifo",
+      "x/odd": "unsupported",
+      "x/sym": "symlink",
+    });
+  });
 });
 
 Deno.test("extractTarGz: applies file mode bits on POSIX", async () => {

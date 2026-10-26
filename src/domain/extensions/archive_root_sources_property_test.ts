@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   type ArchiveEntry,
+  type ArchiveEntryKind,
   archiveEntryRefusal,
   planArchiveRootSources,
 } from "./archive_root_sources.ts";
@@ -55,7 +56,16 @@ const entry: fc.Arbitrary<ArchiveEntry> = fc.record({
   path: fc.array(segment, { minLength: 1, maxLength: 4 }).map((segs) =>
     ["extension", ...segs].join("/")
   ),
-  kind: fc.constantFrom("file", "directory", "link"),
+  kind: fc.constantFrom<ArchiveEntryKind>(
+    "file",
+    "directory",
+    "symlink",
+    "hardlink",
+    "character-device",
+    "block-device",
+    "fifo",
+    "unsupported",
+  ),
 });
 
 const entries = fc.uniqueArray(entry, {
@@ -108,13 +118,15 @@ Deno.test("planArchiveRootSources: an installed source never takes a reserved, h
   );
 });
 
-Deno.test("planArchiveRootSources: refuses exactly the entries archiveEntryRefusal refuses, links always", () => {
+Deno.test("planArchiveRootSources: refuses exactly the entries archiveEntryRefusal refuses, every non-file non-directory always", () => {
   fc.assert(
     fc.property(entries, (list) => {
       const plan = planArchiveRootSources(list);
       const expected = list.flatMap((e) => {
         const refusal = archiveEntryRefusal(e);
-        if (e.kind === "link") assert(refusal !== undefined, e.path);
+        if (e.kind !== "file" && e.kind !== "directory") {
+          assert(refusal !== undefined, e.path);
+        }
         return refusal ? [refusal] : [];
       });
       assertEquals(plan.refusals, expected);

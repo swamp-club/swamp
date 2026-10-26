@@ -27,6 +27,7 @@ import {
 } from "@std/path";
 import { join as posixJoin } from "@std/path/posix";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type {
   InstallChange,
   InstallRollbackOutcome,
@@ -90,6 +91,7 @@ import {
   archiveRootSourceDirs,
   planArchiveRootSources,
 } from "../../domain/extensions/archive_root_sources.ts";
+import { firstSymlinkUnder } from "./first_symlink_under.ts";
 import {
   assertContainedPath,
   PathTraversalError,
@@ -626,48 +628,24 @@ async function listFilesAndLinks(dir: string): Promise<string[]> {
 /**
  * The error pull raises for an archive it refuses because of one entry:
  * names the extension, the version and the entry, and says the version
- * cannot be installed.
+ * cannot be installed. The entry path is the archive author's text, so its
+ * control characters are printed as escapes, and the path is marked as
+ * printed.
  */
 function archiveRefusalError(
   name: string,
   version: string,
   refusal: ArchiveEntryRefusal,
 ): UserError {
+  const path = escapeControlCharacters(refusal.path);
   return markErrorPaths(
     new UserError(
       `Extension archive ${name}@${version} cannot be installed: ` +
-        `${refusal.path} ${refusal.reason}. Ask the extension author to ` +
+        `${path} ${refusal.reason}. Ask the extension author to ` +
         `publish a corrected version.`,
     ),
-    [refusal.path],
+    [path],
   );
-}
-
-/**
- * Recursively validates that no symlink under `path` resolves to a target
- * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
- */
-async function validateNoSymlinkEscape(
-  path: string,
-  resolvedTmpDir: string,
-): Promise<void> {
-  const stat = await Deno.lstat(path);
-  if (stat.isSymlink) {
-    const linkTarget = await Deno.readLink(path);
-    const resolvedTarget = resolve(join(path, "..", linkTarget));
-    if (!resolvedTarget.startsWith(resolvedTmpDir + SEPARATOR)) {
-      throw markErrorPaths(
-        new UserError(
-          `Archive contains a symlink that escapes the temp directory: ${path}`,
-        ),
-        [path],
-      );
-    }
-  } else if (stat.isDirectory) {
-    for await (const entry of Deno.readDir(path)) {
-      await validateNoSymlinkEscape(join(path, entry.name), resolvedTmpDir);
-    }
-  }
 }
 
 /**
@@ -1429,10 +1407,14 @@ export async function prepareInstall(
         } decompressed archive size limit. This version cannot be installed; ask the extension author to publish a smaller archive.`,
       );
     }
-    const message = error instanceof Error ? error.message : String(error);
+    // The extractor's message can name an archive entry, so it is printed
+    // with control characters escaped and its paths marked as printed.
+    const message = escapeControlCharacters(
+      error instanceof Error ? error.message : String(error),
+    );
     return markErrorPaths(
       new UserError(`Failed to ${action}: ${message}`),
-      errorPaths(error),
+      errorPaths(error).map(escapeControlCharacters),
     );
   };
   try {
@@ -1448,11 +1430,10 @@ export async function prepareInstall(
     }
     for (const entry of archiveEntries) {
       if (entry.includes("..") || entry.startsWith("/")) {
+        const path = escapeControlCharacters(entry);
         throw markErrorPaths(
-          new UserError(
-            `Archive contains unsafe path: ${entry}`,
-          ),
-          [entry],
+          new UserError(`Archive contains unsafe path: ${path}`),
+          [path],
         );
       }
     }
@@ -1474,11 +1455,7 @@ export async function prepareInstall(
         (entry) => {
           const archiveEntry: ArchiveEntry = {
             path: entry.archivePath,
-            kind: entry.isDirectory
-              ? "directory"
-              : entry.isFile
-              ? "file"
-              : "link",
+            kind: entry.kind,
           };
           const refusal = archiveEntryRefusal(archiveEntry);
           if (refusal) {
@@ -1503,12 +1480,15 @@ export async function prepareInstall(
       }
     }
 
-    const resolvedTmpDir = resolve(tmpDir);
-    for await (const entry of Deno.readDir(extractDir)) {
-      await validateNoSymlinkEscape(
-        join(extractDir, entry.name),
-        resolvedTmpDir,
-      );
+    // The header check refused every link before it was written; this is
+    // the same last check push makes on its staged tree (swamp-club#3421).
+    const extractedLink = await firstSymlinkUnder(extractDir);
+    if (extractedLink !== undefined) {
+      const refusal = archiveEntryRefusal({
+        path: relative(tmpDir, extractedLink).split(SEPARATOR).join("/"),
+        kind: "symlink",
+      });
+      if (refusal) throw archiveRefusalError(ref.name, version, refusal);
     }
 
     let manifestContent: string;

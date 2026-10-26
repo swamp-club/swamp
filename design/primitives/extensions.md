@@ -866,6 +866,14 @@ its archive path. Shared sources (see [Import Resolution](#import-resolution))
 go there too, so the installed sources' relative imports resolve as they do in
 the archive.
 
+Pull reads each entry's tar header before the entry is written and installs only
+regular files and directories. A symlink, hardlink, device, FIFO or any other
+entry type refuses the whole archive, naming the entry and its type but never a
+link's target, so an installed extension never holds a link. After extraction
+pull makes the same last check push makes on its staged tree: a symlink anywhere
+under the extracted archive refuses it. Archive paths in pull's errors print
+control characters as visible escapes.
+
 ### Behaviors
 
 Source TypeScript files keep their paths relative to the active base: the
