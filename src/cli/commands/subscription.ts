@@ -19,12 +19,15 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
+import { subscriptionStartCommand } from "./subscription_start.ts";
 import { subscriptionStatusCommand } from "./subscription_status.ts";
 
 export const subscriptionCommand = new Command()
   .name("subscription")
   .description(
-    "Show the plan and billing standing of your swamp-club collectives",
+    "Show the plan and billing standing of your swamp-club collectives, " +
+      "and open their billing page",
   )
   .action(groupCommandAction)
-  .command("status", subscriptionStatusCommand);
+  .command("status", subscriptionStatusCommand)
+  .command("start", subscriptionStartCommand);

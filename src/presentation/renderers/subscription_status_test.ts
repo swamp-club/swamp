@@ -114,7 +114,7 @@ function captureWhoamiFirstLine(identity: WhoamiIdentity): string {
   return stripAnsiCode(logs[0]);
 }
 
-Deno.test("LogSubscriptionStatusRenderer: prints identity, plan, aligned collectives and the billing link", () => {
+Deno.test("LogSubscriptionStatusRenderer: prints identity, plan, aligned collectives and the call to action", () => {
   assertEquals(
     capture(makeStatus(), "log"),
     [
@@ -124,7 +124,7 @@ Deno.test("LogSubscriptionStatusRenderer: prints identity, plan, aligned collect
       "  stack72     trial: 9 days left (ends 2026-11-03)\n" +
       "  swamp-club  Team  active",
       "",
-      "To manage billing:  https://swamp-club.com/billing",
+      "To manage billing:  swamp subscription start",
     ].join("\n"),
   );
 });
@@ -169,7 +169,7 @@ Deno.test("LogSubscriptionStatusRenderer: no Plan line when there is no plan nam
 
   assertEquals(output.includes("Plan:"), false);
   assertEquals(
-    output.endsWith("To upgrade:  https://swamp-club.com/billing"),
+    output.endsWith("To upgrade:  swamp subscription start"),
     true,
   );
 });
@@ -182,6 +182,7 @@ Deno.test("LogSubscriptionStatusRenderer: Admin standing has no call to action",
 
   assertEquals(output.includes("billing"), false);
   assertEquals(output.includes("To upgrade"), false);
+  assertEquals(output.includes("swamp subscription start"), false);
   assertEquals(output.split("\n").at(-1), "  swamp-club  Team  active");
 });
 

@@ -309,3 +309,22 @@ Deno.test("billingUrl: appends /billing without a doubled slash", () => {
     "https://swamp-club.com/billing",
   );
 });
+
+Deno.test("billingUrl: a collective opens its own billing page, slug encoded", () => {
+  assertEquals(
+    billingUrl("https://swamp-club.com", "acme"),
+    "https://swamp-club.com/o/acme/billing",
+  );
+  assertEquals(
+    billingUrl("https://swamp-club.com/", "acme"),
+    "https://swamp-club.com/o/acme/billing",
+  );
+  assertEquals(
+    billingUrl("https://swamp-club.com", "a b&c"),
+    "https://swamp-club.com/o/a%20b%26c/billing",
+  );
+  assertEquals(
+    billingUrl("https://swamp-club.com", ""),
+    "https://swamp-club.com/billing",
+  );
+});
