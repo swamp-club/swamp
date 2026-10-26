@@ -39,9 +39,12 @@ import {
   dependencyTrustEarnedPoints,
   type DocOutput,
   type FactorStatus,
+  gradeForPercentage,
   type NotAuditedFix,
+  percentageIfProvisionalEarned,
   type PrivateSourceStanding,
   RUBRIC_VERSION,
+  type ScoreGrade,
 } from "@swamp-club/extension-scoring/rubric";
 import {
   CONTROLLED_DENO_JSON,
@@ -71,7 +74,8 @@ import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
  * the archive, strip its config files, run `deno doc`, read the README and
  * LICENSE, then compose the score with what only the CLI knows before
  * publish. `repository-verified` is provisional here because only the
- * registry can award it, so its points stay out of the percentage.
+ * registry can award it, so its points count as not earned yet and the
+ * percentage is the registry's for the case where it does not.
  *
  * Distinct from `extension_quality_checker.ts` in this directory — that
  * module runs `deno fmt` / `deno lint` / dynamic-import checks as part of
@@ -94,9 +98,19 @@ export interface RubricScore {
   factors: RubricFactor[];
   earnedPoints: number;
   maxEarnablePoints: number;
+  /** floor(earned × 100 / maxEarnablePoints): the registry's formula. */
   percentage: number;
+  /** The registry's grade for `percentage`. */
+  grade: ScoreGrade;
+  /**
+   * What the registry shows if it awards every provisional row, or null
+   * when nothing is provisional.
+   */
+  ifProvisionalEarned: { percentage: number; grade: ScoreGrade } | null;
   allPassed: boolean;
+  /** Points pending the registry; not in `earnedPoints`. */
   provisionalPoints: number;
+  /** Points the CLI can confirm before publish; not the percentage's divisor. */
   maxClientEarnablePoints: number;
   /**
    * Why `deno doc` could not analyse the source, or null when it could.
@@ -165,12 +179,18 @@ export function composeLocalScore(
     status: f.status,
     ...(f.remediation === undefined ? {} : { remediation: f.remediation }),
   }));
+  const ifEarned = percentageIfProvisionalEarned(score);
   return {
     rubricVersion: score.rubricVersion,
     factors,
     earnedPoints: score.earnedPoints,
     maxEarnablePoints: score.maxPoints,
     percentage: score.percentage,
+    grade: gradeForPercentage(score.percentage),
+    ifProvisionalEarned: score.provisionalPoints === 0 ? null : {
+      percentage: ifEarned,
+      grade: gradeForPercentage(ifEarned),
+    },
     allPassed: factors.every((r) =>
       r.status === "earned" || r.status === "provisional"
     ),

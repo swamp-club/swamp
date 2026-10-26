@@ -122,10 +122,13 @@ so the author sees where they stand before publishing.
 swamp extension quality manifest.yaml --json
 ```
 
-**Present:** Show the score and grade to the user (e.g. "Quality: 10/15 (67%),
-Grade B"). If any factors are unearned, list them so the author can decide
-whether to address them. Do not require or suggest they must fix anything —
-these are the author's choices.
+**Present:** Show the score and grade to the user from `earnedPoints`,
+`maxEarnablePoints`, `percentage` and `grade` (e.g. "Quality: 14/16 (87%), Grade
+B"). When `provisionalPoints` is above 0, say those points are pending server
+verification and would raise the score if the registry verifies them (e.g. "+2
+pending: 100%, Grade A once verified"). If any factors are unearned, list them
+so the author can decide whether to address them. Do not require or suggest they
+must fix anything — these are the author's choices.
 
 **Advance:** Always proceed to State 7 regardless of the score.
 

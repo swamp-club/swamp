@@ -64,7 +64,9 @@ function makeScore(overrides: Partial<RubricScore> = {}): RubricScore {
     maxEarnablePoints: 14,
     maxClientEarnablePoints: 12,
     provisionalPoints: 2,
-    percentage: 100,
+    percentage: 85,
+    grade: "B",
+    ifProvisionalEarned: { percentage: 100, grade: "A" },
     allPassed: false,
     docAnalysisError: null,
     ...overrides,
@@ -497,6 +499,49 @@ const SAFETY_FAILURE: LocalGateFailure = {
     }],
   },
 };
+
+Deno.test("createExtensionQualityRenderer: log prints the grade beside the percentage and what pending points raise it to", () => {
+  const renderer = createExtensionQualityRenderer("log");
+  const output = capture(() =>
+    renderer.handlers().completed(completedEvent(makeScore()))
+  ).join("\n");
+  assertStringIncludes(
+    output,
+    "Rubric v3 — 12/14 points (85%, grade B, +2 pending server verification: 100% (A) if the registry verifies them, some factors missing)",
+  );
+});
+
+Deno.test("createExtensionQualityRenderer: log names no raise when nothing is pending", () => {
+  const renderer = createExtensionQualityRenderer("log");
+  const output = capture(() =>
+    renderer.handlers().completed(
+      completedEvent(
+        makeScore({
+          maxClientEarnablePoints: 14,
+          provisionalPoints: 0,
+          ifProvisionalEarned: null,
+        }),
+      ),
+    )
+  ).join("\n");
+  assertStringIncludes(
+    output,
+    "Rubric v3 — 12/14 points (85%, grade B, some factors missing)",
+  );
+  assert(!output.includes("pending server verification"), output);
+});
+
+Deno.test("createExtensionQualityRenderer: json carries grade right after percentage", () => {
+  const renderer = createExtensionQualityRenderer("json");
+  const logs = capture(() =>
+    renderer.handlers().completed(completedEvent(makeScore()))
+  );
+  const doc = JSON.parse(logs[0]);
+  assertEquals([doc.percentage, doc.grade], [85, "B"]);
+  const keys = Object.keys(doc);
+  assertEquals(keys[keys.indexOf("percentage") + 1], "grade");
+  assertEquals(doc.ifProvisionalEarned, undefined);
+});
 
 Deno.test("createExtensionQualityRenderer: log prints the rubric, then every failed check with its details, then fails", () => {
   const renderer = createExtensionQualityRenderer("log");
