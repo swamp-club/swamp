@@ -48,7 +48,10 @@ import { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ConnectionContext } from "./shared.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { Definition } from "../../domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type {
   DatastoreSyncOptions,
@@ -1044,6 +1047,125 @@ Deno.test("handleModelOutputSearch: drops the workflow linkage of a run whose wo
         "status",
         "type",
       ]);
+    }
+  });
+});
+
+// --- output and method history search name resolution (swamp-club#3959) ---
+
+Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: name history holding many deleted definitions from bounded definition scans", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const workflowRepo = new YamlWorkflowRepository(dir);
+    const kept = await saveEditModel(definitionRepo, "kept");
+    await saveEditModel(definitionRepo, "unused");
+
+    const save = (definitionId: string, startedAt: Date) =>
+      outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: createDefinitionId(definitionId),
+          methodName: "execute",
+          status: "succeeded",
+          startedAt,
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            triggeredBy: "manual",
+          } as ModelOutput["provenance"],
+        }),
+      );
+    // The kept model's runs are older than every deleted definition's.
+    await save(kept.id, new Date("2026-01-01T00:00:00Z"));
+    await save(kept.id, new Date("2026-01-01T00:00:01Z"));
+    const deleted = 30;
+    for (let i = 0; i < deleted; i++) {
+      await save(crypto.randomUUID(), new Date(Date.UTC(2026, 0, 2, 0, 0, i)));
+    }
+
+    let findByIdCalls = 0;
+    let scans = 0;
+    const findById = definitionRepo.findById.bind(definitionRepo);
+    definitionRepo.findById = (type, id) => {
+      findByIdCalls++;
+      return findById(type, id);
+    };
+    const scanAll = definitionRepo.findAllIncludingAutoGlobal.bind(
+      definitionRepo,
+    );
+    definitionRepo.findAllIncludingAutoGlobal = () => {
+      scans++;
+      return scanAll();
+    };
+
+    // Only the kept model is readable, so the limit must apply after
+    // authorization to return its two runs past the newer deleted ones.
+    const base = createPolicyEditCtx(dir, definitionRepo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "kept" },
+      }),
+    ]);
+    const ctx = {
+      ...base,
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo,
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    // The global output scans walk registered types.
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      const socket = createMockSocket();
+      await handleModelOutputSearch(
+        socket,
+        ctx,
+        "req-1",
+        new AbortController(),
+        EDITOR,
+        { limit: 2 },
+      );
+      const [response] = frames(socket);
+      assertEquals(response.type, "model.output.search");
+      assertEquals(
+        response.payload.data.results.map((r: { modelName?: string }) =>
+          r.modelName
+        ),
+        ["kept", "kept"],
+      );
+      assertEquals(findByIdCalls, 0);
+      // One scan names the outputs, one authorizes them.
+      assertEquals(scans, 2);
+
+      scans = 0;
+      const historySocket = createMockSocket();
+      await handleModelMethodHistorySearch(
+        historySocket,
+        ctx,
+        "req-history",
+        new AbortController(),
+        EDITOR,
+        {},
+      );
+      const [history] = frames(historySocket);
+      assertEquals(history.type, "model.method.history.search");
+      assertEquals(
+        history.payload.data.results.map((r: { modelName?: string }) =>
+          r.modelName
+        ),
+        ["kept", "kept"],
+      );
+      assertEquals(findByIdCalls, 0);
+      assertEquals(scans, 2);
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
     }
   });
 });

@@ -53,8 +53,6 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -149,11 +147,8 @@ export async function modelOutputSearchAction(
 
   const deps: ModelOutputSearchDeps = {
     findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
-    findDefinitionById: (type, defId) =>
-      repoContext.definitionRepo.findById(
-        ModelType.create(type.normalized),
-        createDefinitionId(defId),
-      ),
+    findAllDefinitions: () =>
+      repoContext.definitionRepo.findAllIncludingAutoGlobal(),
   };
 
   // The list reads outputs through the datastore, so the preview and the

@@ -62,11 +62,17 @@ function makeDeps(
           type: { normalized: "aws/s3-bucket" },
         },
       ]),
-    findDefinitionById: (_type, defId) => {
-      if (defId === "def-1") return Promise.resolve({ name: "my-ec2" });
-      if (defId === "def-2") return Promise.resolve({ name: "my-bucket" });
-      return Promise.resolve(null);
-    },
+    findAllDefinitions: () =>
+      Promise.resolve([
+        {
+          definition: { id: "def-1", name: "my-ec2" },
+          type: { normalized: "aws/ec2-instance" },
+        },
+        {
+          definition: { id: "def-2", name: "my-bucket" },
+          type: { normalized: "aws/s3-bucket" },
+        },
+      ]),
     ...overrides,
   };
 }
@@ -106,7 +112,7 @@ Deno.test("modelOutputSearch: resolves model names from definitions", async () =
 
 Deno.test("modelOutputSearch: handles missing definitions gracefully", async () => {
   const deps = makeDeps({
-    findDefinitionById: () => Promise.resolve(null),
+    findAllDefinitions: () => Promise.resolve([]),
   });
   const events = await collect<ModelOutputSearchEvent>(
     modelOutputSearch(createLibSwampContext(), deps, {}),
@@ -355,4 +361,116 @@ Deno.test("modelOutputSearch: rejects an unparseable since and a negative limit"
       assertEquals(last.error.code, "validation_failed");
     }
   }
+});
+
+/** One output per definition id, all of one type, a second apart. */
+function outputsOf(definitionIds: string[], type = "command/shell") {
+  return definitionIds.map((definitionId, i) => ({
+    output: {
+      id: `out-${i}`,
+      definitionId,
+      methodName: "execute",
+      status: "succeeded",
+      startedAt: new Date(Date.UTC(2026, 0, 15, 10, 0, i)),
+    },
+    type: { normalized: type },
+  }));
+}
+
+Deno.test("modelOutputSearch: names outputs of many deleted definitions from one definition scan (swamp-club#3959)", async () => {
+  const deleted = Array.from({ length: 50 }, (_, i) => `gone-${i}`);
+  let scans = 0;
+  const deps = makeDeps({
+    findAllOutputsGlobal: () =>
+      Promise.resolve(outputsOf([...deleted, "kept"])),
+    findAllDefinitions: () => {
+      scans++;
+      return Promise.resolve([{
+        definition: { id: "kept", name: "still-here" },
+        type: { normalized: "command/shell" },
+      }]);
+    },
+  });
+  const data = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, { limit: 5 }),
+    ),
+  );
+  assertEquals(scans, 1);
+  assertEquals(data.results[0].modelName, "still-here");
+  assertEquals(
+    data.results.slice(1).map((r) => r.modelName),
+    [undefined, undefined, undefined, undefined],
+  );
+});
+
+Deno.test("modelOutputSearch: names an output after the first definition listed for its type and id", async () => {
+  const deps = makeDeps({
+    findAllOutputsGlobal: () => Promise.resolve(outputsOf(["shared"])),
+    // Primary definitions are listed before auto-definitions.
+    findAllDefinitions: () =>
+      Promise.resolve([
+        {
+          definition: { id: "shared", name: "primary" },
+          type: { normalized: "command/shell" },
+        },
+        {
+          definition: { id: "shared", name: "auto" },
+          type: { normalized: "command/shell" },
+        },
+      ]),
+  });
+  const data = completedOf(
+    await collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+  );
+  assertEquals(data.results.map((r) => r.modelName), ["primary"]);
+});
+
+Deno.test("modelOutputSearch: does not name an output after a definition of another type", async () => {
+  const deps = makeDeps({
+    findAllOutputsGlobal: () => Promise.resolve(outputsOf(["def-x"])),
+    findAllDefinitions: () =>
+      Promise.resolve([{
+        definition: { id: "def-x", name: "other-type" },
+        type: { normalized: "aws/s3-bucket" },
+      }]),
+  });
+  const data = completedOf(
+    await collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+  );
+  assertEquals(data.results.map((r) => r.modelName), [undefined]);
+});
+
+Deno.test("modelOutputSearch: scans no definitions when no output needs a name", async () => {
+  const deps = makeDeps({
+    findAllDefinitions: () => {
+      throw new Error("must not scan definitions");
+    },
+    resolveModel: () =>
+      Promise.resolve([{
+        definitionId: "def-1",
+        name: "my-ec2",
+        type: { normalized: "aws/ec2-instance" },
+      }]),
+    findOutputsByDefinition: () =>
+      Promise.resolve(
+        outputsOf(["def-1"], "aws/ec2-instance").map((o) => o.output),
+      ),
+  });
+  // The model filter already knows each output's name.
+  const named = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, { model: "my-ec2" }),
+    ),
+  );
+  assertEquals(named.results.map((r) => r.modelName), ["my-ec2"]);
+  // A window no output falls in names nothing.
+  const empty = completedOf(
+    await collect(
+      modelOutputSearch(createLibSwampContext(), deps, {
+        since: "2030-01-01T00:00:00Z",
+      }),
+    ),
+  );
+  assertEquals(empty.results, []);
 });

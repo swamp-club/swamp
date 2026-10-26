@@ -81,7 +81,11 @@ Deno.test("dashboard time bounds: model output search reads every preset's durat
             output("inside", edge + minute),
             output("outside", edge - minute),
           ]),
-        findDefinitionById: () => Promise.resolve({ name: "m" }),
+        findAllDefinitions: () =>
+          Promise.resolve([{
+            definition: { id: "def-1", name: "m" },
+            type: { normalized: "test/model" },
+          }]),
       }, requestTimeBounds(range)),
     );
     const last = events[events.length - 1];

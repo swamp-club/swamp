@@ -104,10 +104,18 @@ export interface ModelOutputSearchDeps {
       type: { normalized: string };
     }>
   >;
-  findDefinitionById(
-    type: { normalized: string },
-    definitionId: string,
-  ): Promise<{ name: string } | null>;
+  /**
+   * Every definition with its type, primary definitions before
+   * auto-definitions. Read at most once per search to name the outputs, so
+   * history holding many deleted definitions costs one scan, not one per id
+   * (swamp-club#3959).
+   */
+  findAllDefinitions(): Promise<
+    Array<{
+      definition: { id: string; name: string };
+      type: { normalized: string };
+    }>
+  >;
   /**
    * The definitions a `model` filter (a name or an id) names. With
    * {@link findOutputsByDefinition} it reads only those models' outputs
@@ -220,20 +228,28 @@ export async function* modelOutputSearch(
 
       const candidates = await findCandidates(deps, input.model, since);
 
-      const names = new Map<string, Promise<string | undefined>>();
-      const modelNameOf = (
+      // One scan of every definition, only once an output needs a name. The
+      // first definition per type and id wins, so a primary definition names
+      // its outputs over an auto-definition sharing its id.
+      let names: Promise<Map<string, string>> | undefined;
+      const modelNameOf = async (
         type: { normalized: string },
         definitionId: string,
       ): Promise<string | undefined> => {
-        const key = JSON.stringify([type.normalized, definitionId]);
-        let found = names.get(key);
-        if (!found) {
-          found = deps.findDefinitionById(type, definitionId).then((d) =>
-            d?.name
-          );
-          names.set(key, found);
-        }
-        return found;
+        names ??= deps.findAllDefinitions().then((all) => {
+          const index = new Map<string, string>();
+          for (const entry of all) {
+            const key = JSON.stringify([
+              entry.type.normalized,
+              entry.definition.id,
+            ]);
+            if (!index.has(key)) index.set(key, entry.definition.name);
+          }
+          return index;
+        });
+        return (await names).get(
+          JSON.stringify([type.normalized, definitionId]),
+        );
       };
 
       const items: ModelOutputSearchItem[] = [];
