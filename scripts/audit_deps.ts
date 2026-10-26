@@ -91,18 +91,7 @@ export interface AcceptedAdvisory {
   reviewBy: string;
 }
 
-export const ACCEPTED_ADVISORIES: AcceptedAdvisory[] = [
-  {
-    id: "GHSA-mrhx-c7xc-m3w5",
-    package: "zod",
-    versions: ["4.4.3"],
-    reason: "swamp's zod is the instance every extension bundle runs on, so " +
-      "upgrading it changes every installed extension; the fixed 4.6.6 only " +
-      "bounds arrays that declare .max(), .length() or .size(), and an " +
-      "unbounded array still builds one issue per element (swamp-club#3834)",
-    reviewBy: "2027-01-23",
-  },
-];
+export const ACCEPTED_ADVISORIES: AcceptedAdvisory[] = [];
 
 /** Whether `vuln` on `pkg` is accepted on `today` (YYYY-MM-DD). */
 export function isAcceptedAdvisory(
