@@ -48,9 +48,11 @@ import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
 import { MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
+  ADMIN_RESOURCE,
   type AggregateResourceResolver,
   authorizeCommit,
   type CallerAuthority,
+  definitionRecordReadAccessOf,
   partitionReadAccessOf,
   readAccessOf,
   type RequiredAccess,
@@ -60,6 +62,7 @@ import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
 import { type Op, opFromJSON } from "../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../domain/datastore_v3/partition.ts";
 import { PartitionKey } from "../domain/datastore_v3/partition_key.ts";
+import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
@@ -79,7 +82,10 @@ import {
   StaleSeqError,
   TxnIdReusedError,
 } from "../infrastructure/datastore_v3/forwarded_commit.ts";
-import type { UploadLedger } from "../infrastructure/datastore_v3/upload_ledger.ts";
+import type {
+  UploadLedger,
+  UploadReservation,
+} from "../infrastructure/datastore_v3/upload_ledger.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
@@ -326,40 +332,44 @@ class DatastoreApi {
     if (!Number.isSafeInteger(size) || size < 0) {
       return failure(411, "length_required", "Content-Length is required");
     }
+    // An uploaded chunk serves only a commit that names it, and every
+    // forwarded write needs admin until swamp-club#3922: so does the upload,
+    // decided before anything is reserved or read.
+    if (!this.#writeAuthority().allows("admin", ADMIN_RESOURCE)) {
+      return failure(403, "forbidden", "Uploading a chunk needs admin");
+    }
     const now = this.#now();
-    const admission = this.#deps.ledger.admit(
+    const admission = this.#deps.ledger.reserve(
       this.#caller.principal,
       size,
       now,
     );
-    if (!admission.allowed) {
-      return failure(
-        429,
-        "upload_quota_exceeded",
-        "Too many uploaded chunks are not referenced by any commit yet",
-      );
-    }
-    return await this.#withChunkSlot(async () => {
-      const reader = new FramedReader(req.body ?? ReadableStream.from([]), {
-        maxBytes: size,
+    if (!admission.allowed) return uploadQuotaExceeded();
+    const { reservation } = admission;
+    try {
+      return await this.#withChunkSlot(async () => {
+        const reader = new FramedReader(req.body ?? ReadableStream.from([]), {
+          maxBytes: size,
+        });
+        const chunk = await ingestChunk(
+          reader,
+          { sha256, size },
+          { maxChunkBytes: this.#maxChunkBytes() },
+          req.signal,
+        );
+        await reader.assertEnd(req.signal);
+        await this.#store([chunk], req.signal);
+        this.#deps.ledger.record(
+          reservation,
+          this.#storageNamespace,
+          sha256,
+          now,
+        );
+        return Response.json({ sha256, size }, { status: 201 });
       });
-      const chunk = await ingestChunk(
-        reader,
-        { sha256, size },
-        { maxChunkBytes: this.#maxChunkBytes() },
-        req.signal,
-      );
-      await reader.assertEnd(req.signal);
-      await this.#store([chunk], req.signal);
-      this.#deps.ledger.record(
-        this.#caller.principal,
-        this.#storageNamespace,
-        sha256,
-        size,
-        now,
-      );
-      return Response.json({ sha256, size }, { status: 201 });
-    });
+    } finally {
+      reservation.cancel();
+    }
   }
 
   /** `GET chunks/{sha256}`. */
@@ -455,11 +465,27 @@ class DatastoreApi {
         message: authorization.message,
       }, { status: 403 });
     }
-    // The content arrives after the envelope. Each chunk is admitted
-    // against the caller's upload quota, hashed as it is read, staged and
-    // recorded before the next is read, so the request holds one chunk at a
-    // time and the quota counts what it has sent so far. A mismatch fails
-    // the request before anything is committed.
+    const referenced = referencedChunks(ops);
+    // Every chunk named and not carried is checked under the forwarded
+    // lock, which every caller's commits share: bound that work, before
+    // any carried chunk is read. The envelope lists what the body carries.
+    const declared = new Set(envelope.chunks.map((chunk) => chunk.sha256));
+    if (
+      referenced.filter((hash) => !declared.has(hash)).length >
+        MAX_CHUNKS_PER_COMMIT
+    ) {
+      await reader.cancel();
+      return failure(
+        413,
+        "too_many_chunks",
+        `A commit may name at most ${MAX_CHUNKS_PER_COMMIT} chunks it does not carry`,
+      );
+    }
+    // The content arrives after the envelope. Room for each chunk is
+    // reserved in the upload ledger before it is read, then it is hashed
+    // and staged, so the request holds one chunk at a time and the quota
+    // counts what it has sent so far. A mismatch fails the request before
+    // anything is committed.
     let provided: Set<string> | Response;
     try {
       provided = await this.#withChunkSlot(() =>
@@ -474,19 +500,6 @@ class DatastoreApi {
       return provided;
     }
     const carried = provided;
-    const referenced = referencedChunks(ops);
-    // Every chunk named and not carried is checked under the forwarded
-    // lock, which every caller's commits share: bound that work.
-    if (
-      referenced.filter((hash) => !carried.has(hash)).length >
-        MAX_CHUNKS_PER_COMMIT
-    ) {
-      return failure(
-        413,
-        "too_many_chunks",
-        `A commit may name at most ${MAX_CHUNKS_PER_COMMIT} chunks it does not carry`,
-      );
-    }
     // Authorised again under the datastore's forwarded-commit lock, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
@@ -595,10 +608,19 @@ class DatastoreApi {
       limit,
     );
     const head = await this.#v3.commitStore.head(this.#namespace, partition);
-    return Response.json({
-      head: head.seq,
-      commits: page.map((change) => change.commit.toJSON()),
-    });
+    // Each commit is filtered as the changes feed filters it: a partition
+    // can hold commits its identity alone cannot tell apart, such as a
+    // control-plane definition sharing a name with an ordinary one
+    // (swamp-club#3938).
+    const commits: unknown[] = [];
+    for (const change of page) {
+      if (
+        await this.#mayReadCommit(change.commit.partition, change.commit.ops)
+      ) {
+        commits.push(change.commit.toJSON());
+      }
+    }
+    return Response.json({ head: head.seq, commits });
   }
 
   /** `GET changes?cursor={c}&limit=`. */
@@ -705,8 +727,54 @@ class DatastoreApi {
       MAX_REFERENCING_PARTITIONS,
     );
     for (const partition of partitions) {
+      const identity = partition.identity;
       if (
-        await this.#mayRead(await partitionReadAccessOf(partition, resolver))
+        identity.kind === "config" && identity.definitionKind === "model"
+          ? await this.#mayReadDefinitionChunk(
+            partition,
+            identity.name,
+            sha256,
+            resolver,
+          )
+          : this.#mayRead(await partitionReadAccessOf(partition, resolver))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a behavior definition's config partition vouches for `sha256`:
+   * a record in it now names the chunk, and the caller may read that record
+   * as the changes feed decides the op that wrote it. Same-named
+   * definitions of several types share the partition, a control-plane one
+   * among them, so the partition as a whole decides nothing (swamp-club#3938).
+   * A read model not yet complete vouches for nothing.
+   */
+  async #mayReadDefinitionChunk(
+    partition: PartitionKey,
+    name: string,
+    sha256: string,
+    resolver: AggregateResourceResolver,
+  ): Promise<boolean> {
+    let records;
+    try {
+      records = await this.#v3.readModel.liveRecords(
+        this.#namespace,
+        partition,
+      );
+    } catch (error) {
+      if (error instanceof ReadModelIncompleteError) return false;
+      throw error;
+    }
+    for (const record of records) {
+      if (
+        record.content.kind === "blob" &&
+        record.content.blob.chunkHashes().includes(sha256) &&
+        this.#mayRead([
+          await definitionRecordReadAccessOf(name, record.key, resolver),
+        ])
       ) {
         return true;
       }
@@ -776,35 +844,29 @@ class DatastoreApi {
 
   /**
    * Reads, verifies and stages a commit's carried chunks one at a time,
-   * recording each in the upload ledger, then makes them durable together.
-   * Resolves with their hashes, or a 429 once the caller's quota is spent.
+   * each reserved in the upload ledger before it is read, then makes them
+   * durable together and records them. Resolves with their hashes, or a
+   * 429 once the caller's quota or entry cap is spent.
    */
   async #ingestCarried(
     reader: FramedReader,
     declared: readonly { sha256: string; size: number }[],
     signal: AbortSignal,
   ): Promise<Set<string> | Response> {
-    const staged = new Map<string, number>();
-    let pending = 0;
+    const reservations: UploadReservation[] = [];
+    const staged = new Map<string, UploadReservation>();
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
     try {
       for (const chunk of declared) {
-        // What this request staged counts too: it is recorded only once
-        // the batch is durable.
-        pending += chunk.size;
-        if (
-          !this.#deps.ledger.admit(
-            this.#caller.principal,
-            pending,
-            this.#now(),
-          ).allowed
-        ) {
-          return failure(
-            429,
-            "upload_quota_exceeded",
-            "Too many uploaded chunks are not referenced by any commit yet",
-          );
-        }
+        // What this request reserved counts too, so requests in flight
+        // together cannot pass the quota or the entry cap.
+        const admission = this.#deps.ledger.reserve(
+          this.#caller.principal,
+          chunk.size,
+          this.#now(),
+        );
+        if (!admission.allowed) return uploadQuotaExceeded();
+        reservations.push(admission.reservation);
         const verified = await ingestChunk(
           reader,
           chunk,
@@ -812,24 +874,26 @@ class DatastoreApi {
           signal,
         );
         await batch.put(verified.sha256, verified.bytes, signal);
-        staged.set(verified.sha256, verified.size);
+        if (!staged.has(verified.sha256)) {
+          staged.set(verified.sha256, admission.reservation);
+        }
       }
       await reader.assertEnd(signal);
       if (staged.size === 0) return new Set();
       await batch.commit(signal);
       // Recorded once durable: a batch discarded on a later failure leaves
       // nothing counting toward the quota.
-      for (const [sha256, size] of staged) {
+      for (const [sha256, reservation] of staged) {
         this.#deps.ledger.record(
-          this.#caller.principal,
+          reservation,
           this.#storageNamespace,
           sha256,
-          size,
           this.#now(),
         );
       }
       return new Set(staged.keys());
     } finally {
+      for (const reservation of reservations) reservation.cancel();
       await batch.discard();
     }
   }
@@ -1220,6 +1284,14 @@ function bearerToken(req: Request): string | null {
 
 function failure(status: number, code: string, message: string): Response {
   return Response.json({ code, message }, { status });
+}
+
+function uploadQuotaExceeded(): Response {
+  return failure(
+    429,
+    "upload_quota_exceeded",
+    "Too many uploaded chunks are not referenced by any commit yet",
+  );
 }
 
 function tooManyRequests(retryAfterSeconds: number): Response {

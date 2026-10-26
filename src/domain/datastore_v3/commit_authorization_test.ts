@@ -28,6 +28,7 @@ import {
   type CallerAuthority,
   checkCommitBindings,
   type CommitAuthorization,
+  definitionRecordReadAccessOf,
   type KeyOwnership,
   readAccessOf,
   writeAccessOf,
@@ -681,4 +682,28 @@ Deno.test("authorizeCommit: every forwarded write needs admin until swamp-club#3
   );
   assertRefused(refused, "forbidden", 0);
   assert(!refused.ok && refused.message.includes("admin access:*"));
+});
+
+Deno.test("definitionRecordReadAccessOf: decides a definition record by the type its key names", async () => {
+  const resolver = new FakeResolver();
+  resolver.restricted.add("acme/locked");
+  const access = (key: string) =>
+    definitionRecordReadAccessOf("shared", RecordKey.create(key), resolver);
+
+  const ordinary = await access("config/models/acme/web/shared.yaml");
+  assertEquals(ordinary.action, "read");
+  assertEquals(ordinary.resource.kind, "model");
+  assertEquals(ordinary.resource.name, "shared");
+
+  // A control-plane type, a restricted one, or a key naming no type the
+  // partition's definition could own, needs admin.
+  for (
+    const key of [
+      "config/models/@swamp/grant/shared.yaml",
+      "config/models/acme/locked/shared.yaml",
+      "config/models/acme/web/other.yaml",
+    ]
+  ) {
+    assertEquals((await access(key)).action, "admin", key);
+  }
 });

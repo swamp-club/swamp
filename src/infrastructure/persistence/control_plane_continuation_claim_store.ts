@@ -125,6 +125,9 @@ export function heartbeatLiveness(
     if (bytes === null) return "dead";
     try {
       const record = JSON.parse(new TextDecoder().decode(bytes));
+      // An instance that stopped without pushing its interrupted runs
+      // leaves a stopped record rather than none (swamp-club#3958).
+      if (typeof record?.stoppedAt === "string") return "dead";
       const at = new Date(record?.heartbeatAt).getTime();
       if (Number.isNaN(at)) return "dead";
       const published = record?.staleTtlMs;

@@ -24,6 +24,8 @@ import {
   cleanupActiveRunsForInstance,
   deleteActiveRun,
   findActiveRunByRunId,
+  keepActiveRunRecords,
+  listActiveRunsForInstance,
   rekeyActiveRun,
   writeActiveRun,
 } from "./active_run_tracker.ts";
@@ -291,4 +293,71 @@ Deno.test("deleteActiveRun: a delete issued straight after a rekey removes the r
 
 Deno.test("activeRunWritesSettled: resolves at once when nothing is queued", async () => {
   await activeRunWritesSettled(createMockStore(), "instance-1");
+});
+
+Deno.test("keepActiveRunRecords: writes a record back after the run's own queued delete (swamp-club#3958)", async () => {
+  const store = createMockStore();
+  writeActiveRun(store, "inst", "run-1", {
+    resourceName: "slow",
+    runKind: "workflow-run",
+    startedAt: "2026-10-26T12:00:00.000Z",
+  });
+  // The run ended in the abort grace: its finally deletes its record.
+  deleteActiveRun(store, "inst", "run-1");
+
+  const kept = await keepActiveRunRecords(store, "inst", [{
+    runId: "run-1",
+    kind: "workflow-run",
+    resourceName: "slow",
+    resourceId: "00000000-0000-4000-8000-000000000001",
+    startedAt: new Date("2026-10-26T12:00:00.000Z"),
+  }], 1_000);
+
+  assertEquals(kept, true);
+  assertEquals(parseRecord(store, "active-runs/inst/run-1"), {
+    instanceId: "inst",
+    resourceName: "slow",
+    resourceId: "00000000-0000-4000-8000-000000000001",
+    runKind: "workflow-run",
+    startedAt: "2026-10-26T12:00:00.000Z",
+  });
+});
+
+Deno.test("keepActiveRunRecords: a write that does not land in time reports false", async () => {
+  const store = createMockStore();
+  let release: (() => void) | undefined;
+  store.put = () => new Promise<void>((resolve) => release = resolve);
+
+  const kept = await keepActiveRunRecords(store, "inst", [{
+    runId: "run-1",
+    kind: "workflow-run",
+    resourceName: "slow",
+    startedAt: new Date(),
+  }], 10);
+
+  assertEquals(kept, false);
+  release?.();
+  await activeRunWritesSettled(store, "inst");
+});
+
+Deno.test("listActiveRunsForInstance: lists one instance's records by run id, leaving out unreadable ones", async () => {
+  const store = createMockStore();
+  writeActiveRun(store, "inst", "run-1", {
+    resourceName: "slow",
+    runKind: "workflow-run",
+    startedAt: "2026-10-26T12:00:00.000Z",
+  });
+  writeActiveRun(store, "other", "run-2", {
+    resourceName: "slow",
+    runKind: "workflow-run",
+    startedAt: "2026-10-26T12:00:00.000Z",
+  });
+  await activeRunWritesSettled(store, "inst");
+  await activeRunWritesSettled(store, "other");
+  store.data.set("active-runs/inst/garbage", new TextEncoder().encode("{"));
+
+  const runs = await listActiveRunsForInstance(store, "inst");
+
+  assertEquals(runs.map((r) => r.runId), ["run-1"]);
+  assertEquals(runs[0].record.resourceName, "slow");
 });

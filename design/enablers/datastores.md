@@ -6115,7 +6115,7 @@ are stamped `@anonymous`.
 | Route | Purpose |
 |---|---|
 | `POST chunks/has` | `{hashes}` (at most 1,024): the ones serve holds that the caller may reference, touched so GC keeps them |
-| `PUT chunks/{sha256}` | One chunk, hashed as it streams in, recorded in the upload ledger |
+| `PUT chunks/{sha256}` | One chunk, hashed as it streams in, recorded in the upload ledger; needs `admin` until swamp-club#3922 |
 | `GET chunks/{sha256}` | A chunk's bytes, with one `Range`; 404 to a caller who may not read it |
 | `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
 | `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
@@ -6291,13 +6291,42 @@ is decided on a resource that carries neither: a deny conditioned on either
 fails closed. An auto-definition's partition names neither its type nor its
 name, so reading it needs admin.
 
+A partition's identity alone cannot be as strict as the changes feed, which
+decides each op: a control-plane definition can share its name, and so its
+config partition, with an ordinary one (swamp-club#3938). So catch-up also
+filters each commit of the page as the changes feed does (`head` still says
+where the partition ends), and a behavior definition's config partition
+vouches for a chunk only through a record in it that names the chunk now and
+that the caller may read, decided by the type its key names
+(`definitionRecordReadAccessOf`): `admin` for a control-plane or restricted
+type. A chunk only an overwritten or deleted definition named is therefore
+not vouched for by that partition: a non-admin gets 404 for it, and a client
+uploads it again to name it. A read model still being built vouches for
+nothing.
+
+**Uploading a chunk needs admin for now.** An uploaded chunk serves only a
+commit that names it, and every forwarded write needs `admin` until
+swamp-club#3922, so `PUT chunks/{sha256}` decides `admin` on `access:*`
+before it reserves or reads anything (`403 forbidden` otherwise). It relaxes
+with commits.
+
 The upload ledger (`src/infrastructure/datastore_v3/upload_ledger.ts`) lives
 in memory and is bounded. It caps a principal's uploaded bytes no commit
-references at 2 GiB, and its entries per principal. Chunks a commit carries
-count too: each is admitted before it is read and recorded once it is staged,
-so the quota counts what a request has sent so far, and a commit refused
-after its content arrived cannot leave unbounded content behind. A restart forgets it,
-so a client uploads again.
+references at 2 GiB, and its uploads no commit references at 20,000: once a
+commit references a chunk, it stops counting toward both, and still holds
+for a retried commit until its grace window ends. Every upload, a `PUT` or a
+chunk a commit carries, is reserved before its bytes are read and recorded
+once stored, and a reservation counts toward every cap from the moment it is
+granted. Requests in flight together therefore cannot pass a cap, and a
+commit refused after its content arrived cannot leave unbounded content
+behind; a reservation never recorded is cancelled. The whole ledger holds at
+most 200,000 entries and reservations. At that bound a reservation makes
+room from the oldest entry a commit already references, since that commit's
+partition vouches for the chunk; with none, from the oldest upload of the
+principal holding the most unreferenced uploads, and when that is the caller
+(or it ties), the caller is refused with `429 upload_quota_exceeded`. So one
+principal's uploads never push out a lighter principal's. A restart forgets
+the ledger, so a client uploads again.
 
 **Memory and limits.** `storage/1` puts and gets whole chunks, so serve holds
 at most one chunk (16 MiB) per request (a commit's carried chunks are
@@ -6309,7 +6338,8 @@ other limits are constants, with no flags:
 - an envelope of at most 4 MiB, read before anything else;
 - `MAX_COMMIT_OPS` ops and 1,024 carried chunks per commit, and a body of
   at most 1 GiB; at most 1,024 named chunks it does not carry, since each is
-  checked under the forwarded-commit lock every caller shares;
+  checked under the forwarded-commit lock every caller shares. That cap is
+  checked against the envelope's `chunks` before any carried chunk is read;
 - pages of at most 1,000 commits;
 - at most 10,000 feed rows scanned per changes request. The returned cursor
   moves past filtered rows, so a caller who may read nothing still advances.

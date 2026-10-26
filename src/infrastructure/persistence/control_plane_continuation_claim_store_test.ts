@@ -120,6 +120,25 @@ Deno.test("heartbeatLiveness: a serve holder is alive while its heartbeat is rec
   });
 });
 
+Deno.test("heartbeatLiveness: a holder that left a stopped heartbeat is dead, however recent (swamp-club#3958)", async () => {
+  await withStore(async (control) => {
+    await control.put(
+      "heartbeats/a",
+      new TextEncoder().encode(JSON.stringify({
+        instanceId: "a",
+        heartbeatAt: NOW.toISOString(),
+        stoppedAt: NOW.toISOString(),
+      })),
+    );
+    const liveness = heartbeatLiveness(control, {
+      staleMs: 1000,
+      now: () => NOW,
+    });
+
+    assertEquals(await liveness(serveHolder("a")), "dead");
+  });
+});
+
 Deno.test("heartbeatLiveness: nothing is known of a holder that is not a serve instance", async () => {
   await withStore(async (control) => {
     const liveness = heartbeatLiveness(control);

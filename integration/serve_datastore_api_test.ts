@@ -23,6 +23,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -58,6 +59,8 @@ interface Server {
   readonly ctx: ConnectionContext;
   readonly modelType: ModelType;
   readonly model: Definition;
+  /** Answers a request in-process, as the server does. */
+  readonly handle: (req: Request) => Promise<Response>;
   policyLoads: number;
   close(): Promise<void>;
 }
@@ -93,6 +96,7 @@ async function withServer(
       ctx: base,
       modelType: repo.modelType,
       model,
+      handle: () => Promise.reject(new Error("not started")),
       policyLoads: 0,
       close: () => Promise.resolve(),
     };
@@ -109,37 +113,39 @@ async function withServer(
         },
       ),
     } as ConnectionContext;
+    const handle = async (req: Request): Promise<Response> => {
+      const route = matchDatastoreRoute(new URL(req.url).pathname);
+      if (route === undefined) return new Response("no", { status: 404 });
+      return await handleDatastoreRequest(req, route, "127.0.0.1", {
+        ctx,
+        v3,
+        ledger,
+        authenticate: (token) => {
+          const principalId = TOKENS[token];
+          return Promise.resolve(
+            principalId === undefined
+              ? { ok: false, error: "bad token", reason: "secret-mismatch" }
+              : {
+                ok: true,
+                principalId,
+                collectives: [],
+                groups: [],
+                tokenName: token,
+                tokenCreatedAt: "2026-01-01T00:00:00Z",
+              },
+          );
+        },
+      });
+    };
     const http = Deno.serve(
       { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-      async (req) => {
-        const route = matchDatastoreRoute(new URL(req.url).pathname);
-        if (route === undefined) return new Response("no", { status: 404 });
-        return await handleDatastoreRequest(req, route, "127.0.0.1", {
-          ctx,
-          v3,
-          ledger,
-          authenticate: (token) => {
-            const principalId = TOKENS[token];
-            return Promise.resolve(
-              principalId === undefined
-                ? { ok: false, error: "bad token", reason: "secret-mismatch" }
-                : {
-                  ok: true,
-                  principalId,
-                  collectives: [],
-                  groups: [],
-                  tokenName: token,
-                  tokenCreatedAt: "2026-01-01T00:00:00Z",
-                },
-            );
-          },
-        });
-      },
+      handle,
     );
     try {
       Object.assign(server, {
         url: `http://127.0.0.1:${http.addr.port}/api/v1/datastore/_default`,
         ctx,
+        handle,
       });
       await fn(server);
     } finally {
@@ -915,5 +921,365 @@ Deno.test({
       assertEquals(refused.status, 403);
       assertEquals(refused.json.code, "forbidden");
     });
+  },
+});
+
+/** Whether serve's storage holds a chunk. */
+async function stored(server: Server, sha: string): Promise<boolean> {
+  const held = await server.v3.storage.has(
+    "_default",
+    [sha],
+    new AbortController().signal,
+  );
+  return held.has(sha);
+}
+
+Deno.test({
+  name:
+    "datastore API: a chunk upload by a caller who is not an admin is refused before anything is stored or recorded",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger();
+    await withServer(member(), async (server) => {
+      const content = new TextEncoder().encode("member bytes");
+      const sha = await sha256Hex(content);
+      const refused = await fetch(`${server.url}/chunks/${sha}`, {
+        method: "PUT",
+        headers: { authorization: "Bearer alice-token" },
+        body: content,
+      });
+      assertEquals(refused.status, 403);
+      assertEquals((await refused.json()).code, "forbidden");
+      assertEquals(ledger.size, 0);
+      assertEquals(await stored(server, sha), false);
+    }, ledger);
+    await withServer(writer(), async (server) => {
+      const content = new TextEncoder().encode("admin bytes");
+      const sha = await sha256Hex(content);
+      const uploaded = await fetch(`${server.url}/chunks/${sha}`, {
+        method: "PUT",
+        headers: { authorization: "Bearer alice-token" },
+        body: content,
+      });
+      assertEquals(uploaded.status, 201);
+      await uploaded.body?.cancel();
+      assertEquals(await stored(server, sha), true);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: chunk uploads in flight together cannot pass the caller's byte quota",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ maxUnreferencedBytesPerPrincipal: 10 });
+    await withServer(writer(), async (server) => {
+      const first = new TextEncoder().encode("first!");
+      const second = new TextEncoder().encode("second");
+      // The first upload's body is held open until the second is answered.
+      let reading!: () => void;
+      const started = new Promise<void>((resolve) => reading = resolve);
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => release = resolve);
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          reading();
+          await held;
+          controller.enqueue(first);
+          controller.close();
+        },
+      });
+      const put = (sha: string, size: number, body: BodyInit) =>
+        server.handle(
+          new Request(`${server.url}/chunks/${sha}`, {
+            method: "PUT",
+            headers: {
+              authorization: "Bearer alice-token",
+              "content-length": String(size),
+            },
+            body,
+          }),
+        );
+      const pending = put(await sha256Hex(first), first.length, body);
+      await started;
+      const refused = await put(
+        await sha256Hex(second),
+        second.length,
+        second,
+      );
+      assertEquals(refused.status, 429);
+      assertEquals((await refused.json()).code, "upload_quota_exceeded");
+      release();
+      assertEquals((await pending).status, 201);
+      assertEquals(ledger.unreferencedBytes("user:caller", Date.now()), 6);
+      assertEquals(ledger.reserved, 0);
+    }, ledger);
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: an upload whose body fails gives its reserved quota back",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger();
+    await withServer(writer(), async (server) => {
+      const content = new TextEncoder().encode("whole");
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(content.subarray(0, 2));
+          controller.error(new Error("connection lost"));
+        },
+      });
+      const failed = await server.handle(
+        new Request(`${server.url}/chunks/${await sha256Hex(content)}`, {
+          method: "PUT",
+          headers: {
+            authorization: "Bearer alice-token",
+            "content-length": String(content.length),
+          },
+          body,
+        }),
+      );
+      assert(failed.status >= 400, String(failed.status));
+      await failed.body?.cancel();
+      assertEquals(ledger.reserved, 0);
+      assertEquals(ledger.size, 0);
+      assertEquals(ledger.unreferencedBytes("user:caller", Date.now()), 0);
+    }, ledger);
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: chunks a commit carries count toward the caller's entry cap, and the chunk past it is not read",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger({ maxEntriesPerPrincipal: 1 });
+    await withServer(writer(), async (server) => {
+      const one = new TextEncoder().encode("one");
+      const two = new TextEncoder().encode("two");
+      const ops = [
+        ...(await blobSaveOps(server, "a", 1, one)),
+        ...(await blobSaveOps(server, "b", 1, two)),
+      ];
+      const refused = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops,
+          chunks: [
+            { sha256: await sha256Hex(one), size: one.length },
+            { sha256: await sha256Hex(two), size: two.length },
+          ],
+        }, [one, two]),
+      );
+      assertEquals(refused.status, 429, JSON.stringify(refused.json));
+      assertEquals(refused.json.code, "upload_quota_exceeded");
+      assertEquals(await stored(server, await sha256Hex(two)), false);
+      assertEquals(ledger.size, 0);
+      assertEquals(ledger.reserved, 0);
+    }, ledger);
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit naming too many chunks it does not carry is refused before its carried chunks are read",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger();
+    await withServer(writer(), async (server) => {
+      const carried = new TextEncoder().encode("c");
+      const carriedSha = await sha256Hex(carried);
+      // One blob of 1,026 one-byte parts: one carried, 1,025 not.
+      const parts = [{ sha256: carriedSha, size: 1 }];
+      for (let i = 0; i < 1025; i++) {
+        parts.push({ sha256: i.toString(16).padStart(64, "0"), size: 1 });
+      }
+      const [raw, ...rest] = await blobSaveOps(server, "big", 1, carried);
+      const ops = [{
+        ...(raw as Record<string, unknown>),
+        blob: { sha256: "e".repeat(64), size: parts.length, parts },
+      }, ...rest];
+      const refused = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops,
+          chunks: [{ sha256: carriedSha, size: 1 }],
+        }, [carried]),
+      );
+      assertEquals(refused.status, 413, JSON.stringify(refused.json));
+      assertEquals(refused.json.code, "too_many_chunks");
+      assertEquals(await stored(server, carriedSha), false);
+      assertEquals(ledger.size, 0);
+    }, ledger);
+  },
+});
+
+/** A behavior definition named `name` of `type`, stored as one chunk. */
+async function definitionCommit(
+  name: string,
+  type: string,
+  content: Uint8Array,
+): Promise<Uint8Array> {
+  const sha = await sha256Hex(content);
+  return commitBody({
+    expectedSeq: 0,
+    txnId: crypto.randomUUID(),
+    ops: [{
+      kind: "put",
+      intent: {
+        kind: "definition.create",
+        definition: { kind: "model", name },
+      },
+      key: `config/models/${type}/${name}.yaml`,
+      blob: { sha256: sha, size: content.length },
+    }],
+    chunks: [{ sha256: sha, size: content.length }],
+  }, [content]);
+}
+
+Deno.test({
+  name:
+    "datastore API: a control-plane definition's commits and chunks stay hidden from a reader of its name, as the changes feed hides them",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // Bob reads every behavior and its data, but is no admin.
+    const grants = [
+      ...writer(),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["read"],
+        resource: { kind: "model", pattern: "*" },
+      }),
+      grant({
+        subject: { kind: "user", name: "bob" },
+        actions: ["read"],
+        resource: { kind: "data", pattern: "*" },
+      }),
+    ];
+    for (
+      const [type, readable] of [
+        ["@swamp/grant", false],
+        ["ordinary", true],
+      ] as const
+    ) {
+      await withServer(grants, async (server) => {
+        const typeName = type === "ordinary"
+          ? server.modelType.normalized
+          : type;
+        const content = new TextEncoder().encode(
+          `name: shared\n# ${type}\n`,
+        );
+        const sha = await sha256Hex(content);
+        const configPath = `${server.url}/partitions/${
+          encodeURIComponent(
+            partitionOf({
+              kind: "config",
+              definitionKind: "model",
+              name: "shared",
+            })
+              .toString(),
+          )
+        }/commits`;
+        const landed = await post(
+          configPath,
+          "alice-token",
+          await definitionCommit("shared", typeName, content),
+        );
+        assertEquals(landed.status, 200, JSON.stringify(landed.json));
+
+        const catchUp = await getJson(`${configPath}?after=0`, "bob-token");
+        assertEquals(catchUp.status, 200, type);
+        assertEquals(catchUp.json.head, 1, type);
+        assertEquals(
+          (catchUp.json.commits as unknown[]).length,
+          readable ? 1 : 0,
+          type,
+        );
+        const changes = await getJson(
+          `${server.url}/changes?cursor=0`,
+          "bob-token",
+        );
+        assertEquals(
+          (changes.json.changes as unknown[]).length,
+          readable ? 1 : 0,
+          type,
+        );
+
+        const read = await fetch(`${server.url}/chunks/${sha}`, {
+          headers: { authorization: "Bearer bob-token" },
+        });
+        assertEquals(read.status, readable ? 200 : 404, type);
+        await read.body?.cancel();
+        const has = await fetch(`${server.url}/chunks/has`, {
+          method: "POST",
+          headers: { authorization: "Bearer bob-token" },
+          body: JSON.stringify({ hashes: [sha] }),
+        });
+        assertEquals((await has.json()).held, readable ? [sha] : [], type);
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit naming a chunk only a behavior definition holds is vouched for under the commit lock",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // A 1 ms grace window: by the second commit the upload no longer holds,
+    // so only the definition's partition can vouch, read under the
+    // forwarded-commit lock.
+    const ledger = new UploadLedger({ graceMs: 1 });
+    await withServer(writer(), async (server) => {
+      const content = new TextEncoder().encode("name: shared\n");
+      const sha = await sha256Hex(content);
+      const configPath = `${server.url}/partitions/${
+        encodeURIComponent(
+          partitionOf({
+            kind: "config",
+            definitionKind: "model",
+            name: "shared",
+          })
+            .toString(),
+        )
+      }/commits`;
+      const defined = await post(
+        configPath,
+        "alice-token",
+        await definitionCommit("shared", server.modelType.normalized, content),
+      );
+      assertEquals(defined.status, 200, JSON.stringify(defined.json));
+      await waitFor(
+        () => !ledger.holds("user:caller", "_default", sha, Date.now()),
+        "the upload's grace window to end",
+      );
+      const named = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 0,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, "copy", 1, content),
+          chunks: [],
+        }),
+      );
+      assertEquals(named.status, 200, JSON.stringify(named.json));
+    }, ledger);
   },
 });
