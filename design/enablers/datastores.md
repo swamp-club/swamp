@@ -3893,8 +3893,9 @@ tombstone under a file has nothing to remove.
 normalisation-insensitive filesystem (APFS, NTFS), a key nothing owns can
 reach another key's file: `VPC/1/raw` reaches `vpc/1/raw`. The read model
 neither removes nor writes through such a key. For a put or tombstone of a
-key with no file ownership whose file exists, it reads the spelling that file
-has on disk. If that spelling, as found or composed (NFC), is another key
+key with no file of its own on disk (no put of it owned one, or its own
+tombstone removed it) whose path nonetheless reaches a file, it reads the
+spelling that file has on disk. If that spelling, as found or composed (NFC), is another key
 whose file is present, or one the same commit already decided, the change is
 logged and skipped, and stays indexed (`aliased_skipped` in the catch-up
 span). A key reached through another spelling of a directory only, such as

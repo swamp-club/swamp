@@ -1537,13 +1537,13 @@ export class SqliteReadModel implements ReadModel {
     if (decision.kind === "keep") return undefined;
     touched.add(key);
     const source = { partition: owner, seq: commit.seq };
-    // A key no put ever owned names no file of its own. Where the filesystem
-    // folds spellings its path can still reach another key's file
-    // (`VPC/1/raw` to `vpc/1/raw`), which neither its tombstone may remove
-    // nor its put overwrite (swamp-club#3939).
+    // A key with no file of its own on disk (no put of it owned one, or its
+    // own tombstone removed it) can still reach another key's file where the
+    // filesystem folds spellings (`VPC/1/raw` to `vpc/1/raw`), which neither
+    // its tombstone may remove nor its put overwrite (swamp-club#3939).
     const existing = target.existing;
     if (
-      prior === undefined && existing !== undefined &&
+      prior?.present !== true && existing !== undefined &&
       !this.#foldsNothing(commit.namespace) &&
       await this.#time(
         "alias",
@@ -1593,6 +1593,7 @@ export class SqliteReadModel implements ReadModel {
       this.#net?.skipsWrite(commit.namespace, key, position) === true
     ) {
       this.#paths.takeAbsent(path);
+      this.#paths.takeExisting(path);
       this.#stats?.bump("writes_skipped");
       if (blob !== undefined) this.#stats?.bump("chunked_writes_skipped");
       return decision.next;
@@ -2106,6 +2107,7 @@ export class SqliteReadModel implements ReadModel {
         this.#net?.skipsWrite(namespace, record_key, owner.mark) === true
       ) {
         this.#paths.takeAbsent(path);
+        this.#paths.takeExisting(path);
         skipped.add(`${namespace}\0${record_key}`);
         this.#stats?.bump("base_writes_skipped");
         if ("blob" in content) this.#stats?.bump("base_chunked_writes_skipped");
@@ -3560,7 +3562,12 @@ interface ListedNames {
   readonly folded: ReadonlyMap<string, string>;
 }
 
-/** A name as a case-insensitive, normalising filesystem compares it. */
+/**
+ * A name as a case-insensitive, normalising filesystem compares it, near
+ * enough: `toLowerCase` differs from APFS's and NTFS's own folding for a few
+ * characters (final sigma, `ß`). A segment it fails to match makes the guard
+ * skip the key, which leaves a file unwritten but never overwrites one.
+ */
 function foldSpelling(name: string): string {
   return name.normalize("NFC").toLowerCase();
 }

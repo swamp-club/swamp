@@ -914,6 +914,31 @@ for (const spellingFolding of FORCED_MODES) {
     });
   });
 
+  Deno.test(`SqliteReadModel: a key whose own tombstone removed its file neither overwrites nor removes another spelling's file (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
+      await env.append(2, "", [dataTombstone("VPC", 1)]);
+      await env.append(3, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+      await env.append(4, "", [await savePut("VPC", 1, "forged")]);
+      const readModel = env.open({ spellingFolding, netReplay: false });
+      try {
+        await readModel.catchUp(signal());
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 1)),
+          "vpc@1",
+        );
+        await env.append(5, "", [dataTombstone("VPC", 1)]);
+        await readModel.catchUp(signal());
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 1)),
+          "vpc@1",
+        );
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
   Deno.test(`SqliteReadModel: a recovery replay over the files on disk keeps what an incremental catch-up kept (${mode}, swamp-club#3939)`, async () => {
     await withEnv(async (env) => {
       await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
