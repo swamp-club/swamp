@@ -350,7 +350,10 @@ import {
   runShutdownDrain,
   SHUTDOWN_ABORT_GRACE_MS,
 } from "../../serve/shutdown_drain.ts";
-import { interruptShutdownRuns } from "../../serve/shutdown_interrupt.ts";
+import {
+  interruptShutdownRuns,
+  stopHeartbeatAtShutdown,
+} from "../../serve/shutdown_interrupt.ts";
 import {
   markedRunsStillRunning,
   pushSettledAtBoot,
@@ -7384,10 +7387,11 @@ export const serveCommand = new Command()
         await continuationSweepService.dispose();
       }
       if (heartbeatService) {
-        // With runs the datastore may still hold running, a stopped record
-        // takes the heartbeat's place, so a peer reconciles this instance.
-        await heartbeatService.stop({
-          leaveStoppedRecord: unpushedRunIds.length > 0,
+        await stopHeartbeatAtShutdown(heartbeatService, {
+          store: controlPlaneStore,
+          instanceId,
+          aborted: remaining,
+          unpushed: unpushedRunIds,
         });
       }
       // Stop revalidation before the gateway it cuts workers off from.

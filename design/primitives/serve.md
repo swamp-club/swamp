@@ -1405,14 +1405,17 @@ does not skip them as still running. When the push fails, the runs are recorded
 in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
 to push, `--json` mode prints
 `{"status":"interrupt_push_failed","runIds":[…]}`, and the instance writes a
-stopped heartbeat in place of deleting it, so a peer reconciles it at once. That
-write is bounded by 5 s; if it fails, the last heartbeat is left to go stale
+stopped heartbeat in place of deleting it, so a peer reconciles it at once.
+Before that it writes the runs' `active-runs/` records back, since a run that
+ended in the abort grace deleted its own and a peer finds the runs through them
+(`stopHeartbeatAtShutdown`). Each of the two writes is bounded by 5 s; if the
+heartbeat write fails, the last heartbeat is left to go stale
 (swamp-club#3958). A step the abort stopped in flight is recorded `unknown` on
 the interrupted run, so `swamp workflow recover` reopens it (swamp-club#3369).
 Otherwise it deletes its heartbeat, and it exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 15 s (the 5 s
-abort grace, the 5 s interrupt push and, when that push fails, the 5 s stopped
-heartbeat write), and
+`terminationGracePeriodSeconds` above the drain timeout plus about 20 s (the 5 s
+abort grace, the 5 s interrupt push and, when that push fails, 5 s each for the
+active-run records and the stopped heartbeat), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. After a stop that pushed everything, peers see no heartbeat,

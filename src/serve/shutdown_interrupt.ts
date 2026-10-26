@@ -40,6 +40,12 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
+import { keepActiveRunRecords } from "./active_run_tracker.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import {
+  type InstanceHeartbeatService,
+  STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
+} from "./instance_heartbeat.ts";
 
 const logger = getSwampLogger(["serve", "shutdown"]);
 
@@ -280,4 +286,47 @@ async function reported(
     }
   }
   return { ...result, unpushed };
+}
+
+/**
+ * The heartbeat stage of shutdown. With no run left unpushed the heartbeat
+ * is deleted. Otherwise the unpushed runs' active-run records are written
+ * back first, since a run that ended in the abort grace deleted its own and
+ * a peer finds the runs it must settle only through them, and then a stopped
+ * heartbeat takes the heartbeat's place so a peer reconciles this instance
+ * (swamp-club#3958). Each write is bounded by `writeTimeoutMs`.
+ */
+export async function stopHeartbeatAtShutdown(
+  heartbeat: Pick<InstanceHeartbeatService, "stop">,
+  options: {
+    readonly store: ControlPlaneStore;
+    readonly instanceId: string;
+    readonly aborted: ReadonlyArray<
+      & Pick<ActiveRun, "runId" | "kind" | "resourceName" | "startedAt">
+      & Partial<Pick<ActiveRun, "resourceId">>
+    >;
+    readonly unpushed: readonly string[];
+    readonly writeTimeoutMs?: number;
+  },
+): Promise<void> {
+  const writeTimeoutMs = options.writeTimeoutMs ??
+    STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS;
+  if (options.unpushed.length === 0) {
+    await heartbeat.stop();
+    return;
+  }
+  const unpushed = new Set(options.unpushed);
+  const kept = await keepActiveRunRecords(
+    options.store,
+    options.instanceId,
+    options.aborted.filter((run) => unpushed.has(run.runId)),
+    writeTimeoutMs,
+  );
+  if (!kept) {
+    logger.warn(
+      "The active-run records of the unpushed interrupted workflow run(s) {runIds} were not confirmed written in time; a peer may not find them",
+      { runIds: options.unpushed },
+    );
+  }
+  await heartbeat.stop({ leaveStoppedRecord: true, writeTimeoutMs });
 }

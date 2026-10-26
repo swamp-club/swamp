@@ -29,7 +29,9 @@ import { createSyncGate } from "./sync_gate.ts";
 import {
   interruptShutdownRuns,
   type ShutdownInterruptDeps,
+  stopHeartbeatAtShutdown,
 } from "./shutdown_interrupt.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
 import {
@@ -486,4 +488,65 @@ Deno.test("interruptShutdownRuns: on a filesystem datastore nothing is reported 
   });
 
   assertEquals(result, { interrupted: [] });
+});
+
+function recordingStore(events: string[]): ControlPlaneStore {
+  return {
+    put: (key) => {
+      events.push(`put ${key}`);
+      return Promise.resolve();
+    },
+    get: () => Promise.resolve(null),
+    delete: (key) => {
+      events.push(`delete ${key}`);
+      return Promise.resolve();
+    },
+    list: () => Promise.resolve([]),
+  };
+}
+
+const ABORTED = {
+  runId: "run-1",
+  kind: "workflow-run" as const,
+  resourceName: "slow",
+  resourceId: "00000000-0000-4000-8000-000000000001",
+  startedAt: new Date(),
+};
+
+Deno.test("stopHeartbeatAtShutdown: with nothing unpushed the heartbeat is deleted and no record is written", async () => {
+  const events: string[] = [];
+  await stopHeartbeatAtShutdown(
+    {
+      stop: (options) => {
+        events.push(`stop ${options?.leaveStoppedRecord ?? false}`);
+        return Promise.resolve();
+      },
+    },
+    {
+      store: recordingStore(events),
+      instanceId: "inst",
+      aborted: [ABORTED],
+      unpushed: [],
+    },
+  );
+  assertEquals(events, ["stop false"]);
+});
+
+Deno.test("stopHeartbeatAtShutdown: writes the unpushed runs' active-run records back before leaving a stopped heartbeat (swamp-club#3958)", async () => {
+  const events: string[] = [];
+  await stopHeartbeatAtShutdown(
+    {
+      stop: (options) => {
+        events.push(`stop ${options?.leaveStoppedRecord ?? false}`);
+        return Promise.resolve();
+      },
+    },
+    {
+      store: recordingStore(events),
+      instanceId: "inst",
+      aborted: [ABORTED, { ...ABORTED, runId: "run-pushed" }],
+      unpushed: ["run-1"],
+    },
+  );
+  assertEquals(events, ["put active-runs/inst/run-1", "stop true"]);
 });

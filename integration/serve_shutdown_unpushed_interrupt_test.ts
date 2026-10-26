@@ -47,7 +47,10 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../src/infrastructure/persistence/paths.ts";
-import { interruptShutdownRuns } from "../src/serve/shutdown_interrupt.ts";
+import {
+  interruptShutdownRuns,
+  stopHeartbeatAtShutdown,
+} from "../src/serve/shutdown_interrupt.ts";
 import { InstanceHeartbeatService } from "../src/serve/instance_heartbeat.ts";
 import { reconcileRemoteInterruptedRuns } from "../src/serve/boot_reconciliation.ts";
 import {
@@ -209,9 +212,17 @@ async function stopWithSlowDatastore(
   owner: Checkout,
   run: WorkflowRun,
   heartbeat: InstanceHeartbeatService,
+  control: ControlPlaneStore,
 ) {
+  const aborted = {
+    runId: run.id,
+    kind: "workflow-run" as const,
+    resourceName: run.workflowName,
+    resourceId: run.workflowId,
+    startedAt: new Date(),
+  };
   const result = await interruptShutdownRuns(
-    [{ runId: run.id, kind: "workflow-run", startedAt: new Date() }],
+    [aborted],
     {
       repoContext: {
         markDirty: () => Promise.resolve(),
@@ -232,8 +243,11 @@ async function stopWithSlowDatastore(
       unpushedMarkerPath: swampPath(owner.dir, UNPUSHED_INTERRUPTS_FILE),
     },
   );
-  await heartbeat.stop({
-    leaveStoppedRecord: (result.unpushed?.length ?? 0) > 0,
+  await stopHeartbeatAtShutdown(heartbeat, {
+    store: control,
+    instanceId: OWNER,
+    aborted: [aborted],
+    unpushed: result.unpushed ?? [],
   });
   return result;
 }
@@ -247,7 +261,12 @@ Deno.test("shutdown with an unpushed interrupt: a peer whose cache lacks the run
     try {
       const { wf, run, heartbeat } = await startRun(owner, remote, control);
 
-      const result = await stopWithSlowDatastore(owner, run, heartbeat);
+      const result = await stopWithSlowDatastore(
+        owner,
+        run,
+        heartbeat,
+        control,
+      );
 
       assertEquals(result.unpushed, [run.id]);
       assertEquals(owner.tracker.findById(run.id)?.status, "interrupted");
@@ -310,7 +329,7 @@ Deno.test("shutdown with an unpushed interrupt: a failed stopped-heartbeat write
           ? Promise.reject(new Error("S3 unreachable"))
           : put(key, data);
 
-      await stopWithSlowDatastore(owner, run, heartbeat);
+      await stopWithSlowDatastore(owner, run, heartbeat, control);
 
       const record = InstanceHeartbeatService.parseRecord(
         control.entries.get(`heartbeats/${OWNER}`)!,
@@ -403,7 +422,7 @@ Deno.test("shutdown with an unpushed interrupt: a restart does not interrupt a r
     const control = inMemoryControlPlane();
     try {
       const { wf, run, heartbeat } = await startRun(owner, remote, control);
-      await stopWithSlowDatastore(owner, run, heartbeat);
+      await stopWithSlowDatastore(owner, run, heartbeat, control);
       // A peer resumes the run under the same id and pushes it running.
       const resumed = WorkflowRun.fromData({
         ...run.toData(),
@@ -452,7 +471,7 @@ for (
           remote,
           control,
         );
-        await stopWithSlowDatastore(owner, run, heartbeat);
+        await stopWithSlowDatastore(owner, run, heartbeat, control);
         if (hydrationReplaced) {
           await remote.refreshInto(owner, wf.id, run.id as WorkflowRunId);
         }
@@ -487,7 +506,7 @@ Deno.test("shutdown with an unpushed interrupt: a restarted checkout reconciling
     const control = inMemoryControlPlane();
     try {
       const { wf, run, heartbeat } = await startRun(owner, remote, control);
-      await stopWithSlowDatastore(owner, run, heartbeat);
+      await stopWithSlowDatastore(owner, run, heartbeat, control);
       const refreshes: string[] = [];
 
       // The restarted serve's boot reconcile claims the stopped heartbeat
@@ -510,6 +529,44 @@ Deno.test("shutdown with an unpushed interrupt: a restarted checkout reconciling
       assertEquals(local?.tags["interrupt_reason"], "server_shutdown");
     } finally {
       owner.tracker.close();
+    }
+  });
+});
+
+Deno.test("shutdown with an unpushed interrupt: a peer settles a run whose own exit deleted its active-run record", async () => {
+  await withTempDir(async (dir) => {
+    const owner = checkout(join(dir, "owner"));
+    const peer = checkout(join(dir, "peer"));
+    const remote = datastore(join(dir, "remote"));
+    const control = inMemoryControlPlane();
+    try {
+      const { wf, run, heartbeat } = await startRun(owner, remote, control);
+      // The run ended in the abort grace, and its finally deleted its record.
+      await control.delete(`active-runs/${OWNER}/${run.id}`);
+
+      await stopWithSlowDatastore(owner, run, heartbeat, control);
+
+      assertEquals(await control.list(`active-runs/${OWNER}/`), [
+        `active-runs/${OWNER}/${run.id}`,
+      ]);
+      const reaped = await reconcileRemoteInterruptedRuns({
+        controlPlaneStore: control,
+        instanceId: PEER,
+        runTracker: peer.tracker,
+        workflowRunRepo: peer.runs,
+        refreshRunRecord: (workflowId, runId) =>
+          remote.refreshInto(peer, workflowId, runId),
+        pushReaped: () => remote.pushFrom(peer),
+      });
+
+      assertEquals(reaped, 1);
+      assertEquals(
+        (await remote.runs.findById(wf.id, run.id))?.status,
+        "interrupted",
+      );
+    } finally {
+      owner.tracker.close();
+      peer.tracker.close();
     }
   });
 });
