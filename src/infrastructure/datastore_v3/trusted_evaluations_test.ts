@@ -82,13 +82,16 @@ Deno.test("v3EvaluationTrust: serve's own evaluation is read after catching its 
 });
 
 Deno.test("v3EvaluationTrust: an evaluation a forwarded commit wrote, or of unknown writer, is refused", async () => {
-  for (const writer of ["user:ana", null]) {
-    await assertRejects(
-      () => trustOver(writer).trust.definition(TYPE, "web"),
-      UserError,
-      "not made on this server",
-    );
-  }
+  await assertRejects(
+    () => trustOver("user:ana").trust.definition(TYPE, "web"),
+    UserError,
+    "not made on this server",
+  );
+  await assertRejects(
+    () => trustOver(null).trust.definition(TYPE, "web"),
+    UserError,
+    "Evaluate it on this server again",
+  );
 });
 
 Deno.test("v3EvaluationTrust: an evaluation past the size serve runs is refused as too large", async () => {
@@ -96,7 +99,7 @@ Deno.test("v3EvaluationTrust: an evaluation past the size serve runs is refused 
     () =>
       trustOver("", { size: 32 * 1024 * 1024 }).trust.definition(TYPE, "web"),
     UserError,
-    "larger than serve runs",
+    "larger than serve will run",
   );
 });
 

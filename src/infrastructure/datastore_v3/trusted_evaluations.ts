@@ -87,7 +87,12 @@ export function v3EvaluationTrust(
     readonly workflowRepo: Pick<WorkflowRepository, "findByName">;
   },
 ): EvaluationTrust {
-  /** The trusted bytes at the first key holding a record, or null. */
+  /**
+   * The trusted bytes at the first key holding serve's own record, or null
+   * when no key holds a record. A key holding another writer's record is
+   * passed over, so a forwarded evaluation cannot hide serve's own; when
+   * only such records exist the evaluation is refused.
+   */
   const trusted = async (
     partition: PartitionKey,
     keys: readonly string[],
@@ -100,6 +105,7 @@ export function v3EvaluationTrust(
       partition,
       new AbortController().signal,
     );
+    let untrusted: "forwarded" | "unknown" | undefined;
     for (const key of keys) {
       const record = await v3.readModel.liveRecord(
         v3.namespace,
@@ -108,17 +114,13 @@ export function v3EvaluationTrust(
       );
       if (record === undefined) continue;
       if (record.writer !== "") {
-        throw new UserError(
-          `The evaluation of ${what} was not made on this server, so it ` +
-            `cannot be run with --last-evaluated here. Evaluate it on this ` +
-            `server first.`,
-          "evaluation_not_trusted",
-        );
+        untrusted ??= record.writer === null ? "unknown" : "forwarded";
+        continue;
       }
       if ((record.blob?.size ?? 0) > MAX_EVALUATION_BYTES) {
         throw new UserError(
-          `The evaluation of ${what} is larger than serve runs ` +
-            `(${MAX_EVALUATION_BYTES} bytes).`,
+          `The evaluation of ${what} is larger than serve will run ` +
+            `(${MAX_EVALUATION_BYTES} bytes); run it without --last-evaluated.`,
           "evaluation_not_trusted",
         );
       }
@@ -135,6 +137,22 @@ export function v3EvaluationTrust(
         );
       }
       return new TextDecoder().decode(found.bytes);
+    }
+    if (untrusted === "forwarded") {
+      throw new UserError(
+        `The evaluation of ${what} was not made on this server, so it ` +
+          `cannot be run with --last-evaluated here. Evaluate it on this ` +
+          `server first.`,
+        "evaluation_not_trusted",
+      );
+    }
+    if (untrusted === "unknown") {
+      throw new UserError(
+        `The evaluation of ${what} was saved before this server recorded ` +
+          `who writes evaluations, so it cannot be run with ` +
+          `--last-evaluated. Evaluate it on this server again.`,
+        "evaluation_not_trusted",
+      );
     }
     return null;
   };

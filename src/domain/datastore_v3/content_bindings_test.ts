@@ -593,3 +593,41 @@ Deno.test("judgeRunRecord: a waiting gate or wait retyped in the stored workflow
     ["signal"],
   );
 });
+
+Deno.test("judgeRunRecord: a waiting step cannot be dropped, renamed, or given a child run to end its wait unjudged", () => {
+  const waiting = run([
+    step("gate", { status: "waiting_approval", startedAt: STARTED }),
+  ]);
+  assert(judge(waiting, run([])).refusal !== undefined);
+  assert(
+    judge(
+      waiting,
+      run([step("renamed", { status: "succeeded", startedAt: STARTED })]),
+    ).refusal !== undefined,
+  );
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  // Retyped, then given a child run while it waits.
+  assert(
+    judge(
+      waiting,
+      run([
+        step("gate", {
+          status: "waiting_approval",
+          startedAt: STARTED,
+          nestedRun,
+        }),
+      ]),
+      { gate: "other" },
+    ).refusal !== undefined,
+  );
+  // Nor in the record that completes it.
+  assert(
+    judge(
+      waiting,
+      run([
+        step("gate", { status: "succeeded", startedAt: STARTED, nestedRun }),
+      ]),
+      { gate: "other" },
+    ).refusal !== undefined,
+  );
+});

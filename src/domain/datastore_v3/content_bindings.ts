@@ -318,6 +318,21 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
       beforeSteps.set(stepKey(job.jobName, step.stepName), step);
     }
   }
+  // A waiting step stays in the record until it settles: dropping or
+  // renaming it would end the wait without judging how.
+  const afterSteps = new Set(
+    after.jobs.flatMap((job) =>
+      job.steps.map((step) => stepKey(job.jobName, step.stepName))
+    ),
+  );
+  for (const [key, step] of beforeSteps) {
+    if (
+      (step.status === "waiting_approval" ||
+        WAITING_SIGNAL.has(step.status)) && !afterSteps.has(key)
+    ) {
+      return refuse("it drops a step that is waiting");
+    }
+  }
   const addedOutputs: AddedStepOutput[] = [];
   for (const job of after.jobs) {
     for (const step of job.steps) {
@@ -397,6 +412,9 @@ function judgeStep(
         ["prompt", prior.approvalPrompt, step.approvalPrompt],
         ["timeout", prior.approvalTimeout, step.approvalTimeout],
         ["start", prior.startedAt, step.startedAt],
+        // A waiting gate gains no child run: that would make it read as a
+        // nested call's wait, which ends without a decision.
+        ["nested run", prior.nestedRun, step.nestedRun],
       ] as const
     ) {
       if (!same(was, is)) {
@@ -407,9 +425,10 @@ function judgeStep(
   const entered = TERMINAL.has(step.status) && prior?.status !== step.status;
   // A nested-call step also waits in waiting_approval while its child
   // waits; it ends when the child does, which the child's own record
-  // decides.
-  const nestedWait = step.nestedRun !== undefined ||
-    prior?.nestedRun !== undefined;
+  // decides. It is one when its last record already linked the child: a run
+  // links it in the save that starts the wait, and a waiting step's link is
+  // frozen above.
+  const nestedWait = prior?.nestedRun !== undefined;
   // A step that waited on an approval is a gate whatever the stored workflow
   // says it is now: an edit can retype the step while the run waits. One the
   // stored workflow no longer names is a gate when it holds a gate's prompt
