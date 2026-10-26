@@ -17,11 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import fc from "fast-check";
 import { Environment } from "cel-js";
 import { CelEvaluator, coerceBigInts } from "./cel_evaluator.ts";
-import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  InvalidExpressionError,
+  MissingModelDataError,
+} from "../../domain/expressions/errors.ts";
 import {
   extractDependencies,
   extractModelRefs,
@@ -35,6 +38,65 @@ import {
 // function and is the expensive part; evaluation itself carries no state
 // besides the deprecation-warning dedup set.
 const evaluator = new CelEvaluator();
+
+Deno.test("CelEvaluator: container and branch composition preserves the selected missing-data origin, not an unrelated miss", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.integer({ min: 0, max: 6 }), { minLength: 1, maxLength: 5 }),
+      fc.boolean(),
+      async (wrappers, selectsMissing) => {
+        let receiver = selectsMissing ? "data.latest('db', 'missing')" : "null";
+        for (const wrapper of wrappers) {
+          switch (wrapper) {
+            case 0:
+              receiver = `[${receiver}, {}][0]`;
+              break;
+            case 1:
+              receiver = `[{}, ${receiver}][1]`;
+              break;
+            case 2:
+              receiver = `{'key': ${receiver}}.key`;
+              break;
+            case 3:
+              receiver = `(true ? ${receiver} : {})`;
+              break;
+            case 4:
+              receiver = `(false ? {} : ${receiver})`;
+              break;
+            case 5:
+              receiver = `{'key': {}, 'key': ${receiver}}.key`;
+              break;
+            case 6:
+              receiver = `{'0': {}, 0: ${receiver}}['0']`;
+          }
+        }
+        // Also execute a missing lookup in the negative controls. Merely seeing
+        // a miss must not turn a select on literal null into an upstream gap.
+        if (!selectsMissing) {
+          receiver = `[data.latest('db', 'missing'), ${receiver}][1]`;
+        }
+        let reads = 0;
+        const context = {
+          data: {
+            latest: () => {
+              reads++;
+              return Promise.resolve(null);
+            },
+          },
+        };
+        const error = await assertRejects(
+          () => evaluator.evaluateAsync(`${receiver}.attributes`, context),
+          InvalidExpressionError,
+        );
+        assertEquals(error instanceof MissingModelDataError, selectsMissing);
+        if (selectsMissing) assertEquals(reads, 1);
+        // Some invalid literal receivers are rejected by CEL before execution.
+        else assert(reads <= 1);
+      },
+    ),
+    { numRuns: 100 },
+  );
+});
 
 const LOWER = "abcdefghijklmnopqrstuvwxyz".split("");
 

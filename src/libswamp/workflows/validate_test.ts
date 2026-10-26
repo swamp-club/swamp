@@ -935,6 +935,60 @@ Deno.test("createWorkflowValidateDeps: description prose that documents the expr
   );
 });
 
+Deno.test("createWorkflowValidateDeps: input schema descriptions are prose, while defaults and argument data remain executable", async () => {
+  const example = "Example: ${{ dyn(vault).get('prod', 'key') }}";
+  for (const flat of [false, true]) {
+    const properties = {
+      token: { type: "string" as const, description: example },
+      description: {
+        type: "object" as const,
+        description: example,
+        properties: { "odd.key": { description: example } },
+        additionalProperties: { description: example },
+        default: { description: example },
+      },
+      list: {
+        type: "array" as const,
+        items: { properties: { token: { description: example } } },
+      },
+    };
+    const workflow = Workflow.create({
+      name: "documented-inputs",
+      inputs: flat
+        ? properties
+        : { type: "object", description: example, properties },
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "consume",
+          task: StepTask.model("consumer", "run", {
+            value: [{ description: { nested: example } }],
+          }),
+        })],
+      })],
+    });
+    const deps = createWorkflowValidateDeps({
+      ...({} as WorkflowRepository),
+      findByName: () => Promise.resolve(workflow),
+      getPath: () => "workflows/documented-inputs.yaml",
+    });
+    const findings = (await deps.validate(workflow)).filter((r) =>
+      r.name === "Secret usage"
+    );
+    assertEquals(findings.length, 2, JSON.stringify(findings));
+    assertStringIncludes(
+      findings[0].error ?? "",
+      flat
+        ? "inputs.description.default.description"
+        : "inputs.properties.description.default.description",
+    );
+    assertStringIncludes(
+      findings[1].error ?? "",
+      "jobs[0].steps[0].task.inputs.value[0].description.nested",
+    );
+  }
+});
+
 Deno.test("createWorkflowValidateDeps: static secret misuse names the file, path and code in JSON, including raw guards and asserts", async () => {
   const workflow = Workflow.create({
     name: "misuse",

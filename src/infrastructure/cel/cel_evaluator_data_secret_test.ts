@@ -318,6 +318,63 @@ Deno.test("CelEvaluator data secrets: data.version, findBySpec and findByTag ada
   );
 });
 
+Deno.test("CelEvaluator data secrets: missing lookup receivers retain their origin through selected containers and branches without another read", async () => {
+  const f = fixture();
+  f.context.inputs = { index: 1, key: "record", enabled: false };
+  const missing = "data.latest('db', 'missing')";
+  for (
+    const receiver of [
+      `[${missing}][0]`,
+      `[{}, ${missing}][inputs.index]`,
+      `[${missing}][inputs.index - 1]`,
+      `{'record': ${missing}}[inputs.key]`,
+      `{'record': ${missing}}['re' + 'cord']`,
+      `{'record': {}, 'record': ${missing}}.record`,
+      `{'record': {}, inputs.key: ${missing}}.record`,
+      `{0: ${missing}}[0.0]`,
+      `{'0': ${missing}}[0]`,
+      `{'0': {}, 0: ${missing}}['0']`,
+      `{true: ${missing}}['true']`,
+      `{'record': [${missing}]}.record[0]`,
+      `(true ? ${missing} : {})`,
+      `(inputs.enabled ? {} : ${missing})`,
+      `(inputs.enabled == false ? ${missing} : null)`,
+      `(!inputs.enabled && size([1, 2]) == 2 ? ${missing} : {})`,
+      `(inputs.index > 0 ? ${missing} : {})`,
+    ]
+  ) {
+    const before = f.calls.length;
+    await assertRejects(
+      () => f.evaluate(`${receiver}.attributes.password`),
+      MissingModelDataError,
+      undefined,
+      receiver,
+    );
+    assertEquals(f.calls.length, before + 1, receiver);
+  }
+  for (
+    const receiver of [
+      `[${missing}, {}][inputs.index]`,
+      `[${missing}, null][inputs.index]`,
+      `{'unused': ${missing}, 'record': {}}[inputs.key]`,
+      `{'record': ${missing}, 'record': {}}.record`,
+      `{'record': ${missing}, inputs.key: {}}.record`,
+      `{'0': ${missing}, 0: {}}['0']`,
+      `{'constructor': ${missing}}.constructor`,
+      `[${missing}, (inputs.enabled ? ${missing} : {})][1]`,
+      `[${missing}, (inputs.enabled || false ? ${missing} : {})][1]`,
+    ]
+  ) {
+    const before = f.calls.length;
+    const failure = await assertRejects(
+      () => f.evaluate(`${receiver}.attributes`),
+      InvalidExpressionError,
+    );
+    assertEquals(failure instanceof MissingModelDataError, false, receiver);
+    assertEquals(f.calls.length, before + 1, receiver);
+  }
+});
+
 Deno.test("CelEvaluator data secrets: every tagged reference is authorized after evaluation, selected or not, and a denial surfaces as the option-off denial does, once", async () => {
   const f = fixture();
   const denials: VaultAccessDenial[] = [];

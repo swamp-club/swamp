@@ -247,22 +247,188 @@ function describeSpecInstances(
 }
 
 /**
- * Whether cel-js failed a field select or index whose operand is a
- * `data.latest()` or `data.version()` call, the two lookups that resolve to
- * null and record a miss when no record exists. The error carries the AST
- * node of the failing select, so the operand is read from it rather than
- * guessed from the expression text.
+ * Follow the receiver of the failed select through literal containers and
+ * conditional branches. Only the selected value matters: a missing lookup
+ * in a sibling must not excuse an invalid select on an ordinary map or null.
+ * Resolve selectors from plain bindings without invoking getters or replaying
+ * functions, so diagnosing a failure performs no additional external work.
  */
-function selectsDataLookup(error: unknown): boolean {
+function selectsDataLookup(
+  error: unknown,
+  context: Record<string, unknown>,
+): boolean {
   if (typeof error !== "object" || error === null) return false;
   const { code, node } = error as { code?: unknown; node?: unknown };
   if (code !== "no_such_key" || !isAstNode(node)) return false;
   if (node.op !== "." && node.op !== "[]") return false;
-  const operand = node.args[0];
-  if (operand.op !== "rcall") return false;
+  const operand = selectedNode(node.args[0], context);
+  if (operand?.op !== "rcall") return false;
   const [name, receiver] = operand.args;
   return (name === "latest" || name === "version") &&
     receiver.op === "id" && receiver.args === "data";
+}
+
+const UNKNOWN_SELECTOR = Symbol("unknown selector");
+// Standard CEL and arithmetic only: no swamp namespace or extension functions.
+const selectorEnvironment = createExtensionCelEnvironment();
+
+/** Read only data properties: a diagnostic must never invoke a binding getter. */
+function ownBinding(value: unknown, key: unknown): unknown {
+  if (value === null || typeof value !== "object") return UNKNOWN_SELECTOR;
+  if (
+    typeof key !== "string" && typeof key !== "number" &&
+    typeof key !== "bigint"
+  ) {
+    return UNKNOWN_SELECTOR;
+  }
+  const property = Object.getOwnPropertyDescriptor(value, String(key));
+  return property && "value" in property ? property.value : UNKNOWN_SELECTOR;
+}
+
+/** Snapshot plain selector data, refusing getters, functions and opaque values. */
+function selectorData(value: unknown, seen = new Set<object>()): unknown {
+  if (
+    value === null || value === undefined ||
+    ["string", "boolean", "number", "bigint"].includes(typeof value)
+  ) return value;
+  if (typeof value !== "object" || seen.has(value)) return UNKNOWN_SELECTOR;
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    !Array.isArray(value) && prototype !== Object.prototype &&
+    prototype !== null
+  ) return UNKNOWN_SELECTOR;
+  seen.add(value);
+  try {
+    const copy: object = Array.isArray(value)
+      ? new Array(value.length)
+      : Object.create(null);
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (Array.isArray(value) && key === "length") continue;
+      const property = Object.getOwnPropertyDescriptor(value, key);
+      if (!property || !("value" in property)) return UNKNOWN_SELECTOR;
+      const item = selectorData(property.value, seen);
+      if (item === UNKNOWN_SELECTOR) return UNKNOWN_SELECTOR;
+      Object.defineProperty(copy, key, {
+        value: item,
+        enumerable: property.enumerable,
+      });
+    }
+    return copy;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/** Evaluate a selector using only copied data and standard, pure CEL functions. */
+function pureSelectorValue(
+  node: ASTNode,
+  context: Record<string, unknown>,
+): unknown {
+  const names = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (isAstNode(value)) {
+      if (value.op === "id") names.add(value.args);
+      else if (value.op !== "value") visit(value.args);
+    }
+  };
+  visit(node);
+  const bindings: Record<string, unknown> = Object.create(null);
+  for (const name of names) {
+    const property = Object.getOwnPropertyDescriptor(context, name);
+    // A macro's local variable need not be a root binding.
+    if (!property) continue;
+    if (!("value" in property)) return UNKNOWN_SELECTOR;
+    const value = selectorData(property.value);
+    if (value === UNKNOWN_SELECTOR) return UNKNOWN_SELECTOR;
+    Object.defineProperty(bindings, name, { value, enumerable: true });
+  }
+  try {
+    return selectorEnvironment.evaluate(
+      node.input.slice(node.start, node.end),
+      bindings,
+    );
+  } catch {
+    return UNKNOWN_SELECTOR;
+  }
+}
+
+function selectorValue(
+  node: ASTNode,
+  context: Record<string, unknown>,
+): unknown {
+  const selected = selectedNode(node, context);
+  if (!selected) return UNKNOWN_SELECTOR;
+  if (selected !== node) return selectorValue(selected, context);
+  switch (node.op) {
+    case "value":
+      return node.args;
+    case "id":
+      return ownBinding(context, node.args);
+    case ".":
+    case "[]":
+      return ownBinding(
+        selectorValue(node.args[0], context),
+        node.op === "." ? node.args[1] : selectorValue(node.args[1], context),
+      );
+    default:
+      return pureSelectorValue(node, context);
+  }
+}
+
+/** cel-js stores literal map entries as object properties, coercing scalar keys. */
+function mapSelectorKey(value: unknown): string | undefined {
+  return value === null ||
+      ["string", "number", "bigint", "boolean"].includes(typeof value)
+    ? String(value)
+    : undefined;
+}
+
+function selectedNode(
+  node: ASTNode,
+  context: Record<string, unknown>,
+): ASTNode | undefined {
+  if (node.op === "?:") {
+    const condition = selectorValue(node.args[0], context);
+    return typeof condition === "boolean"
+      ? selectedNode(node.args[condition ? 1 : 2], context)
+      : undefined;
+  }
+  if (node.op !== "." && node.op !== "[]") return node;
+  const container = selectedNode(node.args[0], context);
+  if (!container) return undefined;
+  const key = node.op === "."
+    ? node.args[1]
+    : selectorValue(node.args[1], context);
+  if (container.op === "list") {
+    if (typeof key !== "bigint" && typeof key !== "number") return undefined;
+    const index = Number(key);
+    if (
+      !Number.isSafeInteger(index) || index < 0 ||
+      index >= container.args.length
+    ) {
+      return undefined;
+    }
+    return selectedNode(container.args[index], context);
+  }
+  if (container.op === "map") {
+    const selectedKey = mapSelectorKey(key);
+    // cel-js omits these entries when constructing literal maps.
+    if (
+      selectedKey === undefined ||
+      ["__proto__", "constructor", "prototype"].includes(selectedKey)
+    ) return undefined;
+    // CEL keeps the last value of a repeated key. An unknown later key could
+    // overwrite an earlier match, so it cannot establish a lookup's origin.
+    for (let index = container.args.length - 1; index >= 0; index--) {
+      const [entryKey, value] = container.args[index];
+      const candidate = mapSelectorKey(selectorValue(entryKey, context));
+      if (candidate === undefined) return undefined;
+      if (candidate === selectedKey) return selectedNode(value, context);
+    }
+    return undefined;
+  }
+  return node;
 }
 
 function isAstNode(value: unknown): value is ASTNode {
@@ -1558,7 +1724,8 @@ export class CelEvaluator {
     // absent binding. The gap is recognized by the failing select itself: a
     // miss elsewhere in the expression does not excuse a select on something
     // else, which is the expression's own failure whatever the hint says.
-    const Failure = explained !== message && selectsDataLookup(error)
+    const Failure = explained !== message &&
+        selectsDataLookup(error, wrappedContext)
       ? MissingModelDataError
       : InvalidExpressionError;
     return new Failure(
