@@ -34,16 +34,20 @@
  *   namespace as another namespace, as a v3 checkout does
  *   (swamp-club#3785). A record with no tag is returned as it is.
  * - A tagged record is validated whole before CEL sees it, against what the
- *   writer can store. The tag is read strictly. Under the star value every
- *   field is sensitive at any depth: the writer stores each top-level field
- *   as a reference, and a container appears only where a schema marks a
- *   parent and a child inside it sensitive, holding the child's reference.
- *   Under a path list each path is walked through own properties only, as
- *   the writer's own lookup walks; a tagged value that is absent or null
- *   stays so, a stored reference becomes a Secret, and a tagged path that is
- *   a strict prefix of another tagged path may hold a container whose leaves
- *   are all tagged, which is the writer's parent-and-child artifact. Anything
- *   else refuses with `secret_reference_invalid`, recording the fault first so
+ *   writer can store. The tag is read strictly, with the key lists of
+ *   `_swamp.sensitiveFieldKeys` as more tagged paths (swamp-club#3038): a
+ *   place a dot path cannot name, under a key holding a dot, an empty key, or
+ *   a prototype property's name, all walked and viewed as own properties.
+ *   Under the star value every field is sensitive at any depth: the writer
+ *   stores each top-level field as a reference, and a container appears only
+ *   where a schema marks a parent and a child inside it sensitive, holding
+ *   the child's reference. Under a path list each path is walked through own
+ *   properties only, as the writer's own lookup walks; a tagged value that is
+ *   absent or null stays so, a stored reference becomes a Secret, and a
+ *   tagged path that is a strict prefix of another tagged path may hold a
+ *   container whose leaves are all tagged, which is the writer's
+ *   parent-and-child artifact. Anything else refuses with
+ *   `secret_reference_invalid`, recording the fault first so
  *   an absorbing operator cannot hide it. The refusal names the accessor, the
  *   model, the record id, the version and the field path: never the data
  *   name, which a vary suffix can fill from a resolved secret
@@ -75,7 +79,7 @@ import {
 import { SECRET_REFERENCE_INVALID } from "../../domain/expressions/errors.ts";
 import {
   parseStoredVaultReference,
-  readSensitiveFieldsTag,
+  readSensitiveFieldPlaces,
   type SensitiveFieldsTag,
   SensitiveFieldsTagInvalidError,
   UNSAFE_PATH_SEGMENTS,
@@ -211,7 +215,9 @@ function nodeAt(root: PathNode, path: readonly string[]): PathNode {
   return node;
 }
 
-const pathKey = (path: readonly string[]): string => path.join("\u0000");
+// JSON, so a record key holding any character, NUL included, keeps paths
+// apart.
+const pathKey = (path: readonly string[]): string => JSON.stringify(path);
 
 /**
  * Validates every sensitive field of `record` against what the writer can
@@ -404,7 +410,7 @@ export function adaptDataRecord(
   }
   let tag: SensitiveFieldsTag;
   try {
-    tag = readSensitiveFieldsTag(record.tags);
+    tag = readSensitiveFieldPlaces(record.tags);
   } catch (error) {
     if (error instanceof SensitiveFieldsTagInvalidError) {
       refuse(
@@ -654,7 +660,7 @@ function mergedOutputsView(
 function storedReferencesOf(record: RecordLike): SecretReference[] {
   let tag: SensitiveFieldsTag;
   try {
-    tag = readSensitiveFieldsTag(record.tags);
+    tag = readSensitiveFieldPlaces(record.tags);
   } catch (error) {
     if (error instanceof SensitiveFieldsTagInvalidError) return [];
     throw error;

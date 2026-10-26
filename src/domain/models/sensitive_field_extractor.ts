@@ -26,10 +26,12 @@ import {
 } from "../expressions/expression_scanner.ts";
 import {
   codeAroundMetadata,
+  collectFieldMetadata,
   extractFieldsWithMetadata,
   type FieldMetadata,
   findValuesWithMetadata,
   schemaHoldsMetadata,
+  type ValueWithMetadata,
 } from "./zod_field_metadata.ts";
 import {
   schemaDeclaredKeys,
@@ -62,7 +64,10 @@ interface SensitiveMetadata {
  *
  * Walks the schema's object shape recursively, checking each field for
  * `{ sensitive: true }` metadata via `z.globalRegistry`. Handles both
- * `.meta().optional()` and `.optional().meta()` orderings.
+ * `.meta().optional()` and `.optional().meta()` orderings. Fields inside
+ * arrays, records and unions are not reached: {@link findSensitiveResourceValues}
+ * finds them in a value, and {@link collectSensitiveFieldMetadata} reads
+ * their metadata from the schema alone.
  *
  * @param schema - A Zod schema (typically an object schema)
  * @param prefix - Path prefix for nested fields (used in recursion)
@@ -77,11 +82,81 @@ export function extractSensitiveFields(
   );
 }
 
+/**
+ * The vault metadata of a field marked `{ sensitive: true }`, wherever in the
+ * schema it sits.
+ */
+export interface SensitiveFieldMetadata {
+  /** Optional vault name override from field metadata */
+  vaultName?: string;
+  /** Optional vault key override from field metadata */
+  vaultKey?: string;
+  /**
+   * Whether the field sits inside an array element, tuple item, record value
+   * or `.catchall()` key, so that a value holds it once per element.
+   */
+  perElement: boolean;
+}
+
+/**
+ * Returns the vault metadata of every field marked `{ sensitive: true }` in
+ * `schema`, reading the schema alone: fields in nested objects, array
+ * elements, tuple items, record values, `.catchall()` keys and union members.
+ * Metadata on the root schema is not included, as no value is vaulted for it.
+ * The schema is read afresh on every call, so metadata registered after an
+ * earlier call is seen: an answer missing a field would let its value be
+ * written in cleartext.
+ */
+export function collectSensitiveFieldMetadata(
+  schema: z.ZodTypeAny,
+): SensitiveFieldMetadata[] {
+  return collectFieldMetadata(schema, isSensitive).map(
+    ({ meta, perElement }) => {
+      const sensitive = meta as SensitiveMetadata;
+      return {
+        vaultName: sensitive.vaultName,
+        vaultKey: sensitive.vaultKey,
+        perElement,
+      };
+    },
+  );
+}
+
+/**
+ * Reports whether any field of `schema` is marked `{ sensitive: true }`,
+ * wherever it sits (see {@link collectSensitiveFieldMetadata}): whether a
+ * resource written under it needs a vault. Unlike {@link hasSensitiveFields},
+ * metadata on the root schema does not count, since no value is vaulted for
+ * the root.
+ */
+export function schemaHoldsSensitiveFields(schema: z.ZodTypeAny): boolean {
+  return collectSensitiveFieldMetadata(schema).length > 0;
+}
+
+/**
+ * Finds every value in `data` that sits under a field marked
+ * `{ sensitive: true }`, walking the schema and the value together (see
+ * `findValuesWithMetadata`), with the field's vault metadata.
+ */
+export function findSensitiveResourceValues(
+  schema: z.ZodTypeAny,
+  data: unknown,
+): (ValueWithMetadata & SensitiveFieldInfo)[] {
+  return findValuesWithMetadata(schema, data, isSensitive).map((found) => ({
+    ...found,
+    ...toSensitiveFieldInfo(found.path, found.meta),
+  }));
+}
+
 function isSensitive(meta: FieldMetadata): boolean {
   return Boolean((meta as SensitiveMetadata).sensitive);
 }
 
-/** Whether a schema marks any field, even when a raw input lacks that field. */
+/**
+ * Whether a schema marks any field, even when a raw input lacks that field.
+ * Metadata on the root schema counts; see {@link schemaHoldsSensitiveFields}
+ * for the resource writer's question.
+ */
 export function hasSensitiveFields(schema: z.ZodTypeAny): boolean {
   return schemaHoldsMetadata(schema, isSensitive);
 }

@@ -21,12 +21,14 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   buildSensitiveArgRemediations,
+  collectSensitiveFieldMetadata,
   extractDeliveredSensitiveValues,
   extractRefusedSensitiveValues,
   extractSensitiveFields,
   extractSensitiveFieldValues,
   findLiteralSensitiveGlobalArgs,
   findLiteralSensitiveValues,
+  findSensitiveResourceValues,
   getNestedValue,
   hasSensitiveFields,
   holdsRuntimeExpression,
@@ -36,6 +38,7 @@ import {
   objectKeysOf,
   redactAllValues,
   redactSensitiveValues,
+  schemaHoldsSensitiveFields,
   schemaThrew,
   schemaThrowMessage,
   setNestedValue,
@@ -2268,4 +2271,101 @@ Deno.test("hasSensitiveFields: finds a field marked inside a pipe's output or un
     ),
     false,
   );
+});
+
+Deno.test("collectSensitiveFieldMetadata: returns vault metadata of fields inside arrays and records", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true, vaultKey: "api" }),
+    users: z.array(z.object({
+      password: z.string().meta({ sensitive: true, vaultName: "users" }),
+    })),
+    tokens: z.record(z.string(), z.string().meta({ sensitive: true })),
+  });
+  assertEquals(collectSensitiveFieldMetadata(schema), [
+    { vaultName: undefined, vaultKey: "api", perElement: false },
+    { vaultName: "users", vaultKey: undefined, perElement: true },
+    { vaultName: undefined, vaultKey: undefined, perElement: true },
+  ]);
+});
+
+Deno.test("schemaHoldsSensitiveFields: true only when a field is marked sensitive", () => {
+  assertEquals(
+    schemaHoldsSensitiveFields(z.object({
+      list: z.array(z.object({ k: z.string().meta({ sensitive: true }) })),
+    })),
+    true,
+  );
+  assertEquals(
+    schemaHoldsSensitiveFields(z.object({ list: z.array(z.string()) })),
+    false,
+  );
+  // Metadata on the root schema marks no field.
+  assertEquals(
+    schemaHoldsSensitiveFields(
+      z.object({ a: z.string() }).meta({ sensitive: true }),
+    ),
+    false,
+  );
+});
+
+Deno.test("findSensitiveResourceValues: finds every present value extractSensitiveFields names", () => {
+  const cases: { schema: z.ZodTypeAny; data: Record<string, unknown> }[] = [
+    {
+      schema: z.object({ a: z.string().meta({ sensitive: true }) }),
+      data: { a: "x" },
+    },
+    {
+      schema: z.object({
+        a: z.object({ b: z.string().meta({ sensitive: true }).optional() }),
+      }),
+      data: { a: { b: "x" } },
+    },
+    {
+      schema: z.object({
+        a: z.object({ b: z.string().optional().meta({ sensitive: true }) })
+          .nullable(),
+      }),
+      data: { a: { b: "x" } },
+    },
+    {
+      schema: z.object({
+        a: z.object({ b: z.number().meta({ sensitive: true }) }).default({
+          b: 1,
+        }),
+      }),
+      data: { a: { b: 2 } },
+    },
+    {
+      schema: z.object({
+        "odd key": z.object({
+          "b.c": z.string().meta({ sensitive: true }),
+        }),
+      }),
+      data: { "odd key": { "b.c": "x" } },
+    },
+    {
+      schema: z.object({
+        a: z.object({ b: z.string() }).meta({ sensitive: true }),
+      }),
+      data: { a: { b: "x" } },
+    },
+    {
+      schema: z.object({
+        a: z.string().transform((v) => v).meta({ sensitive: true }),
+      }),
+      data: { a: "x" },
+    },
+  ];
+  for (const { schema, data } of cases) {
+    const found = new Set(
+      findSensitiveResourceValues(schema, data).map(({ keys }) =>
+        keys.join(".")
+      ),
+    );
+    for (const { path } of extractSensitiveFields(schema)) {
+      if (getNestedValue(data, path) !== undefined) {
+        assertEquals(found.has(path), true, path);
+      }
+    }
+  }
 });

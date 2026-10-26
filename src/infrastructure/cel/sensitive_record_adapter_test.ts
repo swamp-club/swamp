@@ -32,7 +32,10 @@ import {
   type StepOutputRecord,
   type StepOutputSources,
 } from "../../domain/expressions/step_output_sources.ts";
-import { SENSITIVE_FIELDS_TAG } from "../../domain/models/data_writer.ts";
+import {
+  SENSITIVE_FIELD_KEYS_TAG,
+  SENSITIVE_FIELDS_TAG,
+} from "../../domain/models/data_writer.ts";
 import {
   type FaultScope,
   runInFaultScope,
@@ -1018,4 +1021,154 @@ Deno.test("adaptDataRecord, modelMapView, stepsView and synchronousSensitiveRefe
     "steps.s.outputs.a";
   assertEquals(keys(expression, eng), ["prod/A", "prod/A"]);
   assertEquals(keys(expression, v3), []);
+});
+
+// --- places only the key-list tag names (swamp-club#3038) ---
+
+const REF_C = "${{ vault.get('prod', 'C') }}";
+const REF_D = "${{ vault.get('prod', 'D') }}";
+const REF_E = "${{ vault.get('prod', 'E') }}";
+
+/** A path-list tag with the key lists the writer adds beside it. */
+const keyListTag = (
+  paths: string[],
+  keyLists: (string | number)[][],
+): Record<string, string> => ({
+  ...pathsTag(...paths),
+  [SENSITIVE_FIELD_KEYS_TAG]: JSON.stringify(keyLists),
+});
+
+Deno.test("adaptDataRecord: a place the key-list tag names, under a dotted, empty or prototype-named key or an array index, reads as a Secret, and untagged neighbours are carried as they are", () => {
+  // Parsed, as stored bytes are, so __proto__ is an own key.
+  const attributes = JSON.parse(JSON.stringify({
+    tokens: {
+      "eu.west": REF_A,
+      "": REF_B,
+      constructor: REF_C,
+      plain: "not tagged",
+    },
+    list: [{ prototype: REF_D }],
+  }));
+  Object.defineProperty(attributes.tokens, "__proto__", {
+    value: REF_E,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  const original = record(
+    attributes,
+    keyListTag([], [
+      ["tokens", "eu.west"],
+      ["tokens", ""],
+      ["tokens", "constructor"],
+      ["tokens", "__proto__"],
+      ["list", 0, "prototype"],
+    ]),
+  );
+  const { view, scope } = adapt(original);
+  const tokens = attributesOf(view).tokens as Record<string, unknown>;
+  const keysOf = (secret: unknown): string => {
+    assert(isSecret(secret));
+    return (secretParts(secret)![0] as { reference: { key: string } })
+      .reference.key;
+  };
+  assertEquals(keysOf(tokens["eu.west"]), "A");
+  assertEquals(keysOf(tokens[""]), "B");
+  assertEquals(
+    keysOf(Object.getOwnPropertyDescriptor(tokens, "constructor")!.get!()),
+    "C",
+  );
+  assertEquals(
+    keysOf(Object.getOwnPropertyDescriptor(tokens, "__proto__")!.get!()),
+    "E",
+  );
+  assertEquals(
+    keysOf((attributesOf(view).list as Record<string, unknown>[])[0].prototype),
+    "D",
+  );
+  assertEquals(tokens.plain, "not tagged");
+  // The view's prototype is the original's, never a stored value.
+  assertStrictEquals(Object.getPrototypeOf(tokens), Object.prototype);
+  assertEquals(
+    [...scope.sensitiveReferences.values()].map((r) => r.key).sort(),
+    ["A", "B", "C", "D", "E"],
+  );
+  assertEquals(
+    locationOf(tokens["eu.west"]),
+    `${LOCATION}, field 'tokens.eu.west'`,
+  );
+});
+
+Deno.test("adaptDataRecord: a key-list place that holds no stored reference is refused like any tagged path", () => {
+  assertRefusesInvalid(
+    record(
+      { tokens: { "eu.west": "plain" } },
+      keyListTag([], [[
+        "tokens",
+        "eu.west",
+      ]]),
+    ),
+    "field 'tokens.eu.west' is not a stored vault reference",
+  );
+});
+
+Deno.test("adaptDataRecord: a malformed key-list tag is ignored whole, and one without the path-list tag is not read", () => {
+  const malformed = record({ tokens: { "eu.west": REF_A } }, {
+    ...pathsTag(),
+    [SENSITIVE_FIELD_KEYS_TAG]: '[["tokens",{}]]',
+  });
+  assertStrictEquals(adapt(malformed).view, malformed);
+  const alone = record({ tokens: { "eu.west": REF_A } }, {
+    [SENSITIVE_FIELD_KEYS_TAG]: '[["tokens","eu.west"]]',
+  });
+  assertStrictEquals(adapt(alone).view, alone);
+});
+
+Deno.test("synchronousSensitiveReferences: lists the references at key-list places of a named step's sources", () => {
+  const seed = sourced({}, [{
+    path: [],
+    records: [
+      source(
+        "r1",
+        { password: REF_A, tokens: { "eu.west": REF_B } },
+        keyListTag(["password"], [["tokens", "eu.west"]]),
+      ),
+    ],
+  }]);
+  assertEquals(
+    synchronousSensitiveReferences(
+      "steps.seed.outputs.tokens",
+      undefined,
+      SOLO,
+      { seed },
+    ).map((r) => `${r.vaultName}/${r.key}`).sort(),
+    ["prod/A", "prod/B"],
+  );
+});
+
+Deno.test("adaptDataRecord: a field tagged inside a container stored as one reference is not refused, and the container reads as a Secret", () => {
+  // The writer tags a marked field inside a stored container beside it, so
+  // a reader that restores the container registers the field (swamp-club#3038).
+  const { view, scope } = adapt(
+    record(
+      { credentials: REF_A, services: [{ image: REF_B }] },
+      pathsTag(
+        "credentials",
+        "credentials.apiKey",
+        "services.0.image",
+        "services.0.image.token",
+      ),
+    ),
+  );
+  assert(isSecret(attributesOf(view).credentials));
+  assert(
+    isSecret(
+      (attributesOf(view).services as Record<string, unknown>[])[0].image,
+    ),
+  );
+  assertEquals(scope.faults, []);
+  assertEquals(
+    [...scope.sensitiveReferences.values()].map((r) => r.key).sort(),
+    ["A", "B"],
+  );
 });

@@ -249,6 +249,12 @@ export async function withVaultScopeFixture(
     mintVault?: string;
     /** The `vaultKey` the minter's `token` field fixes; generated if unset. */
     mintTokenKey?: string;
+    /**
+     * When set, the minter's spec also holds a `replicas` array whose
+     * sensitive `secret` field declares this `vaultKey`, and `mint` writes
+     * two replicas.
+     */
+    mintReplicaKey?: string;
   } = {},
 ): Promise<void> {
   // Deno can call a test with the async context the previous test left
@@ -277,6 +283,12 @@ export async function withVaultScopeFixture(
                   : { sensitive: true, vaultKey: options.mintTokenKey },
               ),
               backup: z.string().meta({ sensitive: true }),
+              replicas: z.array(z.object({
+                secret: z.string().meta({
+                  sensitive: true,
+                  vaultKey: options.mintReplicaKey,
+                }),
+              })).optional(),
             }),
             lifetime: "infinite",
             garbageCollection: 5,
@@ -359,6 +371,11 @@ export async function withVaultScopeFixture(
                 name: "app",
                 token: `minted-${sideEffects.count}`,
                 backup: `backup-${sideEffects.count}`,
+                ...(options.mintReplicaKey === undefined ? {} : {
+                  replicas: [{ secret: "replica-0" }, {
+                    secret: "replica-1",
+                  }],
+                }),
               });
               return { dataHandles: [handle] };
             },

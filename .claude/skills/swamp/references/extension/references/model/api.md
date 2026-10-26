@@ -65,7 +65,8 @@ resources: {
 ```
 
 Set `sensitiveOutput: true` on the spec to treat all fields as sensitive. Set
-`vaultName` on the spec to override which vault stores the values.
+`vaultName` on the spec to override which vault stores the values. Fields marked
+inside arrays, records and unions are stored too, one vault key per element.
 
 **Schema requirement:** If your resource will be referenced by other behaviors
 via CEL expressions, declare the referenced properties explicitly in the Zod

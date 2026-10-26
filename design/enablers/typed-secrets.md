@@ -768,7 +768,12 @@ now return references and load nothing.
 
 One adapter turns the tagged fields of a trusted data record into `Secret`
 values. The tag is `_swamp.sensitiveFields`, either `"*"` or a list of
-dot-paths. Every expression-facing accessor uses the adapter:
+dot-paths. Beside a list, `_swamp.sensitiveFieldKeys` adds key lists for places
+a dot path cannot name (a record key holding a dot, an empty key, or a
+prototype property's name, swamp-club#3038); the adapter reads each as one more
+tagged path, through own properties only, and ignores a malformed one whole
+(`readSensitiveFieldPlaces()`). Every expression-facing accessor uses the
+adapter:
 
 - `data.latest` and `data.version`, in own-namespace, wildcard and
   cross-namespace forms: a record of the reader's own namespace is adapted

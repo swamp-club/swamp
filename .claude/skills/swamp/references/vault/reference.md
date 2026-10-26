@@ -444,6 +444,11 @@ The actual value is stored in the vault.
 - `vaultName` on the spec or field metadata — override which vault stores values
 - `vaultKey` on field metadata — override the auto-generated vault key
 
+Fields marked inside arrays, records and unions are stored too, one vault key
+per element. A declared `vaultKey` on such a field becomes a prefix
+(`my-key.users.0.password`), so match it in vault grants with
+`key.startsWith("my-key.")`.
+
 A vault must be configured or an error is thrown at write time.
 
 **Which vault:** the field's `vaultName`, else a data output override's, else
