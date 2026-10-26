@@ -1396,8 +1396,9 @@ export class SwampClubClient {
   /**
    * Mark inbox messages read, in batches the endpoint accepts. Returns the
    * requested ids swamp-club confirmed, in request order; ids that are unknown
-   * or not the caller's are left out. Marking read is idempotent, so a retry
-   * after a failed batch is safe.
+   * or not the caller's are left out. A throw may follow batches that were
+   * already applied; marking read is idempotent, so retrying the whole call
+   * is safe.
    */
   async markInboxRead(
     apiKey: string,

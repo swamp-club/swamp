@@ -275,7 +275,7 @@ Deno.test("listInboxMessages: sends status, limit and before, and nextCursor rou
     requests[1].url.searchParams.get("before"),
     fixture.messagesPage.nextCursor,
   );
-  assertEquals(second, { messages: [], nextCursor: null });
+  assertEquals(second, { messages: [], dropped: 0, nextCursor: null });
 });
 
 Deno.test("listInboxMessages: drops a malformed entry and keeps the rest", async () => {
@@ -288,6 +288,7 @@ Deno.test("listInboxMessages: drops a malformed entry and keeps the rest", async
   );
   const page = await client.listInboxMessages(KEY);
   assertEquals(page.messages.map((m) => m.id), [good[0].id, good[1].id]);
+  assertEquals(page.dropped, 1);
 });
 
 Deno.test("listInboxMessages: strips terminal escapes from a listed message", async () => {
@@ -488,6 +489,21 @@ Deno.test("markInboxRead: removes duplicates and sends batches of at most 100", 
   );
 });
 
+Deno.test("markInboxRead: a failed later batch throws after earlier batches were applied", async () => {
+  const ids = Array.from({ length: 150 }, (_, i) => `id-${i}`);
+  const { client, requests } = stubClient((req) =>
+    requests.length === 1
+      ? Response.json({ read: (req.body as { ids: string[] }).ids })
+      : Response.json({ error: "maintenance" }, { status: 503 })
+  );
+  await assertRejects(
+    () => client.markInboxRead(KEY, ids),
+    UserError,
+    "Failed to mark messages read (HTTP 503): maintenance",
+  );
+  assertEquals(requests.length, 2);
+});
+
 Deno.test("markInboxRead: 403 inbox_requires_user and 404 throw plain messages", async () => {
   const forbidden = stubClient(() =>
     Response.json(fixture.inboxRequiresUser, { status: 403 })
@@ -513,4 +529,134 @@ Deno.test("markInboxRead: a malformed answer throws", async () => {
   );
   assertStringIncludes(err.message, "malformed");
   assert(!err.message.includes("ok"));
+});
+
+// ---------------------------------------------------------------------------
+// Against a real server: Deno's own fetch, not a stub
+// ---------------------------------------------------------------------------
+
+function startMockServer(
+  handler: (req: Request) => Response | Promise<Response>,
+): { url: string; shutdown: () => Promise<void> } {
+  const ac = new AbortController();
+  const server = Deno.serve(
+    { port: 0, signal: ac.signal, onListen() {} },
+    handler,
+  );
+  return {
+    url: `http://localhost:${(server.addr as Deno.NetAddr).port}`,
+    async shutdown() {
+      ac.abort();
+      await server.finished;
+    },
+  };
+}
+
+/**
+ * A client on Deno's real fetch that aborts `controller` once the response
+ * headers arrive, so the abort always lands while the body is being read.
+ */
+function abortAfterHeaders(
+  url: string,
+  controller: AbortController,
+): SwampClubClient {
+  return new SwampClubClient(url, {}, {
+    fetch: async (input, init) => {
+      const res = await globalThis.fetch(input, init);
+      controller.abort();
+      return res;
+    },
+  });
+}
+
+Deno.test("inboxSummary (real server): ETag, If-None-Match and 304 round-trip", async () => {
+  const mock = startMockServer((req) =>
+    req.headers.get("if-none-match") === '"v1"'
+      ? new Response(null, { status: 304 })
+      : Response.json(fixture.summary, { headers: { etag: '"v1"' } })
+  );
+  try {
+    const client = new SwampClubClient(mock.url);
+    const first = await client.inboxSummary(KEY, null, signal());
+    assertEquals(first, { kind: "ok", summary: fixture.summary, etag: '"v1"' });
+    const second = await client.inboxSummary(KEY, '"v1"', signal());
+    assertEquals(second, { kind: "not_modified" });
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("inboxSummary (real server): a stalled body aborted by the signal returns failed", async () => {
+  const mock = startMockServer(() =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('{"unread":'));
+        },
+        cancel() {},
+      }),
+      { status: 200 },
+    )
+  );
+  try {
+    const controller = new AbortController();
+    const client = abortAfterHeaders(mock.url, controller);
+    // The body never finishes; the caller's signal is the only way out.
+    assertEquals(
+      await client.inboxSummary(KEY, null, controller.signal),
+      { kind: "failed", reason: "timeout" },
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("inboxSummary (real server): a refused connection returns failed", async () => {
+  const mock = startMockServer(() => new Response(null));
+  const url = mock.url;
+  await mock.shutdown();
+  const client = new SwampClubClient(url);
+  assertEquals(await client.inboxSummary(KEY, null, signal()), {
+    kind: "failed",
+    reason: "connection failed",
+  });
+});
+
+Deno.test("listInboxMessages (real server): a stalled body cut off by the caller rethrows the abort", async () => {
+  const mock = startMockServer(() =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('{"messages":['));
+        },
+      }),
+      { status: 200 },
+    )
+  );
+  try {
+    const controller = new AbortController();
+    const client = abortAfterHeaders(mock.url, controller);
+    const err = await assertRejects(() =>
+      client.listInboxMessages(KEY, {}, controller.signal)
+    );
+    assert(err instanceof DOMException && err.name === "AbortError");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("markInboxRead (real server): sends the JSON body and the API key", async () => {
+  let seen: { key: string | null; body: unknown } | undefined;
+  const mock = startMockServer(async (req) => {
+    seen = { key: req.headers.get("x-api-key"), body: await req.json() };
+    return Response.json(fixture.markRead);
+  });
+  try {
+    const client = new SwampClubClient(mock.url);
+    const ids = fixture.markRead.read as string[];
+    assertEquals(await client.markInboxRead(KEY, ids), ids);
+    assertEquals(seen, { key: KEY, body: { ids } });
+  } finally {
+    await mock.shutdown();
+  }
 });

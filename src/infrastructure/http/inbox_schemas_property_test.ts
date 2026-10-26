@@ -76,10 +76,56 @@ Deno.test("parseInboxMessage: one-line fields never hold a control character", (
         if (parsed.action) {
           assert(!ANY_CONTROL_RE.test(parsed.action.label));
           assert(!ANY_CONTROL_RE.test(parsed.action.command));
-          assert(parsed.action.command.startsWith("swamp "));
+          assert(
+            /^swamp( [A-Za-z0-9@%+,./:=_-]+)+$/.test(parsed.action.command),
+          );
         }
       },
     ),
+  );
+});
+
+/** Words mixing plain characters with shell syntax. */
+const arbShellishCommand = fc.array(
+  fc.oneof(
+    fc.stringMatching(/^[a-z0-9-]{1,8}$/),
+    fc.constantFrom(
+      ";",
+      "|",
+      "&&",
+      "&",
+      "$(",
+      ")",
+      "`",
+      ">",
+      "<",
+      "'",
+      '"',
+      "*",
+      "~",
+      "\\",
+    ),
+  ),
+  { minLength: 1, maxLength: 8 },
+).map((parts) => `swamp ${parts.join(" ")}`);
+
+Deno.test("parseInboxMessage: a kept command never holds a shell metacharacter", () => {
+  fc.assert(
+    fc.property(arbShellishCommand, (command) => {
+      const parsed = parseInboxMessage({
+        id: "01JBX5Q8ZK00000000000000Z8",
+        kind: "announcement",
+        title: "t",
+        body: "",
+        createdAt: "2026-10-26T09:00:00.000Z",
+        action: { label: "Run", command },
+        readAt: null,
+      });
+      assert(parsed);
+      if (parsed.action) {
+        assert(!/[;|&$`<>'"*~\\()]/.test(parsed.action.command), command);
+      }
+    }),
   );
 });
 

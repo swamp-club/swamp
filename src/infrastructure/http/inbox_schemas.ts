@@ -72,6 +72,11 @@ export interface InboxMessage {
 /** One page of `/api/inbox/messages`, newest first. */
 export interface InboxMessagePage {
   readonly messages: InboxMessage[];
+  /**
+   * How many entries on the page broke the contract and were left out, so a
+   * server that drifts from it shows up instead of losing messages silently.
+   */
+  readonly dropped: number;
   /** Pass as `before` to fetch the next page; null on the last page. */
   readonly nextCursor: string | null;
 }
@@ -155,7 +160,15 @@ function parseLink(raw: unknown): string | undefined {
 }
 
 /**
- * The action when it is well formed and suggests a `swamp` command short
+ * A `swamp` command a user can copy safely: `swamp` and words of plain
+ * characters. Quotes, `;`, `|`, `&`, `$`, backticks, redirects, globs and
+ * `~` are all refused, so the text can never chain or substitute a second
+ * command after `swamp`.
+ */
+const SAFE_SWAMP_COMMAND_RE = /^swamp( [A-Za-z0-9@%+,./:=_-]+)+$/;
+
+/**
+ * The action when it is well formed and suggests a safe `swamp` command short
  * enough to print whole: a truncated command would not run.
  */
 function parseAction(raw: unknown): InboxAction | undefined {
@@ -169,7 +182,7 @@ function parseAction(raw: unknown): InboxAction | undefined {
   if (
     cleanLabel === "" ||
     cleanCommand.length > MAX_INBOX_ACTION_COMMAND_LENGTH ||
-    !cleanCommand.startsWith("swamp ")
+    !SAFE_SWAMP_COMMAND_RE.test(cleanCommand)
   ) {
     return undefined;
   }
@@ -245,8 +258,10 @@ export function parseInboxMessagePage(
 ): InboxMessagePage | undefined {
   const parsed = pageSchema.safeParse(raw);
   if (!parsed.success) return undefined;
+  const messages = parseInboxMessages(parsed.data.messages);
   return {
-    messages: parseInboxMessages(parsed.data.messages),
+    messages,
+    dropped: parsed.data.messages.length - messages.length,
     nextCursor: parsed.data.nextCursor,
   };
 }

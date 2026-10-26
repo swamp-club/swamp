@@ -62,14 +62,20 @@ translate it into swamp's own values, so nothing past them sees raw server text:
 - **Terminal escapes are stripped.** `kind`, `title` and `action` are reduced to
   one line with no ANSI escape sequences or control characters. `body` keeps
   newlines and tabs and loses every other control character.
-- **An action is always a `swamp` command.** An action whose command does not
-  start with `swamp`, or is longer than 200 characters, is dropped; the message
-  is kept. A command is never shortened, because a shortened command would not
-  run.
+- **An action is always a single, plain `swamp` command.** The command must be
+  `swamp` followed by words made of letters, digits and the characters `@`, `%`,
+  `+`, `,`, `.`, `/`, `:`, `=`, `_` and `-`, such as `swamp update` or
+  `swamp extension pull @swamp/aws-ec2`. Quotes, `;`, `|`, `&`, `$`, backticks,
+  redirects, globs and `~` are refused, so the text can never chain or
+  substitute a second command after `swamp`. A command that breaks this, or is
+  longer than 200 characters, drops the action; the message is kept. A command
+  is never shortened, because a shortened command would not run.
 - **A link is always `https:`.** Any other link is dropped; the message is kept.
 - **Ids are ULIDs and dates are ISO 8601.** A message that breaks either, or
-  whose body is over 8 KiB, is dropped and the rest of the list is kept. An
-  over-long title is shortened.
+  whose body is over 8 KiB, is dropped and the rest of the list is kept. The
+  page reports how many it dropped, so a server that drifts from this contract
+  shows up rather than losing messages silently. An over-long title is
+  shortened.
 - **`pollAfterSeconds` is passed through as sent.** The poller enforces the
   900-second floor.
 
@@ -84,7 +90,8 @@ The list, get and mark-read calls are for commands the user runs, so they throw
 a `UserError` with a plain message. They name the server's `error` field when
 there is one and never echo a raw response body. `markInboxRead` removes
 duplicate ids, sends them in batches of 100, and returns only the requested ids
-the server confirmed.
+the server confirmed. If a later batch fails, the earlier ones have already been
+applied; marking read is idempotent, so retrying the whole call is safe.
 
 ## How the CLI uses it
 
