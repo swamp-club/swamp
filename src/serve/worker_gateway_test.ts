@@ -2318,29 +2318,37 @@ Deno.test("WorkerGateway: a dispatch whose worker drops while its busy status is
   await assertRejects(() => dispatch, ChannelClosedError, "before dispatch");
 });
 
+/** The worker methods that record an enrollment, first-connect or reconnect. */
+const RECORDING_METHODS = ["enroll", "set_status"];
+
 /**
- * A harness whose redeem waits while held, so a test can close the worker's
- * socket while its enrollment is being recorded (swamp-club#3405).
+ * A harness whose held methods wait while held — redeem unless a test names
+ * others — so a test can close the worker's socket while its token is being
+ * redeemed or its enrollment recorded (swamp-club#3405, swamp-club#3984).
  */
 function createHeldHarness(
   overrides?: Partial<WorkerGatewayOptions>,
 ): Harness & {
-  hold: () => void;
+  hold: (methods?: readonly string[]) => void;
   release: () => void;
   redeems: () => number;
+  reached: () => number;
   enrolled: WorkerSnapshot[];
 } {
   let gate: Promise<void> | null = null;
+  let held: readonly string[] = [];
   let open = () => {};
   let redeems = 0;
+  let reached = 0;
   const enrolled: WorkerSnapshot[] = [];
   const h: Harness = createHarness({
     onWorkerEnrolled: (w) => enrolled.push(w),
     ...overrides,
     runModelMethod: async (input) => {
-      if (input.methodName === "redeem") {
-        redeems++;
-        if (gate !== null) await gate;
+      if (input.methodName === "redeem") redeems++;
+      if (gate !== null && held.includes(input.methodName)) {
+        reached++;
+        await gate;
       }
       h.transitions.push(input);
     },
@@ -2348,7 +2356,8 @@ function createHeldHarness(
   return {
     ...h,
     enrolled,
-    hold: () => {
+    hold: (methods = ["redeem"]) => {
+      held = methods;
       gate = new Promise<void>((resolve) => {
         open = () => {
           gate = null;
@@ -2358,6 +2367,7 @@ function createHeldHarness(
     },
     release: () => open(),
     redeems: () => redeems,
+    reached: () => reached,
   };
 }
 
@@ -2370,13 +2380,13 @@ async function enrollThenCloseMidway(
   params: Record<string, unknown> = enrollParams,
 ): Promise<void> {
   const disconnects = h.disconnected.length;
-  const redeems = h.redeems();
-  h.hold();
+  const reached = h.reached();
+  h.hold(RECORDING_METHODS);
   const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
   const reply = workerChannel.call(RemoteMethod.enroll, params, {
     timeoutMs: null,
   }).catch(() => {});
-  await waitFor(() => h.redeems() > redeems, "enrollment reached redeem");
+  await waitFor(() => h.reached() > reached, "enrollment being recorded");
   dropSocket();
   h.release();
   await waitFor(
@@ -2425,6 +2435,11 @@ Deno.test("WorkerGateway: a reconnect finishing after its socket closed re-arms 
   await enroll(first.workerChannel);
   first.dropSocket();
   assertEquals(h.gateway.pendingGraceWindows, 1);
+  // Recorded before the hold, so the hold catches the reconnect's status.
+  await waitFor(
+    () => h.transitions.at(-1)?.inputs.status === "disconnected",
+    "disconnect recorded",
+  );
 
   await enrollThenCloseMidway(h);
 
@@ -2480,4 +2495,95 @@ Deno.test("WorkerGateway: an enrollment whose socket closed while it was queued 
   await deadEnroll;
   live.dropSocket();
   await waitFor(() => h.gateway.worker("ci-runner-3") === null, "cleanup");
+});
+
+/**
+ * Starts an enrollment on a fresh socket and holds it at redeem, where the
+ * worker gives up on it: it closes the socket, or cancels the call and keeps
+ * the socket for a retry. Settles once the gateway has finished with it.
+ */
+async function enrollThenAbandonAtRedeem(
+  h: ReturnType<typeof createHeldHarness>,
+  how: "close" | "cancel",
+): Promise<{ workerChannel: RpcChannel; dropSocket: () => void }> {
+  const redeems = h.redeems();
+  h.hold();
+  const socket = connectWorkerSocket(h.gateway);
+  const controller = new AbortController();
+  const reply = socket.workerChannel.call(RemoteMethod.enroll, enrollParams, {
+    timeoutMs: null,
+    signal: controller.signal,
+  }).catch(() => {});
+  await waitFor(() => h.redeems() > redeems, "enrollment reached redeem");
+  if (how === "close") socket.dropSocket();
+  else controller.abort();
+  h.release();
+  // Runs on the transition tail, so the abandoned enrollment has finished.
+  await h.gateway.revokeToken("no-such-token", "revoked");
+  // A closed socket never answers the call; the worker gives up on it.
+  if (how === "close") socket.workerChannel.close("test done");
+  await reply;
+  return socket;
+}
+
+function recorded(h: Harness): string[] {
+  return h.transitions
+    .filter((t) => t.typeArg === WORKER_MODEL_TYPE.normalized)
+    .map((t) => t.methodName);
+}
+
+Deno.test("WorkerGateway: an enrollment whose socket closed while its token was redeemed records no worker (swamp-club#3984)", async () => {
+  const h = createHeldHarness({ graceWindowMs: 200 });
+  await enrollThenAbandonAtRedeem(h, "close");
+
+  assertEquals(h.redeems(), 1);
+  assertEquals(recorded(h), []);
+  assertEquals(h.gateway.worker("ci-runner-3"), null);
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.disconnected.length, 0);
+  assertEquals(h.enrolled.length, 0);
+});
+
+Deno.test("WorkerGateway: an enroll call cancelled while its token was redeemed records no worker, and its retry enrolls (swamp-club#3984)", async () => {
+  const h = createHeldHarness({ graceWindowMs: 200 });
+  const { workerChannel, dropSocket } = await enrollThenAbandonAtRedeem(
+    h,
+    "cancel",
+  );
+
+  assertEquals(recorded(h), []);
+  assertEquals(h.gateway.worker("ci-runner-3"), null);
+
+  // The worker retries on the same socket and machine: redeem runs again,
+  // re-authenticating the machine the first attempt bound.
+  await enroll(workerChannel);
+  assertEquals(h.redeems(), 2);
+  assertEquals(recorded(h), ["enroll"]);
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
+  dropSocket();
+  await waitFor(() => h.gateway.worker("ci-runner-3") === null, "cleanup");
+});
+
+Deno.test("WorkerGateway: a reconnect abandoned while its token was redeemed leaves the prior grace window running (swamp-club#3984)", async () => {
+  const h = createHeldHarness({ graceWindowMs: 200 });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  first.dropSocket();
+  await waitFor(
+    () => h.transitions.at(-1)?.inputs.status === "disconnected",
+    "disconnect recorded",
+  );
+  assertEquals(h.gateway.pendingGraceWindows, 1);
+  const before = recorded(h);
+
+  await enrollThenAbandonAtRedeem(h, "close");
+
+  assertEquals(recorded(h), before);
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, false);
+  assertEquals(h.gateway.pendingGraceWindows, 1);
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3") === null,
+    "grace expiry removes the worker",
+  );
+  assertEquals(h.graceExpired.length, 1);
 });

@@ -65,6 +65,7 @@ import {
   swampPath,
 } from "./paths.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
+import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
 import {
   unreadableRecordsUnder,
   warnUnreadableLeftOut,
@@ -139,6 +140,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly nameToActualPath = new Map<
     string,
     { path: string; primary: boolean }
+  >();
+  /**
+   * One name index per auto-definitions type directory a lookup by name has
+   * missed in, so a later miss reads only what changed there. Like the hints
+   * above it keeps paths and names only; a cache-reset hook must clear it.
+   */
+  private readonly autoDefinitionNameIndexes = new Map<
+    string,
+    AutoDefinitionNameIndex
   >();
   private readonly globalNameToActualPath = new Map<
     string,
@@ -404,11 +414,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           return named;
         }
       }
-      const secondaryDir = join(this.secondaryBaseDir, type.toDirectoryPath());
-      const secondaryDefs = await this.findAllInDir(secondaryDir);
-      const secondaryMatch = secondaryDefs.find((d) =>
-        d.definition.name === name
-      );
+      // Only a file at another path is left: the name index answers without
+      // reading every file of the type each time (swamp-club#3984).
+      const secondaryMatch = await this.autoDefinitionNameIndex(
+        type,
+        this.secondaryBaseDir,
+      ).find(name);
       if (secondaryMatch) {
         this.idToActualPath.set(
           secondaryMatch.definition.id as DefinitionId,
@@ -427,6 +438,24 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
     return null;
+  }
+
+  private autoDefinitionNameIndex(
+    type: ModelType,
+    secondaryBaseDir: string,
+  ): AutoDefinitionNameIndex {
+    const dir = this.getTypeDir(type, secondaryBaseDir);
+    let index = this.autoDefinitionNameIndexes.get(dir);
+    if (!index) {
+      index = new AutoDefinitionNameIndex(
+        dir,
+        type,
+        (path, typeSegments, isSymlink) =>
+          this.readDefinitionFile(path, typeSegments, isSymlink),
+      );
+      this.autoDefinitionNameIndexes.set(dir, index);
+    }
+    return index;
   }
 
   /**
@@ -517,49 +546,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     } catch {
       return null;
     }
-  }
-
-  private async findAllInDir(
-    dir: string,
-  ): Promise<{ definition: Definition; path: string }[]> {
-    const definitions: { definition: Definition; path: string }[] = [];
-    try {
-      for (const entry of await readDirSorted(dir)) {
-        if (
-          (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
-        ) {
-          const path = join(dir, entry.name);
-          try {
-            if (entry.isSymlink) {
-              await assertSafePath(path, this.repoDir);
-            }
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as DefinitionData | null;
-            if (!data) continue;
-            definitions.push({ definition: Definition.fromData(data), path });
-          } catch (error) {
-            if (isIoError(error)) {
-              throw markErrorPaths(
-                new UserError(
-                  `Failed to read definition file ${path}: ${
-                    error instanceof Error ? error.message : error
-                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
-                ),
-                [path, ...errorPaths(error)],
-              );
-            }
-            const msg = error instanceof Error ? error.message : String(error);
-            logger.warn`Skipping broken definition file ${path}: ${msg}`;
-          }
-        }
-      }
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
-      }
-      throw error;
-    }
-    return definitions;
   }
 
   async findByNameGlobal(

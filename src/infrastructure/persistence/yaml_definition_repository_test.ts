@@ -1493,6 +1493,76 @@ Deno.test("YamlDefinitionRepository.findByName hints definitions in the secondar
   });
 });
 
+/** Writes a definition under its name-derived filename, as save() does. */
+async function writeNameDerivedFile(
+  baseDir: string,
+  definition: Definition,
+): Promise<string> {
+  const typeDir = join(baseDir, testType.toDirectoryPath());
+  await ensureDir(typeDir);
+  const path = join(typeDir, `${definition.name}.yaml`);
+  const data = definition.toData();
+  data.type = testType.normalized;
+  await Deno.writeTextFile(path, toCleanYaml(data));
+  return path;
+}
+
+Deno.test("YamlDefinitionRepository.findByName misses a new auto-definition name without reading every auto-definition again (swamp-club#3984)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const auto = join(dir, ".swamp", "auto-definitions");
+    for (let i = 0; i < 20; i++) {
+      await writeNameDerivedFile(auto, createTestDefinition(`worker-${i}`));
+    }
+
+    const [first, firstReads] = await countingReads(() =>
+      repo.findByName(testType, "new-worker")
+    );
+    assertEquals(first, null);
+    assertEquals(firstReads >= 20, true);
+
+    // The re-check an auto-creating run makes under its lock, and the next
+    // new name: neither reads the stored definitions again.
+    const [again, againReads] = await countingReads(() =>
+      repo.findByName(testType, "new-worker")
+    );
+    assertEquals(again, null);
+    assertEquals(againReads < 20, true);
+
+    await writeNameDerivedFile(auto, createTestDefinition("new-worker"));
+    const [next, nextReads] = await countingReads(() =>
+      repo.findByName(testType, "next-worker")
+    );
+    assertEquals(next, null);
+    assertEquals(nextReads < 20, true);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName finds a legacy or mismatched auto-definition stored after a miss (swamp-club#3984)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const auto = join(dir, ".swamp", "auto-definitions");
+    await writeNameDerivedFile(auto, createTestDefinition("noise"));
+    assertEquals(await repo.findByName(testType, "late-legacy"), null);
+    assertEquals(await repo.findByName(testType, "late-mismatched"), null);
+
+    const legacy = createTestDefinition("late-legacy");
+    await writeLegacyNamedFile(auto, legacy);
+    const mismatched = createTestDefinition("late-mismatched");
+    const path = await writeNameDerivedFile(auto, mismatched);
+    await Deno.rename(path, join(dirname(path), "elsewhere.yaml"));
+
+    assertEquals(
+      (await repo.findByName(testType, "late-legacy"))?.id,
+      legacy.id,
+    );
+    assertEquals(
+      (await repo.findByName(testType, "late-mismatched"))?.id,
+      mismatched.id,
+    );
+  });
+});
+
 Deno.test("YamlDefinitionRepository.findByNameGlobal reuses a hint across calls", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
