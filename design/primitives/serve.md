@@ -1641,8 +1641,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   checked once per request in a `swamp.serve.definition_index.validate` span.
   Its `definition_index.*` attributes count the definitions indexed, the
   directories checked and listed again, and the files read. A `cancel` stops
-  the read between resources, and also while the index is checked, and gets
-  its `cancelled` reply at once (swamp-club#3968). The step outputs span
+  the read before its next resource, definition directory or owner file, and
+  stops waiting on a listing another request shares at once; it gets its
+  `cancelled` reply as soon as the one read already in progress ends
+  (swamp-club#3968). The step outputs span
   counts `step_outputs.resources_read`, `step_outputs.resources_denied` and
   `step_outputs.child_runs_read`.
 

@@ -27,6 +27,7 @@ import {
 } from "./definition_id_index.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { statRecord } from "./workflow_run_index.ts";
+import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -429,6 +430,64 @@ Deno.test("DefinitionIdIndex: a directory listed while its stat was too recent i
     await writeDefinition(join(typeDir, "b.yaml"), second, "b");
     now += 60_000;
     assertEquals((await owners(index, second)).map((o) => o.name), ["b"]);
+  });
+});
+
+Deno.test("DefinitionIdIndex: a symlink that loops is skipped as a scan skips it, and every other definition is still found", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, repo, index } = fixture(dir);
+    const typeDir = join(primary, "test", "a");
+    const id = crypto.randomUUID();
+    await writeDefinition(join(typeDir, "good.yaml"), id, "good");
+    const loop = join(typeDir, "loop.yaml");
+    await Deno.symlink(loop, loop, { type: "file" });
+    await bump(typeDir);
+
+    assertEquals((await owners(index, id)).map((o) => o.name), ["good"]);
+    assertEquals(
+      (await repo.findAllIncludingAutoGlobal()).map((f) => f.definition.name),
+      ["good"],
+    );
+    // Still checked on each request, without failing it.
+    assertEquals((await owners(index, id)).map((o) => o.name), ["good"]);
+  });
+});
+
+Deno.test("DefinitionIdIndex: an owner swapped for a symlink out of the repository since its listing is not read through it", async () => {
+  await withTempDir(async (dir) => {
+    await withTempDir(async (outside) => {
+      const { primary, index } = fixture(dir);
+      const path = join(primary, "test", "a", "owner.yaml");
+      const id = crypto.randomUUID();
+      await writeDefinition(path, id, "owner");
+      const view = await index.begin();
+
+      const elsewhere = join(outside, "owner.yaml");
+      await Deno.writeTextFile(elsewhere, yamlOf(id, "elsewhere"));
+      await Deno.remove(path);
+      await Deno.symlink(elsewhere, path, { type: "file" });
+
+      assertEquals(await view.findAllById(id as DefinitionId), []);
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex: traces how many files a check read", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    for (let i = 0; i < 40; i++) {
+      await writeDefinition(
+        join(primary, "test", "a", `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    await withCapturedSpans(async (spans) => {
+      await index.begin();
+      const validate = findSpan(spans, "swamp.serve.definition_index.validate");
+      assertEquals(validate.attributes["definition_index.files_parsed"], 40);
+      assertEquals(validate.attributes["definition_index.definitions"], 40);
+    });
   });
 });
 

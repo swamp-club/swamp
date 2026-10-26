@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { basename, dirname, join } from "@std/path";
 import type { UnreadableContentLookup } from "../../domain/datastore/datastore_sync_service.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
@@ -29,6 +30,7 @@ import { withSpan } from "../tracing/mod.ts";
 import { RUN_INDEX_RACY_WINDOW_MS } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
 import { Semaphore } from "../stream/semaphore.ts";
+import { isIoError } from "./io_errors.ts";
 import { comparePathsBySegment, readDirSorted } from "./sorted_dir_entries.ts";
 import { warnUnreadableLeftOut } from "./unreadable_records.ts";
 import {
@@ -37,8 +39,7 @@ import {
   statRecord,
 } from "./workflow_run_index.ts";
 
-/** How many files of one directory a listing stat's or reads at once. */
-const FILE_CONCURRENCY = 64;
+const logger = getLogger(["definition-repo"]);
 
 /**
  * How many files an index's listings stat or read at once, together: right
@@ -46,6 +47,9 @@ const FILE_CONCURRENCY = 64;
  * must not open a descriptor per file each.
  */
 const MAX_OPEN_FILES = 32;
+
+/** A file whose stat failed for a reason other than being gone or I/O. */
+const BROKEN = Symbol("broken");
 
 type FoundDefinition = { definition: Definition; type: ModelType };
 
@@ -321,13 +325,16 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     await inBatches(yamlFiles, signal, async (entry) => {
       await this.#openFiles.acquire(signal);
       try {
-        parsed += await this.#listFile(
+        // Read before adding: `parsed += await` would add to the value
+        // read before the await, losing the other files' counts.
+        const read = await this.#listFile(
           path,
           entry,
           segments,
           previous,
           files,
         );
+        parsed += read;
       } finally {
         this.#openFiles.release();
       }
@@ -347,7 +354,16 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   ): Promise<number> {
     const filePath = join(path, entry.name);
     const statAt = this.#now();
-    const fingerprint = this.#settled(await this.#stat(filePath), statAt);
+    const stat = await this.#statFile(filePath, true);
+    if (stat === BROKEN) {
+      files.set(entry.name, {
+        id: undefined,
+        fingerprint: undefined,
+        isSymlink: entry.isSymlink,
+      });
+      return 0;
+    }
+    const fingerprint = this.#settled(stat, statAt);
     if (fingerprint === null) {
       // A symlink whose target is missing stays listed, so its target is
       // stat'ed on each check and read once it appears: the link's own
@@ -402,7 +418,9 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       signal?.throwIfAborted();
       const filePath = join(path, name);
       const statAt = this.#now();
-      const fingerprint = this.#settled(await this.#stat(filePath), statAt);
+      const stat = await this.#statFile(filePath, false);
+      if (stat === BROKEN) continue;
+      const fingerprint = this.#settled(stat, statAt);
       if (fingerprint === null) continue;
       if (this.#trusted(file.fingerprint, fingerprint)) continue;
       const found = await this.#source.readDefinitionFile(
@@ -432,16 +450,19 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     for (const { path, dir } of paths) {
       signal?.throwIfAborted();
       const file = dir?.files.get(basename(path));
+      // Whether it is a symlink now, not when listed: a file swapped for a
+      // symlink since must still have its target contained in the repo.
+      const isSymlink = dir && file ? await liveSymlink(path) : null;
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
-      if (!dir || !file || (await this.#stat(path)) === null) {
+      if (!dir || !file || isSymlink === null) {
         this.#unindex(id, path);
         continue;
       }
       const read = await this.#source.readDefinitionFile(
         path,
         [...dir.segments],
-        file.isSymlink,
+        isSymlink,
       );
       if (read?.definition.id === id) {
         found.push(read);
@@ -455,6 +476,29 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       this.#reassign(path, file, read?.definition.id);
     }
     return found;
+  }
+
+  /**
+   * Stats a definition file as a scan reads one: an I/O error (EACCES,
+   * EMFILE, …) is raised, and any other failure — a symlink loop, a path
+   * through a regular file — makes it {@link BROKEN}: it owns nothing and
+   * is stat'ed again on each check, as a scan skips it with a warning.
+   * `warn` logs that warning, once per listing rather than per check.
+   */
+  async #statFile(
+    path: string,
+    warn: boolean,
+  ): Promise<RecordFingerprint | undefined | null | typeof BROKEN> {
+    try {
+      return await this.#stat(path);
+    } catch (error) {
+      if (isIoError(error)) throw error;
+      if (warn) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.warn`Skipping broken definition file ${path}: ${msg}`;
+      }
+      return BROKEN;
+    }
   }
 
   /**
@@ -558,14 +602,35 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   }
 }
 
-/** Runs `each` over `items`, {@link FILE_CONCURRENCY} at a time. */
+/**
+ * Runs `each` over `items`, {@link MAX_OPEN_FILES} at a time, so a listing
+ * that fails stops starting reads at the next batch.
+ */
 async function inBatches<T>(
   items: readonly T[],
   signal: AbortSignal,
   each: (item: T) => Promise<void>,
 ): Promise<void> {
-  for (let i = 0; i < items.length; i += FILE_CONCURRENCY) {
+  for (let i = 0; i < items.length; i += MAX_OPEN_FILES) {
     signal.throwIfAborted();
-    await Promise.all(items.slice(i, i + FILE_CONCURRENCY).map(each));
+    await Promise.all(items.slice(i, i + MAX_OPEN_FILES).map(each));
+  }
+}
+
+/**
+ * Whether `path` is a symlink now; null when it is gone, or a directory on
+ * its path is no longer one.
+ */
+async function liveSymlink(path: string): Promise<boolean | null> {
+  try {
+    return (await Deno.lstat(path)).isSymlink;
+  } catch (error) {
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.NotADirectory
+    ) {
+      return null;
+    }
+    throw error;
   }
 }
