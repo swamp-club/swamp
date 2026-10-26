@@ -193,7 +193,7 @@ function useTriggerSearch(
   // On a preset range, read again once the oldest match leaves the window
   // (swamp-club#3450). An older serve reports no window: nothing is armed.
   const searchWindow = extractSearchWindow(current.data);
-  useRefetchOnAgeOut(current.refetch, {
+  useRefetchOnAgeOut(current.refresh, {
     answer: current.data,
     delayMs: isRelativeBound(requestBounds.since)
       ? ageOutDelayMs(searchWindow.since, searchWindow.oldestStartedAt)

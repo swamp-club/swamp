@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "./SwampProvider.tsx";
-import { createRequestRunner } from "./request_runner.ts";
+import { type ApplyReply, createRequestRunner } from "./request_runner.ts";
 import { type RequestErrorInfo, requestErrorInfo } from "./stream.ts";
 
 interface UseRequestResult<T> {
@@ -34,6 +34,13 @@ interface UseRequestResult<T> {
    * one when none is. Resolves once it has answered; never rejects.
    */
   reload: () => Promise<void>;
+  /**
+   * Re-reads after something changed (run activity, the tab coming into
+   * view, a run leaving the window): waits for the read still in flight,
+   * so its answer is shown, then reads once more. Never discards a reply
+   * on a slow serve (swamp-club#3960).
+   */
+  refresh: () => void;
 }
 
 interface UseRequestOptions {
@@ -42,6 +49,48 @@ interface UseRequestOptions {
    * error and not loading. Lets a view wait for a request it depends on.
    */
   enabled?: boolean;
+}
+
+/** How a run reaches the runner: supersede, join, or join and read again. */
+type RunMode = "send" | "join" | "refresh";
+
+/** The hook state a read writes. */
+export interface ReadState<T> {
+  setData(value: T): void;
+  setLoading(value: boolean): void;
+  setError(value: string | null): void;
+  setErrorInfo(value: RequestErrorInfo | null): void;
+}
+
+/**
+ * The runner's start and apply for one read. A read clears the last error
+ * and shows loading when it goes out, not when it is asked for, so the read
+ * a refresh sends after the one in flight settles clears that one's
+ * failure too (swamp-club#3960).
+ */
+export function readHandlers<T>(
+  request: () => Promise<T>,
+  state: ReadState<T>,
+): { start: () => Promise<T>; apply: ApplyReply<T> } {
+  return {
+    start: () => {
+      state.setLoading(true);
+      state.setError(null);
+      state.setErrorInfo(null);
+      return request();
+    },
+    apply: {
+      result: (result: T) => {
+        state.setData(result);
+        state.setLoading(false);
+      },
+      error: (err: unknown) => {
+        state.setError(err instanceof Error ? err.message : String(err));
+        state.setErrorInfo(requestErrorInfo(err));
+        state.setLoading(false);
+      },
+    },
+  };
 }
 
 export function useRequest<T = Record<string, unknown>>(
@@ -61,7 +110,7 @@ export function useRequest<T = Record<string, unknown>>(
   const payloadKey = payload ? JSON.stringify(payload) : "";
   const requestKey = `${type}\u0000${payloadKey}`;
 
-  const run = useCallback((join: boolean): Promise<void> => {
+  const run = useCallback((mode: RunMode): Promise<void> => {
     const runner = runnerRef.current;
     if (!enabled) {
       runner.invalidate();
@@ -84,28 +133,29 @@ export function useRequest<T = Record<string, unknown>>(
       setLoading(true);
     }
     if (!connected) return Promise.resolve();
-    setLoading(true);
-    setError(null);
-    setErrorInfo(null);
-    const start = () => request<T>(type, payload);
-    const apply = {
-      result: (result: T) => {
-        setData(result);
-        setLoading(false);
-      },
-      error: (err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-        setErrorInfo(requestErrorInfo(err));
-        setLoading(false);
-      },
-    };
-    return join ? runner.join(start, apply) : runner.send(start, apply);
+    const { start, apply } = readHandlers(() => request<T>(type, payload), {
+      setData,
+      setLoading,
+      setError,
+      setErrorInfo,
+    });
+    switch (mode) {
+      case "send":
+        return runner.send(start, apply);
+      case "join":
+        return runner.join(start, apply);
+      case "refresh":
+        return runner.refresh(start, apply);
+    }
   }, [connected, enabled, type, payloadKey, request]);
 
   const fetch = useCallback(() => {
-    run(false).catch(() => {});
+    run("send").catch(() => {});
   }, [run]);
-  const reload = useCallback(() => run(true), [run]);
+  const reload = useCallback(() => run("join"), [run]);
+  const refresh = useCallback(() => {
+    run("refresh").catch(() => {});
+  }, [run]);
 
   useEffect(() => {
     fetch();
@@ -116,5 +166,5 @@ export function useRequest<T = Record<string, unknown>>(
     return () => runner.invalidate();
   }, []);
 
-  return { data, loading, error, errorInfo, refetch: fetch, reload };
+  return { data, loading, error, errorInfo, refetch: fetch, reload, refresh };
 }

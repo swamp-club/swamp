@@ -28,7 +28,9 @@ export interface ApplyReply<T> {
 /**
  * Runs one hook's requests. Only the newest request applies its reply, and
  * each run reports when its request has settled, so a poller can wait for
- * the read it started instead of stacking another on a slow serve.
+ * the read it started instead of stacking another on a slow serve, and a
+ * re-read after a change can wait for it too instead of discarding its
+ * reply (swamp-club#3960).
  */
 export interface RequestRunner {
   /**
@@ -41,6 +43,14 @@ export interface RequestRunner {
    * that is already on its way answers as well as a new one would.
    */
   join<T>(start: () => Promise<T>, apply: ApplyReply<T>): Promise<void>;
+  /**
+   * Waits for the request in flight and then reads once more, or starts
+   * one when none is in flight. For a re-read after something changed: the
+   * read in flight still answers, and the change is not lost. Refreshes
+   * while a read is in flight cost one more read between them; a send or
+   * invalidate drops it. Resolves once the last read settles.
+   */
+  refresh<T>(start: () => Promise<T>, apply: ApplyReply<T>): Promise<void>;
   /** Retires the request in flight, e.g. when the payload changes. */
   invalidate(): void;
 }
@@ -48,11 +58,16 @@ export interface RequestRunner {
 export function createRequestRunner(): RequestRunner {
   const sequence = createRequestSequence();
   let pending: { ticket: number; settled: Promise<void> } | null = null;
+  // The read a refresh owes once the request in flight settles. Every
+  // request starts through `send`, which clears it, so it is only set
+  // while a read is in flight.
+  let queued: (() => Promise<void>) | null = null;
 
   const send = <T>(
     start: () => Promise<T>,
     apply: ApplyReply<T>,
   ): Promise<void> => {
+    queued = null;
     const ticket = sequence.next();
     let reply: Promise<T>;
     try {
@@ -76,12 +91,26 @@ export function createRequestRunner(): RequestRunner {
     return settled;
   };
 
+  // Sends the read a refresh owes, or waits for whichever read already
+  // took its place.
+  const drain = (): Promise<void> => {
+    const owed = queued;
+    if (owed) return owed();
+    return pending ? pending.settled : Promise.resolve();
+  };
+
   return {
     send,
     join: (start, apply) => pending ? pending.settled : send(start, apply),
+    refresh: (start, apply) => {
+      if (!pending) return send(start, apply);
+      queued = () => send(start, apply);
+      return pending.settled.then(drain);
+    },
     invalidate: () => {
       sequence.invalidate();
       pending = null;
+      queued = null;
     },
   };
 }

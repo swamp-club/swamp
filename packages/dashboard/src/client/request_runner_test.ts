@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStrictEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { type ApplyReply, createRequestRunner } from "./request_runner.ts";
 
 /** A request the test answers itself, counting how often it was sent. */
@@ -31,6 +32,17 @@ function controlledRequest() {
       return reply.promise;
     },
   };
+}
+
+/**
+ * Waits until `count` requests have been sent: a refresh's read starts once
+ * the read before it settles.
+ */
+function waitForReplies(
+  req: ReturnType<typeof controlledRequest>,
+  count: number,
+): Promise<void> {
+  return waitFor(() => req.replies.length >= count, `request ${count}`);
 }
 
 /** Records what reached the hook's state. */
@@ -166,4 +178,130 @@ Deno.test("createRequestRunner: invalidate drops the request in flight", async (
   await Promise.all([first, second]);
   assertEquals(stale.applied, []);
   assertEquals(fresh.applied, ["fresh:v2"]);
+});
+
+Deno.test("createRequestRunner: refresh starts a request when none is in flight", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  const refreshed = runner.refresh(req.start, apply);
+  assertEquals(req.replies.length, 1);
+  req.replies[0].resolve("v1");
+  await refreshed;
+  assertEquals(apply.applied, ["v1"]);
+});
+
+Deno.test("createRequestRunner: refresh applies the reply in flight, then reads once more", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  const sent = runner.send(req.start, apply);
+  const refreshed = runner.refresh(req.start, apply);
+  assertEquals(req.replies.length, 1);
+  req.replies[0].resolve("v1");
+  await sent;
+  assertEquals(apply.applied, ["v1"]);
+  await waitForReplies(req, 2);
+  req.replies[1].resolve("v2");
+  await refreshed;
+  assertEquals(apply.applied, ["v1", "v2"]);
+});
+
+Deno.test("createRequestRunner: refreshes while a read is in flight cost one more read", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  runner.send(req.start, apply).catch(() => {});
+  const refreshes = [1, 2, 3].map(() => runner.refresh(req.start, apply));
+  req.replies[0].resolve("v1");
+  await waitForReplies(req, 2);
+  req.replies[1].resolve("v2");
+  await Promise.all(refreshes);
+  assertEquals(req.replies.length, 2);
+  assertEquals(apply.applied, ["v1", "v2"]);
+});
+
+Deno.test("createRequestRunner: a send drops the read a refresh owes", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  const first = runner.send(req.start, apply);
+  const refreshed = runner.refresh(req.start, apply);
+  const second = runner.send(req.start, apply);
+  req.replies[0].resolve("v1");
+  req.replies[1].resolve("v2");
+  await Promise.all([first, refreshed, second]);
+  assertEquals(req.replies.length, 2);
+  assertEquals(apply.applied, ["v2"]);
+});
+
+Deno.test("createRequestRunner: invalidate drops the read a refresh owes", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  const first = runner.send(req.start, apply);
+  const refreshed = runner.refresh(req.start, apply);
+  runner.invalidate();
+  req.replies[0].resolve("v1");
+  await Promise.all([first, refreshed]);
+  assertEquals(req.replies.length, 1);
+  assertEquals(apply.applied, []);
+});
+
+Deno.test("createRequestRunner: a failed read in flight still gets its refresh", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  runner.send(req.start, apply).catch(() => {});
+  const refreshed = runner.refresh(req.start, apply);
+  req.replies[0].reject(new Error("slow"));
+  await waitForReplies(req, 2);
+  req.replies[1].resolve("v2");
+  await refreshed;
+  assertEquals(apply.applied, ["error:slow", "v2"]);
+});
+
+Deno.test("createRequestRunner: the read a refresh owes is joinable and refreshable", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  runner.send(req.start, apply).catch(() => {});
+  const refreshed = runner.refresh(req.start, apply);
+  req.replies[0].resolve("v1");
+  await waitForReplies(req, 2);
+  const joined = runner.join(req.start, apply);
+  const again = runner.refresh(req.start, apply);
+  assertEquals(req.replies.length, 2);
+  req.replies[1].resolve("v2");
+  await Promise.all([refreshed, joined]);
+  await waitForReplies(req, 3);
+  req.replies[2].resolve("v3");
+  await again;
+  assertEquals(apply.applied, ["v1", "v2", "v3"]);
+});
+
+Deno.test("createRequestRunner: refreshes on every change of a slow read show each reply (swamp-club#3960)", async () => {
+  const runner = createRequestRunner();
+  const req = controlledRequest();
+  const apply = recorder();
+  let inFlight = 0;
+  let mostInFlight = 0;
+  const start = () => {
+    inFlight++;
+    mostInFlight = Math.max(mostInFlight, inFlight);
+    return req.start().finally(() => inFlight--);
+  };
+  const settled = [runner.send(start, apply)];
+  // Each run starting or stopping refreshes while the last read is still
+  // on its way; then that read answers.
+  for (let i = 1; i <= 3; i++) {
+    await waitForReplies(req, i);
+    settled.push(runner.refresh(start, apply));
+    req.replies[i - 1].resolve(`v${i}`);
+  }
+  await waitForReplies(req, 4);
+  req.replies[3].resolve("v4");
+  await Promise.all(settled);
+  assertEquals(apply.applied, ["v1", "v2", "v3", "v4"]);
+  assertEquals(mostInFlight, 1);
 });

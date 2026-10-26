@@ -112,7 +112,7 @@ export function useRunSummary(
   const delayMs = isRelativeBound(sentSince)
     ? ageOutDelayMs(summary?.since, summary?.oldestStartedAt)
     : null;
-  useRefetchOnRunActivity(result.refetch, options.enabled ?? true, {
+  useRefetchOnRunActivity(result.refresh, options.enabled ?? true, {
     answer: result.data,
     delayMs,
   });
