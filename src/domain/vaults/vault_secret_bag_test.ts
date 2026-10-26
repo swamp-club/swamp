@@ -24,7 +24,11 @@ import {
   planPowerShellPlacement,
   planShellPlacement,
 } from "./vault_secret_bag.ts";
-import { isIssuedEntry, SecretBagRegistry } from "./secret_bag_registry.ts";
+import {
+  isIssuedEntry,
+  isJsonValueEntry,
+  SecretBagRegistry,
+} from "./secret_bag_registry.ts";
 import { secretOccurrencesOf } from "./secret_occurrences.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 import { sentinelIdentityOf } from "../expressions/provenance_map.ts";
@@ -1427,4 +1431,124 @@ Deno.test("VaultSecretBag: a number or boolean written reference delivers its te
   // The entries keep their encodings for persistence and identity.
   assertEquals(bag.registry.issuedEntryOf(port)?.encoding, "number");
   assertEquals(bag.registry.issuedEntryOf(flag)?.encoding, "boolean");
+});
+
+Deno.test("VaultSecretBag: a JSON-value data reference delivers its number or boolean at a whole value, and its text for an object, a list and everywhere else (swamp-club#3967)", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const add = (key: string) =>
+    bag.addDataReference({ vaultName: "v", key }, `field ${key}`, true);
+  const port = add("port");
+  const on = add("on");
+  const env = add("env");
+  const hosts = add("hosts");
+  const plain = bag.addDataReference(REF, "field plain");
+  const view = bag.withLoaded(
+    new Map([
+      [port, "8080"],
+      [on, "true"],
+      [env, '{"API_KEY":"env-web"}'],
+      [hosts, '["a","b"]'],
+      [plain, "8080"],
+    ]),
+  );
+  assertEquals(
+    view.resolveDeep({
+      port,
+      on,
+      nested: { env, hosts: [hosts] },
+      plain,
+      text: `port=${port} env=${env}`,
+    }),
+    {
+      port: 8080,
+      on: true,
+      // An object or list stays its text: the redactor matches text.
+      nested: { env: '{"API_KEY":"env-web"}', hosts: ['["a","b"]'] },
+      // Not marked, so its text, as before.
+      plain: "8080",
+      text: 'port=8080 env={"API_KEY":"env-web"}',
+    },
+  );
+  // Text deliveries are unchanged.
+  assertEquals(view.resolveRaw(port), "8080");
+  assertEquals(
+    Object.values(view.resolveForShell(`echo ${env}`).env),
+    ['{"API_KEY":"env-web"}'],
+  );
+  assertEquals(view.rawValues.includes('{"API_KEY":"env-web"}'), true);
+  assertEquals(bag.registry.issuedEntryOf(port), {
+    sentinel: port,
+    reference: { vaultName: "v", key: "port" },
+    encoding: "raw",
+    dataOrigin: true,
+    location: "field port",
+    jsonValue: true,
+  });
+});
+
+Deno.test("VaultSecretBag: a JSON-value reference delivers its text when its vault value is not JSON, or not the canonical text of a number or boolean (swamp-club#3967)", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const add = (key: string) =>
+    bag.addDataReference({ vaultName: "v", key }, `field ${key}`, true);
+  const values: [string, string][] = [
+    ["eight thousand", "eight thousand"],
+    ["8080.0", "8080.0"],
+    ["1e3", "1e3"],
+    ['"text"', '"text"'],
+    ["null", "null"],
+  ];
+  const sentinels = values.map(([text]) => add(text));
+  const view = bag.withLoaded(
+    new Map(sentinels.map((sentinel, i) => [sentinel, values[i][0]])),
+  );
+  assertEquals(
+    view.resolveDeep(sentinels),
+    values.map(([, delivered]) => delivered),
+  );
+});
+
+Deno.test("VaultSecretBag: a JSON-value entry keeps its mark through shipping, rehoming and persistence shapes, and never shares a sentinel with the same text unmarked (swamp-club#3967)", () => {
+  const registry = new SecretBagRegistry();
+  const bag = new VaultSecretBag(registry);
+  const port = bag.addDataReference(REF, "field port", true);
+  const view = bag.withLoaded(new Map([[port, "8080"]]));
+  const shipped = view.toEntries();
+  assertEquals(shipped, [
+    { sentinel: port, value: "8080", dataOrigin: true, jsonValue: true },
+  ]);
+
+  // A worker rebuilds the bag and delivers the value.
+  const rebuilt = VaultSecretBag.fromEntries(shipped);
+  assertEquals(rebuilt.resolveDeep({ port }), { port: 8080 });
+  // The same text without the mark gets its own sentinel there.
+  const text = rebuilt.addDataSecret("8080", REF);
+  assertEquals(text === port, false);
+  assertEquals(rebuilt.resolveDeep({ text }), { text: "8080" });
+  assertEquals(rebuilt.addDataSecret("8080", REF, "raw", true), port);
+
+  // Rehoming keeps the mark on a reference-only entry.
+  const target = new VaultSecretBag(registry);
+  const rehomed = bag.rehomeSentinels(port, target) as string;
+  assertEquals(isJsonValueEntry(registry.entryOf(rehomed)!), true);
+  assertEquals(
+    target.withLoaded(new Map([[rehomed, "8080"]])).resolveDeep([rehomed]),
+    [8080],
+  );
+
+  // A written reference keeps it for a data-origin entry only.
+  const written = bag.addWrittenReference(REF, "raw", true, "run-1 port", true);
+  assertEquals(isJsonValueEntry(registry.entryOf(written)!), true);
+  const vault = bag.addWrittenReference(REF, "raw", false, "run-1 x", true);
+  assertEquals("jsonValue" in registry.issuedEntryOf(vault)!, false);
+});
+
+Deno.test("VaultSecretBag: a JSON-value entry written inside JSON text delivers its escaped text, never a parsed value (swamp-club#3967)", () => {
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const env = bag.addWrittenReference(REF, "json", true, "run-1 body", true);
+  const view = bag.withLoaded(new Map([[env, '{"A":"b"}']]));
+  assertEquals(view.resolveDeep({ env }), { env: '{\\"A\\":\\"b\\"}' });
+  // Shipped without the mark: the value is already the escaped text.
+  assertEquals(view.toEntries(), [
+    { sentinel: env, value: '{\\"A\\":\\"b\\"}', dataOrigin: true },
+  ]);
 });

@@ -39,6 +39,7 @@ import {
   parseSensitiveFieldsTag,
   parseStoredVaultReference,
   processSensitiveResourceData,
+  readSensitiveFieldJsonPlaces,
   readSensitiveFieldsTag,
   RECORD_KIND_TAG,
   recordSensitiveVaultRefsUnread,
@@ -4130,6 +4131,59 @@ Deno.test("readSensitiveFieldsTag: a tag the writer could not have produced thro
     );
     assertEquals(error.message.includes("apiKey"), false, String(raw));
   }
+});
+
+Deno.test("readSensitiveFieldJsonPlaces: the JSON places a path list lists, as segment lists", () => {
+  const tags = {
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify([
+      "spec.services.0.port",
+      "spec.services.0.image.token",
+    ]),
+    [SENSITIVE_FIELD_KEYS_TAG]: JSON.stringify([["env", "eu.west"]]),
+    [SENSITIVE_FIELD_JSON_TAG]: JSON.stringify([
+      ["spec", "services", 0, "port"],
+      ["env", "eu.west"],
+      // Listed by neither path tag, so ignored.
+      ["spec", "services", 1, "port"],
+    ]),
+  };
+  assertEquals(readSensitiveFieldJsonPlaces(tags), [
+    ["spec", "services", "0", "port"],
+    ["env", "eu.west"],
+  ]);
+});
+
+Deno.test("readSensitiveFieldJsonPlaces: nothing without a path list, or from a malformed JSON tag", () => {
+  const json = JSON.stringify([["port"]]);
+  assertEquals(readSensitiveFieldJsonPlaces({}), []);
+  assertEquals(
+    readSensitiveFieldJsonPlaces({ [SENSITIVE_FIELD_JSON_TAG]: json }),
+    [],
+  );
+  assertEquals(
+    readSensitiveFieldJsonPlaces({
+      [SENSITIVE_FIELDS_TAG]: SENSITIVE_FIELDS_ALL,
+      [SENSITIVE_FIELD_JSON_TAG]: json,
+    }),
+    [],
+  );
+  for (const malformed of ["not-json", '["port"]', "[[]]", '[["a", -1]]']) {
+    assertEquals(
+      readSensitiveFieldJsonPlaces({
+        [SENSITIVE_FIELDS_TAG]: JSON.stringify(["port"]),
+        [SENSITIVE_FIELD_JSON_TAG]: malformed,
+      }),
+      [],
+      malformed,
+    );
+  }
+  assertEquals(
+    readSensitiveFieldJsonPlaces({
+      [SENSITIVE_FIELDS_TAG]: JSON.stringify(["port"]),
+      [SENSITIVE_FIELD_JSON_TAG]: json,
+    }),
+    [["port"]],
+  );
 });
 
 Deno.test("readSensitiveFieldsTag: unlike parseSensitiveFieldsTag, a malformed tag is never read as absent", () => {

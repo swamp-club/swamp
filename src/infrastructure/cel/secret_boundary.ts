@@ -44,7 +44,10 @@ import {
   SECRET_DESTINATION_REFUSED,
   SecretRefusedError,
 } from "../../domain/expressions/errors.ts";
-import type { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
+import {
+  isJsonValueEntry,
+  type SecretBagRegistry,
+} from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import {
   recordBoundaryFailure,
@@ -226,6 +229,7 @@ export class SecretBoundary {
         dataOrigin: entry.dataOrigin,
         location: "location" in entry ? entry.location : undefined,
         sentinel,
+        ...(isJsonValueEntry(entry) ? { jsonValue: true as const } : {}),
       });
       last = match.index + sentinel.length;
     }
@@ -253,7 +257,11 @@ export class SecretBoundary {
         );
       }
       sentinel = part.dataOrigin
-        ? this.bag.addDataReference(part.reference, part.location)
+        ? this.bag.addDataReference(
+          part.reference,
+          part.location,
+          part.jsonValue === true,
+        )
         : this.bag.addSecret(part.reference, part.location);
       this.issued.set(part, sentinel);
     }

@@ -354,6 +354,9 @@ export const DispatchParamsSchema = z.object({
     sentinel: z.string().regex(SENTINEL_EXACT),
     value: z.string(),
     dataOrigin: z.boolean(),
+    // The value is JSON text a whole-value delivery parses; an older
+    // worker drops it and delivers the text.
+    jsonValue: z.literal(true).optional(),
   })).optional(),
   /**
    * The per-model locks held for this step's run: the orchestrator's pid

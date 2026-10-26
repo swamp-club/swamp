@@ -66,6 +66,7 @@ import {
   type EvaluationScope,
 } from "../src/infrastructure/cel/cel_evaluator.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { runFileSink } from "../src/infrastructure/logging/run_file_sink.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -150,6 +151,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     globalArguments: z.object({
       token: z.string().optional(),
       region: z.string().optional().meta({ secrets: "refuse" }),
+      port: z.number().optional(),
     }),
     resources: {
       creds: {
@@ -160,8 +162,47 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         lifetime: "infinite",
         garbageCollection: 10,
       },
+      // Sensitive values that are not strings, inside array elements: the
+      // places _swamp.sensitiveFieldJson lists (swamp-club#3967).
+      app: {
+        schema: z.object({
+          services: z.array(z.object({
+            port: z.number().meta({ sensitive: true }),
+            env: z.record(z.string(), z.string()).meta({ sensitive: true }),
+          })),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
     },
     methods: {
+      deploy: {
+        description: "records what it received, typed",
+        arguments: z.object({
+          port: z.number().optional(),
+          service: z.object({
+            port: z.number(),
+            // An object is delivered as its JSON text.
+            env: z.string(),
+          }).optional(),
+          label: z.string().optional(),
+          key: z.string().optional(),
+        }),
+        execute: (args, context) => {
+          received.push({
+            args: { ...(args as Record<string, unknown>) },
+            globalArgs: { ...context.globalArgs },
+            unresolved: context.unresolvedMethodArgs,
+          });
+          // As a method would log what it received (swamp-club#3967).
+          const service = (args as { service?: { env: unknown } }).service;
+          if (service) {
+            context.logger.info("env {e}", { e: service.env });
+            context.logger.info("deploying {s}", { s: { args } });
+          }
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
       [METHOD]: {
         description: "records what it received",
         arguments: z.object({
@@ -1501,4 +1542,120 @@ Deno.test({
       await assertNoPlaintextOnDisk(f);
     });
   },
+});
+
+Deno.test("typed local behavior: a sensitive number in an array element reaches the method as a number at a whole value, in a method, nested and global argument, as text inside text, an object as its JSON text, masked in the method log, and a field inside it cannot be selected (swamp-club#3967)", async () => {
+  await withFixture(async (f) => {
+    // Long enough that the object breaks across lines once nested.
+    const apiKey = `key-${crypto.randomUUID()}-${crypto.randomUUID()}`;
+    const db = await f.definitionRepo.findByNameGlobal("db");
+    assert(db);
+    await createResourceWriter(
+      f.dataRepo,
+      f.type,
+      db.definition.id,
+      f.model.resources!,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "db",
+      f.vaultService,
+      "deploy",
+    ).writeResource("app", "main", {
+      services: [{ port: 8080, env: { API_KEY: apiKey } }],
+    });
+    await f.dqs.query('name == ""');
+    const service = "data.latest('db', 'main').attributes.services[0]";
+    // The method log as the CLI writes it: a run file sink with the run's
+    // redactor.
+    const logFilePath = join(f.repoDir, ".swamp", "outputs", "deploy.log");
+    const deps = (): ModelMethodRunDeps => ({
+      ...f.runDeps(),
+      createRunLog: async () => {
+        const handle = await runFileSink.register(
+          [],
+          logFilePath,
+          f.redactor,
+          f.repoDir,
+        );
+        return {
+          logFilePath,
+          redactor: f.redactor,
+          cleanup: () => runFileSink.unregister(handle),
+        };
+      },
+    });
+    const run = async (name: string) =>
+      await collect<ModelMethodRunEvent>(
+        modelMethodRun(createLibSwampContext(), deps(), {
+          modelIdOrName: name,
+          methodName: "deploy",
+          inputs: {},
+          lastEvaluated: false,
+        }),
+      );
+
+    await f.save(Definition.create({
+      name: "svc-typed",
+      type: f.type.normalized,
+      globalArguments: { port: `\${{ ${service}.port }}` },
+      methods: {
+        deploy: {
+          arguments: {
+            port: `\${{ ${service}.port }}`,
+            service: {
+              port: `\${{ ${service}.port }}`,
+              env: `\${{ ${service}.env }}`,
+            },
+            label: `p-\${{ ${service}.port }}`,
+          },
+        },
+      },
+    }));
+    const events = await run("svc-typed");
+    const error = events.find((e) => e.kind === "error");
+    assertEquals(error, undefined, JSON.stringify(error));
+    const last = f.received.at(-1)!;
+    assertEquals(last.args.port, 8080);
+    assertEquals(last.args.service, {
+      port: 8080,
+      env: JSON.stringify({ API_KEY: apiKey }),
+    });
+    assertEquals(last.args.label, "p-8080");
+    assertEquals(last.globalArgs.port, 8080);
+    assertValueFree(f, JSON.stringify(events), "run events");
+    // A method_output event carries the line as the method rendered it,
+    // unmasked, for any secret text a method logs (pre-existing); every other
+    // event is free of the key.
+    assertEquals(
+      JSON.stringify(events.filter((e) => e.kind !== "method_output"))
+        .includes(apiKey),
+      false,
+    );
+    // The method log holds both lines with the text masked, alone and inside
+    // the arguments, and nothing the run wrote holds the key.
+    const methodLog = await Deno.readTextFile(logFilePath);
+    assertStringIncludes(methodLog, "env '***'");
+    assertStringIncludes(methodLog, "env: '***'");
+    for await (const entry of walk(f.repoDir, { includeDirs: false })) {
+      if (entry.path.endsWith(".db")) continue;
+      const text = await Deno.readTextFile(entry.path).catch(() => "");
+      assertEquals(text.includes(apiKey), false, entry.path);
+    }
+
+    // A field inside the value cannot be selected: a Secret has no keys.
+    await f.save(Definition.create({
+      name: "svc-select",
+      type: f.type.normalized,
+      methods: {
+        deploy: { arguments: { key: `\${{ ${service}.env.API_KEY }}` } },
+      },
+    }));
+    const refused = (await run("svc-select")).find((e) => e.kind === "error");
+    assert(refused);
+    assertStringIncludes(JSON.stringify(refused), "No such key: API_KEY");
+    assertEquals(JSON.stringify(refused).includes(apiKey), false);
+    assertEquals(f.received.at(-1), last);
+  });
 });

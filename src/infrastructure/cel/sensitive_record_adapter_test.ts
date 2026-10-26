@@ -33,6 +33,7 @@ import {
   type StepOutputSources,
 } from "../../domain/expressions/step_output_sources.ts";
 import {
+  SENSITIVE_FIELD_JSON_TAG,
   SENSITIVE_FIELD_KEYS_TAG,
   SENSITIVE_FIELDS_TAG,
 } from "../../domain/models/data_writer.ts";
@@ -1171,4 +1172,46 @@ Deno.test("adaptDataRecord: a field tagged inside a container stored as one refe
     [...scope.sensitiveReferences.values()].map((r) => r.key).sort(),
     ["A", "B"],
   );
+});
+
+Deno.test("adaptDataRecord: a place the JSON tag lists reads as a Secret marked as JSON text, and no other place is marked (swamp-club#3967)", () => {
+  const original = record(
+    {
+      spec: { services: [{ port: REF_A, token: REF_B }] },
+      env: { "eu.west": REF_C },
+    },
+    {
+      ...keyListTag(["spec.services.0.port", "spec.services.0.token"], [[
+        "env",
+        "eu.west",
+      ]]),
+      [SENSITIVE_FIELD_JSON_TAG]: JSON.stringify([
+        ["spec", "services", 0, "port"],
+        ["env", "eu.west"],
+      ]),
+    },
+  );
+  const { view } = adapt(original);
+  const attributes = attributesOf(view);
+  const service = (attributes.spec as { services: Record<string, unknown>[] })
+    .services[0];
+  const markOf = (secret: unknown): boolean | undefined => {
+    assert(isSecret(secret));
+    return (secretParts(secret)![0] as { jsonValue?: boolean }).jsonValue;
+  };
+  assertEquals(markOf(service.port), true);
+  assertEquals(markOf(service.token), undefined);
+  assertEquals(
+    markOf((attributes.env as Record<string, unknown>)["eu.west"]),
+    true,
+  );
+
+  // Under the star tag the JSON tag is not read.
+  const star = adapt(
+    record({ port: REF_A }, {
+      ...starTag,
+      [SENSITIVE_FIELD_JSON_TAG]: JSON.stringify([["port"]]),
+    }),
+  );
+  assertEquals(markOf(attributesOf(star.view).port), undefined);
 });

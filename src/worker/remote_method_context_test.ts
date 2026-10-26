@@ -919,6 +919,44 @@ Deno.test("remote context: the worker resolves shipped args as the orchestrator 
   });
 });
 
+Deno.test("remote context: the worker delivers a shipped JSON-value entry as its value at a whole value, and masks its text (swamp-club#3967)", async () => {
+  await withScratch(async (dir) => {
+    const d = dispatch();
+    d.execution.methodArgs = { port: 8080, label: "p-8080" };
+    d.unresolvedMethodArgs = {
+      port: DATA_SENTINEL,
+      label: `p-${DATA_SENTINEL}`,
+    };
+    d.secretBag = [
+      {
+        sentinel: DATA_SENTINEL,
+        value: "8080",
+        dataOrigin: true,
+        jsonValue: true,
+      },
+    ];
+    d.secretValues = ["8080"];
+    const h = harness(dir, undefined, undefined, d);
+    let seenArgs: Record<string, unknown> | undefined;
+    const method: MethodDefinition = {
+      description: "records what it receives",
+      arguments: z.object({ port: z.number(), label: z.string() }),
+      execute: (args) => {
+        seenArgs = args as Record<string, unknown>;
+        return Promise.resolve({});
+      },
+    };
+    await new DefaultMethodExecutionService().execute(
+      definitionFromExecution(d.execution, dispatchMethodArgs(d)),
+      method,
+      h.context,
+    );
+    assertEquals(seenArgs, { port: 8080, label: "p-8080" });
+    assertEquals(h.context.vaultSecrets!.toEntries(), d.secretBag);
+    assertEquals(h.redact("listening on 8080"), "listening on ***");
+  });
+});
+
 Deno.test("remote context: a redactor the caller supplies is the one the context uses and extends (swamp-club#3526)", async () => {
   await withScratch((dir) => {
     const redactor = new SecretRedactor();

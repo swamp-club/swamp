@@ -20,8 +20,10 @@
 import {
   type DataReferenceEntry,
   type DataSecretEntry,
+  deliveredJsonValue,
   holdsValue,
   isIssuedEntry,
+  isJsonValueEntry,
   jsonEscaped,
   type RegistryEntry,
   type SecretBagEntry,
@@ -254,6 +256,22 @@ export function getQuoteContext(str: string, position: number): QuoteContext {
   return "unquoted";
 }
 
+/**
+ * Whether a whole-value occurrence of `entry`'s sentinel delivers the number
+ * or boolean its JSON text holds: a JSON-value entry written as raw text. A
+ * shipped entry carries the mark only when this holds, so it needs no
+ * encoding.
+ */
+function parsesWhole(entry: RegistryEntry): boolean {
+  return isJsonValueEntry(entry) &&
+    (!isIssuedEntry(entry) || entry.encoding === "raw");
+}
+
+/** The key {@link VaultSecretBag.addDataSecret} shares a sentinel by. */
+function dataSentinelKey(value: string, jsonValue: boolean): string {
+  return `${jsonValue ? "json" : "text"}\u0000${value}`;
+}
+
 /** Splits text into sentinel tokens and the text between them. */
 function splitOnSentinels(
   text: string,
@@ -292,7 +310,10 @@ function splitOnSentinels(
 export class VaultSecretBag {
   /** Sentinels this bag issued, in issue order. */
   private readonly issued: string[] = [];
-  /** Sentinel per value for secrets read through data, reused on repeat. */
+  /**
+   * Sentinel per value for secrets read through data, reused on repeat,
+   * keyed by {@link dataSentinelKey}.
+   */
   private readonly dataSentinels = new Map<string, string>();
   private counter = 0;
   /** Drawn on the first issue, so a delivery view draws none. */
@@ -353,21 +374,26 @@ export class VaultSecretBag {
    * sentinel per distinct value, so repeated occurrences share it and two
    * references whose values are equal share it too, with the first
    * reference kept, as {@link RunSensitiveValues} keeps the first source.
+   * A value that is JSON text ({@link DataReferenceEntry.jsonValue}) never
+   * shares a sentinel with the same text that is not.
    */
   addDataSecret(
     value: string,
     reference: SecretReference,
     encoding: SecretEncoding = "raw",
+    jsonValue = false,
   ): string {
-    const existing = this.dataSentinels.get(value);
+    const key = dataSentinelKey(value, jsonValue);
+    const existing = this.dataSentinels.get(key);
     if (existing) return existing;
     const sentinel = this.issue({
       value,
       reference,
       encoding,
       dataOrigin: true,
+      ...(jsonValue ? { jsonValue } : {}),
     });
-    this.dataSentinels.set(value, sentinel);
+    this.dataSentinels.set(key, sentinel);
     return sentinel;
   }
 
@@ -376,14 +402,21 @@ export class VaultSecretBag {
    * expression (typed-secrets 3.3), read at `location`, and returns a unique
    * sentinel that stands for it. No value is read: a load at delivery reads
    * it, as for {@link addSecret}. Unlike {@link addDataSecret}, nothing is
-   * shared on a repeat, because no value is known to share by.
+   * shared on a repeat, because no value is known to share by. `jsonValue`
+   * marks a vault value that is the JSON text of a value that is not a
+   * string ({@link DataReferenceEntry.jsonValue}).
    */
-  addDataReference(reference: SecretReference, location: string): string {
+  addDataReference(
+    reference: SecretReference,
+    location: string,
+    jsonValue = false,
+  ): string {
     return this.issue({
       reference,
       encoding: "raw",
       dataOrigin: true,
       location,
+      ...(jsonValue ? { jsonValue } : {}),
     });
   }
 
@@ -394,15 +427,24 @@ export class VaultSecretBag {
    * returns a unique sentinel that stands for it. The entry keeps the file's
    * encoding and origin, so it persists back as it was read and delivery
    * applies the encoding; no value is read, a load at delivery reads it.
+   * `jsonValue` is kept for a data-origin entry only, as only the accessor
+   * adapter sets it.
    */
   addWrittenReference(
     reference: SecretReference,
     encoding: SecretEncoding,
     dataOrigin: boolean,
     location: string,
+    jsonValue = false,
   ): string {
     return dataOrigin
-      ? this.issue({ reference, encoding, dataOrigin: true, location })
+      ? this.issue({
+        reference,
+        encoding,
+        dataOrigin: true,
+        location,
+        ...(jsonValue ? { jsonValue } : {}),
+      })
       : this.issue({ reference, encoding, dataOrigin: false, location });
   }
 
@@ -534,10 +576,10 @@ export class VaultSecretBag {
    * `target`, so a value sanitized before a step started (at workflow
    * evaluation) is delivered through that step's own bag and ships with it.
    * Each source sentinel maps to one target sentinel, whatever its origin,
-   * with the same reference, encoding and origin; a reference-only entry,
-   * vault or data origin, moves as a reference, with no value. Other text is
-   * left as it is; a sentinel from another bag still resolves through the
-   * registry.
+   * with the same reference, encoding, origin and JSON-value mark; a
+   * reference-only entry, vault or data origin, moves as a reference, with
+   * no value. Other text is left as it is; a sentinel from another bag still
+   * resolves through the registry.
    */
   rehomeSentinels(data: unknown, target: VaultSecretBag): unknown {
     const rehomed = new Map<string, string>();
@@ -551,13 +593,20 @@ export class VaultSecretBag {
           "A secret bag entry without a reference cannot be rehomed",
         );
       }
+      const jsonValue = isJsonValueEntry(entry);
       const issued = holdsValue(entry)
-        ? target.addDataSecret(entry.value, entry.reference, entry.encoding)
+        ? target.addDataSecret(
+          entry.value,
+          entry.reference,
+          entry.encoding,
+          jsonValue,
+        )
         : target.addWrittenReference(
           entry.reference,
           entry.encoding,
           entry.dataOrigin,
           entry.location,
+          jsonValue,
         );
       rehomed.set(sentinel, issued);
       return issued;
@@ -597,12 +646,17 @@ export class VaultSecretBag {
     return this.issued.filter((sentinel) => this.inHand(sentinel));
   }
 
-  /** `sentinel`'s entry in the shape a dispatch ships, with its value. */
+  /**
+   * `sentinel`'s entry in the shape a dispatch ships, with its value, and
+   * its JSON-value mark when it delivers parsed ({@link parsesWhole}).
+   */
   private shipped(sentinel: string): SecretBagEntry {
+    const entry = this.registry.entryOf(sentinel)!;
     return {
       sentinel,
       value: this.valueOf(sentinel)!,
-      dataOrigin: this.registry.entryOf(sentinel)!.dataOrigin,
+      dataOrigin: entry.dataOrigin,
+      ...(parsesWhole(entry) ? { jsonValue: true as const } : {}),
     };
   }
 
@@ -691,9 +745,19 @@ export class VaultSecretBag {
         throw new Error("Malformed vault secret sentinel in secret bag entry");
       }
       const { sentinel, value, dataOrigin } = entry;
-      bag.registry.register({ sentinel, value, dataOrigin });
+      const jsonValue = dataOrigin && entry.jsonValue === true;
+      bag.registry.register(
+        jsonValue
+          ? { sentinel, value, dataOrigin, jsonValue }
+          : { sentinel, value, dataOrigin },
+      );
       bag.issued.push(entry.sentinel);
-      if (entry.dataOrigin) bag.dataSentinels.set(entry.value, entry.sentinel);
+      if (entry.dataOrigin) {
+        bag.dataSentinels.set(
+          dataSentinelKey(entry.value, jsonValue),
+          entry.sentinel,
+        );
+      }
     }
     return bag;
   }
@@ -731,10 +795,21 @@ export class VaultSecretBag {
   }
 
   /**
-   * Recursively replaces all sentinel tokens in a data structure with raw values.
+   * Recursively replaces all sentinel tokens in a data structure with raw
+   * values. A string that is exactly one sentinel of a JSON-value entry
+   * ({@link parsesWhole}) is replaced by the number or boolean its JSON text
+   * holds ({@link deliveredJsonValue}), so a port the writer vaulted arrives
+   * as `8080`; an object or list, and any sentinel inside other text, is its
+   * text.
    */
   resolveDeep(data: unknown): unknown {
     if (typeof data === "string") {
+      if (SENTINEL_EXACT.test(data)) {
+        const entry = this.registry.entryOf(data);
+        if (entry !== undefined && parsesWhole(entry)) {
+          return deliveredJsonValue(this.valueOf(data)!);
+        }
+      }
       return this.resolveRaw(data);
     }
     if (Array.isArray(data)) {

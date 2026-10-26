@@ -119,7 +119,9 @@ function toAttributeValue(value: unknown): string | number | boolean {
  *   so the OTel SDK stamps the active span's `trace_id`/`span_id` onto the
  *   record from `context.active()` at emit time.
  * - **Redaction**: the rendered body and every string attribute value pass
- *   through {@link runFileSink.redactActive}, so secrets from the active run are
+ *   through {@link runFileSink.redactActive}, and a number or boolean
+ *   attribute whose text is a registered value is sent as `***`
+ *   ({@link runFileSink.isActiveSecret}), so secrets from the active run are
  *   scrubbed before the record leaves the process — parity with the persisted
  *   per-run log files, which matters because OTLP export is a new external
  *   egress to a third-party collector.
@@ -135,6 +137,9 @@ export function createOtelLogRecordSink(provider: LoggerProvider): Sink {
       const coerced = toAttributeValue(value);
       attributes[key] = typeof coerced === "string"
         ? runFileSink.redactActive(coerced)
+        // A secret delivered as a number or boolean (swamp-club#3967).
+        : runFileSink.isActiveSecret(String(coerced))
+        ? "***"
         : coerced;
     }
 

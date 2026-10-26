@@ -61,6 +61,12 @@ export interface SecretReferencePart {
   readonly location?: string;
   /** The sentinel the reference entered CEL as, which it leaves as. */
   readonly sentinel?: string;
+  /**
+   * Set when the vault value is the JSON text of a value that is not a
+   * string (a place `_swamp.sensitiveFieldJson` lists), so a delivery of the
+   * reference as a whole value parses it.
+   */
+  readonly jsonValue?: true;
 }
 
 /** A part of a `Secret`: text, or a reference. */
@@ -126,13 +132,20 @@ export function vaultReferenceSecret(
 /**
  * A `Secret` holding one sensitive-field reference a data read brought into
  * CEL (typed-secrets 3.3), read at `location`: the record and the field it
- * was read from, for a load's errors. Only the accessor adapter creates one.
+ * was read from, for a load's errors. `jsonValue` marks a reference whose
+ * vault value is the JSON text of a value that is not a string. Only the
+ * accessor adapter creates one.
  */
 export function dataReferenceSecret(
   reference: SecretReference,
   location: string,
+  jsonValue = false,
 ): Secret {
-  return secretFromParts([{ reference, dataOrigin: true, location }]);
+  return secretFromParts([
+    jsonValue
+      ? { reference, dataOrigin: true, location, jsonValue }
+      : { reference, dataOrigin: true, location },
+  ]);
 }
 
 /** Whether `value` is a `Secret` this module created. */

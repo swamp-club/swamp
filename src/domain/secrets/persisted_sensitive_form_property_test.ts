@@ -129,7 +129,8 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
     fc.property(
       fc.array(arbSecret, { minLength: 1, maxLength: 4 }),
       fc.jsonValue(),
-      (secrets, noise) => {
+      fc.array(fc.boolean(), { minLength: 4, maxLength: 4 }),
+      (secrets, noise, jsonValues) => {
         // Written by a fresh typed run from its sentinels.
         const writer = new RunSensitiveValues(
           undefined,
@@ -141,6 +142,7 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
             ? writerBag.addDataReference(
               { vaultName: "prod", key: `${secret.key}${i}` },
               "data",
+              jsonValues[i],
             )
             : writerBag.addSecret(
               { vaultName: "prod", key: `${secret.key}${i}` },
@@ -173,6 +175,17 @@ Deno.test("rehydrateReferences: a typed run restores any persisted form to senti
         assertEquals(
           again.writtenReferences.length,
           form.writtenReferences.length,
+        );
+        // A JSON-value mark survives the round trip (swamp-club#3967).
+        const marks = (references: readonly { jsonValue?: true }[]) =>
+          references.filter((reference) => reference.jsonValue).length;
+        assertEquals(
+          marks(again.writtenReferences),
+          marks(form.writtenReferences),
+        );
+        assertEquals(
+          marks(form.writtenReferences) > 0,
+          secrets.some((secret, i) => secret.dataOrigin && jsonValues[i]),
         );
         // Every restored sentinel carries the written entry's identity, and
         // none holds a value.

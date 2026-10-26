@@ -178,6 +178,21 @@ export class RunFileSink {
   }
 
   /**
+   * Whether `text` is, whole, a value an active redactor registered. A sink
+   * that exports a number or boolean as such, rather than as text it
+   * redacts, asks this of the value's text, so a secret delivered as a
+   * number (swamp-club#3967) is masked while a number that only contains a
+   * secret's digits is kept.
+   */
+  isActiveSecret(text: string): boolean {
+    return [...this.writers.values()].some((writer) =>
+      writer.redactor?.isSecret(text)
+    ) || [...this.redactors.values()].some((redactor) =>
+      redactor.isSecret(text)
+    );
+  }
+
+  /**
    * Redacts `text` using every currently-active redactor.
    *
    * Each active run registers its own {@link SecretRedactor} under a catch-all

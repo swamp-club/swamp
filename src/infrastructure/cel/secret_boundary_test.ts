@@ -399,3 +399,35 @@ Deno.test("SecretBoundary.release: an adapter view leaves as plain data, with no
   assertEquals(released.content, released.attributes);
   assertEquals(released.name, "n");
 });
+
+Deno.test("SecretBoundary: a JSON-value data reference leaves CEL as a marked entry and rebinds with its mark (swamp-club#3967)", () => {
+  const { bag } = issuingBag();
+  const location =
+    "data.latest of model 'app' record r1 version 2 (data.latest), field 'spec.services.0.port'";
+  const boundary = new SecretBoundary(bag);
+  const sentinel = boundary.release(
+    dataReferenceSecret(reference, location, true),
+  ) as string;
+  assertEquals(bag.registry.entryOf(sentinel), {
+    sentinel,
+    reference,
+    encoding: "raw",
+    dataOrigin: true,
+    location,
+    jsonValue: true,
+  });
+  const bindings = boundary.bind({ port: sentinel });
+  assertEquals(secretParts(bindings.port), [{
+    reference,
+    dataOrigin: true,
+    location,
+    sentinel,
+    jsonValue: true,
+  }]);
+  assertEquals(boundary.release(bindings.port), sentinel);
+  // An unmarked data reference stays unmarked.
+  const plain = boundary.release(
+    dataReferenceSecret(reference, `${location}x`),
+  ) as string;
+  assertEquals("jsonValue" in bag.registry.entryOf(plain)!, false);
+});

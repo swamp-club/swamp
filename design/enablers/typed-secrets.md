@@ -142,7 +142,14 @@ Out of scope, each its own issue if it is needed:
 - Comparing or measuring a secret in an expression. A later design can add it by
   loading at a point read.
 - Non-string secrets. A sensitive output stored as JSON text keeps today's
-  string-on-read behavior.
+  string-on-read behavior. The exception is a number or boolean at a place
+  `_swamp.sensitiveFieldJson` lists (swamp-club#3038): it is delivered as a
+  number or boolean where it stands whole (Section 6.1, swamp-club#3967). An
+  object or list there stays its JSON text. Delivering it parsed needs the
+  run's redactor to mask it by structure rather than by text, and exposing it
+  as an object of `Secret` values, so an expression could select a field inside
+  it, would need the writer to vault each leaf apart or a load at a point read.
+  Both stay out of scope.
 - Treating literal inputs that a schema marks sensitive as secrets. Today's
   handling of literal sensitive arguments is unchanged: they are masked in run
   output and in the evaluated caches, and `--last-evaluated` refuses a cache
@@ -214,8 +221,9 @@ extended to comprehension macros, was not needed.
 
 Outside CEL a secret is a sentinel, text of the form
 `__SWAMP_VSEC_<prefix>_<n>__`. A `VaultSecretBag` maps each sentinel to its
-reference, an encoding and a data-origin flag. Each bag draws a 128-bit random
-prefix, so data cannot guess a sentinel.
+reference, an encoding and a data-origin flag, and a data-origin entry may be
+marked `jsonValue` (Section 6.1). Each bag draws a 128-bit random prefix, so
+data cannot guess a sentinel.
 
 The CEL adapter converts at its boundary:
 
@@ -792,6 +800,42 @@ adapter:
 - Live and reconstructed `steps.<name>.outputs`, child outputs a parent can see,
   and `model.<name>.resource`.
 
+A place `_swamp.sensitiveFieldJson` lists holds the JSON text of a value
+that is not a string (swamp-club#3038). The adapter marks its `Secret` as
+`jsonValue` (`readSensitiveFieldJsonPlaces()`), reading the tag only beside a
+path list and only for places the path tags list. The mark is a property of
+the stored value, not of where a sentinel stands, so it sits beside the
+encoding rather than in it. The boundary carries it into the registry
+(`addDataReference`) and back onto a rebound `Secret`. Delivery
+(`VaultSecretBag.resolveDeep`) replaces a string that is exactly a marked
+sentinel of the `raw` encoding with the number or boolean its loaded text
+holds, when the text is that value's canonical JSON (`deliveredJsonValue`), and
+with the text otherwise (swamp-club#3967). Inside other text, in the shell and
+in a `json`-encoded position it delivers the text. This is how CEL typed the
+plaintext before swamp-club#3038 vaulted it: a whole-expression result kept its
+type and an interpolation made text. A field inside the value cannot be
+selected, because a `Secret` has no keys.
+
+An object or list at such a place is delivered as its JSON text, not parsed.
+The run's redactor matches text, and it also masks the resources a method
+writes. A parsed object prints in layouts that depend on its nesting depth, on
+inspect's depth limit and on the key order and keys the method's schema leaves,
+so no registered text matches every print of it. Registering its parts instead
+either misses some prints or masks unrelated text, written resources included.
+A number or boolean prints as exactly the text the loader registers, so
+delivering it parsed adds no new exposure, except where a sink exports it as a
+value rather than text: the OTLP log sink sends a number or boolean attribute
+whose text is a registered value as `***` (`RunFileSink.isActiveSecret`).
+
+Releases that carry swamp-club#3038 but not swamp-club#3967 deliver such a
+number or boolean as its text. A definition written against them that passes it
+whole into a `z.string()` argument now fails that argument's parse, and one
+that reads it through `z.unknown()` gets the number or boolean rather than
+text. Such a definition should read the field's type, or interpolate the value
+into text (`"${{ ... }}"` with surrounding text) where it needs the text. A
+definition written for the plaintext read before swamp-club#3038 works as it
+did. Objects and lists are delivered as on those releases.
+
 The adapter replaces the expression-facing calls to `resolveSensitiveVaultRefs`.
 It reads no vault, so the synchronous property views can use it. For JSON
 resources `.content` and `.attributes` are the same object and carry the same
@@ -1088,6 +1132,12 @@ that flag. Replay and resume preserve that historical origin for these files,
 including files without a format marker. Version 3 trusts the recorded flag.
 The next write records the corrected origins in version 3.
 
+A written reference also records a data-origin entry's `jsonValue` mark
+(Section 6.1), so a resumed run or a replayed cache delivers the same value.
+The key is optional, and the format version is unchanged: a reader that
+predates the key drops it and delivers the text, as it did before. A shipped
+remote entry carries the mark the same way, and an older worker drops it.
+
 New writes produce `raw` entries. Entries in existing files keep their encoding
 through rehoming and persist back as they were read, and delivery applies it:
 `json` escapes the loaded value; `number` and `boolean` deliver the text, which
@@ -1180,6 +1230,7 @@ delivery instead of an expression.
 | `==`, `size`, a conversion or a string function on a `vault.get` result                                           | Works on the sentinel text, or fails                          | `validate` reports a type error. A run fails with `secret_operation_unsupported`. |
 | The same operations on a tagged sensitive field                                                                           | Work on plaintext                                             | `secret_operation_unsupported`                                                    |
 | A container that holds a secret, interpolated into text                                                                   | Delivered inside the JSON text                                | `secret_operation_unsupported`                                                    |
+| A number or boolean array element, record value or union field `_swamp.sensitiveFieldJson` lists, read as a whole value | The value, as written | The number or boolean at delivery; its text inside text; an object or list there is its JSON text (swamp-club#3967) |
 | A secret in a task selector, placement value, path, `workingDir`, environment key, or `model.method` model or method name | Used as plaintext                                             | `secret_destination_refused`                                                      |
 | A guard or assert predicate whose result holds a secret                                                                   | Truthiness of plaintext or sentinel text                      | `secret_destination_refused`                                                      |
 | A data-origin value in a quoted here-document or in PowerShell single quotes                                              | Pasted into the command, with a warning                       | `secret_destination_refused`                                                      |
@@ -1768,9 +1819,9 @@ verification workflows in `agent-constraints/verification-conventions.md`.
 | Static misuse diagnostics (Section 10.2)      | `src/infrastructure/cel/secret_diagnostics.ts` (`diagnoseSecretMisuse`), `cel_evaluator.ts` (`createSecretCheckEnvironment`), `src/domain/models/validation_service.ts` (`diagnoseSecretMisuse`, `deliverCheckArguments`), `src/libswamp/models/validate.ts` |
 | Vault syntax and legacy execution           | `src/domain/expressions/vault_call_syntax.ts` (source map and AST calls), `vault_reference_extractor.ts` (compatibility filter), `model_resolver.ts` (stored expression readers)                                                                                                                                                                                                                                                                |
 | Typed vault receiver and checks (Section 4.4) | `src/infrastructure/cel/cel_vault_namespace.ts`, `cel_evaluator.ts`, `integration/typed_vault_get_test.ts`, `integration/vault_call_analysis_test.ts` |
-| Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts` (`stepsView` for step outputs), `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace` and `readsSoloNamespace`), `src/domain/data/namespace.ts` (`isForeignToReader`), `src/domain/expressions/step_output_sources.ts` (a step context's output sources and their persisted form), `src/domain/workflows/step_output_resolver.ts` (sources beside the flat outputs), `integration/typed_data_secrets_test.ts` |
+| Accessor adapter (Section 6.1)                | `src/infrastructure/cel/sensitive_record_adapter.ts` (`stepsView` for step outputs), `cel_evaluator.ts` (typed accessor handlers, `withModelView`, `authorizeSensitiveReferences`), `src/domain/models/data_writer.ts` (`readSensitiveFieldsTag`, `readSensitiveFieldJsonPlaces`, `parseStoredVaultReference`), `src/domain/expressions/model_resolver.ts` (`DataReadOptions`, `DataNamespace.namespace` and `readsSoloNamespace`), `src/domain/data/namespace.ts` (`isForeignToReader`), `src/domain/expressions/step_output_sources.ts` (a step context's output sources and their persisted form), `src/domain/workflows/step_output_resolver.ts` (sources beside the flat outputs), `integration/typed_data_secrets_test.ts` |
 | Destination policy (Sections 6.3, 7.1)        | `src/domain/models/secret_destinations.ts` (`refuseSecretsInRefusingFields`, `refuseSecretDestinations`, `assertNoSensitiveRefuseConflict`, `SecretDestinationRefusedError`), `zod_field_metadata.ts` (`findFieldsWhere`), `src/domain/vaults/secret_occurrences.ts` (`SecretOccurrences`), `integration/typed_secret_destinations_test.ts` |
-| Sentinels and shell placement | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`), `vault_secret_bag.ts` (`addDataReference`, `planShellPlacement`, `planPowerShellPlacement`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts` (`refuseShellSecretDestinations`), `shell_strategy.ts` (`planSecrets`) |
+| Sentinels and shell placement | `src/domain/vaults/secret_bag_registry.ts` (`DataReferenceEntry`, `isJsonValueEntry`, `deliveredJsonValue`), `vault_secret_bag.ts` (`addDataReference`, `resolveDeep`, `planShellPlacement`, `planPowerShellPlacement`), `shell_context_scanner.ts`, `src/domain/models/command/shell/shell_model.ts` (`refuseShellSecretDestinations`), `shell_strategy.ts` (`planSecrets`) |
 | Vault access scope                            | `src/domain/vaults/run_vault_access.ts`, `vault_service.ts`                                                                                                                                                                                                                                                                                                           |
 | Existence check (Section 3.4)                 | `src/domain/vaults/secret_reference_check.ts` (`checkSecretReference`), `secret_reference_errors.ts`, `vault_provider.ts` (`VaultExistenceProvider`), `vault_service.ts` (`has`, `authorizeRead`), `secret_bag_registry.ts` (`confirmExists`), `packages/testing/vault_conformance.ts` (`assertVaultExistenceConformance`), `vault_test_context.ts` (`withExistence`) |
 | Loading at delivery (Section 3.3)             | `src/domain/vaults/secret_loader.ts` (`SecretLoader`), `vault_secret_bag.ts` (`withLoaded`), `src/domain/models/method_execution_service.ts` (`executeWorkflow`), `src/domain/expressions/expression_evaluation_service.ts` (`secretLoader`, `resolveRuntimeExpressionsInData`)                                                                                       |

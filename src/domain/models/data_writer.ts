@@ -1966,6 +1966,26 @@ export function readSensitiveFieldPlaces(
 }
 
 /**
+ * The vaulted places of a record whose vault value is the JSON text of a
+ * value that is not a string, as {@link SENSITIVE_FIELD_JSON_TAG} lists
+ * them: segment lists, an array index written as its digits, as
+ * {@link readSensitiveFieldPlaces} spells them. The tag is read as
+ * {@link parseSensitiveFieldsTag} reads it, only alongside a path list and a
+ * malformed one ignored whole, and a place it lists that
+ * {@link readSensitiveFieldPlaces} does not is ignored.
+ */
+export function readSensitiveFieldJsonPlaces(
+  tags: Record<string, string>,
+): (readonly string[])[] {
+  const places = readSensitiveFieldPlaces(tags);
+  if (places.kind !== "paths") return [];
+  const listed = new Set(places.paths.map((path) => JSON.stringify(path)));
+  return parseKeyListTag(tags, SENSITIVE_FIELD_JSON_TAG)
+    .map((keys) => keys.map((key) => String(key)))
+    .filter((path) => listed.has(JSON.stringify(path)));
+}
+
+/**
  * Recursively walks an object/array and resolves any string values that match
  * the vault expression pattern `${{ vault.get('name', 'key') }}`.
  *
