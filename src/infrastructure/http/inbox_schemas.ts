@@ -148,12 +148,18 @@ const body = z.string()
   .refine((s) => new TextEncoder().encode(s).length <= MAX_INBOX_BODY_BYTES)
   .transform(sanitizeInboxBody);
 
-/** The link's href when it is an `https:` URL. */
+/**
+ * The link's href when it is an `https:` URL carrying no username or
+ * password, which could disguise where it leads.
+ */
 function parseLink(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
   try {
     const url = new URL(raw);
-    return url.protocol === "https:" ? url.href : undefined;
+    return url.protocol === "https:" && url.username === "" &&
+        url.password === ""
+      ? url.href
+      : undefined;
   } catch {
     return undefined;
   }

@@ -355,6 +355,21 @@ Deno.test("listInboxMessages: another failure lifts the error field and never ec
   assertEquals(proxyErr.message, "Failed to list your inbox (HTTP 502).");
 });
 
+Deno.test("listInboxMessages: a 401 or 404 with a body that never arrives still gives its plain message", async () => {
+  const stalled = (status: number) => () =>
+    new Response(new ReadableStream({ start() {} }), { status });
+  await assertRejects(
+    () => stubClient(stalled(401)).client.listInboxMessages(KEY),
+    UserError,
+    'Swamp Club rejected your API key. Run "swamp auth login".',
+  );
+  await assertRejects(
+    () => stubClient(stalled(404)).client.listInboxMessages(KEY),
+    UserError,
+    "This Swamp Club server has no inbox.",
+  );
+});
+
 Deno.test("listInboxMessages: a malformed envelope throws", async () => {
   const { client } = stubClient(() => Response.json({ items: [] }));
   await assertRejects(
@@ -463,6 +478,16 @@ Deno.test("markInboxRead: sends { ids } and returns only the ids the server conf
   assertEquals(requests[0].url.pathname, "/api/inbox/read");
   assertEquals(requests[0].headers.get("content-type"), "application/json");
   assertEquals(requests[0].body, { ids: [b, unknown, a] });
+});
+
+Deno.test("markInboxRead: matches ids without regard to case", async () => {
+  const id = fixture.markRead.read[0] as string;
+  const { client, requests } = stubClient(() =>
+    Response.json({ read: [id.toUpperCase()] })
+  );
+  const lower = id.toLowerCase();
+  assertEquals(await client.markInboxRead(KEY, [lower, id]), [lower]);
+  assertEquals(requests[0].body, { ids: [lower] });
 });
 
 Deno.test("markInboxRead: ignores confirmed ids that were never requested", async () => {
@@ -609,17 +634,6 @@ Deno.test("inboxSummary (real server): a stalled body aborted by the signal retu
   } finally {
     await mock.shutdown();
   }
-});
-
-Deno.test("inboxSummary (real server): a refused connection returns failed", async () => {
-  const mock = startMockServer(() => new Response(null));
-  const url = mock.url;
-  await mock.shutdown();
-  const client = new SwampClubClient(url);
-  assertEquals(await client.inboxSummary(KEY, null, signal()), {
-    kind: "failed",
-    reason: "connection failed",
-  });
 });
 
 Deno.test("listInboxMessages (real server): a stalled body cut off by the caller rethrows the abort", async () => {

@@ -87,6 +87,19 @@ Deno.test("parseInboxMessage: drops a non-https link and keeps the message", () 
   );
 });
 
+Deno.test("parseInboxMessage: drops an https link carrying credentials", () => {
+  for (
+    const link of [
+      "https://swamp-club.com@evil.example/",
+      "https://user:pass@swamp-club.com/lab",
+    ]
+  ) {
+    const parsed = parseInboxMessage({ ...message(), link });
+    assert(parsed, link);
+    assertEquals(parsed.link, undefined, link);
+  }
+});
+
 Deno.test("parseInboxMessage: keeps an https link as the parsed href", () => {
   const raw = { ...message(), link: "HTTPS://Swamp-Club.com/lab" };
   assertEquals(parseInboxMessage(raw)?.link, "https://swamp-club.com/lab");

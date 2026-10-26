@@ -1405,7 +1405,13 @@ export class SwampClubClient {
     ids: readonly string[],
     signal?: AbortSignal,
   ): Promise<string[]> {
-    const unique = [...new Set(ids)];
+    // ULIDs are case-insensitive and the schema reports them upper case,
+    // so ids are deduplicated and matched without regard to case.
+    const byKey = new Map<string, string>();
+    for (const id of ids) {
+      if (!byKey.has(id.toUpperCase())) byKey.set(id.toUpperCase(), id);
+    }
+    const unique = [...byKey.values()];
     const confirmed = new Set<string>();
     for (let i = 0; i < unique.length; i += MARK_READ_BATCH_SIZE) {
       const batch = unique.slice(i, i + MARK_READ_BATCH_SIZE);
@@ -1435,9 +1441,9 @@ export class SwampClubClient {
           "Swamp Club returned a malformed answer to marking messages read.",
         );
       }
-      for (const id of read) confirmed.add(id);
+      for (const id of read) confirmed.add(id.toUpperCase());
     }
-    return unique.filter((id) => confirmed.has(id));
+    return unique.filter((id) => confirmed.has(id.toUpperCase()));
   }
 
   /**
@@ -1450,16 +1456,21 @@ export class SwampClubClient {
     notFoundMessage: string,
     signal?: AbortSignal,
   ): Promise<UserError> {
-    const code = parseInboxErrorCode(await this.readInboxJson(res, signal));
+    // 401 and 404 need no body, so a stalled one cannot blur them.
     if (res.status === 401) {
+      await res.body?.cancel();
       return new UserError(
         'Swamp Club rejected your API key. Run "swamp auth login".',
       );
     }
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return new UserError(notFoundMessage);
+    }
+    const code = parseInboxErrorCode(await this.readInboxJson(res, signal));
     if (res.status === 403 && code === INBOX_REQUIRES_USER) {
       return new UserError(INBOX_REQUIRES_USER_MESSAGE);
     }
-    if (res.status === 404) return new UserError(notFoundMessage);
     const detail = code !== undefined ? sanitizeFieldText(code, 200) : "";
     return new UserError(
       detail

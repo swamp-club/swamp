@@ -186,6 +186,8 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   // HTTP adapter test: real localhost server is the boundary under test.
   "src/infrastructure/http/swamp_club_client_search_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.
+  "src/infrastructure/http/swamp_club_client_inbox_test.ts",
+  // HTTP adapter test: real localhost server is the boundary under test.
   "src/infrastructure/http/swamp_club_client_test.ts",
   // Spawns a second deno process to prove cross-process catalog locking.
   "src/infrastructure/persistence/catalog_store_test.ts",

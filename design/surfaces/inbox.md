@@ -70,7 +70,8 @@ translate it into swamp's own values, so nothing past them sees raw server text:
   substitute a second command after `swamp`. A command that breaks this, or is
   longer than 200 characters, drops the action; the message is kept. A command
   is never shortened, because a shortened command would not run.
-- **A link is always `https:`.** Any other link is dropped; the message is kept.
+- **A link is always `https:`, with no username or password.** Any other link is
+  dropped; the message is kept.
 - **Ids are ULIDs and dates are ISO 8601.** A message that breaks either, or
   whose body is over 8 KiB, is dropped and the rest of the list is kept. The
   page reports how many it dropped, so a server that drifts from this contract
