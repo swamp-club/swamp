@@ -71,6 +71,14 @@ export {
 } from "./auth/whoami.ts";
 export type { WhoamiTrial } from "../infrastructure/http/swamp_club_client.ts";
 
+// Subscription operations
+export {
+  billingUrl,
+  subscriptionStatus,
+  type SubscriptionStatusEvent,
+  type SubscriptionStatusView,
+} from "./subscription/status.ts";
+
 // Workflow operations
 export {
   extractStepArtifacts,

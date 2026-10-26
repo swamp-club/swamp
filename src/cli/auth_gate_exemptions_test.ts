@@ -91,6 +91,8 @@ Deno.test("authGateTiming: every other subcommand is gated", () => {
       ["model", "method", "run", "m", "go"],
       ["modle"],
       ["auth", "nonsense"],
+      ["subscription"],
+      ["subscription", "status"],
     ]
   ) {
     assertEquals(timing(args), "gated", args.join(" "));

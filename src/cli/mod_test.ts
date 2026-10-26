@@ -852,7 +852,15 @@ Deno.test("isRepoScopedCommand: repo-less commands and repo init are not repo-sc
   );
   assertEquals(isRepoScopedCommand({ command: "init" }), false);
   for (
-    const command of ["auth", "config", "issue", "telemetry", "update", "start"]
+    const command of [
+      "auth",
+      "config",
+      "issue",
+      "subscription",
+      "telemetry",
+      "update",
+      "start",
+    ]
   ) {
     assertEquals(isRepoScopedCommand({ command }), false, command);
   }
