@@ -49,6 +49,7 @@ import {
   sensitiveSpliceSanitizer,
   type SplicePair,
 } from "./splice_pair.ts";
+import { definitionDescriptionPaths } from "./description_paths.ts";
 import { getLogger } from "@logtape/logtape";
 import { type ASTNode, parse as parseCel } from "cel-js";
 import type { ExpressionLocation } from "./expression.ts";
@@ -1450,10 +1451,13 @@ export class ExpressionEvaluationService {
 
     // Filter to only runtime expressions (vault or env), of the delivery's
     // method when one is named, then to those the author actually wrote at
-    // an authored position — see AuthoredExpressions.
+    // an authored position — see AuthoredExpressions. Description prose
+    // may document the syntax and is never resolved.
     const methodName = options.methodName;
+    const isDescription = definitionDescriptionPaths(definitionData);
     const runtimeExpressions = partitionAuthoredAt(
       expressions.filter((expr) =>
+        !isDescription(expr.path) &&
         containsRuntimeExpression(expr.celExpression) &&
         (methodName === undefined ||
           isDeliveredWithMethod(expr.path, methodName))
@@ -1489,9 +1493,10 @@ export class ExpressionEvaluationService {
       sanitizer,
       provenance,
       {
-        skipPath: methodName === undefined
-          ? undefined
-          : (path) => isOutsideMethodDelivery(path, methodName),
+        skipPath: (path) =>
+          isDescription(path) ||
+          (methodName !== undefined &&
+            isOutsideMethodDelivery(path, methodName)),
         unevaluated: options.keepUnevaluated &&
           { keep: options.keepUnevaluated, into: failedExpressions },
       },

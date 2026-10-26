@@ -68,6 +68,8 @@ import {
   UnboundExpressionError,
 } from "../../domain/expressions/errors.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import { definitionDescriptionPaths } from "../../domain/expressions/description_paths.ts";
+import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
 import { InputValidationService } from "../../domain/inputs/input_validation_service.ts";
 import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
@@ -378,8 +380,17 @@ async function deliverCheckArguments(
     context,
     issuingBag,
   );
-  for (const error of evaluated.failedExpressions?.values() ?? []) {
-    if (!isEvaluationFailure(error)) throw error;
+  // A failure only in description prose never fails the run, which delivers
+  // none of it, so it does not fail the checks either.
+  const selectedData = selected.toData();
+  const isDescription = definitionDescriptionPaths(selectedData);
+  const delivered = new Set(
+    extractExpressions(selectedData)
+      .filter((expr) => !isDescription(expr.path))
+      .map((expr) => expr.raw),
+  );
+  for (const [raw, error] of evaluated.failedExpressions ?? []) {
+    if (delivered.has(raw) && !isEvaluationFailure(error)) throw error;
   }
   // What validate simply cannot evaluate, an input with no default, an
   // environment variable unset here or upstream data not produced yet, is

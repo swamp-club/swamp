@@ -1261,6 +1261,114 @@ Deno.test("default validation: a global that reads a model with no data yet stay
   });
 });
 
+Deno.test("typed local behavior: description prose documenting vault, env or data syntax is neither checked, read nor failed on by validate or run", async () => {
+  await withFixture(async (f) => {
+    const unsupported = "Example: ${{ dyn(vault).get('prod', 'canary-3') }}";
+    const missing = "Example: ${{ vault.get('prod', 'no-such-key') }}";
+    const unsetEnv = "Example: ${{ env.SWAMP_NO_SUCH_VARIABLE_3735 }}";
+    const dataMisuse =
+      "Example: ${{ size(data.latest('db', 'main').attributes.password) }}";
+    const prose = await f.save(Definition.create({
+      name: "documented",
+      type: f.type.normalized,
+      description: `${unsupported} ${missing} ${dataMisuse}`,
+      inputs: {
+        type: "object",
+        description: unsetEnv,
+        properties: {
+          later: { type: "string", description: missing },
+          nested: {
+            type: "object",
+            properties: { deep: { type: "string", description: unsupported } },
+          },
+          list: {
+            type: "array",
+            items: { type: "string", description: unsupported },
+          },
+        },
+      },
+      globalArguments: {},
+      methods: { [METHOD]: { arguments: { note: "plain" } } },
+    }));
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    const beforeMissing = f.counting.readsOf("no-such-key");
+    const beforeAliased = f.counting.readsOf(keyOf(3));
+    const result = await deps.validateModel(prose, f.model, f.type);
+    assertEquals(
+      result.results.filter((r) => !r.passed),
+      [],
+      JSON.stringify(result.results),
+    );
+
+    f.received.length = 0;
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(createLibSwampContext(), f.runDeps(), {
+        modelIdOrName: "documented",
+        methodName: METHOD,
+        inputs: {},
+        lastEvaluated: false,
+      }),
+    );
+    const error = events.find((e) => e.kind === "error");
+    assertEquals(error, undefined, JSON.stringify(error));
+    assertEquals(f.received.at(-1)!.args.note, "plain");
+    assertEquals(f.counting.readsOf("no-such-key") - beforeMissing, 0);
+    assertEquals(f.counting.readsOf(keyOf(3)) - beforeAliased, 0);
+
+    // A schema default is a value the run delivers, so a description key
+    // inside one is still checked.
+    const defaulted = await f.save(Definition.create({
+      name: "documented-default",
+      type: f.type.normalized,
+      inputs: {
+        type: "object",
+        properties: {
+          cfg: { type: "object", default: { description: unsupported } },
+        },
+      },
+      globalArguments: { cfg: "${{ inputs.cfg }}" },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const defaultedResult = await deps.validateModel(
+      defaulted,
+      f.model,
+      f.type,
+    );
+    assertStringIncludes(
+      defaultedResult.results.find((r) => !r.passed)?.error ?? "",
+      "Call vault.get(vaultName, secretKey) directly",
+      JSON.stringify(defaultedResult.results),
+    );
+
+    // The same text in a delivered argument is checked there.
+    const container = "Example: ${{ data.latest('db', 'main').attributes }}";
+    const delivered = await f.save(Definition.create({
+      name: "documented-and-delivered",
+      type: f.type.normalized,
+      description: container,
+      globalArguments: { note: container },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const deliveredResult = await deps.validateModel(
+      delivered,
+      f.model,
+      f.type,
+    );
+    assertStringIncludes(
+      deliveredResult.results.find((r) => !r.passed)?.error ?? "",
+      "secret_operation_unsupported",
+      JSON.stringify(deliveredResult.results),
+    );
+  });
+});
+
 Deno.test({
   name:
     "typed local behavior: legacy evaluate then replay caches retain data origin and refuse a quoted heredoc",

@@ -35,7 +35,7 @@ import {
   extractWholeFieldInputRef,
 } from "../expressions/expression_parser.ts";
 import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
-import { keyPath } from "../expressions/provenance_map.ts";
+import { inputDescriptionPaths } from "../expressions/description_paths.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
 import { literalSensitiveGlobalArgsMessage } from "../models/sensitive_field_extractor.ts";
@@ -189,40 +189,6 @@ export interface WorkflowValidationService {
  */
 const PROSE_DESCRIPTION_PATH =
   /^(?:jobs\[\d+\](?:\.steps\[\d+\])?\.)?description$/;
-
-/** Description annotations of the input schemas, never their default values. */
-function inputDescriptionPaths(schema: unknown): Set<string> {
-  const paths = new Set<string>();
-  const visit = (value: unknown, path: string): void => {
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      return;
-    }
-    const node = value as Record<string, unknown>;
-    if (typeof node.description === "string") {
-      paths.add(keyPath(path, "description"));
-    }
-    const properties = node.properties;
-    if (properties && typeof properties === "object") {
-      for (const [name, property] of Object.entries(properties)) {
-        visit(property, keyPath(keyPath(path, "properties"), name));
-      }
-    }
-    for (const keyword of ["items", "additionalProperties"]) {
-      visit(node[keyword], keyPath(path, keyword));
-    }
-  };
-  visit(schema, "inputs");
-  // Input validation also accepts a flat map of named property schemas.
-  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
-    const root = schema as Record<string, unknown>;
-    if (root.properties === undefined && root.type !== "object") {
-      for (const [name, property] of Object.entries(root)) {
-        visit(property, keyPath("inputs", name));
-      }
-    }
-  }
-  return paths;
-}
 
 /**
  * Default implementation of workflow validation service.
