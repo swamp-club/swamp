@@ -831,38 +831,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
         ) {
           // Found a YAML file, add it to results
-          try {
-            if (entry.isSymlink) {
-              await assertSafePath(fullPath, this.repoDir);
-            }
-            const content = await Deno.readTextFile(fullPath);
-            const data = parseYaml(content) as DefinitionData | null;
-            if (!data) continue;
-            const definition = Definition.fromData(data);
-
-            if (recordPaths) {
-              this.idToActualPath.set(
-                definition.id as DefinitionId,
-                fullPath,
-              );
-            }
-            // Prefer the type from the YAML, fall back to path-based type
-            const typeStr = definition.type ?? pathSegments.join("/");
-            results.push({ definition, type: ModelType.create(typeStr) });
-          } catch (error) {
-            if (isIoError(error)) {
-              throw markErrorPaths(
-                new UserError(
-                  `Failed to read definition file ${fullPath}: ${
-                    error instanceof Error ? error.message : error
-                  }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
-                ),
-                [fullPath, ...errorPaths(error)],
-              );
-            }
-            const msg = error instanceof Error ? error.message : String(error);
-            logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
-          }
+          const found = await this.readDefinitionEntry(
+            fullPath,
+            pathSegments,
+            entry.isSymlink,
+            recordPaths,
+          );
+          if (found) results.push(found);
         } else if (entry.isDirectory) {
           // Recursively search subdirectories
           await this.collectAllDefinitions(
@@ -877,6 +852,72 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
+    }
+  }
+
+  /**
+   * The directories definitions are read from: the definitions directory,
+   * then the auto-definitions directory when there is one. The order is the
+   * one {@link findAllIncludingAutoGlobal} reads them in.
+   */
+  definitionRoots(): string[] {
+    return this.secondaryBaseDir
+      ? [this.baseDir, this.secondaryBaseDir]
+      : [this.baseDir];
+  }
+
+  /**
+   * Reads one definition file as a scan of every definition reads it:
+   * `typeSegments` is the path of its directory below its root, the type a
+   * file that declares none belongs to. Null for an empty or broken file,
+   * which is warned about and skipped; an I/O error is raised.
+   */
+  readDefinitionFile(
+    path: string,
+    typeSegments: string[],
+    isSymlink: boolean,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    return this.readDefinitionEntry(path, typeSegments, isSymlink, false);
+  }
+
+  private async readDefinitionEntry(
+    fullPath: string,
+    pathSegments: string[],
+    isSymlink: boolean,
+    recordPaths: boolean,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    try {
+      if (isSymlink) {
+        await assertSafePath(fullPath, this.repoDir);
+      }
+      const content = await Deno.readTextFile(fullPath);
+      const data = parseYaml(content) as DefinitionData | null;
+      if (!data) return null;
+      const definition = Definition.fromData(data);
+
+      if (recordPaths) {
+        this.idToActualPath.set(
+          definition.id as DefinitionId,
+          fullPath,
+        );
+      }
+      // Prefer the type from the YAML, fall back to path-based type
+      const typeStr = definition.type ?? pathSegments.join("/");
+      return { definition, type: ModelType.create(typeStr) };
+    } catch (error) {
+      if (isIoError(error)) {
+        throw markErrorPaths(
+          new UserError(
+            `Failed to read definition file ${fullPath}: ${
+              error instanceof Error ? error.message : error
+            }. If the open-file limit was reached, raise it with 'ulimit -n'.`,
+          ),
+          [fullPath, ...errorPaths(error)],
+        );
+      }
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
+      return null;
     }
   }
 

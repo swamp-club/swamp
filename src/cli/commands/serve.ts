@@ -467,6 +467,7 @@ import {
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { basename, join, resolve } from "@std/path";
@@ -4962,12 +4963,16 @@ export const serveCommand = new Command()
     // Traced dashboard reads record the event-loop lag seen while they ran,
     // to tell a blocked loop from slow I/O (swamp-club#3741).
     const eventLoopLag = new EventLoopLagMonitor();
+    // Authorizing what a request reads finds the owning definitions here,
+    // not by scanning every definition per request (swamp-club#3968).
+    const definitionIndex = new DefinitionIdIndex(repoContext.definitionRepo);
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
         repoContext,
         gcMutex,
         eventLoopLag,
+        definitionIndex,
         datastoreConfig,
         datastoreResolver,
         syncService,
