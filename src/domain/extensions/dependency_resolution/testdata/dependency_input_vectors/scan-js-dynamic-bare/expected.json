@@ -1,0 +1,58 @@
+{
+  "project": {
+    "config": "deno.json",
+    "packageDir": null,
+    "lock": null,
+    "flags": [
+      "--config",
+      "<root>/deno.json",
+      "--no-lock"
+    ]
+  },
+  "bareImports": [
+    {
+      "importer": "extensions/models/helper.js",
+      "specifier": "vecpkg",
+      "target": "npm:vecpkg@1.0.0"
+    }
+  ],
+  "fmt": {
+    "config": "deno.json"
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import { load } from \"./helper.js\";\n\nexport const model = [load];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": []
+  },
+  "audited": [],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [
+    "safety: Extension has safety errors that must be resolved before pushing."
+  ],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": false,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

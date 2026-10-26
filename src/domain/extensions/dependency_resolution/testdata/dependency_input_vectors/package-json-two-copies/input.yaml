@@ -1,0 +1,37 @@
+description: "Two installed copies under one declared range, one per package.json (#3793)."
+files:
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "extensions/models/member/also.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "extensions/models/member/package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+      - member/also.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"
+  - dir: extensions/models/member/node_modules/vecpkg
+    name: vecpkg
+    version: "1.1.0"

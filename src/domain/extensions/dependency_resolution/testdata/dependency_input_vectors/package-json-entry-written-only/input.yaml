@@ -1,0 +1,23 @@
+description: "A package.json beside an extension whose entry point writes only npm: imports."
+files:
+  "extensions/models/m.ts": |
+    import value from "npm:vecpkg@1.0.0";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"

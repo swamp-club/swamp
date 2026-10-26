@@ -64,11 +64,10 @@ import {
 import {
   denoInfoEntryPoint,
   groupStaleLockfiles,
-  sourceHasBareSpecifiers,
   type StaleLockfile,
   StaleLockfileError,
 } from "../domain/models/bundle.ts";
-import { DENO_CONFIG_FILE_NAMES } from "../domain/extensions/deno_config.ts";
+import { detectExtensionProject } from "../domain/extensions/dependency_resolution/extension_project.ts";
 import type {
   ResolvedBareImport,
   StaleInstalledImport,
@@ -384,78 +383,6 @@ function typedEntries(
 
 function isSameOrUnder(path: string, root: string): boolean {
   return path === root || path.startsWith(root + SEPARATOR);
-}
-
-/**
- * Where the `deno.json` / `package.json` walk up from the manifest stops.
- * A manifest inside the repo walks to the repo dir, as it always has, so a
- * monorepo's root config still applies to an extension pushed with
- * `--extensions-dir` at a sub-directory. A manifest outside the repo walks
- * to the extensions root that contains it, never further; the manifest's
- * own directory when neither contains it.
- */
-export function projectConfigBoundary(
-  manifestDir: string,
-  extensionsRoot: string,
-  repoDir: string,
-): string {
-  const dir = resolve(manifestDir);
-  const root = resolve(extensionsRoot);
-  const repo = resolve(repoDir);
-  if (isSameOrUnder(dir, repo)) return repo;
-  if (isSameOrUnder(dir, root)) return root;
-  return dir;
-}
-
-/**
- * Walks up from `startDir` to `boundaryDir` (inclusive) and returns the path
- * of the first of `fileNames` found, the earlier name winning in one
- * directory, or undefined when none exists in between.
- */
-async function findUpward(
-  startDir: string,
-  boundaryDir: string,
-  fileNames: readonly string[],
-): Promise<string | undefined> {
-  let current = resolve(startDir);
-  const boundary = resolve(boundaryDir);
-  while (true) {
-    for (const fileName of fileNames) {
-      const candidate = join(current, fileName);
-      if (await isFile(candidate)) return candidate;
-    }
-    if (current === boundary) break;
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return undefined;
-}
-
-/**
- * The project Deno config for an extension: the first `deno.json` or
- * `deno.jsonc` walking up from `startDir` to `boundaryDir` (see
- * {@link projectConfigBoundary}), `deno.json` winning in one directory as
- * it does for Deno. Push, quality and fmt all use it, so they format, lint
- * and bundle under the same config.
- */
-export function findDenoConfig(
-  startDir: string,
-  boundaryDir: string,
-): Promise<string | undefined> {
-  return findUpward(startDir, boundaryDir, DENO_CONFIG_FILE_NAMES);
-}
-
-/**
- * The directory of the first `package.json` walking up from `startDir` to
- * `boundaryDir` (inclusive), or undefined when there is none.
- */
-export async function findPackageJsonDir(
-  startDir: string,
-  boundaryDir: string,
-): Promise<string | undefined> {
-  const path = await findUpward(startDir, boundaryDir, ["package.json"]);
-  return path === undefined ? undefined : dirname(path);
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -1390,43 +1317,21 @@ export async function resolveExtensionFiles(
   // 17. Project config: the deno.json, or the package.json project when the
   // extension uses bare specifiers, that push bundles under. The module
   // graph is read under the same config, so it is the bundle's graph.
-  const configBoundary = projectConfigBoundary(
+  const { denoConfigPath, packageJsonDir } = await detectExtensionProject({
     manifestDir,
     extensionsRoot,
     repoDir,
-  );
-  const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
-  let packageJsonDir: string | undefined;
-  if (denoConfigPath) {
-    logger.debug`Found Deno config at ${denoConfigPath}`;
-  } else {
-    const candidateDir = await findPackageJsonDir(manifestDir, configBoundary);
-    if (candidateDir) {
-      let hasBare = false;
-      for (
-        const ep of [
-          ...modelEntryPoints,
-          ...vaultEntryPoints,
-          ...datastoreEntryPoints,
-          ...reportEntryPoints,
-          ...webhookEntryPoints,
-        ]
-      ) {
-        if (symlinkedRoots.has(ep)) continue;
-        if (sourceHasBareSpecifiers(await Deno.readTextFile(ep))) {
-          hasBare = true;
-          break;
-        }
-      }
-      if (hasBare) {
-        packageJsonDir = candidateDir;
-        logger.debug`Found package.json project at ${packageJsonDir}`;
-        if (!ctx.lenientSources) await requireNodeModules(packageJsonDir);
-      } else {
-        logger
-          .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
-      }
-    }
+    entryPoints: [
+      ...modelEntryPoints,
+      ...vaultEntryPoints,
+      ...datastoreEntryPoints,
+      ...reportEntryPoints,
+      ...webhookEntryPoints,
+    ],
+    skip: symlinkedRoots,
+  });
+  if (packageJsonDir && !ctx.lenientSources) {
+    await requireNodeModules(packageJsonDir);
   }
 
   // 18. Local modules, from each entry point's module graph — the graph the

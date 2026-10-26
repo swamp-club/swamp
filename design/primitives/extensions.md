@@ -274,7 +274,7 @@ The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
 reused archive skips the fmt/lint gate. The version is not part of the hash,
 which also keys the adversarial-review report. The hash covers the lockfile
-the bundler runs `--frozen` against (`readOnlyLockFor`), when the project
+the bundler runs `--frozen` against (`frozenLockPath`), when the project
 has one (swamp-club#3662): the bundles and the dependency audit record ship
 the versions it locks, so a lock bump with no source change rebuilds the
 archive. An extension without a lock keeps its hash.
@@ -926,19 +926,39 @@ manifest directory to the repo root looking for project config.
 taking `deno.json` over `deno.jsonc` in the same directory as Deno does
 (swamp-club#3612). Only if it finds neither does it walk again for
 `package.json`. So a Deno config always wins, whatever its depth. Push, quality
-and fmt share this lookup (`findDenoConfig`), and every reader of the config's
-own settings (`lock`, `lint.rules.exclude`) parses it as JSONC
+and fmt share this lookup (`detectExtensionProject`), and every reader of the
+config's own settings (`lock`, `lint.rules.exclude`) parses it as JSONC
 (`parseDenoConfig`).
 
-**Bare specifier gate:** a `package.json` is used only if the extension source
-has bare specifiers (e.g., `from "zod"` rather than `from "npm:zod@4"`). This
+**Bare specifier gate:** a `package.json` is used only if an entry point
+imports a bare name with `from` (e.g., `from "zod"` rather than
+`from "npm:zod@4"`); a side-effect or dynamic import does not count yet
+(swamp-club#3983). This
 keeps an unrelated `package.json` (e.g., one listing `@anthropic-ai/claude-code`
 for tooling) from being taken as the extension's project config.
 
-Specifiers come only from the module's own static imports. Import statements
+Specifiers come only from the module's own imports. Import statements
 inside template literals are generated code for a script the extension emits at
 runtime, not part of its own module graph, so every bare-specifier check ignores
 them.
+
+**One resolver (swamp-club#3969):** push, quality, fmt and the loader read the
+project, each module's import sites and Deno's module graph through one module,
+`src/domain/extensions/dependency_resolution/`: `detectExtensionProject` and
+the lock rules (`configuredLockPath`, `frozenLockPath`), the import sites
+(`scanImportSites`, read with the shared scorer's scanner from
+`@swamp-club/extension-scoring/source`, so push reads imports as the registry
+does), the bare-specifier classifier (`isBareSpecifier`), the top-level
+import-map reader the package cache key and the zod fallback use, and
+`runDenoInfo`, the one way swamp runs `deno info`. Each caller keeps its own
+flags for the read. swamp-club#3983 moves the shared scanner to a syntax-tree
+read, ahead of the rubric v5 rescore. The input vectors
+(`dependency_resolution/testdata/dependency_input_vectors/`, run by
+`integration/dependency_input_vectors_test.ts`) pin, per input form, what push
+ships, audits and records, what quality and fmt read and what the loader
+bundles, against real Deno with local npm, JSR and URL hosts. Each runs in a
+process whose working directory is the vector's repository, since Deno discovers
+a config from the working directory, not from the module it reads.
 
 #### Bundling permutations
 
@@ -1243,16 +1263,17 @@ beside the relative rewrites above:
   resolution its top-level `imports` would not give (an `importMap` file, a
   scope, a workspace root), so editing an import map file cannot reuse a stale
   archive while every config with plain top-level imports keeps its hash.
-- The imports are the ones the dependency audit reads (`findImportSpecifiers`):
+- The imports are the ones the dependency audit reads (`scanImportSites`):
   string literals in import position, with comments and template literals
   blanked, so generated import text is never rewritten. Push audits every code
   module it rewrites, JavaScript included. A site is rewritten only when Babel
   parses that exact literal as an import's module specifier (static import,
   `export ... from`, `import()` or `typeof import()`), since the token scanner
-  can read a quote inside a regex literal as a string. A `.tsx` or `.jsx`
-  module is parsed with JSX. A module that does not parse gets no rewrite, and
-  its bare imports count as shipping as written: the rewrite and the
-  `bare-specifiers` finding come from one plan (`planBareImports`).
+  can read a quote inside a regex literal as a string (`parsedImportOffsets`).
+  A `.tsx` or `.jsx` module is parsed with JSX. A module that does not parse
+  gets no rewrite, and its bare imports count as shipping as written: the
+  rewrite and the `bare-specifiers` finding come from one plan
+  (`planBareImports`).
 - The target is written as Deno reports it, version or range included,
   exactly as a specifier written out in source would ship. A `key/` target
   written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
@@ -2183,7 +2204,7 @@ they outlive the runtime:
 Push and quality treat the author's lockfile as read-only
 (swamp-club#3613). The module graph read (`deno info`) and the bundle run
 with `--frozen` when the project has the lock the bundler honours, and with
-`--no-lock` when it has none (`readOnlyLockFor` in the lockfile adapter; a
+`--no-lock` when it has none (`frozenLockPath` in `dependency_resolution/`; a
 config that cannot be parsed keeps the `deno.lock` beside it). A lock
 that no longer matches the project fails the push with an error naming the
 lock, the config and `deno install --entrypoint <file>`, instead of being

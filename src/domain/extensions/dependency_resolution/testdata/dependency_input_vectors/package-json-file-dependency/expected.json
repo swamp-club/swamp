@@ -1,0 +1,56 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": ".",
+    "lock": null,
+    "flags": [
+      "--node-modules-dir=manual",
+      "--no-lock"
+    ]
+  },
+  "bareImports": [
+    {
+      "importer": "extensions/models/m.ts",
+      "specifier": "local",
+      "target": null
+    }
+  ],
+  "fmt": {
+    "config": null
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import value from \"local\";\n\nexport const model = [value];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": []
+  },
+  "audited": [],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "bare-specifiers: Extension has bare imports that ship as written, which the registry's scorer cannot resolve, so it would score the documentation factors 0: \"local\". Push rewrites a bare import only when the project's Deno config (deno.json or deno.jsonc imports, an importMap file, a scope covering the module, or a workspace root's imports) resolves it to an npm:, jsr:, node: or URL specifier, or, with no Deno config, when package.json declares it as an npm registry dependency installed in node_modules; add such an entry or dependency for each, or write the specifier in its place.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": true,
+      "zod4": [],
+      "bundle": "deno bundle failed for <root>/extensions/models/m.ts: ⚠️  deno bundle is experimental and subject to changes\nerror: Importing npm packages via a file: specifier is only supported with --node-modules-dir=manual\n    at file://<root>/extensions/models/m.ts:1:18\nerror: bundling failed"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+description: "A written jsr: range a deno.lock resolves to an older version."
+files:
+  "deno.json": |
+    {}
+  "deno.lock": |
+    {
+      "version": "5",
+      "specifiers": {
+        "jsr:@vec/lib@1": "1.0.0"
+      },
+      "jsr": {
+        "@vec/lib@1.0.0": {
+          "integrity": "{{JSR_INTEGRITY @vec/lib@1.0.0}}"
+        }
+      }
+    }
+  "extensions/models/m.ts": |
+    import { lib } from "jsr:@vec/lib@^1";
+
+    export const model = [lib];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

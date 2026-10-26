@@ -1,0 +1,18 @@
+description: "The import map in a deno.jsonc with comments."
+files:
+  "deno.jsonc": |
+    {
+      // the map
+      "imports": { "vecpkg": "npm:vecpkg@1.0.0" }
+    }
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

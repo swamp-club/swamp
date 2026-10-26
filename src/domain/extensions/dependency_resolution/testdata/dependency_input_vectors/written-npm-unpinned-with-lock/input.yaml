@@ -1,0 +1,28 @@
+description: "A written npm: specifier with no version, resolved by a deno.lock."
+files:
+  "deno.json": |
+    {}
+  "deno.lock": |
+    {
+      "version": "5",
+      "specifiers": {
+        "npm:vecpkg@*": "1.0.0"
+      },
+      "npm": {
+        "vecpkg@1.0.0": {
+          "integrity": "{{INTEGRITY vecpkg@1.0.0}}",
+          "tarball": "{{ORIGIN}}/vecpkg/-/vecpkg-1.0.0.tgz"
+        }
+      }
+    }
+  "extensions/models/m.ts": |
+    import value from "npm:vecpkg";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

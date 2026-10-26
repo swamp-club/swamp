@@ -1,0 +1,20 @@
+description: "A deno.json above the repository, which swamp does not find and Deno applies."
+repo: repo
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@1.0.0"
+      }
+    }
+  "repo/extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "repo/manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

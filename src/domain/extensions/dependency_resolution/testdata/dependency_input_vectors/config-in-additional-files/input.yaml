@@ -1,0 +1,21 @@
+description: "A deno.json listed in additionalFiles."
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@1.0.0"
+      }
+    }
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+    additionalFiles:
+      - deno.json

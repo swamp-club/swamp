@@ -23,12 +23,14 @@ import { stripAnsiCode } from "@std/fmt/colors";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { parseRange, rangeIntersects, tryParseRange } from "@std/semver";
 import * as zodModule from "zod";
-import { stripSourceComments } from "@swamp-club/extension-scoring/source";
 import { markErrorPaths, UserError } from "../errors.ts";
+import { readConfigImports } from "../extensions/dependency_resolution/import_map.ts";
+import { importStatementSpecifiers } from "../extensions/dependency_resolution/import_sites.ts";
 import {
-  DENO_CONFIG_FILE_NAMES,
-  readDenoConfig,
-} from "../extensions/deno_config.ts";
+  findLoaderDenoConfig,
+  hasBareImport,
+} from "../extensions/dependency_resolution/extension_project.ts";
+import { runDenoInfo } from "../extensions/dependency_resolution/deno_info.ts";
 import {
   bareImportsFromDenoInfo,
   hasUnresolvedBareImports,
@@ -557,92 +559,6 @@ export interface BundleOptions {
 }
 
 /**
- * Checks whether a TypeScript source file contains bare specifier imports
- * (e.g., `from "zod"`, `from "@aws-sdk/..."`) that require a deno.json
- * import map to resolve. Returns true if any bare specifier is found.
- *
- * The bundler recognizes these import kinds; all but "bare" reach
- * `deno bundle` unchanged and are resolved by it without an import map:
- *
- * - relative (`./foo`, `../bar`) — resolved by path
- * - npm: (`npm:zod@4`) — non-local, resolved and inlined by deno bundle
- * - jsr: (`jsr:@std/assert@1`) — non-local, resolved and inlined by deno bundle
- * - https: (`https://deno.land/std/...`) — non-local, resolved and inlined by deno bundle
- * - node: (`node:fs`) — built-in, passed through unchanged
- * - bare (`zod`, `@aws-sdk/...`) — requires a deno.json or package.json to resolve
- *
- * Used by runtime loaders to determine whether a cached bundle should be
- * preferred over re-bundling when no deno.json is available (pulled
- * extensions with bare specifiers would always fail to rebundle locally).
- */
-const IMPORT_SPECIFIER_RE =
-  /(?:import|export)\s+[^;()]*?from\s+["']([^"']+)["']/g;
-
-export function isBareSpecifier(specifier: string): boolean {
-  // A specifier carrying a `${...}` placeholder is interpolated at runtime, not
-  // a package name. stripSourceComments already removes the common source of
-  // these (generated code inside template literals), but `import x from
-  // "${pkg}"` is valid TypeScript at the top level — double quotes do not
-  // interpolate — so the classifier guards itself rather than trusting callers.
-  if (specifier.includes("${")) return false;
-  if (specifier.startsWith(".")) return false;
-  if (specifier.startsWith("npm:")) return false;
-  if (specifier.startsWith("jsr:")) return false;
-  if (specifier.startsWith("https:")) return false;
-  if (specifier.startsWith("http:")) return false;
-  if (specifier.startsWith("node:")) return false;
-  return true;
-}
-
-export function sourceHasBareSpecifiers(source: string): boolean {
-  const stripped = stripSourceComments(source);
-  for (const match of stripped.matchAll(IMPORT_SPECIFIER_RE)) {
-    if (isBareSpecifier(match[1])) return true;
-  }
-  return false;
-}
-
-export function extractBareSpecifierNames(source: string): string[] {
-  const bare = new Set<string>();
-  const stripped = stripSourceComments(source);
-  for (const match of stripped.matchAll(IMPORT_SPECIFIER_RE)) {
-    if (isBareSpecifier(match[1])) bare.add(match[1]);
-  }
-  return [...bare];
-}
-
-/**
- * What an import map resolves a bare specifier to, when that target is an
- * explicit specifier an author can write in its place (`npm:`, `jsr:`, a
- * URL or a relative path). An exact key wins; otherwise the longest key
- * ending in `/` that prefixes the specifier, with the rest appended, as
- * import maps resolve. Undefined when the map has no usable entry.
- */
-export function importMapTarget(
-  specifier: string,
-  imports: Record<string, string> | undefined,
-): string | undefined {
-  if (!imports) return undefined;
-  let target: string | undefined = imports[specifier];
-  if (target === undefined) {
-    let bestKey = "";
-    for (const key of Object.keys(imports)) {
-      if (
-        key.endsWith("/") && specifier.startsWith(key) &&
-        key.length > bestKey.length
-      ) {
-        bestKey = key;
-      }
-    }
-    if (bestKey) {
-      target = imports[bestKey] + specifier.slice(bestKey.length);
-    }
-  }
-  if (typeof target !== "string" || isBareSpecifier(target)) return undefined;
-  return target;
-}
-
-/**
  * Determines whether a bundle failure is "expected" — i.e. a pulled extension
  * whose source contains bare specifiers but has no project config (deno.json /
  * deno.jsonc) to resolve them. In this case the failure is a known limitation,
@@ -659,38 +575,17 @@ export function isExpectedBundleFailure(
   absolutePath: string,
   repoDir?: string,
 ): boolean {
-  // Walk up from the source file looking for deno.json / deno.jsonc.
-  // If found, the project config should have resolved specifiers — failure
-  // is unexpected.
-  let dir = dirname(absolutePath);
-  const root = resolve("/");
-  while (dir !== root) {
-    if (repoDir && resolve(dir) === resolve(repoDir)) break;
-    for (const name of DENO_CONFIG_FILE_NAMES) {
-      try {
-        Deno.statSync(join(dir, name));
-        return false; // Config found — failure is unexpected
-      } catch {
-        // Not found — keep walking
-      }
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
+  // A config above the source should have resolved its specifiers, so a
+  // failure under one is unexpected.
+  if (findLoaderDenoConfig(absolutePath, repoDir)) return false;
 
   // No config found — check if source actually needs one.
   try {
-    const source = Deno.readTextFileSync(absolutePath);
-    return sourceHasBareSpecifiers(source);
+    return hasBareImport(Deno.readTextFileSync(absolutePath));
   } catch {
     return false; // Can't read source — treat as unexpected
   }
 }
-
-// A static, side-effect or literal dynamic import, or a re-export: the
-// specifier each import or export statement names.
-const IMPORTED_SPECIFIER_RE = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"'\n]+)["']/g;
 
 /** How many modules {@link zod4SpecifiersReachedFrom} reads at most. */
 const MAX_ZOD_SCAN_MODULES = 2000;
@@ -717,12 +612,7 @@ export async function zod4SpecifiersReachedFrom(
     } catch {
       continue;
     }
-    for (
-      const match of stripSourceComments(source).matchAll(
-        IMPORTED_SPECIFIER_RE,
-      )
-    ) {
-      const spec = match[1];
+    for (const spec of importStatementSpecifiers(source)) {
       if (spec.startsWith("npm:zod") && isZod4Specifier(spec)) {
         found.add(spec);
       } else if (spec.startsWith("./") || spec.startsWith("../")) {
@@ -769,10 +659,7 @@ export function sharedZodTargets(
 async function configZodTarget(
   denoConfigPath: string,
 ): Promise<string | undefined> {
-  const imports = (await readDenoConfig(denoConfigPath))?.imports as
-    | Record<string, unknown>
-    | undefined;
-  const target = imports?.["zod"];
+  const target = (await readConfigImports(denoConfigPath))?.["zod"];
   return typeof target === "string" && target.startsWith("npm:zod@") &&
       isZod4Specifier(target) && !/^npm:zod@[^/]+\//.test(target)
     ? target
@@ -810,24 +697,17 @@ async function readBareImports(
 ): Promise<ResolvedBareImport[] | undefined> {
   const root = toFileUrl(await denoInfoEntryPoint(entryPoint)).href;
   const read = async (extraArgs: string[]) => {
-    const output = await new Deno.Command(denoPath, {
+    const result = await runDenoInfo(denoPath, root, entryPoint, {
+      // A resolution query only: never write or freeze the author's lock.
       args: [
-        "info",
-        "--json",
-        // A resolution query only: never write or freeze the author's lock.
         ...denoProjectArgs({ ...options, readOnlyLock: {} }),
         ...extraArgs,
-        root,
       ],
-      stdout: "piped",
-      stderr: "piped",
       signal: options.signal ?? AbortSignal.timeout(BUNDLE_TIMEOUT_MS),
       ...(options.env ? { env: options.env } : {}),
-    }).output();
-    return output.success
-      ? bareImportsFromDenoInfo(
-        JSON.parse(new TextDecoder().decode(output.stdout)),
-      )
+    });
+    return result.success
+      ? bareImportsFromDenoInfo(result.graph.json)
       : undefined;
   };
   try {

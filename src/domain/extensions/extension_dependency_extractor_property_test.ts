@@ -23,10 +23,8 @@
 
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
-import {
-  extractSpecifiersFromSource,
-  importMapResolver,
-} from "./extension_dependency_extractor.ts";
+import { extractSpecifiersFromSource } from "./extension_dependency_extractor.ts";
+import { importMapResolver } from "./dependency_resolution/import_map.ts";
 
 const writtenImportArb = fc.constantFrom(
   'import a from "npm:axios@1.7.2";',

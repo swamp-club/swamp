@@ -1,0 +1,21 @@
+description: "A .js module reached from the entry point with a dynamic import() of a mapped bare name."
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@1.0.0"
+      }
+    }
+  "extensions/models/helper.js": |
+    export const load = () => import("vecpkg");
+  "extensions/models/m.ts": |
+    import { load } from "./helper.js";
+
+    export const model = [load];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

@@ -1,0 +1,43 @@
+description: "A package.json project with a deno.lock beside it."
+files:
+  "deno.lock": |
+    {
+      "version": "5",
+      "specifiers": {
+        "npm:vecpkg@^1.0.0": "1.0.0"
+      },
+      "npm": {
+        "vecpkg@1.0.0": {
+          "integrity": "{{INTEGRITY vecpkg@1.0.0}}",
+          "tarball": "{{ORIGIN}}/vecpkg/-/vecpkg-1.0.0.tgz"
+        }
+      },
+      "workspace": {
+        "packageJson": {
+          "dependencies": [
+            "npm:vecpkg@^1.0.0"
+          ]
+        }
+      }
+    }
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"

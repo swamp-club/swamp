@@ -23,11 +23,12 @@ import { bareImportResolverFrom } from "./bare_import_resolution.ts";
 import {
   extractDependencySpecifiers,
   extractSpecifiersFromSource,
-  findImportSpecifiers,
+} from "./extension_dependency_extractor.ts";
+import {
   type ImportMap,
   importMapResolver,
   resolveBareImport,
-} from "./extension_dependency_extractor.ts";
+} from "./dependency_resolution/import_map.ts";
 
 Deno.test("extractSpecifiersFromSource: extracts npm specifier with version", () => {
   const source = `import { z } from "npm:zod@4";
@@ -480,76 +481,6 @@ Deno.test("extractDependencySpecifiers: audits JavaScript code modules too", asy
       [["axios", mjs], ["ms", js]],
     );
   });
-});
-
-// ── findImportSpecifiers (swamp-club#3637) ──────────────────────────────
-
-Deno.test("findImportSpecifiers: reports each import with its quoted span", () => {
-  const source = "import ms from \"ms\";\nexport { x } from './x.ts';\n";
-  assertEquals(findImportSpecifiers(source), [
-    {
-      specifier: "ms",
-      span: {
-        start: { line: 0, character: 15 },
-        end: { line: 0, character: 19 },
-      },
-      offset: 15,
-    },
-    {
-      specifier: "./x.ts",
-      span: {
-        start: { line: 1, character: 18 },
-        end: { line: 1, character: 26 },
-      },
-      offset: 39,
-    },
-  ]);
-});
-
-Deno.test("findImportSpecifiers: counts columns in code points after astral characters and comments", () => {
-  const source = '// 🎉 note\n/* 😀 */ import a from "a"; const s = "🎉";\n';
-  const [site] = findImportSpecifiers(source);
-  assertEquals(site.specifier, "a");
-  assertEquals(site.span, {
-    start: { line: 1, character: 22 },
-    end: { line: 1, character: 25 },
-  });
-  const line = Array.from(source.split("\n")[1]);
-  assertEquals(line.slice(22, 25).join(""), '"a"');
-});
-
-Deno.test("findImportSpecifiers: reads side-effect, dynamic, type and multi-line imports", () => {
-  const source = [
-    'import "side";',
-    'const m = await import("lazy");',
-    'type T = typeof import("types");',
-    "import {",
-    "  a,",
-    "  b,",
-    '} from "multi";',
-    'export * from "star";',
-  ].join("\n");
-  assertEquals(
-    findImportSpecifiers(source).map((s) => [s.specifier, s.span.start.line]),
-    [["side", 0], ["lazy", 1], ["types", 2], ["multi", 6], ["star", 7]],
-  );
-});
-
-Deno.test("findImportSpecifiers: ignores import text in comments, strings and template literals", () => {
-  const source = [
-    '// import a from "a";',
-    '/* import b from "b"; */',
-    "const s = \"import c from 'c'\";",
-    'const t = `import d from "d"`;',
-    'import real from "real";',
-  ].join("\n");
-  assertEquals(findImportSpecifiers(source).map((s) => s.specifier), [
-    "real",
-  ]);
-});
-
-Deno.test("findImportSpecifiers: leaves out an unterminated specifier", () => {
-  assertEquals(findImportSpecifiers('import a from "a\nconst x = 1;'), []);
 });
 
 Deno.test("extractSpecifiersFromSource: an installed package.json dependency carries its declared range and installed version (swamp-club#3630)", () => {

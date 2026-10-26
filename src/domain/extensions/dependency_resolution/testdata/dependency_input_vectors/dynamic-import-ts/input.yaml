@@ -1,0 +1,11 @@
+description: "A dynamic import() of an npm: package in a .ts module."
+files:
+  "extensions/models/m.ts": |
+    export const model = () => import("npm:vecpkg@1.0.0");
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

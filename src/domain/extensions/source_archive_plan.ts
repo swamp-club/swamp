@@ -25,18 +25,17 @@ import {
   relative as posixRelative,
 } from "@std/path/posix";
 import { markErrorPaths, UserError } from "../errors.ts";
-import { isBareSpecifier, isZod4Specifier } from "../models/bundle.ts";
-import { findImportSpecifiers } from "./extension_dependency_extractor.ts";
+import { isZod4Specifier } from "../models/bundle.ts";
+import {
+  parsedImportOffsets,
+  scanImportSites,
+} from "./dependency_resolution/import_sites.ts";
+import { isBareSpecifier } from "./dependency_resolution/specifier.ts";
 import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
 import {
   DEPENDENCY_AUDIT_RECORD_FILENAME,
 } from "@swamp-club/extension-scoring/dependency-audit";
-import {
-  type AstNode,
-  isNode,
-  parseExtensionSource,
-} from "./extension_source_ast.ts";
 import type {
   LocalEdge,
   SourceModuleGraph,
@@ -439,68 +438,6 @@ const REWRITABLE_TARGET_RE = /^(?:npm|jsr|node|https?):/;
 const UNSAFE_TARGET_RE = /["'`\\\r\n\u2028\u2029]|\$\{/;
 
 /**
- * The offsets, with their values, of the string literals Babel parses as
- * the module specifier of an import: a static import or `export ... from`, a dynamic `import()`
- * and a `typeof import()` type. Undefined when `source` does not parse. The
- * token scanner cannot tell a regex literal from a string, so only a span
- * the parser confirms is rewritten (swamp-club#3637).
- */
-function importSourceOffsets(
-  source: string,
-  jsx: boolean,
-): Map<number, string> | undefined {
-  const program = parseExtensionSource(source, { jsx });
-  if (!program) return undefined;
-  const offsets = new Map<number, string>();
-  const add = (node: unknown) => {
-    if (
-      isNode(node) && node.type === "StringLiteral" &&
-      typeof node.start === "number" && typeof node.value === "string"
-    ) {
-      offsets.set(node.start, node.value);
-    }
-  };
-  // Explicit stack: extension source can nest deeply.
-  const stack: AstNode[] = [program];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    switch (node.type) {
-      case "ImportDeclaration":
-      case "ExportNamedDeclaration":
-      case "ExportAllDeclaration":
-      case "ImportExpression":
-        add(node.source);
-        break;
-      case "CallExpression": {
-        const callee = node.callee;
-        const args = node.arguments;
-        if (isNode(callee) && callee.type === "Import" && Array.isArray(args)) {
-          add(args[0]);
-        }
-        break;
-      }
-      case "TSImportType": {
-        const argument = node.argument;
-        add(
-          isNode(argument) && argument.type === "TSLiteralType"
-            ? argument.literal
-            : argument,
-        );
-        break;
-      }
-    }
-    for (const value of Object.values(node)) {
-      if (Array.isArray(value)) {
-        for (const item of value) if (isNode(item)) stack.push(item);
-      } else if (isNode(value)) {
-        stack.push(value);
-      }
-    }
-  }
-  return offsets;
-}
-
-/**
  * Whether bare specifier text is one push rewrites at all: a package
  * specifier never holds whitespace, `;` or parentheses (swamp-club#3637).
  */
@@ -564,10 +501,13 @@ export function planBareImports(
     shippedAsWritten: [],
     unsafe: [],
   };
-  const sites = findImportSpecifiers(source).filter((site) =>
+  const sites = scanImportSites(source).filter((site) =>
     isBareSpecifier(site.specifier)
   );
-  const confirmed = importSourceOffsets(source, /\.[jt]sx$/.test(sourcePath));
+  const confirmed = parsedImportOffsets(
+    source,
+    /\.[jt]sx$/.test(sourcePath),
+  );
   const asWritten = new Set<string>();
   for (const { specifier, span, offset } of sites) {
     if (confirmed && !confirmed.has(offset)) continue;

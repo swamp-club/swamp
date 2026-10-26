@@ -1,0 +1,20 @@
+description: "A node: builtin, written and mapped."
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "path": "node:path"
+      }
+    }
+  "extensions/models/m.ts": |
+    import { join } from "node:path";
+    import { basename } from "path";
+
+    export const model = [join, basename];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

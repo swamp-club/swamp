@@ -1,0 +1,51 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": null,
+    "lock": null,
+    "flags": [
+      "--no-lock",
+      "--node-modules-dir=none"
+    ]
+  },
+  "bareImports": [],
+  "fmt": {
+    "config": null
+  },
+  "archive": [
+    "_shared/lib/shared.ts",
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "_shared/lib/shared.ts": "export const shared = 1;\n",
+    "models/m.ts": "import { shared } from \"../_shared/lib/shared.ts\";\n\nexport const model = [shared];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": []
+  },
+  "audited": [],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": false,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": null,
+    "lock": null,
+    "flags": [
+      "--no-lock",
+      "--node-modules-dir=none"
+    ]
+  },
+  "bareImports": [],
+  "fmt": {
+    "config": null
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import value from \"npm:vecpkg@latest\";\n\nexport const model = [value];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": [
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "latest",
+        "version": "1.1.0",
+        "from": "registry"
+      }
+    ]
+  },
+  "audited": [
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "latest",
+      "sourceFile": "extensions/models/m.ts"
+    }
+  ],
+  "trust": {
+    "errors": [],
+    "warnings": [
+      "vecpkg [loose-specifier]: npm:vecpkg@latest is a dist-tag; audited 1.1.0, the version this push resolves"
+    ]
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": false,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

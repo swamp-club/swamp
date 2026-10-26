@@ -1,0 +1,19 @@
+description: "A quote inside a regex literal before a bare import on the same line."
+files:
+  "deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@1.0.0"
+      }
+    }
+  "extensions/models/m.ts": |
+    export const quoted = /'/.test("x"); import value from "vecpkg";
+
+    export const model = [quoted, value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

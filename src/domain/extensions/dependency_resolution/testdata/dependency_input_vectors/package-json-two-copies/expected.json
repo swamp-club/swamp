@@ -1,0 +1,108 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": ".",
+    "lock": null,
+    "flags": [
+      "--node-modules-dir=manual",
+      "--no-lock"
+    ]
+  },
+  "bareImports": [
+    {
+      "importer": "extensions/models/m.ts",
+      "specifier": "vecpkg",
+      "target": "npm:vecpkg@1.0.0",
+      "installedVersion": "1.0.0"
+    },
+    {
+      "importer": "extensions/models/member/also.ts",
+      "specifier": "vecpkg",
+      "target": "npm:vecpkg@1.1.0",
+      "installedVersion": "1.1.0"
+    }
+  ],
+  "fmt": {
+    "config": null
+  },
+  "archive": [
+    "bundles/m.js",
+    "bundles/member/also.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts",
+    "models/member/also.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import value from \"npm:vecpkg@1.0.0\";\n\nexport const model = [value];\n",
+    "models/member/also.ts": "import value from \"npm:vecpkg@1.1.0\";\n\nexport const model = [value];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok",
+    "bundles/member/also.js": "ok"
+  },
+  "record": {
+    "recordVersion": 1,
+    "dependencies": [
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "installed"
+      },
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "1.1.0",
+        "version": "1.1.0",
+        "from": "installed"
+      }
+    ]
+  },
+  "audited": [
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "^1.0.0",
+      "sourceFile": "extensions/models/m.ts",
+      "importedAs": "vecpkg",
+      "installedVersion": "1.0.0"
+    },
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "^1.0.0",
+      "sourceFile": "extensions/models/member/also.ts",
+      "importedAs": "vecpkg",
+      "installedVersion": "1.1.0"
+    }
+  ],
+  "trust": {
+    "errors": [],
+    "warnings": [
+      "vecpkg [loose-specifier]: npm:vecpkg@^1.0.0 is a range; audited 1.0.0, the version this push resolves (installed in node_modules) (imported as \"vecpkg\" through package.json)",
+      "vecpkg [loose-specifier]: npm:vecpkg@^1.0.0 is a range; audited 1.1.0, the version this push resolves (installed in node_modules) (imported as \"vecpkg\" through package.json)"
+    ]
+  },
+  "reviewWarnings": [
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs.",
+    "testing-completeness: 2 of 2 entry points have no sibling `_test.ts`: extensions/models/m.ts, extensions/models/member/also.ts. Cover success and failure paths with unit tests before publishing."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": true,
+      "zod4": [],
+      "bundle": "ok"
+    },
+    "extensions/models/member/also.ts": {
+      "config": null,
+      "expectedBundleFailure": true,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

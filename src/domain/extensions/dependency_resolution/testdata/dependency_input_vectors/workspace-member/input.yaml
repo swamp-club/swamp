@@ -1,0 +1,48 @@
+description: "An extension in a deno.json workspace member; the lock sits at the workspace root."
+manifest: ext/manifest.yaml
+files:
+  "deno.json": |
+    {
+      "workspace": [
+        "./ext"
+      ]
+    }
+  "deno.lock": |
+    {
+      "version": "5",
+      "specifiers": {
+        "npm:vecpkg@1": "1.0.0"
+      },
+      "npm": {
+        "vecpkg@1.0.0": {
+          "integrity": "{{INTEGRITY vecpkg@1.0.0}}",
+          "tarball": "{{ORIGIN}}/vecpkg/-/vecpkg-1.0.0.tgz"
+        }
+      },
+      "workspace": {
+        "members": {
+          "ext": {
+            "dependencies": [
+              "npm:vecpkg@1"
+            ]
+          }
+        }
+      }
+    }
+  "ext/deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@^1"
+      }
+    }
+  "ext/extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "ext/manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

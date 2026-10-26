@@ -1,0 +1,15 @@
+description: "A relative import of a module outside the models directory, inside the repository."
+files:
+  "extensions/models/m.ts": |
+    import { shared } from "../../lib/shared.ts";
+
+    export const model = [shared];
+  "lib/shared.ts": |
+    export const shared = 1;
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

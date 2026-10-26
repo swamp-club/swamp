@@ -23,16 +23,13 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { dirname, join, relative, resolve } from "@std/path";
+import { dirname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
-  findDenoConfig,
-  findPackageJsonDir,
   inferExtensionsRoot,
   isPulledExtensionManifest,
   planWorkflowArchiveNames,
-  projectConfigBoundary,
   resolveExtensionFiles,
 } from "./resolve_extension_files.ts";
 import { UserError } from "../domain/errors.ts";
@@ -2443,89 +2440,6 @@ Deno.test("resolveExtensionFiles: without the flag a skill present under both th
       err.message,
       "Skill directory hello-skill exists under two roots",
     );
-  });
-});
-
-Deno.test("projectConfigBoundary: the root or repo dir that contains the manifest, else the manifest dir", () => {
-  // resolve, not join: the boundary is absolute, so on Windows it carries the
-  // current drive letter.
-  const repo = resolve("/", "repo");
-  const root = resolve("/", "elsewhere", "ext");
-  assertPathEquals(
-    projectConfigBoundary(join(repo, "ext", "sub"), root, repo),
-    repo,
-  );
-  assertPathEquals(projectConfigBoundary(join(root, "sub"), root, repo), root);
-  assertPathEquals(projectConfigBoundary(repo, root, repo), repo);
-  // A monorepo sub-directory root inside the repo: the repo's own deno.json
-  // still applies, so the walk goes up to the repo dir.
-  const inRepoRoot = join(repo, "packages", "foo");
-  assertPathEquals(
-    projectConfigBoundary(join(inRepoRoot, "src"), inRepoRoot, repo),
-    repo,
-  );
-  assertPathEquals(
-    projectConfigBoundary(resolve("/", "nowhere", "m"), root, repo),
-    resolve("/", "nowhere", "m"),
-  );
-});
-
-Deno.test("findDenoConfig: the nearest deno.json walking up to the boundary, inclusive", async () => {
-  await withTempRepo(async (dir) => {
-    const ext = join(dir, "extensions", "models", "ext");
-    await Deno.mkdir(ext, { recursive: true });
-    assertEquals(await findDenoConfig(ext, dir), undefined);
-
-    await Deno.writeTextFile(join(dir, "deno.json"), "{}");
-    assertPathEquals((await findDenoConfig(ext, dir))!, join(dir, "deno.json"));
-
-    await Deno.writeTextFile(join(ext, "deno.json"), "{}");
-    assertPathEquals((await findDenoConfig(ext, dir))!, join(ext, "deno.json"));
-
-    // A deno.json above the boundary is never used.
-    await Deno.remove(join(ext, "deno.json"));
-    assertEquals(
-      await findDenoConfig(ext, join(dir, "extensions")),
-      undefined,
-    );
-  });
-});
-
-Deno.test("findDenoConfig: finds a deno.jsonc, and deno.json wins in the same directory (swamp-club#3612)", async () => {
-  await withTempRepo(async (dir) => {
-    const ext = join(dir, "extensions", "models");
-    await Deno.mkdir(ext, { recursive: true });
-    await Deno.writeTextFile(join(dir, "deno.jsonc"), "// comment\n{}");
-    assertPathEquals(
-      (await findDenoConfig(ext, dir))!,
-      join(dir, "deno.jsonc"),
-    );
-
-    await Deno.writeTextFile(join(dir, "deno.json"), "{}");
-    assertPathEquals((await findDenoConfig(ext, dir))!, join(dir, "deno.json"));
-
-    // The nearer directory wins over the file name.
-    await Deno.writeTextFile(join(ext, "deno.jsonc"), "{}");
-    assertPathEquals(
-      (await findDenoConfig(ext, dir))!,
-      join(ext, "deno.jsonc"),
-    );
-  });
-});
-
-Deno.test("findDenoConfig: a directory named deno.json is not a config", async () => {
-  await withTempRepo(async (dir) => {
-    await Deno.mkdir(join(dir, "deno.json"));
-    assertEquals(await findDenoConfig(dir, dir), undefined);
-  });
-});
-
-Deno.test("findPackageJsonDir: the directory holding the nearest package.json", async () => {
-  await withTempRepo(async (dir) => {
-    const ext = join(dir, "extensions", "models");
-    assertEquals(await findPackageJsonDir(ext, dir), undefined);
-    await Deno.writeTextFile(join(dir, "package.json"), "{}");
-    assertPathEquals((await findPackageJsonDir(ext, dir))!, dir);
   });
 });
 

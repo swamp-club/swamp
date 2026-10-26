@@ -1,0 +1,14 @@
+description: "Exact npm: versions written @=x.y.z and @vx.y.z."
+files:
+  "extensions/models/m.ts": |
+    import a from "npm:vecpkg@=1.0.0";
+    import b from "npm:vecpkg@v1.0.0";
+
+    export const model = [a, b];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

@@ -26,11 +26,10 @@ import {
   SEPARATOR,
 } from "@std/path";
 import type { ResolvedBareImport } from "./bare_import_resolution.ts";
-import { readDenoConfig } from "./deno_config.ts";
 import {
-  type ImportMap,
+  readConfigImports,
   resolveBareImport,
-} from "./extension_dependency_extractor.ts";
+} from "./dependency_resolution/import_map.ts";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import { qualitySidecarPath } from "./extension_quality_sidecar.ts";
 
@@ -375,11 +374,7 @@ async function unexplainedBareImports(
   rootDir: string,
 ): Promise<string[]> {
   if (bareImports.length === 0) return [];
-  const imports = (await readDenoConfig(denoConfigPath))?.imports;
-  const map: ImportMap | undefined =
-    imports && typeof imports === "object" && !Array.isArray(imports)
-      ? imports as ImportMap
-      : undefined;
+  const map = await readConfigImports(denoConfigPath);
   const configDir = dirname(denoConfigPath);
   const label = (target: string | undefined): string => {
     if (target === undefined) return "";

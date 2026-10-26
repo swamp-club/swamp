@@ -1,0 +1,23 @@
+description: "A package.json file: dependency, installed in node_modules."
+files:
+  "extensions/models/m.ts": |
+    import value from "local";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "local": "file:./local"
+      }
+    }
+installed:
+  - dir: node_modules/local
+    name: local
+    version: "0.0.0"

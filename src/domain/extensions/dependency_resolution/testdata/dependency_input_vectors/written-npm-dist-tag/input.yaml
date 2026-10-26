@@ -1,0 +1,13 @@
+description: "A written npm: dist-tag (@latest)."
+files:
+  "extensions/models/m.ts": |
+    import value from "npm:vecpkg@latest";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
