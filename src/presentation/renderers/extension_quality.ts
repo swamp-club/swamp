@@ -22,14 +22,14 @@ import type {
   ExtensionQualityData,
   ExtensionQualityEvent,
 } from "../../libswamp/extensions/quality.ts";
-import type { FactorStatus } from "../../domain/extensions/extension_rubric_scorer.ts";
+import type { FactorStatus } from "@swamp-club/extension-scoring/rubric";
 import type { LocalGateFailure } from "../../libswamp/extensions/push.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import {
   notAuditedFixes,
   onlyOutagesNotAudited,
-} from "../../domain/extensions/extension_dependency_trust_checker.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
 import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { Renderer } from "../renderer.ts";
@@ -169,6 +169,9 @@ function factorMark(status: FactorStatus): string {
     case "partial":
     case "missing":
       return "✗";
+    case "pending":
+      // the registry's status for a version it has not scored; never local
+      return "?";
   }
 }
 

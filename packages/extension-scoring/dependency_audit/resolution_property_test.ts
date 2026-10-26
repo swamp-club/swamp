@@ -24,7 +24,7 @@ import {
   type LockedDependencyVersions,
   resolveShippedVersion,
   suggestVersion,
-} from "./dependency_version_resolution.ts";
+} from "./resolution.ts";
 
 const versionArb = fc.tuple(
   fc.integer({ min: 0, max: 3 }),

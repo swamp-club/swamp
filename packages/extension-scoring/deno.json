@@ -1,0 +1,30 @@
+{
+  "name": "@swamp-club/extension-scoring",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "exports": {
+    ".": "./mod.ts",
+    "./rubric": "./rubric/mod.ts",
+    "./licensing": "./licensing/mod.ts",
+    "./archive": "./archive/layout.ts",
+    "./doc-failure": "./doc_failure.ts",
+    "./secret-docs": "./secret_docs/mod.ts",
+    "./dependency-audit": "./dependency_audit/mod.ts",
+    "./source": "./source/imports.ts",
+    "./vectors/rubric.json": "./vectors/rubric.json",
+    "./vectors/archive-layout.json": "./vectors/archive_layout.json",
+    "./vectors/secret-docs.json": "./vectors/secret_docs.json",
+    "./vectors/spdx.json": "./vectors/spdx.json",
+    "./vectors/dependency-audit.json": "./vectors/dependency_audit.json"
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.19",
+    "@std/semver": "jsr:@std/semver@^1.0.8",
+    "fast-check": "npm:fast-check@^3.23.2"
+  },
+  "publish": {
+    "exclude": [
+      "**/*_test.ts"
+    ]
+  }
+}

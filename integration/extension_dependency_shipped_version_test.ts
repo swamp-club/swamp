@@ -27,7 +27,9 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { createExtensionPushPrepareDeps } from "../src/libswamp/extensions/push.ts";
-import type { DependencySpecifier } from "../src/domain/extensions/extension_dependency_extractor.ts";
+import type {
+  DependencySpecifier,
+} from "@swamp-club/extension-scoring/dependency-audit";
 
 const PACKUMENT = {
   "dist-tags": { latest: "2.1.3" },

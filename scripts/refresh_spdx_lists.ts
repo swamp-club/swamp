@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Regenerates src/domain/licensing/spdx_lists.generated.ts from the SPDX
+ * Regenerates packages/extension-scoring/licensing/spdx_lists.generated.ts from the SPDX
  * License List data at a pinned release. Run with `deno run refresh-spdx`,
  * optionally passing a release tag (e.g. `v3.30.0`) to move the pin.
  *
@@ -31,7 +31,7 @@ import { fromFileUrl } from "@std/path";
 
 const DEFAULT_TAG = "v3.29.0";
 const OUTPUT = fromFileUrl(
-  new URL("../src/domain/licensing/spdx_lists.generated.ts", import.meta.url),
+  new URL("../packages/extension-scoring/licensing/spdx_lists.generated.ts", import.meta.url),
 );
 
 /** Suggested expression for each deprecated license id that has one. */

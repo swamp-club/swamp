@@ -234,21 +234,23 @@ If an extension doesn't appear after creation, delete stale bundles
 
 ## Quality Scorecard
 
-Swamp Club scores published extensions against a 13-factor rubric. Maximum
-third-party score: **15/16 = 93% (Grade A)**.
+Swamp Club scores published extensions against a 12-factor, 16-point rubric
+(v5); `swamp extension quality` and the registry score with the same package, so
+the local score predicts the registry's. Before publish, `repository-verified`
+is provisional and left out of the percentage.
 
 Key factors: README in `additionalFiles:`, an SPDX `license:` and a LICENSE file
-(optional; one point each), JSDoc coverage ≥80%, explicit return types, manifest
-`description:`, `repository:` URL on allowlisted host, dependency trust (no
-deprecated or vulnerable npm deps). From rubric v4, `swamp extension quality`
-also scores `secret-safe-docs`: README, manifest description and describe
-strings keep secrets in a vault (`${{ vault.get(<vault>, <key>) }}`), which the
-registry adopts in a later release.
+(optional; one point each), JSDoc coverage ≥80%, a non-blank manifest
+`description:`, `repository:` URL on an allowlisted host, dependency trust
+(exact pins, nothing deprecated, vulnerable or unaudited), and
+`secret-safe-docs`: README, manifest description and describe strings keep
+secrets in a vault (`${{ vault.get(<vault>, <key>) }}`).
 
-Run `swamp extension quality manifest.yaml --json` for a local self-check.
-Dependency trust is evaluated automatically — npm dependencies are audited
-against OSV.dev advisories and trust signals (downloads, license, recency,
-maintainer count). HIGH/CRITICAL vulnerabilities block push.
+Run `swamp extension quality manifest.yaml --json` for a local self-check; add
+`--isolated` to run `deno doc` without the local cache and credentials, as the
+registry does. Dependency trust is evaluated automatically — npm dependencies
+are audited against OSV.dev advisories and trust signals (downloads, license,
+recency, maintainer count). HIGH/CRITICAL vulnerabilities block push.
 
 See [references/quality/rubric.md](references/quality/rubric.md) for the full
 rubric and [references/quality/templates.md](references/quality/templates.md)

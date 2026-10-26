@@ -1057,6 +1057,8 @@ export {
 export {
   type FactorStatus,
   RUBRIC_VERSION,
+} from "@swamp-club/extension-scoring/rubric";
+export {
   type RubricFactor,
   type RubricScore,
 } from "../domain/extensions/extension_rubric_scorer.ts";

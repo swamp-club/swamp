@@ -18,27 +18,25 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { join, toFileUrl } from "@std/path";
+import { dirname, join, toFileUrl } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import {
-  composeScore,
-  computeAnalysisFactors,
-  countExports,
-  countFencedCodeBlocks,
-  countSlowTypeDiagnostics,
-  type DocOutput,
-  hasFencedCodeBlock,
-  hasModuleDoc,
+  composeLocalScore,
+  isolatedDenoEnv,
   predictPublishedPrivate,
-  type PrivateSourceStanding,
-  repositoryLikelyVerifiable,
-  RUBRIC_VERSION,
+  type RubricScore,
   type RubricScoreDeps,
   scoreExtensionTarball,
-  SLOW_TYPE_CODES,
-  stripAnsi,
 } from "./extension_rubric_scorer.ts";
-import { DOC_FAILURE_FALLBACK } from "./extension_doc_failure.ts";
+import {
+  type AnalysisFactors,
+  computeAnalysisFactors,
+  type DocOutput,
+  type NotAuditedFix,
+  type PrivateSourceStanding,
+  RUBRIC_VERSION,
+} from "@swamp-club/extension-scoring/rubric";
+import { DOC_FAILURE_FALLBACK } from "@swamp-club/extension-scoring/doc-failure";
 
 function makeManifest(
   overrides: Partial<ExtensionManifest> = {},
@@ -69,316 +67,51 @@ function makeManifest(
   };
 }
 
-// ── Pure helper tests (mirror server analysis-factors_test.ts) ─────────
+// ── composeLocalScore ───────────────────────────────────────────────────
 
-Deno.test("RUBRIC_VERSION is 4 (swamp-club follows with the secret-safe-docs factor)", () => {
-  assertEquals(RUBRIC_VERSION, 4);
+/** The analysis plus what the CLI adds before publish, as these tests write it. */
+type LocalFactors = AnalysisFactors & {
+  dependencyTrustPassed?: boolean;
+  dependencyTrustBlockerCount?: number;
+  dependencyNotAuditedCount?: number;
+  dependencyNotAuditedFixes?: readonly NotAuditedFix[];
+  dependencyLooseCount?: number;
+  secretSafeDocs?: boolean;
+};
+
+function composeScore(
+  factors: LocalFactors,
+  manifest: ExtensionManifest,
+  privateSource?: PrivateSourceStanding,
+  docAnalysisError: string | null = null,
+): RubricScore {
+  const {
+    dependencyTrustPassed,
+    dependencyTrustBlockerCount,
+    dependencyNotAuditedCount,
+    dependencyNotAuditedFixes,
+    dependencyLooseCount,
+    secretSafeDocs,
+    ...analysis
+  } = factors;
+  return composeLocalScore(analysis, manifest, {
+    dependencyTrustBlockerCount: dependencyTrustPassed === false
+      ? Math.max(dependencyTrustBlockerCount ?? 0, 1)
+      : dependencyTrustBlockerCount ??
+        (dependencyTrustPassed ? 0 : undefined),
+    dependencyNotAuditedCount,
+    dependencyNotAuditedFixes,
+    dependencyLooseCount,
+    secretSafeDocs,
+    privateSource,
+  }, docAnalysisError);
+}
+
+Deno.test("RUBRIC_VERSION is 5 (one scorer shared with the registry, swamp-club#3781)", () => {
+  assertEquals(RUBRIC_VERSION, 5);
 });
 
-Deno.test("SLOW_TYPE_CODES contains expected codes", () => {
-  assert(SLOW_TYPE_CODES.has("missing-return-type"));
-  assert(SLOW_TYPE_CODES.has("private-type-ref"));
-  assert(SLOW_TYPE_CODES.has("unsupported-default-export-expr"));
-  assertEquals(SLOW_TYPE_CODES.size, 13);
-});
-
-Deno.test("stripAnsi removes colour codes", () => {
-  const input = "\x1b[31merror\x1b[0m";
-  assertEquals(stripAnsi(input), "error");
-});
-
-Deno.test("hasFencedCodeBlock: true when markdown has a fence", () => {
-  assertEquals(hasFencedCodeBlock("# hi\n```ts\nconsole.log(1)\n```\n"), true);
-});
-
-Deno.test("hasFencedCodeBlock: false when no fence", () => {
-  assertEquals(hasFencedCodeBlock("# hi\njust text\n"), false);
-});
-
-Deno.test("countFencedCodeBlocks: counts complete fences", () => {
-  const md = "# hi\n```\nA\n```\n\n```ts\nB\n```\n";
-  assertEquals(countFencedCodeBlocks(md), 2);
-});
-
-Deno.test("countFencedCodeBlocks: 0 when empty", () => {
-  assertEquals(countFencedCodeBlocks(""), 0);
-});
-
-Deno.test("countSlowTypeDiagnostics: counts listed slow-type codes", () => {
-  const lintOutput =
-    "error[missing-return-type]: bad\nerror[private-type-ref]: bad\nerror[something-else]: ok\n";
-  assertEquals(countSlowTypeDiagnostics(lintOutput), 2);
-});
-
-Deno.test("countSlowTypeDiagnostics: returns 0 when no diagnostics", () => {
-  assertEquals(countSlowTypeDiagnostics(""), 0);
-});
-
-Deno.test("countSlowTypeDiagnostics: strips ANSI before matching", () => {
-  const withAnsi = "\x1b[31merror[missing-return-type]\x1b[0m: bad";
-  assertEquals(countSlowTypeDiagnostics(withAnsi), 1);
-});
-
-Deno.test("hasModuleDoc: true when node has trimmed module_doc", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: {
-      "file:///a.ts": { module_doc: { doc: "  docs  " } },
-    },
-  };
-  assertEquals(hasModuleDoc(doc, "file:///a.ts"), true);
-});
-
-Deno.test("hasModuleDoc: false when module_doc is empty string", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: { "file:///a.ts": { module_doc: { doc: "   " } } },
-  };
-  assertEquals(hasModuleDoc(doc, "file:///a.ts"), false);
-});
-
-Deno.test("hasModuleDoc: false when node missing", () => {
-  const doc: DocOutput = { version: 1, nodes: {} };
-  assertEquals(hasModuleDoc(doc, "file:///a.ts"), false);
-});
-
-Deno.test("countExports: counts exported declarations with jsDoc", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: {
-      "file:///a.ts": {
-        symbols: [
-          {
-            name: "a",
-            declarations: [
-              {
-                declarationKind: "export",
-                kind: "function",
-                jsDoc: { doc: "x" },
-              },
-            ],
-          },
-          {
-            name: "b",
-            declarations: [{ declarationKind: "export", kind: "function" }],
-          },
-          {
-            name: "internal",
-            declarations: [
-              { declarationKind: "declare", kind: "function" },
-            ],
-          },
-        ],
-      },
-    },
-  };
-  const r = countExports(doc, "file:///a.ts");
-  assertEquals(r.total, 2);
-  assertEquals(r.documented, 1);
-});
-
-Deno.test("countExports: overloaded declarations each count separately", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: {
-      "file:///a.ts": {
-        symbols: [
-          {
-            name: "overloaded",
-            declarations: [
-              {
-                declarationKind: "export",
-                kind: "function",
-                jsDoc: { doc: "x" },
-              },
-              { declarationKind: "export", kind: "function" },
-            ],
-          },
-        ],
-      },
-    },
-  };
-  const r = countExports(doc, "file:///a.ts");
-  assertEquals(r.total, 2);
-  assertEquals(r.documented, 1);
-});
-
-// ── computeAnalysisFactors ─────────────────────────────────────────────
-
-Deno.test("computeAnalysisFactors: all clean", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: {
-      "file:///a.ts": {
-        module_doc: { doc: "top-level" },
-        symbols: [
-          {
-            name: "a",
-            declarations: [
-              {
-                declarationKind: "export",
-                kind: "function",
-                jsDoc: { doc: "x" },
-              },
-            ],
-          },
-        ],
-      },
-    },
-  };
-  const f = computeAnalysisFactors({
-    entrypointUrls: ["file:///a.ts"],
-    readme: "# title\n\n" + "abc ".repeat(200) +
-      "\n\n```ts\nusage\n```\n\n```ts\nmore\n```\n",
-    hasLicenseFile: true,
-    doc,
-    rawLintOutput: "",
-  });
-  assertEquals(f.hasReadme, true);
-  assertEquals(f.hasReadmeExamples, true);
-  assertEquals(f.allEntrypointsDocs, true);
-  assertEquals(f.percentageDocumentedSymbols, 1);
-  assertEquals(f.allFastCheck, true);
-  assertEquals(f.hasLicenseFile, true);
-  assert(f.readmeLength !== null && f.readmeLength > 500);
-  assertEquals(f.readmeCodeBlockCount, 2);
-});
-
-Deno.test("computeAnalysisFactors: hasReadme is true when only module doc present", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: {
-      "file:///a.ts": { module_doc: { doc: "module-level" } },
-    },
-  };
-  const f = computeAnalysisFactors({
-    entrypointUrls: ["file:///a.ts"],
-    readme: null,
-    hasLicenseFile: false,
-    doc,
-    rawLintOutput: "",
-  });
-  assertEquals(f.hasReadme, true);
-  assertEquals(f.hasReadmeExamples, false);
-  assertEquals(f.readmeLength, null);
-});
-
-Deno.test("computeAnalysisFactors: zero entrypoints = percentage 1 (vacuous)", () => {
-  const f = computeAnalysisFactors({
-    entrypointUrls: [],
-    readme: "# hi",
-    hasLicenseFile: false,
-    doc: { version: 1, nodes: {} },
-    rawLintOutput: "",
-  });
-  assertEquals(f.percentageDocumentedSymbols, 1);
-  assertEquals(f.allEntrypointsDocs, false); // empty entrypoints → false by server convention
-});
-
-Deno.test("computeAnalysisFactors: slow-type diagnostic fails fast-check", () => {
-  const f = computeAnalysisFactors({
-    entrypointUrls: [],
-    readme: null,
-    hasLicenseFile: false,
-    doc: { version: 1, nodes: {} },
-    rawLintOutput: "error[missing-return-type]: bad",
-  });
-  assertEquals(f.allFastCheck, false);
-});
-
-Deno.test("computeAnalysisFactors: percentage rounds to 4 decimal places", () => {
-  const doc: DocOutput = {
-    version: 1,
-    nodes: {
-      "file:///a.ts": {
-        symbols: [
-          {
-            name: "a",
-            declarations: [
-              {
-                declarationKind: "export",
-                kind: "function",
-                jsDoc: { doc: "x" },
-              },
-            ],
-          },
-          {
-            name: "b",
-            declarations: [{ declarationKind: "export", kind: "function" }],
-          },
-          {
-            name: "c",
-            declarations: [{ declarationKind: "export", kind: "function" }],
-          },
-        ],
-      },
-    },
-  };
-  const f = computeAnalysisFactors({
-    entrypointUrls: ["file:///a.ts"],
-    readme: null,
-    hasLicenseFile: false,
-    doc,
-    rawLintOutput: "",
-  });
-  assertEquals(f.percentageDocumentedSymbols, 0.3333);
-});
-
-// ── repositoryLikelyVerifiable ─────────────────────────────────────────
-
-Deno.test("repositoryLikelyVerifiable: true for https github.com", () => {
-  assertEquals(
-    repositoryLikelyVerifiable("https://github.com/x/y"),
-    true,
-  );
-});
-
-Deno.test("repositoryLikelyVerifiable: true for https gitlab.com", () => {
-  assertEquals(
-    repositoryLikelyVerifiable("https://gitlab.com/x/y"),
-    true,
-  );
-});
-
-Deno.test("repositoryLikelyVerifiable: true for https codeberg.org", () => {
-  assertEquals(
-    repositoryLikelyVerifiable("https://codeberg.org/x/y"),
-    true,
-  );
-});
-
-Deno.test("repositoryLikelyVerifiable: true for https bitbucket.org", () => {
-  assertEquals(
-    repositoryLikelyVerifiable("https://bitbucket.org/x/y"),
-    true,
-  );
-});
-
-Deno.test("repositoryLikelyVerifiable: false for http (not https)", () => {
-  assertEquals(
-    repositoryLikelyVerifiable("http://github.com/x/y"),
-    false,
-  );
-});
-
-Deno.test("repositoryLikelyVerifiable: false for self-hosted host", () => {
-  assertEquals(
-    repositoryLikelyVerifiable("https://git.company.com/x/y"),
-    false,
-  );
-});
-
-Deno.test("repositoryLikelyVerifiable: false for missing URL", () => {
-  assertEquals(repositoryLikelyVerifiable(undefined), false);
-});
-
-Deno.test("repositoryLikelyVerifiable: false for malformed URL", () => {
-  assertEquals(repositoryLikelyVerifiable("not a url"), false);
-});
-
-// ── composeScore (mirror server score.ts v2) ───────────────────────────
-
-function factorsAllEarned(): Parameters<typeof composeScore>[0] {
+function factorsAllEarned(): LocalFactors {
   return {
     hasReadme: true,
     hasReadmeExamples: true,
@@ -422,21 +155,6 @@ Deno.test("composeScore: secret-safe-docs is worth 1 point, earned only when the
   assertStringIncludes(missing.remediation ?? "", "vault.get");
   assertEquals(leaky.percentage, Math.floor((13 * 100) / 14));
   assertEquals(leaky.allPassed, false);
-});
-
-Deno.test("computeAnalysisFactors: secretSafeDocs is unearned unless the caller checked it", () => {
-  const base = {
-    entrypointUrls: [],
-    readme: null,
-    hasLicenseFile: false,
-    doc: { version: 1, nodes: {} },
-    rawLintOutput: "",
-  };
-  assertEquals(computeAnalysisFactors(base).secretSafeDocs, false);
-  assertEquals(
-    computeAnalysisFactors({ ...base, secretSafeDocs: true }).secretSafeDocs,
-    true,
-  );
 });
 
 Deno.test("composeScore: has-readme is worth 2 points", () => {
@@ -728,13 +446,13 @@ Deno.test("composeScore: factor IDs and order match server", () => {
     "rich-readme",
     "symbols-docs",
     "fast-check",
+    "dependency-trust",
+    "secret-safe-docs",
     "description",
     "platforms",
     "has-license",
     "license-file",
     "repository-verified",
-    "dependency-trust",
-    "secret-safe-docs",
   ]);
 });
 
@@ -747,289 +465,6 @@ Deno.test("composeScore: percentage floors (not rounds)", () => {
   assertEquals(score.earnedPoints, 13);
   assertEquals(score.percentage, 92);
 });
-
-// ═══════════════════════════════════════════════════════════════════════
-// Parity tests with swamp-club server scorer.
-//
-// These are ports of the authoritative test suite at
-// swamp-club/tests/domain/analysis-factors_test.ts and the core cases
-// from swamp-club/tests/domain/scorecard_test.ts. They exist so that if
-// our mirrored logic ever drifts from the server's — even by a byte —
-// the drift is caught here before it ships. Do NOT remove cases when
-// pruning; if something looks redundant, check the server file first.
-// ═══════════════════════════════════════════════════════════════════════
-
-// --- analysis-factors_test.ts ports ------------------------------------
-
-Deno.test("[parity] hasFencedCodeBlock - triple-backtick block matches", () => {
-  const md = "# Title\n\n```ts\nconst x = 1;\n```\n";
-  assertEquals(hasFencedCodeBlock(md), true);
-});
-
-Deno.test("[parity] hasFencedCodeBlock - fenced block with language tag", () => {
-  const md = "preamble\n\n```yaml\nkey: value\n```\n";
-  assertEquals(hasFencedCodeBlock(md), true);
-});
-
-Deno.test("[parity] hasFencedCodeBlock - no fence returns false", () => {
-  const md = "# Title\n\nSome prose.\n\nMore prose.";
-  assertEquals(hasFencedCodeBlock(md), false);
-});
-
-Deno.test("[parity] hasFencedCodeBlock - inline backticks are not a block", () => {
-  const md = "Use `foo()` to do it.";
-  assertEquals(hasFencedCodeBlock(md), false);
-});
-
-Deno.test("[parity] countFencedCodeBlocks - counts multiple blocks", () => {
-  const md = "# Title\n\n```ts\nconst x = 1;\n```\n\nSome prose.\n\n" +
-    "```yaml\nfoo: bar\n```\n";
-  assertEquals(countFencedCodeBlocks(md), 2);
-});
-
-Deno.test("[parity] countFencedCodeBlocks - returns 0 when there are no fences", () => {
-  assertEquals(countFencedCodeBlocks("# Plain markdown"), 0);
-});
-
-Deno.test("[parity] countFencedCodeBlocks - single block counts as 1", () => {
-  const md = "```ts\nconst x = 1;\n```\n";
-  assertEquals(countFencedCodeBlocks(md), 1);
-});
-
-Deno.test("[parity] countSlowTypeDiagnostics - matches documented codes", () => {
-  const out = "error[missing-return-type] at foo.ts:1:1\n" +
-    "error[missing-explicit-type] at bar.ts:2:2";
-  assertEquals(countSlowTypeDiagnostics(out), 2);
-});
-
-Deno.test("[parity] countSlowTypeDiagnostics - strips ANSI before matching", () => {
-  const out = "\x1b[31merror[missing-return-type]\x1b[0m at foo.ts:1:1";
-  assertEquals(countSlowTypeDiagnostics(out), 1);
-});
-
-Deno.test("[parity] countSlowTypeDiagnostics - ignores non-slow-type codes", () => {
-  const out = "error[missing-jsdoc] at foo.ts:1:1";
-  assertEquals(countSlowTypeDiagnostics(out), 0);
-});
-
-Deno.test("[parity] countSlowTypeDiagnostics - empty output returns 0", () => {
-  assertEquals(countSlowTypeDiagnostics(""), 0);
-});
-
-function parityMakeDoc(
-  fn: () => {
-    module_doc?: { doc?: string };
-    symbols?: DocOutput["nodes"][string]["symbols"];
-  },
-): DocOutput {
-  return {
-    version: 1,
-    nodes: { "file:///tmp/a.ts": fn() },
-  };
-}
-
-Deno.test("[parity] hasModuleDoc - true when module_doc.doc is non-empty", () => {
-  const doc = parityMakeDoc(() => ({ module_doc: { doc: "Hello" } }));
-  assertEquals(hasModuleDoc(doc, "file:///tmp/a.ts"), true);
-});
-
-Deno.test("[parity] hasModuleDoc - false when doc is whitespace", () => {
-  const doc = parityMakeDoc(() => ({ module_doc: { doc: "   " } }));
-  assertEquals(hasModuleDoc(doc, "file:///tmp/a.ts"), false);
-});
-
-Deno.test("[parity] hasModuleDoc - false when entrypoint missing from map", () => {
-  const doc = parityMakeDoc(() => ({}));
-  assertEquals(hasModuleDoc(doc, "file:///tmp/other.ts"), false);
-});
-
-Deno.test("[parity] countExports - counts declared exports, optionally documented", () => {
-  const doc = parityMakeDoc(() => ({
-    symbols: [
-      {
-        name: "A",
-        declarations: [
-          {
-            declarationKind: "export",
-            kind: "function",
-            jsDoc: { doc: "Documented" },
-          },
-          { declarationKind: "export", kind: "function" },
-        ],
-      },
-      {
-        name: "B",
-        declarations: [{ declarationKind: "private", kind: "function" }],
-      },
-    ],
-  }));
-  const result = countExports(doc, "file:///tmp/a.ts");
-  assertEquals(result.total, 2);
-  assertEquals(result.documented, 1);
-});
-
-Deno.test(
-  "[parity] computeAnalysisFactors - README present with fence + all docs",
-  () => {
-    const doc: DocOutput = {
-      version: 1,
-      nodes: {
-        "file:///tmp/a.ts": {
-          module_doc: { doc: "module doc" },
-          symbols: [
-            {
-              name: "x",
-              declarations: [
-                {
-                  declarationKind: "export",
-                  kind: "function",
-                  jsDoc: { doc: "docs" },
-                },
-              ],
-            },
-          ],
-        },
-      },
-    };
-    const readme = "# Title\n\n```ts\nfoo();\n```\n";
-    const factors = computeAnalysisFactors({
-      entrypointUrls: ["file:///tmp/a.ts"],
-      readme,
-      doc,
-      hasLicenseFile: false,
-      rawLintOutput: "",
-    });
-    assertEquals(factors, {
-      hasReadme: true,
-      hasReadmeExamples: true,
-      allEntrypointsDocs: true,
-      percentageDocumentedSymbols: 1,
-      allFastCheck: true,
-      readmeLength: readme.length,
-      readmeCodeBlockCount: 1,
-      hasLicenseFile: false,
-      dependencyTrustPassed: false,
-      dependencyTrustBlockerCount: 0,
-      dependencyNotAuditedCount: 0,
-      dependencyNotAuditedFixes: [],
-      dependencyLooseCount: 0,
-      secretSafeDocs: false,
-    });
-  },
-);
-
-Deno.test(
-  "[parity] computeAnalysisFactors - no README but module doc on every entrypoint",
-  () => {
-    const doc: DocOutput = {
-      version: 1,
-      nodes: {
-        "file:///tmp/a.ts": {
-          module_doc: { doc: "fallback doc" },
-          symbols: [],
-        },
-      },
-    };
-    const factors = computeAnalysisFactors({
-      entrypointUrls: ["file:///tmp/a.ts"],
-      readme: null,
-      doc,
-      hasLicenseFile: false,
-      rawLintOutput: "",
-    });
-    assertEquals(factors.hasReadme, true);
-    assertEquals(factors.hasReadmeExamples, false);
-    assertEquals(factors.allEntrypointsDocs, true);
-    assertEquals(factors.readmeLength, null);
-    assertEquals(factors.readmeCodeBlockCount, null);
-  },
-);
-
-Deno.test(
-  "[parity] computeAnalysisFactors - empty entrypoints give vacuous 1.0 ratio",
-  () => {
-    const factors = computeAnalysisFactors({
-      entrypointUrls: [],
-      readme: "hello",
-      doc: { version: 1, nodes: {} },
-      hasLicenseFile: false,
-      rawLintOutput: "",
-    });
-    assertEquals(factors.allEntrypointsDocs, false);
-    assertEquals(factors.percentageDocumentedSymbols, 1);
-    assertEquals(factors.allFastCheck, true);
-  },
-);
-
-Deno.test(
-  "[parity] computeAnalysisFactors - partial docs produce fractional ratio (0.3333)",
-  () => {
-    const doc: DocOutput = {
-      version: 1,
-      nodes: {
-        "file:///tmp/a.ts": {
-          module_doc: { doc: "hi" },
-          symbols: [
-            {
-              name: "x",
-              declarations: [
-                {
-                  declarationKind: "export",
-                  kind: "function",
-                  jsDoc: { doc: "docs" },
-                },
-              ],
-            },
-            {
-              name: "y",
-              declarations: [{ declarationKind: "export", kind: "function" }],
-            },
-            {
-              name: "z",
-              declarations: [{ declarationKind: "export", kind: "function" }],
-            },
-          ],
-        },
-      },
-    };
-    const factors = computeAnalysisFactors({
-      entrypointUrls: ["file:///tmp/a.ts"],
-      readme: "plain",
-      doc,
-      hasLicenseFile: false,
-      rawLintOutput: "",
-    });
-    assertEquals(factors.percentageDocumentedSymbols, 0.3333);
-  },
-);
-
-Deno.test(
-  "[parity] computeAnalysisFactors - slow-type diagnostic fails allFastCheck",
-  () => {
-    const factors = computeAnalysisFactors({
-      entrypointUrls: [],
-      readme: "hi",
-      doc: { version: 1, nodes: {} },
-      hasLicenseFile: false,
-      rawLintOutput: "error[missing-return-type] at foo.ts:1:1",
-    });
-    assertEquals(factors.allFastCheck, false);
-  },
-);
-
-Deno.test(
-  "[parity] computeAnalysisFactors - missing-jsdoc is NOT a slow type",
-  () => {
-    const factors = computeAnalysisFactors({
-      entrypointUrls: [],
-      readme: "hi",
-      doc: { version: 1, nodes: {} },
-      hasLicenseFile: false,
-      rawLintOutput: "error[missing-jsdoc] at foo.ts:1:1",
-    });
-    assertEquals(factors.allFastCheck, true);
-  },
-);
 
 // --- scorecard_test.ts ports (core scenarios) --------------------------
 
@@ -1061,7 +496,7 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
   // Universal platforms earns 2 + fast-check always earns 1 (deprecated).
   assertEquals(score.earnedPoints, 3);
   assertEquals(score.percentage, Math.floor((3 * 100) / 16));
-  assertEquals(score.rubricVersion, 4);
+  assertEquals(score.rubricVersion, 5);
   assertEquals(score.factors.length, 12);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
   assertEquals(byId.get("platforms")?.status, "earned");
@@ -1294,7 +729,7 @@ Deno.test("composeScore: dependency-trust loses one point for loose specifiers a
   const factor = score.factors.find((f) => f.id === "dependency-trust")!;
   assertEquals(factor.earnedPoints, 1);
   assertEquals(factor.maxPoints, 2);
-  assertEquals(factor.status, "missing");
+  assertEquals(factor.status, "partial");
   assertStringIncludes(
     factor.remediation ?? "",
     "2 loose dependency specifier(s) (loose-specifier) cost 1 of 2 points",
@@ -1343,7 +778,9 @@ function fakeExtractTarball(
     const extDir = join(destDir, "extension");
     await Deno.mkdir(join(extDir, "models"), { recursive: true });
     for (const [name, content] of Object.entries(files)) {
-      await Deno.writeTextFile(join(extDir, name), content);
+      const path = join(extDir, ...name.split("/"));
+      await Deno.mkdir(dirname(path), { recursive: true });
+      await Deno.writeTextFile(path, content);
     }
   };
 }
@@ -1358,7 +795,7 @@ function fakeScoreDeps(
     extractTarball: fakeExtractTarball(files),
     runDeno: (args: string[], cwd: string) => {
       onRunDeno?.(args, cwd);
-      if (args[0] === "doc" && args[1] === "--json") {
+      if (args[0] === "doc" && args.includes("--json")) {
         return Promise.resolve({
           success: true,
           stdout: JSON.stringify(MINIMAL_DOC_OUTPUT),
@@ -1446,7 +883,7 @@ function failingDocDeps(
     }),
     runDeno: (args, cwd) => {
       calls.push(args);
-      if (args[0] === "doc" && args[1] === "--json") {
+      if (args[0] === "doc" && args.includes("--json")) {
         return Promise.resolve({
           success: false,
           stdout: "",
@@ -1588,7 +1025,7 @@ Deno.test("scoreExtensionTarball: docAnalysisError is null when deno doc succeed
   assertEquals(score.docAnalysisError, null);
 });
 
-Deno.test("scoreExtensionTarball: invalid JSON from a successful deno doc still throws", async () => {
+Deno.test("scoreExtensionTarball: invalid JSON from a successful deno doc is scored as a doc failure, as the registry scores it", async () => {
   const deps: RubricScoreDeps = {
     ...fakeScoreDeps({
       "manifest.yaml": "manifestVersion: 1\nname: '@test/bad-json'\n",
@@ -1597,16 +1034,190 @@ Deno.test("scoreExtensionTarball: invalid JSON from a successful deno doc still 
     runDeno: () =>
       Promise.resolve({ success: true, stdout: "not json", stderr: "" }),
   };
-  let thrown: unknown;
-  try {
-    await scoreExtensionTarball(
-      new Uint8Array(0),
-      makeManifest({ models: ["mod.ts"] }),
-      deps,
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    deps,
+  );
+  assertEquals(score.docAnalysisError, DOC_FAILURE_FALLBACK);
+  assertEquals(
+    score.factors.find((f) => f.id === "symbols-docs")?.earnedPoints,
+    0,
+  );
+});
+
+// ── archive rules shared with the registry (swamp-club#3781) ──────────
+
+Deno.test("scoreExtensionTarball: an entry already under its kind directory is analysed where push archives it", async () => {
+  // typedDir `models: [models/foo.ts]` resolves to extensions/models/models/foo.ts,
+  // which push archives at models/models/foo.ts
+  const docArgs: string[][] = [];
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["models/foo.ts"] }),
+    fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/nested'\n",
+      "models/models/foo.ts": "export const x = 1;",
+      "README.md": "# Test",
+    }, (args) => {
+      if (args.includes("--json")) docArgs.push(args);
+    }),
+  );
+  assertEquals(docArgs.length, 1);
+  const entrypoint = docArgs[0][docArgs[0].length - 1];
+  assertStringIncludes(
+    entrypoint.replaceAll("\\", "/"),
+    "/models/models/foo.ts",
+  );
+  assertEquals(score.docAnalysisError, null);
+});
+
+Deno.test("scoreExtensionTarball: deno doc runs with the registry's import allowlist", async () => {
+  const docArgs: string[][] = [];
+  await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/hosts'\n",
+      "models/mod.ts": "export const x = 1;",
+    }, (args) => docArgs.push(args)),
+  );
+  for (const args of docArgs) {
+    assert(
+      args.some((a) =>
+        a.startsWith("--allow-import=") && a.includes("registry.npmjs.org:443")
+      ),
     );
-  } catch (err) {
-    thrown = err;
   }
-  assert(thrown instanceof Error);
-  assertStringIncludes(thrown.message, "invalid JSON");
+});
+
+Deno.test("scoreExtensionTarball: a README or LICENSE counts only under an accepted name, matched exactly", async () => {
+  const score = await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/case'\n",
+      "models/mod.ts": "export const x = 1;",
+      "files/ReadMe.md": "# Test\n\n```ts\nx\n```\n",
+      "files/LICENSE.Md": "MIT License",
+    }),
+  );
+  const byId = new Map(score.factors.map((f) => [f.id, f]));
+  assertEquals(byId.get("readme-example")?.status, "missing");
+  assertEquals(byId.get("license-file")?.status, "missing");
+});
+
+Deno.test("composeScore: a description of only whitespace earns nothing", () => {
+  for (const description of ["", "   ", "\n\t"]) {
+    const score = composeScore(
+      factorsAllEarned(),
+      makeManifest({ description }),
+    );
+    assertEquals(
+      score.factors.find((f) => f.id === "description")?.status,
+      "missing",
+    );
+  }
+});
+
+Deno.test("composeScore: repository-verified is provisional only for a URL naming an owner and a repository", () => {
+  for (
+    const [repository, status] of [
+      ["https://github.com/example/test", "provisional"],
+      ["https://gitlab.com/group/sub/test/-/tree/main", "provisional"],
+      ["https://github.com/", "missing"],
+      ["https://github.com/example", "missing"],
+    ] as const
+  ) {
+    const score = composeScore(
+      factorsAllEarned(),
+      makeManifest({ repository }),
+    );
+    assertEquals(
+      score.factors.find((f) => f.id === "repository-verified")?.status,
+      status,
+      repository,
+    );
+  }
+});
+
+// ── isolated deno doc (swamp-club#3781) ───────────────────────────────
+
+Deno.test("scoreExtensionTarball: an isolated run gives deno doc an empty cache of its own and removes it", async () => {
+  const dirs: (string | undefined)[] = [];
+  let emptyWhenUsed = true;
+  const deps: RubricScoreDeps = {
+    ...fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/isolated'\n",
+      "models/mod.ts": "export const x = 1;",
+    }),
+    isolated: true,
+  };
+  const run = deps.runDeno;
+  deps.runDeno = async (args, cwd, denoDir) => {
+    dirs.push(denoDir);
+    if (denoDir !== undefined) {
+      for await (const _ of Deno.readDir(denoDir)) emptyWhenUsed = false;
+    }
+    return await run(args, cwd, denoDir);
+  };
+  await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    deps,
+  );
+  assertEquals(dirs.length, 2);
+  assert(dirs[0] !== undefined && dirs[0] === dirs[1]);
+  assert(emptyWhenUsed);
+  let exists = true;
+  try {
+    await Deno.stat(dirs[0]!);
+  } catch {
+    exists = false;
+  }
+  assertEquals(exists, false);
+});
+
+Deno.test("scoreExtensionTarball: a default run keeps the usual deno cache", async () => {
+  const dirs: (string | undefined)[] = [];
+  await scoreExtensionTarball(
+    new Uint8Array(0),
+    makeManifest({ models: ["mod.ts"] }),
+    {
+      ...fakeScoreDeps({
+        "manifest.yaml": "manifestVersion: 1\nname: '@test/cached'\n",
+        "models/mod.ts": "export const x = 1;",
+      }),
+      runDeno: (_args, _cwd, denoDir) => {
+        dirs.push(denoDir);
+        return Promise.resolve({
+          success: true,
+          stdout: '{"version":1,"nodes":{}}',
+          stderr: "",
+        });
+      },
+    },
+  );
+  assertEquals(dirs, [undefined, undefined]);
+});
+
+Deno.test("isolatedDenoEnv: keeps what deno needs to run and drops registry credentials", () => {
+  const env = isolatedDenoEnv({
+    PATH: "/usr/bin",
+    HOME: "/home/u",
+    SystemRoot: "C:\\Windows",
+    HTTPS_PROXY: "http://proxy:3128",
+    DENO_AUTH_TOKENS: "secret@npm.example.com",
+    NPM_CONFIG_REGISTRY: "https://npm.example.com",
+    NPM_TOKEN: "t",
+    DENO_DIR: "/home/u/.cache/deno",
+  }, "/tmp/empty");
+  assertEquals(env, {
+    PATH: "/usr/bin",
+    HOME: "/home/u",
+    SystemRoot: "C:\\Windows",
+    HTTPS_PROXY: "http://proxy:3128",
+    DENO_DIR: "/tmp/empty",
+    NO_COLOR: "1",
+  });
 });

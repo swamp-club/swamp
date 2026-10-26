@@ -27,7 +27,9 @@ import {
   type CommentSites,
 } from "../../domain/extensions/extension_acceptances.ts";
 import { isAcceptableRule } from "../../domain/extensions/extension_rule_catalog.ts";
-import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type {
+  DependencyTrustIssue,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { DeclaredAcceptances } from "../../libswamp/extensions/push.ts";

@@ -47,10 +47,14 @@ import {
   type ExtensionPushPrepareDeps,
 } from "../src/libswamp/extensions/push.ts";
 import {
-  type DependencySpecifier,
   extractDependencySpecifiers,
 } from "../src/domain/extensions/extension_dependency_extractor.ts";
-import { checkDependencyTrust } from "../src/domain/extensions/extension_dependency_trust_checker.ts";
+import type {
+  DependencySpecifier,
+} from "@swamp-club/extension-scoring/dependency-audit";
+import {
+  checkDependencyTrust,
+} from "../src/domain/extensions/extension_dependency_trust_checker.ts";
 import { bundleExtension } from "../src/domain/models/bundle.ts";
 import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 import { SHARED_SWAMP_DENO_CACHE } from "./test_helpers.ts";

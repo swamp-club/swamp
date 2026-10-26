@@ -1,0 +1,2848 @@
+{
+  "about": "Shared vectors for the extension quality rubric (swamp-club#3781). Each case is the input to composeScore \u2014 what one version and its package say, and for the CLI before publish a predicted repository-verified \u2014 and the rows, points and percentage it must produce. swamp's quality and push and the registry's scorecard both compose scores with @swamp-club/extension-scoring and run these vectors.",
+  "rubricVersion": 5,
+  "cases": [
+    {
+      "name": "registry, everything earned",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 16,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "CLI before publish, everything earned: repository-verified is provisional and out of the percentage",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "predicted",
+          "repository": "https://github.com/o/r",
+          "privateSource": {
+            "kind": "unknown"
+          }
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "provisional",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 14,
+        "maxPoints": 16,
+        "provisionalPoints": 2,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "CLI, a URL naming no repository",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "predicted",
+          "repository": "https://github.com/",
+          "privateSource": {
+            "kind": "unknown"
+          }
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "missing",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 14,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 87
+      }
+    },
+    {
+      "name": "CLI, private source attested",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "predicted",
+          "privateSource": {
+            "kind": "attested"
+          }
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Private repository (collective attested)",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "provisional",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 14,
+        "maxPoints": 16,
+        "provisionalPoints": 2,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "registry, private extension with private source hosting",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": false,
+          "privateSourceAttested": true
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Private repository (collective attested)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 16,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "registry, no verified repository",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": false,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "missing",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 14,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 87
+      }
+    },
+    {
+      "name": "a version the registry has not analysed",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": null,
+        "licenseDeclared": null,
+        "dependencyTrust": null,
+        "secretSafeDocs": null,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "pending",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 5,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 31
+      }
+    },
+    {
+      "name": "scored under rubric v2",
+      "inputs": {
+        "scoredWith": 2,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 13,
+        "maxPoints": 13,
+        "provisionalPoints": 0,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "scored under rubric v3",
+      "inputs": {
+        "scoredWith": 3,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 15,
+        "provisionalPoints": 0,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "one loose specifier: dependency-trust partial",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 1,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 1
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 1,
+            "maxPoints": 2,
+            "status": "partial",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "a blocker: dependency-trust missing",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 0,
+          "blockerCount": 1,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 14,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 87
+      }
+    },
+    {
+      "name": "a description of only whitespace",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "  \n ",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "no description",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "no README",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": false,
+          "hasReadmeExamples": false,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": null,
+          "readmeCodeBlockCount": null,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 0,
+            "maxPoints": 2,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 12,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 75
+      }
+    },
+    {
+      "name": "a short README",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 499,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "79.99% of symbols documented",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 0.7999,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "exactly 80% of symbols documented",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 0.8,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 16,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 100
+      }
+    },
+    {
+      "name": "deno doc could not analyse the source",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 0,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": "Not in the published archive: models/x.ts."
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "unsafe docs",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": true
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": false,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    },
+    {
+      "name": "no valid license, no LICENSE file",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": false
+        },
+        "licenseDeclared": false,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 14,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 87
+      }
+    },
+    {
+      "name": "percentage floors",
+      "inputs": {
+        "scoredWith": 5,
+        "analysis": {
+          "hasReadme": true,
+          "hasReadmeExamples": true,
+          "allEntrypointsDocs": true,
+          "percentageDocumentedSymbols": 1,
+          "allFastCheck": true,
+          "readmeLength": 800,
+          "readmeCodeBlockCount": 3,
+          "hasLicenseFile": false
+        },
+        "licenseDeclared": true,
+        "dependencyTrust": {
+          "earnedPoints": 2,
+          "blockerCount": 0,
+          "notAuditedCount": 0,
+          "notAuditedFixes": [],
+          "looseCount": 0
+        },
+        "secretSafeDocs": true,
+        "description": "An extension",
+        "platforms": [],
+        "repository": {
+          "kind": "confirmed",
+          "publicRepositoryVerified": true,
+          "privateSourceAttested": false
+        },
+        "docAnalysisError": null
+      },
+      "expect": {
+        "factors": [
+          {
+            "id": "has-readme",
+            "label": "Has README or module doc",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "readme-example",
+            "label": "README has a code example",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "rich-readme",
+            "label": "README is substantive",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "symbols-docs",
+            "label": "Most symbols documented",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "fast-check",
+            "label": "No slow types (deprecated)",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "dependency-trust",
+            "label": "Dependencies pass trust audit",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "secret-safe-docs",
+            "label": "Docs keep secrets in a vault",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "description",
+            "label": "Has description",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "platforms",
+            "label": "Platform support declared (or universal)",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          },
+          {
+            "id": "has-license",
+            "label": "License declared",
+            "earnedPoints": 1,
+            "maxPoints": 1,
+            "status": "earned",
+            "category": "per-version"
+          },
+          {
+            "id": "license-file",
+            "label": "LICENSE file included",
+            "earnedPoints": 0,
+            "maxPoints": 1,
+            "status": "missing",
+            "category": "per-version"
+          },
+          {
+            "id": "repository-verified",
+            "label": "Verified public repository",
+            "earnedPoints": 2,
+            "maxPoints": 2,
+            "status": "earned",
+            "category": "per-package"
+          }
+        ],
+        "earnedPoints": 15,
+        "maxPoints": 16,
+        "provisionalPoints": 0,
+        "percentage": 93
+      }
+    }
+  ]
+}

@@ -37,7 +37,7 @@ import {
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
 } from "../src/libswamp/extensions/push.ts";
-import { RUBRIC_VERSION } from "../src/domain/extensions/extension_rubric_scorer.ts";
+import { RUBRIC_VERSION } from "@swamp-club/extension-scoring/rubric";
 import { kindDirectorySourcePlan } from "../src/libswamp/extensions/push_test_helpers.ts";
 import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 

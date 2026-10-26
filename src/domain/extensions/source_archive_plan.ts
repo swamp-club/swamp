@@ -29,7 +29,9 @@ import { isBareSpecifier, isZod4Specifier } from "../models/bundle.ts";
 import { findImportSpecifiers } from "./extension_dependency_extractor.ts";
 import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
-import { DEPENDENCY_AUDIT_RECORD_FILENAME } from "./dependency_audit_record.ts";
+import {
+  DEPENDENCY_AUDIT_RECORD_FILENAME,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import {
   type AstNode,
   isNode,

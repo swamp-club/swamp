@@ -32,7 +32,9 @@ import type {
 } from "../../libswamp/extensions/quality.ts";
 import type { LocalGateFailure } from "../../libswamp/extensions/push.ts";
 import type { RubricScore } from "../../domain/extensions/extension_rubric_scorer.ts";
-import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type {
+  DependencyTrustResult,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionQualityRenderer } from "./extension_quality.ts";
 

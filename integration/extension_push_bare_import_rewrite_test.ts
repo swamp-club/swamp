@@ -50,9 +50,11 @@ import {
 import { installExtension } from "../src/libswamp/extensions/pull.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import {
-  type DependencySpecifier,
   extractDependencySpecifiers,
 } from "../src/domain/extensions/extension_dependency_extractor.ts";
+import type {
+  DependencySpecifier,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import {
   bundleExtension,
   installZodGlobal,
@@ -60,7 +62,9 @@ import {
   uint8ArrayToBase64,
 } from "../src/domain/models/bundle.ts";
 import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
-import { checkDependencyTrust } from "../src/domain/extensions/extension_dependency_trust_checker.ts";
+import {
+  checkDependencyTrust,
+} from "../src/domain/extensions/extension_dependency_trust_checker.ts";
 import {
   type ExtensionProject,
   readProjectLockfile,

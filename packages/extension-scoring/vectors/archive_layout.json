@@ -1,0 +1,223 @@
+{
+  "about": "Shared vectors for what the scorer reads from an extension archive (swamp-club#3781): the entrypoints deno doc analyses (paths relative to the manifest root), which README and LICENSE names count in a directory listing, where the manifest is found (the directory relative to the extraction root, \"\" for the root, null for none), and the deno doc arguments.",
+  "entrypoints": [
+    {
+      "name": "a bare entry gets its field's directory",
+      "manifest": {
+        "models": [
+          "foo.ts"
+        ]
+      },
+      "expect": [
+        "models/foo.ts"
+      ]
+    },
+    {
+      "name": "an entry already under its kind directory is prefixed again, as push archives it",
+      "manifest": {
+        "models": [
+          "models/foo.ts"
+        ]
+      },
+      "expect": [
+        "models/models/foo.ts"
+      ]
+    },
+    {
+      "name": "a leading ./ is dropped",
+      "manifest": {
+        "vaults": [
+          "./v.ts"
+        ]
+      },
+      "expect": [
+        "vaults/v.ts"
+      ]
+    },
+    {
+      "name": "every entrypoint field, drivers included",
+      "manifest": {
+        "models": [
+          "m.ts"
+        ],
+        "drivers": [
+          "d.ts"
+        ],
+        "vaults": [
+          "v.ts"
+        ],
+        "datastores": [
+          "s.ts"
+        ],
+        "reports": [
+          "r.ts"
+        ],
+        "webhooks": [
+          "w.ts"
+        ]
+      },
+      "expect": [
+        "models/m.ts",
+        "drivers/d.ts",
+        "vaults/v.ts",
+        "datastores/s.ts",
+        "reports/r.ts",
+        "webhooks/w.ts"
+      ]
+    },
+    {
+      "name": "workflows and skills are not entrypoints",
+      "manifest": {
+        "workflows": [
+          "w.yaml"
+        ],
+        "skills": [
+          "s"
+        ]
+      },
+      "expect": []
+    },
+    {
+      "name": "an entry inside the root after ..",
+      "manifest": {
+        "models": [
+          "a/../b.ts"
+        ]
+      },
+      "expect": [
+        "models/b.ts"
+      ]
+    },
+    {
+      "name": "an entry climbing out of the root",
+      "manifest": {
+        "models": [
+          "../../etc/passwd"
+        ]
+      },
+      "expect": {
+        "escapes": "../../etc/passwd"
+      }
+    },
+    {
+      "name": "a non-string entry is skipped",
+      "manifest": {
+        "models": [
+          1,
+          "ok.ts"
+        ]
+      },
+      "expect": [
+        "models/ok.ts"
+      ]
+    }
+  ],
+  "docFiles": [
+    {
+      "name": "README.md before readme.md",
+      "kind": "readme",
+      "listing": [
+        "readme.md",
+        "README.md"
+      ],
+      "expect": [
+        "README.md",
+        "readme.md"
+      ]
+    },
+    {
+      "name": "a README spelled in another case is not one",
+      "kind": "readme",
+      "listing": [
+        "ReadMe.md",
+        "README.markdown"
+      ],
+      "expect": []
+    },
+    {
+      "name": "LICENSE names in lookup order",
+      "kind": "license",
+      "listing": [
+        "COPYING",
+        "license.txt",
+        "LICENSE.md"
+      ],
+      "expect": [
+        "LICENSE.md",
+        "license.txt",
+        "COPYING"
+      ]
+    },
+    {
+      "name": "a LICENSE spelled in another case is not one",
+      "kind": "license",
+      "listing": [
+        "LICENSE.Md",
+        "Copying"
+      ],
+      "expect": []
+    }
+  ],
+  "manifestRoots": [
+    {
+      "name": "manifest at the root",
+      "files": [
+        "manifest.yaml",
+        "extension/manifest.yaml"
+      ],
+      "expect": ""
+    },
+    {
+      "name": "manifest one level down",
+      "files": [
+        "extension/manifest.yaml"
+      ],
+      "expect": "extension"
+    },
+    {
+      "name": "manifest two levels down",
+      "files": [
+        "a/b/manifest.yaml"
+      ],
+      "expect": "a/b"
+    },
+    {
+      "name": "three levels is too deep",
+      "files": [
+        "a/b/c/manifest.yaml"
+      ],
+      "expect": null
+    },
+    {
+      "name": "node_modules is never searched",
+      "files": [
+        "node_modules/x/manifest.yaml",
+        "z/manifest.yaml"
+      ],
+      "expect": "z"
+    },
+    {
+      "name": "shallower wins, then name order",
+      "files": [
+        "b/manifest.yaml",
+        "a/manifest.yaml",
+        "c/d/manifest.yaml"
+      ],
+      "expect": "a"
+    }
+  ],
+  "denoDoc": {
+    "json": [
+      "doc",
+      "--allow-import=deno.land:443,jsr.io:443,esm.sh:443,raw.esm.sh:443,cdn.jsdelivr.net:443,raw.githubusercontent.com:443,gist.githubusercontent.com:443,registry.npmjs.org:443",
+      "--json",
+      "models/a.ts"
+    ],
+    "lint": [
+      "doc",
+      "--allow-import=deno.land:443,jsr.io:443,esm.sh:443,raw.esm.sh:443,cdn.jsdelivr.net:443,raw.githubusercontent.com:443,gist.githubusercontent.com:443,registry.npmjs.org:443",
+      "--lint",
+      "models/a.ts"
+    ]
+  }
+}

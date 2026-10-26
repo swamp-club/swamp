@@ -19,20 +19,15 @@
 
 import { getLogger } from "@logtape/logtape";
 import { basename, dirname, join, resolve } from "@std/path";
-import { formatRange, tryParseRange } from "@std/semver";
-import type {
-  DependencyRegistry,
-  LockedDependencyVersions,
-} from "../../domain/extensions/dependency_version_resolution.ts";
+import {
+  type LockedDependencyVersions,
+  MAX_LOCKFILE_BYTES,
+  parseDenoLockfile,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import type { ReadOnlyLock } from "../../domain/models/bundle.ts";
 import { readDenoConfig } from "../../domain/extensions/deno_config.ts";
 
 const logger = getLogger(["swamp", "extensions", "lockfile"]);
-
-/** A larger lockfile is not read; the audit resolves from the registry. */
-export const MAX_LOCKFILE_BYTES = 16 * 1024 * 1024;
-
-const SUPPORTED_VERSIONS: ReadonlySet<string> = new Set(["4", "5"]);
 
 /** Where the bundler finds the extension's dependencies. */
 export interface ExtensionProject {
@@ -76,44 +71,10 @@ export async function lockfilePathFor(
   return undefined;
 }
 
-/** `npm:@scope/name@range` or `jsr:@scope/name@range` → its parts. */
-function packageOfSpecifier(
-  key: string,
-): { registry: DependencyRegistry; name: string; range: string | null } | null {
-  const match = /^(npm|jsr):((?:@[^/@]+\/)?[^/@]+)(?:@([^/]+))?/.exec(key);
-  return match
-    ? {
-      registry: match[1] as DependencyRegistry,
-      name: match[2],
-      range: match[3] ?? null,
-    }
-    : null;
-}
-
-/** Two ranges admit the same versions, e.g. `^2.0.0` and `2`. */
-function sameRange(a: string | null, b: string | null): boolean {
-  if (a === b) return true;
-  const ra = tryParseRange(a ?? "*");
-  const rb = tryParseRange(b ?? "*");
-  return ra !== undefined && rb !== undefined &&
-    formatRange(ra) === formatRange(rb);
-}
-
-/** `name@version` or `name@version_peer…` → its name and bare version. */
-function packageOfEntry(key: string): { name: string; version: string } | null {
-  const at = key.indexOf("@", 1);
-  if (at <= 0) return null;
-  return {
-    name: key.slice(0, at),
-    version: key.slice(at + 1).split("_")[0],
-  };
-}
-
 /**
- * What a Deno lockfile (format 4 or 5) records, read as data: the resolved
- * value of each import specifier, and every version of each package from
- * the specifiers and the keys of the `npm` and `jsr` sections. Undefined when the file is missing, too large, not JSON
- * or another format, so the audit resolves from the registry instead.
+ * The Deno lockfile at `path` (format 4 or 5), read as data with
+ * `parseDenoLockfile`. Undefined when the file is missing, too large, not
+ * JSON or another format, so the audit resolves from the registry instead.
  */
 export async function readDenoLockfile(
   path: string,
@@ -130,71 +91,11 @@ export async function readDenoLockfile(
   } catch {
     return undefined;
   }
-
-  let body: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object") return undefined;
-    body = parsed as Record<string, unknown>;
-  } catch {
-    logger.debug`Lockfile ${path} is not JSON; not read`;
-    return undefined;
+  const lock = parseDenoLockfile(text, basename(path));
+  if (!lock) {
+    logger.debug`Lockfile ${path} is not a format 4 or 5 lockfile; not read`;
   }
-  if (!SUPPORTED_VERSIONS.has(String(body.version))) {
-    logger.debug`Lockfile ${path} has format ${body.version}; not read`;
-    return undefined;
-  }
-
-  const versions = new Map<string, Set<string>>();
-  const direct: {
-    key: string;
-    range: string | null;
-    version: string;
-  }[] = [];
-  const record = (registry: DependencyRegistry, name: string, v: string) => {
-    const key = `${registry}:${name}`;
-    const set = versions.get(key) ?? new Set<string>();
-    set.add(v);
-    versions.set(key, set);
-  };
-
-  const specifiers = body.specifiers;
-  if (specifiers && typeof specifiers === "object") {
-    for (const [key, value] of Object.entries(specifiers)) {
-      const pkg = packageOfSpecifier(key);
-      if (pkg && typeof value === "string") {
-        const version = value.split("_")[0];
-        record(pkg.registry, pkg.name, version);
-        direct.push({
-          key: `${pkg.registry}:${pkg.name}`,
-          range: pkg.range,
-          version,
-        });
-      }
-    }
-  }
-  for (const registry of ["npm", "jsr"] as const) {
-    const section = body[registry];
-    if (!section || typeof section !== "object") continue;
-    for (const key of Object.keys(section)) {
-      const entry = packageOfEntry(key);
-      if (entry) record(registry, entry.name, entry.version);
-    }
-  }
-
-  return {
-    source: basename(path),
-    // Deno writes each import's specifier as a key, sometimes in a shorter
-    // equivalent form (`npm:ms@2` for `^2.0.0`), so match by the versions
-    // the range admits rather than by text.
-    resolvedFor: (registry, name, specVersion) =>
-      direct.find((d) =>
-        d.key === `${registry}:${name}` && sameRange(d.range, specVersion)
-      )?.version,
-    versionsFor: (registry, name) => [
-      ...(versions.get(`${registry}:${name}`) ?? []),
-    ],
-  };
+  return lock;
 }
 
 /** The lockfile the bundler honours for `project`, read; or undefined. */

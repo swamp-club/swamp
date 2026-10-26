@@ -17,8 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ExtensionContentMetadata } from "./extension_content.ts";
-import { namesSecretValue } from "./extension_review_rules.ts";
+import { namesSecretValue } from "./secret_names.ts";
 
 /**
  * Finds extension documentation that tells users to handle a secret in
@@ -47,7 +46,7 @@ import { namesSecretValue } from "./extension_review_rules.ts";
  * into the environment is not flagged either: some SDKs read their
  * credentials only from there.
  *
- * swamp-club runs the same check over archives it did not author, so every
+ * The registry runs the same check over archives it did not author, so every
  * pattern is linear in the line length (bounded repetition, no nested
  * quantifiers) and lines longer than {@link MAX_SCANNED_LINE_LENGTH} are
  * skipped. The long-line safety warning already covers those.
@@ -237,13 +236,35 @@ interface Segment {
   code: boolean;
 }
 
+/** A declared argument or config field. */
+export interface SchemaField {
+  name: string;
+  sensitive?: boolean;
+}
+
+/** The parts of an extension's content metadata that declare arguments. */
+export interface SchemaMetadata {
+  models: readonly {
+    globalArguments: readonly SchemaField[];
+    methods: readonly { arguments: readonly SchemaField[] }[];
+  }[];
+  /** Methods an extension adds to other models' types. */
+  extensions?: readonly {
+    methods: readonly { arguments: readonly SchemaField[] }[];
+  }[];
+  vaults: readonly { configFields: readonly SchemaField[] }[];
+  datastores: readonly { configFields: readonly SchemaField[] }[];
+}
+
 /**
  * The argument and config field names an extension's schemas declare and
- * mark sensitive, for {@link detectSecretDocs}.
+ * mark sensitive, for {@link detectSecretDocs}. Without metadata nothing is
+ * declared, so the name heuristic decides every argument.
  */
 export function argumentSchemas(
-  metadata: ExtensionContentMetadata,
+  metadata: SchemaMetadata | null | undefined,
 ): ArgumentSchemas {
+  if (!metadata) return NO_SCHEMAS;
   const sensitive = new Set<string>();
   const declared = new Set<string>();
   const fields = [
@@ -251,7 +272,7 @@ export function argumentSchemas(
       ...m.globalArguments,
       ...m.methods.flatMap((method) => method.arguments),
     ]),
-    ...metadata.extensions.flatMap((e) =>
+    ...(metadata.extensions ?? []).flatMap((e) =>
       e.methods.flatMap((method) => method.arguments)
     ),
     ...metadata.vaults.flatMap((v) => v.configFields),
@@ -262,23 +283,6 @@ export function argumentSchemas(
     if (field.sensitive) sensitive.add(field.name);
   }
   return { sensitive, declared };
-}
-
-/**
- * The top-level `description:` entry of a manifest's YAML text: the line it
- * starts on and its lines, the key line included. A block or multi-line
- * scalar runs while lines are blank or indented. Undefined when there is
- * no such entry.
- */
-export function manifestDescriptionLines(
-  manifestText: string,
-): { line: number; text: string } | undefined {
-  const lines = manifestText.split("\n");
-  const start = lines.findIndex((l) => /^description\s*:/.test(l));
-  if (start === -1) return undefined;
-  let end = start + 1;
-  while (end < lines.length && /^(?:\s|$)/.test(lines[end])) end++;
-  return { line: start + 1, text: lines.slice(start, end).join("\n") };
 }
 
 function segments(text: string, form: SecretDocsForm): Segment[] {
@@ -431,4 +435,83 @@ function credentialShapes(text: string): string[] {
     }
   }
   return problems;
+}
+
+/** The review rule whose findings the `secret-safe-docs` factor counts. */
+export const SECRET_UNSAFE_DOCS_RULE = "secret-unsafe-docs";
+
+/** A finding with the archive file it is in; no file means the manifest description. */
+export interface SecretDocsLocatedFinding {
+  file?: string;
+  line: number;
+  message: string;
+}
+
+/** The most findings the registry stores for one version. */
+export const MAX_STORED_SECRET_DOCS_FINDINGS = 50;
+
+/** Findings past this many stop the scan; the factor then fails. */
+export const MAX_SCANNED_SECRET_DOCS_FINDINGS = 1000;
+
+/** Files larger than this are not scanned; the factor then fails. */
+export const MAX_SECRET_DOCS_FILE_BYTES = 1024 * 1024;
+
+/** More documentation files than this are not scanned; the factor then fails. */
+export const MAX_SECRET_DOCS_FILES = 10_000;
+
+/** Whether an author accepted a finding. */
+export type SecretDocsAccepted = (finding: SecretDocsLocatedFinding) => boolean;
+
+/** A declared acceptance, as the archive's content metadata carries it. */
+export interface SecretDocsAcceptance {
+  rule: string;
+  file?: string;
+  line?: number;
+}
+
+/**
+ * The acceptances that cover secret-unsafe-docs findings: one in a file
+ * covers the finding on its line, and one without a file covers every
+ * finding in the manifest description.
+ */
+export function secretDocsAcceptanceMatcher(
+  acceptances: readonly SecretDocsAcceptance[] | null | undefined,
+): SecretDocsAccepted {
+  const lines = new Set<string>();
+  let description = false;
+  for (const a of acceptances ?? []) {
+    if (a.rule !== SECRET_UNSAFE_DOCS_RULE) continue;
+    if (a.file === undefined) description = true;
+    else if (a.line !== undefined) lines.add(`${a.file}\0${a.line}`);
+  }
+  return (f) =>
+    f.file === undefined ? description : lines.has(`${f.file}\0${f.line}`);
+}
+
+/** The secret-safe-docs outcome for one version. */
+export interface SecretDocsResult {
+  passed: boolean;
+  /** The unaccepted findings, at most {@link MAX_STORED_SECRET_DOCS_FINDINGS}. */
+  findings: SecretDocsLocatedFinding[];
+  /** How many unaccepted findings there were; a lower bound when truncated. */
+  count: number;
+  /** The scan stopped early (a cap), so the docs were not all checked. */
+  truncated: boolean;
+}
+
+/**
+ * The outcome from the unaccepted findings: passed only when there are none
+ * and the scan covered everything. Unchecked documentation is unknown, not
+ * safe.
+ */
+export function summarizeSecretDocs(
+  findings: SecretDocsLocatedFinding[],
+  truncated: boolean,
+): SecretDocsResult {
+  return {
+    passed: findings.length === 0 && !truncated,
+    findings: findings.slice(0, MAX_STORED_SECRET_DOCS_FINDINGS),
+    count: findings.length,
+    truncated,
+  };
 }

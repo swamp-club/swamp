@@ -65,7 +65,7 @@ import {
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { registryChecksVerdict } from "../../domain/extensions/extension_publish_checks.ts";
 import { resolvePublishVisibility } from "../../domain/extensions/extension_manifest.ts";
-import { RUBRIC_VERSION } from "../../domain/extensions/extension_rubric_scorer.ts";
+import { RUBRIC_VERSION } from "@swamp-club/extension-scoring/rubric";
 import {
   acceptedWarningCount,
   type AcceptedWarnings,
@@ -87,7 +87,9 @@ import {
   type PublishedLookup,
   type QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
-import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type {
+  DependencyTrustIssue,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type {
   CollectiveMismatch,

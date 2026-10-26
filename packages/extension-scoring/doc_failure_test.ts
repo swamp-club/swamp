@@ -23,7 +23,7 @@ import {
   describeUnpublishedSpecifiers,
   DOC_FAILURE_FALLBACK,
   MAX_DOC_FAILURE_CHARS,
-} from "./extension_doc_failure.ts";
+} from "./doc_failure.ts";
 
 const ROOT = "/tmp/scorecard_abc123/extract/extension";
 const ESC = "\x1b";

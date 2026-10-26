@@ -47,6 +47,7 @@ const EXPECTED_SETUP_STEPS: Record<string, number> = {
   "release.yml": 1,
   "publish-testing.yml": 1,
   "publish-client.yml": 1,
+  "publish-extension-scoring.yml": 1,
   "multi-model-eval.yml": 2,
   "windows-compat.yml": 1,
   "flaky-tests.yml": 1,

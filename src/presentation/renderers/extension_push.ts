@@ -46,9 +46,9 @@ import {
   type DependencyTrustIssue,
   notAuditedFixes,
   onlyOutagesNotAudited,
-} from "../../domain/extensions/extension_dependency_trust_checker.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
-import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
+import type { ManifestLicenseWarning } from "@swamp-club/extension-scoring/licensing";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import {

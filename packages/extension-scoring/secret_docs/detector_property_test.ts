@@ -19,10 +19,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import {
-  detectSecretDocs,
-  type SecretDocsForm,
-} from "./extension_secret_docs_detector.ts";
+import { detectSecretDocs, type SecretDocsForm } from "./detector.ts";
 
 const name = fc.stringMatching(/^[a-z][a-z0-9-]{0,20}$/);
 const form = fc.constantFrom<SecretDocsForm>("markdown", "plain", "source");

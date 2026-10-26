@@ -20,9 +20,9 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { assertPathEquals } from "../persistence/path_test_helpers.ts";
+import { MAX_LOCKFILE_BYTES } from "@swamp-club/extension-scoring/dependency-audit";
 import {
   lockfilePathFor,
-  MAX_LOCKFILE_BYTES,
   readDenoLockfile,
   readOnlyLockFor,
   readProjectLockfile,

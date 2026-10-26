@@ -18,37 +18,38 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { fromFileUrl } from "@std/path";
 import {
   type DependencyRegistry,
   type LockedDependencyVersions,
   resolveShippedVersion,
   specifierKind,
-} from "./dependency_version_resolution.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
 import {
   checkDependencyTrust,
+  type Fetcher,
+} from "./extension_dependency_trust_checker.ts";
+import {
   dependencyTrustBlockerCount,
   type DependencyTrustCause,
   type DependencyTrustResult,
-  type Fetcher,
   looseSpecifierCount,
   notAuditedCount,
   notAuditedFixes,
-} from "./extension_dependency_trust_checker.ts";
-import {
-  composeScore,
-  computeAnalysisFactors,
-} from "./extension_rubric_scorer.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
+import { composeLocalScore } from "./extension_rubric_scorer.ts";
+import type { ExtensionManifest } from "./extension_manifest.ts";
+import { computeAnalysisFactors } from "@swamp-club/extension-scoring/rubric";
+import vectorsJson from "@swamp-club/extension-scoring/vectors/dependency-audit.json" with {
+  type: "json",
+};
 import {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
-} from "./dependency_audit_record.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
 
-// The vectors the registry scorecard (swamp-club#3353) copies, so push and
-// the scorecard resolve and word findings the same way.
-const VECTORS_PATH = fromFileUrl(
-  new URL("./testdata/dependency_audit_vectors.json", import.meta.url),
-);
+// The vectors @swamp-club/extension-scoring ships: the package's own tests
+// run them against the shared evaluator; these run them through push's
+// fetching, so its lookups feed the evaluator what the vectors expect.
 
 interface ResolutionVector {
   name: string;
@@ -97,18 +98,18 @@ interface FindingVector {
   spec: string | null;
   locked?: string[];
   npm?: Record<string, unknown>;
+  npmStatus?: number;
   jsr?: { status: number; body: unknown };
+  osv?: { status: number; body: unknown };
   expect: {
     severity: string;
     message: string;
     cause?: string;
     pointsLost: number;
   }[];
-  /** The scorecard's wording of the same finding, where it differs. */
-  scorecardMessage?: string;
 }
 
-const vectors = JSON.parse(await Deno.readTextFile(VECTORS_PATH)) as {
+const vectors = vectorsJson as unknown as {
   resolution: ResolutionVector[];
   record: RecordVector[];
   recordEntries: RecordEntryVector[];
@@ -194,10 +195,19 @@ function vectorFetcher(v: FindingVector): Fetcher {
       );
     }
     if (u.includes("api.osv.dev")) {
-      return Promise.resolve(Response.json({ vulns: [] }));
+      return Promise.resolve(
+        Response.json(v.osv?.body ?? { vulns: [] }, {
+          status: v.osv?.status ?? 200,
+        }),
+      );
     }
     if (u.includes("api.npmjs.org/downloads")) {
       return Promise.resolve(Response.json({ downloads: 50_000 }));
+    }
+    if (u.includes("registry.npmjs.org") && v.npmStatus) {
+      return Promise.resolve(
+        new Response("unavailable", { status: v.npmStatus }),
+      );
     }
     if (u.includes("registry.npmjs.org") && v.npm) {
       return Promise.resolve(
@@ -250,35 +260,23 @@ for (const v of vectors.findings) {
 }
 
 function factorOf(result: DependencyTrustResult) {
-  const factors = computeAnalysisFactors({
+  const analysis = computeAnalysisFactors({
     entrypointUrls: [],
     readme: null,
     hasLicenseFile: false,
-    doc: { nodes: [] } as unknown as Parameters<
-      typeof computeAnalysisFactors
-    >[0]["doc"],
+    doc: { version: 1, nodes: {} },
     rawLintOutput: "",
-    dependencyTrustPassed: dependencyTrustBlockerCount(result) === 0,
-    dependencyTrustBlockerCount: dependencyTrustBlockerCount(result),
-    dependencyNotAuditedCount: notAuditedCount(result),
-    dependencyNotAuditedFixes: notAuditedFixes(result),
-    dependencyLooseCount: looseSpecifierCount(result),
   });
-  return composeScore(
-    factors,
+  return composeLocalScore(
+    analysis,
+    { description: "d", platforms: [] } as unknown as ExtensionManifest,
     {
-      description: "d",
-      platforms: [],
-      labels: [],
-      models: [],
-      workflows: [],
-      vaults: [],
-      datastores: [],
-      reports: [],
-      skills: [],
-    } as unknown as Parameters<typeof composeScore>[1],
-  )
-    .factors.find((f) => f.id === "dependency-trust")!;
+      dependencyTrustBlockerCount: dependencyTrustBlockerCount(result),
+      dependencyNotAuditedCount: notAuditedCount(result),
+      dependencyNotAuditedFixes: notAuditedFixes(result),
+      dependencyLooseCount: looseSpecifierCount(result),
+    },
+  ).factors.find((f) => f.id === "dependency-trust")!;
 }
 
 for (const sc of vectors.scoring) {
