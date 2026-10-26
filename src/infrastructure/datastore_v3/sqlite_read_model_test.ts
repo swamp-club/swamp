@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
@@ -1098,6 +1099,106 @@ Deno.test("SqliteReadModel: a recovery replay where names are listed decomposed 
       assertEquals(await readOrAbsent(env.contentPath("", name, 1)), undefined);
     } finally {
       await replay.close();
+    }
+  });
+});
+
+/** Runs `fn` with the read model's log captured, and returns the messages. */
+async function readModelWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "datastore", "read-model"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+for (const tombstone of [false, true]) {
+  const change = tombstone ? "tombstone" : "put";
+  Deno.test(`SqliteReadModel: in list mode a ${change} of a key no listed name matches is skipped, warned about and counted (swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      // A file at the key's path that no listing shows: the directory lists
+      // no name `stray` matches under the folding rules.
+      const stray = env.contentPath("", "stray", 1);
+      await writeLocal(stray, "on disk");
+      await env.append(1, "", [await savePut("other", 1)]);
+      await env.append(2, "", [
+        tombstone ? dataTombstone("stray", 1) : await savePut("stray", 1),
+      ]);
+      const readModel = env.open({
+        spellingFolding: "list",
+        netReplay: false,
+        readDir: async function* (dir) {
+          for await (const entry of Deno.readDir(dir)) {
+            if (entry.name !== "stray") yield entry;
+          }
+        },
+      });
+      try {
+        let attributes: Record<string, unknown> = {};
+        const warnings = await readModelWarnings(async () => {
+          attributes = await catchUpAttributes(readModel);
+        });
+        assertEquals(attributes[ALIASED], 1);
+        assert(
+          warnings.some((message) =>
+            message.includes(dataKey("stray", 1).toString()) &&
+            message.includes("reaches another key's file")
+          ),
+          `no aliased-spelling warning in ${JSON.stringify(warnings)}`,
+        );
+        assertEquals(await readOrAbsent(stray), "on disk");
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "other", 1)),
+          "other@1",
+        );
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+}
+
+Deno.test("SqliteReadModel: in list mode a directory a write adds in a page is seen by a later change of another spelling in the same page (swamp-club#3939)", async () => {
+  await withEnv(async (env) => {
+    // abc@1's put over a file already there lists the behavior's directory
+    // before vpc/ exists.
+    await writeLocal(env.contentPath("", "abc", 1), "on disk");
+    await env.append(1, "", [await savePut("abc", 1)]);
+    await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
+    // Where the filesystem folds case `VPC/2/raw` reaches vpc@2's new file.
+    await env.append(3, "", [await savePut("VPC", 2, "forged")]);
+    const listed: string[] = [];
+    const readModel = env.open({
+      spellingFolding: "list",
+      netReplay: false,
+      readDir: (dir) => {
+        listed.push(dir);
+        return Deno.readDir(dir);
+      },
+    });
+    try {
+      const attributes = await catchUpAttributes(readModel);
+      assertEquals(attributes["swamp.datastore.v3.pages"], 1);
+      assert(listed.length > 0, "abc@1's put listed the directories");
+      assertEquals(await readOrAbsent(env.contentPath("", "vpc", 2)), "vpc@2");
+      const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+      assertEquals(attributes[ALIASED], folds ? 1 : undefined);
+    } finally {
+      await readModel.close();
     }
   });
 });
