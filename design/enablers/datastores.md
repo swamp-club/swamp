@@ -3895,13 +3895,17 @@ reach another key's file: `VPC/1/raw` reaches `vpc/1/raw`. The read model
 neither removes nor writes through such a key. For a put or tombstone of a
 key with no file of its own on disk (no put of it owned one, or its own
 tombstone removed it) whose path nonetheless reaches a file, it reads the
-spelling that file has on disk. If that spelling, as found or composed (NFC), is another key
-whose file is present, or one the same commit already decided, the change is
-logged and skipped, and stays indexed (`aliased_skipped` in the catch-up
-span). A key reached through another spelling of a directory only, such as
-`vpc/2` under `VPC/`, names no other key's file and is written, so a recovery
-replay gives it back its ownership. This holds for every checkout, solo ones
-included, since the same replay runs everywhere.
+spelling that file has on disk. Every key that folds to that spelling
+(case-folded and composed, NFC) reaches the same file, whichever spelling
+created it, so the file is another key's when such a key, other than this
+one, has a present file or the same commit already decided one. The change
+is then logged and skipped, and stays indexed (`aliased_skipped` in the
+catch-up span). The present keys are looked up by folded spelling in the
+read model state, through an index built on first use and kept in step as
+commits are applied. A key reached through another spelling of a directory
+only, such as `vpc/2` under `VPC/`, names no other key's file and is written,
+so a recovery replay gives it back its ownership. This holds for every
+checkout, solo ones included, since the same replay runs everywhere.
 
 The check costs nothing where nothing folds. The read model probes its state
 directory once, inside its exclusive section (`spelling_folding.ts`), and
@@ -3921,8 +3925,10 @@ Listings are cached for one apply page and dropped whenever a write adds a
 name, so a replay over files already on disk lists each directory once at
 most. Two limits remain. A compacted base load writes keys that own their
 files, so it is not checked, and two owned keys that differ only in case
-inside one base still share a file on such a filesystem. Per-directory
-casefolding below a cache root (ext4's `chattr +F`) is not detected.
+inside one base still share a file on such a filesystem. Case folding set per
+directory below a cache root (ext4's `chattr +F`, NTFS's `fsutil file
+setCaseSensitiveInfo`) is not detected: the probe of the state directory
+answers for the whole device.
 
 **Failures.** Any other failure throws `ReadModelApplyError`, naming the
 namespace, partition and seq, and leaves the cursor before the commit, so the

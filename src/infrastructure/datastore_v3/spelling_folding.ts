@@ -135,3 +135,14 @@ async function deviceOf(
     }
   }
 }
+
+/**
+ * A name as a case-insensitive, normalising filesystem compares it, near
+ * enough: `toLowerCase` differs from APFS's and NTFS's own folding for a few
+ * characters (final sigma, `ß`). Where the read model fails to match a name
+ * by it, it skips the key, which leaves a file unwritten but never
+ * overwrites one.
+ */
+export function foldSpelling(name: string): string {
+  return name.normalize("NFC").toLowerCase();
+}

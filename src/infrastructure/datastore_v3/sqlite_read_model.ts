@@ -148,6 +148,7 @@ import {
   refusedKeyReason,
 } from "./record_path_guard.ts";
 import {
+  foldSpelling,
   probeSpellingFolding,
   type SpellingFolding,
   spellingFoldingOf,
@@ -1056,6 +1057,7 @@ export class SqliteReadModel implements ReadModel {
         }
         // Another process may have changed the tree since the last section.
         this.#paths.clear();
+        this.#state.forgetFoldedKeys();
         this.#guarded.clear();
         this.#replaying = false;
         const generation = this.#catalog.generation();
@@ -1435,6 +1437,7 @@ export class SqliteReadModel implements ReadModel {
       const records = new Map<string, AppliedRecord | null>();
       const files = new Map<string, FileOwnership>();
       const touched = new Set<string>();
+      const touchedFolded = new FoldedKeys();
       const unreadable = new Map<string, StoredUnreadableRecord>();
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
@@ -1447,6 +1450,7 @@ export class SqliteReadModel implements ReadModel {
           signal,
           batch,
           touched,
+          touchedFolded,
           unreadable,
         );
         if (file !== undefined) files.set(key, file);
@@ -1519,6 +1523,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
     batch: DurableWriteBatch,
     touched: Set<string>,
+    touchedFolded: FoldedKeys,
     unreadable: Map<string, StoredUnreadableRecord>,
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
@@ -1536,6 +1541,7 @@ export class SqliteReadModel implements ReadModel {
     const decision = decideFile(prior, owner, position, change.put !== null);
     if (decision.kind === "keep") return undefined;
     touched.add(key);
+    touchedFolded.add(key);
     const source = { partition: owner, seq: commit.seq };
     // A key with no file of its own on disk (no put of it owned one, or its
     // own tombstone removed it) can still reach another key's file where the
@@ -1552,7 +1558,7 @@ export class SqliteReadModel implements ReadModel {
             commit.namespace,
             key,
             existing,
-            touched,
+            touchedFolded,
           ),
       )
     ) {
@@ -1826,19 +1832,19 @@ export class SqliteReadModel implements ReadModel {
    * key's (swamp-club#3939): on a case- or normalisation-insensitive
    * filesystem (APFS, NTFS) `VPC/1/raw` reaches `vpc/1/raw`. The file's
    * spelling on disk is read from its real path where `realPath` gives it,
-   * and from the directory listings otherwise. The file is another key's
-   * when that spelling, as listed or composed (NFC), is a key other than
-   * `key` whose file is present, or one this commit already decided
-   * (`decided`). A key reached through another spelling of a directory
-   * only, as `vpc/2` under `VPC/`, names no other key's file and is
-   * written. Where the filesystem folds nothing this is false without a
-   * look.
+   * and from the directory listings otherwise. Every key spelt so as such a
+   * filesystem compares names ({@link foldSpelling}) reaches the same file,
+   * whichever spelling created it, so the file is another key's when a key
+   * other than `key` folding to that spelling has a present file, or this
+   * commit already decided one (`decided`). A key that reaches a file no
+   * other key owns, as `vpc/2` under a `VPC/` another key made, is written.
+   * Where the filesystem folds nothing this is false without a look.
    */
   async #reachesAnotherKeysFile(
     namespace: string,
     key: string,
     existing: string,
-    decided: ReadonlySet<string>,
+    decided: FoldedKeys,
   ): Promise<boolean> {
     const root = this.#cacheRoot(namespace);
     const folding = await this.#foldingOf(root);
@@ -1849,13 +1855,12 @@ export class SqliteReadModel implements ReadModel {
       : await this.#listedSpelling(root, key);
     // No listed name matches a segment as the filesystem might fold it.
     if (onDisk === undefined) return true;
-    // Not even when spelt as the key: where names are listed decomposed
-    // (HFS+), a decomposed key lists as itself over its composed twin's file.
-    return [...new Set([onDisk, onDisk.normalize("NFC")])].some((spelling) =>
-      spelling !== key &&
-      (decided.has(spelling) ||
-        this.#state.fileOwnership(namespace, spelling)?.present === true)
-    );
+    const folded = foldSpelling(onDisk);
+    if (decided.hasOther(folded, key)) return true;
+    for (const other of this.#state.presentKeysFoldedTo(namespace, folded)) {
+      if (other !== key) return true;
+    }
+    return false;
   }
 
   /**
@@ -3563,14 +3568,24 @@ interface ListedNames {
   readonly folded: ReadonlyMap<string, string>;
 }
 
-/**
- * A name as a case-insensitive, normalising filesystem compares it, near
- * enough: `toLowerCase` differs from APFS's and NTFS's own folding for a few
- * characters (final sigma, `ß`). A segment it fails to match makes the guard
- * skip the key, which leaves a file unwritten but never overwrites one.
- */
-function foldSpelling(name: string): string {
-  return name.normalize("NFC").toLowerCase();
+/** Keys by their folded spelling ({@link foldSpelling}), for one commit. */
+class FoldedKeys {
+  readonly #keys = new Map<string, Set<string>>();
+
+  add(key: string): void {
+    const folded = foldSpelling(key);
+    const keys = this.#keys.get(folded) ?? new Set<string>();
+    keys.add(key);
+    this.#keys.set(folded, keys);
+  }
+
+  /** Whether a key other than `key` folds to `folded`. */
+  hasOther(folded: string, key: string): boolean {
+    for (const other of this.#keys.get(folded) ?? []) {
+      if (other !== key) return true;
+    }
+    return false;
+  }
 }
 
 /**

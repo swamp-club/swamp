@@ -93,3 +93,49 @@ Deno.test("ReadModelState: a schema-5 state migrates to the checkout filter tabl
     assertEquals(READ_MODEL_STATE_SCHEMA_VERSION, 7);
   });
 });
+
+Deno.test("ReadModelState.presentKeysFoldedTo: keeps in step with applied files, and forgets what a rollback or reset undoes (swamp-club#3939)", async () => {
+  await withStatePath((path) => {
+    const state = ReadModelState.open(path);
+    let seq = 0;
+    const apply = (files: [string, boolean][]) =>
+      state.recordApplied({
+        namespace: "",
+        partition: "p",
+        seq: ++seq,
+        records: new Map(),
+        live: new Map(),
+        files: new Map(
+          files.map((
+            [key, present],
+          ) => [key, { owner: "p", mark: seq, present }]),
+        ),
+      });
+    const keys = () => [...state.presentKeysFoldedTo("", "data/vpc/1/raw")];
+    try {
+      apply([["data/vpc/1/raw", true]]);
+      assertEquals(keys(), ["data/vpc/1/raw"]);
+      // Built now: later applies keep it in step.
+      apply([["data/VPC/1/raw", true]]);
+      assertEquals(keys().toSorted(), ["data/VPC/1/raw", "data/vpc/1/raw"]);
+      apply([["data/vpc/1/raw", false]]);
+      assertEquals(keys(), ["data/VPC/1/raw"]);
+      assertEquals(
+        [...state.presentKeysFoldedTo("alpha", "data/vpc/1/raw")],
+        [],
+      );
+
+      state.beginBatch();
+      apply([["data/Vpc/1/raw", true]]);
+      assertEquals(keys().toSorted(), ["data/VPC/1/raw", "data/Vpc/1/raw"]);
+      state.rollbackBatch();
+      seq--;
+      assertEquals(keys(), ["data/VPC/1/raw"]);
+
+      state.reset(1);
+      assertEquals(keys(), []);
+    } finally {
+      state.close();
+    }
+  });
+});

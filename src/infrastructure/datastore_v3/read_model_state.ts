@@ -55,6 +55,7 @@ import {
   readFileAccess,
 } from "../../domain/datastore_v3/file_access.ts";
 import type { FileOwnership } from "../../domain/datastore_v3/materialisation.ts";
+import { foldSpelling } from "./spelling_folding.ts";
 import type {
   AtRiskCopy,
   LiveRecord,
@@ -407,6 +408,13 @@ export class ReadModelState {
   readonly #upsertUnreadable: StatementSync;
   #closed = false;
   #batchOpen = false;
+  /**
+   * The keys with a present file, by namespace and folded spelling
+   * ({@link foldSpelling}), built from `materialised_keys` on first use
+   * (swamp-club#3939). {@link recordApplied} keeps it in step; anything else
+   * that rewrites the table, or rolls a change back, drops it.
+   */
+  #foldedKeys: Map<string, Set<string>> | undefined;
 
   private constructor(db: DatabaseSync) {
     this.#db = db;
@@ -646,6 +654,7 @@ export class ReadModelState {
    * cursor; neither the cursor nor the applied seq moves back.
    */
   recordApplied(commit: AppliedCommit): void {
+    let ownershipChanged = false;
     this.#transaction(() => {
       const applied = this.appliedSeq(commit.namespace, commit.partition);
       if (commit.seq > applied) {
@@ -678,6 +687,7 @@ export class ReadModelState {
           }
         }
         for (const [key, file] of commit.files ?? []) {
+          ownershipChanged = true;
           this.#upsertOwnership.run(
             commit.namespace,
             key,
@@ -703,6 +713,46 @@ export class ReadModelState {
       }
       if (commit.cursor !== undefined) this.#advanceCursor(commit.cursor);
     });
+    const folded = this.#foldedKeys;
+    if (!ownershipChanged || folded === undefined) return;
+    for (const [key, file] of commit.files ?? []) {
+      const id = foldedId(commit.namespace, foldSpelling(key));
+      const keys = folded.get(id) ?? new Set<string>();
+      if (file.present) keys.add(key);
+      else keys.delete(key);
+      if (keys.size === 0) folded.delete(id);
+      else folded.set(id, keys);
+    }
+  }
+
+  /**
+   * The keys of `namespace` with a present file whose spelling folds
+   * ({@link foldSpelling}) to `folded` (swamp-club#3939).
+   */
+  presentKeysFoldedTo(namespace: string, folded: string): ReadonlySet<string> {
+    this.#requireOpen();
+    if (this.#foldedKeys === undefined) {
+      const index = new Map<string, Set<string>>();
+      const rows = this.#db.prepare(
+        "SELECT namespace, record_key FROM materialised_keys WHERE present = 1",
+      ).all() as { namespace: string; record_key: string }[];
+      for (const row of rows) {
+        const id = foldedId(row.namespace, foldSpelling(row.record_key));
+        const keys = index.get(id) ?? new Set<string>();
+        keys.add(row.record_key);
+        index.set(id, keys);
+      }
+      this.#foldedKeys = index;
+    }
+    return this.#foldedKeys.get(foldedId(namespace, folded)) ?? NO_KEYS;
+  }
+
+  /**
+   * Drops the index {@link presentKeysFoldedTo} reads, for a caller that
+   * cannot tell whether another process changed the table since.
+   */
+  forgetFoldedKeys(): void {
+    this.#foldedKeys = undefined;
   }
 
   /** Moves the cursor past a change applied earlier by a partition catch-up. */
@@ -724,6 +774,7 @@ export class ReadModelState {
    * names this boot's removals, which stay done.
    */
   reset(catalogGeneration: number, keepUnsynced = false): void {
+    this.#foldedKeys = undefined;
     this.#transaction(() => {
       this.#db.exec(
         "INSERT OR IGNORE INTO load_touched_keys (namespace, record_key) " +
@@ -988,6 +1039,7 @@ export class ReadModelState {
       readonly boot: string;
     },
   ): void {
+    this.#foldedKeys = undefined;
     this.#transaction(() => {
       this.#db.exec(`
         DELETE FROM live_records;
@@ -1046,6 +1098,7 @@ export class ReadModelState {
   rollbackBatch(): void {
     if (!this.#batchOpen) return;
     this.#batchOpen = false;
+    this.#foldedKeys = undefined;
     rollbackQuietly(this.#db);
   }
 
@@ -1418,6 +1471,7 @@ export class ReadModelState {
           this.#db.exec("ROLLBACK TO state_change");
           this.#db.exec("RELEASE state_change");
         } catch {
+          this.#foldedKeys = undefined;
           // SQLite rolled the whole transaction back itself (a full disk,
           // an I/O error), or the savepoint cannot be undone. Roll back
           // everything, so the batch cannot commit half of this change:
@@ -1553,6 +1607,12 @@ function atRiskOf(row: AtRiskRow): StoredAtRiskCopy {
     createdAt: new Date(row.created_at),
     lastAttempt: new Date(row.last_attempt),
   };
+}
+
+const NO_KEYS: ReadonlySet<string> = new Set();
+
+function foldedId(namespace: string, folded: string): string {
+  return `${namespace}\0${folded}`;
 }
 
 function rollbackQuietly(db: DatabaseSync): void {

@@ -940,6 +940,31 @@ for (const spellingFolding of FORCED_MODES) {
     });
   });
 
+  Deno.test(`SqliteReadModel: a key spelt as the disk spells a file another spelling owns neither overwrites nor removes it (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      // VPC@1 makes the directory VPC/, and vpc@2 owns its file under it.
+      await env.append(1, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
+      await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
+      // Where the filesystem folds case, VPC/2/raw is vpc@2's file, spelt
+      // as this key spells it.
+      await env.append(3, "", [await savePut("VPC", 2, "forged")]);
+      await env.append(4, "", [dataTombstone("VPC", 2)]);
+      const readModel = env.open({ spellingFolding, netReplay: false });
+      try {
+        const attributes = await catchUpAttributes(readModel);
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 2)),
+          "vpc@2",
+        );
+        const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+        // The put, and then the tombstone, of a key that owns nothing.
+        assertEquals(attributes[ALIASED], folds ? 2 : undefined);
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
   Deno.test(`SqliteReadModel: a recovery replay over the files on disk keeps what an incremental catch-up kept (${mode}, swamp-club#3939)`, async () => {
     await withEnv(async (env) => {
       await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
