@@ -148,15 +148,22 @@ run's poll and the second-by-second clocks beside it. Run summaries, and the
 model output searches behind the Models page and a model's page, are re-read
 when a run starts or stops being driven and when the tab comes back into view,
 at most once per 30 seconds (`RUN_ACTIVITY_REFETCH_MS`) and never while the tab
-is hidden. A live run's page polls only the run and its logs; its run-search row
-is re-read when the run's status or the active runs change. A poll tick, and the
-re-read on coming back into view, waits for a read of the run or its logs still
-in flight instead of sending another (`reload` in `useRequest`), so a slow serve
-sees at most one of each per page rather than one per tick (swamp-club#3742).
-There is no client-side request timeout: a read serve never answers holds the
-page's live reads until it answers or the socket closes, which rejects it. A
-preset time range is sent as a duration (`since: "7d"`) to the run queries and
-to `model.output.search`, so the request does not change as the clock moves.
+is hidden. Such a re-read, and the age-out re-read below, does not supersede a
+read still in flight: it waits for that read, whose answer is shown, then reads
+once more, however many changes came meanwhile (`refresh` in `useRequest`). A
+read slower than the throttle is still shown while runs keep starting, and the
+re-read after it is sent as soon as it settles, outside the throttle, so a slow
+serve has one such read in flight at a time (swamp-club#3960). A payload or
+time-range change still supersedes it. A live run's page polls only the run and
+its logs; its run-search row is re-read when the run's status or the active runs
+change. A poll tick, and the re-read on coming back into view, waits for a read
+of the run or its logs still in flight instead of sending another (`reload` in
+`useRequest`), so a slow serve sees at most one of each per page rather than one
+per tick (swamp-club#3742). There is no client-side request timeout: a read
+serve never answers holds the page's live reads until it answers or the socket
+closes, which rejects it. A preset time range is sent as a duration
+(`since: "7d"`) to the run queries and to `model.output.search`, so the request
+does not change as the clock moves.
 
 The sidebar, overview and Approvals page share one approvals request owner.
 Entering either page or retrying a read joins an in-flight listing. A completed

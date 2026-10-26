@@ -188,7 +188,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
   // On a preset range, read the page again once the oldest match leaves
   // the window, as the totals below do (swamp-club#3450).
   const answered = extractSearchWindow(search.data);
-  useRefetchOnAgeOut(search.refetch, {
+  useRefetchOnAgeOut(search.refresh, {
     answer: search.data,
     delayMs: isRelativeBound(searchWindow.since)
       ? ageOutDelayMs(answered.since, answered.oldestStartedAt)

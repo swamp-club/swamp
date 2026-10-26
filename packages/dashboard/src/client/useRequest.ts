@@ -34,6 +34,13 @@ interface UseRequestResult<T> {
    * one when none is. Resolves once it has answered; never rejects.
    */
   reload: () => Promise<void>;
+  /**
+   * Re-reads after something changed (run activity, the tab coming into
+   * view, a run leaving the window): waits for the read still in flight,
+   * so its answer is shown, then reads once more. Never discards a reply
+   * on a slow serve (swamp-club#3960).
+   */
+  refresh: () => void;
 }
 
 interface UseRequestOptions {
@@ -43,6 +50,9 @@ interface UseRequestOptions {
    */
   enabled?: boolean;
 }
+
+/** How a run reaches the runner: supersede, join, or join and read again. */
+type RunMode = "send" | "join" | "refresh";
 
 export function useRequest<T = Record<string, unknown>>(
   type: string,
@@ -61,7 +71,7 @@ export function useRequest<T = Record<string, unknown>>(
   const payloadKey = payload ? JSON.stringify(payload) : "";
   const requestKey = `${type}\u0000${payloadKey}`;
 
-  const run = useCallback((join: boolean): Promise<void> => {
+  const run = useCallback((mode: RunMode): Promise<void> => {
     const runner = runnerRef.current;
     if (!enabled) {
       runner.invalidate();
@@ -99,13 +109,16 @@ export function useRequest<T = Record<string, unknown>>(
         setLoading(false);
       },
     };
-    return join ? runner.join(start, apply) : runner.send(start, apply);
+    return runner[mode](start, apply);
   }, [connected, enabled, type, payloadKey, request]);
 
   const fetch = useCallback(() => {
-    run(false).catch(() => {});
+    run("send").catch(() => {});
   }, [run]);
-  const reload = useCallback(() => run(true), [run]);
+  const reload = useCallback(() => run("join"), [run]);
+  const refresh = useCallback(() => {
+    run("refresh").catch(() => {});
+  }, [run]);
 
   useEffect(() => {
     fetch();
@@ -116,5 +129,5 @@ export function useRequest<T = Record<string, unknown>>(
     return () => runner.invalidate();
   }, []);
 
-  return { data, loading, error, errorInfo, refetch: fetch, reload };
+  return { data, loading, error, errorInfo, refetch: fetch, reload, refresh };
 }

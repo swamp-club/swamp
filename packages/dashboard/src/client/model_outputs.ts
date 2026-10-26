@@ -47,6 +47,6 @@ export function useModelOutputSearch(
     enabled: useLegacy,
   });
   const source = useLegacy ? older : now;
-  useRefetchOnRunActivity(source.refetch);
+  useRefetchOnRunActivity(source.refresh);
   return source;
 }

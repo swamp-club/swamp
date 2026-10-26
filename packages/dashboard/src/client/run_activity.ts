@@ -203,7 +203,9 @@ export interface AgeOut {
  * Calls `refetch` when serve starts or finishes a run, or the tab comes
  * back into view, and once `ageOut`'s run leaves the window; at most once
  * per `RUN_ACTIVITY_REFETCH_MS`, and never while the tab is hidden. The
- * first load counts as a fetch.
+ * first load counts as a fetch. Pass `useRequest`'s `refresh`, which waits
+ * for a read still in flight: a read slower than the throttle would
+ * otherwise never answer while runs keep starting (swamp-club#3960).
  */
 export function useRefetchOnRunActivity(
   refetch: () => void,
@@ -215,7 +217,8 @@ export function useRefetchOnRunActivity(
 
 /**
  * Calls `refetch` once `ageOut`'s run leaves the window, with the same
- * throttle as `useRefetchOnRunActivity` but not on run activity.
+ * throttle as `useRefetchOnRunActivity` but not on run activity. Pass
+ * `useRequest`'s `refresh`, as there.
  */
 export function useRefetchOnAgeOut(
   refetch: () => void,
