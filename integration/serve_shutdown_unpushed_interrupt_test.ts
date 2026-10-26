@@ -43,8 +43,10 @@ import { ActiveRun } from "../src/domain/models/active_run.ts";
 import type { ControlPlaneStore } from "../src/domain/datastore/control_plane_store.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
-import { swampPath } from "../src/infrastructure/persistence/paths.ts";
-import { SWAMP_SUBDIRS } from "../src/infrastructure/persistence/paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../src/infrastructure/persistence/paths.ts";
 import { interruptShutdownRuns } from "../src/serve/shutdown_interrupt.ts";
 import { InstanceHeartbeatService } from "../src/serve/instance_heartbeat.ts";
 import { reconcileRemoteInterruptedRuns } from "../src/serve/boot_reconciliation.ts";
@@ -338,6 +340,98 @@ Deno.test("shutdown with an unpushed interrupt: a failed stopped-heartbeat write
   });
 });
 
+/**
+ * A restarted serve's boot reap in `owner`'s checkout, as serve runs it: the
+ * runs the status index lists as running and the ones the marker names, the
+ * reaper judged against this checkout's tracker, and the settle push.
+ */
+async function bootReap(
+  owner: Checkout,
+  remote: ReturnType<typeof datastore>,
+  heartbeatAlive: (instanceId: string) => boolean,
+): Promise<number> {
+  const markerPath = swampPath(owner.dir, UNPUSHED_INTERRUPTS_FILE);
+  const marker = await readUnpushedInterrupts(markerPath);
+  let reaped = 0;
+  await runInRootUnitOfWork(
+    { markDirty: () => Promise.resolve() },
+    {
+      flush: () =>
+        pushSettledAtBoot({
+          reaped,
+          marker,
+          markerPath,
+          push: () => remote.pushFrom(owner),
+        }),
+      pushWhen: "completed",
+    },
+    async () => {
+      const runningRuns = await owner.runs.findGlobalByStatus("running");
+      for (
+        const marked of await markedRunsStillRunning(
+          marker,
+          (workflowId, runId) => owner.runs.findById(workflowId, runId),
+        )
+      ) {
+        if (!runningRuns.some(({ run }) => run.id === marked.run.id)) {
+          runningRuns.push(marked);
+        }
+      }
+      const result = await reapOrphanedWorkflowRuns(
+        runningRuns,
+        (wid, r) => owner.runs.save(wid, r),
+        (runId) => {
+          const tracked = owner.tracker.findById(runId);
+          return tracked
+            ? { status: tracked.status, instanceId: tracked.instanceId }
+            : null;
+        },
+        () => true,
+        "restarted-instance",
+        (instanceId) => Promise.resolve(heartbeatAlive(instanceId)),
+      );
+      reaped = result.reaped;
+    },
+  );
+  return reaped;
+}
+
+Deno.test("shutdown with an unpushed interrupt: a restart does not interrupt a run a peer has since resumed", async () => {
+  await withTempDir(async (dir) => {
+    const owner = checkout(join(dir, "owner"));
+    const remote = datastore(join(dir, "remote"));
+    const control = inMemoryControlPlane();
+    try {
+      const { wf, run, heartbeat } = await startRun(owner, remote, control);
+      await stopWithSlowDatastore(owner, run, heartbeat);
+      // A peer resumes the run under the same id and pushes it running.
+      const resumed = WorkflowRun.fromData({
+        ...run.toData(),
+        status: "running",
+        instanceId: PEER,
+      });
+      const peer = checkout(join(dir, "peer"));
+      try {
+        await peer.runs.save(wf.id, resumed);
+        await remote.pushFrom(peer);
+      } finally {
+        peer.tracker.close();
+      }
+      // The original checkout restarts, and its boot pull brings that in.
+      await remote.refreshInto(owner, wf.id, run.id as WorkflowRunId);
+
+      const reaped = await bootReap(owner, remote, (id) => id === PEER);
+
+      assertEquals(reaped, 0);
+      const live = await remote.runs.findById(wf.id, run.id);
+      assertEquals(live?.status, "running");
+      assertEquals(live?.instanceId, PEER);
+    } finally {
+      owner.tracker.close();
+    }
+  });
+});
+
 for (
   const { name, hydrationReplaced } of [
     { name: "its cache still holds the interrupt", hydrationReplaced: false },
@@ -365,52 +459,11 @@ for (
 
         // The next serve's boot reap, as serve runs it.
         const markerPath = swampPath(owner.dir, UNPUSHED_INTERRUPTS_FILE);
-        const marker = await readUnpushedInterrupts(markerPath);
-        assertEquals(marker, {
+        assertEquals(await readUnpushedInterrupts(markerPath), {
           present: true,
           runs: [{ runId: run.id, workflowId: wf.id }],
         });
-        let reaped = 0;
-        await runInRootUnitOfWork(
-          { markDirty: () => Promise.resolve() },
-          {
-            flush: () =>
-              pushSettledAtBoot({
-                reaped,
-                marker,
-                markerPath,
-                push: () => remote.pushFrom(owner),
-              }),
-            pushWhen: "completed",
-          },
-          async () => {
-            const runningRuns = await owner.runs.findGlobalByStatus(
-              "running",
-            );
-            for (
-              const marked of await markedRunsStillRunning(
-                marker,
-                (workflowId, runId) => owner.runs.findById(workflowId, runId),
-              )
-            ) {
-              if (!runningRuns.some(({ run }) => run.id === marked.run.id)) {
-                runningRuns.push(marked);
-              }
-            }
-            const result = await reapOrphanedWorkflowRuns(
-              runningRuns,
-              (wid, r) => owner.runs.save(wid, r),
-              (runId) => {
-                const tracked = owner.tracker.findById(runId);
-                return tracked ? { status: tracked.status } : null;
-              },
-              () => true,
-              "restarted-instance",
-              () => Promise.resolve(false),
-            );
-            reaped = result.reaped;
-          },
-        );
+        const reaped = await bootReap(owner, remote, () => false);
 
         assertEquals(reaped, hydrationReplaced ? 1 : 0);
         assertEquals(

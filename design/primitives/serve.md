@@ -1245,7 +1245,9 @@ as its instance id. The coordination records:
    reads each run that file names by id, since the status index does not
    notice a pull that put a record back to `running`, and removes the file
    once the push lands (`pushSettledAtBoot`,
-   `src/serve/unpushed_interrupts.ts`, swamp-club#3958).
+   `src/serve/unpushed_interrupts.ts`, swamp-club#3958). A tracker row of one
+   instance is not trusted for a record another instance now owns, as after a
+   peer resumed the run; that run is judged by its owner's heartbeat.
 5. Runs one `reconcileRemoteInterruptedRuns` pass if a remote control plane
    exists.
 6. Replays pending runs whose trigger is still configured.
@@ -1269,7 +1271,10 @@ from the datastore (`hydrateFile`, in the pull lane of the shared sync gate,
 bounded by 10 s). A record the cache already holds is never replaced: a
 restarted checkout claims its own previous instance, whose unpushed interrupt
 is in the cache. The pass interrupts those runs with the ones the cache held,
-and on a synced datastore pushes once what it interrupted (swamp-club#3958).
+and on a synced datastore pushes once what it interrupted (swamp-club#3958). An
+instance whose records could not be read, or one of whose runs could not be
+fetched, keeps its `active-runs/` records and heartbeat, and its claim is
+released, so a later pass, here or on a peer, reconciles it again.
 
 The run tracker is local and a run record is not pushed until the run ends, so
 the claiming peer finds nothing to interrupt for a run that crashed mid-step,

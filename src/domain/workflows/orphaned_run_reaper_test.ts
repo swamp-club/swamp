@@ -1433,3 +1433,58 @@ Deno.test("suspendedRunOwnerStillRuns: true only while a live local owner's trac
     false,
   );
 });
+
+Deno.test("reapOrphanedWorkflowRuns: a run another instance took over is not judged by this tracker's row (swamp-club#3958)", async () => {
+  // Shutdown settled the local row as interrupted; a peer then resumed the
+  // run, and the boot pull brought in its live record.
+  const run = makeRun({ instanceId: "peer-instance" });
+  const saved: string[] = [];
+  const lookups: string[] = [];
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    (_wid, r) => {
+      saved.push(r.id);
+      return Promise.resolve();
+    },
+    () => ({ status: "interrupted", instanceId: "previous-instance" }),
+    unexpectedPidCheck,
+    "restarted-instance",
+    (id) => {
+      lookups.push(id);
+      return Promise.resolve(true);
+    },
+  );
+  assertEquals(result, { reaped: 0, skipped: 1 });
+  assertEquals(run.status, "running");
+  assertEquals(saved, []);
+  assertEquals(lookups, ["peer-instance"]);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: a run taken over by an instance that is gone is reaped", async () => {
+  const run = makeRun({ instanceId: "peer-instance" });
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    () => ({ status: "running", instanceId: "previous-instance" }),
+    unexpectedPidCheck,
+    "restarted-instance",
+    () => Promise.resolve(false),
+  );
+  assertEquals(result, { reaped: 1, skipped: 0 });
+  assertEquals(run.status, "interrupted");
+});
+
+Deno.test("reapOrphanedWorkflowRuns: a row of the instance the record names is still trusted", async () => {
+  const run = makeRun({ instanceId: "previous-instance" });
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    () => ({ status: "interrupted", instanceId: "previous-instance" }),
+    unexpectedPidCheck,
+    "restarted-instance",
+    () => {
+      throw new Error("the tracker row decides");
+    },
+  );
+  assertEquals(result, { reaped: 1, skipped: 0 });
+});

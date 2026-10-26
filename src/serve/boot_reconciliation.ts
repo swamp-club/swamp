@@ -736,9 +736,14 @@ export async function reconcileRemoteInterruptedRuns(
   // Read before the cleanup below deletes them: the active-run records name
   // the claimed instances' workflow runs, which this cache may not hold.
   const claimedWorkflowRuns: {
+    instanceId: string;
     workflowId: WorkflowId;
     runId: WorkflowRunId;
   }[] = [];
+  // Claimed instances whose runs could not all be read or refreshed. Their
+  // active-run records, heartbeat and claim are left for a later pass to
+  // retry: once they are gone, nothing names those runs.
+  const retryInstances = new Set<string>();
   if (deps.workflowRunRepo) {
     for (const claimedId of claimedInstanceIds) {
       try {
@@ -767,11 +772,13 @@ export async function reconcileRemoteInterruptedRuns(
             continue;
           }
           claimedWorkflowRuns.push({
+            instanceId: claimedId,
             workflowId: createWorkflowId(workflowId),
             runId: createWorkflowRunId(runId),
           });
         }
       } catch (err: unknown) {
+        retryInstances.add(claimedId);
         logger.warn(
           "Failed to read the active-run records of instance {instanceId}: {error}",
           {
@@ -783,7 +790,51 @@ export async function reconcileRemoteInterruptedRuns(
     }
   }
 
+  const refreshed: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+  if (deps.workflowRunRepo) {
+    const workflowRunRepo = deps.workflowRunRepo;
+    for (const { instanceId, workflowId, runId } of claimedWorkflowRuns) {
+      try {
+        // A record the cache holds is never replaced: it may carry a change
+        // not pushed yet, such as the interrupt a restarted checkout's
+        // previous instance could not push. It is still read by id, since
+        // the status index may not name it.
+        let run = await workflowRunRepo.findById(workflowId, runId);
+        if (!run && deps.refreshRunRecord) {
+          await deps.refreshRunRecord(workflowId, runId);
+          run = await workflowRunRepo.findById(workflowId, runId);
+        }
+        if (run) refreshed.push({ run, workflowId });
+      } catch (err: unknown) {
+        retryInstances.add(instanceId);
+        logger.warn(
+          "Failed to refresh workflow run {runId} from the datastore; instance {instanceId} is left for a later pass to reconcile again: {error}",
+          {
+            runId,
+            instanceId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+  }
+
   for (const claimedId of claimedInstanceIds) {
+    if (retryInstances.has(claimedId)) {
+      // Released, so this pass or another instance's claims it again.
+      await deps.controlPlaneStore
+        .delete(`claims/reconcile-instance/${claimedId}`)
+        .catch((err: unknown) => {
+          logger.warn(
+            "Failed to release the reconcile claim on instance {instanceId}: {error}",
+            {
+              instanceId: claimedId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        });
+      continue;
+    }
     const activeRunsCleaned = await cleanupActiveRunsForInstance(
       deps.controlPlaneStore,
       claimedId,
@@ -798,29 +849,6 @@ export async function reconcileRemoteInterruptedRuns(
 
   if (deps.workflowRunRepo) {
     const workflowRunRepo = deps.workflowRunRepo;
-    const refreshed: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    for (const { workflowId, runId } of claimedWorkflowRuns) {
-      try {
-        // A record the cache holds is never replaced: it may carry a change
-        // not pushed yet, such as the interrupt a restarted checkout's
-        // previous instance could not push. It is still read by id, since
-        // the status index may not name it.
-        let run = await workflowRunRepo.findById(workflowId, runId);
-        if (!run && deps.refreshRunRecord) {
-          await deps.refreshRunRecord(workflowId, runId);
-          run = await workflowRunRepo.findById(workflowId, runId);
-        }
-        if (run) refreshed.push({ run, workflowId });
-      } catch (err: unknown) {
-        logger.warn(
-          "Failed to refresh workflow run {runId} from the datastore: {error}",
-          {
-            runId,
-            error: err instanceof Error ? err.message : String(err),
-          },
-        );
-      }
-    }
     let yamlReaped = 0;
     const pushReaped = deps.pushReaped;
     try {
@@ -884,7 +912,8 @@ export async function reconcileRemoteInterruptedRuns(
     }
   }
 
-  for (const key of claimedHeartbeatKeys) {
+  for (const [index, key] of claimedHeartbeatKeys.entries()) {
+    if (retryInstances.has(claimedInstanceIds[index])) continue;
     await deps.controlPlaneStore.delete(key).catch((err: unknown) => {
       logger.warn(
         "Failed to delete stale heartbeat {key}: {error}",

@@ -4866,7 +4866,9 @@ export const serveCommand = new Command()
           },
           (runId) => {
             const tracked = runTracker.findById(runId);
-            return tracked ? { status: tracked.status } : null;
+            return tracked
+              ? { status: tracked.status, instanceId: tracked.instanceId }
+              : null;
           },
           isProcessGone,
           instanceId,

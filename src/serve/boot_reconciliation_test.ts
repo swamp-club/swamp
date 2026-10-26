@@ -2518,29 +2518,55 @@ Deno.test("reconcileRemoteInterruptedRuns: skips active-run records of method ru
   assertEquals(runs.events, []);
 });
 
-Deno.test("reconcileRemoteInterruptedRuns: a failed refresh is logged and the pass goes on", async () => {
+Deno.test("reconcileRemoteInterruptedRuns: a failed refresh leaves the instance for a later pass, which retries it", async () => {
   const failing = crypto.randomUUID();
+  const workflowId = crypto.randomUUID();
   const cached = crypto.randomUUID();
   const h = createReconcileHarness(
     { "dead-inst": makeHeartbeat("dead-inst", { stale: true }) },
     [],
   );
+  const recordKey = `active-runs/dead-inst/${failing}`;
   await h.controlPlaneStore.put(
-    `active-runs/dead-inst/${failing}`,
-    activeRunRecord("dead-inst", { resourceId: crypto.randomUUID() }),
+    recordKey,
+    activeRunRecord("dead-inst", { resourceId: workflowId }),
   );
-  const runs = refreshableRunRepo(
-    [{ id: cached, instanceId: "dead-inst" }],
-    [],
-  );
+  const runs = refreshableRunRepo([{ id: cached, instanceId: "dead-inst" }], [{
+    id: failing,
+    instanceId: "dead-inst",
+    workflowId,
+  }]);
   h.deps.workflowRunRepo = runs.repo;
   h.deps.refreshRunRecord = () => Promise.reject(new Error("S3 unreachable"));
 
+  // The cached run is still settled; the instance is not let go.
   assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
   assertEquals(runs.events, [
     `interrupt ${cached} remote_instance_dead`,
     `save wf-cached ${cached}`,
   ]);
+  assertEquals(h.controlPlaneStore.deleted.includes(recordKey), false);
+  assertEquals(
+    h.controlPlaneStore.deleted.includes("heartbeats/dead-inst"),
+    false,
+  );
+  assertEquals(
+    await h.controlPlaneStore.get("claims/reconcile-instance/dead-inst"),
+    null,
+  );
+
+  // The next pass claims it again, and this time the refresh lands.
+  h.deps.refreshRunRecord = runs.refresh;
+  await reconcileRemoteInterruptedRuns(h.deps);
+  assertEquals(
+    runs.events.includes(`interrupt ${failing} remote_instance_dead`),
+    true,
+  );
+  assertEquals(h.controlPlaneStore.deleted.includes(recordKey), true);
+  assertEquals(
+    h.controlPlaneStore.deleted.includes("heartbeats/dead-inst"),
+    true,
+  );
 });
 
 Deno.test("reconcileRemoteInterruptedRuns: pushes nothing when no workflow run was interrupted", async () => {

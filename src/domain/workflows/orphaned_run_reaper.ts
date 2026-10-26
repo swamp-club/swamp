@@ -50,7 +50,9 @@ export interface ReapResult {
 export async function reapOrphanedWorkflowRuns(
   runs: { run: WorkflowRun; workflowId: WorkflowId }[],
   save: (workflowId: WorkflowId, run: WorkflowRun) => Promise<void>,
-  trackerLookup: (runId: string) => { status: string } | null,
+  trackerLookup: (
+    runId: string,
+  ) => { status: string; instanceId?: string } | null,
   isDeadFn: (pid: number) => boolean,
   localInstanceId?: string,
   heartbeatLookup?: (instanceId: string) => Promise<boolean>,
@@ -62,7 +64,13 @@ export async function reapOrphanedWorkflowRuns(
     if (run.status !== "running") continue;
 
     const tracked = trackerLookup(run.id);
-    if (tracked) {
+    // A row of one instance against a record another instance now owns:
+    // that instance took the run over, as a resume does, so the row says
+    // nothing about the run as it stands. It is judged as the other
+    // instance's run below (swamp-club#3958).
+    const takenOver = tracked !== null && tracked.instanceId !== undefined &&
+      run.instanceId !== undefined && tracked.instanceId !== run.instanceId;
+    if (tracked && !takenOver) {
       if (tracked.status === "running") {
         logger.info(
           "Skipping workflow run {runId} (workflow: {workflowName}) — tracker reports still running",
