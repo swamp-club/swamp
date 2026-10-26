@@ -425,7 +425,7 @@ export async function deliverStepSecrets(input: {
     ? unresolvedArgumentsOf(definition, methodName)
     : undefined;
   if (
-    registry !== undefined && registry.typedSecrets &&
+    (registry !== undefined) &&
     sentinelArguments !== undefined
   ) {
     refuseSecretDestinations({
@@ -1163,13 +1163,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         hasPlacement(context.placement);
 
       // The merge as `unresolvedMethodArgs` carries it, built while the
-      // global arguments still hold their sentinels, with or without the
-      // internal option: the resolution below writes values into them, and a
+      // global arguments still hold their sentinels: resolution below writes
+      // values into them, and a
       // method such as command/shell reads `run` from this merge wherever it
       // was authored, so a secret under globalArguments is placed through
       // the environment and never reaches the command line (swamp-club#3627).
       // A run with no secrets has nothing to keep and builds no merge. Then
-      // the destination refusals of a typed run, then the load of the vault
+      // the destination refusals, then the load of the vault
       // references this attempt delivers, once and before anything receives
       // them (design/enablers/typed-secrets.md Sections 3.3 and 6.3). From
       // here on `context` is the attempt's: global argument validation, the

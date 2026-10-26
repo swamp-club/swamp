@@ -490,7 +490,7 @@ Deno.test("fromData: handles null content bytes", async () => {
 // fromResourceHandle — vault reference resolution
 // ============================================================================
 
-Deno.test("fromResourceHandle: resolves vault references in attributes when vaultService is provided", async () => {
+Deno.test("fromResourceHandle: keeps sensitive references in stored attributes", async () => {
   const vaultService = new VaultService();
   vaultService.registerVault({ name: "myvault", type: "mock", config: {} });
   await vaultService.put("myvault", "secret-key", "resolved-secret-value");
@@ -530,21 +530,15 @@ Deno.test("fromResourceHandle: resolves vault references in attributes when vaul
     "model-123",
     "test-model",
     repo,
-    sensitiveValues,
-    vaultService,
   );
 
-  assertEquals(record.attributes.apiKey, "resolved-secret-value");
+  assertEquals(record.attributes.apiKey, data.apiKey);
   assertEquals(record.attributes.label, "test");
   assertEquals(record.garbageCollection, 10);
-  // Live step outputs record what they resolve (swamp-club#2171).
-  assertEquals(sensitiveValues.list(), [{
-    value: "resolved-secret-value",
-    source: { vaultName: "myvault", key: "secret-key" },
-  }]);
+  assertEquals(sensitiveValues.list(), []);
 });
 
-Deno.test("fromResourceHandle: a reference whose vault read fails stays as stored and is recorded as unread (swamp-club#3806)", async () => {
+Deno.test("fromResourceHandle: a reference to a missing key stays as stored without a vault read (swamp-club#3806)", async () => {
   const vaultService = new VaultService();
   vaultService.registerVault({ name: "myvault", type: "mock", config: {} });
   const sensitiveValues = new RunSensitiveValues();
@@ -582,15 +576,11 @@ Deno.test("fromResourceHandle: a reference whose vault read fails stays as store
     "model-123",
     "test-model",
     repo,
-    sensitiveValues,
-    vaultService,
   );
 
   assertEquals(record.attributes.apiKey, vaultRef);
   const unread = sensitiveValues.unreadReferenceFor(vaultRef);
-  assertEquals(unread?.vaultName, "myvault");
-  assertEquals(unread?.key, "missing-key");
-  assertEquals(unread?.fieldPath, "apiKey");
+  assertEquals(unread, undefined);
 });
 
 Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitted", async () => {
@@ -622,7 +612,6 @@ Deno.test("fromResourceHandle: returns raw vault refs when vaultService is omitt
     "model-123",
     "test-model",
     repo,
-    new RunSensitiveValues(),
   );
 
   assertEquals(record.attributes.apiKey, vaultRef);
@@ -693,7 +682,6 @@ Deno.test("fromResourceHandle: content is parsed attributes for JSON", async () 
     "model-123",
     "test-model",
     repo,
-    new RunSensitiveValues(),
   );
 
   const content = record.content as Record<string, unknown>;
@@ -729,7 +717,6 @@ Deno.test("fromResourceHandle: lifecycle defaults to active and keeps deleted", 
       "model-123",
       "test-model",
       repo,
-      new RunSensitiveValues(),
     );
 
   assertEquals((await map(handle())).lifecycle, "active");
@@ -763,7 +750,6 @@ Deno.test("fromResourceHandle: content is empty string for non-JSON", async () =
     "model-123",
     "test-model",
     repo,
-    new RunSensitiveValues(),
   );
 
   assertEquals(record.content, "");

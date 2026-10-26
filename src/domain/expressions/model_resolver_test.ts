@@ -24,20 +24,13 @@ import {
   assertExists,
   assertRejects,
   assertStrictEquals,
-  assertStringIncludes,
 } from "@std/assert";
 import { UserError } from "../errors.ts";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import {
-  type CelArgEvaluator,
-  type ExpressionContext,
-  ModelResolver,
-} from "./model_resolver.ts";
+import { type ExpressionContext, ModelResolver } from "./model_resolver.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
-import { MockVaultProvider } from "../vaults/mock_vault_provider.ts";
-import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
+
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { Definition } from "../definitions/definition.ts";
 import { Data } from "../data/data.ts";
@@ -1849,179 +1842,10 @@ Deno.test("data.latest() with exact data name skips specName ambiguity check (sw
 });
 
 // ============================================================================
-// resolveVaultExpressions — dynamic CEL argument resolution
+// Deferred dynamic vault arguments
 // ============================================================================
 
-function createVaultResolver(
-  secrets: Record<string, Record<string, string>>,
-): ModelResolver {
-  // Build a stub VaultService whose get() delegates to MockVaultProviders.
-  // We can't use the real VaultService.registerVault() because it calls
-  // createVaultProvider() which requires a registered vault type. Instead
-  // we create a minimal duck-typed service that satisfies the ModelResolver.
-  const providers = new Map<string, MockVaultProvider>();
-  for (const [vaultName, vaultSecrets] of Object.entries(secrets)) {
-    providers.set(vaultName, new MockVaultProvider(vaultName, vaultSecrets));
-  }
-  // It offers no existence check, so each reference is checked with one
-  // probe read through get().
-  const vaultService = {
-    async get(
-      vaultName: string,
-      secretKey: string,
-    ): Promise<string> {
-      const provider = providers.get(vaultName);
-      if (!provider) {
-        throw new Error(`Vault '${vaultName}' not found in test setup`);
-      }
-      return await provider.get(secretKey);
-    },
-    authorizeRead: () => Promise.resolve(),
-    supportsExistenceCheck: () => false,
-  } as unknown as VaultService;
-
-  const defRepo = {
-    findAllGlobal: () => Promise.resolve([]),
-  } as unknown as YamlDefinitionRepository;
-  return new ModelResolver(defRepo, { vaultService });
-}
-
 /** The value a load at delivery reads for the one sentinel `cel` holds. */
-async function deliver(
-  resolver: ModelResolver,
-  bag: VaultSecretBag,
-  cel: string,
-): Promise<string> {
-  const loaded = await resolver.secretLoader().load(bag, cel);
-  return loaded.resolveRaw(cel.slice(1, -1));
-}
-
-function makeCelOptions(
-  inputs: Record<string, unknown>,
-): { celEvaluator: CelArgEvaluator; context: ExpressionContext } {
-  return {
-    celEvaluator: new CelEvaluator(),
-    context: {
-      model: {},
-      env: {},
-      inputs,
-    },
-  };
-}
-
-Deno.test("resolveVaultExpressions: quoted args used verbatim (existing behaviour)", async () => {
-  const resolver = createVaultResolver({
-    "my-vault": { "api-key": "secret-123" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const result = await resolver.resolveVaultExpressions(
-    `vault.get('my-vault', 'api-key')`,
-    secretBag,
-    { location: "test" },
-  );
-  assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(await deliver(resolver, secretBag, result), "secret-123");
-});
-
-Deno.test("resolveVaultExpressions: bare-token args CEL-evaluated from inputs", async () => {
-  const resolver = createVaultResolver({
-    "prod-vault": { "db-password": "prod-pass-42" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const celOptions = makeCelOptions({
-    vaultName: "prod-vault",
-    secretKey: "db-password",
-  });
-  const result = await resolver.resolveVaultExpressions(
-    `vault.get(inputs.vaultName, inputs.secretKey)`,
-    secretBag,
-    { location: "test", celOptions },
-  );
-  assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(await deliver(resolver, secretBag, result), "prod-pass-42");
-});
-
-Deno.test("resolveVaultExpressions: mixed literal/dynamic args", async () => {
-  const resolver = createVaultResolver({
-    "infra": { "prod-key": "infra-secret" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const celOptions = makeCelOptions({ secretKey: "prod-key" });
-  const result = await resolver.resolveVaultExpressions(
-    `vault.get('infra', inputs.secretKey)`,
-    secretBag,
-    { location: "test", celOptions },
-  );
-  assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(await deliver(resolver, secretBag, result), "infra-secret");
-});
-
-Deno.test("resolveVaultExpressions: bare-token fallback for non-CEL tokens", async () => {
-  const resolver = createVaultResolver({
-    "my-vault": { "my-key": "fallback-secret" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const celOptions = makeCelOptions({});
-  // "my-vault" contains a hyphen — not valid CEL — should fall back to verbatim
-  const result = await resolver.resolveVaultExpressions(
-    `vault.get(my-vault, my-key)`,
-    secretBag,
-    { location: "test", celOptions },
-  );
-  assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(await deliver(resolver, secretBag, result), "fallback-secret");
-});
-
-Deno.test("resolveVaultExpressions: hard error for valid CEL with missing input", async () => {
-  const resolver = createVaultResolver({
-    "any-vault": { "any-key": "value" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const celOptions = makeCelOptions({});
-  await assertRejects(
-    () =>
-      resolver.resolveVaultExpressions(
-        `vault.get(inputs.missingVault, 'key')`,
-        secretBag,
-        { location: "test", celOptions },
-      ),
-    Error,
-    "Failed to resolve dynamic vault name",
-  );
-});
-
-Deno.test("resolveVaultExpressions: non-string CEL result throws", async () => {
-  const resolver = createVaultResolver({
-    "any-vault": { "any-key": "value" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const celOptions = makeCelOptions({ vaultNum: 42 });
-  await assertRejects(
-    () =>
-      resolver.resolveVaultExpressions(
-        `vault.get(inputs.vaultNum, 'key')`,
-        secretBag,
-        { location: "test", celOptions },
-      ),
-    Error,
-    "must resolve to a string",
-  );
-});
-
-Deno.test("resolveVaultExpressions: without celOptions bare tokens used verbatim", async () => {
-  const resolver = createVaultResolver({
-    "my-vault": { "my-key": "plain-secret" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  // No celOptions — bare tokens should be used verbatim (backwards compat)
-  const result = await resolver.resolveVaultExpressions(
-    `vault.get(my-vault, my-key)`,
-    secretBag,
-    { location: "test" },
-  );
-  assertEquals(result.startsWith('"__SWAMP_VSEC_'), true);
-  assertEquals(await deliver(resolver, secretBag, result), "plain-secret");
-});
 
 // --- resolveModel gates its exact-ID fallback on UUID syntax ---
 //
@@ -2241,7 +2065,10 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
     const lightCtx = resolver.buildLightContext(lightValues);
     const lightRecord = await lightCtx.data!.latest("secret-holder", "creds");
     assertExists(lightRecord);
-    assertEquals(lightRecord.attributes.apiKey, "secret-123");
+    assertEquals(
+      lightRecord.attributes.apiKey,
+      "${{ vault.get('my-vault', 'api-key') }}",
+    );
     // Fields the schema did not mark sensitive stay unresolved.
     assertEquals(
       lightRecord.attributes.plain,
@@ -2255,13 +2082,9 @@ Deno.test("buildLightContext resolves data.latest sensitive vault refs like buil
     assertEquals(fullRecord.attributes.apiKey, lightRecord.attributes.apiKey);
     assertEquals(fullRecord.attributes.plain, lightRecord.attributes.plain);
 
-    const expected = [{
-      value: "secret-123",
-      source: { vaultName: "my-vault", key: "api-key" },
-    }];
-    assertEquals(lightValues.list(), expected);
-    assertEquals(fullValues.list(), expected);
-    assertEquals(lightRedactor.redact("key=secret-123"), "key=***");
+    assertEquals(lightValues.list(), []);
+    assertEquals(fullValues.list(), []);
+    assertEquals(lightRedactor.redact("key=secret-123"), "key=secret-123");
   });
 });
 
@@ -2325,17 +2148,17 @@ Deno.test("data.latest records sensitive vault refs resolved through the catalog
         "creds",
       );
       assertExists(record);
-      assertEquals(record.attributes.apiKey, "secret-456");
+      assertEquals(
+        record.attributes.apiKey,
+        "${{ vault.get('my-vault', 'api-key') }}",
+      );
       // Fields the schema did not mark sensitive stay unresolved.
       assertEquals(
         record.attributes.plain,
         "${{ vault.get('my-vault', 'api-key') }}",
       );
-      assertEquals(values.list(), [{
-        value: "secret-456",
-        source: { vaultName: "my-vault", key: "api-key" },
-      }]);
-      assertEquals(redactor.redact("key=secret-456"), "key=***");
+      assertEquals(values.list(), []);
+      assertEquals(redactor.redact("key=secret-456"), "key=secret-456");
     } finally {
       catalog.close();
     }
@@ -2693,108 +2516,6 @@ Deno.test("data.specInstanceNames() returns no names without a data query servic
     assertEquals(ctx.data?.specInstanceNames?.("mirror", "summary") ?? [], []);
     catalog.close();
   });
-});
-
-Deno.test("resolveVaultExpressions: vault.get text inside a literal() is left as text", async () => {
-  const fetched: string[] = [];
-  const resolver = createVaultResolver({
-    "v": { "real": "secret-1", "decoy": "secret-2" },
-  });
-  const inner = resolver as unknown as {
-    getVaultService: () => Promise<VaultService>;
-  };
-  const service = await inner.getVaultService();
-  const get = service.get.bind(service);
-  service.get = (vaultName: string, secretKey: string, ...rest: unknown[]) => {
-    fetched.push(secretKey);
-    return (get as (...a: unknown[]) => Promise<string>)(
-      vaultName,
-      secretKey,
-      ...rest,
-    );
-  };
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const result = await resolver.resolveVaultExpressions(
-    `literal('{{ vault.get("v", "decoy") }}') + vault.get('v', 'real')`,
-    secretBag,
-    { location: "test" },
-  );
-  assertEquals(fetched, ["real"]);
-  assertEquals(
-    result.startsWith(
-      `literal('{{ vault.get("v", "decoy") }}') + "__SWAMP_VSEC_`,
-    ),
-    true,
-  );
-});
-
-Deno.test("resolveVaultExpressions: a call that starts inside a string does not swallow the real one", async () => {
-  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const result = await resolver.resolveVaultExpressions(
-    `literal('vault.get(') + vault.get('a','b')`,
-    secretBag,
-    { location: "test" },
-  );
-  assertEquals(
-    result.startsWith(`literal('vault.get(') + "__SWAMP_VSEC_`),
-    true,
-  );
-});
-
-Deno.test("resolveVaultExpressions: a vault form only a direct call resolves is reported", async () => {
-  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
-  await assertRejects(
-    () =>
-      resolver.resolveVaultExpressions(
-        `cel.bind(v, vault, v.get('a', 'b'))`,
-        new VaultSecretBag(new SecretBagRegistry()),
-        { location: "test" },
-      ),
-    Error,
-    "Unsupported vault expression",
-  );
-});
-
-Deno.test("resolveVaultExpressions: ignores member access and comments", async () => {
-  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
-  const value = `self.vault.get('a', 'b') // vault.get('a', 'b')`;
-  assertEquals(
-    await resolver.resolveVaultExpressions(
-      value,
-      new VaultSecretBag(new SecretBagRegistry()),
-      { location: "test" },
-    ),
-    value,
-  );
-});
-
-Deno.test("resolveVaultExpressions: a member reached across whitespace is not the vault namespace", async () => {
-  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
-  const value = `self . vault.get('a', 'b')`;
-  assertEquals(
-    await resolver.resolveVaultExpressions(
-      value,
-      new VaultSecretBag(new SecretBagRegistry()),
-      { location: "test" },
-    ),
-    value,
-  );
-});
-
-Deno.test("resolveVaultExpressions: a call inside another call's argument is not resolved twice", async () => {
-  const resolver = createVaultResolver({ "a": { "b": "secret-b" } });
-  // The outer call's bare first argument covers the inner call; only the
-  // outer one is a match, so the output is never spliced out of order.
-  await assertRejects(
-    () =>
-      resolver.resolveVaultExpressions(
-        `vault.get(vault.get('a','b'), 'c')`,
-        new VaultSecretBag(new SecretBagRegistry()),
-        { location: "test" },
-      ),
-    Error,
-  );
 });
 
 // ============================================================================
@@ -3680,26 +3401,6 @@ Deno.test("data.latest(): attributes come from content a metadata-only pull left
   });
 });
 
-Deno.test("resolveVaultExpressions: the issued entry carries the vault name, key and location, and no value", async () => {
-  const resolver = createVaultResolver({
-    "my-vault": { "api-key": "secret-123" },
-  });
-  const secretBag = new VaultSecretBag(new SecretBagRegistry());
-  const result = await resolver.resolveVaultExpressions(
-    `vault.get('my-vault', 'api-key')`,
-    secretBag,
-    { location: "test" },
-  );
-  const sentinel = result.slice(1, -1);
-  assertEquals(secretBag.registry.issuedEntryOf(sentinel), {
-    sentinel,
-    reference: { vaultName: "my-vault", key: "api-key" },
-    encoding: "raw",
-    dataOrigin: false,
-    location: "test",
-  });
-});
-
 // ============================================================================
 // typed-secrets 3.3: stored reads and the reader's namespace
 // ============================================================================
@@ -3779,12 +3480,18 @@ Deno.test("data.latest with the stored option returns tagged references as writt
 
       // The default, and an explicit resolve, read as today.
       const resolved = await ctx.data!.latest("holder", "creds");
-      assertEquals(resolved?.attributes.apiKey, "secret-123");
+      assertEquals(
+        resolved?.attributes.apiKey,
+        "${{ vault.get('my-vault', 'api-key') }}",
+      );
       const explicit = await ctx.data!.latest("orphan", "creds", {
         sensitiveFields: "resolve",
       });
-      assertEquals(explicit?.attributes.apiKey, "secret-123");
-      assertEquals(reads, 2);
+      assertEquals(
+        explicit?.attributes.apiKey,
+        "${{ vault.get('my-vault', 'api-key') }}",
+      );
+      assertEquals(reads, 0);
     } finally {
       catalog.close();
     }
@@ -3849,11 +3556,8 @@ Deno.test("data.latest: a tagged field whose vault read fails stays as stored an
         const record = await ctx.data!.latest(name, "creds");
         assertEquals(record?.attributes.ticket, reference, name);
         const unread = values.unreadReferenceFor(reference);
-        assertExists(unread, name);
-        assertEquals(unread.vaultName, "infra");
-        assertEquals(unread.key, "ticket-key");
-        assertEquals(unread.fieldPath, "ticket");
-        assertStringIncludes(unread.reason, "authorization timeout");
+        assertEquals(unread, undefined, name);
+        assertEquals(values.list(), []);
       }
     } finally {
       catalog.close();

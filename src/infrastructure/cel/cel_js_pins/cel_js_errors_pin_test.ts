@@ -50,6 +50,39 @@ class FatalError extends Error {
   override name = "FatalError";
 }
 
+Deno.test(
+  pin(
+    "missing member errors expose the receiver node used to classify unbound run bindings",
+  ),
+  () => {
+    const env = dynEnvironment();
+    for (
+      const [expression, receiverOp, receiverName] of [
+        ["inputs.x", "id", "inputs"],
+        ['inputs["x"]', "id", "inputs"],
+        ["env.X", "id", "env"],
+        ['env["X"]', "id", "env"],
+        ["inputs.cfg.nope", ".", undefined],
+        ["other.x", "id", "other"],
+      ] as const
+    ) {
+      const error = assertCelError(
+        () =>
+          env.evaluate(expression, { inputs: { cfg: {} }, env: {}, other: {} }),
+        EvaluationError,
+        "no_such_key",
+      );
+      const node = (error as unknown as {
+        node: { left: { op: unknown; args: unknown } };
+      }).node;
+      assertEquals(node.left.op, receiverOp, expression);
+      if (receiverOp === "id") {
+        assertEquals(node.left.args, receiverName, expression);
+      }
+    }
+  },
+);
+
 function throwingEnvironment(): Environment {
   return dynEnvironment()
     .registerFunction("boom(): bool", () => {

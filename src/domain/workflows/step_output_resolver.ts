@@ -18,14 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import type { VaultService } from "../vaults/vault_service.ts";
-import type { SecretSink } from "../secrets/mod.ts";
-import {
-  parseSensitiveFieldsTag,
-  recordSensitiveVaultRefsUnread,
-  resolveSensitiveVaultRefsLeavingUnread,
-} from "../models/data_writer.ts";
-import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
+
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import type {
   StepOutputGroup,
@@ -369,10 +362,6 @@ export class StepOutputResolver {
  */
 export function createDataRepositoryAttributeReader(
   dataRepo: UnifiedDataRepository,
-  options: {
-    getVaultService: () => Promise<VaultService>;
-    sensitiveValues: SecretSink;
-  } | { getVaultService?: undefined } = {},
 ): ResourceAttributeReader {
   return async (ref) => {
     const content = await dataRepo.getContent(
@@ -389,36 +378,6 @@ export function createDataRepositoryAttributeReader(
       return undefined;
     }
     if (!isRecord(parsed)) return undefined;
-    if (options.getVaultService && Object.keys(parsed).length > 0) {
-      const sensitiveFields = parseSensitiveFieldsTag(ref.tags);
-      if (sensitiveFields) {
-        let vaultService: VaultService | undefined;
-        try {
-          vaultService = await options.getVaultService();
-        } catch (error) {
-          // A refusal by the run's vault access fails the read like every
-          // other vault path (swamp-club#2676); it is never mistaken for an
-          // unavailable vault.
-          if (error instanceof VaultAccessDeniedError) throw error;
-          // The vault cannot be built: its refs stay as stored and are
-          // recorded as unread (swamp-club#3806).
-          await recordSensitiveVaultRefsUnread(
-            parsed,
-            sensitiveFields,
-            error,
-            options.sensitiveValues,
-          );
-        }
-        if (vaultService) {
-          await resolveSensitiveVaultRefsLeavingUnread(
-            parsed,
-            sensitiveFields,
-            vaultService,
-            options.sensitiveValues,
-          );
-        }
-      }
-    }
     return parsed;
   };
 }

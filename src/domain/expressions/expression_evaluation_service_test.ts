@@ -55,6 +55,7 @@ import {
 import { ProvenanceMap } from "./provenance_map.ts";
 import {
   InvalidExpressionError,
+  MissingModelDataError,
   SECRET_DESTINATION_REFUSED,
   SecretRefusedError,
 } from "./errors.ts";
@@ -71,6 +72,7 @@ import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts
 import fc from "fast-check";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { findVaultGetCalls } from "./vault_reference_extractor.ts";
+import { assertMethodArgumentsEvaluated } from "./unresolved_expression_guard.ts";
 
 /** The reference every secret of these tests stands for. */
 const REF = { vaultName: "v", key: "k" };
@@ -191,22 +193,13 @@ Deno.test("deferChildInputs: a typed run refuses a vault selector that holds a S
         defer(
           new RunSensitiveValues(
             undefined,
-            new SecretBagRegistry({ typedSecrets: true }),
+            new SecretBagRegistry(),
           ),
         ),
       SecretRefusedError,
     );
     assertEquals(error.code, SECRET_DESTINATION_REFUSED);
     assertStringIncludes(error.message, "inputs.vault");
-    // An untyped run keeps the sentinel text the selector evaluated to.
-    const untyped = defer(new RunSensitiveValues());
-    const [call] = findVaultGetCalls(
-      untyped.deferredExpressions[0].expression,
-    );
-    assertStringIncludes(
-      new CelEvaluator().evaluate(call[3], {}) as string,
-      "__SWAMP_",
-    );
     return Promise.resolve();
   });
 });
@@ -582,6 +575,16 @@ Deno.test("evaluateDefinition: records failed expressions with their reason and 
       failed.get("${{ model.ghost.resource.state.main.attributes }}")!.message,
       "Behavior ghost has no resource data",
     );
+    // Validation tells this gap from an invalid expression by its class.
+    assertEquals(
+      failed.get("${{ model.ghost.resource.state.main.attributes }}") instanceof
+        MissingModelDataError,
+      true,
+    );
+    assertEquals(
+      failed.get("${{ 1 + 'a' }}") instanceof MissingModelDataError,
+      false,
+    );
 
     // Evaluation stays lenient: failures keep their raw text.
     const args = result.definition.getMethodArguments("execute");
@@ -636,6 +639,98 @@ Deno.test("evaluateDefinition: self.globalArguments in a method argument sees th
       result.failedExpressions!.has("${{ inputs.host.nope }}"),
       true,
     );
+  });
+});
+
+Deno.test("evaluateDefinition: container interpolation and CEL refusals stay pending without blocking whole-field uses", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    for (const shape of ["record", "array"]) {
+      const values = new RunSensitiveValues();
+      const bag = new VaultSecretBag(values.sentinels);
+      const secret = bag.addDataReference(REF, "inputs.value");
+      const value = shape === "record" ? { token: secret } : [secret];
+      const raw = "${{ inputs.value }}";
+      const size = shape === "record"
+        ? "${{ size(inputs.value.token) }}"
+        : "${{ size(inputs.value[0]) }}";
+      const definition = Definition.create({
+        name: "pending-secret",
+        inputs: { properties: { value: {} } },
+        globalArguments: { whole: raw, text: `before ${raw} after`, size },
+        methods: {
+          whole: { arguments: { value: raw } },
+          text: { arguments: { value: `before ${raw} ` + "${{ 1 + 1 }}" } },
+          size: { arguments: { value: size } },
+          copied: { arguments: { value: "${{ self.globalArguments.text }}" } },
+          plain: { arguments: { value: "${{ 1 + 1 }}" } },
+        },
+      });
+      const result = await service.evaluateDefinition(
+        definition,
+        ModelType.create("test/model"),
+        values,
+        { value },
+        undefined,
+        bag,
+      );
+      const failed = result.failedExpressions!;
+      for (const expression of [raw, size]) {
+        assertStringIncludes(
+          failed.get(expression)!.message,
+          "secret_operation_unsupported",
+        );
+      }
+      for (const copy of [result.definition, result.sanitizedDefinition!]) {
+        assertEquals(copy.globalArguments.text, `before ${raw} after`);
+        assertEquals(copy.globalArguments.size, size);
+        assertEquals(copy.getMethodArguments("text").value, `before ${raw} 2`);
+        assertEquals(
+          copy.getMethodArguments("copied").value,
+          `before ${raw} after`,
+        );
+        // A whole-field occurrence of the same raw still carries a container.
+        const whole = copy.getMethodArguments("whole").value;
+        assertEquals(Array.isArray(whole), shape === "array");
+        const leaf = Array.isArray(whole)
+          ? whole[0]
+          : (whole as Record<string, unknown>).token;
+        assertEquals(
+          bag.registry.issuedEntryOf(leaf as string)?.reference,
+          REF,
+        );
+        for (const method of ["whole", "plain"]) {
+          assertMethodArgumentsEvaluated(
+            method,
+            copy.getMethodArguments(method),
+            failed,
+          );
+        }
+        for (const method of ["text", "size", "copied"]) {
+          assertThrows(
+            () =>
+              assertMethodArgumentsEvaluated(
+                method,
+                copy.getMethodArguments(method),
+                failed,
+              ),
+            Error,
+            "secret_operation_unsupported",
+          );
+        }
+      }
+      assertEquals(
+        result.provenance!.overlapsData(
+          "methods.text.arguments.value",
+          7,
+          7 + raw.length,
+        ),
+        false,
+      );
+    }
   });
 });
 
@@ -2075,7 +2170,7 @@ Deno.test("evaluateDataPair: reads data once and splices raw and sanitized copie
     );
     assertEquals(reads.count, plainReads.count);
     assertEquals(pair.raw, { run: `echo ${SENSITIVE}`, whole: SENSITIVE });
-    assertEquals(JSON.stringify(pair.sanitized).includes(SENSITIVE), false);
+    assertEquals(pair.sanitized, pair.raw);
     assertEquals(bag.resolveDeep(pair.sanitized), pair.raw);
   });
 });
@@ -2116,7 +2211,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
     assertEquals(result.secretBag, bag);
     const args = result.definition.getMethodArguments("run");
     const run = args.run as string;
-    assertEquals(run.includes(SENSITIVE), false);
+    assertEquals(run.includes(SENSITIVE), true);
     assertEquals(bag.resolveRaw(run), `/tmp/test-home-mixed:${SENSITIVE}`);
     // self.globalArguments is bound to the real value, not the sentinel.
     assertEquals(args.len, `/tmp/test-home-mixed:${SENSITIVE.length}`);
@@ -2482,7 +2577,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: checks each vault.get referenc
     }
     assertEquals(
       entries.map((entry) => "location" in entry && entry.location),
-      ["globalArguments.token", "methods.run.arguments.cmd"],
+      ["globalArguments.token:1:1", "methods.run.arguments.cmd:1:1"],
     );
     // Delivery loads them, once per reference.
     const loaded = await service.secretLoader(undefined).load(
@@ -2515,7 +2610,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a missing key fails at evaluat
           "unrestricted",
         ),
       Error,
-      "(at methods.run.arguments.cmd): Secret 'missing' not found in vault 'v'",
+      "(at methods.run.arguments.cmd:1:1): Secret 'missing' not found in vault 'v'",
     );
     assertEquals(
       (error as { code?: string }).code,
@@ -2556,7 +2651,7 @@ Deno.test("resolveAllExpressionsInData: a typed routing destination refuses befo
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "never-loaded",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const context = attachSensitiveValues(
       makeContext(),
       new RunSensitiveValues(
@@ -2600,7 +2695,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run evaluates vault.ge
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-runtime-def",
       globalArguments: { token: "${{ vault.get('v', 'token') }}" },
@@ -2654,7 +2749,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run refuses a vault al
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-alias-def",
       methods: {
@@ -2682,7 +2777,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run refuses a vault al
 Deno.test("resolveRuntimeExpressionsInDefinition: a typed run fails a missing key at evaluation with secret_reference_unavailable", async () => {
   await withTempDir(async (repoDir) => {
     const { service, reads } = countingEvaluator(repoDir, {});
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-missing-def",
       methods: {
@@ -2714,7 +2809,7 @@ Deno.test("evaluateDefinition: a typed run evaluates plain expressions as before
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const values = new RunSensitiveValues(undefined, registry);
     const definition = Definition.create({
       name: "typed-pass-def",
@@ -2751,7 +2846,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: a typed run keeps the legacy b
       "a@b": "s3cret-at",
       "k-1": "s3cret-dash",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const definition = Definition.create({
       name: "typed-legacy-forms",
       methods: {
@@ -2791,7 +2886,7 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
     const { service, reads, checks } = countingEvaluator(repoDir, {
       token: "s3cret-token",
     });
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const reference = "${{ vault.get('v', 'token') }}";
     // A mutable literal: the record schema's form and the context's both
     // take it.
@@ -2865,5 +2960,86 @@ Deno.test("resolveRuntimeExpressionsInData: a typed run keeps a step context's o
     // The context's step context is untouched and still carries its sources.
     assertEquals(stepOutputSourcesOf(context.steps!.seed), sources);
     assertEquals(context.steps!.seed.outputs!.password, reference);
+  });
+});
+
+Deno.test("evaluateDefinition: replay checks only authored occurrences in the selected method and preserves cached data and literal text", async () => {
+  await withTempDir(async (repoDir) => {
+    const service = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(repoDir),
+      repoDir,
+    );
+    const read = "${{ self.globalArguments.snapshot }}";
+    const unlisted = "${{ file.contents('unlisted') }}";
+    const other = "${{ file.contents('other') }}";
+    const literal = "${{ 1 + 1 }}";
+    const definition = Definition.create({
+      name: "cached",
+      globalArguments: { snapshot: "cached value" },
+      methods: {
+        run: {
+          arguments: {
+            selected: read,
+            data: read,
+            unlisted,
+            literal,
+            foreign: "${{ github.sha }}",
+            frozen: "previously evaluated",
+          },
+        },
+        other: { arguments: { shared: read, sideEffect: other } },
+      },
+    });
+    const authoredExpressions = new Set([
+      read,
+      other,
+      "${{ github.sha }}",
+      "${{ literal('${{ 1 + 1 }}') }}",
+    ]);
+    const map = ProvenanceMap.authored().withWholeData(
+      "methods.run.arguments.data",
+    );
+    let reads = 0;
+    const result = await service.evaluateDefinition(
+      definition,
+      ModelType.create("test/replay"),
+      new RunSensitiveValues(),
+      undefined,
+      {
+        model: {},
+        env: {},
+        file: {
+          contents: () => {
+            reads++;
+            return "new value";
+          },
+        },
+      },
+      undefined,
+      {
+        definition: { raw: map, sanitized: map },
+        authoredExpressions,
+        methodName: "run",
+      },
+    );
+    assertEquals(result.definition.getMethodArguments("run"), {
+      selected: "cached value",
+      data: read,
+      unlisted,
+      literal,
+      foreign: "${{ github.sha }}",
+      frozen: "previously evaluated",
+    });
+    assertEquals(result.definition.getMethodArguments("other"), {
+      shared: read,
+      sideEffect: other,
+    });
+    assertEquals(result.failedExpressions?.size, 0);
+    assertEquals(reads, 0);
+    assertEquals(result.authoredExpressions, authoredExpressions);
+    assertEquals(
+      result.provenance?.isWholeDataAt("methods.run.arguments.data"),
+      true,
+    );
   });
 });

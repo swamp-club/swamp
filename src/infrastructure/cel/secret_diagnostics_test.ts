@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { SECRET_OPERATION_UNSUPPORTED } from "../../domain/expressions/errors.ts";
 import {
   CONTAINER_COMPARISON_REASON,
@@ -156,8 +156,6 @@ Deno.test("diagnoseSecretMisuse: text without a direct vault.get call, an alias,
       "inputs.x == 'x'",
       "size(data.latest('m', 'd').attributes.password)",
       "data.latest('m', 'd').attributes.password == 'x'",
-      "dyn(vault).get('v', 'k') == 'x'",
-      "cel.bind(v, vault, v.get('v', 'k')) == 'x'",
       "vault.get('v', 'k'",
       "not cel at all {{",
     ]
@@ -198,4 +196,61 @@ Deno.test("diagnoseSecretMisuse: a ternary with a Secret branch is an escape, as
       .length,
     1,
   );
+});
+
+Deno.test("diagnoseSecretMisuse: indirect vault use is a static error without a direct call", () => {
+  for (
+    const expression of [
+      "dyn(vault).get('v', 'k')",
+      "cel.bind(v, vault, v.get('v', 'k'))",
+      "vault.get",
+    ]
+  ) {
+    const findings = diagnoseSecretMisuse(
+      expression,
+      "methods.run.arguments.token",
+    );
+    assertEquals(findings.length, 1, expression);
+    assertEquals(findings[0].code, "invalid_expression");
+    assertStringIncludes(
+      findings[0].location,
+      "methods.run.arguments.token:1:",
+    );
+    assertStringIncludes(findings[0].reason, "directly");
+  }
+});
+
+Deno.test("diagnoseSecretMisuse: embedded secret containers are refused but whole fields and scalar results are allowed", () => {
+  for (
+    const expression of [
+      "{'token': vault.get('v', 'k')}",
+      "[vault.get('v', 'k')]",
+      "{'nested': [vault.get('v', 'k')], 'count': 1}",
+      "[vault.get('v', 'k'), 1] + ['public']",
+      "dyn({'token': vault.get('v', 'k')})",
+      "inputs.flag ? {'token': vault.get('v', 'k')} : {}",
+    ]
+  ) {
+    assertEquals(diagnoseSecretMisuse(expression, AT), [], expression);
+    const findings = diagnoseSecretMisuse(expression, AT, true);
+    assertEquals(findings.length, 1, expression);
+    assertEquals(findings[0].code, SECRET_OPERATION_UNSUPPORTED);
+    assertEquals(
+      findings[0].reason,
+      "interpolating a container holding a secret into text",
+    );
+  }
+  for (
+    const expression of [
+      "vault.get('v', 'k')",
+      "'prefix-' + vault.get('v', 'k')",
+      "size([vault.get('v', 'k')])",
+      "{'count': size([vault.get('v', 'k')])}",
+      "{'isNull': vault.get('v', 'k') == null}",
+      "{'token': vault.get('v', 'k')}.token",
+      "false ? {'token': vault.get('v', 'k')} : {}",
+    ]
+  ) {
+    assertEquals(diagnoseSecretMisuse(expression, AT, true), [], expression);
+  }
 });

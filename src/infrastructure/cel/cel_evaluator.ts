@@ -18,12 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Environment, Optional } from "cel-js";
+import type { ASTNode } from "cel-js";
 import { getLogger } from "@logtape/logtape";
-import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import {
-  extractExpressions,
-  transformHyphenatedModelRefs,
-} from "../../domain/expressions/expression_parser.ts";
+  InvalidExpressionError,
+  MissingModelDataError,
+} from "../../domain/expressions/errors.ts";
+import { extractExpressions } from "../../domain/expressions/expression_parser.ts";
 import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
 import {
   literal,
@@ -36,6 +37,7 @@ import {
 import {
   assertDirectVaultCalls,
   CelVaultNamespace,
+  isMissingRunBinding,
   prepareCheckedVaultCalls,
   type VaultEvaluationScope,
 } from "./cel_vault_namespace.ts";
@@ -46,6 +48,7 @@ import {
   SECRET_DESTINATION_REFUSED,
   SECRET_OPERATION_UNSUPPORTED,
   SecretRefusedError,
+  UnboundExpressionError,
 } from "../../domain/expressions/errors.ts";
 import type { DataReadOptions } from "../../domain/expressions/model_resolver.ts";
 import type { QueryView } from "../../domain/data/query_view.ts";
@@ -244,6 +247,241 @@ function describeSpecInstances(
 }
 
 /**
+ * Follow the receiver of the failed select through literal containers and
+ * conditional branches. Only the selected value matters: a missing lookup
+ * in a sibling must not excuse an invalid select on an ordinary map or null.
+ * Resolve selectors from plain bindings without invoking getters or replaying
+ * functions, so diagnosing a failure performs no additional external work.
+ */
+function selectsDataLookup(
+  error: unknown,
+  context: Record<string, unknown>,
+): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { code, node } = error as { code?: unknown; node?: unknown };
+  if (code !== "no_such_key" || !isAstNode(node)) return false;
+  if (node.op !== "." && node.op !== "[]") return false;
+  const operand = selectedNode(node.args[0], context);
+  if (operand?.op !== "rcall") return false;
+  const [name, receiver] = operand.args;
+  return (name === "latest" || name === "version") &&
+    receiver.op === "id" && receiver.args === "data";
+}
+
+/** The `data` accessors that answer a list of records. */
+const SET_READ_ACCESSORS = ["findBySpec", "findByTag", "query"] as const;
+type SetReadAccessor = typeof SET_READ_ACCESSORS[number];
+
+function isSetReadAccessor(name: unknown): name is SetReadAccessor {
+  return (SET_READ_ACCESSORS as readonly unknown[]).includes(name);
+}
+
+/** Identifies one set-read call by its accessor and string arguments. */
+function setReadKey(accessor: SetReadAccessor, args: unknown[]): string {
+  return JSON.stringify([accessor, ...args]);
+}
+
+/**
+ * The call, when the failed index's receiver — followed through literal
+ * containers and conditional branches like {@link selectsDataLookup} — is a
+ * set read that answered no record. Its arguments are read from plain
+ * literals and bindings and matched against the answers recorded, so an
+ * empty answer to one call never excuses an index into another.
+ */
+function indexedEmptySetRead(
+  error: unknown,
+  context: Record<string, unknown>,
+): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const { code, node } = error as { code?: unknown; node?: unknown };
+  if (code !== "index_out_of_bounds" || !isAstNode(node)) return undefined;
+  if (node.op !== "[]") return undefined;
+  const operand = selectedNode(node.args[0], context);
+  if (operand?.op !== "rcall") return undefined;
+  const [name, receiver, argNodes] = operand.args;
+  if (
+    !isSetReadAccessor(name) || receiver.op !== "id" ||
+    receiver.args !== "data"
+  ) return undefined;
+  const data = context["data"];
+  if (!(data instanceof CelDataNamespace)) return undefined;
+  const args = (argNodes as ASTNode[]).map((arg) =>
+    selectorValue(arg, context)
+  );
+  if (!args.every((arg) => typeof arg === "string")) return undefined;
+  if (!data.emptySetReads.has(setReadKey(name, args))) return undefined;
+  return `data.${name}(${args.map((arg) => JSON.stringify(arg)).join(", ")})`;
+}
+
+const UNKNOWN_SELECTOR = Symbol("unknown selector");
+// Standard CEL and arithmetic only: no swamp namespace or extension functions.
+const selectorEnvironment = createExtensionCelEnvironment();
+
+/** Read only data properties: a diagnostic must never invoke a binding getter. */
+function ownBinding(value: unknown, key: unknown): unknown {
+  if (value === null || typeof value !== "object") return UNKNOWN_SELECTOR;
+  if (
+    typeof key !== "string" && typeof key !== "number" &&
+    typeof key !== "bigint"
+  ) {
+    return UNKNOWN_SELECTOR;
+  }
+  const property = Object.getOwnPropertyDescriptor(value, String(key));
+  return property && "value" in property ? property.value : UNKNOWN_SELECTOR;
+}
+
+/** Snapshot plain selector data, refusing getters, functions and opaque values. */
+function selectorData(value: unknown, seen = new Set<object>()): unknown {
+  if (
+    value === null || value === undefined ||
+    ["string", "boolean", "number", "bigint"].includes(typeof value)
+  ) return value;
+  if (typeof value !== "object" || seen.has(value)) return UNKNOWN_SELECTOR;
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    !Array.isArray(value) && prototype !== Object.prototype &&
+    prototype !== null
+  ) return UNKNOWN_SELECTOR;
+  seen.add(value);
+  try {
+    const copy: object = Array.isArray(value)
+      ? new Array(value.length)
+      : Object.create(null);
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (Array.isArray(value) && key === "length") continue;
+      const property = Object.getOwnPropertyDescriptor(value, key);
+      if (!property || !("value" in property)) return UNKNOWN_SELECTOR;
+      const item = selectorData(property.value, seen);
+      if (item === UNKNOWN_SELECTOR) return UNKNOWN_SELECTOR;
+      Object.defineProperty(copy, key, {
+        value: item,
+        enumerable: property.enumerable,
+      });
+    }
+    return copy;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/** Evaluate a selector using only copied data and standard, pure CEL functions. */
+function pureSelectorValue(
+  node: ASTNode,
+  context: Record<string, unknown>,
+): unknown {
+  const names = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (isAstNode(value)) {
+      if (value.op === "id") names.add(value.args);
+      else if (value.op !== "value") visit(value.args);
+    }
+  };
+  visit(node);
+  const bindings: Record<string, unknown> = Object.create(null);
+  for (const name of names) {
+    const property = Object.getOwnPropertyDescriptor(context, name);
+    // A macro's local variable need not be a root binding.
+    if (!property) continue;
+    if (!("value" in property)) return UNKNOWN_SELECTOR;
+    const value = selectorData(property.value);
+    if (value === UNKNOWN_SELECTOR) return UNKNOWN_SELECTOR;
+    Object.defineProperty(bindings, name, { value, enumerable: true });
+  }
+  try {
+    return selectorEnvironment.evaluate(
+      node.input.slice(node.start, node.end),
+      bindings,
+    );
+  } catch {
+    return UNKNOWN_SELECTOR;
+  }
+}
+
+function selectorValue(
+  node: ASTNode,
+  context: Record<string, unknown>,
+): unknown {
+  const selected = selectedNode(node, context);
+  if (!selected) return UNKNOWN_SELECTOR;
+  if (selected !== node) return selectorValue(selected, context);
+  switch (node.op) {
+    case "value":
+      return node.args;
+    case "id":
+      return ownBinding(context, node.args);
+    case ".":
+    case "[]":
+      return ownBinding(
+        selectorValue(node.args[0], context),
+        node.op === "." ? node.args[1] : selectorValue(node.args[1], context),
+      );
+    default:
+      return pureSelectorValue(node, context);
+  }
+}
+
+/** cel-js stores literal map entries as object properties, coercing scalar keys. */
+function mapSelectorKey(value: unknown): string | undefined {
+  return value === null ||
+      ["string", "number", "bigint", "boolean"].includes(typeof value)
+    ? String(value)
+    : undefined;
+}
+
+function selectedNode(
+  node: ASTNode,
+  context: Record<string, unknown>,
+): ASTNode | undefined {
+  if (node.op === "?:") {
+    const condition = selectorValue(node.args[0], context);
+    return typeof condition === "boolean"
+      ? selectedNode(node.args[condition ? 1 : 2], context)
+      : undefined;
+  }
+  if (node.op !== "." && node.op !== "[]") return node;
+  const container = selectedNode(node.args[0], context);
+  if (!container) return undefined;
+  const key = node.op === "."
+    ? node.args[1]
+    : selectorValue(node.args[1], context);
+  if (container.op === "list") {
+    if (typeof key !== "bigint" && typeof key !== "number") return undefined;
+    const index = Number(key);
+    if (
+      !Number.isSafeInteger(index) || index < 0 ||
+      index >= container.args.length
+    ) {
+      return undefined;
+    }
+    return selectedNode(container.args[index], context);
+  }
+  if (container.op === "map") {
+    const selectedKey = mapSelectorKey(key);
+    // cel-js omits these entries when constructing literal maps.
+    if (
+      selectedKey === undefined ||
+      ["__proto__", "constructor", "prototype"].includes(selectedKey)
+    ) return undefined;
+    // CEL keeps the last value of a repeated key. An unknown later key could
+    // overwrite an earlier match, so it cannot establish a lookup's origin.
+    for (let index = container.args.length - 1; index >= 0; index--) {
+      const [entryKey, value] = container.args[index];
+      const candidate = mapSelectorKey(selectorValue(entryKey, context));
+      if (candidate === undefined) return undefined;
+      if (candidate === selectedKey) return selectedNode(value, context);
+    }
+    return undefined;
+  }
+  return node;
+}
+
+function isAstNode(value: unknown): value is ASTNode {
+  return typeof value === "object" && value !== null && "op" in value &&
+    "args" in value;
+}
+
+/**
  * Wrapper class for data namespace context objects.
  */
 export class CelDataNamespace {
@@ -256,6 +494,12 @@ export class CelDataNamespace {
    * non-optional select on the missing record raises.
    */
   readonly missedLookups: string[] = [];
+  /**
+   * Set reads (`findBySpec`, `findByTag`, `query`) that answered no record,
+   * keyed by {@link setReadKey}. An index into one is upstream data not
+   * produced yet, as a select on a missed `data.latest` is.
+   */
+  readonly emptySetReads = new Set<string>();
   private readonly specNameCandidates: SpecNameCandidate[] = [];
 
   constructor(delegate: Record<string, unknown>) {
@@ -265,7 +509,29 @@ export class CelDataNamespace {
   /** Drops recorded misses so they cannot leak into a later evaluation. */
   clearMissedLookups(): void {
     this.missedLookups.length = 0;
+    this.emptySetReads.clear();
     this.specNameCandidates.length = 0;
+  }
+
+  /** Records `accessor(args)` when the set read answered no record. */
+  private recordEmpty(
+    result: unknown,
+    accessor: SetReadAccessor,
+    args: unknown[],
+  ): unknown {
+    const empty = (value: unknown) => {
+      if (Array.isArray(value) && value.length === 0) {
+        this.emptySetReads.add(setReadKey(accessor, args));
+      }
+    };
+    if (result instanceof Promise) {
+      return result.then((value) => {
+        empty(value);
+        return value;
+      });
+    }
+    empty(result);
+    return result;
   }
 
   /**
@@ -431,7 +697,11 @@ export class CelDataNamespace {
   findByTag(tagKey: string, tagValue: string): unknown {
     const fn = this.delegate["findByTag"];
     if (typeof fn === "function") {
-      return (fn as (k: string, v: string) => unknown)(tagKey, tagValue);
+      return this.recordEmpty(
+        (fn as (k: string, v: string) => unknown)(tagKey, tagValue),
+        "findByTag",
+        [tagKey, tagValue],
+      );
     }
     return [];
   }
@@ -439,7 +709,11 @@ export class CelDataNamespace {
   findBySpec(modelName: string, specName: string): unknown {
     const fn = this.delegate["findBySpec"];
     if (typeof fn === "function") {
-      return (fn as (m: string, s: string) => unknown)(modelName, specName);
+      return this.recordEmpty(
+        (fn as (m: string, s: string) => unknown)(modelName, specName),
+        "findBySpec",
+        [modelName, specName],
+      );
     }
     return [];
   }
@@ -452,10 +726,14 @@ export class CelDataNamespace {
   query(predicate: string, select?: string, view?: QueryView): unknown {
     const fn = this.delegate["query"];
     if (typeof fn === "function") {
-      return (fn as (pred: string, sel?: string, view?: QueryView) => unknown)(
-        predicate,
-        select,
-        view,
+      return this.recordEmpty(
+        (fn as (pred: string, sel?: string, view?: QueryView) => unknown)(
+          predicate,
+          select,
+          view,
+        ),
+        "query",
+        select === undefined ? [predicate] : [predicate, select],
       );
     }
     return [];
@@ -601,22 +879,6 @@ export async function prepareExpressionsIn(
   }
 }
 
-/**
- * The internal environment's options. Internal: only tests set them until
- * typed-secrets Phase 4 turns the path on for every entry point
- * (design/enablers/typed-secrets.md Section 10.3).
- */
-export interface CelEvaluatorOptions {
-  /**
-   * The `Secret` value: its type, the allowed set and every refusal the
-   * inventory yields, the fault context, the container rule and the boundary
-   * conversion. Off, the environment is exactly what it was before them: a
-   * custom binary overload marks every use of its operator maybe-async
-   * (fact 4), so nothing is registered.
-   */
-  readonly typedSecrets?: boolean;
-}
-
 /** What one evaluation runs with. */
 export interface EvaluationScope {
   /**
@@ -627,6 +889,8 @@ export interface EvaluationScope {
   readonly secretBag?: VaultSecretBag;
   /** Required for direct typed vault calls; checks use the run's services. */
   readonly vault?: VaultEvaluationScope;
+  /** Built only when a direct vault call or sensitive-field read needs it. */
+  readonly getVault?: () => Promise<VaultEvaluationScope>;
   /**
    * What becomes of a `Secret` in the result. `release`, the default, issues
    * its sentinel into the bag. `refuse` is the predicate destination of a
@@ -660,10 +924,8 @@ export interface EvaluationScope {
  * Builds the internal environment: the extension baseline plus swamp's
  * namespace types and their receiver methods.
  */
-export function createInternalCelEnvironment(
-  options: CelEvaluatorOptions = {},
-): Environment {
-  return buildInternalEnvironment(options.typedSecrets ? "evaluate" : "off");
+export function createInternalCelEnvironment(): Environment {
+  return buildInternalEnvironment("evaluate");
 }
 
 /**
@@ -676,7 +938,7 @@ export function createInternalCelEnvironment(
  * variable of the receiver type, so a check accepts the allowed set and
  * rejects any other operation on a `vault.get` result.
  */
-type SecretMode = "off" | "evaluate" | "check";
+type SecretMode = "evaluate" | "check";
 
 /**
  * The type-check environment of the static misuse diagnostics
@@ -1062,20 +1324,8 @@ const PREDICATE_RESULT =
 export class CelEvaluator {
   private readonly env: Environment;
   private readonly warnedPatterns = new Set<string>();
-  private readonly typedSecrets: boolean;
-
-  constructor(options: CelEvaluatorOptions = {}) {
-    this.typedSecrets = options.typedSecrets === true;
-    this.env = createInternalCelEnvironment(options);
-  }
-
-  /**
-   * Whether this evaluator runs with typed secrets: what a delegate that
-   * answers it a record must know, since only the typed environment adapts
-   * one (design/enablers/typed-secrets.md Section 4.5 item 4).
-   */
-  get isTyped(): boolean {
-    return this.typedSecrets;
+  constructor() {
+    this.env = createInternalCelEnvironment();
   }
 
   /**
@@ -1092,53 +1342,7 @@ export class CelEvaluator {
     context: Record<string, unknown>,
     scope: EvaluationScope = {},
   ): unknown {
-    if (this.typedSecrets) {
-      return this.evaluateWithSecrets(expression, context, scope);
-    }
-    // Wrap file/data namespace objects in registered types so cel-js can
-    // resolve receiver methods instead of treating them as maps. Hoisted out
-    // of the try so the catch can read back which data lookups missed.
-    const wrappedContext = this.wrapNamespaces(context);
-    try {
-      // Transform hyphenated model names to bracket notation before evaluation
-      const transformedExpr = transformHyphenatedModelRefs(expression);
-
-      // Warn about deprecated model.*.resource / model.*.file patterns
-      this.warnDeprecatedPatterns(transformedExpr);
-
-      const rawResult = this.env.evaluate(transformedExpr, wrappedContext);
-      const result = unwrapOptional(rawResult);
-
-      // Detect unresolved Promises from async CEL functions (data.latest,
-      // data.findByTag, data.findBySpec, data.query).  These functions are
-      // async but the sync evaluate path cannot await them, so the raw
-      // Promise leaks through.  Catch it here — before coerceBigInts
-      // silently converts the Promise to {} — and throw a clear error.
-      if (result instanceof Promise) {
-        // Suppress the dangling rejection — the async operation is still
-        // in flight but we are about to throw synchronously.  Without
-        // this, the eventual rejection surfaces as an unhandled promise
-        // rejection in the runtime.
-        result.catch(() => {});
-
-        throw unresolvedPromiseError(expression);
-      }
-
-      return coerceBigInts(result);
-    } catch (error) {
-      // Re-throw InvalidExpressionError directly to avoid double-wrapping
-      // (the Promise detection above already throws this type).
-      if (error instanceof InvalidExpressionError) throw error;
-      throw new InvalidExpressionError(
-        this.explainMissedLookups(
-          error instanceof Error ? error.message : String(error),
-          wrappedContext,
-        ),
-        expression,
-        undefined,
-        error instanceof Error ? error : undefined,
-      );
-    }
+    return this.evaluateWithSecrets(expression, context, scope);
   }
 
   /**
@@ -1158,34 +1362,7 @@ export class CelEvaluator {
     context: Record<string, unknown>,
     scope: EvaluationScope = {},
   ): Promise<unknown> {
-    if (this.typedSecrets) {
-      return await this.evaluateWithSecretsAsync(expression, context, scope);
-    }
-    const wrappedContext = this.wrapNamespaces(context);
-    try {
-      // Prepare what the expression reads synchronously first: the
-      // definitions behind the model names it passes to data accessors
-      // (swamp-club#3029), and the content it reads through the model map
-      // and file.contents (swamp-club#3179).
-      await prepareExpressionContext(expression, context);
-      const transformedExpr = transformHyphenatedModelRefs(expression);
-      this.warnDeprecatedPatterns(transformedExpr);
-      const rawResult = await this.env.evaluate(
-        transformedExpr,
-        wrappedContext,
-      );
-      return coerceBigInts(unwrapOptional(rawResult));
-    } catch (error) {
-      throw new InvalidExpressionError(
-        this.explainMissedLookups(
-          error instanceof Error ? error.message : String(error),
-          wrappedContext,
-        ),
-        expression,
-        undefined,
-        error instanceof Error ? error : undefined,
-      );
-    }
+    return await this.evaluateWithSecretsAsync(expression, context, scope);
   }
 
   /**
@@ -1302,7 +1479,6 @@ export class CelEvaluator {
     scope: EvaluationScope = {},
   ): Promise<EvaluationScope> {
     await prepareExpressionsIn(content, context);
-    if (!this.typedSecrets) return scope;
     const authorized = new Set(scope.authorizedReferences ?? []);
     const denied = new Map(scope.deniedReferences ?? []);
     let changed = false;
@@ -1323,17 +1499,18 @@ export class CelEvaluator {
         const key = sensitiveReferenceKey(reference);
         if (authorized.has(key) || denied.has(key)) continue;
         changed = true;
-        if (scope.vault === undefined) {
-          denied.set(
-            key,
-            new Error(
-              "a record with sensitive fields requires the run's vault check scope",
-            ),
-          );
-          continue;
-        }
         try {
-          await scope.vault.service.authorizeRead(
+          const vault = scope.vault ?? await scope.getVault?.();
+          if (vault === undefined) {
+            denied.set(
+              key,
+              new Error(
+                "a record with sensitive fields requires the run's vault check scope",
+              ),
+            );
+            continue;
+          }
+          await vault.service.authorizeRead(
             reference.vaultName,
             reference.key,
           );
@@ -1365,6 +1542,11 @@ export class CelEvaluator {
         // start external work. Every direct call is checked, even in dead branches.
         const analysis = analyzeVaultCalls(expression);
         assertDirectVaultCalls(analysis, expression);
+        if (analysis.calls.length > 0 && scope.vault === undefined) {
+          checking = true;
+          scope = { ...scope, vault: await scope.getVault?.() };
+          checking = false;
+        }
         if (analysis.calls.length > 0 && (!scope.secretBag || !scope.vault)) {
           throw new InvalidExpressionError(
             "vault.get requires the run's secret bag and vault check scope",
@@ -1441,7 +1623,13 @@ export class CelEvaluator {
     wrappedContext: Record<string, unknown>,
   ): Promise<void> {
     if (faults.sensitiveReferences.size === 0) return;
-    if (scope.vault === undefined) {
+    let vault: VaultEvaluationScope | undefined;
+    try {
+      vault = scope.vault ?? await scope.getVault?.();
+    } catch (error) {
+      throw this.evaluationError(error, expression, wrappedContext);
+    }
+    if (vault === undefined) {
       throw new InvalidExpressionError(
         "a record with sensitive fields requires the run's vault check scope",
         expression,
@@ -1449,7 +1637,7 @@ export class CelEvaluator {
     }
     for (const reference of faults.sensitiveReferences.values()) {
       try {
-        await scope.vault.service.authorizeRead(
+        await vault.service.authorizeRead(
           reference.vaultName,
           reference.key,
         );
@@ -1608,11 +1796,36 @@ export class CelEvaluator {
     expression: string,
     wrappedContext: Record<string, unknown>,
   ): InvalidExpressionError {
-    return new InvalidExpressionError(
-      this.explainMissedLookups(
-        error instanceof Error ? error.message : String(error),
-        wrappedContext,
-      ),
+    if (isMissingRunBinding(error)) {
+      return new UnboundExpressionError(
+        `A run input or environment binding is missing in ${expression}`,
+        expression,
+      );
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    // An index into a set read that found no record is the same gap.
+    const emptySetRead = indexedEmptySetRead(error, wrappedContext);
+    if (emptySetRead !== undefined) {
+      return new MissingModelDataError(
+        `${message}\n\n${emptySetRead} found no data record — check the ` +
+          `names, or test its size() if no record may exist yet.`,
+        expression,
+        undefined,
+        error instanceof Error ? error : undefined,
+      );
+    }
+    const explained = this.explainMissedLookups(message, wrappedContext);
+    // A select whose operand is the lookup that found no record is upstream
+    // data not produced yet, which validation tolerates as it tolerates an
+    // absent binding. The gap is recognized by the failing select itself: a
+    // miss elsewhere in the expression does not excuse a select on something
+    // else, which is the expression's own failure whatever the hint says.
+    const Failure = explained !== message &&
+        selectsDataLookup(error, wrappedContext)
+      ? MissingModelDataError
+      : InvalidExpressionError;
+    return new Failure(
+      explained,
       expression,
       undefined,
       error instanceof Error ? error : undefined,
@@ -1631,11 +1844,9 @@ export class CelEvaluator {
     try {
       // Attempt to parse the expression — ParseResult is callable, not a
       // success/error union.  If parse() doesn't throw, the syntax is valid.
-      if (this.typedSecrets) {
-        const analysis = analyzeVaultCalls(expression);
-        assertDirectVaultCalls(analysis, expression);
-        this.env.parse(analysis.source.text);
-      } else this.env.parse(transformHyphenatedModelRefs(expression));
+      const analysis = analyzeVaultCalls(expression);
+      assertDirectVaultCalls(analysis, expression);
+      this.env.parse(analysis.source.text);
       return { valid: true };
     } catch (error) {
       return {

@@ -145,7 +145,6 @@ interface Fixture {
  * the CelEvaluator option and the registry flag, so they never diverge.
  */
 async function withFixture(
-  typed: boolean,
   fn: (f: Fixture) => Promise<void>,
 ): Promise<void> {
   const canaries = generateCanaries();
@@ -174,10 +173,10 @@ async function withFixture(
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const redactor = new SecretRedactor();
-    const registry = new SecretBagRegistry({ typedSecrets: typed });
+    const registry = new SecretBagRegistry();
     const sensitiveValues = new RunSensitiveValues(redactor, registry);
     const bag = new VaultSecretBag(registry);
-    const evaluator = new CelEvaluator({ typedSecrets: typed });
+    const evaluator = new CelEvaluator();
     const scope: EvaluationScope = {
       secretBag: bag,
       vault: { service: vaultService, redactor, location: "inputs.secret" },
@@ -425,7 +424,7 @@ async function assertNothingRan(f: Fixture, seen: Seen = {}): Promise<void> {
 }
 
 Deno.test("typed secret destinations: a refusing field or an environment variable name is refused before any read, check or method, wherever it was authored", async () => {
-  await withFixture(true, async (f) => {
+  await withFixture(async (f) => {
     const seen: Seen = {};
     const model = recorder(f.canaries, seen);
     const secret = f.ref(0);
@@ -484,7 +483,7 @@ Deno.test(
   "typed secret destinations: a data value in a quoted here-document is refused before any read, with run authored under globalArguments",
   posix,
   async () => {
-    await withFixture(true, async (f) => {
+    await withFixture(async (f) => {
       const data = f.dataRef();
       await assertRefused(
         () =>
@@ -510,7 +509,7 @@ Deno.test(
   "typed secret destinations (powershell): a data value in single quotes is refused before any read, with run authored under globalArguments",
   { ignore: Deno.build.os !== "windows" },
   async () => {
-    await withFixture(true, async (f) => {
+    await withFixture(async (f) => {
       const data = f.dataRef();
       await assertRefused(
         () =>
@@ -533,7 +532,7 @@ Deno.test(
 );
 
 Deno.test("typed secret destinations: every canary class reaches method arguments, globalArgs and the check exactly, with one load per reference per attempt", async () => {
-  await withFixture(true, async (f) => {
+  await withFixture(async (f) => {
     const seen: Seen = {};
     const model = recorder(f.canaries, seen);
     const refs = f.canaries.map((_, i) => f.ref(i));
@@ -592,7 +591,7 @@ Deno.test(
   "typed secret destinations: the shell environment receives each canary exactly and the shell's own argv holds none",
   posix,
   async () => {
-    await withFixture(true, async (f) => {
+    await withFixture(async (f) => {
       const refs = f.canaries.map((_, i) => f.ref(i));
       const marker = `STEP_${crypto.randomUUID().slice(0, 8)}`;
       // Prints each variable's UTF-8 bytes as hex, so the output never
@@ -662,7 +661,7 @@ Deno.test(
 );
 
 Deno.test("typed secret destinations: a NUL in a loaded environment value fails before any launch with a value-free error and no result, with ignoreExitCode too", async () => {
-  await withFixture(true, async (f) => {
+  await withFixture(async (f) => {
     const nul = f.bag.addSecret(
       { vaultName: VAULT, key: "nul" },
       "methods.execute.arguments.env",
@@ -724,7 +723,7 @@ Deno.test("typed secret destinations: a NUL in a loaded environment value fails 
 });
 
 Deno.test("typed secret destinations: a failed method leaves an output record with its error redacted of values and sentinels", async () => {
-  await withFixture(true, async (f) => {
+  await withFixture(async (f) => {
     const secret = f.ref(5);
     const model: ModelDefinition = {
       type: ModelType.create(`test/typed-leaky-${crypto.randomUUID()}`),
@@ -767,7 +766,7 @@ Deno.test("typed secret destinations: a failed method leaves an output record wi
 });
 
 Deno.test("typed secret destinations: a stand-in and a mask derive from a typed evaluation's reference with no load", async () => {
-  await withFixture(true, async (f) => {
+  await withFixture(async (f) => {
     const result = await f.access(() =>
       f.evaluator.evaluateAsync(
         `vault.get('${VAULT}', 'k3') + '-suffix'`,
@@ -791,53 +790,6 @@ Deno.test("typed secret destinations: a stand-in and a mask derive from a typed 
 });
 
 Deno.test(
-  "typed secret destinations: option off, a refusing field is delivered and a quoted here-document pastes a data value with a warning, as today",
-  posix,
-  async () => {
-    await withFixture(false, async (f) => {
-      const seen: Seen = {};
-      const model = recorder(f.canaries, seen);
-      const secret = f.ref(0);
-      const definition = Definition.create({
-        name: "legacy-field",
-        globalArguments: {},
-        methods: { create: { arguments: { workingDir: secret } } },
-      });
-      await f.access(() =>
-        f.service.executeWorkflow(
-          definition,
-          model,
-          "create",
-          f.context(model.type, definition, "create"),
-          { secretLoader: f.loader },
-        )
-      );
-      assertEquals(seen.method?.args.workingDir, f.canaries[0].value);
-      assertEquals(f.vault.readsOf(keyOf(0)), 1);
-
-      const legacy = f.bag.addDataSecret("legacy-value", DATA_REF);
-      const shell = Definition.create({
-        name: "legacy-heredoc",
-        globalArguments: {},
-        methods: {
-          execute: { arguments: { run: `cat <<'EOF'\n${legacy}\nEOF` } },
-        },
-      });
-      const stdout = await runShell(f, shell);
-      assertEquals(stdout, "legacy-value");
-      assertEquals(
-        f.events.map((e) => e.type).filter((t) =>
-          t === "sensitive_value_in_command_line"
-        ),
-        ["sensitive_value_in_command_line"],
-      );
-      // Nothing was derived from the sentinel.
-      assertEquals(f.sensitiveValues.masked(legacy), legacy);
-    });
-  },
-);
-
-Deno.test(
   "typed secret destinations: a run authored under globalArguments is placed through the environment with the option on or off, so the shell's own argv holds the reference and no plaintext",
   posix,
   async () => {
@@ -845,9 +797,9 @@ Deno.test(
     // values into the global arguments, in either mode: with the option off,
     // a run under globalArguments used to reach the sh -c argv as plaintext
     // (swamp-club#3627).
-    for (const typed of [true, false]) {
-      const mode = `typed ${typed}`;
-      await withFixture(typed, async (f) => {
+    {
+      const mode = `typed ${true}`;
+      await withFixture(async (f) => {
         const ref = f.ref(4);
         const marker = `STEP_${crypto.randomUUID().slice(0, 8)}`;
         const lines = [

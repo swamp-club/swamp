@@ -33,6 +33,7 @@ import {
 } from "@std/assert";
 import {
   InvalidExpressionError,
+  MissingModelDataError,
   SECRET_OPERATION_UNSUPPORTED,
   SECRET_REFERENCE_INVALID,
   SecretRefusedError,
@@ -145,7 +146,8 @@ function fixture() {
       calls.push({ accessor: "version", args: [model, name, version] });
       return Promise.resolve(records[name] ?? null);
     },
-    findBySpec: () => Promise.resolve([records.main, records.first]),
+    findBySpec: (model: string) =>
+      Promise.resolve(model === "empty" ? [] : [records.main, records.first]),
     findByTag: (_key: string, value: string) =>
       Promise.resolve(records[value] === undefined ? [] : [records[value]]),
     // Answers as the query service does under its view: records as stored
@@ -154,7 +156,9 @@ function fixture() {
     // the view it received, or the record's name.
     query: (predicate: string, select?: string, view?: QueryView) => {
       calls.push({ accessor: "query", args: [predicate, select, view] });
-      const named = predicate.split(",").map((name) => records[name]);
+      const named = predicate === "none"
+        ? []
+        : predicate.split(",").map((name) => records[name]);
       if (!select) return Promise.resolve(named);
       return Promise.resolve(named.map((r) => {
         if (select === "name") return (r as { name: string }).name;
@@ -177,7 +181,7 @@ function fixture() {
     model: { web: modelData, "uuid-1": modelData },
     inputs: { item: "x" },
   };
-  const evaluator = new CelEvaluator({ typedSecrets: true });
+  const evaluator = new CelEvaluator();
   return {
     evaluator,
     bag,
@@ -268,6 +272,39 @@ Deno.test("CelEvaluator data secrets: data.version, findBySpec and findByTag ada
     assert(f.bag.registry.issuedEntryOf(result), expression);
   }
   assertEquals(await f.evaluate("data.latest('db', 'missing')"), null);
+  // A non-optional select on the missing record is upstream data not
+  // produced yet, told apart from an invalid expression by its class.
+  const missing = await assertRejects(
+    () => f.evaluate("data.latest('db', 'missing').attributes.password"),
+    MissingModelDataError,
+  );
+  assertStringIncludes(missing.message, "found no data record");
+  await assertRejects(
+    () => f.evaluate("data.latest('db', 'missing')['attributes']"),
+    MissingModelDataError,
+  );
+  await assertRejects(
+    () => f.evaluate("data.latest('db', 'main').attributes.nope"),
+    InvalidExpressionError,
+  );
+  // A miss elsewhere in the expression does not excuse a select on something
+  // other than the lookup: that is the expression's own failure, whether or
+  // not the unrelated record exists.
+  for (
+    const expression of [
+      "[data.latest('db', 'missing'), {}][1].attributes.password",
+      "data.latest('db', 'missing').?attributes.orValue({}) == {} " +
+      "&& [{}][0].attributes",
+    ]
+  ) {
+    const failure = await assertRejects(
+      () => f.evaluate(expression),
+      InvalidExpressionError,
+      undefined,
+      expression,
+    );
+    assertEquals(failure instanceof MissingModelDataError, false, expression);
+  }
   // No tag: reference-looking text stays text, and nothing needs a scope.
   const unscoped = { secretBag: f.bag };
   assertEquals(
@@ -282,6 +319,104 @@ Deno.test("CelEvaluator data secrets: data.version, findBySpec and findByTag ada
     ),
     REF_A,
   );
+});
+
+Deno.test("CelEvaluator data secrets: missing lookup receivers retain their origin through selected containers and branches without another read", async () => {
+  const f = fixture();
+  f.context.inputs = { index: 1, key: "record", enabled: false };
+  const missing = "data.latest('db', 'missing')";
+  for (
+    const receiver of [
+      `[${missing}][0]`,
+      `[{}, ${missing}][inputs.index]`,
+      `[${missing}][inputs.index - 1]`,
+      `{'record': ${missing}}[inputs.key]`,
+      `{'record': ${missing}}['re' + 'cord']`,
+      `{'record': {}, 'record': ${missing}}.record`,
+      `{'record': {}, inputs.key: ${missing}}.record`,
+      `{0: ${missing}}[0.0]`,
+      `{'0': ${missing}}[0]`,
+      `{'0': {}, 0: ${missing}}['0']`,
+      `{true: ${missing}}['true']`,
+      `{'record': [${missing}]}.record[0]`,
+      `(true ? ${missing} : {})`,
+      `(inputs.enabled ? {} : ${missing})`,
+      `(inputs.enabled == false ? ${missing} : null)`,
+      `(!inputs.enabled && size([1, 2]) == 2 ? ${missing} : {})`,
+      `(inputs.index > 0 ? ${missing} : {})`,
+    ]
+  ) {
+    const before = f.calls.length;
+    await assertRejects(
+      () => f.evaluate(`${receiver}.attributes.password`),
+      MissingModelDataError,
+      undefined,
+      receiver,
+    );
+    assertEquals(f.calls.length, before + 1, receiver);
+  }
+  for (
+    const receiver of [
+      `[${missing}, {}][inputs.index]`,
+      `[${missing}, null][inputs.index]`,
+      `{'unused': ${missing}, 'record': {}}[inputs.key]`,
+      `{'record': ${missing}, 'record': {}}.record`,
+      `{'record': ${missing}, inputs.key: {}}.record`,
+      `{'0': ${missing}, 0: {}}['0']`,
+      `{'constructor': ${missing}}.constructor`,
+      `[${missing}, (inputs.enabled ? ${missing} : {})][1]`,
+      `[${missing}, (inputs.enabled || false ? ${missing} : {})][1]`,
+    ]
+  ) {
+    const before = f.calls.length;
+    const failure = await assertRejects(
+      () => f.evaluate(`${receiver}.attributes`),
+      InvalidExpressionError,
+    );
+    assertEquals(failure instanceof MissingModelDataError, false, receiver);
+    assertEquals(f.calls.length, before + 1, receiver);
+  }
+});
+
+Deno.test("CelEvaluator data secrets: an index into a set read that found no record is missing upstream data, and only for that call", async () => {
+  const f = fixture();
+  for (
+    const expression of [
+      "data.findBySpec('empty', 'creds')[0].attributes.password",
+      "data.findByTag('name', 'absent')[0].attributes.password",
+      "data.query('none')[0].attributes",
+      "data.query('none', 'name')[0]",
+      "[data.findBySpec('empty', 'creds')][0][0].attributes",
+      "(true ? data.findByTag('name', 'absent') : [])[0]",
+    ]
+  ) {
+    const missing = await assertRejects(
+      () => f.evaluate(expression),
+      MissingModelDataError,
+      undefined,
+      expression,
+    );
+    assertStringIncludes(missing.message, "found no data record", expression);
+  }
+  // A record set that is not empty, an empty list that is not the set read,
+  // and an empty answer to a different call are the expression's own
+  // failures.
+  for (
+    const expression of [
+      "data.findBySpec('db', 'creds')[2]",
+      "[data.findByTag('name', 'absent'), []][1][0]",
+      "size(data.findByTag('name', 'absent')) == 0 " +
+      "? data.findByTag('name', 'main')[1] : null",
+    ]
+  ) {
+    const failure = await assertRejects(
+      () => f.evaluate(expression),
+      InvalidExpressionError,
+      undefined,
+      expression,
+    );
+    assertEquals(failure instanceof MissingModelDataError, false, expression);
+  }
 });
 
 Deno.test("CelEvaluator data secrets: every tagged reference is authorized after evaluation, selected or not, and a denial surfaces as the option-off denial does, once", async () => {
@@ -607,32 +742,6 @@ Deno.test("CelEvaluator data secrets: a model indexed by name and by id reads on
   });
 });
 
-Deno.test("CelEvaluator: with typed secrets off, the same reads return the stored reference text, read with the default options, and issue nothing", async () => {
-  const f = fixture();
-  const off = new CelEvaluator();
-  assertEquals(
-    await off.evaluateAsync(
-      "data.latest('db', 'main').attributes.password",
-      f.context,
-      f.scope,
-    ),
-    REF_A,
-  );
-  assertEquals(f.calls, [{
-    accessor: "latest",
-    args: ["db", "main", undefined],
-  }]);
-  assertEquals(
-    off.evaluate(
-      "model.web.resource.creds.main.attributes.password",
-      f.context,
-      f.scope,
-    ),
-    REF_A,
-  );
-  assertEquals(f.bag.registry.isEmpty, true);
-});
-
 Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged references of the model-map records an expression reads, so the synchronous evaluate accepts them, and fails closed on anything it did not authorize (typed-secrets 4.1)", async () => {
   const f = fixture();
   const name = "${{ model.web.resource.creds.main.attributes.user }}-x";
@@ -733,10 +842,6 @@ Deno.test("CelEvaluator.prepareSynchronousReads: authorizes the tagged reference
       f.context,
       f.scope,
     ),
-    f.scope,
-  );
-  assertEquals(
-    await new CelEvaluator().prepareSynchronousReads(name, f.context, f.scope),
     f.scope,
   );
 });
@@ -958,15 +1063,6 @@ Deno.test("CelEvaluator: steps.<name>.outputs reads through the step's sources w
     ),
     f.scope,
   );
-  // Typed secrets off: the stored reference text, as today.
-  assertEquals(
-    await new CelEvaluator().evaluateAsync(
-      "steps.seed.outputs.password",
-      context,
-      {},
-    ),
-    REF_A,
-  );
 });
 
 Deno.test("CelEvaluator data secrets: data.query passes the typed environment's view to its delegate, adapts the records it answers for no select or an empty one, and leaves a projection as the view answered it (typed-secrets 4.3)", async () => {
@@ -1051,18 +1147,4 @@ Deno.test("CelEvaluator data secrets: the view data.query hands its delegate is 
   );
   assertEquals(seen.length, 2);
   assert(seen.every((view) => view !== undefined));
-
-  const off = new CelEvaluator();
-  assertEquals(
-    await off.evaluateAsync("data.query('x', 'y')", probe("security")),
-    [REF_A],
-  );
-  assertEquals(seen.at(-1), undefined);
-  assertEquals(
-    (await off.evaluateAsync(
-      "data.query('main')",
-      f.context,
-    ) as DataRecord[])[0].attributes.password,
-    REF_A,
-  );
 });

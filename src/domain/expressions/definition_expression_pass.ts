@@ -24,7 +24,7 @@ import type {
   CelExpressionValidator,
 } from "./cel_runtime.ts";
 import { extractDependencies } from "./dependency_extractor.ts";
-import { ExpressionError } from "./errors.ts";
+import { MissingModelDataError } from "./errors.ts";
 import type { ExpressionLocation } from "./expression.ts";
 import {
   replaceExpressionsTracked,
@@ -85,7 +85,8 @@ function underPath(
       : `${prefix}.${path}`;
   return {
     whole: (value, path) => sanitizer.whole(value, full(path)),
-    embedded: (text, path) => sanitizer.embedded(text, full(path)),
+    embedded: (text, path, value) =>
+      sanitizer.embedded(text, full(path), value),
   };
 }
 
@@ -136,13 +137,36 @@ export async function evaluateDefinitionExpressions(
    * occurrence overlapping data is neither evaluated nor substituted.
    */
   provenance: DefinitionPassProvenance = AUTHORED_DEFINITION,
+  /** Subtrees outside this delivery are neither evaluated nor substituted. */
+  skipPath?: (path: string) => boolean,
 ): Promise<DefinitionExpressionPassResult> {
   expressions = expressions.filter((expr) =>
-    expr.start === undefined || expr.end === undefined
+    !skipPath?.(expr.path) &&
+    (expr.start === undefined || expr.end === undefined
       ? !provenance.raw.hasDataAtOrBelow(expr.path)
-      : !provenance.raw.overlapsData(expr.path, expr.start, expr.end)
+      : !provenance.raw.overlapsData(expr.path, expr.start, expr.end))
   );
   const failedExpressions = new Map<string, Error>();
+  const recordFailure = (raw: string, error: unknown) => {
+    failedExpressions.set(
+      raw,
+      error instanceof Error ? error : new Error(String(error)),
+    );
+  };
+  // A refusal at interpolation is the same pending failure as a refusal in
+  // CEL. Check both coordinate views, keeping the raw view's values intact.
+  // Handle each occurrence separately: the same container may be allowed as
+  // a whole field and refused inside text in another method.
+  const rawSanitizer: SpliceSanitizer | undefined = sanitizer && {
+    whole: (value, path) => {
+      sanitizer.whole(value, path);
+      return value;
+    },
+    embedded: (text, path, value) => {
+      sanitizer.embedded(text, path, value);
+      return text;
+    },
+  };
   const declaredInputs = new Set(
     Object.keys(definitionData.inputs?.properties ?? {}),
   );
@@ -166,7 +190,11 @@ export async function evaluateDefinitionExpressions(
         failedExpressions.set(
           expr.raw,
           markModelWording(
-            new ExpressionError(worded.text, expr.celExpression, expr.path),
+            new MissingModelDataError(
+              worded.text,
+              expr.celExpression,
+              expr.path,
+            ),
             worded.modelText,
           ),
         );
@@ -188,10 +216,7 @@ export async function evaluateDefinitionExpressions(
         ) continue;
         // Most often an input referenced directly (not inside a conditional
         // branch) that only another method supplies — see #653.
-        failedExpressions.set(
-          expr.raw,
-          error instanceof Error ? error : new Error(String(error)),
-        );
+        recordFailure(expr.raw, error);
       }
     }
     return values;
@@ -209,6 +234,9 @@ export async function evaluateDefinitionExpressions(
     globalValues,
     provenance.raw.subtree("globalArguments"),
     globalOriginOf,
+    undefined,
+    rawSanitizer && underPath(rawSanitizer, "globalArguments"),
+    recordFailure,
   );
   const globalArguments = globals.data as Record<string, unknown>;
 
@@ -222,6 +250,8 @@ export async function evaluateDefinitionExpressions(
       restOrigins,
     );
   const restOriginOf = originLookup(restOrigins);
+  const skipRest = (path: string) =>
+    isGlobalArgumentPath(path) || (skipPath?.(path) ?? false);
 
   // The same raw text can resolve differently in the two phases
   // (`self.globalArguments.*` does), so each section takes its own values.
@@ -230,6 +260,9 @@ export async function evaluateDefinitionExpressions(
     restValues,
     provenance.raw,
     restOriginOf,
+    skipRest,
+    rawSanitizer,
+    recordFailure,
   );
   const data = restSplice.data as DefinitionData;
   const dataProvenance = restSplice.provenance.graft(
@@ -250,14 +283,16 @@ export async function evaluateDefinitionExpressions(
     globalOriginOf,
     undefined,
     underPath(sanitizer, "globalArguments"),
+    recordFailure,
   );
   const sanitizedRest = replaceExpressionsTracked(
     sanitizedBase,
     restValues,
     provenance.sanitized,
     restOriginOf,
-    undefined,
+    skipRest,
     sanitizer,
+    recordFailure,
   );
   return {
     data: { ...data, globalArguments },

@@ -34,7 +34,7 @@ Deno.test("RunSensitiveValues: in a typed run a registered sentinel is masked an
       fc.string({ maxLength: 6 }),
       fc.constantFrom("vault", "data", "legacy"),
       (value, before, after, origin) => {
-        const registry = new SecretBagRegistry({ typedSecrets: true });
+        const registry = new SecretBagRegistry();
         const redactor = new SecretRedactor();
         const values = new RunSensitiveValues(redactor, registry);
         const bag = new VaultSecretBag(registry);
@@ -58,14 +58,13 @@ Deno.test("RunSensitiveValues: in a typed run a registered sentinel is masked an
   );
 });
 
-Deno.test("RunSensitiveValues: sentinel-shaped text the run did not issue is kept, typed or not", () => {
+Deno.test("RunSensitiveValues: sentinel-shaped text the run did not issue is kept", () => {
   fc.assert(
     fc.property(
       fc.hexaString({ minLength: 32, maxLength: 32 }),
       fc.nat({ max: 99 }),
-      fc.boolean(),
-      (prefix, n, typed) => {
-        const registry = new SecretBagRegistry({ typedSecrets: typed });
+      (prefix, n) => {
+        const registry = new SecretBagRegistry();
         new VaultSecretBag(registry).addSecret(REF, "loc");
         const values = new RunSensitiveValues(undefined, registry);
         const text = `a __SWAMP_VSEC_${prefix}_${n}__ b`;

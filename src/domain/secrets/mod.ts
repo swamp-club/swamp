@@ -32,11 +32,9 @@ export {
 export {
   type DataPath,
   type PersistedForm,
-  rehydratePersistedForm,
   rehydrateReferences,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
-  type VaultReader,
   type WrittenReference,
   WrittenReferenceSchema,
 } from "./persisted_sensitive_form.ts";

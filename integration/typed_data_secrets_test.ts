@@ -340,7 +340,7 @@ async function withFixture(
         location: "inputs.cmd",
       },
     };
-    const evaluator = new CelEvaluator({ typedSecrets: true });
+    const evaluator = new CelEvaluator();
     const loader = new SecretLoader(() => Promise.resolve(vaultService), {
       addSecret: (value) => redacted.push(value),
     });
@@ -957,7 +957,7 @@ Deno.test("typed data secrets: a record the writer could not have stored refuses
   });
 });
 
-Deno.test("typed data secrets: readResource keeps resolving plaintext with its schema fallback, and the option-off path is unchanged", async () => {
+Deno.test("typed data secrets: readResource keeps resolving plaintext with its schema fallback", async () => {
   await withFixture(async (f) => {
     const passwordKey = keyOf(f.modelId, "creds", "main", "password");
     // A record with no tag, as data written before the tag existed.
@@ -987,32 +987,6 @@ Deno.test("typed data secrets: readResource keeps resolving plaintext with its s
     assertEquals((await readResource("legacy"))?.password, f.secrets.password);
     // Each trusted read loads the value: three reads so far.
     assertEquals(f.counting.readsOf(passwordKey), 3);
-
-    const off = new CelEvaluator();
-    const context = f.context as unknown as Record<string, unknown>;
-    assertEquals(
-      await off.evaluateAsync(
-        "data.latest('db', 'main').attributes.password",
-        context,
-      ),
-      f.secrets.password,
-    );
-    assertEquals(
-      await off.evaluateAsync(
-        "data.version('db', 'main', 1).attributes.password",
-        context,
-      ),
-      `\${{ vault.get('prod', '${passwordKey}') }}`,
-    );
-    assertEquals(
-      await off.evaluateAsync(
-        "model.db.resource.creds.main.attributes.password",
-        context,
-      ),
-      `\${{ vault.get('prod', '${passwordKey}') }}`,
-    );
-    assertEquals(f.counting.readsOf(passwordKey), 4);
-    assertEquals(f.bag.registry.isEmpty, true);
   });
 });
 

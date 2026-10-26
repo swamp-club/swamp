@@ -19,7 +19,10 @@
 
 /** Reference-only CEL vault receiver and the pre-execution reference checks. */
 import type { Environment } from "cel-js";
-import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import {
+  InvalidExpressionError,
+  UnboundExpressionError,
+} from "../../domain/expressions/errors.ts";
 import {
   editCelSource,
   indirectVaultUse,
@@ -128,11 +131,14 @@ export async function prepareCheckedVaultCalls(
           replace(arg.node.start, arg.node.end),
           local,
         );
-      } catch {
+      } catch (error) {
         // Faults take precedence and never carry a value. Other argument errors
         // name the authored call, never cel-js's potentially value-bearing cause.
         assertFaults();
-        throw new InvalidExpressionError(
+        const errorType = isMissingRunBinding(error)
+          ? UnboundExpressionError
+          : InvalidExpressionError;
+        throw new errorType(
           `Failed to evaluate vault.get argument ${position + 1} at ${
             callLocation(expression, call.start, scope.location)
           }`,
@@ -188,4 +194,16 @@ export function callLocation(
   const line = preceding.split("\n").length;
   const column = offset - preceding.lastIndexOf("\n");
   return `${path}:${line}:${column}`;
+}
+
+/** Only an absent top-level input/env binding can be supplied by a later run. */
+export function isMissingRunBinding(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const cause = error as {
+    code?: unknown;
+    node?: { left?: { op?: unknown; args?: unknown } };
+  };
+  const root = cause.node?.left;
+  return cause.code === "no_such_key" && root?.op === "id" &&
+    (root.args === "inputs" || root.args === "env");
 }

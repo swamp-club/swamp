@@ -41,7 +41,7 @@ import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import {
   CelEvaluator,
-  createInternalCelEnvironment,
+  createExtensionCelEnvironment,
   type EvaluationScope,
 } from "./cel_evaluator.ts";
 import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
@@ -60,7 +60,7 @@ import {
 
 import { CelVaultNamespace } from "./cel_vault_namespace.ts";
 
-const evaluator = new CelEvaluator({ typedSecrets: true });
+const evaluator = new CelEvaluator();
 
 /** One run's bag, two vault references and a data-origin entry. */
 function fixture() {
@@ -232,7 +232,7 @@ function functionExpression(signature: string): string {
 /** The function refusals the internal environment registers. */
 function internalFunctionRefusals(): string[] {
   const swamp = new Set(SWAMP_FUNCTION_SIGNATURES);
-  const builtins = secretCapableBuiltins(createInternalCelEnvironment())
+  const builtins = secretCapableBuiltins(createExtensionCelEnvironment())
     .map((fn) => fn.signature)
     .filter((signature) => !swamp.has(signature));
   return [
@@ -749,27 +749,20 @@ Deno.test("CelEvaluator typed secrets: with no run's bag, sentinel text stays te
   assertEquals(evaluator.evaluate("s", { s: f.s }), f.s);
 });
 
-Deno.test("CelEvaluator: with typed secrets off, a scope changes nothing and sentinel text stays text", () => {
+Deno.test("CelEvaluator: the default evaluator refuses operations on a bound secret", () => {
   const f = fixture();
-  const off = new CelEvaluator();
-  assertEquals(
-    off.evaluate("s == 'x'", { s: f.s }, { secretBag: f.bag }),
-    false,
-  );
-  assertEquals(
-    off.evaluate("size(s)", { s: f.s }, { secretBag: f.bag }),
-    f.s.length,
-  );
+  const evaluator = new CelEvaluator();
+  for (const expression of ["s == 'x'", "size(s)"]) {
+    const error = assertThrows(
+      () => evaluator.evaluate(expression, { s: f.s }, { secretBag: f.bag }),
+      SecretRefusedError,
+    );
+    assertEquals(error.code, "secret_operation_unsupported");
+  }
 });
 
 Deno.test("CelEvaluator typed secrets: a parse error keeps today's error", () => {
   assertThrows(() => evaluate("s +"), InvalidExpressionError);
-});
-
-Deno.test("CelEvaluator.isTyped: answers the option the evaluator was built with, so an untyped guard or assert evaluator is handed parsed content by the model.method delegate", () => {
-  assertEquals(new CelEvaluator().isTyped, false);
-  assertEquals(new CelEvaluator({ typedSecrets: true }).isTyped, true);
-  assertEquals(evaluator.isTyped, true);
 });
 
 Deno.test("CelEvaluator typed secrets: the predicate destination refuses a result that holds a secret anywhere, issues nothing, and keeps null comparisons and plain results (typed-secrets 4.1)", async () => {

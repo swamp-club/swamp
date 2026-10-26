@@ -119,7 +119,6 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
     "id-1",
     "creds",
     "db",
-    true,
   ) as Record<string, unknown>;
   assertEquals(typed.tags, {
     type: "resource",
@@ -128,23 +127,8 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
     "_swamp.sensitiveFields": JSON.stringify(["password"]),
   });
   assertEquals(typed.attributes, { password: REFERENCE, host: "h" });
-  // The untyped consumer, the guard and assert evaluators until Phase 4,
-  // receives the parsed content whatever the run's registry carries.
-  const untyped = repo(data("application/json"), json);
-  assertEquals(
-    await modelMethodResourceResult(
-      untyped.repo,
-      TYPE,
-      "id-1",
-      "creds",
-      "db",
-      false,
-    ),
-    { password: REFERENCE, host: "h" },
-  );
-  assertEquals(untyped.calls, ["getContent:creds"]);
   // Text content is text for both, and nothing written answers undefined.
-  for (const consumer of [true, false]) {
+  {
     assertEquals(
       await modelMethodResourceResult(
         repo(data("text/plain"), "plain text").repo,
@@ -152,7 +136,6 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
         "id-1",
         "creds",
         "db",
-        consumer,
       ),
       "plain text",
     );
@@ -166,7 +149,6 @@ Deno.test("modelMethodResourceResult: a typed consumer is handed the stored reco
         "id-1",
         "creds",
         "db",
-        consumer,
       ),
       undefined,
     );

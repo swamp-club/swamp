@@ -3980,7 +3980,7 @@ Deno.test("createResourceWriter: a redactor masking only sentinels serializes te
     lifetime: "infinite",
     garbageCollection: 5,
   };
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const sentinel = new VaultSecretBag(registry).addSecret(
     { vaultName: "v", key: "k" },
     "loc",

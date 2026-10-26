@@ -186,7 +186,7 @@ Deno.test("TriggerInputResolver: propagates a hard reference error", async () =>
 });
 
 Deno.test("TriggerInputResolver: with a typed evaluator, a vault.get is refused before any work and a Secret result is refused as a destination, while plain inputs resolve as before (typed-secrets 4.1)", async () => {
-  const typed = new CelEvaluator({ typedSecrets: true });
+  const typed = new CelEvaluator();
   const resolver = new TriggerInputResolver(typed);
   assertEquals(
     await resolver.resolve(
@@ -211,7 +211,7 @@ Deno.test("TriggerInputResolver: with a typed evaluator, a vault.get is refused 
   // Secret can only come from a data accessor, which the webhook context
   // does not bind, so the destination refusal is proven on the evaluator's
   // own scope: a context that does bind a secret-valued accessor.
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const sentinel = new VaultSecretBag(registry).addSecret(
     { vaultName: "prod", key: "A" },
     "in",

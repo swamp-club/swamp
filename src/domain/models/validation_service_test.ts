@@ -3740,7 +3740,7 @@ Deno.test("validateModel: checks receive what deliverCheckArguments delivers: va
   assertEquals(captured?.vaultSecrets, bag);
 });
 
-Deno.test("validateModel: a refused or failed delivery fails every applicable check with its error and runs none", async () => {
+Deno.test("validateModel: a refused or failed delivery reports once for multiple applicable checks and runs none", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
@@ -3787,15 +3787,12 @@ Deno.test("validateModel: a refused or failed delivery fails every applicable ch
         ),
     }),
   );
-  const checks = results.filter((r) => r.name.startsWith("Check:"));
-  assertEquals(checks.map((r) => r.name).sort(), [
-    "Check: first",
-    "Check: second",
-  ]);
-  for (const result of checks) {
-    assertEquals(result.passed, false);
-    assertStringIncludes(result.error ?? "", "secret_destination_refused");
-  }
+  const failures = results.filter((r) =>
+    r.name === "Check argument delivery" && !r.passed
+  );
+  assertEquals(failures.length, 1);
+  assertEquals(failures[0].name, "Check argument delivery");
+  assertStringIncludes(failures[0].error ?? "", "secret_destination_refused");
   assertEquals(executed, 0);
 });
 

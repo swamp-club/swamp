@@ -116,25 +116,12 @@ Deno.test("captureDeferredBindings: a typed run copies each step's output source
     },
     workflowRunId: "r1",
   };
-  const untyped = captureDeferredBindings(
-    attachSensitiveValues(
-      { ...base, steps: steps() } as unknown as ExpressionContext,
-      new RunSensitiveValues(),
-    ),
-  );
-  assertEquals(untyped.steps, {
-    seed: {
-      status: "succeeded",
-      outputs: { password: "${{ vault.get('prod', 'A') }}", user: "u" },
-    },
-    plain: { status: "skipped" },
-  });
   const typed = captureDeferredBindings(
     attachSensitiveValues(
       { ...base, steps: steps() } as unknown as ExpressionContext,
       new RunSensitiveValues(
         undefined,
-        new SecretBagRegistry({ typedSecrets: true }),
+        new SecretBagRegistry(),
       ),
     ),
   );
@@ -147,7 +134,7 @@ Deno.test("captureDeferredBindings: a typed run copies each step's output source
     plain: { status: "skipped" },
   });
   // The copy is plain data the record schema accepts, in both forms.
-  for (const bindings of [untyped, typed]) {
+  for (const bindings of [typed]) {
     const parsed = DeferredExpressionSchema.parse({
       id: crypto.randomUUID(),
       expression: "${{ env.HOME }}",
@@ -160,6 +147,6 @@ Deno.test("captureDeferredBindings: a typed run copies each step's output source
     captureDeferredBindings(
       { ...base, steps: steps() } as unknown as ExpressionContext,
     ).steps,
-    untyped.steps,
+    typed.steps,
   );
 });

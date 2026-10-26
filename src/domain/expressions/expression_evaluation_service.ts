@@ -25,7 +25,6 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import {
   CelEvaluator,
   type EvaluationScope,
-  prepareExpressionsIn,
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   CelExpressionEvaluator,
@@ -45,12 +44,12 @@ import {
 import { sensitiveValuesOf } from "./sensitive_context.ts";
 import { fromPersistedStepContexts } from "./step_output_sources.ts";
 import {
-  isDefinitionArgumentPath,
   isDeliveredWithMethod,
   isOutsideMethodDelivery,
   sensitiveSpliceSanitizer,
   type SplicePair,
 } from "./splice_pair.ts";
+import { definitionDescriptionPaths } from "./description_paths.ts";
 import { getLogger } from "@logtape/logtape";
 import { type ASTNode, parse as parseCel } from "cel-js";
 import type { ExpressionLocation } from "./expression.ts";
@@ -632,8 +631,6 @@ export interface PassEvaluatorOptions {
  */
 export interface PassEvaluator
   extends CelExpressionEvaluator, CelExpressionValidator {
-  /** Whether the pass runs with typed secrets. */
-  readonly typed: boolean;
   /**
    * Prepares the context for every expression in `content` and, in a typed
    * run, authorizes the sensitive-field references a synchronous evaluation
@@ -645,8 +642,6 @@ export interface PassEvaluator
 
 export class ExpressionEvaluationService {
   private readonly celEvaluator: CelEvaluator;
-  /** The typed evaluator, built on first use for a typed run. */
-  private typedEvaluator?: CelEvaluator;
   private readonly sortService: TopologicalSortService;
   private readonly modelResolver: ModelResolver;
   private readonly definitionRepo: YamlDefinitionRepository;
@@ -682,60 +677,44 @@ export class ExpressionEvaluationService {
   }
 
   /**
-   * The evaluator for a run: the legacy one, or, when the run's registry is
-   * typed (the internal typed-secrets option, which only tests set), the
-   * typed one, built once by forwarding the registry's flag. The registry is
-   * the single switch (design/enablers/typed-secrets.md Section 11, Phase
-   * 3.5): no production code sets the option, and a fitness test pins this
-   * call as the one forwarding site.
-   */
-  private evaluatorFor(registry: SecretBagRegistry | undefined): CelEvaluator {
-    if (registry?.typedSecrets !== true) return this.celEvaluator;
-    return this.typedEvaluator ??= new CelEvaluator({
-      typedSecrets: registry.typedSecrets,
-    });
-  }
-
-  /**
    * What a typed evaluation runs with: the issuing bag, and the vault check
    * scope the resolver's vault service answers, so vault.get checks and
    * sensitive-field authorization ask the service a load reads through.
    */
-  private async scopeFor(
+  private scopeFor(
     secretBag: VaultSecretBag,
     location: string,
     redactor: ProbeRedactor | undefined,
-  ): Promise<EvaluationScope> {
+  ): EvaluationScope {
+    let vault: ReturnType<ModelResolver["vaultEvaluationScope"]> | undefined;
     return {
       secretBag,
-      vault: await this.modelResolver.vaultEvaluationScope(location, redactor),
+      // A rejected scope is not kept: the next read in the pass asks again,
+      // so a transient failure building the vault service fails one read.
+      getVault: () =>
+        vault ??= this.modelResolver.vaultEvaluationScope(location, redactor)
+          .catch((error) => {
+            vault = undefined;
+            throw error;
+          }),
     };
   }
 
   /**
-   * The evaluator a pass runs with (design/enablers/typed-secrets.md
-   * Section 5, typed-secrets 4.1): the one seam every workflow and
-   * definition pass selects its evaluator through. With an untyped
-   * registry, the legacy evaluator in the pass shape, so the pass is what
-   * it always was. With a typed registry, the typed evaluator bound to one
-   * scope: the issuing bag (`secretBag`, or a bag over the run's registry),
-   * the vault check scope the resolver's vault service answers, and the
-   * predicate destination when the pass is a guard or assert. `prepare` is
-   * the pass's authorization step for what it evaluates synchronously; it
-   * carries the authorized references forward on this pass evaluator alone,
-   * so a pass authorizes for itself and never for another.
+   * Binds the shared evaluator to this pass's issuing bag, lazy vault scope and
+   * destination. Synchronous passes prepare authorization for their own reads;
+   * authorization never carries from one pass to another.
    */
-  async passEvaluatorFor(
+  passEvaluatorFor(
     sensitiveValues: RunSensitiveValues | undefined,
     options: PassEvaluatorOptions,
-  ): Promise<PassEvaluator> {
-    const registry = options.secretBag?.registry ?? sensitiveValues?.sentinels;
-    if (registry?.typedSecrets !== true) {
-      return ExpressionEvaluationService.legacyPass(this.celEvaluator);
-    }
-    const evaluator = this.evaluatorFor(registry);
+  ): PassEvaluator {
+    const registry = options.secretBag?.registry ??
+      sensitiveValues?.sentinels ??
+      new SecretBagRegistry();
+    const evaluator = this.celEvaluator;
     let scope: EvaluationScope = {
-      ...await this.scopeFor(
+      ...this.scopeFor(
         options.secretBag ?? new VaultSecretBag(registry),
         options.location,
         sensitiveValues?.probeRedactor,
@@ -756,7 +735,6 @@ export class ExpressionEvaluationService {
       return value;
     };
     return {
-      typed: true,
       evaluate: (expression, context) =>
         routed(evaluator.evaluate(expression, context, scope)),
       evaluateAsync: async (expression, context) =>
@@ -769,19 +747,6 @@ export class ExpressionEvaluationService {
           scope,
         );
       },
-    };
-  }
-
-  /** The legacy evaluator in the pass shape: no scope, and prepare as today. */
-  private static legacyPass(evaluator: CelEvaluator): PassEvaluator {
-    return {
-      typed: false,
-      evaluate: (expression, context) =>
-        evaluator.evaluate(expression, context),
-      evaluateAsync: (expression, context) =>
-        evaluator.evaluateAsync(expression, context),
-      validate: (expression) => evaluator.validate(expression),
-      prepare: (content, context) => prepareExpressionsIn(content, context),
     };
   }
 
@@ -810,7 +775,6 @@ export class ExpressionEvaluationService {
     secretBag: VaultSecretBag,
     foreignText: ForeignTextRule = "fail",
   ): Promise<SplicePair<T>> {
-    const sensitiveValues = sensitiveValuesOf(context);
     const origins = new Map<string, SpliceOrigin>();
     const values = await this.evaluateDataValues(
       pair.raw,
@@ -819,13 +783,12 @@ export class ExpressionEvaluationService {
       pair.rawProvenance,
       origins,
       foreignText,
+      secretBag,
     );
     if (values.size === 0) return pair;
     return pair.splice(
       values,
-      sensitiveValues
-        ? sensitiveSpliceSanitizer(sensitiveValues, secretBag)
-        : { whole: (value) => value, embedded: (text) => text },
+      sensitiveSpliceSanitizer(secretBag),
       undefined,
       (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
     );
@@ -849,9 +812,23 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     authored: AuthoredExpressions,
   ): Promise<unknown> {
-    const values = await this.evaluateDataValues(data, context, authored);
+    const bag = bagFor(context);
+    const values = await this.evaluateDataValues(
+      data,
+      context,
+      authored,
+      undefined,
+      undefined,
+      undefined,
+      bag,
+    );
     if (values.size === 0) return data;
-    return replaceExpressions(data, values);
+    return replaceExpressions(
+      data,
+      values,
+      undefined,
+      sensitiveSpliceSanitizer(bag),
+    );
   }
 
   /**
@@ -866,6 +843,7 @@ export class ExpressionEvaluationService {
     authored: AuthoredExpressions,
     foreignText: ForeignTextRule = "fail",
   ): Promise<TrackedSplice> {
+    const bag = bagFor(context);
     const origins = new Map<string, SpliceOrigin>();
     const values = await this.evaluateDataValues(
       data,
@@ -874,6 +852,7 @@ export class ExpressionEvaluationService {
       provenance,
       origins,
       foreignText,
+      bag,
     );
     if (values.size === 0) return { data, provenance };
     return replaceExpressionsTracked(
@@ -881,6 +860,8 @@ export class ExpressionEvaluationService {
       values,
       provenance,
       (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
+      undefined,
+      sensitiveSpliceSanitizer(bag),
     );
   }
 
@@ -891,6 +872,7 @@ export class ExpressionEvaluationService {
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     origins?: Map<string, SpliceOrigin>,
     foreignText: ForeignTextRule = "fail",
+    secretBag?: VaultSecretBag,
   ): Promise<Map<string, unknown>> {
     const expressions = partitionAuthoredAt(
       extractExpressions(data),
@@ -904,10 +886,10 @@ export class ExpressionEvaluationService {
 
     // In a typed run the pass binds the run's sentinels as Secrets and a
     // Secret result leaves as a sentinel issued into a bag over the run's
-    // registry (typed-secrets 4.1); untyped, it is the legacy evaluator.
+    // registry; the same typed evaluator handles every entry point.
     const passEvaluator = await this.passEvaluatorFor(
       sensitiveValuesOf(context),
-      { location: expressions[0].path },
+      { location: expressions[0].path, secretBag },
     );
 
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
@@ -920,7 +902,7 @@ export class ExpressionEvaluationService {
       // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
       // inside a prose string (e.g. a plan body that documents expression
       // syntax). Leaving the raw text in place preserves prose round-trip.
-      // The legacy evaluator's syntax check decides, on both paths: the
+      // The syntax check decides: the
       // typed one would also refuse a vault alias, which is the typed
       // evaluation's own refusal, not prose.
       if (!this.celEvaluator.validate(expr.celExpression).valid) {
@@ -1001,19 +983,25 @@ export class ExpressionEvaluationService {
     inputValues?: Record<string, unknown>,
     context?: ExpressionContext,
     secretBag?: VaultSecretBag,
-    provenance: {
+    options: {
       /** Where data already sits in the definition's data. */
       definition?: DefinitionPassProvenance;
       /** Where data sits in `inputValues`. */
       inputs?: ProvenanceMap;
+      /** On replay, only expressions vouched for by source/cache may run. */
+      authoredExpressions?: ReadonlySet<string>;
+      /** On replay, evaluate only globals and the selected method. */
+      methodName?: string;
     } = {},
   ): Promise<EvaluatedDefinition> {
+    secretBag ??= new VaultSecretBag(sensitiveValues.sentinels);
     const definitionData = definition.toData();
-    const definitionProvenance = provenance.definition ?? AUTHORED_DEFINITION;
-    const authoredExpressions = collectAuthoredExpressions(
-      inputValues,
-      collectAuthoredExpressions(definitionData),
-    );
+    const definitionProvenance = options.definition ?? AUTHORED_DEFINITION;
+    const authoredExpressions = options.authoredExpressions ??
+      collectAuthoredExpressions(
+        inputValues,
+        collectAuthoredExpressions(definitionData),
+      );
 
     // Build context if not provided.
     const ctx = context ??
@@ -1023,7 +1011,7 @@ export class ExpressionEvaluationService {
     if (inputValues) {
       ctx.inputs = inputValues;
       attachBindingProvenance(ctx, {
-        inputs: provenance.inputs ?? ProvenanceMap.authored(),
+        inputs: options.inputs ?? ProvenanceMap.authored(),
       });
     }
 
@@ -1044,8 +1032,20 @@ export class ExpressionEvaluationService {
       ),
     });
 
-    // Extract expressions from definition data
-    const expressions = extractExpressions(definitionData);
+    const methodName = options.methodName;
+    // A replay supplies the original authored set: cached data cannot vouch
+    // for its own expressions. The fresh pass retains its ordinary rules.
+    let expressions = extractExpressions(definitionData).filter((expr) =>
+      methodName === undefined || isDeliveredWithMethod(expr.path, methodName)
+    );
+    if (options.authoredExpressions !== undefined) {
+      expressions = partitionAuthoredAt(
+        expressions,
+        authoredExpressions,
+        definitionProvenance.raw,
+        sensitiveValues,
+      );
+    }
 
     if (expressions.length === 0) {
       return {
@@ -1084,15 +1084,12 @@ export class ExpressionEvaluationService {
       ),
       ctx,
       passEvaluator,
-      secretBag
-        ? sensitiveSpliceSanitizer(
-          sensitiveValuesOf(ctx) ?? sensitiveValues,
-          secretBag,
-          isDefinitionArgumentPath,
-        )
-        : undefined,
+      sensitiveSpliceSanitizer(secretBag),
       definitionData,
       definitionProvenance,
+      methodName === undefined
+        ? undefined
+        : (path) => isOutsideMethodDelivery(path, methodName),
     );
 
     // Create new Definition from evaluated data
@@ -1206,8 +1203,8 @@ export class ExpressionEvaluationService {
         // it is refused rather than written into the child's expression as
         // sentinel text (typed-secrets 4.1).
         const registry = sensitiveValuesOf(context)?.sentinels;
-        const evaluator = this.evaluatorFor(registry);
-        const value = evaluator === this.celEvaluator || registry === undefined
+        const evaluator = this.celEvaluator;
+        const value = registry === undefined
           ? evaluator.evaluate(bare, context)
           : evaluator.evaluate(bare, context, {
             secretBag: new VaultSecretBag(registry),
@@ -1454,10 +1451,13 @@ export class ExpressionEvaluationService {
 
     // Filter to only runtime expressions (vault or env), of the delivery's
     // method when one is named, then to those the author actually wrote at
-    // an authored position — see AuthoredExpressions.
+    // an authored position — see AuthoredExpressions. Description prose
+    // may document the syntax and is never resolved.
     const methodName = options.methodName;
+    const isDescription = definitionDescriptionPaths(definitionData);
     const runtimeExpressions = partitionAuthoredAt(
       expressions.filter((expr) =>
+        !isDescription(expr.path) &&
         containsRuntimeExpression(expr.celExpression) &&
         (methodName === undefined ||
           isDeliveredWithMethod(expr.path, methodName))
@@ -1481,14 +1481,7 @@ export class ExpressionEvaluationService {
     // A runtime expression can also read a sensitive data value
     // (`env.X + data.latest(...)`), so its result is sanitized as it is
     // spliced into an argument, like the definition pass does.
-    const sensitiveValues = sensitiveValuesOf(expressionContext);
-    const sanitizer = sensitiveValues
-      ? sensitiveSpliceSanitizer(
-        sensitiveValues,
-        secretBag,
-        isDefinitionArgumentPath,
-      )
-      : undefined;
+    const sanitizer = sensitiveSpliceSanitizer(secretBag);
     const failedExpressions = new Map<string, Error>();
     const resolvedDefinition = await this.resolveRuntimeInExpressions(
       definitionData,
@@ -1500,9 +1493,10 @@ export class ExpressionEvaluationService {
       sanitizer,
       provenance,
       {
-        skipPath: methodName === undefined
-          ? undefined
-          : (path) => isOutsideMethodDelivery(path, methodName),
+        skipPath: (path) =>
+          isDescription(path) ||
+          (methodName !== undefined &&
+            isOutsideMethodDelivery(path, methodName)),
         unevaluated: options.keepUnevaluated &&
           { keep: options.keepUnevaluated, into: failedExpressions },
       },
@@ -1554,8 +1548,7 @@ export class ExpressionEvaluationService {
     destination?: PassEvaluatorOptions & { destination: string },
   ): Promise<unknown> {
     const secretBag = destination?.secretBag ?? bagFor(expressionContext);
-    const refusing = secretBag.registry.typedSecrets &&
-      destination !== undefined;
+    const refusing = destination !== undefined;
     const refuse = (value: unknown): void => {
       if (refusing) {
         refuseRoutingSecrets(
@@ -1710,6 +1703,7 @@ export class ExpressionEvaluationService {
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     pass: RuntimePassOptions = {},
   ): Promise<unknown> {
+    sanitizer ??= sensitiveSpliceSanitizer(secretBag);
     const records = new Map(
       (context.deferredExpressions ?? []).map((
         record,
@@ -1821,13 +1815,13 @@ export class ExpressionEvaluationService {
       const celContext = records.size
         ? await withBindings(ctx, expr.celExpression, location)
         : ctx;
-      const evaluator = this.evaluatorFor(secretBag.registry);
-      if (evaluator !== this.celEvaluator) {
+      const evaluator = this.celEvaluator;
+      {
         // A typed run evaluates vault.get as the CEL function: the evaluator
         // checks every direct call up front, refuses an alias, and issues
         // the sentinel on release into the step's bag
         // (design/enablers/typed-secrets.md Sections 3.4 and 4.4). Text that
-        // is not CEL stays raw, as on the legacy path. The screen parses the
+        // is not CEL stays raw outside strict validation. The screen parses the
         // normalized source, with legacy bare-token arguments such as
         // vault.get(my-vault, a@b) already quoted as the evaluator parses
         // them; it records an alias rather than refusing it, so an alias
@@ -1835,6 +1829,7 @@ export class ExpressionEvaluationService {
         try {
           analyzeVaultCalls(expr.celExpression);
         } catch (error) {
+          if (pass.unevaluated) throw error;
           if (containsVaultExpression(expr.celExpression)) {
             getLogger(["swamp", "expressions"])
               .warn`Skipped vault expression at ${expr.path} because its CEL is syntactically invalid: ${
@@ -1846,33 +1841,9 @@ export class ExpressionEvaluationService {
         return await evaluator.evaluateAsync(
           expr.celExpression,
           celContext,
-          await this.scopeFor(secretBag, location, redactor),
+          this.scopeFor(secretBag, location, redactor),
         );
       }
-      let cel = expr.celExpression;
-      if (containsVaultExpression(cel)) {
-        cel = await this.modelResolver.resolveVaultExpressions(
-          cel,
-          secretBag,
-          {
-            location,
-            redactor,
-            celOptions: {
-              celEvaluator: this.celEvaluator,
-              context: celContext,
-            },
-          },
-        );
-      }
-      const validation = this.celEvaluator.validate(cel);
-      if (!validation.valid) {
-        if (containsVaultExpression(expr.celExpression)) {
-          getLogger(["swamp", "expressions"])
-            .warn`Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`;
-        }
-        return expr.raw;
-      }
-      return await this.celEvaluator.evaluateAsync(cel, celContext);
     };
 
     const values = new Map<string, unknown>();

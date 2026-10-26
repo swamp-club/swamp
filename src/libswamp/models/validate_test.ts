@@ -40,8 +40,6 @@ import {
   defineModel,
   type ModelDefinition,
 } from "../../domain/models/model.ts";
-import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
-import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -648,7 +646,7 @@ Deno.test("modelValidate all with include that accepts nothing reports no models
 });
 
 Deno.test(
-  "createModelValidateDeps: a typed registry reports Secret usage with the definition file and location, and an untyped one does not",
+  "createModelValidateDeps: reports Secret usage with the definition file and location by default",
   async () => {
     await withTempDir(async (dir) => {
       const type = ModelType.create("test/typed-validate");
@@ -673,13 +671,7 @@ Deno.test(
       try {
         const typed = createModelValidateDeps(
           dir,
-          {
-            createSensitiveValues: () =>
-              new RunSensitiveValues(
-                undefined,
-                new SecretBagRegistry({ typedSecrets: true }),
-              ),
-          },
+          {},
           undefined,
           new FileSystemUnifiedDataRepository(dir, undefined, store),
           store,
@@ -701,19 +693,38 @@ Deno.test(
           `${join(dir, "models")}`,
         );
         assertStringIncludes(usage?.error ?? "", "globalArguments.token:1:1");
-
-        const untyped = createModelValidateDeps(
-          dir,
-          undefined,
-          undefined,
-          new FileSystemUnifiedDataRepository(dir, undefined, store),
-          store,
-        );
-        const plain = await untyped.validateModel(definition, modelDef, type);
-        assertEquals(
-          plain.results.some((r) => r.name === "Secret usage"),
-          false,
-        );
+        for (
+          const [value, passed] of [
+            ['prefix:${{ {"token": vault.get("default", "token")} }}', false],
+            ['${{ [vault.get("default", "token")] }} suffix', false],
+            ['${{ {"token": vault.get("default", "token")} }}', true],
+            ['prefix:${{ vault.get("default", "token") }}', true],
+          ] as const
+        ) {
+          const interpolated = Definition.create({
+            name: "interpolated",
+            globalArguments: { token: value },
+            methods: { create: { arguments: { env: { TOKEN: value } } } },
+          });
+          const outcome = await typed.validateModel(
+            interpolated,
+            modelDef,
+            type,
+          );
+          const usage = outcome.results.find((r) => r.name === "Secret usage");
+          assertEquals(usage?.passed, passed, value);
+          if (!passed) {
+            assertStringIncludes(
+              usage?.error ?? "",
+              "secret_operation_unsupported",
+            );
+            assertStringIncludes(usage?.error ?? "", "globalArguments.token:");
+            assertStringIncludes(
+              usage?.error ?? "",
+              "methods.create.arguments.env.TOKEN:",
+            );
+          }
+        }
       } finally {
         store.close();
       }

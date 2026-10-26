@@ -80,6 +80,35 @@ export class InvalidExpressionError extends ExpressionError {
   }
 }
 
+/** A missing run input or environment binding, without a value-bearing cause. */
+export class UnboundExpressionError extends InvalidExpressionError {
+  constructor(message: string, expression: string) {
+    super(message, expression);
+    this.name = "UnboundExpressionError";
+  }
+}
+
+/**
+ * Upstream data that does not exist yet: a model reference with no resource
+ * or file data, or a non-optional select on a data lookup that found no
+ * record. Like an absent binding, it is a gap a later run fills, so
+ * validation leaves the expression as its stored text.
+ */
+export class MissingModelDataError extends InvalidExpressionError {
+  constructor(
+    message: string,
+    expression: string,
+    path?: string,
+    cause?: Error,
+  ) {
+    super(message, expression, path, cause);
+    this.name = "MissingModelDataError";
+    // The gap is not an invalid expression, so the message carries no such
+    // prefix: it names the model or lookup that has no data.
+    this.message = message;
+  }
+}
+
 /**
  * Error thrown when a method is about to run with an argument that still holds
  * an expression whose evaluation failed. Carries the original evaluation error
@@ -124,6 +153,23 @@ export type SecretRefusalCode =
   | typeof SECRET_OPERATION_UNSUPPORTED
   | typeof SECRET_DESTINATION_REFUSED
   | typeof SECRET_REFERENCE_INVALID;
+
+/** Keeps a secret refusal's code through evaluation and transport wrappers. */
+export function secretRefusalCode(
+  error: unknown,
+): SecretRefusalCode | undefined {
+  const seen = new Set<unknown>();
+  while (typeof error === "object" && error !== null && !seen.has(error)) {
+    seen.add(error);
+    const { code, cause } = error as { code?: unknown; cause?: unknown };
+    if (
+      code === SECRET_OPERATION_UNSUPPORTED ||
+      code === SECRET_DESTINATION_REFUSED || code === SECRET_REFERENCE_INVALID
+    ) return code;
+    error = cause;
+  }
+  return undefined;
+}
 
 /**
  * An expression refused an operation on a secret

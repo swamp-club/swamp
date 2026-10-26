@@ -45,9 +45,9 @@ import {
   type ModelDefinition,
 } from "../src/domain/models/model.ts";
 import { ModelInvocationService } from "../src/domain/models/model_invocation_service.ts";
+import { shellModel } from "../src/domain/models/command/shell/shell_model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../src/domain/secrets/persisted_sensitive_form.ts";
-import { RunSensitiveValues } from "../src/domain/secrets/run_sensitive_values.ts";
 import { SecretRedactor } from "../src/domain/secrets/secret_redactor.ts";
 import {
   RunVaultAccess,
@@ -122,8 +122,7 @@ interface Fixture {
   stored: { reference: string; key: string; password: string; token: string };
   received: Received[];
   checked: Checked[];
-  typedValues: () => RunSensitiveValues;
-  runDeps: (typed: boolean) => ModelMethodRunDeps;
+  runDeps: () => ModelMethodRunDeps;
   save: (definition: Definition) => Promise<Definition>;
   access: <T>(fn: () => Promise<T>, vaults?: string[]) => Promise<T>;
   /** Every unique canary value, the password and the token: nothing on disk may hold one. */
@@ -266,12 +265,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     const reference = storedContent.password;
     const key = /vault\.get\('[^']+', '([^']+)'\)/.exec(reference)![1];
 
-    const typedValues = () =>
-      new RunSensitiveValues(
-        redactor,
-        new SecretBagRegistry({ typedSecrets: true }),
-      );
-    const runDeps = (typed: boolean): ModelMethodRunDeps => ({
+    const runDeps = (): ModelMethodRunDeps => ({
       repoDir,
       lookupDefinition: (idOrName) =>
         definitionRepo.findByNameGlobal(idOrName).then((found) =>
@@ -315,15 +309,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
           redactor,
           cleanup: () => {},
         }),
-      ...(typed
-        ? {
-          createSensitiveValues: (r: SecretRedactor) =>
-            new RunSensitiveValues(
-              r,
-              new SecretBagRegistry({ typedSecrets: true }),
-            ),
-        }
-        : {}),
+      ...({}),
     });
     const fixture: Fixture = {
       repoDir,
@@ -343,7 +329,6 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       stored: { reference, key, password, token },
       received,
       checked,
-      typedValues,
       runDeps,
       save: async (definition) => {
         await definitionRepo.save(type, definition);
@@ -398,7 +383,7 @@ function assertValueFree(f: Fixture, text: string, what: string): void {
   }
 }
 
-Deno.test("typed local behavior: evaluate writes a reference-safe cache with zero loads, and the untyped cache holds the same references", async () => {
+Deno.test("typed local behavior: evaluate writes a reference-safe cache with zero loads", async () => {
   await withFixture(async (f) => {
     const app = await f.save(Definition.create({
       name: "app",
@@ -419,7 +404,6 @@ Deno.test("typed local behavior: evaluate writes a reference-safe cache with zer
       f.definitionRepo,
       undefined,
       undefined,
-      f.typedValues,
     );
     const events = await collect<ModelEvaluateEvent>(
       modelEvaluate(createLibSwampContext(), deps, { modelIdOrName: "app" }),
@@ -456,27 +440,6 @@ Deno.test("typed local behavior: evaluate writes a reference-safe cache with zer
       "the evaluated cache",
     );
     await assertNoPlaintextOnDisk(f);
-
-    // The untyped path reads the value eagerly and writes the same cache.
-    const untyped = createModelEvaluateDeps(
-      f.repoDir,
-      undefined,
-      f.dataRepo,
-      f.catalog,
-      f.definitionRepo,
-    );
-    await collect<ModelEvaluateEvent>(
-      modelEvaluate(createLibSwampContext(), untyped, {
-        modelIdOrName: "app",
-      }),
-    );
-    const plain = await f.evaluatedDefRepo.findByNameWithProvenance(
-      f.type,
-      "app",
-    );
-    assertEquals(plain?.definition.globalArguments, args);
-    assert(f.counting.reads.length > 0);
-    await assertNoPlaintextOnDisk(f);
   });
 });
 
@@ -502,7 +465,7 @@ Deno.test("typed local behavior: run delivers the exact value of every canary cl
       }));
       const before = f.counting.readsOf(keyOf(i));
       const events = await collect<ModelMethodRunEvent>(
-        modelMethodRun(createLibSwampContext(), f.runDeps(true), {
+        modelMethodRun(createLibSwampContext(), f.runDeps(), {
           modelIdOrName: name,
           methodName: METHOD,
           inputs: {},
@@ -529,7 +492,7 @@ Deno.test("typed local behavior: run delivers the exact value of every canary cl
     // loads again.
     const before = f.counting.readsOf(keyOf(0));
     await collect<ModelMethodRunEvent>(
-      modelMethodRun(createLibSwampContext(), f.runDeps(true), {
+      modelMethodRun(createLibSwampContext(), f.runDeps(), {
         modelIdOrName: "svc-0",
         methodName: METHOD,
         inputs: {},
@@ -538,20 +501,6 @@ Deno.test("typed local behavior: run delivers the exact value of every canary cl
     );
     assertEquals(f.counting.readsOf(keyOf(0)) - before, 2);
     assertEquals(f.received.at(-1)!.args.password, f.canaries[0].value);
-    await assertNoPlaintextOnDisk(f);
-
-    // The untyped path delivers the same values.
-    f.received.length = 0;
-    await collect<ModelMethodRunEvent>(
-      modelMethodRun(createLibSwampContext(), f.runDeps(false), {
-        modelIdOrName: "svc-1",
-        methodName: METHOD,
-        inputs: {},
-        lastEvaluated: false,
-      }),
-    );
-    assertEquals(f.received.at(-1)!.args.password, f.canaries[1].value);
-    assertEquals(f.received.at(-1)!.args.note, f.stored.password);
     await assertNoPlaintextOnDisk(f);
   });
 });
@@ -573,9 +522,9 @@ Deno.test("typed local behavior: --last-evaluated replays the cache as reference
         },
       },
     }));
-    const replay = (typed: boolean, lastEvaluated: boolean) =>
+    const replay = (lastEvaluated: boolean) =>
       collect<ModelMethodRunEvent>(
-        modelMethodRun(createLibSwampContext(), f.runDeps(typed), {
+        modelMethodRun(createLibSwampContext(), f.runDeps(), {
           modelIdOrName: "replay",
           methodName: METHOD,
           inputs: {},
@@ -583,7 +532,7 @@ Deno.test("typed local behavior: --last-evaluated replays the cache as reference
         }),
       );
     // A fresh typed run writes the cache: references, never values.
-    const fresh = await replay(true, false);
+    const fresh = await replay(false);
     assertEquals(fresh.some((e) => e.kind === "error"), false);
     assertEquals(f.received.at(-1)!.args.note, `n-${f.stored.password}`);
     const cached = await f.evaluatedDefRepo.findByNameWithProvenance(
@@ -602,7 +551,7 @@ Deno.test("typed local behavior: --last-evaluated replays the cache as reference
 
     const storedBefore = f.counting.readsOf(f.stored.key);
     const canaryBefore = f.counting.readsOf(keyOf(0));
-    const events = await replay(true, true);
+    const events = await replay(true);
     const error = events.find((e) => e.kind === "error");
     assertEquals(error, undefined, JSON.stringify(error));
     // The replay restored references and loaded the current value at
@@ -616,14 +565,6 @@ Deno.test("typed local behavior: --last-evaluated replays the cache as reference
     assertEquals(f.counting.readsOf(keyOf(0)) - canaryBefore, 2);
     assertStringIncludes(String(last.unresolved?.note), "__SWAMP_VSEC_");
     assertValueFree(f, JSON.stringify(events), "replay events");
-    await assertNoPlaintextOnDisk(f);
-
-    // The untyped replay of the same cache restores the values eagerly and
-    // delivers the same.
-    const untyped = await replay(false, true);
-    assertEquals(untyped.some((e) => e.kind === "error"), false);
-    assertEquals(f.received.at(-1)!.args.note, `n-${rotated}`);
-    assertEquals(f.received.at(-1)!.globalArgs.token, rotated);
     await assertNoPlaintextOnDisk(f);
   });
 });
@@ -653,7 +594,7 @@ Deno.test("typed local behavior: context.runModel rechecks under its own registr
       evaluationService: f.evaluationService,
       repoDir: f.repoDir,
     });
-    const callerRegistry = new SecretBagRegistry({ typedSecrets: true });
+    const callerRegistry = new SecretBagRegistry();
     const callerBag = new VaultSecretBag(callerRegistry);
     const callerSentinel = callerBag.addSecret(
       { vaultName: VAULT, key: keyOf(0) },
@@ -773,7 +714,7 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     }));
     const deps = createModelValidateDeps(
       f.repoDir,
-      { method: METHOD, createSensitiveValues: f.typedValues },
+      { method: METHOD },
       undefined,
       f.dataRepo,
       f.catalog,
@@ -819,7 +760,9 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     const checksBefore = f.checked.length;
     const before4 = f.counting.readsOf(keyOf(4));
     const refused = await deps.validateModel(refusedDef, f.model, f.type);
-    const check = refused.results.find((r) => r.name === "Check: see-args");
+    const check = refused.results.find((r) =>
+      r.name === "Check argument delivery"
+    );
     assertEquals(check?.passed, false);
     assertStringIncludes(check?.error ?? "", "secret_destination_refused");
     assertStringIncludes(check?.error ?? "", "region");
@@ -829,7 +772,7 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     assertValueFree(f, JSON.stringify(refused), "the refusal");
 
     // What validate cannot evaluate, an input with no default, is left as
-    // its stored text for the check, as the untyped path leaves it; nothing
+    // its stored text for the check; nothing
     // is read. Another method's expressions are outside this validation and
     // never evaluated.
     const before6 = f.counting.readsOf(keyOf(6));
@@ -875,7 +818,7 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     const checksBeforeMissing = f.checked.length;
     const missing = await deps.validateModel(missingDef, f.model, f.type);
     const missingCheck = missing.results.find((r) =>
-      r.name === "Check: see-args"
+      r.name === "Check argument delivery"
     );
     assertEquals(missingCheck?.passed, false);
     assertStringIncludes(missingCheck?.error ?? "", "no-such-key");
@@ -886,11 +829,9 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
     // before any check runs and with no read.
     const before9 = f.counting.readsOf(keyOf(9));
     const aliased = await deps.validateModel(aliasedDef, f.model, f.type);
-    const aliasedCheck = aliased.results.find((r) =>
-      r.name === "Check: see-args"
-    );
+    const aliasedCheck = aliased.results.find((r) => r.name === "Secret usage");
     assertEquals(aliasedCheck?.passed, false);
-    assertStringIncludes(aliasedCheck?.error ?? "", "direct vault.get");
+    assertStringIncludes(aliasedCheck?.error ?? "", "directly");
     assertEquals(f.checked.length, checksBeforeMissing);
     assertEquals(f.counting.readsOf(keyOf(9)) - before9, 0);
 
@@ -947,7 +888,7 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       }));
       const outcome = await deps.validateModel(ordered, f.model, f.type);
       const orderedCheck = outcome.results.find((r) =>
-        r.name === "Check: see-args"
+        r.name === "Check argument delivery"
       );
       assertEquals(orderedCheck?.passed, false, name);
       assertStringIncludes(
@@ -980,7 +921,7 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       f.type,
     );
     const besideMissingCheck = besideMissing.results.find((r) =>
-      r.name === "Check: see-args"
+      r.name === "Check argument delivery"
     );
     assertEquals(besideMissingCheck?.passed, false);
     assertStringIncludes(
@@ -1014,13 +955,13 @@ Deno.test("typed local behavior: a run resolves the global arguments and the inv
         },
       },
     }));
-    for (const typed of [true, false]) {
+    {
       f.received.length = 0;
       const before4 = f.counting.readsOf(keyOf(4));
       const before5 = f.counting.readsOf(keyOf(5));
       const beforeMissing = f.counting.readsOf("no-such-key");
       const events = await collect<ModelMethodRunEvent>(
-        modelMethodRun(createLibSwampContext(), f.runDeps(typed), {
+        modelMethodRun(createLibSwampContext(), f.runDeps(), {
           modelIdOrName: "two-methods",
           methodName: METHOD,
           inputs: {},
@@ -1028,16 +969,16 @@ Deno.test("typed local behavior: a run resolves the global arguments and the inv
         }),
       );
       const error = events.find((e) => e.kind === "error");
-      assertEquals(error, undefined, `${typed}: ${JSON.stringify(error)}`);
+      assertEquals(error, undefined, `${true}: ${JSON.stringify(error)}`);
       const last = f.received.at(-1)!;
-      assertEquals(last.args.note, f.canaries[5].value, String(typed));
-      assertEquals(last.globalArgs.token, f.stored.token, String(typed));
-      assert(f.counting.readsOf(keyOf(5)) > before5, String(typed));
-      assertEquals(f.counting.readsOf(keyOf(4)) - before4, 0, String(typed));
+      assertEquals(last.args.note, f.canaries[5].value, String(true));
+      assertEquals(last.globalArgs.token, f.stored.token, String(true));
+      assert(f.counting.readsOf(keyOf(5)) > before5, String(true));
+      assertEquals(f.counting.readsOf(keyOf(4)) - before4, 0, String(true));
       assertEquals(
         f.counting.readsOf("no-such-key") - beforeMissing,
         0,
-        String(typed),
+        String(true),
       );
     }
     await assertNoPlaintextOnDisk(f);
@@ -1046,9 +987,9 @@ Deno.test("typed local behavior: a run resolves the global arguments and the inv
 
 Deno.test("typed local behavior: model.method inputs arrive at the trusted method as values, once per reference per attempt", async () => {
   await withFixture(async (f) => {
-    const registry = new SecretBagRegistry({ typedSecrets: true });
+    const registry = new SecretBagRegistry();
     const bag = new VaultSecretBag(registry);
-    const evaluator = new CelEvaluator({ typedSecrets: true });
+    const evaluator = new CelEvaluator();
     const execution = new DefaultMethodExecutionService();
     const scope: EvaluationScope = {
       secretBag: bag,
@@ -1130,4 +1071,434 @@ Deno.test("typed local behavior: model.method inputs arrive at the trusted metho
     assertEquals(f.counting.readsOf(keyOf(5)) - before, 2);
     await assertNoPlaintextOnDisk(f);
   });
+});
+
+Deno.test("default validation: tagged data reaches check delivery and only missing bindings stay unevaluated", async () => {
+  await withFixture(async (f) => {
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    const stored = await f.save(Definition.create({
+      name: "check-data",
+      type: f.type.normalized,
+      globalArguments: {
+        token: "${{ data.latest('db', 'main').attributes.password }}",
+      },
+      methods: {
+        [METHOD]: {
+          arguments: {
+            note: "${{ data.latest('db', 'main').attributes.password }}",
+          },
+        },
+      },
+    }));
+    const before = f.counting.reads.length;
+    const result = await deps.validateModel(stored, f.model, f.type);
+    assertEquals(
+      result.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(result),
+    );
+    assertStringIncludes(
+      String(f.checked.at(-1)?.unresolved?.note),
+      "__SWAMP_VSEC_",
+    );
+    assertEquals(f.checked.at(-1)?.loaded, true);
+    assertEquals(f.counting.reads.length - before, 1);
+    assertValueFree(f, JSON.stringify(result), "data validation");
+
+    const executed = f.checked.length;
+    for (
+      const [index, expression] of [
+        "env.PATH + 1",
+        "env.PATH + missingRoot.field",
+        "vault.get(123, 'canary-0')",
+        "vault.get('prod', )",
+      ].entries()
+    ) {
+      const invalid = await f.save(Definition.create({
+        name: `invalid-check-${index}`,
+        type: f.type.normalized,
+        globalArguments: { token: "${{ " + expression + " }}" },
+        methods: { [METHOD]: { arguments: {} } },
+      }));
+      const invalidResult = await deps.validateModel(invalid, f.model, f.type);
+      assertEquals(
+        invalidResult.results.some((r) => !r.passed),
+        true,
+        expression,
+      );
+      assertEquals(f.checked.length, executed, expression);
+      assertValueFree(f, JSON.stringify(invalidResult), "invalid validation");
+    }
+  });
+});
+
+Deno.test("default validation: a global that reads a model with no data yet stays as its stored text and the checks still run", async () => {
+  await withFixture(async (f) => {
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    // The upstream definition exists but has never run, so it has no
+    // resource data: the gap a later run fills, not an invalid expression.
+    await f.save(Definition.create({
+      name: "upstream",
+      type: f.type.normalized,
+      globalArguments: {},
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const expression =
+      "${{ model.upstream.resource.state.main.attributes.id }}";
+    const downstream = await f.save(Definition.create({
+      name: "downstream",
+      type: f.type.normalized,
+      globalArguments: { token: expression, region: "us-east-1" },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const checksBefore = f.checked.length;
+    const result = await deps.validateModel(downstream, f.model, f.type);
+    assertEquals(
+      result.results.find((r) => r.name === "Check argument delivery"),
+      undefined,
+      JSON.stringify(result.results),
+    );
+    assertEquals(
+      result.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(result.results),
+    );
+    assertEquals(f.checked.length, checksBefore + 1);
+    assertEquals(f.checked.at(-1)!.globalArgs.token, expression);
+    assertEquals(f.checked.at(-1)!.globalArgs.region, "us-east-1");
+
+    // The recommended data.latest form of the same gap degrades the same
+    // way: the lookup finds no record, and the select on it stays as text.
+    const viaData = "${{ data.latest('upstream', 'main').attributes.id }}";
+    const latest = await f.save(Definition.create({
+      name: "downstream-latest",
+      type: f.type.normalized,
+      globalArguments: { token: viaData },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const latestResult = await deps.validateModel(latest, f.model, f.type);
+    assertEquals(
+      latestResult.results.find((r) => r.name === "Check argument delivery"),
+      undefined,
+      JSON.stringify(latestResult.results),
+    );
+    assertEquals(
+      latestResult.results.find((r) => r.name === "Check: see-args")?.passed,
+      true,
+      JSON.stringify(latestResult.results),
+    );
+    assertEquals(f.checked.length, checksBefore + 2);
+    assertEquals(f.checked.at(-1)!.globalArgs.token, viaData);
+
+    const lookup = "data.latest('upstream', 'main')";
+    for (
+      const [index, receiver] of [
+        `[${lookup}][0]`,
+        `{'record': ${lookup}}.record`,
+        `(true ? ${lookup} : {})`,
+        `{'0': {}, 0: ${lookup}}['0']`,
+      ].entries()
+    ) {
+      const token = `\${{ ${receiver}.attributes.id }}`;
+      const wrapped = await f.save(Definition.create({
+        name: `downstream-wrapped-${index}`,
+        type: f.type.normalized,
+        globalArguments: { token },
+        methods: { [METHOD]: { arguments: {} } },
+      }));
+      const wrappedResult = await deps.validateModel(wrapped, f.model, f.type);
+      assertEquals(
+        wrappedResult.results.find((r) => r.name === "Check argument delivery"),
+        undefined,
+        JSON.stringify(wrappedResult.results),
+      );
+      assertEquals(f.checked.length, checksBefore + 3 + index);
+      assertEquals(f.checked.at(-1)!.globalArgs.token, token);
+    }
+
+    // The gap is the select on the lookup itself. A miss elsewhere in the
+    // expression does not excuse an invalid select on something else, which
+    // fails the checks whether or not the unrelated record exists.
+    for (
+      const [index, receiver] of [
+        `[${lookup}, {}][1]`,
+        `{'key': ${lookup}, 'key': {} }.key`,
+        `{'0': ${lookup}, 0: {} }['0']`,
+      ].entries()
+    ) {
+      const unrelated = await f.save(Definition.create({
+        name: `downstream-unrelated-miss-${index}`,
+        type: f.type.normalized,
+        globalArguments: { token: `\${{ ${receiver}.attributes }}` },
+        methods: { [METHOD]: { arguments: {} } },
+      }));
+      const unrelatedResult = await deps.validateModel(
+        unrelated,
+        f.model,
+        f.type,
+      );
+      assertEquals(
+        unrelatedResult.results.some((r) => !r.passed),
+        true,
+        JSON.stringify(unrelatedResult.results),
+      );
+      assertEquals(f.checked.length, checksBefore + 6);
+    }
+  });
+});
+
+Deno.test("default validation: an index into a set read with no data yet stays as its stored text and the checks still run", async () => {
+  await withFixture(async (f) => {
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    await f.save(Definition.create({
+      name: "upstream",
+      type: f.type.normalized,
+      globalArguments: {},
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    for (
+      const [index, read] of [
+        "data.findBySpec('upstream', 'state')[0]",
+        "data.findByTag('owner', 'nobody-3735')[0]",
+        "data.query('modelName == \"upstream\"')[0]",
+        "[data.findBySpec('upstream', 'state')][0][0]",
+      ].entries()
+    ) {
+      const token = `\${{ ${read}.attributes.id }}`;
+      const downstream = await f.save(Definition.create({
+        name: `downstream-set-read-${index}`,
+        type: f.type.normalized,
+        globalArguments: { token },
+        methods: { [METHOD]: { arguments: {} } },
+      }));
+      const checksBefore = f.checked.length;
+      const result = await deps.validateModel(downstream, f.model, f.type);
+      assertEquals(
+        result.results.find((r) => r.name === "Check argument delivery"),
+        undefined,
+        `${read}: ${JSON.stringify(result.results)}`,
+      );
+      assertEquals(f.checked.length, checksBefore + 1, read);
+      assertEquals(f.checked.at(-1)!.globalArgs.token, token, read);
+    }
+  });
+});
+
+Deno.test("typed local behavior: description prose documenting vault, env or data syntax is neither checked, read nor failed on by validate or run", async () => {
+  await withFixture(async (f) => {
+    const unsupported = "Example: ${{ dyn(vault).get('prod', 'canary-3') }}";
+    const missing = "Example: ${{ vault.get('prod', 'no-such-key') }}";
+    const unsetEnv = "Example: ${{ env.SWAMP_NO_SUCH_VARIABLE_3735 }}";
+    const dataMisuse =
+      "Example: ${{ size(data.latest('db', 'main').attributes.password) }}";
+    const prose = await f.save(Definition.create({
+      name: "documented",
+      type: f.type.normalized,
+      description: `${unsupported} ${missing} ${dataMisuse}`,
+      inputs: {
+        type: "object",
+        description: unsetEnv,
+        properties: {
+          later: { type: "string", description: missing },
+          nested: {
+            type: "object",
+            properties: { deep: { type: "string", description: unsupported } },
+          },
+          list: {
+            type: "array",
+            items: { type: "string", description: unsupported },
+          },
+        },
+      },
+      globalArguments: {},
+      methods: { [METHOD]: { arguments: { note: "plain" } } },
+    }));
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    const beforeMissing = f.counting.readsOf("no-such-key");
+    const beforeAliased = f.counting.readsOf(keyOf(3));
+    const result = await deps.validateModel(prose, f.model, f.type);
+    assertEquals(
+      result.results.filter((r) => !r.passed),
+      [],
+      JSON.stringify(result.results),
+    );
+
+    f.received.length = 0;
+    const events = await collect<ModelMethodRunEvent>(
+      modelMethodRun(createLibSwampContext(), f.runDeps(), {
+        modelIdOrName: "documented",
+        methodName: METHOD,
+        inputs: {},
+        lastEvaluated: false,
+      }),
+    );
+    const error = events.find((e) => e.kind === "error");
+    assertEquals(error, undefined, JSON.stringify(error));
+    assertEquals(f.received.at(-1)!.args.note, "plain");
+    assertEquals(f.counting.readsOf("no-such-key") - beforeMissing, 0);
+    assertEquals(f.counting.readsOf(keyOf(3)) - beforeAliased, 0);
+
+    // A schema default is a value the run delivers, so a description key
+    // inside one is still checked.
+    const defaulted = await f.save(Definition.create({
+      name: "documented-default",
+      type: f.type.normalized,
+      inputs: {
+        type: "object",
+        properties: {
+          cfg: { type: "object", default: { description: unsupported } },
+        },
+      },
+      globalArguments: { cfg: "${{ inputs.cfg }}" },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const defaultedResult = await deps.validateModel(
+      defaulted,
+      f.model,
+      f.type,
+    );
+    assertStringIncludes(
+      defaultedResult.results.find((r) => !r.passed)?.error ?? "",
+      "Call vault.get(vaultName, secretKey) directly",
+      JSON.stringify(defaultedResult.results),
+    );
+
+    // The same text in a delivered argument is checked there.
+    const container = "Example: ${{ data.latest('db', 'main').attributes }}";
+    const delivered = await f.save(Definition.create({
+      name: "documented-and-delivered",
+      type: f.type.normalized,
+      description: container,
+      globalArguments: { note: container },
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    const deliveredResult = await deps.validateModel(
+      delivered,
+      f.model,
+      f.type,
+    );
+    assertStringIncludes(
+      deliveredResult.results.find((r) => !r.passed)?.error ?? "",
+      "secret_operation_unsupported",
+      JSON.stringify(deliveredResult.results),
+    );
+  });
+});
+
+Deno.test({
+  name:
+    "typed local behavior: legacy evaluate then replay caches retain data origin and refuse a quoted heredoc",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixture(async (f) => {
+      const reference = f.stored.reference;
+      const command = `cat <<'EOF'\n${reference}\nEOF`;
+      const definition = Definition.create({
+        name: "legacy-heredoc",
+        methods: { execute: { arguments: { run: command } } },
+      });
+      const path = "methods.execute.arguments.run";
+      const start = command.indexOf(reference);
+      const provenance = ProvenanceMap.authored().withRanges(path, [[
+        start,
+        start + f.stored.password.length,
+      ]]);
+      const persistedProvenance = ProvenanceMap.authored().withRanges(path, [[
+        start,
+        start + reference.length,
+      ]]);
+      await f.definitionRepo.save(shellModel.type, definition);
+      await f.evaluatedDefRepo.save(
+        shellModel.type,
+        definition,
+        provenance,
+        new Set(["${{ data.latest('db', 'main').attributes.password }}"]),
+        [],
+        [{
+          path: ["methods", "execute", "arguments", "run"],
+          occurrence: 0,
+          vaultName: VAULT,
+          key: f.stored.key,
+          encoding: "raw",
+          dataOrigin: false,
+        }],
+        [],
+        persistedProvenance,
+      );
+      const cachePath = f.evaluatedDefRepo.getPath(
+        shellModel.type,
+        definition.id,
+      );
+      const text = await Deno.readTextFile(cachePath);
+      await Deno.writeTextFile(
+        cachePath,
+        text.replace(
+          `sensitiveFormat: ${SENSITIVE_FORMAT_VERSION}`,
+          "sensitiveFormat: 2",
+        ),
+      );
+      const deps: ModelMethodRunDeps = {
+        ...f.runDeps(),
+        lookupDefinition: () =>
+          Promise.resolve({ definition, type: shellModel.type }),
+        getModelDef: () => ({
+          ...shellModel,
+          methods: {
+            execute: {
+              ...shellModel.methods.execute,
+              execute: () => {
+                throw new Error("A refused command must never execute");
+              },
+            },
+          },
+        }),
+      };
+      const events = await f.access(() =>
+        collect(modelMethodRun(createLibSwampContext(), deps, {
+          modelIdOrName: definition.name,
+          methodName: "execute",
+          inputs: {},
+          lastEvaluated: true,
+        }))
+      );
+      const errors = events.filter((event) => event.kind === "error");
+      assertEquals(errors.length, 1);
+      assertEquals(errors[0].error.code, "secret_destination_refused");
+      assertStringIncludes(
+        errors[0].error.message,
+        "here-document with a quoted delimiter",
+      );
+      assertEquals(events.some((event) => event.kind === "completed"), false);
+      assertEquals(f.counting.reads, []);
+      await assertNoPlaintextOnDisk(f);
+    });
+  },
 });

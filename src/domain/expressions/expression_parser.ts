@@ -166,6 +166,7 @@ function extractExpressionsRecursive(
 ): void {
   if (skipPath?.(path)) return;
   if (typeof data === "string") {
+    const embedded = matchSingleExpression(data) === null;
     for (const span of scanExpressions(data)) {
       locations.push({
         path,
@@ -173,6 +174,7 @@ function extractExpressionsRecursive(
         celExpression: span.inner,
         start: span.start,
         end: span.end,
+        ...(embedded ? { embedded: true } : {}),
       });
     }
   } else if (Array.isArray(data)) {
@@ -193,13 +195,14 @@ function extractExpressionsRecursive(
 
 /**
  * Rewrites an evaluated result as it is spliced at `path`: `whole` receives a
- * whole-field result, `embedded` the text a result renders to inside a larger
- * string. Only spliced results pass through it, never the authored text
+ * whole-field result; `embedded` receives rendered text and the original value
+ * so policies can distinguish containers from strings. Only spliced results
+ * pass through it, never the authored text
  * around them.
  */
 export interface SpliceSanitizer {
   whole(value: unknown, path: string): unknown;
-  embedded(text: string, path: string): string;
+  embedded(text: string, path: string, value?: unknown): string;
   /** The real value of a sentinel this sanitizer writes, for provenance. */
   resolve?: SentinelResolver;
 }
@@ -253,7 +256,7 @@ function replaceExpressionsRecursive(
       const rendered = typeof value === "object"
         ? JSON.stringify(value, null, 2)
         : String(value);
-      return sanitizer ? sanitizer.embedded(rendered, path) : rendered;
+      return sanitizer ? sanitizer.embedded(rendered, path, value) : rendered;
     });
   } else if (Array.isArray(data)) {
     return data.map((item, index) =>
@@ -324,8 +327,17 @@ export function replaceExpressionsTracked(
   originOf: (raw: string) => SpliceOrigin,
   skipPath?: (path: string) => boolean,
   sanitizer?: SpliceSanitizer,
+  /** A lenient definition pass records a failed splice and keeps its source. */
+  onSpliceFailure?: (raw: string, error: unknown) => void,
 ): TrackedSplice {
-  const state = { provenance, originOf, skipPath, sanitizer, values };
+  const state = {
+    provenance,
+    originOf,
+    skipPath,
+    sanitizer,
+    values,
+    onSpliceFailure,
+  };
   // Each visited path is written once and paths never nest, so the changes
   // are collected and applied in one pass.
   const changes: [string, ProvenanceMap][] = [];
@@ -341,6 +353,7 @@ interface TrackedState {
   skipPath?: (path: string) => boolean;
   sanitizer?: SpliceSanitizer;
   values: Map<string, unknown>;
+  onSpliceFailure?: (raw: string, error: unknown) => void;
 }
 
 function replaceTracked(
@@ -361,9 +374,16 @@ function replaceTracked(
       if (!state.values.has(single.raw)) return data;
       const evaluated = state.values.get(single.raw);
       if (evaluated === undefined) return data;
-      const value = state.sanitizer
-        ? state.sanitizer.whole(evaluated, path)
-        : evaluated;
+      let value: unknown;
+      try {
+        value = state.sanitizer
+          ? state.sanitizer.whole(evaluated, path)
+          : evaluated;
+      } catch (error) {
+        if (!state.onSpliceFailure) throw error;
+        state.onSpliceFailure(single.raw, error);
+        return data;
+      }
       const origin = state.originOf(single.raw);
       update(
         path,
@@ -396,12 +416,21 @@ function replaceTracked(
       }
       const value = state.values.get(span.raw);
       if (value === null || value === undefined) continue;
-      const rendered = typeof value === "object"
-        ? JSON.stringify(value, null, 2)
-        : String(value);
-      const text = state.sanitizer
-        ? state.sanitizer.embedded(rendered, path)
-        : rendered;
+      let rendered: string;
+      let text: string;
+      try {
+        rendered = typeof value === "object"
+          ? JSON.stringify(value, null, 2)
+          : String(value);
+        text = state.sanitizer
+          ? state.sanitizer.embedded(rendered, path, value)
+          : rendered;
+      } catch (error) {
+        if (!state.onSpliceFailure) throw error;
+        state.onSpliceFailure(span.raw, error);
+        copy(span.start, span.end);
+        continue;
+      }
       const origin = state.originOf(span.raw);
       for (
         const [s, e] of embeddedRanges(

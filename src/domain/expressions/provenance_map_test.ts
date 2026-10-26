@@ -309,7 +309,7 @@ Deno.test("replaceExpressionsTracked: a sanitizer's clone keeps data positional 
       authoredRaws: new Set([token]),
     }),
     undefined,
-    sensitiveSpliceSanitizer(values, bag),
+    sensitiveSpliceSanitizer(bag),
   );
   assertEquals(result.provenance.isWholeDataAt("v.b"), true);
   assertEquals(result.provenance.hasDataAtOrBelow("v.a"), false);

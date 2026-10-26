@@ -33,6 +33,7 @@ import { UserError } from "../../domain/errors.ts";
 import {
   InvalidExpressionError,
   SecretRefusedError,
+  UnboundExpressionError,
 } from "../../domain/expressions/errors.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
@@ -87,7 +88,7 @@ async function withVault(
         redactor: { addSecret: (value) => redacted.push(value) },
       },
     };
-    const evaluator = new CelEvaluator({ typedSecrets: true });
+    const evaluator = new CelEvaluator();
     await fn({
       evaluator,
       bag,
@@ -115,6 +116,31 @@ Deno.test("CelEvaluator vault.get: returns a registered reference, never a value
     assertEquals(f.ctx.getOperationsByMethod("get"), []);
     assertEquals(f.ctx.getOperationsByMethod("has").length, 1);
     assertEquals(f.redacted, []);
+  });
+});
+
+Deno.test("CelEvaluator vault.get: missing top-level selector bindings are unbound without probing the vault", async () => {
+  await withVault(async (f) => {
+    for (
+      const [selector, unbound] of [
+        ["inputs.key", true],
+        ["env.KEY", true],
+        ["inputs.cfg.key", false],
+        ["other.key", false],
+      ] as const
+    ) {
+      const expression = `vault.get('prod', ${selector})`;
+      const error = await assertRejects(
+        () =>
+          f.evaluate(expression, { inputs: { cfg: {} }, env: {}, other: {} }),
+        InvalidExpressionError,
+      );
+      assertEquals(error instanceof UnboundExpressionError, unbound, selector);
+      assertEquals(error.expression, expression);
+      assertEquals(error.cause, undefined);
+    }
+    assertEquals(f.ctx.getOperationsByMethod("get"), []);
+    assertEquals(f.ctx.getOperationsByMethod("has"), []);
   });
 });
 
@@ -443,5 +469,123 @@ Deno.test("CelEvaluator vault.get: a ternary with a vault.get branch beside a st
       SecretRefusedError,
     );
     assertEquals(error.operation, "Secret == string");
+  });
+});
+
+Deno.test("CelEvaluator: plain and env expressions do not initialize the vault scope", async () => {
+  const evaluator = new CelEvaluator();
+  let scopes = 0;
+  const scope: EvaluationScope = {
+    secretBag: new VaultSecretBag(new SecretBagRegistry()),
+    getVault: () => {
+      scopes++;
+      return Promise.reject(new Error("unavailable vault configuration"));
+    },
+  };
+  const context = { inputs: { x: 2 }, env: { VALUE: "plain" } };
+  const prepared = await evaluator.prepareSynchronousReads(
+    { value: "${{ env.VALUE }}" },
+    context,
+    scope,
+  );
+  assertEquals(evaluator.evaluate("inputs.x + 1", context, prepared), 3);
+  assertEquals(
+    await evaluator.evaluateAsync("env.VALUE", context, scope),
+    "plain",
+  );
+  assertEquals(scopes, 0);
+  await assertRejects(
+    () => evaluator.evaluateAsync("vault.get(v, k)", context, scope),
+    Error,
+    "unavailable vault configuration",
+  );
+  assertEquals(scopes, 1);
+});
+
+Deno.test("CelEvaluator: default compatibility corpus preserves plain expressions and refuses secret observations", async () => {
+  await withVault(async (f) => {
+    const secret = "vault.get(prod, token)";
+    const cases: readonly {
+      expression: string;
+      plain: string;
+      expected: unknown;
+      code?: string;
+    }[] = [
+      {
+        expression: `${secret} == 'x'`,
+        plain: "'x' == 'x'",
+        expected: true,
+        code: "secret_operation_unsupported",
+      },
+      {
+        expression: `size(${secret})`,
+        plain: "size('abc')",
+        expected: 3,
+        code: "secret_operation_unsupported",
+      },
+      {
+        expression: `int(${secret})`,
+        plain: "int('42')",
+        expected: 42,
+        code: "secret_operation_unsupported",
+      },
+      {
+        expression: `string(${secret})`,
+        plain: "string(42)",
+        expected: "42",
+        code: "secret_operation_unsupported",
+      },
+      {
+        expression: `${secret}.contains('x')`,
+        plain: "'abc'.contains('b')",
+        expected: true,
+        code: "secret_operation_unsupported",
+      },
+      {
+        expression: `${secret} in ['x']`,
+        plain: "'x' in ['x']",
+        expected: true,
+        code: "secret_operation_unsupported",
+      },
+      {
+        expression: `${secret} != null && [1] == [1]`,
+        plain: "true && [1] == [1]",
+        expected: true,
+        code: "secret_operation_unsupported",
+      },
+    ];
+    for (const row of cases) {
+      assertEquals(await f.evaluate(row.plain), row.expected, row.plain);
+      if (row.code) {
+        const error = await assertRejects(
+          () => f.evaluate(row.expression),
+          SecretRefusedError,
+        );
+        assertEquals(error.code, row.code, row.expression);
+      } else {
+        assertEquals(
+          await f.evaluate(row.expression),
+          row.expected,
+          row.expression,
+        );
+      }
+    }
+    // type() observes the registered type name, not the value (Section 4.3).
+    await f.evaluate(`type(${secret})`);
+    assertEquals(await f.evaluate(`${secret} == null`), false);
+    assertEquals(await f.evaluate(`${secret} != null`), true);
+    for (
+      const expression of [
+        secret,
+        "vault.get('prod', 'token')",
+        `'prefix-' + ${secret}`,
+      ]
+    ) {
+      const result = await f.evaluate(expression) as string;
+      assertEquals(result.includes("private-canary-3625"), false);
+      assertStringIncludes(result, "__SWAMP_VSEC_");
+    }
+    assertEquals(f.ctx.getOperationsByMethod("get"), []);
+    assertEquals(f.ctx.getOperationsByMethod("has").length, 1);
   });
 });

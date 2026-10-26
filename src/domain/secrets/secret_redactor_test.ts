@@ -146,7 +146,7 @@ Deno.test("SecretRedactor", async (t) => {
 });
 
 Deno.test("SecretRedactor.maskSentinelsOf: masks every sentinel the run issued before any value is registered, and hasSecrets says so", () => {
-  const registry = new SecretBagRegistry({ typedSecrets: true });
+  const registry = new SecretBagRegistry();
   const redactor = new SecretRedactor();
   redactor.maskSentinelsOf(registry);
   // An empty registry masks nothing yet.

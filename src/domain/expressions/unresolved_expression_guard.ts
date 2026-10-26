@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { UnresolvedExpressionError } from "./errors.ts";
+import { secretRefusalCode, UnresolvedExpressionError } from "./errors.ts";
 import { extractExpressions } from "./expression_parser.ts";
 
 /**
@@ -52,6 +52,8 @@ export function assertMethodArgumentsEvaluated(
   for (const expr of extractExpressions(methodArgs, basePath)) {
     const cause = failed.get(expr.raw);
     if (cause) {
+      // Refusals retain their domain code when a lenient pass delays them.
+      if (secretRefusalCode(cause) !== undefined) throw cause;
       throw new UnresolvedExpressionError(expr.raw, expr.path, cause);
     }
   }

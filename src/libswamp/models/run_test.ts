@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { SecretRefusedError } from "../../domain/expressions/errors.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -51,7 +52,7 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
-import { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
+import type { RunSensitiveValues } from "../../domain/secrets/run_sensitive_values.ts";
 import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { SecretBagRegistry } from "../../domain/vaults/secret_bag_registry.ts";
@@ -207,7 +208,7 @@ function createFakeVaultService(): any {
 
 // deno-lint-ignore no-explicit-any
 function createFakeRedactor(): any {
-  return {};
+  return { maskSentinelsOf: () => {} };
 }
 
 function createTestDeps(
@@ -1956,7 +1957,11 @@ Deno.test("modelMethodRun: --last-evaluated restores cached references into the 
   }
   const key = executed?.getMethodArguments("run").key as string;
   assertEquals(key.includes(secret), false);
-  assertEquals(executedBag?.resolveRaw(key), `echo ${secret}`);
+  assertEquals(executedBag?.resolvesAny, true);
+  assertEquals(
+    [...executedBag!.registry.all()].every((entry) => !("value" in entry)),
+    true,
+  );
   assertEquals(reported?.key, "echo ***");
 });
 
@@ -1993,11 +1998,7 @@ Deno.test("modelMethodRun: a typed --last-evaluated replay restores cached refer
       createTestModelDef("run"),
     ),
     createEvaluationService: () => evaluationService,
-    createSensitiveValues: (redactor: SecretRedactor) =>
-      new RunSensitiveValues(
-        redactor,
-        new SecretBagRegistry({ typedSecrets: true }),
-      ),
+
     createVaultService: () => {
       vaultServices++;
       return Promise.resolve(
@@ -2409,12 +2410,11 @@ Deno.test("modelMethodRun: a method error that echoes a sensitive argument reach
   );
 });
 
-Deno.test("modelMethodRun: the run's sensitive values come from createSensitiveValues, and their registry reaches the passes and the delivery", async () => {
+Deno.test("modelMethodRun: the default run shares one registry across passes and delivery", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");
   const seen: SecretBagRegistry[] = [];
   let delivered: SecretBagRegistry | undefined;
-  const typedRegistry = new SecretBagRegistry({ typedSecrets: true });
   const deps: ModelMethodRunDeps = {
     ...createTestDeps(definition, modelDef),
     // A typed run's values mask the registry's sentinels through the redactor.
@@ -2424,8 +2424,7 @@ Deno.test("modelMethodRun: the run's sensitive values come from createSensitiveV
         redactor: new SecretRedactor(),
         cleanup: () => {},
       }),
-    createSensitiveValues: (redactor) =>
-      new RunSensitiveValues(redactor, typedRegistry),
+
     createEvaluationService: () => ({
       ...createFakeEvaluationService(),
       hasDefinitionExpressions: () => true,
@@ -2481,9 +2480,8 @@ Deno.test("modelMethodRun: the run's sensitive values come from createSensitiveV
   );
   assertEquals(events.some((e) => e.kind === "error"), false);
   assertEquals(seen.length, 3);
-  for (const registry of seen) assertEquals(registry, typedRegistry);
-  assertEquals(delivered, typedRegistry);
-  assertEquals(typedRegistry.typedSecrets, true);
+  for (const registry of seen) assertEquals(registry, seen[0]);
+  assertEquals(delivered, seen[0]);
 });
 
 Deno.test("modelMethodRun: the saved evaluated definition holds the mask for a sensitive argument fed from an input, beside a vault reference (swamp-club#3681)", async () => {
@@ -2945,4 +2943,21 @@ Deno.test("modelMethodRun: the evaluation is saved through the execution service
   assertEquals(order, ["saved", "method"]);
   assertEquals(saved.length, 1);
   assertEquals(saved[0].getMethodArguments("run"), { key: "resolved" });
+});
+
+Deno.test("methodExecutionFailed: preserves secret refusal codes through redaction", () => {
+  for (
+    const code of [
+      "secret_operation_unsupported",
+      "secret_destination_refused",
+      "secret_reference_invalid",
+    ] as const
+  ) {
+    const cause = new SecretRefusedError(code, "operation", "expression");
+    assertEquals(methodExecutionFailed(cause, new SecretRedactor()).code, code);
+    assertEquals(
+      methodExecutionFailed(new Error("wrapper", { cause })).code,
+      code,
+    );
+  }
 });

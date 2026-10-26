@@ -30,13 +30,10 @@ import {
   schemaTransformsValues,
 } from "../models/zod_type_coercion.ts";
 import {
-  type DataPath,
-  rehydratePersistedForm,
   rehydrateReferences,
   type RunSensitiveValues,
   SENSITIVE_FORMAT_VERSION,
   toPersistedForm,
-  type VaultReader,
   vaultReferenceText,
   type WrittenReference,
 } from "../secrets/mod.ts";
@@ -81,6 +78,7 @@ export const MaskedPathSchema = z.array(
 
 /** An evaluated definition as it is written to the evaluated cache. */
 export interface PersistedEvaluatedDefinition {
+  sensitiveFormat: number;
   definition: Definition;
   deferredExpressions: DeferredExpression[];
   writtenReferences: WrittenReference[];
@@ -655,7 +653,7 @@ function hasUnreferencedData(
   values: RunSensitiveValues,
 ): boolean {
   if (value === undefined || value === null) return false;
-  const form = toPersistedForm({ value }, values, { applies: () => true });
+  const form = toPersistedForm({ value }, values);
   if (typeof form.data.value !== "string") return true;
   let text = form.data.value;
   // Work from right to left so removing an occurrence leaves earlier offsets
@@ -775,34 +773,8 @@ function hasCapturedPlaintext(
 }
 
 /**
- * Whether a path in a cached definition file carries a value rather than
- * structure: an argument, a deferred expression's binding values, or a
- * place the source definition held an expression.
- */
-function cachedValuePath(sourcePaths: readonly string[]) {
-  return (path: DataPath): boolean => {
-    if (path[0] === "globalArguments") return true;
-    if (path[0] === "methods" && path[2] === "arguments") return true;
-    if (path[0] === "deferredExpressions" && path[2] === "bindings") {
-      return true;
-    }
-    // Spelled the way expression extraction spells paths.
-    const dotted = path.reduce<string>(
-      (parent, p) =>
-        typeof p === "number" ? indexPath(parent, p) : keyPath(parent, p),
-      "",
-    );
-    return sourcePaths.some((source) =>
-      dotted === source || dotted.startsWith(`${source}.`) ||
-      dotted.startsWith(`${source}[`)
-    );
-  };
-}
-
-/**
  * Builds what to write to the evaluated cache from the copy that executes:
- * sentinels become the vault references their values came from, recorded
- * sensitive values at value positions do too, tag values carry placeholders,
+ * issued sentinels become their vault references, tag values carry placeholders,
  * and any literal still under a sensitive argument path of `schemas` (a
  * value from the run's inputs, or one stored in the source) becomes the
  * mask. Nothing sensitive is written in plaintext, whether it came from a
@@ -837,7 +809,6 @@ export function persistEvaluatedDefinition(
     deferredExpressions: deferredExpressions.map(neededBindings),
   };
   const sourceExpressions = extractExpressions(source.toData());
-  const sourcePaths = sourceExpressions.map((e) => e.path);
   const inputAliases = new Set([
     ...Object.keys(source.inputs?.properties ?? {}),
     ...Object.keys(source.globalArguments),
@@ -848,9 +819,7 @@ export function persistEvaluatedDefinition(
     opaqueInputs ||= !refs || refs.opaqueInputs;
     for (const key of refs?.inputs ?? []) inputAliases.add(key);
   }
-  const form = toPersistedForm(file, values, {
-    applies: cachedValuePath(sourcePaths),
-  });
+  const form = toPersistedForm(file, values);
   const { deferredExpressions: persistedDeferred, ...definitionData } =
     form.data;
   // Once the references are in place, so a sentinel in a sensitive field is
@@ -994,6 +963,7 @@ export function persistEvaluatedDefinition(
   );
   return {
     definition: Definition.fromData(masked.data),
+    sensitiveFormat: SENSITIVE_FORMAT_VERSION,
     deferredExpressions: persistedDeferred,
     writtenReferences: form.writtenReferences.filter((reference) =>
       !outerMasks.some((path) =>
@@ -1052,7 +1022,7 @@ function shownSchemas(
 /**
  * Restores a cached evaluated definition for replay.
  *
- * In a typed run (the bag's registry carries the option) the cache's written
+ * The cache's written
  * references become sentinels the step's bag issues, reading no vault: the
  * raw and executed copies are one sentinel copy, since a typed run holds no
  * value anywhere, and the delivery loads the current value under the
@@ -1064,13 +1034,10 @@ function shownSchemas(
  * in hand can realign, so a typed replay refuses it rather than risk a data
  * range landing on authored text; one with no provenance at all replays as
  * authored, as it always did.
- *
- * In an untyped run the legacy branch restores the raw copy for CEL contexts
- * and reports, and the executed copy with data-origin sentinels from the
- * step's bag, exactly as a fresh untyped evaluation would produce.
  */
-export async function rehydrateEvaluatedDefinition(
+export function rehydrateEvaluatedDefinition(
   cached: {
+    sensitiveFormat?: number;
     definition: Definition;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
@@ -1082,17 +1049,15 @@ export async function rehydrateEvaluatedDefinition(
     /** Where data sits in the raw copy, as the cache stores it. */
     provenance?: ProvenanceMap | "unreadable";
   },
-  read: VaultReader,
-  values: RunSensitiveValues,
   bag: VaultSecretBag,
-): Promise<{
+): {
   definition: Definition;
   executedDefinition: Definition;
   deferredExpressions: DeferredExpression[];
   /** Set in a typed run: the map of both copies, aligned onto them. */
   provenance?: ProvenanceMap;
-}> {
-  if (bag.registry.typedSecrets) {
+} {
+  {
     const readable = (map: ProvenanceMap | "unreadable" | undefined) =>
       map instanceof ProvenanceMap ? map : undefined;
     return rehydrateEvaluatedDefinitionReferences({
@@ -1101,36 +1066,12 @@ export async function rehydrateEvaluatedDefinition(
       provenance: readable(cached.provenance),
     }, bag);
   }
-  const file = {
-    ...cached.definition.toData(),
-    deferredExpressions: [...cached.deferredExpressions],
-  };
-  const { raw, sanitized } = await rehydratePersistedForm(
-    file,
-    cached.writtenReferences,
-    read,
-    values,
-    bag,
-    // Only arguments carry sentinels in a fresh run; resolveDeep restores
-    // nothing else, so every other position gets its real value back.
-    (path) =>
-      path[0] === "globalArguments" ||
-      (path[0] === "methods" && path[2] === "arguments"),
-  );
-  const { deferredExpressions, ...rawDefinition } = raw;
-  const { deferredExpressions: _unused, ...sanitizedDefinition } = sanitized;
-  return {
-    definition: Definition.fromData(rawDefinition as DefinitionData),
-    executedDefinition: Definition.fromData(
-      sanitizedDefinition as DefinitionData,
-    ),
-    deferredExpressions,
-  };
 }
 
 /** The typed branch of {@link rehydrateEvaluatedDefinition}. */
 function rehydrateEvaluatedDefinitionReferences(
   cached: {
+    sensitiveFormat?: number;
     definition: Definition;
     deferredExpressions: readonly DeferredExpression[];
     writtenReferences: readonly WrittenReference[];
@@ -1154,6 +1095,7 @@ function rehydrateEvaluatedDefinitionReferences(
     cached.writtenReferences,
     bag,
     cached.definition.name,
+    cached.sensitiveFormat ?? 0,
   );
   const { deferredExpressions, ...restoredDefinition } = restored;
   const definition = Definition.fromData(restoredDefinition as DefinitionData);
