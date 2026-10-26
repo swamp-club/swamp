@@ -34,6 +34,7 @@ import {
 } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { type BlobPart, BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
 import type { CatalogAction } from "../src/domain/datastore_v3/catalog_projection.ts";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
@@ -694,14 +695,23 @@ Deno.test("read model: a reader arriving during another read model's catch-up wa
       const first = catchingUp.catchUp(signal());
       await reached.promise;
       let settled = false;
-      const waiting = reader.catchUpUnlessComplete(signal(), 30_000).then(
+      // The reader checks its signal each time it fails to take the lock: the
+      // tryLock loop of SqliteReadModel's #exclusive with a lock wait.
+      const waitSignal = signal();
+      let lockPolls = 0;
+      const throwIfAborted = waitSignal.throwIfAborted.bind(waitSignal);
+      waitSignal.throwIfAborted = () => {
+        lockPolls++;
+        throwIfAborted();
+      };
+      const waiting = reader.catchUpUnlessComplete(waitSignal, 30_000).then(
         (caughtUp) => {
           settled = true;
           return caughtUp;
         },
       );
       // Still waiting while the other catch-up holds the lock.
-      await new Promise((done) => setTimeout(done, 200));
+      await waitFor(() => lockPolls >= 2, "the reader to wait on the lock");
       assertEquals(settled, false);
       gate.resolve();
       assertEquals((await first).cursor, 5);

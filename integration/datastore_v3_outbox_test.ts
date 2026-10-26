@@ -47,6 +47,7 @@ import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_
 import { createCommitLogUnitOfWork } from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
+import { recoverCommitOutbox } from "../src/infrastructure/datastore_v3/commit_outbox_recovery.ts";
 import { ChunkStore } from "../src/domain/datastore_v3/chunk_store.ts";
 import { FileSystemStorage } from "../src/infrastructure/persistence/fs_datastore_storage.ts";
 import {
@@ -303,6 +304,63 @@ Deno.test("v3 outbox: a writer killed after its append lands settles as a duplic
     assertEquals(commits.length, 1);
     assertEquals(commits[0].fence, killed.fence, "the dead writer's commit");
     assertEquals(await outboxHasEntries(datastorePath), false);
+  });
+});
+
+Deno.test("v3 outbox: a writer killed after its append lands settles as a duplicate after compaction folds the commit (swamp-club#3916)", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    const killed = await killWriter(repos, datastorePath, {
+      pauses: ["after-append"],
+      killAt: "after-append",
+    });
+    assertEquals(await outboxHasEntries(datastorePath), true);
+    // The commit is folded moments after it landed, before any sweep.
+    const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
+    const partition = partitionOf({ kind: "definition", id: killed.id });
+    try {
+      const head = await store.head("", partition);
+      assertEquals(head.seq, 1);
+      const last = (await store.changesSince(0, 10_000)).at(-1)?.cursor;
+      assert(last !== undefined);
+      // Under the killed writer's fence, the store's highest.
+      await store.compactHistory(last, { fence: killed.fence });
+      assertEquals((await store.history()).compactedThrough, last);
+    } finally {
+      await store.close();
+    }
+    // The next writer's recovery finds the folded commit's txnId and settles
+    // the entry: it is neither landed again nor dropped as moved on.
+    const lease = await plantV3WriterLease(datastorePath, { pid: GONE_PID });
+    const handle = openV3Datastore({ repoDir: repos.repoA, datastorePath });
+    try {
+      await handle.raiseWriterFence(lease.fence);
+      const report = await recoverCommitOutbox(handle, {
+        fence: lease.fence,
+        writer: handle.writer,
+        writerAlive: () => false,
+      });
+      assertEquals(
+        { landed: report.landed, settled: report.settled },
+        { landed: 0, settled: 1 },
+      );
+      assertEquals(report.drops, []);
+    } finally {
+      await handle.close();
+      await lease.release();
+    }
+    assertEquals(await outboxHasEntries(datastorePath), false);
+    await startWriter(repos);
+    // Nothing was appended after the folded seq.
+    const after = SqliteCommitStore.open(join(datastorePath, "commits.db"));
+    try {
+      assertEquals((await after.head("", partition)).seq, 1);
+    } finally {
+      await after.close();
+    }
+    assert(
+      await exists(killed.checkoutFile),
+      "the interrupted-writer recovery keeps a file a folded commit owns",
+    );
   });
 });
 

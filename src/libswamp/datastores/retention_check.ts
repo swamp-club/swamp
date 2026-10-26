@@ -110,7 +110,7 @@ export interface RetentionV3HistoryCheck {
   oldestCommitAt: string | null;
   /**
    * Commits written before this are folded by each retention pass: the
-   * earlier of the retention cutoff and the 7-day safety window.
+   * earlier of the retention cutoff and the compaction policy's last day.
    */
   compactionBound: string;
   /** History older than this fails the check: the bound less a day's grace. */

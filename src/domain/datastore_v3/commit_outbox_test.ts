@@ -30,7 +30,6 @@ import {
   sameHead,
   sweepMayOverlap,
 } from "./commit_outbox.ts";
-import { DEFAULT_COMPACTION_POLICY } from "./compaction_policy.ts";
 import { putOp } from "./op.ts";
 import { partitionOf } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
@@ -97,9 +96,8 @@ Deno.test("COMPACTED_TXN_RETENTION_MS: outlasts the retry bound plus the lease's
     COMPACTED_TXN_RETENTION_MS >
       OUTBOX_RETRY_BOUND_MS + WRITER_LEASE_CLOCK_SKEW_MS,
   );
-  // Days, not hours, and no longer than compaction keeps commits anyway.
+  // Days, not hours.
   assert(OUTBOX_RETRY_BOUND_MS >= 24 * 60 * 60 * 1000);
-  assert(OUTBOX_RETRY_BOUND_MS <= DEFAULT_COMPACTION_POLICY.retainMs);
 });
 
 Deno.test("sameHead: compares the seq, and the txnId when both sides know it", () => {

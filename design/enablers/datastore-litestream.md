@@ -794,10 +794,53 @@ download (once per swamp home) are paid separately:
 | GCS restore, write-first | 9.9 s  | 23.2 s | 2.35x   |
 
 swamp-club#3418's 1.5x is not met. The cost grows with the history a clone
-replays: compaction keeps the last 7 days and the newest 10,000 commits
-(`DEFAULT_COMPACTION_POLICY`), so these repos replay all of theirs. The
-compaction-policy follow-up carries it into Phase 5. v3's own times match
-swamp-club#3803's; the ratios moved with v2's.
+replays: compaction kept the last 7 days and the newest 10,000 commits, so
+these repos replayed all of theirs. v3's own times match swamp-club#3803's; the
+ratios moved with v2's.
+
+**The compaction policy (swamp-club#3916).** Compaction now keeps the newest
+2,500 commits by count and folds at least 500 at a time; only a retention pass
+keeps a time window, of a day. Measured on filesystem v3, because a bucket
+replica could not be restored once Litestream had compacted it
+(swamp-club#3935), on a repo populated as above (about 5,500 commits; 2,500 or
+500 retained; medians of 3–5 interleaved rounds with A/A twins):
+
+| Cell                                | Before  | After                |
+| ----------------------------------- | ------- | -------------------- |
+| Fresh clone, `data list`            | 22.3 s  | 20.5 s (2,500 kept)¹ |
+| Restore, `data list`                | 20.7 s  | 18.8 s (2,500 kept)  |
+| Checkout 200 behind                 | 2.0 s   | 1.8 s (replays)      |
+| Checkout 1,000 behind               | 5.7 s   | 10.4 s if 500 kept   |
+| Checkout 3,000 behind               | 14.0 s  | 14.5 s (base load)   |
+| First writes after the upgrade      | 0.6 s   | 2.5 s each, for 3²   |
+| Writes, reads, workflow steps       | –       | within 3% (15 rounds) |
+
+¹ The A/A twin's median; the branch's own was 26.0 s with one sample under
+load. ² With the 2 s cap; uncapped, the first write took about 6 s.
+
+- **Where a clone's time goes.** A trace of each shows both write the same
+  ~32,000 files that are live at the end of the feed, about 9 s, which no
+  policy changes: #3803's net replay already skips superseded writes. What
+  compaction removes is per-commit work (catalog, state, path targeting),
+  about 1.3 ms a commit: 7.4 s at 5,500 commits uncompacted, against a fixed
+  base load of about 4 s (staging and catalog) plus the retained tail. The
+  gain is small at this size and grows with history; the clone no longer
+  does.
+- **Why 2,500.** A base load costs 10–14 s here, replay about 4.5 ms a commit,
+  so they break even near 2,500–3,000 commits behind. With 500 kept, a
+  checkout 1,000 behind took 10.4 s against 5.7 s; with 2,500 kept it
+  replays, never slower than before.
+- **The first fold after an upgrade.** Unbounded, the first writer folded
+  4,984 commits at teardown in about 6 s. A CLI writer now stops after 2 s
+  (plus the batch in flight) and the next writer goes on: three writes of
+  about 2.5 s, then 0.6 s again. Serve's hourly maintenance keeps 60 s.
+- **Netted base load.** A fresh checkout's base load skipped the 665 base
+  files the tail replaced or removed; the tail after a compacted base touches
+  few files, so the saving is small.
+- **Against v2 and on buckets.** A v2 filesystem datastore has no clone step,
+  so these cells have no v2 ratio. Bucket clone and restore are measured in
+  the team-mode dogfood once swamp-club#3935 is fixed; on buckets the replica
+  restore adds about 2 s to the same read-model work.
 
 **Storage.** For the same work v3 stores 5–7x fewer objects than v2 (2,265–3,387
 against 14,391–17,820); bytes follow each repo's mix of large blobs, so neither

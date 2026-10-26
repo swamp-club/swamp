@@ -24,14 +24,17 @@ import {
   DEFAULT_COMPACTION_POLICY,
   retentionOf,
 } from "./compaction_policy.ts";
-import { OUTBOX_RETRY_BOUND_MS } from "./commit_outbox.ts";
+import {
+  COMPACTED_TXN_RETENTION_MS,
+  OUTBOX_RETRY_BOUND_MS,
+} from "./commit_outbox.ts";
 
 const POLICY = { minCommits: 100, retainCommits: 50, retainMs: 60_000 };
 
-Deno.test("retentionOf: keeps the policy's newest commits and those written within its period", () => {
+Deno.test("retentionOf: without a cutoff keeps the policy's newest commits, and by time only what is stamped from now on (swamp-club#3916)", () => {
   assertEquals(retentionOf(POLICY, new Date("2026-10-12T00:10:00.000Z")), {
     commits: 50,
-    since: "2026-10-12T00:09:00.000Z",
+    since: "2026-10-12T00:10:00.000Z",
   });
 });
 
@@ -50,19 +53,19 @@ Deno.test("compactionTarget: compacts through the candidate once it folds the mi
   );
 });
 
-Deno.test("DEFAULT_COMPACTION_POLICY: folds 10,000 commits at a time and keeps a week and 10,000 commits", () => {
+Deno.test("DEFAULT_COMPACTION_POLICY: folds 500 commits at a time, keeps the newest 2,500, and a retention pass keeps the last day (swamp-club#3916)", () => {
   assertEquals(DEFAULT_COMPACTION_POLICY, {
-    minCommits: 10_000,
-    retainCommits: 10_000,
-    retainMs: 7 * 24 * 60 * 60 * 1000,
+    minCommits: 500,
+    retainCommits: 2_500,
+    retainMs: 24 * 60 * 60 * 1000,
   });
 });
 
-Deno.test("compactionBound: a retention cutoff folds no commit newer than it, nor one inside the policy's period", () => {
+Deno.test("compactionBound: without a cutoff it is now; a cutoff folds no commit newer than it, nor one inside the policy's period", () => {
   const now = new Date("2026-10-12T00:10:00.000Z");
   assertEquals(
     compactionBound(POLICY, now).toISOString(),
-    "2026-10-12T00:09:00.000Z",
+    "2026-10-12T00:10:00.000Z",
   );
   // A cutoff older than the period bounds the fold.
   assertEquals(
@@ -106,9 +109,8 @@ Deno.test("compactionTarget: a retention cutoff folds any commit the retention a
   );
 });
 
-Deno.test("DEFAULT_COMPACTION_POLICY: its period covers the outbox's retry bound, the safety window a cutoff never folds into", () => {
-  assertEquals(
-    DEFAULT_COMPACTION_POLICY.retainMs >= OUTBOX_RETRY_BOUND_MS,
-    true,
-  );
+Deno.test("DEFAULT_COMPACTION_POLICY: a retry's txnId outlives every fold, whatever the period (swamp-club#3916)", () => {
+  // Retries are made safe by compacted_txns, not by the policy's period: a
+  // folded commit's txnId is kept past the outbox's retry bound.
+  assertEquals(COMPACTED_TXN_RETENTION_MS > OUTBOX_RETRY_BOUND_MS, true);
 });

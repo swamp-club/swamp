@@ -389,7 +389,7 @@ Deno.test("listV3Namespaces: reads a checkpointed commits.db without writing to 
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff, never inside the safety window, and the sweep then reclaims removed content (swamp-club#3473)", async () => {
+Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff, never inside the policy's last day, and the sweep then reclaims removed content (swamp-club#3473, swamp-club#3916)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");
     await initializeV3Datastore(datastorePath, "test");
@@ -423,10 +423,10 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
         // Written long ago, then removed by retention 10 days ago.
         [30, [await blobPut("a", 1, reaped), versionOp("a", 1)]],
         [10, [deleteVersion("a", 1)]],
-        // Older than a 3-day cutoff, but inside the 7-day safety window.
+        // Older than a 3-day cutoff.
         [5, [await blobPut("b", 1, kept), versionOp("b", 1)]],
-        // Newer than any cutoff here.
-        [1, [await savePut("c", 1), versionOp("c", 1)]],
+        // Newer than the 3-day cutoff, even two days on.
+        [1.5, [await savePut("c", 1), versionOp("c", 1)]],
       ] as const;
       let seq = 1;
       for (const [days, ops] of history) {
@@ -438,7 +438,7 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
       const reapedChunks = [...reaped.chunkHashes()].sort();
       const all = await storedChunks();
 
-      // Well under the default policy's 10,000 commits: nothing is due.
+      // Well under the default policy's 500 commits: nothing is due.
       assertEquals(await handle.compactIfDue(signal()), undefined);
 
       // A 20-day cutoff folds only the write; the remove is newer, so the
@@ -454,16 +454,16 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
       assertEquals((await handle.collectChunks(signal())).deleted, 0);
       assertEquals(await storedChunks(), all);
 
-      // A 3-day cutoff is held back to the 7-day window: the remove folds,
-      // the commits inside the window and after the cutoff stay.
+      // A 3-day cutoff folds the remove and the write before it; the commits
+      // after the cutoff stay.
       const cutoff = new Date(now - 3 * DAY_MS);
       const folded = await handle.compactBefore(cutoff, signal());
-      assertEquals(folded.bound.toISOString(), ago(7));
-      assertEquals(folded.compactedThrough, 2);
-      assertEquals(folded.report?.compacted, 1);
+      assertEquals(folded.bound.toISOString(), ago(3));
+      assertEquals(folded.compactedThrough, 3);
+      assertEquals(folded.report?.compacted, 2);
       assertEquals(await handle.describe(), {
-        storedCommits: 2,
-        compactedThrough: 2,
+        storedCommits: 1,
+        compactedThrough: 3,
       });
       // Within the release grace the reaped chunks are still kept.
       assertEquals((await handle.collectChunks(signal())).deleted, 0);
@@ -479,19 +479,123 @@ Deno.test("openV3Datastore: compactBefore folds a quiet history up to the cutoff
         assert((await storedChunks()).includes(hash));
       }
 
-      // Two days on, the window has slid past the second write, which now
-      // folds; the commit newer than the cutoff still stays.
-      const later = await handle.compactBefore(cutoff, signal());
-      assertEquals(later.bound.toISOString(), ago(7));
-      assertEquals(later.compactedThrough, 3);
+      // A cutoff of now is held back to the policy's last day: the older
+      // commit folds, one written within the day stays.
+      await handle.commitStore.append(
+        modelCommit(5, [await savePut("d", 1), versionOp("d", 1)], {
+          at: ago(0.5),
+          txnId: "txn-5",
+        }),
+      );
+      const latest = await handle.compactBefore(new Date(now), signal());
+      assertEquals(latest.bound.toISOString(), ago(1));
+      assertEquals(latest.compactedThrough, 4);
       assertEquals(await handle.describe(), {
         storedCommits: 1,
-        compactedThrough: 3,
+        compactedThrough: 4,
       });
       // Nothing more is older than the bound: another call folds nothing.
-      const again = await handle.compactBefore(cutoff, signal());
+      const again = await handle.compactBefore(new Date(now), signal());
       assertEquals(again.report, undefined);
-      assertEquals(again.compactedThrough, 3);
+      assertEquals(again.compactedThrough, 4);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: a compaction stopped between batches keeps what it folded, and the next one goes on (swamp-club#3916)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const now = Date.parse("2030-01-01T00:00:00.000Z");
+    const handle = openV3Datastore({
+      repoDir: join(dir, "a"),
+      datastorePath,
+      clock: () => new Date(now),
+    });
+    try {
+      for (let seq = 1; seq <= 3500; seq++) {
+        await handle.commitStore.append(
+          modelCommit(seq, [await savePut("a", seq), versionOp("a", seq)], {
+            at: new Date(now - 60_000).toISOString(),
+          }),
+        );
+      }
+      // The budget runs out after the first batch: the compaction checks
+      // its signal before each one.
+      const controller = new AbortController();
+      const signal = controller.signal;
+      const check = signal.throwIfAborted.bind(signal);
+      let checks = 0;
+      signal.throwIfAborted = () => {
+        if (++checks === 2) {
+          controller.abort(new DOMException("budget", "TimeoutError"));
+        }
+        check();
+      };
+      await assertRejects(() => handle.compactIfDue(signal));
+      assertEquals(await handle.describe(), {
+        storedCommits: 3250,
+        compactedThrough: 250,
+      });
+      // The next writer folds the rest down to the newest 2,500.
+      const report = await handle.compactIfDue(AbortSignal.timeout(30_000));
+      assertEquals(report?.point, 1000);
+      assertEquals(await handle.describe(), {
+        storedCommits: 2500,
+        compactedThrough: 1000,
+      });
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: compactIfDue folds commits written moments ago once 500 lie below the newest 2,500, and a retry of a folded commit is still a duplicate (swamp-club#3916)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const now = Date.parse("2030-01-01T00:00:00.000Z");
+    const handle = openV3Datastore({
+      repoDir: join(dir, "a"),
+      datastorePath,
+      clock: () => new Date(now),
+    });
+    const signal = () => AbortSignal.timeout(30_000);
+    const commit = async (seq: number) =>
+      modelCommit(seq, [await savePut("a", seq), versionOp("a", seq)], {
+        // Written a minute before the compaction.
+        at: new Date(now - 60_000).toISOString(),
+      });
+    try {
+      for (let seq = 1; seq <= 2999; seq++) {
+        await handle.commitStore.append(await commit(seq));
+      }
+      // 499 commits below the newest 2,500: under the minimum.
+      assertEquals(await handle.compactIfDue(signal()), undefined);
+      await handle.commitStore.append(await commit(3000));
+      const report = await handle.compactIfDue(signal());
+      assertEquals(report?.point, 500);
+      assertEquals(report?.compacted, 500);
+      assertEquals(await handle.describe(), {
+        storedCommits: 2500,
+        compactedThrough: 500,
+      });
+      // A retry of a commit folded a minute after it landed finds its txnId.
+      assertEquals(await handle.commitStore.append(await commit(1)), {
+        kind: "duplicate",
+        seq: 1,
+      });
+      assertEquals(await handle.commitStore.append(await commit(500)), {
+        kind: "duplicate",
+        seq: 500,
+      });
+      // History goes on at the head.
+      assertEquals(await handle.commitStore.append(await commit(3001)), {
+        kind: "appended",
+        seq: 3001,
+      });
     } finally {
       await handle.close();
     }

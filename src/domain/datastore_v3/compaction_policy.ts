@@ -34,20 +34,34 @@ export interface CompactionPolicy {
   /** Keep at least this many of the newest commits uncompacted. */
   readonly retainCommits: number;
   /**
-   * Keep every commit written within this many milliseconds, so a checkout
-   * a little behind replays commits instead of loading the base.
+   * With a retention cutoff, keep every commit written within this many
+   * milliseconds: the floor a retention pass, which asks to fold everything
+   * before it is run, never folds into. Ordinary compaction keeps commits by
+   * count only (swamp-club#3916).
    */
   readonly retainMs: number;
 }
 
 /**
- * The default policy: fold at least 10,000 commits at a time, and keep the
- * newest 10,000 and the last 7 days.
+ * The default policy (swamp-club#3916): fold at least 500 commits at a
+ * time and keep the newest 2,500, so a fresh clone replays at most about
+ * 3,000 commits after the base; a retention pass keeps the last day.
+ *
+ * 2,500 is just under where loading the base costs what replaying does: on
+ * a filesystem v3 repo of 5,500 commits a base load took 10-14 s, replay
+ * about 4.5 ms a commit. A checkout up to 2,500 commits behind replays,
+ * never slower than before; a fresh clone's replay stops growing with
+ * history.
+ *
+ * No time window is needed for retries: `compacted_txns` keeps a compacted
+ * commit's txnId for `COMPACTED_TXN_RETENTION_MS`, longer than the outbox's
+ * retry bound, so a retry of a commit folded a moment after it landed is
+ * still a duplicate, and one that never landed appends at the new head.
  */
 export const DEFAULT_COMPACTION_POLICY: CompactionPolicy = {
-  minCommits: 10_000,
-  retainCommits: 10_000,
-  retainMs: 7 * 24 * 60 * 60 * 1000,
+  minCommits: 500,
+  retainCommits: 2_500,
+  retainMs: 24 * 60 * 60 * 1000,
 };
 
 /** The history a compaction may fold, as the store measures it. */
@@ -69,30 +83,33 @@ export interface CompactionRetention {
   readonly commits: number;
   /**
    * Commits whose `at` is at or after this instant are kept. Compared to the
-   * second, which is far below any retention period.
+   * second, which is far below any retention period. Without a retention
+   * cutoff it is the time the policy is applied, so only a commit stamped by
+   * a clock running ahead is kept by it.
    */
   readonly since: string;
 }
 
 /**
  * The instant before which a compaction may fold commits at `now`. Without
- * `before` it is the policy's own bound, `now` less `retainMs`. With
- * `before` (a retention cutoff, swamp-club#3473) it is the earlier of the
- * two: a commit newer than the cutoff is never folded, and neither is one
- * inside the policy's period, however old the cutoff asks for.
+ * `before` it is `now`: ordinary compaction keeps commits by count only.
+ * With `before` (a retention cutoff, swamp-club#3473) it is the earlier of
+ * the cutoff and `now` less `retainMs`: a commit newer than the cutoff is
+ * never folded, and neither is one inside the policy's period, however old
+ * the cutoff asks for.
  *
- * The period is the safety window: the default keeps 7 days, the outbox's
- * retry bound (`OUTBOX_RETRY_BOUND_MS`), so a commit a writer may still
- * retry, or a checkout a little behind may still replay, stays a commit.
+ * Retries need no period (swamp-club#3916): `compacted_txns` keeps a
+ * compacted commit's txnId past the outbox's retry bound, so a retry still
+ * finds it whenever its commit was folded.
  */
 export function compactionBound(
   policy: CompactionPolicy,
   now: Date,
   before?: Date,
 ): Date {
-  const bound = now.getTime() - policy.retainMs;
+  if (before === undefined) return new Date(now.getTime());
   return new Date(
-    before === undefined ? bound : Math.min(bound, before.getTime()),
+    Math.min(now.getTime() - policy.retainMs, before.getTime()),
   );
 }
 

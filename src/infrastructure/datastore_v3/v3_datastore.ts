@@ -683,8 +683,8 @@ export interface V3Datastore {
    * Folds every commit written before `cutoff` into the compacted base,
    * however few (swamp-club#3473): retention's deletes leave the content
    * they removed in history until it is folded. Never folds a commit newer
-   * than `cutoff`, nor one inside the default policy's 7-day safety window
-   * (the outbox's retry bound): the bound is the earlier of the two. A
+   * than `cutoff`, nor one inside the default policy's last day
+   * (`retainMs`): the bound is the earlier of the two. A
    * remove is folded, and the chunks its content held released, only once
    * the remove itself is older than the bound; a chunk sweep then deletes
    * them past its grace period. Run it only while this process holds the

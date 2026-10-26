@@ -128,7 +128,7 @@ import {
 } from "../../domain/datastore_v3/file_access.ts";
 import { currentBootIdentity } from "./boot_identity.ts";
 import { CatchUpStats } from "./catch_up_stats.ts";
-import { withSpan } from "../tracing/tracer.ts";
+import { type Span, withSpan } from "../tracing/tracer.ts";
 import {
   type AppliedRecord,
   type FileOwnership,
@@ -396,6 +396,11 @@ export class SqliteReadModel implements ReadModel {
   #stats: CatchUpStats | undefined;
   /** The running catch-up's net replay, if it is one (swamp-club#3803). */
   #net: NetReplayPlan | undefined;
+  /**
+   * Set while a net catch-up from an empty checkout runs: a compacted base
+   * it meets first is netted with the tail after it (swamp-club#3916).
+   */
+  #netBase = false;
   readonly #paths = new PathCache();
   #queue: Promise<unknown> = Promise.resolve();
   #closed = false;
@@ -602,12 +607,14 @@ export class SqliteReadModel implements ReadModel {
     if (
       options.net === true && this.#netReplay && this.#state.cursor() === 0
     ) {
+      this.#netBase = true;
       this.#net = await this.#planNetReplay(signal);
     }
     try {
       return await this.#catchUpFeedNow(signal);
     } finally {
       this.#net = undefined;
+      this.#netBase = false;
     }
   }
 
@@ -622,60 +629,106 @@ export class SqliteReadModel implements ReadModel {
     return withSpan(
       "swamp.datastore.v3.readmodel.net_plan",
       {},
-      async (span) => {
-        const planner = new NetReplayPlanner((namespace, key) =>
-          unprojectedReason(namespace, key, this.#checkout) !== undefined ||
-          refusedKeyReason(
-              RecordKey.create(key),
-              this.#cacheRoot(namespace),
-              this.#stateDir,
-            ) !== undefined
-        );
-        let cursor = 0;
-        let commits = 0;
-        for (;;) {
-          signal.throwIfAborted();
-          let page;
-          try {
-            page = await this.#commitStore.changesSince(cursor, this.#pageSize);
-          } catch (error) {
-            if (error instanceof CommitsCompactedError) return undefined;
-            throw error;
-          }
-          for (const change of page) {
-            planner.add({
-              namespace: change.commit.namespace,
-              partition: change.commit.partition.toString(),
-              position: change.cursor,
-              changes: finalKeyStates(change.commit),
-            });
-            cursor = change.cursor;
-            commits++;
-          }
-          if (page.length < this.#pageSize) break;
+      (span) => this.#readNetPlan(this.#netPlanner(), 0, signal, span),
+    );
+  }
+
+  /**
+   * Plans a net replay of the tail after a compacted base (swamp-club#3916):
+   * the staged base's files seed the plan, so the load leaves off disk each
+   * base file the tail replaces or removes, and the tail's replay goes on
+   * with the same plan. Runs after the base is staged and before its files
+   * are written. Undefined when the feed was compacted past `point`
+   * meanwhile: the base then loads in full.
+   */
+  #planBaseNet(
+    point: number,
+    signal: AbortSignal,
+  ): Promise<NetReplayPlan | undefined> {
+    return withSpan(
+      "swamp.datastore.v3.readmodel.base_net_plan",
+      {},
+      (span) => {
+        const planner = this.#netPlanner();
+        for (const file of this.#state.stagedFiles()) {
+          planner.seed(file.namespace, file.record_key, {
+            owner: file.owner,
+            mark: file.mark,
+            present: file.present,
+          });
         }
-        const absent = new Set<string>();
-        for (const { namespace, segment } of planner.directories()) {
-          try {
-            await Deno.lstat(join(this.#cacheRoot(namespace), segment));
-          } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) throw error;
-            absent.add(`${namespace}\0${segment}`);
-          }
-        }
-        const plan = planner.finish((namespace, segment) =>
-          absent.has(`${namespace}\0${segment}`)
-        );
-        span.setAttributes({
-          "swamp.datastore.v3.commits": commits,
-          "swamp.datastore.v3.bound": plan.bound,
-          "swamp.datastore.v3.writes_replaceable": plan.replaceable,
-          "swamp.datastore.v3.writes_kept_for_prefix": plan.keptForPrefix,
-          "swamp.datastore.v3.writes_kept_for_directory": plan.keptForDirectory,
-        });
-        return plan;
+        return this.#readNetPlan(planner, point, signal, span);
       },
     );
+  }
+
+  /** A net replay planner that leaves alone the keys {@link #target} would. */
+  #netPlanner(): NetReplayPlanner {
+    return new NetReplayPlanner((namespace, key) =>
+      unprojectedReason(namespace, key, this.#checkout) !== undefined ||
+      refusedKeyReason(
+          RecordKey.create(key),
+          this.#cacheRoot(namespace),
+          this.#stateDir,
+        ) !== undefined
+    );
+  }
+
+  /**
+   * The first pass of a net replay (swamp-club#3803): reads the feed once,
+   * from `from` up to its end now, into `planner`, and plans which writes
+   * and removals the replay may leave off disk ({@link NetReplayPlanner}).
+   * Undefined when the feed starts below a compaction point.
+   */
+  async #readNetPlan(
+    planner: NetReplayPlanner,
+    from: number,
+    signal: AbortSignal,
+    span: Span,
+  ): Promise<NetReplayPlan | undefined> {
+    let cursor = from;
+    let commits = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      let page;
+      try {
+        page = await this.#commitStore.changesSince(cursor, this.#pageSize);
+      } catch (error) {
+        if (error instanceof CommitsCompactedError) return undefined;
+        throw error;
+      }
+      for (const change of page) {
+        planner.add({
+          namespace: change.commit.namespace,
+          partition: change.commit.partition.toString(),
+          position: change.cursor,
+          changes: finalKeyStates(change.commit),
+        });
+        cursor = change.cursor;
+        commits++;
+      }
+      if (page.length < this.#pageSize) break;
+    }
+    const absent = new Set<string>();
+    for (const { namespace, segment } of planner.directories()) {
+      try {
+        await Deno.lstat(join(this.#cacheRoot(namespace), segment));
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        absent.add(`${namespace}\0${segment}`);
+      }
+    }
+    const plan = planner.finish((namespace, segment) =>
+      absent.has(`${namespace}\0${segment}`)
+    );
+    span.setAttributes({
+      "swamp.datastore.v3.commits": commits,
+      "swamp.datastore.v3.bound": plan.bound,
+      "swamp.datastore.v3.writes_replaceable": plan.replaceable,
+      "swamp.datastore.v3.writes_kept_for_prefix": plan.keptForPrefix,
+      "swamp.datastore.v3.writes_kept_for_directory": plan.keptForDirectory,
+    });
+    return plan;
   }
 
   async #catchUpFeedNow(signal: AbortSignal): Promise<CatchUpResult> {
@@ -695,9 +748,13 @@ export class SqliteReadModel implements ReadModel {
       } catch (error) {
         if (!(error instanceof CommitsCompactedError)) throw error;
         // The base reconciles files with the state, which a net replay's
-        // skipped writes leave ahead of them: the rest replays in full.
+        // skipped writes leave ahead of them: the rest replays in full,
+        // unless nothing was applied yet, when the base is netted with the
+        // tail after it (swamp-club#3916).
         this.#net = undefined;
-        await this.#loadBase(signal);
+        const net = this.#netBase && this.#state.cursor() === 0;
+        this.#netBase = false;
+        await this.#loadBase(signal, net);
         continue;
       }
       applied += await this.#applyPage(page, true, signal);
@@ -1722,16 +1779,24 @@ export class SqliteReadModel implements ReadModel {
    * Each step can run again, and the state moves last, so a crash anywhere
    * repeats the load. The touched keys and names make a retry against a
    * newer base reconcile what an earlier attempt wrote.
+   *
+   * With `net`, for a catch-up from an empty checkout (swamp-club#3916), a
+   * plan of the base and the tail after it ({@link #planBaseNet}) leaves off
+   * disk each base file a later commit of the tail replaces or removes, and
+   * becomes the tail replay's net plan. The state still takes every file
+   * the base shows: the tail's commits, which the replay applies next, then
+   * write or remove each skipped one, as a net replay's do. A crash before
+   * then resumes the replay at the point, where those commits still are.
    */
-  #loadBase(signal: AbortSignal): Promise<void> {
+  #loadBase(signal: AbortSignal, net = false): Promise<void> {
     return withSpan(
       "swamp.datastore.v3.readmodel.load_base",
       {},
-      () => this.#loadBaseNow(signal),
+      () => this.#loadBaseNow(signal, net),
     );
   }
 
-  async #loadBaseNow(signal: AbortSignal): Promise<void> {
+  async #loadBaseNow(signal: AbortSignal, net: boolean): Promise<void> {
     const started = performance.now();
     let point: number | undefined;
     for (let staged = false; !staged;) {
@@ -1757,6 +1822,7 @@ export class SqliteReadModel implements ReadModel {
     this.#stats?.bump("base_stage_ms", Math.round(performance.now() - started));
     if (point === undefined) return;
 
+    if (net) this.#net = await this.#planBaseNet(point, signal);
     const removals = this.#state.loadRemovals();
     const writes = this.#state.loadWrites();
     this.#state.touchKeys([...removals, ...writes]);
@@ -1769,8 +1835,14 @@ export class SqliteReadModel implements ReadModel {
     const batch = this.#writeBatch();
     let unreadable: StoredUnreadableRecord[];
     const filesStarted = performance.now();
+    let skipped: Set<string>;
     try {
-      unreadable = await this.#loadFiles(removals, writes, batch, signal);
+      ({ unreadable, skipped } = await this.#loadFiles(
+        removals,
+        writes,
+        batch,
+        signal,
+      ));
       await batch.barrier();
     } finally {
       batch.discard();
@@ -1809,9 +1881,15 @@ export class SqliteReadModel implements ReadModel {
     this.#state.finishLoad(
       point,
       unreadable,
-      batch.syncs || this.#boot === undefined
-        ? undefined
-        : { keys: [...removals, ...writes], boot: this.#boot },
+      batch.syncs || this.#boot === undefined ? undefined : {
+        keys: [
+          ...removals,
+          ...writes.filter((key) =>
+            !skipped.has(`${key.namespace}\0${key.record_key}`)
+          ),
+        ],
+        boot: this.#boot,
+      },
     );
     this.#stats?.bump(
       "base_finish_ms",
@@ -1824,15 +1902,17 @@ export class SqliteReadModel implements ReadModel {
    * The compacted base's file removals and writes, through `batch`.
    * Resolves with the records whose content could not be read: their files
    * are removed, and never fail the load (swamp-club#3617), since no
-   * commit is left to retry them from.
+   * commit is left to retry them from. Writes the net plan skips are left
+   * off disk, and resolved as `skipped`, by namespace and key.
    */
   async #loadFiles(
     removals: readonly LoadKey[],
     writes: readonly LoadKey[],
     batch: DurableWriteBatch,
     signal: AbortSignal,
-  ): Promise<StoredUnreadableRecord[]> {
+  ): Promise<{ unreadable: StoredUnreadableRecord[]; skipped: Set<string> }> {
     const unreadable: StoredUnreadableRecord[] = [];
+    const skipped = new Set<string>();
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
       const path = await this.#target(
@@ -1877,6 +1957,18 @@ export class SqliteReadModel implements ReadModel {
         continue;
       }
       const owner = this.#state.loadFile(namespace, record_key);
+      // A later commit of the tail replaces or removes this content before
+      // anything reads it (swamp-club#3916): its chunks are never fetched.
+      if (
+        owner !== undefined &&
+        this.#net?.skipsWrite(namespace, record_key, owner.mark) === true
+      ) {
+        this.#paths.takeAbsent(path);
+        skipped.add(`${namespace}\0${record_key}`);
+        this.#stats?.bump("base_writes_skipped");
+        if ("blob" in content) this.#stats?.bump("base_chunked_writes_skipped");
+        continue;
+      }
       const source = { partition: owner?.owner ?? "", seq: 0 };
       try {
         await this.#writeContent(
@@ -1915,7 +2007,7 @@ export class SqliteReadModel implements ReadModel {
         );
       }
     }
-    return unreadable;
+    return { unreadable, skipped };
   }
 
   /**
