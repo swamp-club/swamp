@@ -1261,6 +1261,50 @@ Deno.test("default validation: a global that reads a model with no data yet stay
   });
 });
 
+Deno.test("default validation: an index into a set read with no data yet stays as its stored text and the checks still run", async () => {
+  await withFixture(async (f) => {
+    const deps = createModelValidateDeps(
+      f.repoDir,
+      { method: METHOD },
+      undefined,
+      f.dataRepo,
+      f.catalog,
+      f.definitionRepo,
+    );
+    await f.save(Definition.create({
+      name: "upstream",
+      type: f.type.normalized,
+      globalArguments: {},
+      methods: { [METHOD]: { arguments: {} } },
+    }));
+    for (
+      const [index, read] of [
+        "data.findBySpec('upstream', 'state')[0]",
+        "data.findByTag('owner', 'nobody-3735')[0]",
+        "data.query('modelName == \"upstream\"')[0]",
+        "[data.findBySpec('upstream', 'state')][0][0]",
+      ].entries()
+    ) {
+      const token = `\${{ ${read}.attributes.id }}`;
+      const downstream = await f.save(Definition.create({
+        name: `downstream-set-read-${index}`,
+        type: f.type.normalized,
+        globalArguments: { token },
+        methods: { [METHOD]: { arguments: {} } },
+      }));
+      const checksBefore = f.checked.length;
+      const result = await deps.validateModel(downstream, f.model, f.type);
+      assertEquals(
+        result.results.find((r) => r.name === "Check argument delivery"),
+        undefined,
+        `${read}: ${JSON.stringify(result.results)}`,
+      );
+      assertEquals(f.checked.length, checksBefore + 1, read);
+      assertEquals(f.checked.at(-1)!.globalArgs.token, token, read);
+    }
+  });
+});
+
 Deno.test("typed local behavior: description prose documenting vault, env or data syntax is neither checked, read nor failed on by validate or run", async () => {
   await withFixture(async (f) => {
     const unsupported = "Example: ${{ dyn(vault).get('prod', 'canary-3') }}";

@@ -268,6 +268,51 @@ function selectsDataLookup(
     receiver.op === "id" && receiver.args === "data";
 }
 
+/** The `data` accessors that answer a list of records. */
+const SET_READ_ACCESSORS = ["findBySpec", "findByTag", "query"] as const;
+type SetReadAccessor = typeof SET_READ_ACCESSORS[number];
+
+function isSetReadAccessor(name: unknown): name is SetReadAccessor {
+  return (SET_READ_ACCESSORS as readonly unknown[]).includes(name);
+}
+
+/** Identifies one set-read call by its accessor and string arguments. */
+function setReadKey(accessor: SetReadAccessor, args: unknown[]): string {
+  return JSON.stringify([accessor, ...args]);
+}
+
+/**
+ * The call, when the failed index's receiver — followed through literal
+ * containers and conditional branches like {@link selectsDataLookup} — is a
+ * set read that answered no record. Its arguments are read from plain
+ * literals and bindings and matched against the answers recorded, so an
+ * empty answer to one call never excuses an index into another.
+ */
+function indexedEmptySetRead(
+  error: unknown,
+  context: Record<string, unknown>,
+): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const { code, node } = error as { code?: unknown; node?: unknown };
+  if (code !== "index_out_of_bounds" || !isAstNode(node)) return undefined;
+  if (node.op !== "[]") return undefined;
+  const operand = selectedNode(node.args[0], context);
+  if (operand?.op !== "rcall") return undefined;
+  const [name, receiver, argNodes] = operand.args;
+  if (
+    !isSetReadAccessor(name) || receiver.op !== "id" ||
+    receiver.args !== "data"
+  ) return undefined;
+  const data = context["data"];
+  if (!(data instanceof CelDataNamespace)) return undefined;
+  const args = (argNodes as ASTNode[]).map((arg) =>
+    selectorValue(arg, context)
+  );
+  if (!args.every((arg) => typeof arg === "string")) return undefined;
+  if (!data.emptySetReads.has(setReadKey(name, args))) return undefined;
+  return `data.${name}(${args.map((arg) => JSON.stringify(arg)).join(", ")})`;
+}
+
 const UNKNOWN_SELECTOR = Symbol("unknown selector");
 // Standard CEL and arithmetic only: no swamp namespace or extension functions.
 const selectorEnvironment = createExtensionCelEnvironment();
@@ -449,6 +494,12 @@ export class CelDataNamespace {
    * non-optional select on the missing record raises.
    */
   readonly missedLookups: string[] = [];
+  /**
+   * Set reads (`findBySpec`, `findByTag`, `query`) that answered no record,
+   * keyed by {@link setReadKey}. An index into one is upstream data not
+   * produced yet, as a select on a missed `data.latest` is.
+   */
+  readonly emptySetReads = new Set<string>();
   private readonly specNameCandidates: SpecNameCandidate[] = [];
 
   constructor(delegate: Record<string, unknown>) {
@@ -458,7 +509,29 @@ export class CelDataNamespace {
   /** Drops recorded misses so they cannot leak into a later evaluation. */
   clearMissedLookups(): void {
     this.missedLookups.length = 0;
+    this.emptySetReads.clear();
     this.specNameCandidates.length = 0;
+  }
+
+  /** Records `accessor(args)` when the set read answered no record. */
+  private recordEmpty(
+    result: unknown,
+    accessor: SetReadAccessor,
+    args: unknown[],
+  ): unknown {
+    const empty = (value: unknown) => {
+      if (Array.isArray(value) && value.length === 0) {
+        this.emptySetReads.add(setReadKey(accessor, args));
+      }
+    };
+    if (result instanceof Promise) {
+      return result.then((value) => {
+        empty(value);
+        return value;
+      });
+    }
+    empty(result);
+    return result;
   }
 
   /**
@@ -624,7 +697,11 @@ export class CelDataNamespace {
   findByTag(tagKey: string, tagValue: string): unknown {
     const fn = this.delegate["findByTag"];
     if (typeof fn === "function") {
-      return (fn as (k: string, v: string) => unknown)(tagKey, tagValue);
+      return this.recordEmpty(
+        (fn as (k: string, v: string) => unknown)(tagKey, tagValue),
+        "findByTag",
+        [tagKey, tagValue],
+      );
     }
     return [];
   }
@@ -632,7 +709,11 @@ export class CelDataNamespace {
   findBySpec(modelName: string, specName: string): unknown {
     const fn = this.delegate["findBySpec"];
     if (typeof fn === "function") {
-      return (fn as (m: string, s: string) => unknown)(modelName, specName);
+      return this.recordEmpty(
+        (fn as (m: string, s: string) => unknown)(modelName, specName),
+        "findBySpec",
+        [modelName, specName],
+      );
     }
     return [];
   }
@@ -645,10 +726,14 @@ export class CelDataNamespace {
   query(predicate: string, select?: string, view?: QueryView): unknown {
     const fn = this.delegate["query"];
     if (typeof fn === "function") {
-      return (fn as (pred: string, sel?: string, view?: QueryView) => unknown)(
-        predicate,
-        select,
-        view,
+      return this.recordEmpty(
+        (fn as (pred: string, sel?: string, view?: QueryView) => unknown)(
+          predicate,
+          select,
+          view,
+        ),
+        "query",
+        select === undefined ? [predicate] : [predicate, select],
       );
     }
     return [];
@@ -1718,6 +1803,17 @@ export class CelEvaluator {
       );
     }
     const message = error instanceof Error ? error.message : String(error);
+    // An index into a set read that found no record is the same gap.
+    const emptySetRead = indexedEmptySetRead(error, wrappedContext);
+    if (emptySetRead !== undefined) {
+      return new MissingModelDataError(
+        `${message}\n\n${emptySetRead} found no data record — check the ` +
+          `names, or test its size() if no record may exist yet.`,
+        expression,
+        undefined,
+        error instanceof Error ? error : undefined,
+      );
+    }
     const explained = this.explainMissedLookups(message, wrappedContext);
     // A select whose operand is the lookup that found no record is upstream
     // data not produced yet, which validation tolerates as it tolerates an

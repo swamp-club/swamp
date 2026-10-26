@@ -146,7 +146,8 @@ function fixture() {
       calls.push({ accessor: "version", args: [model, name, version] });
       return Promise.resolve(records[name] ?? null);
     },
-    findBySpec: () => Promise.resolve([records.main, records.first]),
+    findBySpec: (model: string) =>
+      Promise.resolve(model === "empty" ? [] : [records.main, records.first]),
     findByTag: (_key: string, value: string) =>
       Promise.resolve(records[value] === undefined ? [] : [records[value]]),
     // Answers as the query service does under its view: records as stored
@@ -155,7 +156,9 @@ function fixture() {
     // the view it received, or the record's name.
     query: (predicate: string, select?: string, view?: QueryView) => {
       calls.push({ accessor: "query", args: [predicate, select, view] });
-      const named = predicate.split(",").map((name) => records[name]);
+      const named = predicate === "none"
+        ? []
+        : predicate.split(",").map((name) => records[name]);
       if (!select) return Promise.resolve(named);
       return Promise.resolve(named.map((r) => {
         if (select === "name") return (r as { name: string }).name;
@@ -372,6 +375,47 @@ Deno.test("CelEvaluator data secrets: missing lookup receivers retain their orig
     );
     assertEquals(failure instanceof MissingModelDataError, false, receiver);
     assertEquals(f.calls.length, before + 1, receiver);
+  }
+});
+
+Deno.test("CelEvaluator data secrets: an index into a set read that found no record is missing upstream data, and only for that call", async () => {
+  const f = fixture();
+  for (
+    const expression of [
+      "data.findBySpec('empty', 'creds')[0].attributes.password",
+      "data.findByTag('name', 'absent')[0].attributes.password",
+      "data.query('none')[0].attributes",
+      "data.query('none', 'name')[0]",
+      "[data.findBySpec('empty', 'creds')][0][0].attributes",
+      "(true ? data.findByTag('name', 'absent') : [])[0]",
+    ]
+  ) {
+    const missing = await assertRejects(
+      () => f.evaluate(expression),
+      MissingModelDataError,
+      undefined,
+      expression,
+    );
+    assertStringIncludes(missing.message, "found no data record", expression);
+  }
+  // A record set that is not empty, an empty list that is not the set read,
+  // and an empty answer to a different call are the expression's own
+  // failures.
+  for (
+    const expression of [
+      "data.findBySpec('db', 'creds')[2]",
+      "[data.findByTag('name', 'absent'), []][1][0]",
+      "size(data.findByTag('name', 'absent')) == 0 " +
+      "? data.findByTag('name', 'main')[1] : null",
+    ]
+  ) {
+    const failure = await assertRejects(
+      () => f.evaluate(expression),
+      InvalidExpressionError,
+      undefined,
+      expression,
+    );
+    assertEquals(failure instanceof MissingModelDataError, false, expression);
   }
 });
 
