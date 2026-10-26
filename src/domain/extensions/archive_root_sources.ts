@@ -23,7 +23,34 @@ import {
 } from "./source_archive_plan.ts";
 
 /** What an archive entry is, as its tar header records it. */
-export type ArchiveEntryKind = "file" | "directory" | "link";
+export type ArchiveEntryKind =
+  | "file"
+  | "directory"
+  | "symlink"
+  | "hardlink"
+  | "character-device"
+  | "block-device"
+  | "fifo"
+  | "unsupported";
+
+/**
+ * Why each kind other than a file or directory refuses the archive. None
+ * quotes anything from the header beyond the entry's own path: a link's
+ * target is the archive author's text.
+ */
+const REFUSED_KIND_REASONS: Readonly<
+  Record<Exclude<ArchiveEntryKind, "file" | "directory">, string>
+> = {
+  "symlink": "is a symlink; extensions may not contain links",
+  "hardlink": "is a hardlink; extensions may not contain links",
+  "character-device": "is a character device; an extension holds only " +
+    "regular files and directories",
+  "block-device": "is a block device; an extension holds only regular " +
+    "files and directories",
+  "fifo": "is a FIFO; an extension holds only regular files and directories",
+  "unsupported": "has an unsupported tar entry type; an extension holds " +
+    "only regular files and directories",
+};
 
 /** One entry of an extension archive. */
 export interface ArchiveEntry {
@@ -97,8 +124,10 @@ function aliasesReservedName(name: string): boolean {
  * is acceptable. Decided from the tar header alone, so a caller can refuse
  * before the entry is written.
  *
- * - A symlink or hardlink anywhere in the archive: push never writes one,
- *   and its safety gate refuses them in sources.
+ * - Anything but a regular file or directory anywhere in the archive: a
+ *   symlink, hardlink, device, FIFO or unsupported entry type. Push writes
+ *   only files and directories, and its safety gate refuses links in
+ *   sources, so an installed extension never holds a link.
  * - Under a top-level entry holding shared sources (a name that is not
  *   reserved, or `_shared/`; swamp-club#3384): a backslash (push always
  *   writes `/`), a hidden or `..` segment, a Deno or npm resolution config
@@ -110,11 +139,8 @@ function aliasesReservedName(name: string): boolean {
 export function archiveEntryRefusal(
   entry: ArchiveEntry,
 ): ArchiveEntryRefusal | undefined {
-  if (entry.kind === "link") {
-    return {
-      path: entry.path,
-      reason: "is a symlink or hardlink; extensions may not contain links",
-    };
+  if (entry.kind !== "file" && entry.kind !== "directory") {
+    return { path: entry.path, reason: REFUSED_KIND_REASONS[entry.kind] };
   }
   const segments = extensionSegments(entry.path);
   if (segments === undefined || !isSharedSourceRoot(segments[0])) {

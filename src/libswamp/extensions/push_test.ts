@@ -40,7 +40,6 @@ import {
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
-  firstSymlinkUnder,
 } from "./push.ts";
 import { notAuthenticated, type SwampError } from "../errors.ts";
 import { buildPrepareInput, topLevelBareImports } from "./push_test_helpers.ts";
@@ -4031,23 +4030,6 @@ Deno.test("extensionPushPrepare: a file with a symlink on its path is refused by
     assertEquals(analyzed.some((files) => files.includes(linked)), false);
     assertEquals(extracted.some((files) => files.includes(linked)), false);
   });
-});
-
-Deno.test("firstSymlinkUnder: finds a symlink anywhere in a staged tree without following it", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "staged-" });
-  try {
-    await Deno.mkdir(join(dir, "extension", "files"), { recursive: true });
-    await Deno.writeTextFile(join(dir, "extension", "manifest.yaml"), "x");
-    assertEquals(await firstSymlinkUnder(dir), undefined);
-
-    const link = join(dir, "extension", "files", "notes.md");
-    await Deno.symlink(join(dir, "extension", "manifest.yaml"), link, {
-      type: "file",
-    });
-    assertEquals(await firstSymlinkUnder(dir), link);
-  } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
 });
 
 Deno.test("extensionPushPrepare: the archive records the version the audit checked for each dependency (swamp-club#3662)", async () => {

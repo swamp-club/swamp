@@ -48,7 +48,11 @@ import { createLibSwampContext } from "../context.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { canonicalLockfilePath } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { PulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, UserError } from "../../domain/errors.ts";
+import {
+  buildRawTarGz,
+  type RawTarEntry,
+} from "../../infrastructure/archive/raw_tar_test_helpers.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 import { extensionInstallRoots } from "../../infrastructure/persistence/paths.ts";
@@ -3338,6 +3342,132 @@ for (
     },
   );
 }
+
+/**
+ * A skill-only extension archive built header by header, so it can hold
+ * entries push never writes; `extra` follows the manifest and skill.
+ */
+async function rawSkillArchive(
+  name: string,
+  extra: RawTarEntry[],
+): Promise<Uint8Array> {
+  const skill = `skill-${name.split("/").pop()}`;
+  return await buildRawTarGz([
+    { path: "extension/", typeflag: "5" },
+    {
+      path: "extension/manifest.yaml",
+      typeflag: "0",
+      body: [
+        "manifestVersion: 1",
+        `name: "${name}"`,
+        `version: "${SKILL_VERSION}"`,
+        "skills:",
+        `  - ${skill}`,
+      ].join("\n"),
+    },
+    { path: `extension/skills/${skill}/SKILL.md`, typeflag: "0", body: name },
+    ...extra,
+  ]);
+}
+
+for (
+  const [what, entry, reason] of [
+    [
+      "a hardlink",
+      { typeflag: "1", linkname: "extension/manifest.yaml" },
+      "is a hardlink; extensions may not contain links",
+    ],
+    [
+      "a symlink to a file outside the extension",
+      { typeflag: "2", linkname: "../../../../outside-target" },
+      "is a symlink; extensions may not contain links",
+    ],
+    [
+      "a character device",
+      { typeflag: "3" },
+      "is a character device; an extension holds only regular files and directories",
+    ],
+    [
+      "a FIFO",
+      { typeflag: "6" },
+      "is a FIFO; an extension holds only regular files and directories",
+    ],
+    [
+      "an unsupported entry type carrying a body",
+      { typeflag: "Z", body: "export const z = 1;\n" },
+      "has an unsupported tar entry type; an extension holds only regular files and directories",
+    ],
+  ] as const
+) {
+  Deno.test(
+    `installExtension: ${what} refuses the archive before anything is written`,
+    async () => {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        const name = uniqueExtName();
+        const path = "extension/files/entry";
+        const archive = await rawSkillArchive(name, [{ path, ...entry }]);
+        const error = await assertRejects(
+          () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+          UserError,
+        );
+        assertStringIncludes(error.message, `${path} ${reason}`);
+        assertStringIncludes(error.message, "cannot be installed");
+        if ("linkname" in entry) {
+          assertEquals(error.message.includes(entry.linkname), false);
+        }
+        assertEquals(await exists(extRootOf(repoDir, name)), false);
+        assertEquals(await exists(join(repoDir, "outside-target")), false);
+        assertEquals(lockfile.getEntry(name), null);
+      });
+    },
+  );
+}
+
+Deno.test(
+  "installExtension: an archive path's control characters are printed escaped in every refusal",
+  async () => {
+    const cases: [string, RawTarEntry, string][] = [
+      [
+        "the entry check",
+        { path: "extension/files/\x1b[31mred", typeflag: "2", linkname: "x" },
+        "extension/files/\\x1b[31mred is a symlink",
+      ],
+      [
+        "the unsafe path check",
+        { path: "extension/../\x1b[31mred", typeflag: "0", body: "x" },
+        "Archive contains unsafe path: extension/../\\x1b[31mred",
+      ],
+      [
+        "an extractor error pull wraps",
+        { path: "\\\x1b[31mred", typeflag: "0", body: "x" },
+        "Failed to extract archive: Archive contains unsafe path: \\\\x1b[31mred",
+      ],
+    ];
+    for (const [where, entry, printed] of cases) {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        const name = uniqueExtName();
+        const archive = await rawSkillArchive(name, [entry]);
+        const error = await assertRejects(
+          () => installArchive(repoDir, lockfile, { [name]: archive }, name),
+          UserError,
+        );
+        assertStringIncludes(error.message, printed, where);
+        assertEquals(error.message.includes("\x1b"), false, where);
+        assertEquals(
+          errorPaths(error).every((p) => error.message.includes(p)),
+          true,
+          where,
+        );
+        assertEquals(
+          errorPaths(error).some((p) => p.includes("\\x1b")),
+          true,
+          where,
+        );
+        assertEquals(await exists(extRootOf(repoDir, name)), false, where);
+      });
+    }
+  },
+);
 
 Deno.test(
   "installExtension: a hidden file or resolution config under a shared source refuses the archive",

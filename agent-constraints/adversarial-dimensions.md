@@ -93,8 +93,9 @@ JSON)? Challenge each trust boundary crossing:
   extension manifests, archive entries, user input), does it validate that
   resolved paths stay within the expected root? Check for `..` traversal,
   absolute paths, and symlinks that escape the boundary. Use existing primitives
-  (`assertSafePath`, `assertContainedPath`, `validateNoSymlinkEscape`) or
-  equivalent. New file-handling code that doesn't use these is a finding.
+  (`assertSafePath`, `assertContainedPath`, the archive entry gate
+  `archiveEntryRefusal`) or equivalent. New file-handling code that doesn't use
+  these is a finding.
 
 ### Resource exhaustion
 

@@ -178,7 +178,7 @@ async function* abortOnEarlyExit<T>(
  *
  * The entry holds the raw tar header along with an absolute target path
  * (derived from the configured extraction root) so callers can apply
- * additional validation — e.g. symlink-escape checks — before any bytes hit
+ * additional validation — e.g. refusing entry kinds — before any bytes hit
  * disk.
  */
 export interface ExtractedEntry {
@@ -186,16 +186,45 @@ export interface ExtractedEntry {
   archivePath: string;
   /** The fully-resolved on-disk target path. */
   targetPath: string;
-  /** Whether the entry is a regular file. */
-  isFile: boolean;
-  /** Whether the entry is a directory. */
-  isDirectory: boolean;
-  /** Whether the entry is a symlink. */
-  isSymlink: boolean;
-  /** Symlink target as recorded in the header (only set for symlinks). */
+  /** What the entry is, decided from its typeflag alone. */
+  kind: TarEntryKind;
+  /** Link target as recorded in the header (only set for links). */
   linkname: string | null;
   /** POSIX mode bits as recorded in the header. */
   mode: number;
+}
+
+/**
+ * What a tar entry is. `unsupported` covers every typeflag not named here
+ * (GNU sparse or dump-dir entries, vendor extensions): `UntarStream` gives
+ * those a body, so telling a file by its body would read them as files.
+ */
+export type TarEntryKind =
+  | "file"
+  | "directory"
+  | "symlink"
+  | "hardlink"
+  | "character-device"
+  | "block-device"
+  | "fifo"
+  | "unsupported";
+
+const TAR_ENTRY_KINDS: Readonly<Record<string, TarEntryKind>> = {
+  "0": "file",
+  "7": "file", // contiguous file, read as a regular file
+  "1": "hardlink",
+  "2": "symlink",
+  "3": "character-device",
+  "4": "block-device",
+  "5": "directory",
+  "6": "fifo",
+};
+
+/** The kind of entry a typeflag records (`UntarStream` reads NUL as `0`). */
+function tarEntryKind(typeflag: string): TarEntryKind {
+  return Object.hasOwn(TAR_ENTRY_KINDS, typeflag)
+    ? TAR_ENTRY_KINDS[typeflag]
+    : "unsupported";
 }
 
 /**
@@ -317,14 +346,11 @@ export async function extractTarGz(
     const isDir = isDirectoryTypeflag(typeflag);
     const isLink = isLinkTypeflag(typeflag);
     const isSymlink = typeflag === "2";
-    const isFile = !isDir && !isLink && entry.readable !== undefined;
 
     const meta: ExtractedEntry = {
       archivePath: entry.path,
       targetPath,
-      isFile,
-      isDirectory: isDir,
-      isSymlink,
+      kind: tarEntryKind(typeflag),
       linkname: isLink ? entry.header.linkname : null,
       mode: entry.header.mode & 0o7777,
     };

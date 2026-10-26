@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type ArchiveEntry,
+  type ArchiveEntryKind,
   archiveEntryRefusal,
   archiveRootSourceDirs,
   planArchiveRootSources,
@@ -27,7 +28,7 @@ import {
 
 const file = (path: string): ArchiveEntry => ({ path, kind: "file" });
 const dir = (path: string): ArchiveEntry => ({ path, kind: "directory" });
-const link = (path: string): ArchiveEntry => ({ path, kind: "link" });
+const link = (path: string): ArchiveEntry => ({ path, kind: "symlink" });
 
 Deno.test("planArchiveRootSources: installs mirrored root files, skipping reserved names", () => {
   const plan = planArchiveRootSources([
@@ -94,18 +95,47 @@ Deno.test("planArchiveRootSources: a leading ./ is ignored", () => {
   ]);
 });
 
-Deno.test("archiveEntryRefusal: a link anywhere refuses the archive", () => {
-  for (
-    const path of [
-      "extension/models/x.ts",
-      "extension/lib/x.ts",
-      "extension/files/data",
-      "elsewhere",
-    ]
-  ) {
-    const refusal = archiveEntryRefusal(link(path));
-    assertEquals(refusal?.path, path);
-    assertStringIncludes(refusal!.reason, "may not contain links");
+Deno.test("archiveEntryRefusal: anything but a file or directory refuses the archive wherever it is", () => {
+  const reasons: [ArchiveEntryKind, string][] = [
+    ["symlink", "is a symlink; extensions may not contain links"],
+    ["hardlink", "is a hardlink; extensions may not contain links"],
+    [
+      "character-device",
+      "is a character device; an extension holds only regular files and directories",
+    ],
+    [
+      "block-device",
+      "is a block device; an extension holds only regular files and directories",
+    ],
+    [
+      "fifo",
+      "is a FIFO; an extension holds only regular files and directories",
+    ],
+    [
+      "unsupported",
+      "has an unsupported tar entry type; an extension holds only regular files and directories",
+    ],
+  ];
+  for (const [kind, reason] of reasons) {
+    for (
+      const path of [
+        "extension/models/x.ts",
+        "extension/lib/x.ts",
+        "extension/files/data",
+        "elsewhere",
+      ]
+    ) {
+      assertEquals(archiveEntryRefusal({ path, kind }), { path, reason });
+    }
+  }
+});
+
+Deno.test("archiveEntryRefusal: files and directories outside shared sources are accepted", () => {
+  for (const kind of ["file", "directory"] as const) {
+    assertEquals(
+      archiveEntryRefusal({ path: "extension/models/x.ts", kind }),
+      undefined,
+    );
   }
 });
 

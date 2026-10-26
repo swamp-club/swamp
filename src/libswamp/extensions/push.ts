@@ -94,6 +94,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
 import { archiveEntryRefusal } from "../../domain/extensions/archive_root_sources.ts";
+import { firstSymlinkUnder } from "./first_symlink_under.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { validateExtensionSkills } from "../../domain/extensions/extension_skill_validator.ts";
 import {
@@ -3092,21 +3093,6 @@ function buildResolvedData(
     labels: input.manifest.labels,
     dependencies: input.manifest.dependencies,
   };
-}
-
-/** The first symlink under `dir`, found without following any. */
-export async function firstSymlinkUnder(
-  dir: string,
-): Promise<string | undefined> {
-  for await (const entry of Deno.readDir(dir)) {
-    const path = join(dir, entry.name);
-    if (entry.isSymlink) return path;
-    if (entry.isDirectory) {
-      const found = await firstSymlinkUnder(path);
-      if (found !== undefined) return found;
-    }
-  }
-  return undefined;
 }
 
 async function bundleAndArchive(
