@@ -218,8 +218,12 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
       },
       completed: (e) => {
         const { score, archiveSize, findings } = e.data;
-        const provisional = score.provisionalPoints > 0
-          ? ` (+${score.provisionalPoints} pending server verification)`
+        // The percentage and grade count only confirmed points, as the
+        // registry does; pending points and what they would raise it to
+        // are named beside them.
+        const raise = score.ifProvisionalEarned;
+        const provisional = raise
+          ? `, +${score.provisionalPoints} pending server verification: ${raise.percentage}% (${raise.grade}) if the registry verifies them`
           : "";
         const passStatus = score.allPassed
           ? "all factors earned"
@@ -233,7 +237,7 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
           logger.warn`${e.data.licenseWarning.message}`;
         }
         logger.info(
-          `Rubric v${score.rubricVersion} — ${score.earnedPoints}/${score.maxClientEarnablePoints} points (${score.percentage}%${provisional}, ${passStatus})`,
+          `Rubric v${score.rubricVersion} — ${score.earnedPoints}/${score.maxEarnablePoints} points (${score.percentage}%, grade ${score.grade}${provisional}, ${passStatus})`,
         );
         for (const factor of score.factors) {
           const mark = factorMark(factor.status);
@@ -455,6 +459,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             maxClientEarnablePoints: score.maxClientEarnablePoints,
             provisionalPoints: score.provisionalPoints,
             percentage: score.percentage,
+            grade: score.grade,
             allPassed: score.allPassed,
             factors: score.factors,
             dependencyTrust: {

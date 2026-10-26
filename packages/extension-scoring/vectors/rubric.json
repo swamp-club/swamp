@@ -1,5 +1,5 @@
 {
-  "about": "Shared vectors for the extension quality rubric (swamp-club#3781). Each case is the input to composeScore \u2014 what one version and its package say, and for the CLI before publish a predicted repository-verified \u2014 and the rows, points and percentage it must produce. swamp's quality and push and the registry's scorecard both compose scores with @swamp-club/extension-scoring and run these vectors.",
+  "about": "Shared vectors for the extension quality rubric (swamp-club#3781). Each case is the input to composeScore \u2014 what one version and its package say, and for the CLI before publish a predicted repository-verified \u2014 and the rows, points and percentage it must produce. A provisional row earns nothing yet, so the percentage divides by every row's points (swamp-club#3845). swamp's quality and push and the registry's scorecard both compose scores with @swamp-club/extension-scoring and run these vectors.",
   "rubricVersion": 5,
   "cases": [
     {
@@ -140,7 +140,7 @@
       }
     },
     {
-      "name": "CLI before publish, everything earned: repository-verified is provisional and out of the percentage",
+      "name": "CLI before publish, everything earned: repository-verified is provisional and not earned yet",
       "inputs": {
         "scoredWith": 5,
         "analysis": {
@@ -275,7 +275,7 @@
         "earnedPoints": 14,
         "maxPoints": 16,
         "provisionalPoints": 2,
-        "percentage": 100
+        "percentage": 87
       }
     },
     {
@@ -552,7 +552,7 @@
         "earnedPoints": 14,
         "maxPoints": 16,
         "provisionalPoints": 2,
-        "percentage": 100
+        "percentage": 87
       }
     },
     {

@@ -316,7 +316,10 @@ Deno.test("extensionQuality: fresh run yields packaging → scoring → complete
     assertEquals(score.maxEarnablePoints, 16);
     assertEquals(score.maxClientEarnablePoints, 14);
     assertEquals(score.provisionalPoints, 2);
-    assertEquals(score.percentage, 100);
+    // The registry's formula: the provisional points stay in the divisor.
+    assertEquals(score.percentage, 87);
+    assertEquals(score.grade, "B");
+    assertEquals(score.ifProvisionalEarned, { percentage: 100, grade: "A" });
     assertEquals(score.allPassed, true);
     const repoFactor = score.factors.find((f) =>
       f.id === "repository-verified"

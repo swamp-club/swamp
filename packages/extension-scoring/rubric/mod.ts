@@ -49,6 +49,7 @@ export {
   type FactorCategory,
   type FactorStatus,
   gradeForPercentage,
+  percentageIfProvisionalEarned,
   RUBRIC_VERSION,
   type RubricFactor,
   type RubricInputs,

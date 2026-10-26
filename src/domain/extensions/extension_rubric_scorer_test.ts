@@ -130,14 +130,26 @@ function factorsAllEarned(): LocalFactors {
   };
 }
 
-Deno.test("composeScore: perfect extension earns 14/14 client-confirmed (100%)", () => {
+Deno.test("composeScore: perfect extension earns 14/16 (87%, B) and 100% (A) once the registry verifies the repository", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
   assertEquals(score.earnedPoints, 14);
   assertEquals(score.maxEarnablePoints, 16);
   assertEquals(score.maxClientEarnablePoints, 14);
   assertEquals(score.provisionalPoints, 2);
-  assertEquals(score.percentage, 100);
+  assertEquals(score.percentage, 87);
+  assertEquals(score.grade, "B");
+  assertEquals(score.ifProvisionalEarned, { percentage: 100, grade: "A" });
   assertEquals(score.allPassed, true);
+});
+
+Deno.test("composeScore: nothing provisional has no raise to show", () => {
+  const score = composeScore(
+    factorsAllEarned(),
+    makeManifest({ repository: undefined }),
+  );
+  assertEquals(score.provisionalPoints, 0);
+  assertEquals([score.percentage, score.grade], [87, "B"]);
+  assertEquals(score.ifProvisionalEarned, null);
 });
 
 Deno.test("composeScore: secret-safe-docs is worth 1 point, earned only when the docs are clean", () => {
@@ -153,7 +165,7 @@ Deno.test("composeScore: secret-safe-docs is worth 1 point, earned only when the
   const missing = leaky.factors.find((f) => f.id === "secret-safe-docs")!;
   assertEquals([missing.earnedPoints, missing.status], [0, "missing"]);
   assertStringIncludes(missing.remediation ?? "", "vault.get");
-  assertEquals(leaky.percentage, Math.floor((13 * 100) / 14));
+  assertEquals(leaky.percentage, Math.floor((13 * 100) / 16));
   assertEquals(leaky.allPassed, false);
 });
 
@@ -457,13 +469,10 @@ Deno.test("composeScore: factor IDs and order match server", () => {
 });
 
 Deno.test("composeScore: percentage floors (not rounds)", () => {
-  // 13/14 client-earnable = 92.9 → floor = 92
-  const score = composeScore(
-    { ...factorsAllEarned(), hasLicenseFile: false },
-    makeManifest(),
-  );
-  assertEquals(score.earnedPoints, 13);
-  assertEquals(score.percentage, 92);
+  // 14/16 = 87.5 → floor = 87
+  const score = composeScore(factorsAllEarned(), makeManifest());
+  assertEquals(score.earnedPoints, 14);
+  assertEquals(score.percentage, 87);
 });
 
 // --- scorecard_test.ts ports (core scenarios) --------------------------
@@ -508,23 +517,25 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
   assertEquals(byId.get("entrypoints-docs"), undefined);
 });
 
-Deno.test("[parity] composeScore: perfect score hits 100% with repository-verified provisional", () => {
+Deno.test("[parity] composeScore: perfect score hits 100% once the registry awards repository-verified", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  // 14/14 client-earnable (repo-verified is provisional, excluded from total)
+  // 14/16: repo-verified is provisional, not earned yet, still in the divisor
   assertEquals(score.earnedPoints, 14);
   assertEquals(score.maxClientEarnablePoints, 14);
   assertEquals(score.provisionalPoints, 2);
-  assertEquals(score.percentage, 100);
+  assertEquals(score.percentage, 87);
+  assertEquals(score.ifProvisionalEarned?.percentage, 100);
   assertEquals(score.allPassed, true);
 });
 
-Deno.test("[parity] composeScore: percentage floors (13/14 → 92)", () => {
+Deno.test("[parity] composeScore: percentage floors (13/16 → 81, 15/16 → 93)", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
   assertEquals(score.earnedPoints, 13);
-  assertEquals(score.percentage, 92);
+  assertEquals(score.percentage, 81);
+  assertEquals(score.ifProvisionalEarned, { percentage: 93, grade: "A" });
 });
 
 Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () => {
