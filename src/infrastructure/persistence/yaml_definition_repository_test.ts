@@ -1563,6 +1563,37 @@ Deno.test("YamlDefinitionRepository.findByName finds a legacy or mismatched auto
   });
 });
 
+Deno.test({
+  name:
+    "YamlDefinitionRepository.findByName raises an I/O error on an auto-definition it cannot read, rather than finding none (swamp-club#3984)",
+  // Windows has no file modes; root reads any file whatever its mode.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlDefinitionRepository(dir);
+      const auto = join(dir, ".swamp", "auto-definitions");
+      const path = await writeNameDerivedFile(
+        auto,
+        createTestDefinition("stored-worker"),
+      );
+      assertEquals(await repo.findByName(testType, "new-worker"), null);
+
+      // An auto-creating run must not take it for a missing definition and
+      // write a new one over it.
+      await Deno.chmod(path, 0o000);
+      try {
+        await assertRejects(
+          () => repo.findByName(testType, "stored-worker"),
+          UserError,
+          "Failed to read definition file",
+        );
+      } finally {
+        await Deno.chmod(path, 0o644);
+      }
+    });
+  },
+});
+
 Deno.test("YamlDefinitionRepository.findByNameGlobal reuses a hint across calls", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);

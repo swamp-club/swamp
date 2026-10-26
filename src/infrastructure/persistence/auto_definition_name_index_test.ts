@@ -21,6 +21,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { UserError } from "../../domain/errors.ts";
 import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
@@ -127,12 +128,14 @@ Deno.test("AutoDefinitionNameIndex.find: finds a legacy uuid-named file by the n
   });
 });
 
-Deno.test("AutoDefinitionNameIndex.find: leaves a file at its name-derived path to the caller", async () => {
+Deno.test("AutoDefinitionNameIndex.find: answers with the file a name gives first, which the caller reads before asking", async () => {
   await withTempDir(async (dir) => {
     const { typeDir, index } = await fixture(dir);
-    await writeDefinition(typeDir, "plain.yaml", "plain");
+    const path = await writeDefinition(typeDir, "plain.yaml", "plain");
+    const id = crypto.randomUUID();
+    await writeDefinition(typeDir, `${id}.yaml`, "plain", id);
 
-    assertEquals(await index.find("plain"), null);
+    assertEquals((await index.find("plain"))?.path, path);
   });
 });
 
@@ -375,7 +378,33 @@ Deno.test("AutoDefinitionNameIndex.find: inside the racy window it lists again b
   });
 });
 
-Deno.test("AutoDefinitionNameIndex.find: a name-derived file rewritten in place to declare another name is not seen (documented gap)", async () => {
+Deno.test({
+  name:
+    "AutoDefinitionNameIndex.find: raises an I/O error reading the file a name gives, rather than finding nothing",
+  // Windows has no file modes; root reads any file whatever its mode.
+  ignore: Deno.build.os === "windows" || Deno.uid() === 0,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const { typeDir, index } = await fixture(dir);
+      const path = await writeDefinition(typeDir, "plain.yaml", "plain");
+      assertEquals(await index.find("other"), null);
+
+      // The caller's own read of plain.yaml failed and reported a miss.
+      await Deno.chmod(path, 0o000);
+      try {
+        await assertRejects(
+          () => index.find("plain"),
+          UserError,
+          "Failed to read definition file",
+        );
+      } finally {
+        await Deno.chmod(path, 0o644);
+      }
+    });
+  },
+});
+
+Deno.test("AutoDefinitionNameIndex.find: a name-derived file rewritten in place to declare another name is not seen (documented gap, until a lookup of its old name)", async () => {
   await withTempDir(async (dir) => {
     const { typeDir, index } = await fixture(dir);
     const path = await writeDefinition(typeDir, "plain.yaml", "plain");
@@ -386,5 +415,9 @@ Deno.test("AutoDefinitionNameIndex.find: a name-derived file rewritten in place 
     // until the file is listed anew.
     await rewriteInPlace(path, "renamed");
     assertEquals(await index.find("renamed"), null);
+
+    // A lookup of the name it declared before reads it, and sees the change.
+    assertEquals(await index.find("plain"), null);
+    assertEquals((await index.find("renamed"))?.path, path);
   });
 });

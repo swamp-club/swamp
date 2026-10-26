@@ -2565,7 +2565,9 @@ Deno.test("WorkerGateway: an enroll call cancelled while its token was redeemed 
 });
 
 Deno.test("WorkerGateway: a reconnect abandoned while its token was redeemed leaves the prior grace window running (swamp-club#3984)", async () => {
-  const h = createHeldHarness({ graceWindowMs: 200 });
+  // Long enough that the window is still open when the abandoned attempt
+  // has been checked, on a loaded runner too.
+  const h = createHeldHarness({ graceWindowMs: 2_000 });
   const first = connectWorkerSocket(h.gateway);
   await enroll(first.workerChannel);
   first.dropSocket();

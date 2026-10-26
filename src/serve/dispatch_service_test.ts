@@ -2278,9 +2278,9 @@ Deno.test("withWrittenVersions: attaches the versions, and leaves an error witho
 });
 
 Deno.test("DispatchService: a step skips a worker whose enrollment finished after its socket closed (swamp-club#3405)", async () => {
-  let redeemGate: Promise<void> | null = null;
-  let openRedeem = () => {};
-  let redeems = 0;
+  let recordGate: Promise<void> | null = null;
+  let openRecord = () => {};
+  let records = 0;
   const gateway = new WorkerGateway({
     repoDir: "/tmp/unused",
     repoContext: {} as RepositoryContext,
@@ -2289,9 +2289,11 @@ Deno.test("DispatchService: a step skips a worker whose enrollment finished afte
     onWorkerIdle: (worker) => service.notifyWorkerIdle(worker),
     onWorkerEnrolled: (worker) => service.notifyWorkerEnrolled(worker),
     runModelMethod: async (input) => {
-      if (input.methodName === "redeem") {
-        redeems++;
-        if (redeemGate !== null) await redeemGate;
+      // Held while the worker is recorded: a socket closed during redeem
+      // stops the enrollment before it is recorded (swamp-club#3984).
+      if (input.methodName === "enroll") {
+        records++;
+        if (recordGate !== null) await recordGate;
       }
     },
     findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
@@ -2340,9 +2342,9 @@ Deno.test("DispatchService: a step skips a worker whose enrollment finished afte
   });
 
   // "a-dead" sorts before "b-live", so the scheduler offers it first.
-  redeemGate = new Promise<void>((resolve) => {
-    openRedeem = () => {
-      redeemGate = null;
+  recordGate = new Promise<void>((resolve) => {
+    openRecord = () => {
+      recordGate = null;
       resolve();
     };
   });
@@ -2352,9 +2354,9 @@ Deno.test("DispatchService: a step skips a worker whose enrollment finished afte
     enrollParams("a-dead.s3cret", "uuid-a"),
     { timeoutMs: null },
   ).catch(() => {});
-  await waitFor(() => redeems === 1, "dead enrollment reached redeem");
+  await waitFor(() => records === 1, "dead enrollment being recorded");
   dead.dropSocket();
-  openRedeem();
+  openRecord();
   await waitFor(() => gateway.worker("a-dead") !== null, "late enrollment");
 
   const live = connect();

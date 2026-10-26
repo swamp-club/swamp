@@ -82,14 +82,15 @@ function isNameDerived(file: string, name: string | undefined): boolean {
 }
 
 /**
- * What a full scan of the directory answers for `name` once its
- * name-derived file has missed: the first file in name order that declares
- * it, other than that file.
+ * What a lookup answers for `name` from the files a scan of the directory
+ * reads: the file its name gives when that file declares it, else the first
+ * other file in name order that declares it.
  */
 function scan(files: Map<string, string | undefined>, name: string) {
+  const named = `${name}.yaml`;
+  if (isNameDerived(named, name) && files.get(named) === name) return named;
   for (const file of [...files.keys()].sort()) {
-    if (isNameDerived(file, name)) continue;
-    if (files.get(file) === name) return file;
+    if (file !== named && files.get(file) === name) return file;
   }
   return null;
 }

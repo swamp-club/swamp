@@ -105,9 +105,15 @@ interface ValidationCounts {
  * as it was. Overlapping lookups share a check that starts after each of
  * them asked.
  *
- * One change is not seen until that file is listed anew: a `<name>.yaml`
- * declaring its own name, rewritten by something other than `save()` to
- * declare another name. `save()` never does this; it moves a renamed
+ * A lookup whose read of the name-derived file missed, though the index
+ * holds that file as declaring the name, reads it again here as a scan
+ * would: an I/O error is then raised instead of reported as no definition,
+ * so an auto-creating run cannot write a new definition over it.
+ *
+ * One change is not seen until that file is listed anew, or a lookup of the
+ * name it declared before reads it: a `<name>.yaml` declaring its own name,
+ * rewritten by something other than `save()` to declare another name (a
+ * hand edit, a checkout). `save()` never does this; it moves a renamed
  * definition to its new name's path. Until then a lookup of the new name
  * misses the file, and an auto-creating run creates a second definition of
  * that name.
@@ -155,6 +161,32 @@ export class AutoDefinitionNameIndex {
     name: string,
   ): Promise<{ definition: Definition; path: string } | null> {
     await this.#validate();
+    const named = `${name}.yaml`;
+    if (isFilenameSafeDefinitionName(name) && this.#regular.has(named)) {
+      // The caller's read of the file its name gives missed, though the file
+      // declared that name when listed. Read it as a scan would, so an I/O
+      // error is raised rather than taken for a definition that is not there.
+      const path = join(this.#dir, named);
+      const isSymlink = await liveSymlink(path);
+      if (isSymlink !== null) {
+        const found = await this.#read(
+          path,
+          [...this.#typeSegments],
+          isSymlink,
+        );
+        if (found?.definition.name === name) {
+          return { definition: found.definition, path };
+        }
+        // Rewritten to declare another name: keep what it declares now.
+        if (found && this.#regular.delete(named)) {
+          this.#irregular.set(named, {
+            name: found.definition.name,
+            fingerprint: undefined,
+            isSymlink,
+          });
+        }
+      }
+    }
     for (const [filename, file] of [...this.#irregular]) {
       if (file.name !== name) continue;
       const path = join(this.#dir, filename);

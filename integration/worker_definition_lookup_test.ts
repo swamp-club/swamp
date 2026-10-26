@@ -134,7 +134,9 @@ Deno.test("integration: serve's worker definitions resolve through the auto-defi
       assertEquals(second.ok && second.created, true);
       // No stored definition is read again but the one created since, and
       // the two stored under their ids while their stats are too recent to
-      // trust (each check reads those again until they settle).
+      // trust: each check reads those again until they settle, and a new
+      // name is checked twice, before the auto-definition lock and under it.
+      // So 1 + 2 * 2 at most, against the STORED a full scan would read.
       const parsed = filesParsed(spans);
       assertEquals(parsed >= 1 && parsed <= 5, true, `read ${parsed} files`);
     });
