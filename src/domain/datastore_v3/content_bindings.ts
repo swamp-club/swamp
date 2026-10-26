@@ -406,6 +406,14 @@ function judgeStep(
 ): string | undefined {
   const decisionChanged = !same(prior?.approvalDecision, step.approvalDecision);
   if (decisionChanged) actions.add("approve");
+  // An approval gate never waits on a child run: a link would let a later
+  // record settle it as a nested call's wait.
+  if (
+    kind === "approval" && step.status === "waiting_approval" &&
+    step.nestedRun !== undefined
+  ) {
+    return "it gives an approval gate a child run";
+  }
   if (prior?.status === "waiting_approval") {
     for (
       const [field, was, is] of [
@@ -472,8 +480,10 @@ function judgeStep(
     const settledByCancel = step.status === "failed" &&
       step.settledByAbort === true &&
       (runStatus === "cancelled" || runStatus === "failed");
-    const outcome = entered || !same(prior.output, step.output) ||
-      !same(prior.wait, step.wait);
+    // Leaving the wait for anything but a waiting status is its outcome:
+    // moving it back to pending or running reopens it without a signal.
+    const outcome = !WAITING_SIGNAL.has(step.status) ||
+      !same(prior.output, step.output) || !same(prior.wait, step.wait);
     if (outcome && !settledByCancel) actions.add("signal");
   } else if (
     signal && TERMINAL.has(step.status) && step.status !== "skipped" &&

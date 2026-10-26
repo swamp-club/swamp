@@ -631,3 +631,28 @@ Deno.test("judgeRunRecord: a waiting step cannot be dropped, renamed, or given a
     ).refusal !== undefined,
   );
 });
+
+Deno.test("judgeRunRecord: a signal wait moved back out of waiting needs signal, and an approval gate never waits on a child run", () => {
+  assertEquals(
+    [
+      ...judge(
+        run([step("wait", { status: "waiting_signal", wait: { key: "k" } })]),
+        run([step("wait", { status: "pending", wait: { key: "k" } })]),
+      ).actions,
+    ],
+    ["signal"],
+  );
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  assert(
+    judge(
+      run([step("gate", { status: "running", startedAt: STARTED })]),
+      run([
+        step("gate", {
+          status: "waiting_approval",
+          startedAt: STARTED,
+          nestedRun,
+        }),
+      ]),
+    ).refusal !== undefined,
+  );
+});
