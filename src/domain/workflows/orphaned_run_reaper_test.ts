@@ -1488,3 +1488,16 @@ Deno.test("reapOrphanedWorkflowRuns: a row of the instance the record names is s
   );
   assertEquals(result, { reaped: 1, skipped: 0 });
 });
+
+Deno.test("reapOrphanedWorkflowRuns: without heartbeats to judge a taken-over run by, the tracker row decides", async () => {
+  const run = makeRun({ instanceId: "other-instance" });
+  const result = await reapOrphanedWorkflowRuns(
+    [{ run, workflowId: WORKFLOW_ID }],
+    () => Promise.resolve(),
+    () => ({ status: "interrupted", instanceId: "previous-instance" }),
+    unexpectedPidCheck,
+    "restarted-instance",
+  );
+  assertEquals(result, { reaped: 1, skipped: 0 });
+  assertEquals(run.status, "interrupted");
+});

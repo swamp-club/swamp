@@ -538,6 +538,63 @@ export async function replayPendingRuns(
 export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 /**
+ * How many passes may fail to read or fetch a claimed instance's workflow
+ * runs before that instance is cleaned up anyway. A lasting failure, such
+ * as a record that cannot be parsed or a refused fetch, would otherwise keep
+ * every peer reclaiming it on every pass (swamp-club#3958).
+ */
+export const MAX_RECONCILE_ATTEMPTS = 5;
+
+/**
+ * How long a count of failed passes is kept without a new failure: past it,
+ * {@link cleanupExpiredClaims} removes one an instance no longer needs.
+ */
+export const RECONCILE_ATTEMPTS_TTL_MS = 60 * 60 * 1000;
+
+const RECONCILE_ATTEMPTS_PREFIX = "claims/reconcile-attempts/";
+
+/**
+ * Counts one more failed pass for `instanceId` and returns the count. A
+ * count that cannot be read starts again at one; one that cannot be written
+ * is logged, so a store that keeps failing still retries.
+ */
+async function countFailedAttempt(
+  store: ControlPlaneStore,
+  instanceId: string,
+): Promise<number> {
+  const key = `${RECONCILE_ATTEMPTS_PREFIX}${instanceId}`;
+  let attempts = 1;
+  try {
+    const data = await store.get(key);
+    if (data) {
+      const previous = JSON.parse(new TextDecoder().decode(data))?.attempts;
+      if (typeof previous === "number" && Number.isInteger(previous)) {
+        attempts = previous + 1;
+      }
+    }
+  } catch {
+    // Unreadable: counted from one.
+  }
+  try {
+    await store.put(
+      key,
+      new TextEncoder().encode(
+        JSON.stringify({ attempts, updatedAt: new Date().toISOString() }),
+      ),
+    );
+  } catch (err: unknown) {
+    logger.warn(
+      "Failed to record a failed reconcile pass for instance {instanceId}: {error}",
+      {
+        instanceId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+  }
+  return attempts;
+}
+
+/**
  * How often a live owner refreshes its tracker rows (the interval the
  * workflow execution service heartbeats on). A row owned on another host is
  * only judged once it has missed two of these, however small `--stale-ttl`
@@ -819,6 +876,19 @@ export async function reconcileRemoteInterruptedRuns(
     }
   }
 
+  for (const claimedId of retryInstances) {
+    const attempts = await countFailedAttempt(
+      deps.controlPlaneStore,
+      claimedId,
+    );
+    if (attempts < MAX_RECONCILE_ATTEMPTS) continue;
+    retryInstances.delete(claimedId);
+    logger.error(
+      "Gave up fetching the workflow runs of instance {instanceId} after {attempts} failed reconcile passes; cleaning it up. A run it left running that this instance could not fetch may stay running in the datastore: settle it with 'swamp workflow cancel <workflow> --run <run id>'",
+      { instanceId: claimedId, attempts },
+    );
+  }
+
   for (const claimedId of claimedInstanceIds) {
     if (retryInstances.has(claimedId)) {
       // Released, so this pass or another instance's claims it again.
@@ -835,6 +905,11 @@ export async function reconcileRemoteInterruptedRuns(
         });
       continue;
     }
+    await deps.controlPlaneStore
+      .delete(`${RECONCILE_ATTEMPTS_PREFIX}${claimedId}`)
+      .catch(() => {
+        // A count left behind is swept by cleanupExpiredClaims.
+      });
     const activeRunsCleaned = await cleanupActiveRunsForInstance(
       deps.controlPlaneStore,
       claimedId,
@@ -954,6 +1029,28 @@ export async function cleanupExpiredClaims(
         cleaned++;
       }
     } catch {
+      await deps.controlPlaneStore.delete(key).catch(() => {});
+      cleaned++;
+    }
+  }
+  // Counts of failed passes for instances no pass has failed on lately.
+  for (
+    const key of await deps.controlPlaneStore.list(RECONCILE_ATTEMPTS_PREFIX)
+  ) {
+    const data = await deps.controlPlaneStore.get(key);
+    if (!data) continue;
+    let age = NaN;
+    try {
+      const record = JSON.parse(new TextDecoder().decode(data)) as {
+        updatedAt?: unknown;
+      };
+      if (typeof record.updatedAt === "string") {
+        age = Date.now() - new Date(record.updatedAt).getTime();
+      }
+    } catch {
+      // Unparseable: removed below.
+    }
+    if (Number.isNaN(age) || age > RECONCILE_ATTEMPTS_TTL_MS) {
       await deps.controlPlaneStore.delete(key).catch(() => {});
       cleaned++;
     }

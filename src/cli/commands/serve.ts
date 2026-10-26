@@ -359,6 +359,7 @@ import {
   type UnpushedInterrupts,
 } from "../../serve/unpushed_interrupts.ts";
 import { pushNamespaceCounted } from "../../infrastructure/persistence/push_paths.ts";
+import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -4765,16 +4766,19 @@ export const serveCommand = new Command()
     // On a synced datastore, the runs boot and reconciliation settle are
     // pushed, so the datastore does not keep them running until some other
     // write pushes (swamp-club#3958).
+    // One deadline bounds the gate wait and the push together; a push that
+    // gets the gate past it is skipped.
     const pushSettledRuns = syncService
       ? async () => {
-        await withSharedSyncGate(
-          syncGate,
-          () =>
-            pushNamespaceCounted(
-              syncService,
-              serveNamespace,
-              AbortSignal.timeout(SETTLED_RUN_PUSH_TIMEOUT_MS),
-            ),
+        await runBoundedSync(
+          "settled workflow runs",
+          "push",
+          SETTLED_RUN_PUSH_TIMEOUT_MS,
+          (signal) =>
+            withSharedSyncGate(syncGate, async () => {
+              signal.throwIfAborted();
+              await pushNamespaceCounted(syncService, serveNamespace, signal);
+            }),
         );
       }
       : undefined;
@@ -4794,13 +4798,20 @@ export const serveCommand = new Command()
           resolvedRepoDir,
         );
         if (relPath === undefined) return;
-        await withSharedSyncGate(
-          syncGate,
-          () =>
-            syncService.hydrateFile!(relPath, {
-              signal: AbortSignal.timeout(RUN_RECORD_REFRESH_TIMEOUT_MS),
-            }),
+        // The deadline covers the wait for the pull lane too.
+        await runBoundedSync(
+          "workflow run record",
           "pull",
+          RUN_RECORD_REFRESH_TIMEOUT_MS,
+          (signal) =>
+            withSharedSyncGate(
+              syncGate,
+              async () => {
+                signal.throwIfAborted();
+                await syncService.hydrateFile!(relPath, { signal });
+              },
+              "pull",
+            ),
         );
       }
       : undefined;
