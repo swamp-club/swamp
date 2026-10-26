@@ -957,9 +957,9 @@ export class SqliteReadModel implements ReadModel {
 
   /**
    * Whether a partition whose key starts with `prefix` (a whole partition
-   * key, or one ending `--`) holds a live record, as of the last commit this read model applied: whether an
-   * aggregate's id still has records, for a forwarded create claiming it
-   * (swamp-club#3922).
+   * key, or one ending `--`) holds a live record, as of the last commit
+   * this read model applied: whether an aggregate's id still has records,
+   * for a forwarded create claiming it (swamp-club#3922).
    */
   holdsRecordsUnder(namespace: string, prefix: string): Promise<boolean> {
     return this.#afterPage(() =>

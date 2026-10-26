@@ -6311,6 +6311,11 @@ to the same write. The checks the handlers share are one implementation
   records. A removal's put only lowers a latest marker to a stored version; a
   rename writes exactly the shape the repository's rename writes.
 
+The content-derived decisions (`tag`, `approve`, `signal`, expression
+reads, vault reads) are made before the forwarded lock, as serve's handlers
+make theirs before they save; under the lock serve re-decides access and
+checks that no record the content was judged against moved.
+
 **Evaluations serve runs.** Serve runs `--last-evaluated` only with an
 evaluation it wrote itself (`EvaluationTrust`,
 `src/infrastructure/datastore_v3/trusted_evaluations.ts`): the read model

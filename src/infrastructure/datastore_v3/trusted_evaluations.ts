@@ -93,6 +93,13 @@ export function v3EvaluationTrust(
     keys: readonly string[],
     what: string,
   ): Promise<string | null> => {
+    // Serve's own commits reach the read model only by catching up: the
+    // evaluation serve just saved is read as it is now.
+    await v3.readModel.catchUpPartition(
+      v3.namespace,
+      partition,
+      new AbortController().signal,
+    );
     for (const key of keys) {
       const record = await v3.readModel.liveRecord(
         v3.namespace,
@@ -105,6 +112,13 @@ export function v3EvaluationTrust(
           `The evaluation of ${what} was not made on this server, so it ` +
             `cannot be run with --last-evaluated here. Evaluate it on this ` +
             `server first.`,
+          "evaluation_not_trusted",
+        );
+      }
+      if ((record.blob?.size ?? 0) > MAX_EVALUATION_BYTES) {
+        throw new UserError(
+          `The evaluation of ${what} is larger than serve runs ` +
+            `(${MAX_EVALUATION_BYTES} bytes).`,
           "evaluation_not_trusted",
         );
       }

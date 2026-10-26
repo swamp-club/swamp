@@ -46,10 +46,11 @@ export function containedLogFileReader<R extends LogFileReader>(
     for (const logDir of logDirs) {
       try {
         await assertSafePath(path, logDir);
-        return await read(path, options);
       } catch (error) {
         if (!(error instanceof PathTraversalError)) throw error;
+        continue;
       }
+      return await read(path, options);
     }
     return { lines: [], path };
   }) as R;

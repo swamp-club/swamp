@@ -1749,3 +1749,48 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "forwarded content: serve runs its own fresh evaluation, read through the trust with no other catch-up",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const admin = grant({
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    });
+    await withServer(
+      [admin],
+      async (server) => {
+        const trust = v3EvaluationTrust(server.v3, server.ctx.repoContext);
+        // Serve evaluates web twice: the second is a re-evaluation of a record
+        // the read model already holds.
+        for (let round = 0; round < 2; round++) {
+          const frames = await sendRequest(server.ctx, {
+            type: "model.evaluate",
+            id: crypto.randomUUID(),
+            payload: { modelIdOrName: "web" },
+          });
+          assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+          const cache = await trust.definition(server.modelType, "web");
+          assertEquals(cache?.definition.id, server.model.id, `round ${round}`);
+        }
+        await saveWorkflow(server, runsWeb("deploy"));
+        const evaluated = await sendRequest(server.ctx, {
+          type: "workflow.evaluate",
+          id: crypto.randomUUID(),
+          payload: { workflowIdOrName: "deploy" },
+        });
+        assertEquals(
+          errorFrame(evaluated),
+          undefined,
+          JSON.stringify(evaluated),
+        );
+        assertEquals((await trust.workflow("deploy"))?.workflow.name, "deploy");
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});
