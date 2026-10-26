@@ -565,6 +565,8 @@ async function checkBehaviorDefinition(
       await behaviorIdRefusal(context, declared) === undefined
     );
   }
+  // Not guarded under the lock: two creates of one name share the name's
+  // config partition, whose head orders them.
   if (before === undefined || before.name !== after.name) {
     const name = await behaviorNameRefusal(context, declared);
     if (name !== undefined) return refused(op, name);

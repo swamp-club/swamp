@@ -570,3 +570,26 @@ Deno.test("judgeRunRecord: a gate the run skips without waiting on it needs only
     ["approve"],
   );
 });
+
+Deno.test("judgeRunRecord: a waiting gate or wait retyped in the stored workflow still needs approve or signal to settle", () => {
+  assertEquals(
+    [
+      ...judge(
+        run([step("gate", { status: "waiting_approval", startedAt: STARTED })]),
+        run([step("gate", { status: "succeeded", startedAt: STARTED })]),
+        { gate: "other" },
+      ).actions,
+    ],
+    ["approve"],
+  );
+  assertEquals(
+    [
+      ...judge(
+        run([step("wait", { status: "waiting_signal", wait: { key: "k" } })]),
+        run([step("wait", { status: "succeeded", wait: { key: "k" } })]),
+        { wait: "other" },
+      ).actions,
+    ],
+    ["signal"],
+  );
+});

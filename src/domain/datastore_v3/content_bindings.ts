@@ -410,14 +410,15 @@ function judgeStep(
   // decides.
   const nestedWait = step.nestedRun !== undefined ||
     prior?.nestedRun !== undefined;
-  // A step the stored workflow no longer names is a gate when it waited on
-  // one or holds a gate's prompt or decision: its prompt is frozen while it
-  // waits, so a record cannot drop the evidence in one commit and settle the
-  // gate in the next.
+  // A step that waited on an approval is a gate whatever the stored workflow
+  // says it is now: an edit can retype the step while the run waits. One the
+  // stored workflow no longer names is a gate when it holds a gate's prompt
+  // or decision: its prompt is frozen while it waits, so a record cannot
+  // drop the evidence in one commit and settle the gate in the next.
   const gate = kind === "approval" ||
+    (!nestedWait && prior?.status === "waiting_approval") ||
     (kind === "unknown" && !nestedWait &&
-      (prior?.status === "waiting_approval" ||
-        prior?.approvalPrompt !== undefined ||
+      (prior?.approvalPrompt !== undefined ||
         step.approvalPrompt !== undefined ||
         step.approvalDecision !== undefined));
   // A gate leaves waiting_approval only for an outcome: moving it back to
@@ -445,9 +446,9 @@ function judgeStep(
       actions.add("approve");
     }
   }
+  // Likewise a step that waited on a signal, whatever it is now.
   const signal = kind === "signal" ||
-    (kind === "unknown" && prior !== undefined &&
-      WAITING_SIGNAL.has(prior.status));
+    (prior !== undefined && WAITING_SIGNAL.has(prior.status));
   if (signal && prior !== undefined && WAITING_SIGNAL.has(prior.status)) {
     const settledByCancel = step.status === "failed" &&
       step.settledByAbort === true &&
