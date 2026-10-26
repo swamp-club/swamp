@@ -944,6 +944,33 @@ With `model:@acme/*`, `behavior search` shows only matching behaviors. With
 `model:*` it shows everything. With no `read` grant for the kind, the request is
 refused.
 
+Serve finds an id's owners through a definition index it keeps between
+requests (`DefinitionIdIndex`, swamp-club#3968), instead of reading every
+definition, auto-definitions included, on each request. The index records only
+which file declares which id. Each request first checks the stat of every
+definition directory. A directory whose stat moved, or was less than 2 s old
+when it was last listed, is listed again, and only its files whose own stat
+moved (or was that recent when read) are read. Deciding when a stat is taken
+keeps a write that lands in the same clock tick as a listing from hiding
+behind a stat that only later looks old. The request
+then reads each owner's file itself, so owners are judged on the names and tags
+stored now. Creating, removing or renaming a definition file moves its
+directory's stat, so a change by any process is seen by the next request:
+swamp's saves and a v3 datastore's pulls replace a file by renaming a new one
+over it, and a datastore extension's pull that creates a file is seen the same
+way. A file that failed to parse, a file a lookup found rewritten, and a
+symlinked definition (whose target may sit in another directory) are stat'ed on
+every request, so changes to them made in place are seen too. One change waits
+for the directory's next change, or for a lookup of the id the file declared: a
+regular file that declares an id, overwritten in place to declare another (by
+hand, or by a datastore extension that overwrites files in place). Until then
+the file is not an owner of its new id, which fails open: a deny that this copy
+would bring, by its name or its tags, does not apply. Making that change needs
+write access to the definitions, which can change any owner's file itself, so
+it grants nothing more. A filesystem that does not update directory mtimes
+would hide new files until serve restarts; no supported datastore is known to.
+Outside serve (the CLI, tests) each request still scans.
+
 A `*` resource name never matches a name-scoped deny, so no request over many
 resources is authorized as `*` (swamp-club#2675):
 

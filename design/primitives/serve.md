@@ -1634,6 +1634,20 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   Identifiers are never included. The dashboard uses these to tell an expired
   version from a missing behavior; access denials stay top-level `unauthorized`.
 
+  `workflow.history.get` resolves a run's step outputs and authorizes each
+  resource it reads on its owners. Those owners come from serve's definition
+  index (see "Collection operations and grant-scoped filtering" in
+  `design/enablers/access-control.md`),
+  checked once per request in a `swamp.serve.definition_index.validate` span.
+  Its `definition_index.*` attributes count the definitions indexed, the
+  directories checked and listed again, and the files read. A `cancel` stops
+  the read before its next resource, definition directory or owner file, and
+  stops waiting on a listing another request shares at once; it gets its
+  `cancelled` reply as soon as the one read already in progress ends
+  (swamp-club#3968). The step outputs span
+  counts `step_outputs.resources_read`, `step_outputs.resources_denied` and
+  `step_outputs.child_runs_read`.
+
   On desktop the sidebar collapses to an icon-only rail
   (remembered in `localStorage`); at 768px and below it becomes an off-canvas
   drawer opened from a top-bar menu button.

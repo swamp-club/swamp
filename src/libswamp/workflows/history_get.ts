@@ -165,8 +165,14 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
    * receipt of a signal delivered since the run suspended.
    */
   signalWaits?: SignalWaitSupport;
-  /** Reads a run's step outputs back from the datastore. */
-  resolveStepOutputs: (run: WorkflowRun) => Promise<RunStepOutputs>;
+  /**
+   * Reads a run's step outputs back from the datastore, stopping once
+   * `signal` aborts.
+   */
+  resolveStepOutputs: (
+    run: WorkflowRun,
+    signal?: AbortSignal,
+  ) => Promise<RunStepOutputs>;
   /**
    * Where retention records how far it has reaped. With it a run that is not
    * found says that runs before the cutoff have been reaped (swamp-club#3473).
@@ -186,6 +192,11 @@ export interface WorkflowHistoryGetOptions {
    * on exactly this and does not look the argument up again.
    */
   reference?: RunReference;
+  /**
+   * Stops resolving step outputs once it aborts: the read then fails with
+   * its reason (swamp-club#3968).
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -229,7 +240,7 @@ export function createWorkflowHistoryGetDeps(
     findLatestRun: (workflowId) => runRepo.findLatestByWorkflowId(workflowId),
     getRunPath: (workflowId, runId) =>
       runRepo.getPath(workflowId, createWorkflowRunId(runId)),
-    resolveStepOutputs: async (run) => {
+    resolveStepOutputs: async (run, signal) => {
       // Opened per call: only callers that render outputs pay for it.
       const catalogStore = createCatalogStore(repoDir, datastoreResolver);
       try {
@@ -248,27 +259,32 @@ export function createWorkflowHistoryGetDeps(
         // Counted for the step outputs span (swamp-club#3741).
         let resourcesRead = 0;
         let resourcesDenied = 0;
+        let childRunsRead = 0;
         const readAttributes = createDataRepositoryAttributeReader(dataRepo);
         const resolver = new StepOutputResolver({
           readAttributes: (ref) => {
             resourcesRead++;
             return readAttributes(ref);
           },
-          findChildRun: (workflowId, runId) =>
-            runRepo.findById(
+          findChildRun: (workflowId, runId) => {
+            childRunsRead++;
+            return runRepo.findById(
               createWorkflowId(workflowId),
               createWorkflowRunId(runId),
-            ),
+            );
+          },
           canRead: canRead && (async (ref) => {
             const allowed = await canRead(ref);
             if (!allowed) resourcesDenied++;
             return allowed;
           }),
+          signal,
         });
         const outputs = await resolveRunStepOutputs(run, resolver);
         setActiveSpanAttributes({
           "step_outputs.resources_read": resourcesRead,
           "step_outputs.resources_denied": resourcesDenied,
+          "step_outputs.child_runs_read": childRunsRead,
         });
         return outputs;
       } finally {
@@ -360,7 +376,7 @@ export async function* workflowHistoryGet(
         ? await withSpan(
           "swamp.workflow.step_outputs.resolve",
           {},
-          () => deps.resolveStepOutputs(run),
+          () => deps.resolveStepOutputs(run, options.signal),
         )
         : undefined;
       const data = toRunData(run, path, undefined, stepOutputs);

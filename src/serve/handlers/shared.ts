@@ -23,6 +23,7 @@
 
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
+import type { DefinitionOwnerIndex } from "../../domain/definitions/repositories.ts";
 import {
   markActiveSpanError,
   setActiveSpanAttributes,
@@ -358,6 +359,12 @@ export interface ConnectionContext {
    * seen recently (swamp-club#3741). Absent outside `swamp serve`.
    */
   eventLoopLag?: EventLoopLagReader;
+  /**
+   * Where serve finds the definitions owning what a request reads, kept
+   * between requests instead of scanning every definition each time
+   * (swamp-club#3968). Absent outside `swamp serve`: requests then scan.
+   */
+  definitionIndex?: DefinitionOwnerIndex;
   datastoreConfig: DatastoreConfig;
   datastoreResolver: DatastorePathResolver;
   /**

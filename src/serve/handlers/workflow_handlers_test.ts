@@ -55,6 +55,9 @@ import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
 import { nestedChain } from "../../domain/workflows/nested_run_test_helpers.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -770,6 +773,169 @@ Deno.test("handleWorkflowHistoryGet: leaves out outputs of models the principal 
     assertEquals(frame.payload?.data.jobs[0].steps[0].outputs, {
       stdout: "hello",
     });
+  });
+});
+
+// ── definition index (swamp-club#3968) ─────────────────────────────────
+
+/** A definition named `name` that declares `id`. */
+function definitionOf(
+  id: string,
+  name: string,
+  tags: Record<string, string> = {},
+): Definition {
+  return Definition.fromData({
+    ...Definition.create({ name, tags }).toData(),
+    id,
+  });
+}
+
+/**
+ * `makeHistoryCtx` with serve's definition index over real definition files:
+ * `writer` (tagged `env: dev`), `secrets`, and `unrelated` definitions that
+ * own nothing the run wrote. Reads of definition files are counted, and a
+ * scan of every definition through the repository fails the test.
+ */
+async function makeIndexedHistoryCtx(
+  dir: string,
+  workflow: Workflow,
+  grants: Grant[],
+  unrelated = 0,
+) {
+  const repo = new YamlDefinitionRepository(dir);
+  const type = ModelType.create(HISTORY_MODEL_TYPE);
+  await repo.save(type, definitionOf(WRITER_ID, "writer", { env: "dev" }));
+  await repo.save(type, definitionOf(SECRETS_ID, "secrets"));
+  for (let i = 0; i < unrelated; i++) {
+    await repo.save(type, definitionOf(crypto.randomUUID(), `unrelated-${i}`));
+  }
+  const counts = { reads: 0, scans: 0 };
+  const ctx = makeHistoryCtx(dir, workflow, grants);
+  // Grants with conditions decide on the owners' tags.
+  const snapshot = new PolicySnapshot(grants, [], createConditionEvaluator());
+  ctx.policySnapshotLoader = {
+    snapshot,
+    decisionService: new GrantBasedAccessDecisionService(snapshot),
+  } as unknown as PolicySnapshotLoader;
+  const repoContext = ctx.repoContext as unknown as Record<string, unknown>;
+  repoContext.definitionRepo = {
+    ...(repoContext.definitionRepo as Record<string, unknown>),
+    findAllIncludingAutoGlobal: () => {
+      counts.scans++;
+      return repo.findAllIncludingAutoGlobal();
+    },
+  };
+  ctx.definitionIndex = new DefinitionIdIndex({
+    definitionRoots: () => repo.definitionRoots(),
+    readDefinitionFile: (path, segments, isSymlink) => {
+      counts.reads++;
+      return repo.readDefinitionFile(path, segments, isSymlink);
+    },
+    // Every stat the test's writes set is old enough to trust.
+  }, { now: () => Date.now() + 60_000 });
+  return { ctx, repo, counts };
+}
+
+const indexedHistoryGrants = () => [
+  grantFor("wf", "workflow", "history-wf"),
+  grantFor("data", "data", "*"),
+];
+
+Deno.test("handleWorkflowHistoryGet: reads only the owners' definition files per request, however many definitions there are and however many requests overlap", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, counts } = await makeIndexedHistoryCtx(
+      dir,
+      workflow,
+      indexedHistoryGrants(),
+      50,
+    );
+
+    const first = await historyGet(ctx, searchPrincipal);
+    assertEquals(first.payload?.data.jobs[0].steps[0].outputs, {
+      stdout: "hello",
+      apiKey: "not-for-you",
+    });
+    // The one listing of all 52 definitions, then the two owners read.
+    assertEquals(counts.reads, 52 + 2);
+
+    for (let i = 0; i < 5; i++) await historyGet(ctx, searchPrincipal);
+    assertEquals(counts.reads, 54 + 5 * 2);
+
+    await Promise.all(
+      Array.from({ length: 10 }, () => historyGet(ctx, searchPrincipal)),
+    );
+    assertEquals(counts.reads, 64 + 10 * 2);
+    assertEquals(counts.scans, 0);
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: a tag deny on an owner whose tags changed between requests leaves its output out of the next one", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const deny = {
+      ...grantFor("deny-prod", "data", "*"),
+      effect: "deny",
+      condition: 'tags.env == "prod"',
+    } as Grant;
+    const { ctx, repo } = await makeIndexedHistoryCtx(dir, workflow, [
+      ...indexedHistoryGrants(),
+      deny,
+    ]);
+
+    const before = await historyGet(ctx, searchPrincipal);
+    assertEquals(before.payload?.data.jobs[0].steps[0].outputs, {
+      stdout: "hello",
+      apiKey: "not-for-you",
+    });
+
+    await repo.save(
+      ModelType.create(HISTORY_MODEL_TYPE),
+      definitionOf(WRITER_ID, "writer", { env: "prod" }),
+    );
+    await withCapturedSpans(async (spans) => {
+      const after = await historyGet(ctx, searchPrincipal);
+      assertEquals(after.payload?.data.jobs[0].steps[0].outputs, {
+        apiKey: "not-for-you",
+      });
+      const outputs = findSpan(spans, "swamp.workflow.step_outputs.resolve");
+      assertEquals(outputs.attributes["step_outputs.resources_denied"], 1);
+      const validate = findSpan(
+        spans,
+        "swamp.serve.definition_index.validate",
+      );
+      assertEquals(validate.attributes["definition_index.definitions"], 2);
+    });
+  });
+});
+
+Deno.test("handleWorkflowHistoryGet: a cancelled request replies cancelled without reading any definition", async () => {
+  await withHistoryRepo(async (dir) => {
+    const workflow = await seedHistoryRun(dir);
+    const { ctx, counts } = await makeIndexedHistoryCtx(
+      dir,
+      workflow,
+      indexedHistoryGrants(),
+    );
+    const frames: HistoryFrame[] = [];
+    const socket = {
+      readyState: WebSocket.OPEN,
+      send: (data: string) => frames.push(JSON.parse(data)),
+    } as unknown as WebSocket;
+    const controller = new AbortController();
+    controller.abort();
+
+    await handleWorkflowHistoryGet(
+      socket,
+      ctx,
+      "req-history-cancelled",
+      { workflowIdOrName: "history-wf" },
+      controller,
+      searchPrincipal,
+    );
+
+    assertEquals(frames.map((f) => f.error?.code), ["cancelled"]);
+    assertEquals(counts.reads, 0);
   });
 });
 
@@ -1958,6 +2124,7 @@ Deno.test("handleWorkflowHistoryGet: traces the lookup, authorization, read, red
       const outputs = findSpan(spans, "swamp.workflow.step_outputs.resolve");
       assertEquals(outputs.attributes["step_outputs.resources_read"], 1);
       assertEquals(outputs.attributes["step_outputs.resources_denied"], 1);
+      assertEquals(outputs.attributes["step_outputs.child_runs_read"], 0);
 
       const traceId = request.spanContext().traceId;
       assertEquals(

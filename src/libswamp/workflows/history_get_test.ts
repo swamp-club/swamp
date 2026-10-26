@@ -22,7 +22,7 @@ import {
   InMemorySignalWaitStore,
   unsignalledOutcomeFor,
 } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -153,6 +153,25 @@ Deno.test("workflowHistoryGet: includeOutputs adds the resolved step outputs", a
   >;
   assertEquals(resolvedRunId, run.id);
   assertEquals(completed.data.jobs[0].steps[0].outputs, { stdout: "hello" });
+});
+
+Deno.test("workflowHistoryGet: passes its signal to step output resolution (swamp-club#3968)", async () => {
+  const controller = new AbortController();
+  let received: AbortSignal | undefined;
+  const deps = makeDeps({
+    findLatestRun: () => Promise.resolve(runWithOneStep()),
+    resolveStepOutputs: (_run, signal) => {
+      received = signal;
+      return Promise.resolve({});
+    },
+  });
+  await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(createLibSwampContext(), deps, "my-workflow", {
+      includeOutputs: true,
+      signal: controller.signal,
+    }),
+  );
+  assertStrictEquals(received, controller.signal);
 });
 
 Deno.test("workflowHistoryGet: yields resolving then completed on happy path", async () => {

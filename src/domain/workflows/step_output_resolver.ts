@@ -229,6 +229,7 @@ export class StepOutputResolver {
   private readonly findChildRun?: ChildRunFinder;
   private readonly canRead?: ResourceReadPolicy;
   private readonly namespace: string;
+  private readonly signal?: AbortSignal;
 
   constructor(deps: {
     readAttributes: ResourceAttributeReader;
@@ -239,11 +240,17 @@ export class StepOutputResolver {
      * (an older run record). Outputs are own-namespace by construction.
      */
     namespace?: string;
+    /**
+     * Stops resolving, with the signal's reason, once it aborts: checked
+     * before each resource and child run is read (swamp-club#3968).
+     */
+    signal?: AbortSignal;
   }) {
     this.readAttributes = deps.readAttributes;
     this.findChildRun = deps.findChildRun;
     this.canRead = deps.canRead;
     this.namespace = deps.namespace ?? "";
+    this.signal = deps.signal;
   }
 
   /** Resolves the outputs of one step from its persisted output. */
@@ -269,6 +276,7 @@ export class StepOutputResolver {
       ) {
         return { attributesByDataId: {} };
       }
+      this.signal?.throwIfAborted();
       const childRun = await this.findChildRun(workflowId, runId);
       if (!childRun) return { attributesByDataId: {} };
       const child = await this.resolveChildOutputs(childRun);
@@ -329,7 +337,9 @@ export class StepOutputResolver {
     const attributeSets: Record<string, unknown>[] = [];
     const records: StepOutputRecord[] = [];
     for (const ref of stepResourceRefs(output)) {
+      this.signal?.throwIfAborted();
       if (this.canRead && !(await this.canRead(ref))) continue;
+      this.signal?.throwIfAborted();
       let attributes: Record<string, unknown> | undefined;
       try {
         attributes = await this.readAttributes(ref);

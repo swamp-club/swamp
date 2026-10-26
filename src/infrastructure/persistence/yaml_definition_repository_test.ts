@@ -3330,3 +3330,43 @@ Deno.test("YamlDefinitionRepository.findById: a miss warns naming the unreadable
     assertEquals(warnings[0].includes(otherLost), false, warnings[0]);
   });
 });
+
+Deno.test("YamlDefinitionRepository: definitionRoots and readDefinitionFile read one file as a scan of every definition does", async () => {
+  await withTempDir(async (dir) => {
+    const primary = join(dir, "models");
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(dir, undefined, primary, autoDir);
+    assertEquals(repo.definitionRoots(), [primary, autoDir]);
+    assertEquals(
+      new YamlDefinitionRepository(dir, undefined, primary, false)
+        .definitionRoots(),
+      [primary],
+    );
+
+    const definition = createTestDefinition("untyped");
+    const path = join(autoDir, "test", "typed-by-path", "untyped.yaml");
+    await ensureDir(dirname(path));
+    await Deno.writeTextFile(path, toCleanYaml({ ...definition.toData() }));
+    const broken = join(autoDir, "test", "typed-by-path", "broken.yaml");
+    await Deno.writeTextFile(broken, "id: [unterminated\n");
+
+    const read = await repo.readDefinitionFile(
+      path,
+      ["test", "typed-by-path"],
+      false,
+    );
+    assertEquals(read?.definition.id, definition.id);
+    assertEquals(read?.type.normalized, "test/typed-by-path");
+    assertEquals(
+      (await repo.findAllIncludingAutoGlobal()).map((e) => [
+        e.definition.id,
+        e.type.normalized,
+      ]),
+      [[definition.id, "test/typed-by-path"]],
+    );
+    assertEquals(
+      await repo.readDefinitionFile(broken, ["test", "typed-by-path"], false),
+      null,
+    );
+  });
+});

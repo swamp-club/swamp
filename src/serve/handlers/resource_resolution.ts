@@ -42,7 +42,12 @@ import {
   normalizeModelTypeName,
 } from "../../domain/models/control_plane_types.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
-import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
+import type {
+  DefinitionOwnerIndex,
+  DefinitionOwnerView,
+  DefinitionRepository,
+} from "../../domain/definitions/repositories.ts";
 import {
   type DefinitionLookupResult,
   findDefinitionByIdGlobal,
@@ -670,24 +675,43 @@ const WORKFLOW_OWNER_TYPE = "workflow";
  * decide on them. An owner no longer found is judged on its recorded name,
  * as it is today. Definitions are scanned once per instance, however many
  * items share them; {@link canonicalResources} reads extension workflows
- * once per request too.
+ * once per request too. Given serve's definition index, an instance checks
+ * it once and reads only the files declaring each id it is asked about,
+ * instead of scanning every definition (swamp-club#3968).
  */
 export class CanonicalResources {
   readonly #definitionRepo: DefinitionRepository;
   readonly #workflowRepo: WorkflowRepository;
+  readonly #ownerIndex: DefinitionOwnerIndex | undefined;
+  readonly #signal: AbortSignal | undefined;
   readonly #definitions = new Map<string, Promise<DefinitionLookupResult[]>>();
   #index: Promise<Map<string, DefinitionLookupResult[]>> | undefined;
+  #view: Promise<DefinitionOwnerView> | undefined;
   readonly #workflows = new Map<string, Promise<AccessResource[]>>();
 
   constructor(
     definitionRepo: DefinitionRepository,
     workflowRepo: WorkflowRepository,
+    ownerIndex?: DefinitionOwnerIndex,
+    signal?: AbortSignal,
   ) {
     this.#definitionRepo = definitionRepo;
     this.#workflowRepo = workflowRepo;
+    this.#ownerIndex = ownerIndex;
+    this.#signal = signal;
   }
 
   #definitionsById(id: string): Promise<DefinitionLookupResult[]> {
+    const ownerIndex = this.#ownerIndex;
+    if (ownerIndex) {
+      let found = this.#definitions.get(id);
+      if (!found) {
+        this.#view ??= ownerIndex.begin(this.#signal);
+        found = this.#view.then((view) => view.findAllById(id as DefinitionId));
+        this.#definitions.set(id, found);
+      }
+      return found;
+    }
     // One scan of every definition per request, grouped by id, when the
     // repository offers it; a scan per id would make a collection of N items
     // cost N full scans.
@@ -982,13 +1006,21 @@ function authorizeAmbiguous<T>(
   return access.narrow(readable);
 }
 
-/** A {@link CanonicalResources} for one request on `ctx`'s repository. */
-export function canonicalResources(ctx: ConnectionContext): CanonicalResources {
+/**
+ * A {@link CanonicalResources} for one request on `ctx`'s repository. With
+ * `signal`, looking definitions up stops when the request is cancelled.
+ */
+export function canonicalResources(
+  ctx: ConnectionContext,
+  signal?: AbortSignal,
+): CanonicalResources {
   const { definitionRepo, workflowRepo } = ctx.repoContext;
   // One read of the extension workflows per request: each lookup through
   // the repository itself would walk them all again (swamp-club#3779).
   return new CanonicalResources(
     definitionRepo,
     workflowRepo.memoizedView?.() ?? workflowRepo,
+    ctx.definitionIndex,
+    signal,
   );
 }

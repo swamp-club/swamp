@@ -1034,8 +1034,9 @@ function dataReadPolicy(
   socket: WebSocket,
   ctx: ConnectionContext,
   principal: Principal | null,
+  signal?: AbortSignal,
 ): ResourceReadPolicy {
-  const canonical = canonicalResources(ctx);
+  const canonical = canonicalResources(ctx, signal);
   return async (ref) =>
     (await filterByResources(
       [ref],
@@ -1066,7 +1067,7 @@ export async function handleWorkflowHistoryGet(
           ctx.repoDir,
           ctx.datastoreResolver,
           ctx.repoContext.workflowRepo,
-          dataReadPolicy(socket, ctx, principal),
+          dataReadPolicy(socket, ctx, principal, controller.signal),
           ctx.repoContext.signalWaits,
           ctx.repoContext.unreadableContent,
         ),
@@ -1101,6 +1102,8 @@ export async function handleWorkflowHistoryGet(
       workflowHistoryGet(libCtx, deps, payload.workflowIdOrName, {
         includeOutputs: true,
         reference,
+        // A cancelled read stops resolving outputs (swamp-club#3968).
+        signal: controller.signal,
       }),
       {
         resolving: () => {},
@@ -1141,6 +1144,10 @@ export async function handleWorkflowHistoryGet(
       payload: { data: result },
     });
   } catch (error) {
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
     const message = sanitizeErrorForClient(error);
     sendError(
       socket,

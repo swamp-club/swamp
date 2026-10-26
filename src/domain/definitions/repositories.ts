@@ -21,6 +21,32 @@ import type { ModelType } from "../models/model_type.ts";
 import type { Definition, DefinitionId } from "./definition.ts";
 
 /**
+ * Where a long-lived process finds the definitions declaring an id without
+ * reading every definition on each request (swamp-club#3968). It answers as
+ * {@link DefinitionRepository.findAllIncludingAutoGlobal} filtered by id
+ * would at the time the view began.
+ */
+export interface DefinitionOwnerIndex {
+  /**
+   * Brings the index up to date with the definitions stored now and returns
+   * a view to look ids up in. A request begins one view and looks up every
+   * id it needs in it.
+   */
+  begin(signal?: AbortSignal): Promise<DefinitionOwnerView>;
+}
+
+/** One request's look at a {@link DefinitionOwnerIndex}. */
+export interface DefinitionOwnerView {
+  /**
+   * Every definition declaring `id`, each read from its file now, primary
+   * definitions first, in the order a scan of every definition reads them.
+   */
+  findAllById(
+    id: DefinitionId,
+  ): Promise<{ definition: Definition; type: ModelType }[]>;
+}
+
+/**
  * Repository interface for persisting and retrieving Definitions.
  */
 export interface DefinitionRepository {

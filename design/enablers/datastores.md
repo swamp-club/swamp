@@ -4176,8 +4176,10 @@ readable run), `findAllGlobal`, `findAllGlobalSince`, `findGlobalByStatus`,
 Outputs: `findAll`, `findByDefinition` (only that definition's records),
 `findAllGlobal` (so `model output get <id>` by id prints not-found plus the
 warning), `findAllGlobalSince` (only records whose file-name start is in the
-window, or that name none). Definitions: `findAllIncludingAutoGlobal`, and a
-`findByIdGlobal` miss. Evaluated definitions: `findAll`, `findAllGlobal`.
+window, or that name none). Definitions: `findAllIncludingAutoGlobal`, a
+`findByIdGlobal` miss, and serve's definition index whenever a request lists an
+auto-definitions directory again (`DefinitionIdIndex`, swamp-club#3968).
+Evaluated definitions: `findAll`, `findAllGlobal`.
 Serve's loops over `findAllForType` that read each record with
 `getContent` leave a record whose content is unreadable out with a warning
 naming it, as `readStoredGrants` does, so one torn bookkeeping record never

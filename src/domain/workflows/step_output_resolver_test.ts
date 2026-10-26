@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import fc from "fast-check";
 import {
   createDataRepositoryAttributeReader,
@@ -381,6 +381,74 @@ Deno.test("StepOutputResolver.resolve: the read policy filters resources out", a
   assertEquals(resolved.outputs, { visible: 1 });
   // A denied resource is never read.
   assertEquals(read, ["a"]);
+});
+
+Deno.test("StepOutputResolver.resolve: stops between resources once its signal aborts (swamp-club#3968)", async () => {
+  const run = runWithSteps([{
+    name: "write",
+    output: modelMethodOutput({
+      result: { a: resourceRecord("a", 1), b: resourceRecord("b", 1) },
+    }),
+  }]);
+  const controller = new AbortController();
+  const checked: string[] = [];
+  const read: string[] = [];
+  const resolver = new StepOutputResolver({
+    readAttributes: (ref) => {
+      read.push(ref.name);
+      // The request is cancelled while its first resource is read.
+      controller.abort(new Error("request cancelled"));
+      return Promise.resolve({ value: 1 });
+    },
+    canRead: (ref) => {
+      checked.push(ref.name);
+      return Promise.resolve(true);
+    },
+    signal: controller.signal,
+  });
+
+  await assertRejects(
+    () => resolver.resolve(stepOf(run, "write")),
+    Error,
+    "request cancelled",
+  );
+  assertEquals(checked, ["a"]);
+  assertEquals(read, ["a"]);
+});
+
+Deno.test("StepOutputResolver.resolve: a cancelled read checks no policy and reads no child run", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("request cancelled"));
+  let calls = 0;
+  const resolver = new StepOutputResolver({
+    readAttributes: () => {
+      calls++;
+      return Promise.resolve({});
+    },
+    findChildRun: () => {
+      calls++;
+      return Promise.resolve(null);
+    },
+    canRead: () => {
+      calls++;
+      return Promise.resolve(true);
+    },
+    signal: controller.signal,
+  });
+  const run = runWithSteps([
+    {
+      name: "write",
+      output: modelMethodOutput({ result: { a: resourceRecord("a", 1) } }),
+    },
+    {
+      name: "child",
+      output: { type: "workflow", workflowId: "w", runId: "r" },
+    },
+  ]);
+
+  await assertRejects(() => resolver.resolve(stepOf(run, "write")));
+  await assertRejects(() => resolver.resolve(stepOf(run, "child")));
+  assertEquals(calls, 0);
 });
 
 Deno.test("StepOutputResolver.resolve: a workflow step resolves its child run's outputs", async () => {

@@ -47,7 +47,11 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
+import type {
+  DefinitionOwnerIndex,
+  DefinitionRepository,
+} from "../../domain/definitions/repositories.ts";
+import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { CompositeWorkflowRepository } from "../../infrastructure/persistence/composite_workflow_repository.ts";
@@ -1028,6 +1032,82 @@ Deno.test("CanonicalResources.modelOwners: every definition sharing the id, with
       assertEquals(owner.fields.ns, "");
       assertEquals(owner.fields.tags, { env: "prod" });
     }
+  });
+});
+
+Deno.test("CanonicalResources: with a definition index, checks it once per request and never scans every definition (swamp-club#3968)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({
+      name: "prod-db",
+      globalArguments: {},
+      tags: { env: "prod" },
+    });
+    const dev = Definition.create({ name: "dev-db", globalArguments: {} });
+    await repo.save(SHELL, prod);
+    await repo.save(SHELL, dev);
+    await copyDefinitionFile(repo, prod, "safe-model");
+
+    const index = new DefinitionIdIndex(repo);
+    let begins = 0;
+    const counted: DefinitionOwnerIndex = {
+      begin: (signal) => {
+        begins++;
+        return index.begin(signal);
+      },
+    };
+    let scans = 0;
+    const scanning = {
+      findAllIncludingAutoGlobal: () => {
+        scans++;
+        return repo.findAllIncludingAutoGlobal();
+      },
+    } as unknown as DefinitionRepository;
+
+    for (let request = 1; request <= 3; request++) {
+      const canonical = new CanonicalResources(
+        scanning,
+        workflowRepo([]),
+        counted,
+      );
+      const [prodOwners, devOwners] = await Promise.all([
+        canonical.modelOwners(prod.id, "command/shell", "recorded", "data"),
+        canonical.dataOwners({
+          modelType: "command/shell",
+          modelId: dev.id,
+          modelName: "recorded",
+        }),
+      ]);
+      assertEquals(prodOwners.map((o) => o.name).sort(), [
+        "prod-db",
+        "safe-model",
+      ]);
+      assertEquals(devOwners.map((o) => o.name), ["dev-db"]);
+      assertEquals(begins, request);
+    }
+    assertEquals(scans, 0);
+  });
+});
+
+Deno.test("CanonicalResources: with a definition index, an owner's tags changed between requests decide the next request", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const prod = Definition.create({
+      name: "prod-db",
+      globalArguments: {},
+      tags: { env: "dev" },
+    });
+    await repo.save(SHELL, prod);
+    const index = new DefinitionIdIndex(repo);
+    const ownersNow = async () =>
+      (await new CanonicalResources(repo, workflowRepo([]), index)
+        .modelOwners(prod.id, "command/shell", "recorded", "data"))
+        .map((o) => o.fields.tags);
+
+    assertEquals(await ownersNow(), [{ env: "dev" }]);
+    prod.setTag("env", "prod");
+    await repo.save(SHELL, prod);
+    assertEquals(await ownersNow(), [{ env: "prod" }]);
   });
 });
 
