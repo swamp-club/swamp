@@ -148,6 +148,11 @@ import {
   refusedKeyReason,
 } from "./record_path_guard.ts";
 import {
+  probeSpellingFolding,
+  type SpellingFolding,
+  spellingFoldingOf,
+} from "./spelling_folding.ts";
+import {
   ProjectedCatalog,
   type ReadModelCatalog,
   V3Catalog,
@@ -315,8 +320,9 @@ export interface SqliteReadModelOptions {
   /** How a directory is synced after a move aside. For tests. */
   readonly syncDirectory?: (dir: string) => Promise<void>;
   /**
-   * How the recovery sweep lists a directory; `Deno.readDir` by default.
-   * For tests, which list names as HFS+ does (swamp-club#3736).
+   * How the recovery sweep and the aliased-spelling guard list a directory;
+   * `Deno.readDir` by default. For tests, which list names as HFS+ does
+   * (swamp-club#3736), or count the guard's listings (swamp-club#3939).
    */
   readonly readDir?: (dir: string) => AsyncIterable<Deno.DirEntry>;
   /**
@@ -337,6 +343,11 @@ export interface SqliteReadModelOptions {
    * Tests compare the two.
    */
   readonly netReplay?: boolean;
+  /**
+   * How every cache root folds spellings, in place of probing the state
+   * directory (swamp-club#3939). For tests.
+   */
+  readonly spellingFolding?: SpellingFolding;
 }
 
 /** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
@@ -372,6 +383,11 @@ export class SqliteReadModel implements ReadModel {
   readonly #atRiskCopyBytes: number;
   readonly #netReplay: boolean;
   readonly #checkout: ReadModelCheckout | undefined;
+  readonly #forcedFolding: SpellingFolding | undefined;
+  /** What the probe of the state directory found, once it ran. */
+  #probedFolding: SpellingFolding | undefined;
+  /** How each cache root folds spellings, by root. */
+  readonly #rootFolding = new Map<string, SpellingFolding>();
   /** The reserved namespaces whose skipped commits were warned about. */
   readonly #warnedReserved = new Set<string>();
   /**
@@ -444,6 +460,7 @@ export class SqliteReadModel implements ReadModel {
     this.#atRiskCopyBytes = options.atRiskCopyBytes ??
       DEFAULT_AT_RISK_COPY_BYTES;
     this.#netReplay = options.netReplay ?? true;
+    this.#forcedFolding = options.spellingFolding;
   }
 
   /** Opens the read model, creating its state directory and files when absent. */
@@ -1339,6 +1356,7 @@ export class SqliteReadModel implements ReadModel {
     signal: AbortSignal,
   ): Promise<number> {
     if (page.length === 0) return 0;
+    this.#paths.forgetListings();
     const batch = this.#writeBatch();
     this.#state.beginBatch();
     this.#catalog.beginBatch();
@@ -1504,25 +1522,40 @@ export class SqliteReadModel implements ReadModel {
     unreadable: Map<string, StoredUnreadableRecord>,
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
-    const path = await this.#time("target", () =>
-      this.#target(
-        commit.namespace,
-        change.key,
-        change.put !== null,
-        `commit ${commit.seq} of ${commit.partition.toString()}`,
-      ));
-    if (path === undefined) return undefined;
+    const from = `commit ${commit.seq} of ${commit.partition.toString()}`;
+    const target = await this.#time(
+      "target",
+      () =>
+        this.#targetOf(commit.namespace, change.key, change.put !== null, from),
+    );
+    if (target === undefined) return undefined;
+    const path = target.path;
 
     const owner = commit.partition.toString();
-    const decision = decideFile(
-      this.#state.fileOwnership(commit.namespace, key),
-      owner,
-      position,
-      change.put !== null,
-    );
+    const prior = this.#state.fileOwnership(commit.namespace, key);
+    const decision = decideFile(prior, owner, position, change.put !== null);
     if (decision.kind === "keep") return undefined;
     touched.add(key);
     const source = { partition: owner, seq: commit.seq };
+    // A key no put ever owned names no file of its own. Where the filesystem
+    // folds spellings its path can still reach another key's file
+    // (`VPC/1/raw` to `vpc/1/raw`), which neither its tombstone may remove
+    // nor its put overwrite (swamp-club#3939).
+    const existing = target.existing;
+    if (
+      prior === undefined && existing !== undefined &&
+      await this.#time(
+        "target",
+        () => this.#reachesAnotherSpelling(commit.namespace, key, existing),
+      )
+    ) {
+      logger
+        .warn`Not materialising ${key} from ${from}: its path reaches another key's file on a filesystem that folds case or Unicode normalisation`;
+      this.#stats?.bump("aliased_skipped");
+      return change.put === null && decision.kind === "remove"
+        ? decision.next
+        : undefined;
+    }
     if (decision.kind === "remove" || change.put === null) {
       // Nothing of the key is on disk in a net replay (swamp-club#3803).
       if (this.#net?.skipsRemoval(commit.namespace, key, position) === true) {
@@ -1703,6 +1736,19 @@ export class SqliteReadModel implements ReadModel {
     isPut: boolean,
     source: string,
   ): Promise<string | undefined> {
+    return (await this.#targetOf(namespace, recordKey, isPut, source))?.path;
+  }
+
+  /**
+   * {@link #target}, with the real path of the file when one is already
+   * there (`existing`).
+   */
+  async #targetOf(
+    namespace: string,
+    recordKey: RecordKey,
+    isPut: boolean,
+    source: string,
+  ): Promise<{ path: string; existing?: string } | undefined> {
     const key = recordKey.toString();
     if (this.#unprojected(namespace, key)) return undefined;
     const root = this.#cacheRoot(namespace);
@@ -1732,8 +1778,10 @@ export class SqliteReadModel implements ReadModel {
     // A path whose prefix of `missingFrom` segments does not exist resolves,
     // as `resolveRealPath` resolves it, under its longest existing prefix,
     // and a write must create the directories from that prefix down.
+    // Every segment, the file's own included, exists when none is missing.
     let resolved: string;
-    if (missingFrom === undefined) {
+    const existing = missingFrom === undefined;
+    if (existing) {
       resolved = await this.#paths.resolve(path);
       if (isPut) this.#paths.noteAbsent(path, []);
     } else {
@@ -1757,7 +1805,58 @@ export class SqliteReadModel implements ReadModel {
     if (within(resolved, await this.#paths.resolveDirectory(this.#stateDir))) {
       return skip("it resolves into the read model's state directory");
     }
-    return path;
+    return existing ? { path, existing: resolved } : { path };
+  }
+
+  /**
+   * Whether the file of `key`, whose real path is `existing`, is reached
+   * only under another spelling of `key` (swamp-club#3939): some segment
+   * below the cache root has no directory entry of exactly its name, as on a
+   * case- or normalisation-insensitive filesystem (APFS, NTFS) where
+   * `VPC/1/raw` reaches `vpc/1/raw`. Where the filesystem folds nothing this
+   * is false without a look; where `realPath` gives the spelling on disk, a
+   * real path spelt as the key needs no listing either.
+   */
+  async #reachesAnotherSpelling(
+    namespace: string,
+    key: string,
+    existing: string,
+  ): Promise<boolean> {
+    const root = this.#cacheRoot(namespace);
+    const folding = await this.#foldingOf(root);
+    if (folding === "off") return false;
+    if (folding === "canonical") {
+      const realRoot = await this.#paths.resolveDirectory(root);
+      if (existing === join(realRoot, ...key.split("/"))) return false;
+    }
+    let dir = root;
+    for (const segment of key.split("/")) {
+      if (!await this.#paths.hasEntry(dir, segment, this.#readDir)) {
+        return true;
+      }
+      dir = join(dir, segment);
+    }
+    return false;
+  }
+
+  /**
+   * How `root` folds spellings: the probe of the state directory, run once
+   * and inside an exclusive section, for a root on its device, and `list`
+   * for one on another.
+   */
+  async #foldingOf(root: string): Promise<SpellingFolding> {
+    if (this.#forcedFolding !== undefined) return this.#forcedFolding;
+    let folding = this.#rootFolding.get(root);
+    if (folding === undefined) {
+      this.#probedFolding ??= await probeSpellingFolding(this.#stateDir);
+      folding = await spellingFoldingOf(
+        root,
+        this.#stateDir,
+        this.#probedFolding,
+      );
+      this.#rootFolding.set(root, folding);
+    }
+    return folding;
   }
 
   /**
@@ -2208,7 +2307,9 @@ export class SqliteReadModel implements ReadModel {
     // the ones it created are real directories under their parents.
     for (const dir of [...absentDirectories ?? []].reverse()) {
       this.#paths.markCreated(dir);
+      this.#paths.forgetListing(dirname(dir));
     }
+    this.#paths.forgetListing(dirname(path));
     for (
       let dir = dirname(path);
       dir !== root && dir.startsWith(root + SEPARATOR);
@@ -3421,6 +3522,12 @@ class PathCache {
   readonly #resolved = new Map<string, string>();
   /** Absent directories above a path just checked, for its write. */
   readonly #absent = new Map<string, readonly string[]>();
+  /**
+   * Directories' entry names, exactly as listed, for the aliased-spelling
+   * guard (swamp-club#3939). Kept for one page at most, and forgotten for a
+   * directory a write adds an entry to.
+   */
+  readonly #listings = new Map<string, ReadonlySet<string>>();
 
   isDirectory(path: string): boolean {
     return this.#directories.has(path);
@@ -3486,10 +3593,38 @@ class PathCache {
     return real;
   }
 
+  /**
+   * Whether `dir` lists an entry named exactly `name`, listing it through
+   * `readDir` only the first time it is asked about.
+   */
+  async hasEntry(
+    dir: string,
+    name: string,
+    readDir: (dir: string) => AsyncIterable<Deno.DirEntry>,
+  ): Promise<boolean> {
+    let names = this.#listings.get(dir);
+    if (names === undefined) {
+      const listed = new Set<string>();
+      for await (const entry of readDir(dir)) listed.add(entry.name);
+      names = listed;
+      this.#listings.set(dir, names);
+    }
+    return names.has(name);
+  }
+
+  forgetListing(dir: string): void {
+    this.#listings.delete(dir);
+  }
+
+  forgetListings(): void {
+    this.#listings.clear();
+  }
+
   clear(): void {
     this.#directories.clear();
     this.#resolved.clear();
     this.#absent.clear();
+    this.#listings.clear();
   }
 }
 

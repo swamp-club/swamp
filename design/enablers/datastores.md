@@ -3889,6 +3889,36 @@ Retrying would block every later commit, and with them chunk GC, so a put
 that conflicts is logged and skipped like a refused key, and stays indexed. A
 tombstone under a file has nothing to remove.
 
+**Spellings that alias** (swamp-club#3939). On a case- or
+normalisation-insensitive filesystem (APFS, NTFS), a key nothing owns can
+reach another key's file: `VPC/1/raw` reaches `vpc/1/raw`. The read model
+neither removes nor writes through such a key: a put or tombstone of a key
+with no file ownership, whose file exists but some segment of whose path has
+no directory entry of exactly its name, is logged and skipped, and stays
+indexed (`aliased_skipped` in the catch-up span). This holds for every
+checkout, solo ones included, since the same replay runs everywhere.
+
+The check costs nothing where nothing folds. The read model probes its state
+directory once, inside its exclusive section (`spelling_folding.ts`), and
+each cache root on the same device takes the result:
+
+- `off`: neither an upper-case nor a decomposed spelling reaches the probe
+  file. The check is skipped, so a replay on Linux is unchanged.
+- `canonical`: a spelling reaches it, and `realPath` gives the name on
+  disk. A key whose file's real path is spelt as the key needs no listing;
+  only a mismatch, an alias or a symlinked directory, is checked against
+  the directory listings.
+- `list`: a spelling reaches it but `realPath` echoes the spelling given, the
+  probe failed, or the root is on another device. Every unowned key whose
+  file exists is checked against the listings.
+
+Listings are cached for one apply page and forgotten for a directory a write
+adds to, so a page lists each directory once at most. Two limits remain. A
+compacted base load writes keys that own their files, so it is not checked,
+and two owned keys that differ only in case inside one base still share a
+file on such a filesystem. Per-directory casefolding below a cache root
+(ext4's `chattr +F`) is not detected.
+
 **Failures.** Any other failure throws `ReadModelApplyError`, naming the
 namespace, partition and seq, and leaves the cursor before the commit, so the
 next catch-up tries it again. Causes are a `BlobRef` with a `legacyKey` (no
@@ -6167,6 +6197,10 @@ refusal fails the whole commit with `403` and the op's index:
   needs `write` on that name (`writeAccessesOf`). Without that, a caller
   with `write` on one definition could tombstone, or for a vault overwrite,
   any other by naming it as the counterpart.
+- **Spellings that alias.** An aliased spelling of a key nothing owns
+  reaches no other key's file on a case- or normalisation-insensitive
+  filesystem: the read model skips it (see "Spellings that alias" under the
+  v3 read model).
 
 `integration/datastore_v3_*_staging_test.ts` run every repository write on
 v3 through `withAuditedV3Env`. Each scenario's commits must pass these

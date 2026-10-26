@@ -497,6 +497,9 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     // swamp-club#3617: puts back a format marker another process wrote.
     "src/infrastructure/datastore_v3/v3_datastore.ts: removeBlankMarker":
       CONFIG_WRITE,
+    // swamp-club#3939: an empty probe file, removed straight after.
+    "src/infrastructure/datastore_v3/spelling_folding.ts: probeSpellingFolding":
+      "Writes an empty probe file of a fixed name; no value reaches it.",
     "src/infrastructure/persistence/auth_repository.ts: AuthRepository":
       CONFIG_WRITE,
     "src/infrastructure/persistence/auth_verification_repository.ts: AuthVerificationRepository":

@@ -21,7 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
-import type { Op } from "../../domain/datastore_v3/op.ts";
+import { type Op, tombstoneOp } from "../../domain/datastore_v3/op.ts";
 import {
   blobPut,
   dataKey,
@@ -31,6 +31,7 @@ import {
   MODEL_ID,
   MODEL_TYPE,
   modelCommit,
+  modelIntent,
   modelPartition,
   savePut,
   versionOp,
@@ -46,6 +47,7 @@ import {
   SqliteReadModel,
   type SqliteReadModelOptions,
 } from "./sqlite_read_model.ts";
+import type { SpellingFolding } from "./spelling_folding.ts";
 import { catalogRow } from "./v3_catalog.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 
@@ -703,4 +705,287 @@ Deno.test({
       }
     });
   },
+});
+
+/**
+ * Whether the filesystem holding `dir` reaches a file under an upper-case
+ * or decomposed spelling of its name: an oracle independent of the probe.
+ */
+async function foldsSpellings(dir: string): Promise<boolean> {
+  await Deno.mkdir(dir, { recursive: true });
+  const name = "oracle-é";
+  await Deno.writeTextFile(join(dir, name), "");
+  try {
+    for (const spelling of [name.toUpperCase(), name.normalize("NFD")]) {
+      try {
+        await Deno.lstat(join(dir, spelling));
+        return true;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    return false;
+  } finally {
+    await Deno.remove(join(dir, name));
+  }
+}
+
+/** Catches `readModel` up, and returns its catch-up span's attributes. */
+async function catchUpAttributes(
+  readModel: SqliteReadModel,
+): Promise<Record<string, unknown>> {
+  let attributes: Record<string, unknown> = {};
+  await withCapturedSpans(async (spans) => {
+    await readModel.catchUp(signal());
+    attributes = findSpan(spans, "swamp.datastore.v3.readmodel.catchup")
+      .attributes;
+  });
+  return attributes;
+}
+
+const ALIASED = "swamp.datastore.v3.aliased_skipped";
+
+/** A tombstone of the fixture's data version `name`@`version`. */
+function dataTombstone(name: string, version: number): Op {
+  return tombstoneOp({
+    intent: modelIntent({ kind: "data.delete", name, version }),
+    key: dataKey(name, version),
+  });
+}
+
+const FORCED_MODES: readonly (SpellingFolding | undefined)[] = [
+  undefined,
+  "canonical",
+  "list",
+];
+
+for (const spellingFolding of FORCED_MODES) {
+  const mode = spellingFolding ?? "probed";
+
+  Deno.test(`SqliteReadModel: a tombstone of a key nothing owns leaves a file another spelling of the key reaches (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+      // Where the filesystem folds case `VPC/1/raw` resolves to `vpc/1/raw`.
+      await env.append(2, "", [dataTombstone("VPC", 1)]);
+      const readModel = env.open({ spellingFolding });
+      try {
+        const attributes = await catchUpAttributes(readModel);
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 1)),
+          "vpc@1",
+        );
+        const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+        assertEquals(attributes[ALIASED], folds ? 1 : undefined);
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
+  Deno.test(`SqliteReadModel: a put of a key nothing owns does not overwrite a file another spelling of the key reaches (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+      await env.append(2, "", [await savePut("VPC", 1, "forged")]);
+      const readModel = env.open({ spellingFolding });
+      try {
+        const attributes = await catchUpAttributes(readModel);
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 1)),
+          "vpc@1",
+        );
+        const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+        assertEquals(attributes[ALIASED], folds ? 1 : undefined);
+        if (!folds) {
+          assertEquals(
+            await readOrAbsent(env.contentPath("", "VPC", 1)),
+            "forged",
+          );
+        }
+        // Both stay indexed, so history and chunk GC stay whole.
+        const live = await liveKeys(readModel, "");
+        assert(live.includes(dataKey("VPC", 1).toString()));
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
+  Deno.test(`SqliteReadModel: a put of a decomposed spelling of a key nothing owns does not overwrite the composed spelling's file (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      const composed = "café";
+      const decomposed = composed.normalize("NFD");
+      await env.append(1, "", [
+        await savePut(composed, 1),
+        versionOp(composed, 1),
+      ]);
+      await env.append(2, "", [await savePut(decomposed, 1, "forged")]);
+      const readModel = env.open({ spellingFolding });
+      try {
+        await readModel.catchUp(signal());
+        assertEquals(
+          await readOrAbsent(env.contentPath("", composed, 1)),
+          `${composed}@1`,
+        );
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
+  Deno.test(`SqliteReadModel: a key that owns its file is written through another spelling of its directory (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("VPC", 1), versionOp("VPC", 1)]);
+      await env.append(2, "", [await savePut("vpc", 2), versionOp("vpc", 2)]);
+      // vpc@2 owns its file now, wherever its directory's spelling leads.
+      await env.append(3, "", [await savePut("vpc", 2, "second")]);
+      // In full, so vpc@2's first file is on disk when the second put lands.
+      const readModel = env.open({ spellingFolding, netReplay: false });
+      try {
+        const attributes = await catchUpAttributes(readModel);
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "vpc", 2)),
+          "second",
+        );
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "VPC", 1)),
+          "VPC@1",
+        );
+        assertEquals(attributes[ALIASED], undefined);
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+
+  Deno.test(`SqliteReadModel: a recovery replay over the files on disk keeps what an incremental catch-up kept (${mode}, swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      await env.append(1, "", [await savePut("vpc", 1), versionOp("vpc", 1)]);
+      await env.append(2, "", [await savePut("VPC", 1, "forged")]);
+      await env.append(3, "", [dataTombstone("VPC", 1)]);
+      const first = env.open({ spellingFolding });
+      try {
+        await first.catchUp(signal());
+      } finally {
+        await first.close();
+      }
+      const after = await readOrAbsent(env.contentPath("", "vpc", 1));
+      assertEquals(after, "vpc@1");
+      // The state is lost: every key replays unowned over its file.
+      const replay = env.open({
+        spellingFolding,
+        stateDir: join(dirname(env.repoDir), "recovered-state"),
+        netReplay: false,
+      });
+      try {
+        await replay.catchUp(signal());
+        assertEquals(await readOrAbsent(env.contentPath("", "vpc", 1)), after);
+      } finally {
+        await replay.close();
+      }
+    });
+  });
+
+  Deno.test(`SqliteReadModel: a net replay of spellings that alias leaves what a full replay leaves (${mode}, swamp-club#3939)`, async () => {
+    const outcomes: unknown[] = [];
+    for (const netReplay of [true, false]) {
+      await withEnv(async (env) => {
+        await env.append(1, "", [
+          await savePut("vpc", 1, "a"),
+          versionOp("vpc", 1),
+        ]);
+        await env.append(2, "", [await savePut("VPC", 1, "forged")]);
+        await env.append(3, "", [await savePut("vpc", 1, "b")]);
+        const readModel = env.open({ spellingFolding, netReplay });
+        try {
+          const attributes = await catchUpAttributes(readModel);
+          outcomes.push([
+            await readOrAbsent(env.contentPath("", "vpc", 1)),
+            await readOrAbsent(env.contentPath("", "VPC", 1)),
+            attributes[ALIASED],
+          ]);
+        } finally {
+          await readModel.close();
+        }
+      });
+    }
+    assertEquals(outcomes[0], outcomes[1]);
+  });
+}
+
+if (Deno.build.os !== "windows") {
+  Deno.test("SqliteReadModel: a key reached through a symlinked directory is not taken for another spelling (swamp-club#3939)", async () => {
+    const outcomes: unknown[] = [];
+    for (const spellingFolding of ["off", "canonical", "list"] as const) {
+      await withEnv(async (env) => {
+        await env.append(1, "", [await savePut("vpc", 1, "old")]);
+        const link = dirname(dirname(env.contentPath("", "vpc", 1)));
+        const real = join(dirname(link), "real");
+        await writeLocal(join(real, "1", "raw"), "old");
+        await Deno.symlink(real, link, { type: "dir" });
+        await env.append(2, "", [await savePut("vpc", 1, "new")]);
+        // A fresh state: the put of vpc@1 is unowned over the linked file.
+        const readModel = env.open({ spellingFolding, netReplay: false });
+        try {
+          const attributes = await catchUpAttributes(readModel);
+          outcomes.push([
+            await readOrAbsent(join(real, "1", "raw")),
+            attributes[ALIASED],
+          ]);
+        } finally {
+          await readModel.close();
+        }
+      });
+    }
+    assertEquals(outcomes[1], outcomes[0]);
+    assertEquals(outcomes[2], outcomes[0]);
+  });
+}
+
+Deno.test("SqliteReadModel: a full replay over files spelt as their keys lists no directory unless the mode is list, and each at most once a page (swamp-club#3939)", async () => {
+  const ITEMS = 50;
+  for (const spellingFolding of ["off", "canonical", "list"] as const) {
+    await withEnv(async (env) => {
+      const ops: Op[] = [];
+      for (let i = 0; i < ITEMS; i++) {
+        ops.push(await savePut(`item-${i}`, 1), versionOp(`item-${i}`, 1));
+      }
+      await env.append(1, "", ops);
+      const first = env.open({ spellingFolding: "off" });
+      try {
+        await first.catchUp(signal());
+      } finally {
+        await first.close();
+      }
+      const listed: string[] = [];
+      const replay = env.open({
+        spellingFolding,
+        stateDir: join(dirname(env.repoDir), "recovered-state"),
+        netReplay: false,
+        readDir: (dir) => {
+          listed.push(dir);
+          return Deno.readDir(dir);
+        },
+      });
+      try {
+        await replay.catchUp(signal());
+      } finally {
+        await replay.close();
+      }
+      if (spellingFolding === "list") {
+        // Each directory from the root down to every file, listed once in
+        // the one page.
+        const root = v3CacheRoot(env.repoDir, "");
+        const dirs = new Set<string>();
+        for (let i = 0; i < ITEMS; i++) {
+          const segments = dataKey(`item-${i}`, 1).toString().split("/");
+          for (let depth = 0; depth < segments.length; depth++) {
+            dirs.add(join(root, ...segments.slice(0, depth)));
+          }
+        }
+        assertEquals(listed.toSorted(), [...dirs].toSorted());
+      } else {
+        assertEquals(listed, []);
+      }
+    });
+  }
 });
