@@ -979,8 +979,18 @@ resources is authorized as `*` (swamp-club#2675):
   that fails to parse is judged on the name it declares with no tags, since its
   tags cannot be read, so a tag-conditioned deny does not hide it.
   `model.evaluate` without a name evaluates every behavior, since evaluation
-  orders them all in one dependency graph, but saves and returns only the
-  readable ones.
+  orders them all in one dependency graph, but returns only the readable ones.
+- `model.evaluate` and `workflow.evaluate` are admitted on `read` but save an
+  evaluation only when the caller may `run` the behavior or workflow, as the
+  runs that write the same files are decided (swamp-club#3940): `admin` for a
+  restricted or control-plane behavior type. A
+  `--last-evaluated` run replays the saved file, and a workflow's records the
+  inputs it was evaluated with, so a reader could otherwise choose what a
+  runner executes. A reader gets the evaluation back with `saved: false` and no
+  `outputPath`. Evaluate has no method, so a `run` grant conditioned on
+  `methodName` does not let it save. A file saved before this rule records no
+  producer and is not told apart: a run without `--last-evaluated`, or an
+  evaluate by a caller who may run, rewrites it.
 - `data.query` drops unreadable records inside the query, before the limit,
   `limited` and any `select` projection are computed.
 - Reports are data: `report.get` and `report.search` cover only reports whose

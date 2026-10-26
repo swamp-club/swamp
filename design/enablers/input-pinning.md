@@ -60,7 +60,8 @@ workflow cache, whose expressions were resolved when the cache was written. The
 run records the inputs it was started with, which can differ. Each behavior
 step then replays its definition's evaluated cache, which is keyed by behavior
 name and shared by every workflow that runs the behavior. Another workflow's
-run, or `model evaluate`, can rewrite it in between. One run can therefore mix
+run, or `model evaluate` by a caller who may run the behavior, can rewrite it
+in between. One run can therefore mix
 values from three evaluations: the workflow cache's, a definition cache's, and
 its own.
 

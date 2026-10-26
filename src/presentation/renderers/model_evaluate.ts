@@ -72,6 +72,11 @@ class LogModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
     if (item.outputPath) {
       logger.info("  Output: {outputPath}", { outputPath: item.outputPath });
     }
+    if (item.saved === false) {
+      logger.info(
+        `  Not saved: saving needs the run permission on this ${noun}`,
+      );
+    }
   }
 
   private renderAll(data: ModelEvaluateAllData): void {
@@ -94,6 +99,11 @@ class LogModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
         logger.info("    Output: {outputPath}", {
           outputPath: item.outputPath,
         });
+      }
+      if (item.saved === false) {
+        logger.info(
+          `    Not saved: saving needs the run permission on this ${noun}`,
+        );
       }
     }
   }
