@@ -1849,7 +1849,8 @@ export class SqliteReadModel implements ReadModel {
       : await this.#listedSpelling(root, key);
     // No listed name matches a segment as the filesystem might fold it.
     if (onDisk === undefined) return true;
-    if (onDisk === key) return false;
+    // Not even when spelt as the key: where names are listed decomposed
+    // (HFS+), a decomposed key lists as itself over its composed twin's file.
     return [...new Set([onDisk, onDisk.normalize("NFC")])].some((spelling) =>
       spelling !== key &&
       (decided.has(spelling) ||

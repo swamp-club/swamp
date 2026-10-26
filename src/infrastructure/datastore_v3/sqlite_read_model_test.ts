@@ -1202,3 +1202,40 @@ Deno.test("SqliteReadModel: in list mode a directory a write adds in a page is s
     }
   });
 });
+
+for (const tombstone of [false, true]) {
+  const change = tombstone ? "tombstone" : "put";
+  Deno.test(`SqliteReadModel: where names are listed decomposed, a ${change} of a decomposed key leaves its composed twin's file (swamp-club#3939)`, async () => {
+    await withEnv(async (env) => {
+      const composed = "caf\u00e9";
+      const decomposed = composed.normalize("NFD");
+      await env.append(1, "", [
+        await savePut(composed, 1),
+        versionOp(composed, 1),
+      ]);
+      await env.append(2, "", [
+        tombstone
+          ? dataTombstone(decomposed, 1)
+          : await savePut(decomposed, 1, "forged"),
+      ]);
+      // As on HFS+, which lists every name decomposed and whose realPath
+      // the probe cannot trust.
+      const readModel = env.open({
+        spellingFolding: "list",
+        readDir: decomposedReadDir,
+        netReplay: false,
+      });
+      try {
+        const attributes = await catchUpAttributes(readModel);
+        assertEquals(
+          await readOrAbsent(env.contentPath("", composed, 1)),
+          `${composed}@1`,
+        );
+        const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+        assertEquals(attributes[ALIASED], folds ? 1 : undefined);
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+}
