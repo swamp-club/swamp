@@ -141,6 +141,7 @@ import {
   V3_LOCAL_COPIES_DIR,
   v3BucketBindingAt,
   v3ReplicaFor,
+  v3ReplicatesAt,
 } from "./v3_datastore_binding.ts";
 
 export { V3_LOCAL_COPIES_DIR };
@@ -814,7 +815,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const admits = datastoreKeyFilter(options.directories, options.exclude);
   const commitsDbPath = v3CommitsDbPath(datastorePath, repoDir);
   ensureDirSync(dirname(commitsDbPath));
-  const commitStore = SqliteCommitStore.open(commitsDbPath);
+  const commitStore = SqliteCommitStore.open(commitsDbPath, {
+    replicated: v3ReplicatesAt(datastorePath),
+  });
   const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath), {
     // Recovery judges whether this process still runs by it
     // (swamp-club#3564).

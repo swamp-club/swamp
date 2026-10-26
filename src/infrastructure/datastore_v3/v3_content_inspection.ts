@@ -28,7 +28,9 @@
  * database is opened read-only and the datastore's chunks are only
  * `stat`ed. The commit store is never opened, so the checkout's view may lag
  * the datastore's; a chunk absent from the datastore is not reported, as a
- * lagging checkout may still name one history compaction released.
+ * lagging checkout may still name one history compaction released. Only a
+ * copy whose replication lineage was found broken has its `commits.db`
+ * quick-checked, read-only (swamp-club#3935).
  *
  * @module
  */
@@ -50,8 +52,15 @@ import { unreadableRecordAdvice } from "../../domain/datastore_v3/read_model.ts"
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import { AT_RISK_DIR, READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
-import { type V3KeptLineage, v3KeptLineages } from "./litestream/v3_copy.ts";
+import {
+  quickCheck,
+  type V3KeptLineage,
+  v3KeptLineages,
+  v3ReplicaCheckOf,
+} from "./litestream/v3_copy.ts";
 import { v3DatastoreConfigOf } from "./v3_repo_context.ts";
+import { v3CommitsDbPath } from "./v3_datastore.ts";
+import { v3ReplicatesAt } from "./v3_datastore_binding.ts";
 
 /** How many entries of each kind an inspection lists; the rest are counted. */
 export const V3_CONTENT_LISTED = 10;
@@ -127,6 +136,70 @@ export async function inspectV3KeptLineages(
     options.datastoreConfig,
   );
   return await v3KeptLineages(location.path);
+}
+
+/**
+ * Whether the lineage this checkout's copy replicates can be restored, as
+ * its sidecar last found (swamp-club#3935):
+ *
+ * - `verified`: the last check of this lineage restored it cleanly;
+ * - `unverified`: no check of this lineage has finished yet;
+ * - `broken`: the last check failed SQLite's integrity check, and the next
+ *   writer starts a new lineage from this copy;
+ * - `broken-copy-damaged`: so did the copy's own quick check, so no new
+ *   lineage is started from it.
+ */
+export interface V3ReplicaRestorable {
+  readonly status: "verified" | "unverified" | "broken" | "broken-copy-damaged";
+  readonly lineageFence?: number;
+  readonly txid?: string;
+  readonly checkedAt?: string;
+  readonly error?: string;
+  /** The copy's quick check, when the lineage is broken. */
+  readonly copyCheck?: string;
+}
+
+/**
+ * What this checkout's sidecar last found about restoring its replication
+ * lineage (swamp-club#3935), for `doctor datastores`; undefined while the
+ * datastore does not replicate. Read-only, from the copy's own files: the
+ * copy is quick-checked only when its lineage was found broken.
+ */
+export async function inspectV3ReplicaRestorable(
+  options: {
+    readonly repoDir: string;
+    readonly datastoreConfig: DatastoreConfig;
+  },
+): Promise<V3ReplicaRestorable | undefined> {
+  const location = await v3DatastoreConfigOf(
+    options.repoDir,
+    options.datastoreConfig,
+  );
+  if (!v3ReplicatesAt(location.path)) return undefined;
+  const commitsDb = v3CommitsDbPath(location.path, options.repoDir);
+  const check = await v3ReplicaCheckOf({
+    datastorePath: location.path,
+    repoDir: options.repoDir,
+    commitsDb,
+  });
+  const verdict = check?.verdict;
+  if (check === undefined) return { status: "unverified" };
+  if (verdict === undefined || verdict.lineageFence !== check.lineageFence) {
+    return { status: "unverified", lineageFence: check.lineageFence };
+  }
+  const recorded = {
+    lineageFence: verdict.lineageFence,
+    txid: verdict.txid,
+    checkedAt: verdict.checkedAt,
+  };
+  if (verdict.ok) return { status: "verified", ...recorded };
+  const copyCheck = quickCheck(commitsDb);
+  return {
+    status: copyCheck === "ok" ? "broken" : "broken-copy-damaged",
+    ...recorded,
+    ...(verdict.error !== undefined ? { error: verdict.error } : {}),
+    copyCheck,
+  };
 }
 
 export interface InspectV3ContentOptions {

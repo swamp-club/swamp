@@ -37,6 +37,7 @@ import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_com
 import {
   installByRename,
   restoreV3Copy,
+  V3RestoredDatabaseCorruptError,
   V3RestoreError,
 } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
 import {
@@ -320,7 +321,9 @@ Deno.test({
             install: installByRename(target),
             deadlineMs: 30_000,
           }),
-        V3RestoreError,
+        // SQLite fails the integrity check itself with SQLITE_NOTADB: a
+        // damaged restore, which marks the lineage broken (swamp-club#3935).
+        V3RestoredDatabaseCorruptError,
       );
       assertEquals(count(target), 2);
       assertEquals(await leftovers(dir), []);
@@ -344,6 +347,8 @@ Deno.test({
         V3RestoreError,
       );
       assertStringIncludes(newer.message, "newer");
+      // A newer schema is an upgrade to make, not a broken lineage.
+      assertEquals(newer instanceof V3RestoredDatabaseCorruptError, false);
       assertEquals(count(target), 2);
     });
   },

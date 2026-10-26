@@ -26,6 +26,7 @@ import {
   supervisorArgs,
   type SupervisorDeps,
   type SupervisorOptions,
+  type SupervisorVerifyRequest,
   touchUseLock,
 } from "./replication_supervisor.ts";
 import {
@@ -33,6 +34,8 @@ import {
   readPresence,
   type ReplicationPaths,
   replicationPathsFor,
+  writeCopyState,
+  writeReplicaVerification,
 } from "./replication_files.ts";
 
 const UNIX = Deno.build.os !== "windows";
@@ -321,6 +324,136 @@ Deno.test({
       );
       assertEquals(await readPresence(paths), { kind: "missing" });
       assertEquals(h.started, false);
+    });
+  },
+});
+
+Deno.test("parseSupervisorArgs: reads back the replica check's interval (swamp-club#3935)", () => {
+  const options: SupervisorOptions = {
+    commitsDb: "/d/commits.db",
+    privateRoot: "/tmp/swamp-1",
+    lineageFence: 7,
+    replicaPath: "/r/_litestream/000000000007",
+    replicaType: "s3",
+    idleMs: 300_000,
+    stopWaitMs: 5_000,
+    tickMs: 2_000,
+    verifyIntervalMs: 60_000,
+  };
+  assertEquals(parseSupervisorArgs(supervisorArgs(options)), options);
+});
+
+/** A sidecar whose copy acknowledged `txid` on lineage 3, with a fake check. */
+async function verifySetup(dir: string, txid = "0000000000000005") {
+  const { options, paths } = await setup(dir);
+  await writeCopyState(paths, {
+    replicaRoot: "file:/r",
+    lineageFence: 3,
+    txid,
+  });
+  return {
+    options: { ...options, replicaType: "file" as const },
+    paths,
+  };
+}
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: checks its replica once the writer acknowledged a TXID, then idles out",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await verifySetup(dir);
+      const calls: SupervisorVerifyRequest[] = [];
+      const h = harness();
+      h.deps.verifyReplica = (request) => {
+        calls.push(request);
+        return Promise.resolve(undefined);
+      };
+      assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
+      // Once when it started, and not again at the idle exit: that TXID was
+      // tried, and no new one was acknowledged.
+      assertEquals(calls.length, 1);
+      assertEquals(calls[0].lineageFence, 3);
+      assertEquals(calls[0].replicaType, "file");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a TXID a verdict covers is not checked again",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options, paths } = await verifySetup(dir);
+      const calls: SupervisorVerifyRequest[] = [];
+      await writeReplicaVerification(paths, {
+        lineageFence: 3,
+        txid: "0000000000000005",
+        checkedAt: new Date().toISOString(),
+        ok: true,
+      });
+      const h = harness();
+      h.deps.verifyReplica = (request) => {
+        calls.push(request);
+        return Promise.resolve(undefined);
+      };
+      assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
+      assertEquals(calls.length, 0);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: an idle sidecar waits for a running check before it stops",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await verifySetup(dir);
+      const h = harness();
+      let finish!: () => void;
+      h.deps.verifyReplica = () =>
+        new Promise<void>((resolve) => finish = resolve);
+      let stoppedDuringCheck = false;
+      h.at(3_000, () => {
+        stoppedDuringCheck = h.child.signals.length > 0;
+        finish();
+      });
+      const started = h.now();
+      assertEquals(await runReplicationSupervisor(options, h.deps), "idle");
+      assertEquals(stoppedDuringCheck, false);
+      assert(h.now() - started >= 3_000);
+    });
+  },
+});
+
+Deno.test({
+  name: "runReplicationSupervisor: a stop request cancels a running check",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await verifySetup(dir);
+      const h = harness();
+      let stop!: () => void;
+      h.deps.stopRequested = new Promise((resolve) => stop = resolve);
+      let signal: AbortSignal | undefined;
+      h.deps.verifyReplica = (request) => {
+        signal = request.signal;
+        return new Promise((_, reject) =>
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new Error("aborted")),
+          )
+        );
+      };
+      h.at(500, () => stop());
+      assertEquals(
+        await runReplicationSupervisor(options, h.deps),
+        "stop-requested",
+      );
+      assertEquals(signal?.aborted, true);
     });
   },
 });

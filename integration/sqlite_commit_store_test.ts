@@ -418,6 +418,44 @@ Deno.test("SqliteCommitStore: opens with WAL, synchronous FULL and the default a
   });
 });
 
+Deno.test("SqliteCommitStore: a replicated store never checkpoints its own WAL (swamp-club#3935)", async () => {
+  // Past SQLite's 1000-frame auto-checkpoint: each commit writes the commits
+  // table and its indexes.
+  const commits = 600;
+  const mainFileGrowth = async (options: SqliteCommitStoreOptions) => {
+    let growth = 0;
+    await withStore(async (store, path) => {
+      const before = (await Deno.stat(path)).size;
+      for (let seq = 1; seq <= commits; seq++) {
+        await store.append(leaseCommit(otherPartition(), seq));
+      }
+      growth = (await Deno.stat(path)).size - before;
+    }, options);
+    return growth;
+  };
+  // Only Litestream may move frames into the file of a replicated copy.
+  assertEquals(await mainFileGrowth({ replicated: true }), 0);
+  assert(await mainFileGrowth({}) > 0);
+});
+
+Deno.test("SqliteCommitStore: a replicated store turns auto-checkpoint off", async () => {
+  await withTempDir((dir) => {
+    const db = openCommitsDatabase(join(dir, "commits.db"), {
+      replicated: true,
+    });
+    try {
+      assertEquals(
+        (db.prepare("PRAGMA wal_autocheckpoint").get() as {
+          wal_autocheckpoint: number;
+        }).wal_autocheckpoint,
+        0,
+      );
+    } finally {
+      db.close();
+    }
+  });
+});
+
 Deno.test("SqliteCommitStore: refuses a database from a newer schema", async () => {
   await withTempDir((dir) => {
     const path = join(dir, "commits.db");

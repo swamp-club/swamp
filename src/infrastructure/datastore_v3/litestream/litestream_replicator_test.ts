@@ -46,12 +46,15 @@ import {
   DEFAULT_REPLICATOR_TIMINGS,
   LitestreamReplicator,
   type ReplicatorDeps,
+  resetForeignLitestreamState,
 } from "./litestream_replicator.ts";
 import {
   ensureSharedDir,
   isMarkedForReplacement,
+  readLitestreamStateOwner,
   type ReplicationPaths,
   replicationPathsFor,
+  writeCopyState,
   writeLineage,
   writePresence,
 } from "./replication_files.ts";
@@ -1244,5 +1247,52 @@ Deno.test({
         false,
       );
     });
+  },
+});
+
+Deno.test({
+  name:
+    "resetForeignLitestreamState: a sidecar starts Litestream afresh only on another lineage than its local state's (swamp-club#3935)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const dir = await Deno.realPath(
+      await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-ls-reset-" }),
+    );
+    try {
+      const commitsDb = join(dir, "commits.db");
+      const paths = await replicationPathsFor(commitsDb, join(dir, "priv"));
+      await ensureSharedDir(paths);
+      const state = join(dir, ".commits.db-litestream");
+      const plant = async () => {
+        await Deno.mkdir(join(state, "ltx", "0"), { recursive: true });
+        await Deno.writeTextFile(join(state, "ltx", "0", "a.ltx"), "x");
+      };
+      const present = async () =>
+        await Deno.stat(state).then(() => true, () => false);
+      // A copy from before the record goes by its last published head:
+      // published on another lineage, fresh.
+      await plant();
+      await writeCopyState(paths, {
+        replicaRoot: "file:/r",
+        lineageFence: 6,
+        txid: "0000000000000072",
+      });
+      await resetForeignLitestreamState(paths, 7);
+      assertEquals(await present(), false);
+      assertEquals(await readLitestreamStateOwner(paths), 7);
+      // A sidecar on lineage 7 that died before any head on it was
+      // published: its state is kept for the next one on lineage 7.
+      await plant();
+      await resetForeignLitestreamState(paths, 7);
+      assertEquals(await present(), true);
+      // Another lineage: fresh, and the record follows.
+      await resetForeignLitestreamState(paths, 8);
+      assertEquals(await present(), false);
+      assertEquals(await readLitestreamStateOwner(paths), 8);
+      // Nothing to remove is no error.
+      await resetForeignLitestreamState(paths, 9);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   },
 });

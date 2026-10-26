@@ -325,6 +325,9 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: droppedCommits":
       READ_ONLY_DB,
+    // swamp-club#3935: the writer's copy, before it restarts a lineage.
+    "src/infrastructure/datastore_v3/litestream/v3_copy.ts: quickCheck":
+      READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: txnAt":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/v3_datastore.ts: listV3Namespaces":
@@ -479,6 +482,13 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/datastore_v3/litestream/replication_files.ts: writeLineage":
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/litestream/replication_files.ts: writePresence":
+      CONFIG_WRITE,
+    // swamp-club#3935: a lineage, a TXID, a time and SQLite's integrity
+    // findings, which name pages and indexes, never stored values.
+    "src/infrastructure/datastore_v3/litestream/replication_files.ts: writeReplicaVerification":
+      CONFIG_WRITE,
+    // swamp-club#3935: the lineage Litestream's local state belongs to.
+    "src/infrastructure/datastore_v3/litestream/replication_files.ts: writeLitestreamStateOwner":
       CONFIG_WRITE,
     "src/infrastructure/datastore_v3/v3_config_adoption.ts: commitConfigAdoption":
       CONFIG_WRITE,

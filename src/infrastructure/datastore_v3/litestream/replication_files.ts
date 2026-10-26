@@ -31,7 +31,10 @@
  *   only by the lock holder), `replace-<pid>` marks, `use.lock` (shared by
  *   commands while they use the sidecar) and `lineage.json`; and, since
  *   swamp-club#3482, `copy.json` (which lineage and TXID the copy holds) and
- *   `restore.lock` (taken by a restore of the copy). The directory and the
+ *   `restore.lock` (taken by a restore of the copy); and, since
+ *   swamp-club#3935, `replica-verify.json` (whether the sidecar could restore
+ *   its lineage the way a reader would) and `litestream-state.json` (which
+ *   lineage Litestream's local state belongs to). The directory and the
  *   presence record are trusted only when this user owns them.
  * - In a per-user directory, `/tmp/swamp-<uid>/<hash>/`, created 0700 and
  *   checked before every use, what a process trusts for paths: the
@@ -56,6 +59,10 @@ import {
   parseProcessIdentity,
   type ProcessIdentity,
 } from "../../../domain/datastore_v3/process_liveness.ts";
+import {
+  parseReplicaVerification,
+  type ReplicaVerification,
+} from "../../../domain/datastore_v3/replica_verification.ts";
 import { atomicWriteTextFile } from "../../persistence/atomic_write.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
@@ -82,6 +89,10 @@ export interface ReplicationPaths {
   readonly copy: string;
   /** Serializes restores of the copy (swamp-club#3482). */
   readonly restoreLock: string;
+  /** The last check that the lineage can be restored (swamp-club#3935). */
+  readonly verify: string;
+  /** Which lineage Litestream's local state belongs to (swamp-club#3935). */
+  readonly litestreamState: string;
   readonly privateDir: string;
   readonly config: string;
   readonly socket: string;
@@ -142,6 +153,8 @@ export async function replicationPathsFor(
     lineage: join(sharedDir, "lineage.json"),
     copy: join(sharedDir, "copy.json"),
     restoreLock: join(sharedDir, "restore.lock"),
+    verify: join(sharedDir, "replica-verify.json"),
+    litestreamState: join(sharedDir, "litestream-state.json"),
     privateDir,
     config: join(privateDir, "litestream.yml"),
     socket,
@@ -419,6 +432,60 @@ export async function writeCopyState(
   state: LocalCopyState,
 ): Promise<void> {
   await atomicWriteTextFile(paths.copy, serializeLineageRecord(state));
+}
+
+/**
+ * Reads `replica-verify.json`; one that is missing or does not parse is no
+ * verdict, never a broken lineage.
+ */
+export async function readReplicaVerification(
+  paths: Pick<ReplicationPaths, "verify">,
+): Promise<ReplicaVerification | undefined> {
+  try {
+    return parseReplicaVerification(
+      JSON.parse(await Deno.readTextFile(paths.verify)),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes `replica-verify.json` by temp file and rename. */
+export async function writeReplicaVerification(
+  paths: Pick<ReplicationPaths, "verify">,
+  verification: ReplicaVerification,
+): Promise<void> {
+  await atomicWriteTextFile(paths.verify, JSON.stringify(verification));
+}
+
+/**
+ * The lineage Litestream's local state belongs to, or undefined when no
+ * record says (one missing, unreadable, or from before swamp-club#3935).
+ */
+export async function readLitestreamStateOwner(
+  paths: Pick<ReplicationPaths, "litestreamState">,
+): Promise<number | undefined> {
+  try {
+    const record = JSON.parse(await Deno.readTextFile(paths.litestreamState));
+    const fence = record?.lineageFence;
+    return typeof fence === "number" && Number.isSafeInteger(fence) &&
+        fence > 0
+      ? fence
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Records the lineage Litestream's local state belongs to. */
+export async function writeLitestreamStateOwner(
+  paths: Pick<ReplicationPaths, "litestreamState">,
+  lineageFence: number,
+): Promise<void> {
+  await atomicWriteTextFile(
+    paths.litestreamState,
+    JSON.stringify({ lineageFence }),
+  );
 }
 
 /**

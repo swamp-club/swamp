@@ -35,9 +35,11 @@ import {
 } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   acquireV3WriterLock,
+  advanceV3WriterLease,
   assertV3WriterCurrent,
   checkV3WriterLease,
   holdsV3WriterLock,
+  onV3HoldRetaken,
   onV3LeaseTaken,
   tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
@@ -601,5 +603,47 @@ Deno.test("onV3LeaseTaken: a listener that throws leaves a normal hold", async (
     } finally {
       stop();
     }
+  });
+});
+
+Deno.test("advanceV3WriterLease: moves the process's hold to the next fence and tells the retake listeners (swamp-club#3935)", async () => {
+  await withTempDir(async (dir) => {
+    const fences = memoryFenceStore();
+    const retaken: number[] = [];
+    const unsubscribe = onV3HoldRetaken((_path, fence) => {
+      retaken.push(fence);
+    });
+    const release = await acquireV3WriterLock(dir, { fenceStore: fences });
+    try {
+      assertEquals(await advanceV3WriterLease(dir), 2);
+      assertEquals(v3WriterFence(dir), 2);
+      assertEquals(fences.raised, [1, 2]);
+      assertEquals(retaken, [2]);
+    } finally {
+      unsubscribe();
+      await release();
+    }
+    assertEquals(await v3WriterLockHandle(dir).inspect(), null);
+    // Without a hold there is nothing to move.
+    assertEquals(await advanceV3WriterLease(dir), undefined);
+  });
+});
+
+Deno.test("advanceV3WriterLease: a move that fails still lets the hold be released (swamp-club#3935)", async () => {
+  await withTempDir(async (dir) => {
+    const fences = memoryFenceStore();
+    let refuse = false;
+    const failing: V3WriterFenceStore = {
+      writerFence: fences.writerFence,
+      raiseWriterFence: (next) =>
+        refuse
+          ? Promise.reject(new Error("commits.db is busy"))
+          : fences.raiseWriterFence(next),
+    };
+    const release = await acquireV3WriterLock(dir, { fenceStore: failing });
+    refuse = true;
+    await assertRejects(() => advanceV3WriterLease(dir), Error, "busy");
+    await release();
+    assertEquals(holdsV3WriterLock(dir), false);
   });
 });

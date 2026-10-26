@@ -402,6 +402,42 @@ const CASES: [
       await taker.release();
     },
   ],
+  [
+    "advance moves the holder to the next fence without letting the lease go (swamp-club#3935)",
+    async (store, clock) => {
+      const { writer } = writers(store, clock);
+      const a = writer();
+      const first = await a.lease.acquire({ maxWaitMs: 0 });
+      const next = await a.lease.advance(first);
+      assert(next !== undefined);
+      assertEquals(next.fence, first.fence + 1);
+      // The old hold is fenced; the new one holds.
+      await assertRejects(() => first.assertCurrent(), WriterFencedError);
+      await next.assertCurrent();
+      // No other writer got in: the lease is still held.
+      await assertRejects(
+        () => writer().lease.acquire({ maxWaitMs: 0 }),
+        WriterLeaseBusyError,
+      );
+      await next.release();
+    },
+  ],
+  [
+    "advance of a hold another writer took over moves nothing",
+    async (store, clock) => {
+      const { writer, gone } = writers(store, clock);
+      const a = writer();
+      const first = await a.lease.acquire({ maxWaitMs: 0 });
+      // a's process is gone: b takes over at the next fence.
+      gone.add(a.pid);
+      const taker = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(await a.lease.advance(first), undefined);
+      // b still holds the lease, at its own fence.
+      await taker.assertCurrent();
+      assertEquals(taker.fence, first.fence + 1);
+      await taker.release();
+    },
+  ],
 ];
 
 for (const [storeName, open] of STORES) {

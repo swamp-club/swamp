@@ -209,8 +209,11 @@ A forced checkpoint can move WAL frames into the database file before Litestream
 has shipped them. Litestream notices and takes a full snapshot, which is why the
 TRUNCATE replica grew 11×. The TRUNCATE runs, and one failover run, also logged
 `compaction failed … write snapshot ltx: read page … EOF / invalid argument`
-from the level-9 snapshot compactor. The data was still correct, but this is an
-open risk.
+from the level-9 snapshot compactor. The data was still correct here, but the
+same Litestream did lose frames to an application's checkpoint in the Phase 4
+dogfood: see [Verifying the replica](#verifying-the-replica-swamp-club3935). A
+replicated `commits.db` now runs with auto-checkpoint off, the second regime
+above.
 
 ## Knowing a commit is replicated
 
@@ -1672,6 +1675,147 @@ replica paths, and `syncAndPublishNow` passes them to `collectV3Lineages` on
 a lineage's first confirmation. `datastore_v3_rules_test` pins
 `replicaPaths()` calls to the resolver.
 
+## Verifying the replica (swamp-club#3935)
+
+**What happened.** In the Phase 4 dogfood (swamp-club#3916, on the buckets
+swamp-club#3756 populated), a v3 bucket datastore of about 6,400 commits
+could not be cloned on S3 or on GCS: every restore failed SQLite's integrity
+check (`Tree 2 page 17040 cell 7: 2nd reference to page 4131`), while the
+writer's own `commits.db` was intact. Restores at about 2,400 and 5,600
+commits had worked; at 4,400, 5,300 and 6,400 they failed.
+
+**Where it broke.** The lineage's level-9 snapshot restored cleanly. Every
+compacted file restored corrupt, even alone: L1 `1-1a` with the snapshot
+removed, and L2 `1-71`. The corrupt restore differed from the writer's copy
+in 18 of 24,050 pages, each a valid b-tree page holding an older version of
+itself (one was still as it was at TXID 2). Writes were missing; nothing
+was garbled. So Litestream never captured some WAL frames: the damage was
+in its L0 files, which compaction then merged.
+
+**Why.** litestream#1578: Litestream holds a long read transaction so no
+other connection can restart the WAL past what it has read. When a sync
+request on its control socket runs Litestream's database setup or one of its
+checkpoints, that transaction is opened on the request's context, and Go
+rolls it back when the request returns. Litestream still treats the lock as
+held. An application connection's auto-checkpoint (SQLite's default, 1000
+pages) can then restart the WAL before Litestream reads its newest frames,
+and Litestream's restart check passes, because the restarted WAL is shorter
+than where it stopped. swamp triggers this squarely: every write command
+starts or reuses a sidecar and forces a sync through the control socket. The
+fix, #1579, is on Litestream's main branch, merged on 2026-10-20 and in no
+release yet.
+
+`scripts/repro_v3_replica_restore.ts` reproduces it with Litestream alone,
+outside swamp: a WAL database written in bursts with indexed inserts,
+rewrites and deletes, a forced sync after each burst, and a restore and
+check after each. With 60 rounds per run (the two release rows ran the same
+seeds):
+
+| Litestream                    | App auto-checkpoint | Runs that ended corrupt |
+| ----------------------------- | ------------------- | ----------------------- |
+| 0.5.17 release                | 1000 (default)      | 7 of 12                 |
+| 0.5.17 release                | off                 | 0 of 12                 |
+| main at `f282d0e` (has #1579) | 1000 (default)      | 0 of 17                 |
+
+One of the 17 main runs, with Litestream stopped and restarted between
+bursts, restored a database that passed the integrity check but lacked rows
+the writer held. The 11 later runs of that kind, three of them on the same
+seed, did not. That run's harness did not yet check the sync request's
+answer, so a sync refused just after the restart would look the same; it is
+unexplained. The writer's check below would not catch such a loss, since
+nothing about the restore fails.
+
+**The workaround.** Until swamp pins a Litestream with #1579, a replicated
+`commits.db` turns auto-checkpoint off on every connection that commits
+(`SqliteCommitStoreOptions.replicated`): only Litestream checkpoints it, and
+Litestream handles its own WAL restarts. This is the "auto-checkpoint off"
+regime measured in [Checkpoint regimes (Q2)](#checkpoint-regimes-q2): the
+same replica size and restore time. A database that does not replicate keeps
+SQLite's default. The v3 fitness rule that refuses checkpoint pragmas pins
+this one site.
+
+**The writer checks its own replica.** A reader finds a replica it cannot
+restore only when it clones or refreshes, and by then nobody but the writer
+can use the datastore. So the sidecar's supervisor restores its own lineage,
+the way a reader does: at the TXID in `copy.json` (the writer's last
+published head), falling back to the latest state when compaction merged
+that TXID's files away, with the same integrity and schema checks, into a
+temp file in the private directory that it then deletes. It records the
+verdict in `replica-verify.json` beside `lineage.json`: the lineage, the
+TXID, when, and whether it restored.
+
+- **When.** Only when the writer has acknowledged a TXID the last verdict on
+  this lineage does not cover; at most once every 10 minutes; and once more
+  before the sidecar idles out, if anything was acknowledged since. The
+  check runs beside the tick loop, never inside a command, so no command
+  waits for it. An idle sidecar does not stop while a check runs, and a stop
+  request cancels it.
+- **What counts as broken.** Only a restore SQLite refuses: rows from its
+  integrity check, or the check itself failing with `SQLITE_CORRUPT` or
+  `SQLITE_NOTADB`, which is how a badly damaged file answers. A restore that
+  could not run (the bucket unreachable, or past the check's 30-minute
+  deadline, the same as a reader's restore) records nothing and is tried
+  again after the interval: restarting a lineage over a network failure
+  would upload a full snapshot for nothing. A SQLite error counts by its
+  primary result code, so extended codes such as `SQLITE_CORRUPT_INDEX` are
+  corruption too.
+- **What it costs.** One full restore per check: the whole database
+  downloaded from the bucket, about the size of `commits.db`, and written to
+  the private directory under `/tmp/swamp-<uid>`, which on a host whose
+  `/tmp` is a tmpfs holds it in memory until the check deletes it.
+
+**Recovery is a new lineage from the writer's copy.** The copy holds every
+commit the writer acknowledged, so a full snapshot of it replaces the broken
+lineage without losing anything.
+
+- A CLI write command decides its lineage in `prepareV3WriterLineage`. When
+  the verdict says the lineage it would continue is broken, it restarts at
+  its own fence instead, through the usual claim of `started.json`, the
+  outrank and foreign-root checks. Readers follow the new lineage once it is
+  confirmed, and collection then removes the broken one.
+  `recordV3LeaseFence` (a read-only recovery, serve's retake) never continues
+  a broken lineage either.
+- Serve holds one fence until it loses the lease, and a lineage cannot
+  restart at a fence the copy already began one at. So when serve's 30-second
+  probe finds its lineage broken, it moves its lease to the next fence
+  (`WriterLease.advance`): it creates the next fence record itself, so no
+  other writer can take the lease in between, and the existing retake path
+  replaces its sidecar and restarts the lineage at the new fence. A commit in
+  flight under the old fence is refused as fenced, as after any retake. Serve
+  moves once per broken lineage: when its copy fails its own check the
+  lineage is kept, and moving again would only fence its commits. A move that
+  fails is logged: when the next fence was not taken it is tried again at the
+  next probe; when it was taken but `commits.db` refused it, both fences are
+  released and serve's lease renewal takes a fresh one, as after a lost lease,
+  and the retake restarts the lineage.
+- Before restarting, the writer runs SQLite's quick check on its own copy. A
+  copy that fails it is not snapshotted into a new lineage, which would only
+  replace one broken replica with another: the lineage is kept and the
+  failure logged.
+- A sidecar on the new lineage starts Litestream without its local state.
+  Litestream 0.5 keeps one local position per database, not per replica, so
+  a sidecar on a new lineage would otherwise resume the old lineage's
+  position against an empty replica path, and fail its first sync once that
+  lineage's early L0 files had expired: the first restart on the dogfood
+  bucket did. `litestream-state.json` beside `lineage.json` records which
+  lineage the local state belongs to, written at every sidecar start, so
+  state a sidecar left on the same lineage (one that died before its first
+  head was published) is kept. A copy from before the record goes by the
+  lineage of its last published head.
+
+**Doctor.** `swamp doctor datastores` reports the `v3_replica_restorable`
+check (`v3ReplicaRestorableFinding` in `--json`) on a replicating checkout:
+it passes when the last check of the current lineage restored it, or none has
+run yet, and fails when the lineage was found broken, saying whether this
+copy is intact (the next write, or a running serve, starts a new lineage) or
+damaged too. It reads only the checkout's own files and downloads nothing.
+
+**The window.** Between the write that breaks a lineage and its restart,
+readers' clones and refreshes still fail: up to the check interval after the
+writer stops writing, plus the time until the next write (or serve's next
+probe). A reader's own failed restore could tell the writer sooner, but
+readers cannot write to the writer's copy; that is left for team mode.
+
 ## Upgrades
 
 The pinned version belongs to the swamp release that pins it. Each version
@@ -1759,11 +1903,15 @@ macOS.
 - **Upstream dependency.** swamp would pin a binary whose Windows support
   regressed in a minor release (0.5.16). Pin exactly, and run a probe suite like
   this one in CI on every bump, on all five release targets.
-- **Snapshot compaction errors** (`compaction failed … read page … EOF`)
-  appeared under forced TRUNCATE checkpoints and once in a failover run. The
-  data stayed correct. No matching upstream issue exists as of 2026-10-11 (the
-  closest is litestream#1199, a different snapshot-on-checkpoint compaction
-  failure). File one, with the `spike/` reproduction, before Phase 5.
+- **A replica the writer cannot see is broken** (swamp-club#3935).
+  Litestream 0.5.17 loses its read lock after a sync request, and an
+  application checkpoint then drops frames from the replica
+  (litestream#1578). swamp turns auto-checkpoint off on a replicated copy,
+  and its sidecar checks that its lineage restores. Bump the pin to the first
+  release with litestream#1579, and keep the check: it is what notices the
+  next such bug before readers do. The `compaction failed … read page … EOF`
+  log lines under forced checkpoints match litestream#1545 (fixed on main by
+  #1547, also unreleased); swamp never forces one.
 - **The sidecar sees bucket credentials and every commit.** Today's embedded
   Deno extraction checks only a version marker. It writes atomically (temp +
   rename, `0o755`) and runs a `--version` health check, but nothing verifies the

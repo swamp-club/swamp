@@ -39,9 +39,16 @@
 
 import { shouldIdleExit } from "../../../domain/datastore_v3/litestream_replication.ts";
 import {
+  REPLICA_VERIFY_INTERVAL_MS,
+  type ReplicaVerification,
+  shouldVerifyReplica,
+} from "../../../domain/datastore_v3/replica_verification.ts";
+import {
   clearReplacementMarks,
   ensurePrivateDir,
   ensureSharedDir,
+  readCopyState,
+  readReplicaVerification,
   removeOwnPresence,
   type ReplicationPaths,
   replicationPathsFor,
@@ -75,6 +82,11 @@ export interface SupervisorOptions {
   readonly stopWaitMs: number;
   /** How often the idle check runs. */
   readonly tickMs: number;
+  /**
+   * How often, at most, the sidecar restores its lineage to check it
+   * (swamp-club#3935); {@link REPLICA_VERIFY_INTERVAL_MS} when absent.
+   */
+  readonly verifyIntervalMs?: number;
 }
 
 /** A running Litestream child. */
@@ -97,6 +109,20 @@ export interface SupervisorDeps {
   sleep(ms: number): Promise<void>;
   /** Resolves once the supervisor is asked to stop (SIGTERM, SIGINT). */
   stopRequested?: Promise<void>;
+  /**
+   * Restores the lineage as a reader would and records the verdict
+   * (swamp-club#3935); see `replica_verifier.ts`. Without it the sidecar
+   * never checks its replica.
+   */
+  verifyReplica?(request: SupervisorVerifyRequest): Promise<unknown>;
+}
+
+/** What a supervisor asks {@link SupervisorDeps.verifyReplica} to check. */
+export interface SupervisorVerifyRequest {
+  readonly paths: ReplicationPaths;
+  readonly lineageFence: number;
+  readonly replicaType: LitestreamReplicaType;
+  readonly signal: AbortSignal;
 }
 
 /** Why a supervisor ended. */
@@ -135,6 +161,9 @@ export function supervisorArgs(options: SupervisorOptions): string[] {
     String(options.stopWaitMs),
     "--tick-ms",
     String(options.tickMs),
+    ...(options.verifyIntervalMs !== undefined
+      ? ["--verify-interval-ms", String(options.verifyIntervalMs)]
+      : []),
   ];
 }
 
@@ -158,6 +187,7 @@ export function parseSupervisorArgs(
   const idleMs = count("--idle-ms");
   const stopWaitMs = count("--stop-wait-ms");
   const tickMs = count("--tick-ms");
+  const verifyIntervalMs = count("--verify-interval-ms");
   if (
     commitsDb === undefined || privateRoot === undefined ||
     replicaPath === undefined || lineageFence === undefined ||
@@ -174,6 +204,7 @@ export function parseSupervisorArgs(
     idleMs,
     stopWaitMs,
     tickMs,
+    ...(verifyIntervalMs !== undefined ? { verifyIntervalMs } : {}),
   };
 }
 
@@ -265,6 +296,7 @@ async function superviseHeld(
   deps.stopRequested?.then(() => {
     stopRequested = true;
   }, () => {});
+  const verifier = new ReplicaCheck(paths, options, deps);
   try {
     await writePresence(paths, { ...presence, litestreamPid: child.pid });
     while (true) {
@@ -274,11 +306,14 @@ async function superviseHeld(
         await stopChild(child, options.stopWaitMs, deps);
         return "stop-requested";
       }
-      if (
-        !shouldIdleExit(await lastUsedAt(paths), deps.now(), options.idleMs)
-      ) {
-        continue;
-      }
+      const idle = shouldIdleExit(
+        await lastUsedAt(paths),
+        deps.now(),
+        options.idleMs,
+      );
+      await verifier.maybeStart(idle);
+      // Never stop while a check runs: it covers what this sidecar uploaded.
+      if (!idle || verifier.running) continue;
       // Idle for the whole timeout: stop only while no command uses it.
       const use = await Deno.open(paths.useLock, {
         read: true,
@@ -301,8 +336,78 @@ async function superviseHeld(
       }
     }
   } finally {
+    await verifier.stop();
     if (!exited) child.kill("SIGKILL");
     await cleanUp(paths);
+  }
+}
+
+/**
+ * The sidecar's checks of its own replica (swamp-club#3935): at most one
+ * at a time, started from the tick loop and never awaited by it, so a long
+ * restore delays neither a stop request nor noticing Litestream exit.
+ */
+class ReplicaCheck {
+  #running: Promise<void> | undefined;
+  #lastStartedAtMs: number | undefined;
+  #lastAttemptedTxid: string | undefined;
+  readonly #abort = new AbortController();
+
+  constructor(
+    private readonly paths: ReplicationPaths,
+    private readonly options: SupervisorOptions,
+    private readonly deps: SupervisorDeps,
+  ) {}
+
+  get running(): boolean {
+    return this.#running !== undefined;
+  }
+
+  /** Starts a check when one is due; see `shouldVerifyReplica`. */
+  async maybeStart(idle: boolean): Promise<void> {
+    const verify = this.deps.verifyReplica;
+    const replicaType = this.options.replicaType;
+    if (verify === undefined || replicaType === undefined || this.running) {
+      return;
+    }
+    const copy = await readCopyState(this.paths);
+    const acknowledgedTxid = copy?.lineageFence === this.options.lineageFence
+      ? copy.txid
+      : undefined;
+    const last: ReplicaVerification | undefined = await readReplicaVerification(
+      this.paths,
+    );
+    const due = shouldVerifyReplica({
+      lineageFence: this.options.lineageFence,
+      acknowledgedTxid,
+      last,
+      lastStartedAtMs: this.#lastStartedAtMs,
+      lastAttemptedTxid: this.#lastAttemptedTxid,
+      nowMs: this.deps.now(),
+      idle,
+      intervalMs: this.options.verifyIntervalMs ?? REPLICA_VERIFY_INTERVAL_MS,
+    });
+    if (!due) return;
+    this.#lastStartedAtMs = this.deps.now();
+    this.#lastAttemptedTxid = acknowledgedTxid;
+    this.#running = verify({
+      paths: this.paths,
+      lineageFence: this.options.lineageFence,
+      replicaType,
+      signal: this.#abort.signal,
+    }).then(
+      () => {},
+      // No verdict: tried again after the interval.
+      () => {},
+    ).finally(() => {
+      this.#running = undefined;
+    });
+  }
+
+  /** Cancels a running check and waits for it. */
+  async stop(): Promise<void> {
+    this.#abort.abort();
+    await this.#running;
   }
 }
 

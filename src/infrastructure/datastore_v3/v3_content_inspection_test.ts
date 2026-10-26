@@ -20,7 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { join, relative } from "@std/path";
+import { dirname, join, relative } from "@std/path";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { unreadableRecordAdvice } from "../../domain/datastore_v3/read_model.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
@@ -29,8 +29,20 @@ import { readModelStateDir } from "./record_path_guard.ts";
 import { AT_RISK_DIR, READ_MODEL_STATE_FILE } from "./sqlite_read_model.ts";
 import {
   inspectV3Content,
+  inspectV3ReplicaRestorable,
   V3_CONTENT_LISTED,
 } from "./v3_content_inspection.ts";
+import { withMockedEnv } from "../persistence/path_test_helpers.ts";
+import { V3_REPLICA_ENV } from "./litestream/replica_setting.ts";
+import {
+  ensureSharedDir,
+  replicationPathsFor,
+  writeLineage,
+  writeReplicaVerification,
+} from "./litestream/replication_files.ts";
+import { v3PrivateRoot } from "./litestream/v3_replication.ts";
+import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import { v3CommitsDbPath } from "./v3_datastore.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-content-" });
@@ -292,4 +304,94 @@ Deno.test("inspectV3Content: a torn chunk of a record this checkout could not ma
       unreadableRecordAdvice("data/m/lost/1/raw"),
     );
   });
+});
+
+Deno.test({
+  name:
+    "inspectV3ReplicaRestorable: maps the copy's lineage and last verdict to a status, and quick-checks the copy only when broken (swamp-club#3935)",
+  // Replication needs a Unix user id.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const root = await Deno.realPath(dir);
+      const datastorePath = join(root, "ds");
+      const repoDir = join(root, "repo");
+      await Deno.mkdir(datastorePath);
+      await Deno.mkdir(repoDir);
+      const config = filesystem(datastorePath);
+      const inspect = () =>
+        inspectV3ReplicaRestorable({ repoDir, datastoreConfig: config });
+      // Not replicating: no finding.
+      await withMockedEnv({ [V3_REPLICA_ENV]: undefined }, async () => {
+        assertEquals(await inspect(), undefined);
+      });
+      await withMockedEnv(
+        {
+          [V3_REPLICA_ENV]: JSON.stringify({
+            type: "file",
+            path: join(root, "replica"),
+          }),
+        },
+        async () => {
+          const commitsDb = v3CommitsDbPath(datastorePath, repoDir);
+          await Deno.mkdir(dirname(commitsDb), { recursive: true });
+          // Never replicated: no lineage yet.
+          assertEquals(await inspect(), { status: "unverified" });
+          const store = SqliteCommitStore.open(commitsDb);
+          await store.close();
+          const paths = await replicationPathsFor(commitsDb, v3PrivateRoot());
+          await ensureSharedDir(paths);
+          await writeLineage(paths, {
+            replicaRoot: `file:${join(root, "replica")}`,
+            lineageFence: 4,
+            lastFence: 5,
+            previousLineages: [],
+          });
+          assertEquals(await inspect(), {
+            status: "unverified",
+            lineageFence: 4,
+          });
+          const verdict = {
+            lineageFence: 4,
+            txid: "0000000000000009",
+            checkedAt: "2026-10-25T12:00:00.000Z",
+            ok: true,
+          };
+          // A verdict on another lineage says nothing about this one.
+          await writeReplicaVerification(paths, {
+            ...verdict,
+            lineageFence: 3,
+          });
+          assertEquals(await inspect(), {
+            status: "unverified",
+            lineageFence: 4,
+          });
+          await writeReplicaVerification(paths, verdict);
+          assertEquals(await inspect(), {
+            status: "verified",
+            lineageFence: 4,
+            txid: verdict.txid,
+            checkedAt: verdict.checkedAt,
+          });
+          const broken = { ...verdict, ok: false, error: "integrity check" };
+          await writeReplicaVerification(paths, broken);
+          assertEquals(await inspect(), {
+            status: "broken",
+            lineageFence: 4,
+            txid: verdict.txid,
+            checkedAt: verdict.checkedAt,
+            error: "integrity check",
+            copyCheck: "ok",
+          });
+          await Deno.writeFile(
+            commitsDb,
+            new TextEncoder().encode("not sqlite"),
+          );
+          const damaged = await inspect();
+          assertEquals(damaged?.status, "broken-copy-damaged");
+          assertStringIncludes(damaged!.copyCheck!, "not a database");
+        },
+      );
+    });
+  },
 });

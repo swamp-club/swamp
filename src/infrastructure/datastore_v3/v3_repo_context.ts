@@ -62,6 +62,7 @@ import {
 import type { ChunkCollectionReport } from "../../domain/datastore_v3/chunk_collector.ts";
 import {
   acquireV3WriterLock,
+  advanceV3WriterLease,
   assertV3WriterCurrent,
   holdsV3WriterLock,
   onV3HoldRetaken,
@@ -97,7 +98,9 @@ import {
   type V3Copy,
   type V3CopyRefresh,
   V3LineageOutrankedError,
+  v3ReplicaCheckOf,
 } from "./litestream/v3_copy.ts";
+import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import {
   readWriterMarkerFile,
@@ -1799,6 +1802,8 @@ export function startV3ReplicationUpkeep(
   // A replacement asked for while one runs (swamp-club#3565): it runs again
   // once the running one settles, instead of being dropped.
   let again = false;
+  // The broken lineage serve last moved its lease away from.
+  let advancedFor: number | undefined;
   const replace = (): void => {
     if (stopped) return;
     if (replacing !== undefined) {
@@ -1867,6 +1872,9 @@ export function startV3ReplicationUpkeep(
       ) {
         currentCopies.delete(copyKey);
       }
+      // A broken lineage the move did not get away from is moved from
+      // again at the next probe (swamp-club#3935).
+      advancedFor = undefined;
       logger
         .warn`Replacing the Litestream sidecar of the v3 datastore at ${datastorePath} failed; the next probe retries: ${error}`;
     }).finally(() => {
@@ -1900,6 +1908,29 @@ export function startV3ReplicationUpkeep(
         !await current.probe()
       ) {
         replace();
+        return;
+      }
+      // Serve holds one fence, so a lineage its sidecar found it cannot
+      // restore is restarted at the next one (swamp-club#3935): the
+      // replacement the move sets off starts the new lineage from serve's
+      // copy. Once per lineage: from a copy that fails its own check the
+      // lineage is kept, and moving again would only fence serve's commits.
+      const check = await v3ReplicaCheckOf(copyOf(repoDir, config));
+      if (
+        check !== undefined &&
+        isLineageBroken(check.verdict, check.lineageFence) &&
+        advancedFor !== check.lineageFence
+      ) {
+        logger
+          .warn`The replication lineage of the v3 datastore at ${datastorePath} cannot be restored; moving serve's writer lease to a new fence to start a new lineage`;
+        try {
+          if (await advanceV3WriterLease(datastorePath) !== undefined) {
+            advancedFor = check.lineageFence;
+          }
+        } catch (error) {
+          logger
+            .warn`Moving serve's writer lease of the v3 datastore at ${datastorePath} to a new fence failed; the next probe retries: ${error}`;
+        }
         return;
       }
       // Serve's commits replicate passively; a head is published whenever

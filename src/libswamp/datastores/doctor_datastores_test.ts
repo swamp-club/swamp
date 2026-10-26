@@ -1870,3 +1870,93 @@ Deno.test("doctorDatastores: no kept replication lineage passes, and one that ca
   assertEquals(finding?.passed, false);
   assertStringIncludes(finding!.message, "bucket offline");
 });
+
+/** The replica check's finding from one scan with `finding` (swamp-club#3935). */
+async function replicaFinding(
+  check: DoctorDatastoresDeps["checkV3ReplicaRestorable"],
+) {
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), {
+      ...makeDeps(customConfig, {
+        healthy: true,
+        message: "ok",
+        latencyMs: 1,
+      }, []),
+      checkV3ReplicaRestorable: check,
+    }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assert(completed?.kind === "completed");
+  return {
+    health: completed.data.healthFindings.find((f) =>
+      f.check === "v3_replica_restorable"
+    ),
+    finding: completed.data.v3ReplicaRestorableFinding,
+  };
+}
+
+Deno.test("doctorDatastores: a lineage found broken fails the replica check, and says the next writer restarts it (swamp-club#3935)", async () => {
+  const broken = {
+    status: "broken" as const,
+    lineageFence: 1570,
+    txid: "0000000000000070",
+    checkedAt: "2026-10-25T18:30:00.000Z",
+    error: "Tree 2 page 17040 cell 7: 2nd reference to page 4131",
+    copyCheck: "ok",
+  };
+  const { health, finding } = await replicaFinding(() =>
+    Promise.resolve(broken)
+  );
+  assertEquals(health?.passed, false);
+  for (
+    const part of [
+      "000000001570",
+      broken.error,
+      "cannot clone or refresh",
+      "starts a new lineage",
+    ]
+  ) {
+    assertStringIncludes(health!.message, part);
+  }
+  assertEquals(finding, broken);
+});
+
+Deno.test("doctorDatastores: a broken lineage over a damaged copy says no new lineage starts (swamp-club#3935)", async () => {
+  const { health } = await replicaFinding(() =>
+    Promise.resolve({
+      status: "broken-copy-damaged" as const,
+      lineageFence: 3,
+      error: "integrity",
+      copyCheck: "database disk image is malformed",
+    })
+  );
+  assertEquals(health?.passed, false);
+  assertStringIncludes(health!.message, "database disk image is malformed");
+  assertStringIncludes(health!.message, "no new lineage is started");
+});
+
+Deno.test("doctorDatastores: a verified or not yet checked replica passes; none while not replicating; an unreadable one fails (swamp-club#3935)", async () => {
+  const verified = await replicaFinding(() =>
+    Promise.resolve({
+      status: "verified" as const,
+      lineageFence: 3,
+      txid: "0000000000000010",
+      checkedAt: "2026-10-25T18:30:00.000Z",
+    })
+  );
+  assertEquals(verified.health?.passed, true);
+  assertStringIncludes(verified.health!.message, "restored cleanly");
+  assertEquals(verified.finding, undefined);
+  const unverified = await replicaFinding(() =>
+    Promise.resolve({ status: "unverified" as const, lineageFence: 3 })
+  );
+  assertEquals(unverified.health?.passed, true);
+  assertStringIncludes(unverified.health!.message, "not been checked yet");
+  const off = await replicaFinding(() => Promise.resolve(undefined));
+  assertEquals(off.health, undefined);
+  const unreadable = await replicaFinding(() =>
+    Promise.reject(new Error("permission denied"))
+  );
+  assertEquals(unreadable.health?.passed, false);
+  assertStringIncludes(unreadable.health!.message, "permission denied");
+});

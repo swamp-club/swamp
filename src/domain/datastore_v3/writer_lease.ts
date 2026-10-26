@@ -473,6 +473,29 @@ export class WriterLease {
   }
 
   /**
+   * Moves `hold` to the next fence without letting the lease go
+   * (swamp-club#3935): taking over is creating the next fence, so the
+   * holder can take over from itself, and no other writer can win the lease
+   * in between. A process that needs a fence it never used (a new
+   * replication lineage) gets one. The old hold is released. Resolves
+   * undefined, and the old hold is lost, when `hold` is no longer the
+   * lease's or another writer created the next fence first.
+   */
+  async advance(hold: WriterLeaseHold): Promise<WriterLeaseHold | undefined> {
+    try {
+      await hold.assertCurrent();
+    } catch (error) {
+      if (error instanceof WriterFencedError) return undefined;
+      throw error;
+    }
+    const next = await this.#take(hold.fence + 1);
+    // Marks the old fence released and removes its heartbeat; a higher
+    // fence exists either way, so nothing can take the old one again.
+    await hold.release().catch(() => {});
+    return next;
+  }
+
+  /**
    * Creates fence `fence`, then checks that no higher fence appeared while
    * it did. Resolves undefined when another writer won.
    */
