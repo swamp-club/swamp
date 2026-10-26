@@ -465,7 +465,8 @@ a.rd-hop:focus-visible {
 .rd-graph-panel {
   min-width: 0;
 }
-.rd-job-panel {
+/* .panel sets overflow: hidden and styles.css loads after this sheet */
+.panel.rd-job-panel {
   position: sticky;
   top: 12px;
   max-height: calc(100vh - 24px);
@@ -477,7 +478,7 @@ a.rd-hop:focus-visible {
   .rd-graph-layout.has-panel {
     grid-template-columns: minmax(0, 1fr);
   }
-  .rd-job-panel {
+  .panel.rd-job-panel {
     position: static;
     max-height: none;
   }
