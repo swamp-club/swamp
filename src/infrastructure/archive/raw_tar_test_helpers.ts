@@ -78,7 +78,7 @@ function ustarHeader(
  */
 export async function buildRawTarGz(
   entries: readonly RawTarEntry[],
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   const blocks: Uint8Array<ArrayBuffer>[] = [];
   for (const entry of entries) {
     const body = encoder.encode(entry.body ?? "");
