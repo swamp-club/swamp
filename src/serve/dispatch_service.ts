@@ -249,6 +249,16 @@ export class DispatchService {
     this.#gateway = gateway;
   }
 
+  /**
+   * Resolves once every pending-dispatch and step-lease transition queued so
+   * far has settled, including ones queued while waiting: a test awaits it
+   * after closing the server, so the queue records written without waiting
+   * land before it removes the repo (swamp-club#3954).
+   */
+  async settled(): Promise<void> {
+    await this.#transitions.settled();
+  }
+
   /** Called by serve wiring so finished dispatches release writer sessions. */
   setOnDispatchEnd(callback: (dispatchId: string) => void): void {
     this.#onDispatchEnd = callback;

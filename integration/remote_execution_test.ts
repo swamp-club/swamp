@@ -268,9 +268,11 @@ async function startOrchestrator(
     serverUrl: `ws://127.0.0.1:${port}`,
     shutdown: async () => {
       await server.shutdown();
-      // The disconnects the closed sockets recorded are written before the
-      // test removes the repo (swamp-club#3854).
+      // The disconnects the closed sockets recorded (swamp-club#3854) and the
+      // queue records a queued step wrote (swamp-club#3954) are written
+      // before the test removes the repo.
       await gateway.settled();
+      await dispatchService.settled();
     },
     mintToken,
     runModelMethod,
