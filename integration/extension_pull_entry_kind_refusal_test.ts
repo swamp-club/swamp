@@ -28,7 +28,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { join, parse } from "@std/path";
 import { walk } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -50,6 +50,10 @@ await initializeLogging({});
 const VERSION = "2026.10.26.1";
 const ESC = "\x1b";
 const LINK_TARGET_MARK = "link-target-must-not-print";
+const ABSOLUTE_TARGET = join(
+  parse(Deno.cwd()).root,
+  `${LINK_TARGET_MARK}-${crypto.randomUUID()}`,
+);
 
 /** A registry serving `archive` as the only version of `name`. */
 async function serveRegistry(name: string, archive: Uint8Array<ArrayBuffer>) {
@@ -131,8 +135,7 @@ async function treeOf(dir: string): Promise<string[]> {
 
 interface Case {
   what: string;
-  /** Builds the entry; `outside` is a directory beside the repository. */
-  entry: (outside: string) => RawTarEntry;
+  entry: () => RawTarEntry;
   /** What the error prints for the entry, after its archive path. */
   printed: string;
 }
@@ -150,10 +153,12 @@ const CASES: Case[] = [
   },
   {
     what: "a symlink to an absolute path outside the repository",
-    entry: (outside) => ({
+    // At the file system root, so the target fits the header's 100-byte
+    // linkname field wherever the temp dir is.
+    entry: () => ({
       path: "extension/files/escape",
       typeflag: "2",
-      linkname: join(outside, LINK_TARGET_MARK),
+      linkname: ABSOLUTE_TARGET,
     }),
     printed:
       "extension/files/escape is a symlink; extensions may not contain links",
@@ -234,7 +239,7 @@ for (const { what, entry, printed } of CASES) {
         const name = `@test/entry-kind-${crypto.randomUUID().slice(0, 8)}`;
         await using registry = await serveRegistry(
           name,
-          await archiveWith(name, entry(outside)),
+          await archiveWith(name, entry()),
         );
         const lockfilePath = join(repoDir, "upstream_extensions.json");
         const deps = await createExtensionPullDeps(
@@ -279,6 +284,7 @@ for (const { what, entry, printed } of CASES) {
         // tree around the repository is as it was.
         const lockfile = await Deno.readTextFile(lockfilePath).catch(() => "");
         assertEquals(lockfile.includes(name), false, lockfile);
+        assertEquals(await Deno.lstat(ABSOLUTE_TARGET).catch(() => null), null);
         assertEquals(
           (await treeOf(root)).filter((p) =>
             p.includes("pulled-extensions") || !p.startsWith(repoDir)
