@@ -38,6 +38,7 @@ import {
 } from "../context.ts";
 import {
   attachSignalWaits,
+  cacheRelativeMarkPath,
   continuationClaimsOver,
   libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
@@ -51,6 +52,8 @@ import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
+  type WorkflowId,
+  type WorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "../../domain/workflows/signal_wait.ts";
@@ -348,6 +351,14 @@ import {
   SHUTDOWN_ABORT_GRACE_MS,
 } from "../../serve/shutdown_drain.ts";
 import { interruptShutdownRuns } from "../../serve/shutdown_interrupt.ts";
+import {
+  markedRunsStillRunning,
+  pushSettledAtBoot,
+  readUnpushedInterrupts,
+  UNPUSHED_INTERRUPTS_FILE,
+  type UnpushedInterrupts,
+} from "../../serve/unpushed_interrupts.ts";
+import { pushNamespaceCounted } from "../../infrastructure/persistence/push_paths.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -545,12 +556,24 @@ import {
   RetentionGcService,
 } from "../../serve/retention_gc_service.ts";
 import { runRepoRetention } from "../../libswamp/retention/run.ts";
-import { withSyncGate } from "../../serve/sync_gate.ts";
+import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
 import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
   setV3SyncDeadline,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
+
+/**
+ * How long the push of the runs boot or reconciliation settled may take
+ * (swamp-club#3958). Boot waits for it before serving, so it is bounded.
+ */
+const SETTLED_RUN_PUSH_TIMEOUT_MS = 30_000;
+
+/**
+ * How long a reconciliation pass waits to bring one run record of a dead
+ * instance from the datastore (swamp-club#3958).
+ */
+const RUN_RECORD_REFRESH_TIMEOUT_MS = 10_000;
 
 const DISPATCH_ENV_ALLOW_HELP =
   "Comma-separated environment variable names; only these ship to workers with each " +
@@ -4739,15 +4762,100 @@ export const serveCommand = new Command()
     const runningRuns = await repoContext.workflowRunRepo.findGlobalByStatus(
       "running",
     );
+    // On a synced datastore, the runs boot and reconciliation settle are
+    // pushed, so the datastore does not keep them running until some other
+    // write pushes (swamp-club#3958).
+    const pushSettledRuns = syncService
+      ? async () => {
+        await withSharedSyncGate(
+          syncGate,
+          () =>
+            pushNamespaceCounted(
+              syncService,
+              serveNamespace,
+              AbortSignal.timeout(SETTLED_RUN_PUSH_TIMEOUT_MS),
+            ),
+        );
+      }
+      : undefined;
+    // A dead instance's run records, which this cache holds only if it
+    // hydrated after they started, brought from the datastore before
+    // reconciliation settles them. The refresh writes into the cache, so it
+    // takes the pull lane, as a step-start pull does.
+    const syncedCachePath = isCustomDatastoreConfig(datastoreConfig)
+      ? datastoreConfig.cachePath
+      : undefined;
+    const refreshRunRecord = runRecordsSynced && syncService?.hydrateFile &&
+        syncedCachePath !== undefined
+      ? async (workflowId: WorkflowId, runId: WorkflowRunId) => {
+        const relPath = cacheRelativeMarkPath(
+          repoContext.workflowRunRepo.getPath(workflowId, runId),
+          syncedCachePath,
+          resolvedRepoDir,
+        );
+        if (relPath === undefined) return;
+        await withSharedSyncGate(
+          syncGate,
+          () =>
+            syncService.hydrateFile!(relPath, {
+              signal: AbortSignal.timeout(RUN_RECORD_REFRESH_TIMEOUT_MS),
+            }),
+          "pull",
+        );
+      }
+      : undefined;
+    // The interrupted runs the previous serve in this checkout could not
+    // push at its shutdown, pushed once here.
+    const unpushedMarkerPath = swampPath(
+      resolvedRepoDir,
+      UNPUSHED_INTERRUPTS_FILE,
+    );
+    let unpushedAtBoot: UnpushedInterrupts = { present: false };
+    if (pushSettledRuns) {
+      try {
+        unpushedAtBoot = await readUnpushedInterrupts(unpushedMarkerPath);
+      } catch (error) {
+        logger.warn(
+          "Boot: could not read the record of unpushed interrupted workflow runs: {error}",
+          { error: error instanceof Error ? error.message : String(error) },
+        );
+      }
+    }
+    // Read by id: a record the boot pull put back to running is not in the
+    // status index under that status, so the reap would not see it.
+    for (
+      const marked of await markedRunsStillRunning(
+        unpushedAtBoot,
+        (workflowId, runId) =>
+          repoContext.workflowRunRepo.findById(workflowId, runId),
+      )
+    ) {
+      if (!runningRuns.some(({ run }) => run.id === marked.run.id)) {
+        runningRuns.push(marked);
+      }
+    }
     // The boot reap and the method-run settle below run in root units of
-    // work with no push, so their saves stage into a root instead of reaching
-    // the hook through signalChange's fallback (swamp-club#3056). Nothing
-    // pushes, as before.
+    // work, so their saves stage into a root instead of reaching the hook
+    // through signalChange's fallback (swamp-club#3056). The reap's root
+    // pushes what it interrupted, and what the marker names; the method-run
+    // settle pushes nothing, as before.
+    let bootReaped = 0;
     const reapResult = await runInRootUnitOfWork(
       repoContext,
-      { flush: undefined },
-      () =>
-        reapOrphanedWorkflowRuns(
+      {
+        flush: pushSettledRuns
+          ? () =>
+            pushSettledAtBoot({
+              reaped: bootReaped,
+              marker: unpushedAtBoot,
+              markerPath: unpushedMarkerPath,
+              push: pushSettledRuns,
+            })
+          : undefined,
+        pushWhen: "completed",
+      },
+      async () => {
+        const result = await reapOrphanedWorkflowRuns(
           runningRuns,
           async (wid, r) => {
             await repoContext.workflowRunRepo.save(wid, r);
@@ -4762,10 +4870,19 @@ export const serveCommand = new Command()
           hasRemoteControlPlane
             ? async (id) => {
               const data = await controlPlaneStore.get(`heartbeats/${id}`);
-              return data !== null;
+              if (data === null) return false;
+              // An instance that stopped without pushing its interrupted
+              // runs leaves a stopped record (swamp-club#3958). A merely
+              // stale one is left to reconciliation, as before.
+              const record = InstanceHeartbeatService.parseRecord(data);
+              return record === null ||
+                !InstanceHeartbeatService.isStopped(record);
             }
             : undefined,
-        ),
+        );
+        bootReaped = result.reaped;
+        return result;
+      },
     );
     if (reapResult.reaped > 0) {
       logger.warn(
@@ -7213,11 +7330,13 @@ export const serveCommand = new Command()
       if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
       // Before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does (swamp-club#3252).
-      await interruptShutdownRuns(remaining, {
+      const interruptResult = await interruptShutdownRuns(remaining, {
         repoContext,
         syncService,
         namespace: serveNamespace,
         syncGate,
+        runTracker,
+        unpushedMarkerPath,
         onInterrupted: (runId) => {
           if (isJson) {
             console.log(JSON.stringify({ status: "interrupted", runId }));
@@ -7225,6 +7344,14 @@ export const serveCommand = new Command()
           logger.info`Interrupted workflow run ${runId} (server shutdown)`;
         },
       });
+      // The datastore may still hold these runs running (swamp-club#3958).
+      const unpushedRunIds = interruptResult.unpushed ?? [];
+      if (isJson && unpushedRunIds.length > 0) {
+        console.log(JSON.stringify({
+          status: "interrupt_push_failed",
+          runIds: unpushedRunIds,
+        }));
+      }
       await runIndexWarmup.finished();
       if (workerGcService) {
         await workerGcService.dispose();
@@ -7241,7 +7368,11 @@ export const serveCommand = new Command()
         await continuationSweepService.dispose();
       }
       if (heartbeatService) {
-        await heartbeatService.stop();
+        // With runs the datastore may still hold running, a stopped record
+        // takes the heartbeat's place, so a peer reconciles this instance.
+        await heartbeatService.stop({
+          leaveStoppedRecord: unpushedRunIds.length > 0,
+        });
       }
       // Stop revalidation before the gateway it cuts workers off from.
       await workerTokenRevalidationService.dispose();
@@ -7341,6 +7472,8 @@ export const serveCommand = new Command()
         workflowRunRepo: repoContext.workflowRunRepo,
         markDirty: repoContext.markDirty,
         outputRepo: repoContext.outputRepo,
+        ...(refreshRunRecord !== undefined && { refreshRunRecord }),
+        ...(pushSettledRuns !== undefined && { pushReaped: pushSettledRuns }),
       });
       if (remoteReaped > 0) {
         logger
@@ -7419,6 +7552,9 @@ export const serveCommand = new Command()
             workflowRunRepo: repoContext.workflowRunRepo,
             markDirty: repoContext.markDirty,
             outputRepo: repoContext.outputRepo,
+            ...(refreshRunRecord !== undefined && { refreshRunRecord }),
+            ...(pushSettledRuns !== undefined &&
+              { pushReaped: pushSettledRuns }),
           });
           if (reaped > 0) {
             logger

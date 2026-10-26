@@ -1216,7 +1216,7 @@ as its instance id. The coordination records:
 
 | Key                                         | Writer / cadence                                                | Reader                                                                     |
 | ------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `heartbeats/<instanceId>`                   | `InstanceHeartbeatService` every 30 s; deleted on clean stop    | Reconciliation (stale after 90 s), `run.attach`, `/api/v1/cluster/instances` |
+| `heartbeats/<instanceId>`                   | `InstanceHeartbeatService` every 30 s; deleted on clean stop, or replaced by a stopped record (`stoppedAt`) when the stop could not push its interrupted runs | Reconciliation (stale after 90 s, or at once when stopped), `run.attach`, run cancel and `run.doctor`, continuation claims, `/api/v1/cluster/instances` (`stopped`) |
 | `active-runs/<instanceId>/<runId>`          | `writeActiveRun` on run start, deleted on finish                | `run.attach` from another instance; swept when the owner is declared dead |
 | `pending-runs/<id>`                         | Cron and webhook triggers, dual-written with the SQLite tracker | `replayPendingRuns` at boot                                                |
 | `fire-records/<workflowId>/<time>`          | `putIfAbsent` by whichever instance wins the cron fire          | Reaper (4 h TTL)                                                           |
@@ -1238,7 +1238,14 @@ as its instance id. The coordination records:
 2. Migrates root-level control records into the configured namespace, once.
 3. Sweeps stale worker leases and dispatches.
 4. Reaps runs whose owning PID or heartbeat is gone
-   (`RunTrackerStore.reapStaleRuns` / `reapDeadProcessRuns`).
+   (`RunTrackerStore.reapStaleRuns` / `reapDeadProcessRuns`). A run whose
+   owner left a stopped heartbeat counts as gone. On a synced datastore the
+   reap pushes what it interrupted, and pushes once when the previous
+   shutdown in this checkout left `.swamp/serve-unpushed-interrupts.json`. It
+   reads each run that file names by id, since the status index does not
+   notice a pull that put a record back to `running`, and removes the file
+   once the push lands (`pushSettledAtBoot`,
+   `src/serve/unpushed_interrupts.ts`, swamp-club#3958).
 5. Runs one `reconcileRemoteInterruptedRuns` pass if a remote control plane
    exists.
 6. Replays pending runs whose trigger is still configured.
@@ -1246,11 +1253,20 @@ as its instance id. The coordination records:
 Only then does `/ready` return 200.
 
 **Steady state.** Every 60 s (plus up to 500 ms jitter),
-`reconcileRemoteInterruptedRuns` lists heartbeats and claims each stale peer. It
-marks that peer's `running` tracker rows `interrupted` with reason
-`remote_instance_dead`, interrupts its YAML workflow-run records and deletes its
-`active-runs/` records. Only then does it remove the heartbeat, so a crash
-mid-reconcile leaves the heartbeat for another instance once the claim expires.
+`reconcileRemoteInterruptedRuns` lists heartbeats and claims each stale peer. A
+stopped heartbeat is stale at once. It marks that peer's `running` tracker rows
+`interrupted` with reason `remote_instance_dead`, interrupts its YAML
+workflow-run records and deletes its `active-runs/` records. Only then does it
+remove the heartbeat, so a crash mid-reconcile leaves the heartbeat for another
+instance once the claim expires.
+
+This instance's cache holds a peer's run only if it hydrated after the run
+started: the runtime data poller pulls `data/` and `auto-definitions/`, never
+run records. So before deleting the claimed peer's `active-runs/` records the
+pass reads them, and brings each workflow run they name from the datastore
+into the cache (`hydrateFile`, in the pull lane of the shared sync gate,
+bounded by 10 s). It interrupts those runs with the ones the cache held, and on
+a synced datastore pushes once what it interrupted (swamp-club#3958).
 
 The run tracker is local and a run record is not pushed until the run ends, so
 the claiming peer finds nothing to interrupt for a run that crashed mid-step,
@@ -1369,14 +1385,24 @@ runs end `cancelled`) and, on a remote datastore, pushes those records under the
 shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
 swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
-the run's last pushed status. A step the abort stopped in flight is recorded
-`unknown` on the interrupted run, so `swamp workflow recover` reopens it
-(swamp-club#3369). It then deletes its heartbeat and exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 10 s (the 5 s
-abort grace and the 5 s interrupt push), and
+the run's last pushed status until a later write settles it. Shutdown completes
+those runs' tracker rows as `interrupted` (`server_shutdown`), so the next boot
+does not skip them as still running. When the push fails, the runs are recorded
+in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
+to push, `--json` mode prints
+`{"status":"interrupt_push_failed","runIds":[…]}`, and the instance writes a
+stopped heartbeat in place of deleting it, so a peer reconciles it at once. That
+write is bounded by 5 s; if it fails, the last heartbeat is left to go stale
+(swamp-club#3958). A step the abort stopped in flight is recorded `unknown` on
+the interrupted run, so `swamp workflow recover` reopens it (swamp-club#3369).
+Otherwise it deletes its heartbeat, and it exits. Set the pod's
+`terminationGracePeriodSeconds` above the drain timeout plus about 15 s (the 5 s
+abort grace, the 5 s interrupt push and, when that push fails, the 5 s stopped
+heartbeat write), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
-instance drains. Peers see no stale heartbeat, so nothing is reaped.
+instance drains. After a stop that pushed everything, peers see no heartbeat,
+so nothing is reaped.
 Attached clients get the terminal frame. Nothing is resumed, but
 `swamp run history` shows the final status. If the shutdown handler does not
 finish (e.g. SIGKILL before the YAML records are saved), the next instance's

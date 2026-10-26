@@ -316,12 +316,15 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // Serve shutdown's run interrupts: the push of the interrupted records is
   // the root's flush, bounded by one deadline (swamp-club#3252).
   "src/serve/shutdown_interrupt.ts: interruptShutdownRuns",
-  // Writes that push nothing, in a root with no push, so they stage into it
-  // rather than through signalChange's hook fallback (swamp-club#3056): boot
-  // and continuous reconciliation, run.doctor's fix, and worker data-plane
-  // writes and capability deletes, which the dispatching run's push carries.
-  // Two roots in turn, never nested: method-run outputs, then run records.
+  // Boot and continuous reconciliation: two roots in turn, never nested.
+  // The method-run outputs' root pushes nothing; the run records' root
+  // pushes what the pass interrupted as its flush, through the injected
+  // pushReaped, and that push carries the outputs too (swamp-club#3958).
   "src/serve/boot_reconciliation.ts: reconcileRemoteInterruptedRuns (x2)",
+  // Writes that push nothing, in a root with no push, so they stage into it
+  // rather than through signalChange's hook fallback (swamp-club#3056): the
+  // boot sweep, run.doctor's fix, and worker data-plane writes and
+  // capability deletes, which the dispatching run's push carries.
   "src/serve/boot_reconciliation.ts: sweepStaleRecords",
   "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",

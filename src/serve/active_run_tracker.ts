@@ -200,6 +200,29 @@ export async function findActiveRunByRunId(
   return null;
 }
 
+/**
+ * The active-run records `instanceId` left, by run id. A record that cannot
+ * be read or parsed is left out.
+ */
+export async function listActiveRunsForInstance(
+  store: ControlPlaneStore,
+  instanceId: string,
+): Promise<{ runId: string; record: ActiveRunRecord }[]> {
+  const prefix = `active-runs/${instanceId}/`;
+  const runs: { runId: string; record: ActiveRunRecord }[] = [];
+  for (const key of await store.list(prefix)) {
+    const data = await store.get(key);
+    if (!data) continue;
+    try {
+      const record = JSON.parse(decoder.decode(data)) as ActiveRunRecord;
+      runs.push({ runId: key.slice(prefix.length), record });
+    } catch {
+      continue;
+    }
+  }
+  return runs;
+}
+
 export async function cleanupActiveRunsForInstance(
   store: ControlPlaneStore,
   instanceId: string,

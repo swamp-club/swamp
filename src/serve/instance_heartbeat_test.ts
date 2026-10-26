@@ -242,3 +242,77 @@ Deno.test("InstanceHeartbeatService: a tick runs with no active span when starte
     for (const span of seen) assertEquals(span, undefined);
   });
 });
+
+Deno.test("InstanceHeartbeatService: stop with leaveStoppedRecord writes a stopped record instead of deleting (swamp-club#3958)", async () => {
+  const store = createInMemoryStore();
+  const service = new InstanceHeartbeatService(store, "stopped-test", {
+    intervalMs: 60_000,
+  });
+  await service.start();
+
+  await service.stop({ leaveStoppedRecord: true });
+
+  assertEquals(store.deleted, []);
+  const data = store.entries.get("heartbeats/stopped-test");
+  assertExists(data);
+  const record = InstanceHeartbeatService.parseRecord(data);
+  assertExists(record);
+  assertExists(record.stoppedAt);
+  assertEquals(InstanceHeartbeatService.isStopped(record), true);
+  assertEquals(InstanceHeartbeatService.isStale(record), true);
+});
+
+Deno.test("InstanceHeartbeatService: a stopped record that cannot be written leaves the last heartbeat", async () => {
+  const store = createInMemoryStore();
+  const service = new InstanceHeartbeatService(store, "slow-stop", {
+    intervalMs: 60_000,
+  });
+  await service.start();
+  const last = store.entries.get("heartbeats/slow-stop");
+  store.put = () => Promise.reject(new Error("S3 unreachable"));
+
+  await service.stop({ leaveStoppedRecord: true });
+
+  assertEquals(store.deleted, []);
+  assertEquals(store.entries.get("heartbeats/slow-stop"), last);
+});
+
+Deno.test("InstanceHeartbeatService: a stopped record write that never settles is cut off at its bound", async () => {
+  const store = createInMemoryStore();
+  const service = new InstanceHeartbeatService(store, "hung-stop", {
+    intervalMs: 60_000,
+  });
+  await service.start();
+  let release: (() => void) | undefined;
+  store.put = () => new Promise<void>((resolve) => release = resolve);
+
+  await service.stop({ leaveStoppedRecord: true, writeTimeoutMs: 10 });
+
+  assertEquals(store.deleted, []);
+  release?.();
+});
+
+Deno.test("InstanceHeartbeatService.isStale: a stopped record is stale whatever its age", () => {
+  const now = new Date().toISOString();
+  const record: HeartbeatRecord = {
+    instanceId: "stopped",
+    hostname: "host",
+    pid: 1,
+    startedAt: now,
+    heartbeatAt: now,
+    stoppedAt: now,
+  };
+  assertEquals(InstanceHeartbeatService.isStale(record), true);
+});
+
+Deno.test("InstanceHeartbeatService.parseRecord: rejects a stoppedAt that is not a string", () => {
+  const data = new TextEncoder().encode(JSON.stringify({
+    instanceId: "x",
+    hostname: "host",
+    pid: 1,
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    stoppedAt: 1,
+  }));
+  assertEquals(InstanceHeartbeatService.parseRecord(data), null);
+});

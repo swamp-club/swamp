@@ -23,9 +23,15 @@
  * datastore, pushed (swamp-club#3252). Without the push the interrupted
  * record stayed in the local cache, and a restart against the datastore read
  * whatever the run had last pushed.
+ *
+ * The push is bounded by one short deadline, so it can miss. Each run's
+ * tracker row is settled whatever happens, so the next boot's reaper does
+ * not skip the run as still running, and the runs not pushed are reported
+ * and recorded for the next start (swamp-club#3958).
  */
 
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -33,6 +39,7 @@ import { pushNamespaceCounted } from "../infrastructure/persistence/push_paths.t
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
+import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
 
 const logger = getSwampLogger(["serve", "shutdown"]);
 
@@ -61,21 +68,41 @@ export interface ShutdownInterruptDeps {
   readonly pushTimeoutMs?: number;
   /** Called once for each run marked interrupted. */
   readonly onInterrupted?: (runId: string) => void;
+  /**
+   * The run tracker whose rows the aborted runs settle as interrupted. A
+   * row left running makes the next boot's reaper skip the run.
+   */
+  readonly runTracker?: Pick<RunTrackerRepository, "complete">;
+  /**
+   * Where the runs not pushed are recorded for the next start
+   * ({@link recordUnpushedInterrupts}); unset records nothing.
+   */
+  readonly unpushedMarkerPath?: string;
 }
 
 export interface ShutdownInterruptResult {
   readonly interrupted: readonly string[];
   /** Why the push of the interrupted runs failed, when it did. */
   readonly pushError?: string;
+  /**
+   * The aborted workflow runs whose interrupted record is not known to have
+   * reached the datastore: every interrupted run when the push failed, and
+   * each run that could not be loaded or saved. Set only on a synced
+   * datastore, and only when not empty.
+   */
+  readonly unpushed?: readonly string[];
 }
 
 /**
- * Marks the aborted workflow runs in `remaining` interrupted and pushes them.
- * A failed load, save or push is logged and never thrown, so the rest of
- * shutdown still runs.
+ * Marks the aborted workflow runs in `remaining` interrupted, settles their
+ * tracker rows and pushes them. A failed load, save, push or marker write is
+ * logged and never thrown, so the rest of shutdown still runs.
  */
 export async function interruptShutdownRuns(
-  remaining: ReadonlyArray<Pick<ActiveRun, "runId" | "kind" | "startedAt">>,
+  remaining: ReadonlyArray<
+    & Pick<ActiveRun, "runId" | "kind" | "startedAt">
+    & Partial<Pick<ActiveRun, "resourceId">>
+  >,
   deps: ShutdownInterruptDeps,
 ): Promise<ShutdownInterruptResult> {
   const interrupted: string[] = [];
@@ -84,6 +111,16 @@ export async function interruptShutdownRuns(
   );
   if (workflowRuns.length === 0) return { interrupted };
   const { repoContext, syncService } = deps;
+  const settleTrackerRow = (runId: string) => {
+    try {
+      deps.runTracker?.complete(runId, "interrupted", "server_shutdown");
+    } catch (err) {
+      logger.warn("Failed to settle the tracker row of run {runId}: {error}", {
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
   const earliestCutoff = new Date(
     Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) - 60_000,
   );
@@ -99,10 +136,17 @@ export async function interruptShutdownRuns(
     logger.warn("Failed to load workflow runs for interrupt: {error}", {
       error: err instanceof Error ? err.message : String(err),
     });
-    return { interrupted };
+    for (const run of workflowRuns) settleTrackerRow(run.runId);
+    return await reported(
+      { interrupted },
+      workflowRuns.map((r) => r.runId),
+      workflowRuns,
+      deps,
+    );
   }
   const loaded = allRuns;
   let pushError: string | undefined;
+  const notSaved: string[] = [];
   const pushTimeoutMs = deps.pushTimeoutMs ?? SHUTDOWN_PUSH_TIMEOUT_MS;
   await runInRootUnitOfWork(
     repoContext,
@@ -150,7 +194,7 @@ export async function interruptShutdownRuns(
           } catch (err) {
             pushError = err instanceof Error ? err.message : String(err);
             logger.warn(
-              "Failed to push interrupted workflow run(s) {runIds} to the datastore; their interrupted status was not saved there: {error}",
+              "Failed to push interrupted workflow run(s) {runIds} to the datastore; their interrupted status was not saved there yet: {error}. The next serve in this checkout pushes them, and other instances settle them when they reconcile this one",
               { runIds: interrupted, error: pushError },
             );
           } finally {
@@ -174,6 +218,7 @@ export async function interruptShutdownRuns(
               match.run,
             );
             interrupted.push(run.runId);
+            settleTrackerRow(run.runId);
             deps.onInterrupted?.(run.runId);
           }
         } catch (err) {
@@ -181,9 +226,58 @@ export async function interruptShutdownRuns(
             runId: run.runId,
             error: err instanceof Error ? err.message : String(err),
           });
+          notSaved.push(run.runId);
+          settleTrackerRow(run.runId);
         }
       }
     },
   );
-  return pushError === undefined ? { interrupted } : { interrupted, pushError };
+  return await reported(
+    pushError === undefined ? { interrupted } : { interrupted, pushError },
+    pushError === undefined ? notSaved : [...interrupted, ...notSaved],
+    workflowRuns,
+    deps,
+    loaded,
+  );
+}
+
+/**
+ * Adds `unpushed` to `result` on a synced datastore and records it at the
+ * marker path, when there is any.
+ */
+async function reported(
+  result: ShutdownInterruptResult,
+  unpushed: readonly string[],
+  aborted: ReadonlyArray<
+    & Pick<ActiveRun, "runId">
+    & Partial<Pick<ActiveRun, "resourceId">>
+  >,
+  deps: ShutdownInterruptDeps,
+  loaded: ReadonlyArray<{ run: { id: string }; workflowId: string }> = [],
+): Promise<ShutdownInterruptResult> {
+  if (!deps.syncService || unpushed.length === 0) return result;
+  if (deps.unpushedMarkerPath !== undefined) {
+    // The workflow id lets the next start read each record by id.
+    const workflowIdOf = (runId: string) =>
+      loaded.find((r) => r.run.id === runId)?.workflowId ??
+        aborted.find((r) => r.runId === runId)?.resourceId;
+    try {
+      await recordUnpushedInterrupts(
+        deps.unpushedMarkerPath,
+        unpushed.map((runId) => {
+          const workflowId = workflowIdOf(runId);
+          return workflowId === undefined ? { runId } : { runId, workflowId };
+        }),
+      );
+    } catch (err) {
+      logger.warn(
+        "Failed to record the unpushed interrupted workflow run(s) {runIds} for the next start: {error}",
+        {
+          runIds: unpushed,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
+  return { ...result, unpushed };
 }

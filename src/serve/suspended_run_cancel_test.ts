@@ -649,6 +649,40 @@ Deno.test("ownerGoneDecider: without a tracker row, another instance's run is go
   });
 });
 
+Deno.test("ownerGoneDecider: without a tracker row, another instance that left a stopped heartbeat is gone (swamp-club#3958)", async () => {
+  await withTracker(async (tracker) => {
+    const run = runningRun(makeWorkflow("deploy"), DEAD_PID, "peer");
+    const now = new Date().toISOString();
+    const stopped = new TextEncoder().encode(JSON.stringify({
+      instanceId: "peer",
+      hostname: "host",
+      pid: DEAD_PID,
+      startedAt: now,
+      heartbeatAt: now,
+      stoppedAt: now,
+    }));
+    const controlPlaneStore = {
+      get: (key: string) =>
+        Promise.resolve(
+          key === "heartbeats/peer"
+            ? stopped
+            : key === "heartbeats/new-instance"
+            ? new Uint8Array([1])
+            : null,
+        ),
+    } as unknown as ConnectionContext["controlPlaneStore"];
+
+    const gone = await ownerGoneDecider({
+      activeRunRegistry: new ActiveRunRegistry(),
+      runTracker: tracker,
+      instanceId: "new-instance",
+      controlPlaneStore,
+    })(run);
+
+    assertEquals(gone, { gone: true });
+  });
+});
+
 Deno.test("cancelSuspendedRunAndPush: cancels a running run whose serve process is gone, by run id alone", async () => {
   await withTracker(async (tracker) => {
     const wf = makeWorkflow("deploy");

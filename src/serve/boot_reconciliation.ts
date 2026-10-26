@@ -38,7 +38,11 @@ import {
   DEFAULT_STALE_TTL_MS,
   InstanceHeartbeatService,
 } from "./instance_heartbeat.ts";
-import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
+import {
+  cleanupActiveRunsForInstance,
+  listActiveRunsForInstance,
+} from "./active_run_tracker.ts";
+import { isUuid } from "../domain/models/model_lookup.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import { isSensitiveHeader } from "./webhook.ts";
@@ -51,6 +55,13 @@ import type {
   VaultProvider,
 } from "../domain/vaults/vault_provider.ts";
 import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
+import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+  type WorkflowId,
+  type WorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
 import {
   cancelOrphanedMethodRuns,
   goneInstanceIds,
@@ -567,6 +578,22 @@ export interface ReconcileRemoteInterruptedRunsDeps {
   ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
   /** This process's pid. Defaults to `Deno.pid`. */
   selfPid?: number;
+  /**
+   * Brings one workflow run record of a claimed instance into the cache
+   * from the remote datastore. This instance's cache holds another
+   * instance's run only if it hydrated after the run started, so without
+   * it only the runs the cache holds are settled (swamp-club#3958).
+   */
+  refreshRunRecord?: (
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ) => Promise<void>;
+  /**
+   * Pushes the workflow runs the pass interrupted, so the datastore does not
+   * keep them `running`. Called once, when the pass interrupted any; a
+   * failure is logged, not thrown.
+   */
+  pushReaped?: () => Promise<void>;
 }
 
 /**
@@ -700,6 +727,50 @@ export async function reconcileRemoteInterruptedRuns(
     );
   }
 
+  // Read before the cleanup below deletes them: the active-run records name
+  // the claimed instances' workflow runs, which this cache may not hold.
+  const claimedWorkflowRuns: {
+    workflowId: WorkflowId;
+    runId: WorkflowRunId;
+  }[] = [];
+  if (deps.workflowRunRepo && deps.refreshRunRecord) {
+    for (const claimedId of claimedInstanceIds) {
+      try {
+        const records = await listActiveRunsForInstance(
+          deps.controlPlaneStore,
+          claimedId,
+        );
+        for (const { runId, record } of records) {
+          if (record.runKind === "method-run") continue;
+          // Both ids name a file in the cache, and the record comes from a
+          // store other writers can reach.
+          if (
+            record.resourceId === undefined || !isUuid(record.resourceId) ||
+            !isUuid(runId)
+          ) {
+            logger.info(
+              "Not refreshing workflow run {runId} of instance {instanceId}: its active-run record names no workflow id",
+              { runId, instanceId: claimedId },
+            );
+            continue;
+          }
+          claimedWorkflowRuns.push({
+            workflowId: createWorkflowId(record.resourceId),
+            runId: createWorkflowRunId(runId),
+          });
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          "Failed to read the active-run records of instance {instanceId}: {error}",
+          {
+            instanceId: claimedId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+  }
+
   for (const claimedId of claimedInstanceIds) {
     const activeRunsCleaned = await cleanupActiveRunsForInstance(
       deps.controlPlaneStore,
@@ -715,16 +786,60 @@ export async function reconcileRemoteInterruptedRuns(
 
   if (deps.workflowRunRepo) {
     const workflowRunRepo = deps.workflowRunRepo;
+    const refreshed: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+    for (const { workflowId, runId } of claimedWorkflowRuns) {
+      try {
+        await deps.refreshRunRecord!(workflowId, runId);
+        const run = await workflowRunRepo.findById(workflowId, runId);
+        if (run) refreshed.push({ run, workflowId });
+      } catch (err: unknown) {
+        logger.warn(
+          "Failed to refresh workflow run {runId} from the datastore: {error}",
+          {
+            runId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+    let yamlReaped = 0;
+    const pushReaped = deps.pushReaped;
     try {
       await runInRootUnitOfWork(
         { markDirty: deps.markDirty },
-        { flush: undefined },
+        {
+          // One push of what the pass interrupted, so the datastore does not
+          // keep those runs running (swamp-club#3958). It also carries the
+          // method-run cancellations staged before it.
+          flush: pushReaped
+            ? async () => {
+              if (yamlReaped === 0) return;
+              try {
+                await pushReaped();
+              } catch (err: unknown) {
+                logger.warn(
+                  "Failed to push {count} workflow run(s) reaped from dead remote instances: {error}",
+                  {
+                    count: yamlReaped,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              }
+            }
+            : undefined,
+          pushWhen: "completed",
+        },
         async () => {
           // Whatever their age: a run resumed long after it started is as
-          // orphaned as a recent one (swamp-club#2518).
+          // orphaned as a recent one (swamp-club#2518). The status index
+          // may not name a run just refreshed, so those are read directly.
           const yamlRuns = await workflowRunRepo.findGlobalByStatus(
             "running",
           );
+          const seen = new Set(yamlRuns.map(({ run }) => run.id));
+          for (const entry of refreshed) {
+            if (!seen.has(entry.run.id)) yamlRuns.push(entry);
+          }
           for (const { run, workflowId } of yamlRuns) {
             if (!run.instanceId || !deadSet.has(run.instanceId)) continue;
             if (run.status !== "running") continue;
@@ -734,6 +849,7 @@ export async function reconcileRemoteInterruptedRuns(
             run.interruptOrphaned("remote_instance_dead");
             await workflowRunRepo.save(workflowId, run);
             reaped++;
+            yamlReaped++;
             logger.warn(
               "Reaped YAML workflow run {runId} from dead remote instance {instanceId}",
               { runId: run.id, instanceId: deadInstanceId },
