@@ -22,7 +22,6 @@ import { join } from "@std/path";
 import { assertPathEquals } from "../persistence/path_test_helpers.ts";
 import { MAX_LOCKFILE_BYTES } from "@swamp-club/extension-scoring/dependency-audit";
 import {
-  lockfilePathFor,
   readDenoLockfile,
   readOnlyLockFor,
   readProjectLockfile,
@@ -120,79 +119,6 @@ Deno.test("readDenoLockfile: a lock over the size cap is not read", async () => 
     await Deno.truncate(path, MAX_LOCKFILE_BYTES + 1);
     assertEquals(await readDenoLockfile(path), undefined);
   });
-});
-
-Deno.test("lockfilePathFor: a deno.json without a lock setting uses the deno.lock beside it", async () => {
-  await withTempDir(async (dir) => {
-    const config = join(dir, "deno.json");
-    await Deno.writeTextFile(config, JSON.stringify({ imports: {} }));
-    assertPathEquals(
-      await lockfilePathFor({ denoConfigPath: config }),
-      join(dir, "deno.lock"),
-    );
-  });
-});
-
-Deno.test("lockfilePathFor: honours the lock setting of a config with comments, as a deno.jsonc (swamp-club#3612)", async () => {
-  await withTempDir(async (dir) => {
-    const config = join(dir, "deno.jsonc");
-    await Deno.writeTextFile(config, '{ // comment\n "lock": false, }');
-    assertEquals(await lockfilePathFor({ denoConfigPath: config }), undefined);
-
-    await Deno.writeTextFile(config, '// comment\n{ "lock": "locks/a.lock" }');
-    assertPathEquals(
-      await lockfilePathFor({ denoConfigPath: config }),
-      join(dir, "locks", "a.lock"),
-    );
-
-    await Deno.writeTextFile(config, "/* no lock setting */ {}");
-    assertPathEquals(
-      await lockfilePathFor({ denoConfigPath: config }),
-      join(dir, "deno.lock"),
-    );
-  });
-});
-
-Deno.test("lockfilePathFor: a config that cannot be parsed reads no lock", async () => {
-  await withTempDir(async (dir) => {
-    const config = join(dir, "deno.json");
-    await Deno.writeTextFile(config, '{ "lock": false');
-    assertEquals(await lockfilePathFor({ denoConfigPath: config }), undefined);
-  });
-});
-
-Deno.test("lockfilePathFor: honours the deno.json lock setting", async () => {
-  await withTempDir(async (dir) => {
-    const config = join(dir, "deno.json");
-    await Deno.writeTextFile(config, JSON.stringify({ lock: false }));
-    assertEquals(await lockfilePathFor({ denoConfigPath: config }), undefined);
-
-    await Deno.writeTextFile(config, JSON.stringify({ lock: "locks/a.lock" }));
-    assertPathEquals(
-      await lockfilePathFor({ denoConfigPath: config }),
-      join(dir, "locks", "a.lock"),
-    );
-
-    await Deno.writeTextFile(
-      config,
-      JSON.stringify({ lock: { path: "b.lock", frozen: true } }),
-    );
-    assertPathEquals(
-      await lockfilePathFor({ denoConfigPath: config }),
-      join(dir, "b.lock"),
-    );
-  });
-});
-
-Deno.test("lockfilePathFor: package.json mode uses the deno.lock in its directory", async () => {
-  assertPathEquals(
-    await lockfilePathFor({ packageJsonDir: join("a", "b") }),
-    join("a", "b", "deno.lock"),
-  );
-});
-
-Deno.test("lockfilePathFor: no project means no lock, as the bundler runs with --no-lock", async () => {
-  assertEquals(await lockfilePathFor({}), undefined);
 });
 
 Deno.test("readProjectLockfile: a lock beside a missing deno.json is ignored", async () => {

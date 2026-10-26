@@ -76,7 +76,7 @@ import {
 } from "./source_snapshot.ts";
 import { realCanonicalPath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { markErrorPaths } from "../errors.ts";
-import { DENO_CONFIG_FILE_NAMES } from "./deno_config.ts";
+import { findLoaderDenoConfig } from "./dependency_resolution/extension_project.ts";
 import {
   BEHAVIOR_EXPORT_NAME,
   MODEL_EXPORT_NAME,
@@ -765,31 +765,6 @@ function resolveExtensionAssets(
   return undefined;
 }
 
-function findNearestDenoConfig(
-  absolutePath: string,
-  repoDir: string | null,
-): string | undefined {
-  let dir = dirname(absolutePath);
-  const root = resolve("/");
-  while (dir !== root) {
-    if (repoDir && resolve(dir) === resolve(repoDir)) break;
-
-    for (const name of DENO_CONFIG_FILE_NAMES) {
-      const candidate = join(dir, name);
-      try {
-        Deno.statSync(candidate);
-        return candidate;
-      } catch {
-        // Not found — keep walking up
-      }
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return undefined;
-}
-
 /**
  * Builds the self-contained bundle serve ships to workers, once per
  * registration. It bundles only the source the type was registered from:
@@ -1385,5 +1360,5 @@ export const modelKindAdapter: KindAdapter = {
     }
   },
 
-  resolveDenoConfig: findNearestDenoConfig,
+  resolveDenoConfig: findLoaderDenoConfig,
 };

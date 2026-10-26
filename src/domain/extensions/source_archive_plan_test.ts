@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { importMapResolver } from "./extension_dependency_extractor.ts";
+import { importMapResolver } from "./dependency_resolution/import_map.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { UserError } from "../errors.ts";

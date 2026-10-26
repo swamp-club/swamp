@@ -46,9 +46,7 @@ import {
 } from "../resolve_manifest_path.ts";
 import {
   createModuleGraphReader,
-  findDenoConfig,
   isPulledExtensionManifest,
-  projectConfigBoundary,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -146,10 +144,7 @@ export const extensionQualityCommand = new Command()
       });
 
       const manifestDir = dirname(absoluteManifestPath);
-      const denoConfigPath = await findDenoConfig(
-        manifestDir,
-        projectConfigBoundary(manifestDir, resolved.extensionsRoot, repoDir),
-      );
+      const { denoConfigPath } = resolved;
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const identity = await loadIdentity();

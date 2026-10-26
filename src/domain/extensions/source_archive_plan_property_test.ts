@@ -25,10 +25,8 @@ import {
   normalize as posixNormalize,
 } from "@std/path/posix";
 import fc from "fast-check";
-import {
-  findImportSpecifiers,
-  importMapResolver,
-} from "./extension_dependency_extractor.ts";
+import { importMapResolver } from "./dependency_resolution/import_map.ts";
+import { scanImportSites } from "./dependency_resolution/import_sites.ts";
 import type { LocalEdge } from "./extension_source_graph.ts";
 import {
   applySpecifierRewrites,
@@ -216,7 +214,7 @@ Deno.test("bareImportRewrites: a rewritten module has no bare import the map res
         source,
         bareImportRewrites(source, importMapResolver(BARE_IMPORTS), "/m.ts"),
       );
-      for (const { specifier } of findImportSpecifiers(out)) {
+      for (const { specifier } of scanImportSites(out)) {
         assert(
           !Object.keys(BARE_IMPORTS).some((k) =>
             specifier === k || specifier.startsWith(`${k}/`) ||

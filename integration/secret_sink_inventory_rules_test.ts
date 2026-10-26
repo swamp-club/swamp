@@ -357,12 +357,13 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/local/workspace_hub.ts: SWAMP_CLI_ACTIONS": CLI_REINVOCATION,
     "src/serve/local/workspace_hub.ts: spawnDashboardChild": CLI_REINVOCATION,
     "src/cli/context.ts: getGitRootSync": TOOLING,
+    "src/domain/extensions/dependency_resolution/deno_info.ts: runDenoInfo":
+      TOOLING,
     "src/domain/extensions/extension_quality_checker.ts: checkExtensionQuality":
       TOOLING,
     "src/domain/extensions/extension_rubric_scorer.ts: createRubricScoreDeps":
       TOOLING,
     "src/domain/models/bundle.ts: bundleExtension": TOOLING,
-    "src/domain/models/bundle.ts: readBareImports": TOOLING,
     "src/infrastructure/daemon/has_systemctl.ts: hasSystemctl": TOOLING,
     "src/infrastructure/daemon/launchd_service_scheduler.ts: LaunchdServiceScheduler":
       TOOLING,
@@ -405,8 +406,6 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/process/terminal/terminal_launcher.ts: createSystemTerminalLauncher":
       TOOLING,
     "src/infrastructure/process/terminal/terminal_launcher.ts: lookupExecutable":
-      TOOLING,
-    "src/infrastructure/runtime/deno_info_module_graph_reader.ts: DenoInfoModuleGraphReader":
       TOOLING,
     "src/infrastructure/runtime/embedded_deno_runtime.ts: EmbeddedDenoRuntime":
       TOOLING,

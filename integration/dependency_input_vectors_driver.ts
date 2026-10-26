@@ -33,11 +33,7 @@
 import { dirname, join, relative, SEPARATOR } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
-import {
-  findDenoConfig,
-  projectConfigBoundary,
-  resolveExtensionFiles,
-} from "../src/cli/resolve_extension_files.ts";
+import { resolveExtensionFiles } from "../src/cli/resolve_extension_files.ts";
 import { requireInitializedRepoReadOnly } from "../src/cli/repo_context.ts";
 import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
 import {
@@ -209,11 +205,8 @@ export async function runVector(
   }
 
   // The project config and lock, as the push, quality and fmt commands
-  // find them.
-  const denoConfigPath = await findDenoConfig(
-    manifestDir,
-    projectConfigBoundary(manifestDir, resolved.extensionsRoot, repoDir),
-  );
+  // read them.
+  const { denoConfigPath } = resolved;
   const project = { denoConfigPath, packageJsonDir: resolved.packageJsonDir };
   const readOnlyLock = await readOnlyLockFor(project);
   outcome.project = {

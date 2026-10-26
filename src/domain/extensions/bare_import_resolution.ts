@@ -35,7 +35,7 @@ import {
   SEPARATOR_PATTERN,
 } from "@std/path";
 import { format, satisfies, tryParse, tryParseRange } from "@std/semver";
-import { isBareSpecifier } from "../models/bundle.ts";
+import { isBareSpecifier } from "./dependency_resolution/specifier.ts";
 
 /** One bare import a local module writes, and what Deno resolved it to. */
 export interface ResolvedBareImport {

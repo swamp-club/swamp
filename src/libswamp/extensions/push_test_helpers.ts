@@ -26,12 +26,11 @@ import {
 import type { ExtensionPushPrepareInput } from "./push.ts";
 import type { ResolvedBareImport } from "../../domain/extensions/bare_import_resolution.ts";
 import {
-  findImportSpecifiers,
-  type ImportMap,
+  readConfigImports,
   resolveBareImport,
-} from "../../domain/extensions/extension_dependency_extractor.ts";
-import { readDenoConfig } from "../../domain/extensions/deno_config.ts";
-import { isBareSpecifier } from "../../domain/models/bundle.ts";
+} from "../../domain/extensions/dependency_resolution/import_map.ts";
+import { scanImportSites } from "../../domain/extensions/dependency_resolution/import_sites.ts";
+import { isBareSpecifier } from "../../domain/extensions/dependency_resolution/specifier.ts";
 
 /**
  * The bare-import resolutions the module graph would report for `files`
@@ -43,12 +42,11 @@ export async function topLevelBareImports(
   files: string[],
   denoConfigPath: string,
 ): Promise<ResolvedBareImport[]> {
-  const imports = ((await readDenoConfig(denoConfigPath))?.imports ??
-    {}) as ImportMap;
+  const imports = await readConfigImports(denoConfigPath) ?? {};
   const found: ResolvedBareImport[] = [];
   for (const importer of files) {
     const source = await Deno.readTextFile(importer);
-    for (const { specifier } of findImportSpecifiers(source)) {
+    for (const { specifier } of scanImportSites(source)) {
       if (!isBareSpecifier(specifier)) continue;
       const target = resolveBareImport(specifier, imports);
       found.push(

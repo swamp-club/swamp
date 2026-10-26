@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { dirname } from "@std/path";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createExtensionFmtDeps,
@@ -40,9 +39,7 @@ import {
 } from "../resolve_manifest_path.ts";
 import {
   createModuleGraphReader,
-  findDenoConfig,
   isPulledExtensionManifest,
-  projectConfigBoundary,
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -120,7 +117,9 @@ export const extensionFmtCommand = new Command()
       allReportFiles,
       allWebhookFiles,
       additionalFilePaths,
-      extensionsRoot,
+      // The project deno.json push bundles under, so fmt and push format
+      // and lint under the same rules.
+      denoConfigPath,
       staleLockfiles,
     } = await resolveExtensionFiles({
       repoDir,
@@ -142,14 +141,6 @@ export const extensionFmtCommand = new Command()
       ...additionalFilePaths,
     ];
     const tsFiles = allFiles.filter((f) => f.endsWith(".ts"));
-
-    // The project deno.json, found the way push finds it, so fmt and push
-    // format and lint under the same rules.
-    const manifestDir = dirname(absoluteManifestPath);
-    const denoConfigPath = await findDenoConfig(
-      manifestDir,
-      projectConfigBoundary(manifestDir, extensionsRoot, repoDir),
-    );
 
     // 4. Create deps, input, renderer and run generator
     const ctx = createLibSwampContext({ logger: cliCtx.logger });

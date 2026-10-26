@@ -26,6 +26,7 @@ import {
   staleLockfileError,
 } from "../../domain/models/bundle.ts";
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
+import { runDenoInfo } from "../../domain/extensions/dependency_resolution/deno_info.ts";
 import {
   bareImportsFromDenoInfo,
   denoInfoRootDir,
@@ -45,9 +46,6 @@ import type {
   SourceModuleGraph,
   SpecifierSpan,
 } from "../../domain/extensions/extension_source_graph.ts";
-
-/** Upper bound on one `deno info` run; it fetches remote modules on a cold cache. */
-const DENO_INFO_TIMEOUT_MS = 5 * 60 * 1000;
 
 const CODE_MEDIA_TYPES: ReadonlySet<string> = new Set([
   "JavaScript",
@@ -250,25 +248,18 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     const readOnlyLock = this.options?.readOnlyLock
       ? await readOnlyLockFor(project)
       : undefined;
-    // A file URL, not the path: deno info resolves its argument through the
-    // import map first, which reads a Windows path (C:\...) as a URL with
-    // the scheme c: and reports it as an external module.
-    const command = new Deno.Command(this.denoPath, {
-      args: [
-        "info",
-        "--json",
-        ...denoProjectArgs({ ...project, readOnlyLock }),
-        toFileUrl(entryPoint).href,
-      ],
-      stdout: "piped",
-      stderr: "piped",
-      signal: AbortSignal.timeout(DENO_INFO_TIMEOUT_MS),
-      ...(project.packageJsonDir ? { cwd: project.packageJsonDir } : {}),
-      ...(this.env ? { env: this.env } : {}),
-    });
-    const output = await command.output();
-    if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr);
+    const result = await runDenoInfo(
+      this.denoPath,
+      toFileUrl(entryPoint).href,
+      entryPoint,
+      {
+        args: denoProjectArgs({ ...project, readOnlyLock }),
+        ...(project.packageJsonDir ? { cwd: project.packageJsonDir } : {}),
+        ...(this.env ? { env: this.env } : {}),
+      },
+    );
+    if (!result.success) {
+      const stderr = result.stderr;
       if (readOnlyLock?.lockPath && isStaleLockfile(stderr)) {
         throw staleLockfileError(
           readOnlyLock.lockPath,
@@ -278,7 +269,7 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         );
       }
       const details = stripAnsiCode(stderr.trim()) ||
-        `deno info exited with code ${output.code}`;
+        `deno info exited with code ${result.code}`;
       throw markErrorPaths(
         new UserError(
           `Could not read the module graph of ${entryPoint}, so push cannot ` +
@@ -287,14 +278,7 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         [entryPoint],
       );
     }
-    let json: unknown;
-    try {
-      json = JSON.parse(new TextDecoder().decode(output.stdout));
-    } catch (error) {
-      throw new Error(
-        `deno info returned invalid JSON for ${entryPoint}: ${error}`,
-      );
-    }
+    const json = result.graph.json;
     const graph = await parseDenoInfoGraph(json, {
       exists: fileExists,
       readText: (path) => Deno.readTextFile(path).catch(() => undefined),
@@ -347,26 +331,23 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     project: ModuleGraphProject,
   ): Promise<ResolvedBareImport[]> {
     try {
-      const output = await new Deno.Command(this.denoPath, {
-        args: [
-          "info",
-          "--json",
+      const result = await runDenoInfo(
+        this.denoPath,
+        toFileUrl(entryPoint).href,
+        entryPoint,
+        {
           // A resolution query only: a lock written under a manual
           // node_modules may lack the entries this mode wants, so the read
           // never freezes or writes it. The bundle keeps its lock flags.
-          ...denoProjectArgs({ ...project, readOnlyLock: {} }),
-          "--node-modules-dir=none",
-          toFileUrl(entryPoint).href,
-        ],
-        stdout: "piped",
-        stderr: "piped",
-        signal: AbortSignal.timeout(DENO_INFO_TIMEOUT_MS),
-        ...(this.env ? { env: this.env } : {}),
-      }).output();
-      if (!output.success) return [];
-      return bareImportsFromDenoInfo(
-        JSON.parse(new TextDecoder().decode(output.stdout)),
+          args: [
+            ...denoProjectArgs({ ...project, readOnlyLock: {} }),
+            "--node-modules-dir=none",
+          ],
+          ...(this.env ? { env: this.env } : {}),
+        },
       );
+      if (!result.success) return [];
+      return bareImportsFromDenoInfo(result.graph.json);
     } catch {
       return [];
     }
