@@ -46,8 +46,8 @@ import {
   isCallerVaultAuthorized,
   vaultAccessResource,
 } from "./handlers/shared.ts";
+import { canonicalJson } from "../domain/expressions/expression_references.ts";
 import {
-  canonicalJson,
   type ContentCheckContext,
   parseRecord,
   refused,
@@ -209,10 +209,16 @@ async function sensitiveReferenceRefusal(
   return undefined;
 }
 
+/** A latest marker's version, or undefined when it holds anything else. */
+function markerVersion(bytes: Uint8Array): number | undefined {
+  const text = new TextDecoder().decode(bytes);
+  return /^[1-9][0-9]*$/.test(text) ? Number(text) : undefined;
+}
+
 /**
- * A removal's put may only lower a name's latest marker to a version that
- * is stored and that the commit does not remove: the repository's own
- * marker after a removal.
+ * A removal's put may only lower a name's latest marker, or keep it, to a
+ * version that is stored and that the commit does not remove: the
+ * repository's own marker after a removal.
  */
 async function markerRefusal(
   context: ContentCheckContext,
@@ -225,11 +231,21 @@ async function markerRefusal(
   }
   const bytes = await context.bytesOf(op);
   if (!(bytes instanceof Uint8Array)) return bytes;
-  const text = new TextDecoder().decode(bytes);
-  if (!/^[1-9][0-9]*$/.test(text)) {
+  const version = markerVersion(bytes);
+  if (version === undefined) {
     return refused(op, "its latest marker is not a version");
   }
-  const metadata = keyOf(key.base, key.name, `${text}/metadata.yaml`);
+  const current = await context.prior(
+    context.deps.partition,
+    keyOf(key.base, key.name, "latest"),
+  );
+  const currentVersion = current.kind === "present"
+    ? markerVersion(current.bytes)
+    : undefined;
+  if (currentVersion === undefined || version > currentVersion) {
+    return refused(op, "a data removal may not raise a latest marker");
+  }
+  const metadata = keyOf(key.base, key.name, `${version}/metadata.yaml`);
   const removed = commit.some((other) =>
     other.kind === "tombstone" && other.key.toString() === metadata
   );
@@ -273,7 +289,10 @@ async function renameRefusal(
   if (marker.kind !== "present") {
     return refused(op, "the name it renames has no stored version");
   }
-  const sourceVersion = new TextDecoder().decode(marker.bytes).trim();
+  const sourceVersion = markerVersion(marker.bytes);
+  if (sourceVersion === undefined) {
+    return refused(op, "the name it renames has no stored version");
+  }
   const sourceMetadataRecord = await context.prior(
     partition,
     keyOf(key.base, from, `${sourceVersion}/metadata.yaml`),
@@ -299,11 +318,13 @@ async function renameRefusal(
   if (key.file === "latest") {
     const bytes = await context.bytesOf(op);
     if (!(bytes instanceof Uint8Array)) return bytes;
-    const version = Number(new TextDecoder().decode(bytes));
-    return written(key.name).has(version) ? undefined : refused(
-      op,
-      "its latest marker names a version the rename does not write",
-    );
+    const version = markerVersion(bytes);
+    return version !== undefined && written(key.name).has(version)
+      ? undefined
+      : refused(
+        op,
+        "its latest marker names a version the rename does not write",
+      );
   }
   if (key.name === to && key.file === "raw") {
     const digest = await context.digest(

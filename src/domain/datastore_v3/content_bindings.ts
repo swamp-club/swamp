@@ -36,6 +36,7 @@
  * @module
  */
 
+import { canonicalJson } from "../expressions/expression_references.ts";
 import {
   evaluateApprovalTimeout,
   gateTimeoutSeconds,
@@ -407,11 +408,26 @@ function judgeStep(
   // A nested-call step also waits in waiting_approval while its child
   // waits; it ends when the child does, which the child's own record
   // decides.
-  const nestedWait = step.nestedRun !== undefined;
+  const nestedWait = step.nestedRun !== undefined ||
+    prior?.nestedRun !== undefined;
+  // A step the stored workflow no longer names is a gate when it waited on
+  // one or holds a gate's prompt or decision: its prompt is frozen while it
+  // waits, so a record cannot drop the evidence in one commit and settle the
+  // gate in the next.
   const gate = kind === "approval" ||
     (kind === "unknown" && !nestedWait &&
       (prior?.status === "waiting_approval" ||
+        prior?.approvalPrompt !== undefined ||
+        step.approvalPrompt !== undefined ||
         step.approvalDecision !== undefined));
+  // A gate leaves waiting_approval only for an outcome: moving it back to
+  // pending or running re-opens it without a decision.
+  if (
+    gate && prior?.status === "waiting_approval" &&
+    step.status !== "waiting_approval" && !TERMINAL.has(step.status)
+  ) {
+    actions.add("approve");
+  }
   if (gate && entered) {
     const settledByCancel = step.status === "failed" &&
       step.settledByAbort === true &&
@@ -479,17 +495,6 @@ function same(a: unknown, b: unknown): boolean {
   return canonical(a) === canonical(b);
 }
 
-/** JSON with object keys sorted, so equal values compare equal. */
 function canonical(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, v) =>
-      v !== null && typeof v === "object" && !Array.isArray(v)
-        ? Object.fromEntries(
-          Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
-            a < b ? -1 : a > b ? 1 : 0
-          ),
-        )
-        : v,
-  ) ?? "undefined";
+  return canonicalJson(value) ?? "undefined";
 }

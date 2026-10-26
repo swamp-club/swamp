@@ -62,6 +62,7 @@ import { isDeferredExpression } from "../domain/expressions/deferred_expression.
 import { extractExpressions } from "../domain/expressions/expression_parser.ts";
 import {
   analyzeContentExpressions,
+  canonicalJson,
   definitionRetargetSourcesChanged,
   expressionsAddedByEdit,
 } from "../domain/expressions/expression_references.ts";
@@ -243,10 +244,15 @@ export class ForwardedContentAuthority implements ContentAuthority {
           return { kind: "absent" };
         }
         read.set(memo, { partition, key, sha256: record.sha256 });
+        // A record past the cap is judged unreadable, never read whole.
+        if ((record.blob?.size ?? 0) > MAX_CHECKED_CONTENT_BYTES) {
+          return { kind: "unreadable" };
+        }
         const found = await v3.readModel.recordBytes(
           v3.namespace,
           partition,
           key,
+          MAX_CHECKED_CONTENT_BYTES,
         );
         return found === undefined || found.record.sha256 !== record.sha256
           ? { kind: "unreadable" }
@@ -782,10 +788,16 @@ async function checkVaultDefinition(
     }
   }
   if (named) {
-    const holder = await ctx.repoContext.vaultConfigRepo.findByName(
-      after.name,
-      true,
-    ).catch(() => null);
+    let holder;
+    try {
+      holder = await ctx.repoContext.vaultConfigRepo.findByName(
+        after.name,
+        true,
+      );
+    } catch {
+      // A name whose holder cannot be read cannot be judged free.
+      return refused(op, "the vaults holding its name cannot be read");
+    }
     if (holder !== null && holder.id !== after.id) {
       return refused(op, "its name is held by another vault");
     }
@@ -1049,19 +1061,4 @@ async function checkEvaluatedWorkflow(
     }
   }
   return undefined;
-}
-
-/** JSON with object keys sorted, so equal values compare equal. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_key, v) =>
-      v !== null && typeof v === "object" && !Array.isArray(v)
-        ? Object.fromEntries(
-          Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
-            a < b ? -1 : a > b ? 1 : 0
-          ),
-        )
-        : v,
-  ) ?? "undefined";
 }

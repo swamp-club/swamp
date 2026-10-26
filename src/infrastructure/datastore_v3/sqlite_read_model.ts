@@ -979,6 +979,8 @@ export class SqliteReadModel implements ReadModel {
     namespace: string,
     partition: PartitionKey,
     key: string,
+    /** The most bytes to read: a larger file is answered as unreadable. */
+    maxBytes = Number.POSITIVE_INFINITY,
   ): Promise<
     | { readonly record: LiveRecordWriter; readonly bytes: Uint8Array }
     | undefined
@@ -991,9 +993,11 @@ export class SqliteReadModel implements ReadModel {
     if (refusedKeyReason(RecordKey.create(key), root, this.#stateDir)) {
       return undefined;
     }
+    const path = join(root, ...key.split("/"));
     let bytes: Uint8Array;
     try {
-      bytes = await Deno.readFile(join(root, ...key.split("/")));
+      if ((await Deno.stat(path)).size > maxBytes) return undefined;
+      bytes = await Deno.readFile(path);
     } catch {
       return undefined;
     }
@@ -3452,11 +3456,21 @@ function appliedRecord(
   principal: string | undefined,
 ): AppliedRecord | null {
   if (put === null) return null;
-  const writer = principal ?? "";
+  // Only a commit with no principal is serve's own (or an HA peer's); an
+  // empty one is recorded as unknown, never as serve's.
+  const writer = principal === undefined
+    ? ""
+    : principal === ""
+    ? undefined
+    : principal;
   return withAccess(
     "blob" in put.content
-      ? { sha256: put.sha256, blob: put.content.blob, writer }
-      : { sha256: put.sha256, writer },
+      ? {
+        sha256: put.sha256,
+        blob: put.content.blob,
+        ...(writer === undefined ? {} : { writer }),
+      }
+      : { sha256: put.sha256, ...(writer === undefined ? {} : { writer }) },
     put.access,
   );
 }

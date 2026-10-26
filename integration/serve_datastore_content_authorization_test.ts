@@ -1655,3 +1655,97 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "forwarded content: a record past the read cap is unreadable, never read whole, and a removal may not raise a latest marker",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const dataWriter = [
+      ...member(),
+      grant({ actions: ["write"], resource: { kind: "data", pattern: "*" } }),
+    ];
+    await withServer(
+      dataWriter,
+      async (server) => {
+        const key = `config/models/${server.modelType.normalized}/web.yaml`;
+        const partition = behaviorPartition("web");
+        await server.v3.readModel.catchUp(new AbortController().signal);
+        assert(
+          await server.v3.readModel.recordBytes(
+            server.v3.namespace,
+            partition,
+            key,
+          ) !== undefined,
+        );
+        assertEquals(
+          await server.v3.readModel.recordBytes(
+            server.v3.namespace,
+            partition,
+            key,
+            1,
+          ),
+          undefined,
+        );
+
+        const type = server.modelType.normalized;
+        const id = server.model.id;
+        const data = partitionOf({ kind: "model", type: server.modelType, id });
+        const base = `data/${type}/${id}/vpc`;
+        const versions = [1, 2].flatMap((version) => {
+          const intent = {
+            kind: "data.save",
+            model: { type, id },
+            name: "vpc",
+            version,
+          };
+          const metadata = {
+            name: "vpc",
+            id: crypto.randomUUID(),
+            version,
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            tags: { type: "resource" },
+            ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+            createdAt: "2026-10-26T00:00:00.000Z",
+          };
+          return [
+            put(intent, `${base}/${version}/raw`, encoder.encode("{}")),
+            put(intent, `${base}/${version}/metadata.yaml`, yaml(metadata)),
+            {
+              kind: "data-version",
+              key: `${base}/${version}/metadata.yaml`,
+              metadata,
+            },
+          ];
+        });
+        const saved = await forward(server, data, [
+          ...versions,
+          put(
+            { kind: "data.save", model: { type, id }, name: "vpc", version: 1 },
+            `${base}/latest`,
+            encoder.encode("1"),
+          ),
+        ]);
+        assertEquals(saved.status, 200, JSON.stringify(saved.json));
+        const marker = (version: string) =>
+          forward(server, data, [
+            put(
+              { kind: "data.delete", model: { type, id }, name: "vpc" },
+              `${base}/latest`,
+              encoder.encode(version),
+            ),
+          ]);
+        const raised = await marker("2");
+        assertEquals(raised.status, 403, JSON.stringify(raised.json));
+        assertEquals(raised.json.reason, "content-refused");
+        const kept = await marker("1");
+        assertEquals(kept.status, 200, JSON.stringify(kept.json));
+      },
+      undefined,
+      MANAGED,
+    );
+  },
+});

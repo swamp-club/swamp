@@ -55,6 +55,9 @@ import {
 } from "../persistence/yaml_evaluated_workflow_repository.ts";
 import type { V3Datastore } from "./v3_datastore.ts";
 
+/** The largest evaluation serve reads to run. */
+const MAX_EVALUATION_BYTES = 16 * 1024 * 1024;
+
 /** Loads the evaluations serve may run. */
 export interface EvaluationTrust {
   /**
@@ -109,6 +112,7 @@ export function v3EvaluationTrust(
         v3.namespace,
         partition,
         key,
+        MAX_EVALUATION_BYTES,
       );
       if (found === undefined || found.record.sha256 !== record.sha256) {
         throw new UserError(

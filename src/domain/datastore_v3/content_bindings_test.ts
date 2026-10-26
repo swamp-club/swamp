@@ -498,3 +498,50 @@ Deno.test("judgeRunRecord: what the record adds for serve to authorise is return
   assertEquals(same.addedOutputs, []);
   assertEquals([...same.actions], []);
 });
+
+Deno.test("judgeRunRecord: a gate the stored workflow no longer names cannot be reopened, or have its prompt dropped, to settle it without approve", () => {
+  const waiting = run([
+    step("gate", {
+      status: "waiting_approval",
+      startedAt: STARTED,
+      approvalPrompt: "Deploy?",
+    }),
+  ]);
+  // First commit of the attack: move the gate back to running.
+  const reopened = run([
+    step("gate", {
+      status: "running",
+      startedAt: STARTED,
+      approvalPrompt: "Deploy?",
+    }),
+  ]);
+  assertEquals(
+    [...judge(waiting, reopened, { gate: "unknown" }).actions],
+    ["approve"],
+  );
+  // Dropping the prompt in the same move is refused outright.
+  assert(
+    judge(
+      waiting,
+      run([step("gate", { status: "running", startedAt: STARTED })]),
+      { gate: "unknown" },
+    ).refusal !== undefined,
+  );
+  // Second commit: still a gate by its prompt, so completing it needs approve.
+  assertEquals(
+    [
+      ...judge(
+        reopened,
+        run([
+          step("gate", {
+            status: "succeeded",
+            startedAt: STARTED,
+            approvalPrompt: "Deploy?",
+          }),
+        ]),
+        { gate: "unknown" },
+      ).actions,
+    ],
+    ["approve"],
+  );
+});
