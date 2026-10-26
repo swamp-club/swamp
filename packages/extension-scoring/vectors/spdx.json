@@ -1,0 +1,115 @@
+{
+  "about": "Shared vectors for licenses (swamp-club#3781): whether a manifest's declared license earns has-license (a valid SPDX expression of current ids) and whether a dependency's license is on the trust allowlist.",
+  "manifest": [
+    {
+      "license": "MIT",
+      "valid": true
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "valid": true
+    },
+    {
+      "license": "(MIT AND ISC)",
+      "valid": true
+    },
+    {
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "valid": true
+    },
+    {
+      "license": "GPL-2.0+",
+      "valid": false
+    },
+    {
+      "license": "GPL-2.0-or-later",
+      "valid": true
+    },
+    {
+      "license": "mit",
+      "valid": false
+    },
+    {
+      "license": "MIT or ISC",
+      "valid": false
+    },
+    {
+      "license": "LicenseRef-Mine",
+      "valid": false
+    },
+    {
+      "license": "",
+      "valid": false
+    },
+    {
+      "license": "MIT OR",
+      "valid": false
+    },
+    {
+      "license": "Apache-2.0 WITH Not-An-Exception",
+      "valid": false
+    },
+    {
+      "license": "AGPL-3.0",
+      "valid": false
+    }
+  ],
+  "dependency": [
+    {
+      "license": "MIT",
+      "allowed": true
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "allowed": true
+    },
+    {
+      "license": "(MIT AND ISC)",
+      "allowed": true
+    },
+    {
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "allowed": false
+    },
+    {
+      "license": "GPL-2.0+",
+      "allowed": false
+    },
+    {
+      "license": "GPL-2.0-or-later",
+      "allowed": false
+    },
+    {
+      "license": "mit",
+      "allowed": false
+    },
+    {
+      "license": "MIT or ISC",
+      "allowed": false
+    },
+    {
+      "license": "LicenseRef-Mine",
+      "allowed": false
+    },
+    {
+      "license": "",
+      "allowed": false
+    },
+    {
+      "license": "MIT OR",
+      "allowed": false
+    },
+    {
+      "license": "Apache-2.0 WITH Not-An-Exception",
+      "allowed": false
+    },
+    {
+      "license": "AGPL-3.0",
+      "allowed": false
+    },
+    {
+      "license": null,
+      "allowed": false
+    }
+  ]
+}

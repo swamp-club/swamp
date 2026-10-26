@@ -25,7 +25,7 @@ import {
   resolveShippedVersion,
   specifierKind,
   suggestVersion,
-} from "./dependency_version_resolution.ts";
+} from "./resolution.ts";
 
 const NPM: PublishedPackage = {
   versions: ["1.0.0", "1.2.0", "1.2.5", "2.0.0", "2.1.0-beta.1"],

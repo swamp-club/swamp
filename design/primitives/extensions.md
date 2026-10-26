@@ -87,8 +87,8 @@ manifest only checks that `license` is a non-empty string, so reading an
 installed extension never depends on the SPDX lists.
 
 Push preparation checks a declared value with the syntax-only parser in
-`src/domain/licensing/` against the SPDX License List vendored there (`deno run
-refresh-spdx` updates it, pinned to a release). Only SPDX identifiers in
+`@swamp-club/extension-scoring/licensing` against the SPDX License List vendored
+there (`deno run refresh-spdx` updates it, pinned to a release). Only SPDX identifiers in
 canonical case count; a malformed expression, an unknown or deprecated id, or
 any `LicenseRef-`/`AdditionRef-` produces a warning (`licenseWarnings` in
 quality, `warnings.license` in push) and never blocks.
@@ -252,6 +252,23 @@ scored the way the registry scores it (swamp-club#3370), not thrown: lint is
 skipped, the documentation factors score 0, and `docAnalysisError` names
 what did not resolve. Quality then fails; a bare-specifiers finding, when
 there is one, is the reason given.
+
+The rubric and every rule it rests on live in the
+`@swamp-club/extension-scoring` package (`packages/extension-scoring`,
+swamp-club#3781), which swamp builds from source as a workspace member and the
+registry imports from JSR: the factor table and `composeScore`, the archive
+layout rules (README and LICENSE names matched exactly against a listing,
+entrypoints always prefixed with their kind directory, the manifest-root search,
+the `deno doc` arguments), the SPDX license policy, the secret-docs detector and
+the files it reads, the dependency audit's extraction, resolution, record and
+evaluation, and the doc-failure describer. Swamp keeps only the I/O around it:
+extracting the archive, running `deno doc`, reading files and fetching from npm,
+OSV and JSR. The package ships the vectors both sides test against
+(`vectors/*.json`) and stays pure TypeScript with no runtime APIs, which
+`integration/extension_scoring_package_rules_test.ts` enforces. A rule change
+that can move a score bumps `RUBRIC_VERSION` (v5 is the first shared rubric).
+`swamp extension quality --isolated` runs `deno doc` with an empty cache and a
+minimal environment, as the registry does.
 
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
@@ -1966,15 +1983,19 @@ acceptable on its own (see Declared acceptances):
 - `ipv4-address-literals`: IPv4 address literals in `.md` and `.txt` files
   outside the RFC 5737 documentation, loopback and link-local ranges (found by
   the extensible content rule framework)
-- `secret-unsafe-docs` (`extension_secret_docs_detector.ts`, appended in
-  `runQualityFindings`): docs that put a secret in plaintext or reference a
-  vault with syntax swamp does not resolve, in the packaged Markdown (fenced
-  code for all patterns, prose for credential shapes only), the manifest
-  `description` on the author's own lines and source describe strings. A
-  secret argument is one a schema marks sensitive, or an undeclared name that
-  reads as a secret. Linear-time patterns and a line-length cap, since the
-  registry runs the same check on archives it did not author. An unaccepted
-  finding loses the rubric v4 `secret-safe-docs` point (swamp-club#3757)
+- `secret-unsafe-docs` (`@swamp-club/extension-scoring/secret-docs`, appended
+  in `runQualityFindings`): docs that put a secret in plaintext or reference a
+  vault with syntax swamp does not resolve. The shared selector picks the files
+  from the archive push builds: Markdown that is not a binary, an include file
+  or data a module imports (fenced code for all patterns, prose for credential
+  shapes only), the describe strings of every non-test code module, and the
+  manifest's parsed `description`, reported on its `description:` line. A
+  secret argument is one a schema (`extensions:` methods included) marks
+  sensitive, or an undeclared name that reads as a secret. Linear-time
+  patterns, a line-length cap and file caps (1 MiB, 10,000 files; unread
+  documentation fails the factor and cannot be accepted), since the registry
+  runs the same check on archives it did not author. An unaccepted finding
+  loses the `secret-safe-docs` point (swamp-club#3757)
 
 ### Binaries
 
@@ -2111,11 +2132,12 @@ literal in import position (after `from`, a side-effect `import` or `import(`),
 with comments and template literals blanked, so import text inside a string,
 comment or template literal is never audited. These are the same imports push
 rewrites to their targets in the shipped source (swamp-club#3637), and the audit
-reads every code module the graph reports, JavaScript included, so nothing ships
-as an `npm:`/`jsr:` specifier unaudited. A package both written out and mapped
+reads every non-test code file the archive ships, JavaScript, include files and
+code under `files/` included, as the registry does, so nothing ships as an `npm:`/`jsr:` specifier
+unaudited. A package both written out and mapped
 at the same specifier is audited once, as the written form. The rules live in
-`src/domain/extensions/dependency_version_resolution.ts` and run no Deno
-tooling, so they outlive the runtime:
+`@swamp-club/extension-scoring/dependency-audit` and run no Deno tooling, so
+they outlive the runtime:
 
 1. An exact pin (`1.2.3`, `=1.2.3`, `v1.2.3`) is that version.
 2. Otherwise, in package.json mode, the version installed in `node_modules/`
@@ -2185,8 +2207,8 @@ shipped version.
 The first row keeps its old message, `package is deprecated`; a
 `loose-specifier` finding names the version this push resolves. The exact
 wording is pinned by
-`src/domain/extensions/testdata/dependency_audit_vectors.json`, which
-swamp-club's scorecard (swamp-club#3353) copies. swamp-club#3354 makes
+`vectors/dependency_audit.json` in `@swamp-club/extension-scoring`, which
+holds the push and scorecard wording side by side. swamp-club#3354 makes
 deprecated pins and loose specifiers errors after a two-week window.
 
 Every finding with a cause carries a `remediation`, and `jsr-yanked` and
@@ -2208,8 +2230,8 @@ helps the first.
 Push writes `dependency-audit.json` at the archive root, beside
 `manifest.yaml` (swamp-club#3662), so the registry's scorecard
 (swamp-club#3778) audits the version that ships rather than re-resolving a
-range against the registry as it stands. The rules live in
-`src/domain/extensions/dependency_audit_record.ts`:
+range against the registry as it stands. The rules, writer and reader both,
+live in `@swamp-club/extension-scoring/dependency-audit`:
 
 ```json
 {
@@ -2302,7 +2324,7 @@ dependency (`not-audited`). Push still only warns on the last four (`--yes`
 accepts them); nothing here becomes a push error. `dependencyTrustBlockerCount`
 counts the errors, deprecated and yanked warnings; `looseSpecifierCount` counts
 the distinct dependencies with a loose specifier. The shared vectors in
-`testdata/dependency_audit_vectors.json` pin the rule for both scorers.
+`vectors/dependency_audit.json` pin the rule for both scorers.
 
 ## Registry
 

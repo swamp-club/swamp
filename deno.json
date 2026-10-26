@@ -3,7 +3,12 @@
   "version": "0.1.0",
   "license": "AGPL-3.0-only",
   "exports": "./main.ts",
-  "workspace": ["packages/client", "packages/testing", "packages/dashboard"],
+  "workspace": [
+    "packages/client",
+    "packages/testing",
+    "packages/dashboard",
+    "packages/extension-scoring"
+  ],
   "tasks": {
     "dev": "deno run --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-sys --allow-ffi main.ts",
     "test": "SWAMP_NO_TELEMETRY=1 deno test --parallel --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys --allow-ffi",
@@ -13,7 +18,7 @@
     "compile": "deno run -A scripts/compile.ts",
     "license-headers": "deno run --allow-read --allow-write scripts/add_license_headers.ts",
     "unbarrel": "deno run --allow-read --allow-write scripts/unbarrel.ts",
-    "refresh-spdx": "deno run --allow-read=scripts --allow-write=src/domain/licensing/spdx_lists.generated.ts --allow-net=raw.githubusercontent.com scripts/refresh_spdx_lists.ts && deno fmt src/domain/licensing/spdx_lists.generated.ts",
+    "refresh-spdx": "deno run --allow-read=scripts --allow-write=packages/extension-scoring/licensing/spdx_lists.generated.ts --allow-net=raw.githubusercontent.com scripts/refresh_spdx_lists.ts && deno fmt packages/extension-scoring/licensing/spdx_lists.generated.ts",
     "audit": "deno run --allow-read --allow-net=api.osv.dev --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/audit_deps.ts",
     "sbom": "deno run --allow-read --allow-run --allow-net=api.jsr.io,registry.npmjs.org --allow-write=sbom.cdx.json,scripts/jsr_license_cache.json scripts/generate_sbom.ts",
     "audit-actions": "deno run --allow-read --allow-net=api.github.com --allow-env=GITHUB_STEP_SUMMARY,GITHUB_TOKEN --allow-write scripts/audit_actions.ts",

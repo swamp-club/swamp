@@ -27,7 +27,8 @@ import {
   tryParseRange,
 } from "@std/semver";
 
-export type DependencyRegistry = "npm" | "jsr";
+import type { DependencyRegistry } from "./specifiers.ts";
+export type { DependencyRegistry };
 
 /**
  * What a package manager's lockfile records for a package. The port between
@@ -66,6 +67,21 @@ export type ShippedVersionSource =
 export interface ShippedVersion {
   version: string;
   from: ShippedVersionSource;
+  /** The archive's dependency audit record decided it; `from` stays push's source. */
+  recorded?: true;
+}
+
+/**
+ * What an archive's dependency audit record says push audited
+ * (swamp-club#3662): the registry audits the version push shipped.
+ */
+export interface RecordedDependencyVersions {
+  /** The version push audited for this import's own specifier. */
+  recordedFor(
+    registry: DependencyRegistry,
+    name: string,
+    specVersion: string | null,
+  ): ShippedVersion | undefined;
 }
 
 /** What a registry publishes for one package. */
@@ -146,9 +162,11 @@ function resolveJsrVersion(
 }
 
 /**
- * The version push ships for a specifier: an exact pin; else the version
+ * The version that ships for a specifier: an exact pin; else the version
  * installed in a package.json project's node_modules (swamp-club#3630),
- * which the bundle inlines whatever the lockfile says; else the version
+ * which the bundle inlines whatever the lockfile says; else, for the
+ * registry, the version the archive's audit record says push audited, when
+ * the registry lists it; else the version
  * the lockfile resolves that specifier to; else, when the lockfile does not
  * record the specifier, the highest version it records for the package that
  * satisfies it (Deno reuses a locked version that does); else what the
@@ -163,10 +181,17 @@ export function resolveShippedVersion(
   lock: LockedDependencyVersions | undefined,
   published: PublishedPackage | null,
   installed?: string,
+  record?: RecordedDependencyVersions,
 ): ShippedVersion | null {
   const exact = exactVersion(specVersion);
   if (exact !== null) return { version: exact, from: "exact" };
   if (installed !== undefined) return { version: installed, from: "installed" };
+
+  const recorded = record?.recordedFor(registry, name, specVersion);
+  // the record is the author's claim: it counts only for a version the registry lists
+  if (recorded && published?.versions.includes(recorded.version)) {
+    return { ...recorded, recorded: true };
+  }
 
   const kind = specifierKind(specVersion);
   if (lock && kind !== "dist-tag") {

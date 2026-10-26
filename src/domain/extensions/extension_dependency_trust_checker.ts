@@ -17,323 +17,49 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DependencySpecifier } from "./extension_dependency_extractor.ts";
-import type { ShippedDependency } from "./dependency_audit_record.ts";
 import {
+  DEFAULT_TRUST_THRESHOLDS,
+  type DependencySpecifier,
+  type DependencyTrustResult,
+  evaluateJsrPackage,
+  evaluateNpmPackage,
+  failedPackageAudits,
+  groupForAudit,
+  type JsrLookup,
+  jsrNameValid,
   type LockedDependencyVersions,
-  type PublishedPackage,
-  resolveAuditVersion,
-  resolveShippedVersion,
-  type ShippedVersion,
-  type ShippedVersionSource,
-  specifierKind,
-  suggestVersion,
-} from "./dependency_version_resolution.ts";
-
-export { resolveAuditVersion };
-
-/**
- * Why a finding needs the pusher's attention; every finding with a cause
- * joins the push warnings gate (an error with one still blocks).
- * - `not-audited`: an OSV, npm or JSR lookup failed, so the dependency was
- *   not checked and is never reported as passed.
- * - `deprecated-version`: the version that ships is deprecated while the
- *   package's latest is not.
- * - `loose-specifier`: an unpinned, range or dist-tag specifier; the finding
- *   names the version this push resolves.
- * - `jsr-yanked`: the JSR version that ships is yanked.
- * - `jsr-missing`: the JSR package or version does not exist (an error).
- */
-export type DependencyTrustCause =
-  | "not-audited"
-  | "deprecated-version"
-  | "loose-specifier"
-  | "jsr-yanked"
-  | "jsr-missing";
+  type Lookup,
+  MalformedOsvResponseError,
+  type NpmLookup,
+  npmNameValid,
+  type OsvVulnerability,
+  overLimitAudits,
+  parseJsrMeta,
+  parseNpmPackument,
+  parseOsvResponse,
+  planNpmPackage,
+  pushResult,
+  type SpecifierAudit,
+  type TrustThresholds,
+} from "@swamp-club/extension-scoring/dependency-audit";
 
 /**
- * How a `not-audited` finding is resolved, by why the dependency was not
- * audited: only an `outage` clears on a re-run.
+ * The dependency trust audit's lookups: npm's packument and download
+ * count, OSV's advisories and JSR's `meta.json`. Every decision about what
+ * they say is the shared `@swamp-club/extension-scoring` evaluator's, the
+ * same one the registry's scorecard runs (swamp-club#3781).
  */
-export type NotAuditedFix =
-  | "outage"
-  | "name"
-  | "specifier"
-  | "unexpected"
-  | "other";
-
-export interface DependencyTrustIssue {
-  dependency: string;
-  message: string;
-  /** Present on not-audited and the shipped-version findings only. */
-  cause?: DependencyTrustCause;
-  /**
-   * The version to move to, on `jsr-yanked` and `deprecated-version`
-   * findings when another stable version exists.
-   */
-  suggestedVersion?: string;
-  /** How to resolve a finding that has a cause. */
-  remediation?: string;
-  /** Which fix `remediation` gives; present on `not-audited` findings only. */
-  notAuditedFix?: NotAuditedFix;
-}
-
-export interface DependencyAuditSummary {
-  name: string;
-  /**
-   * The import specifier as the source writes it, e.g. `npm:ms@^2.1.0`, or
-   * the one the import map resolves a bare import to.
-   */
-  specifier: string;
-  /** The bare specifier the source wrote, when the import map resolved it. */
-  importedAs?: string;
-  version: string;
-  /** Where `version` came from; absent when nothing resolved. */
-  resolvedFrom?: ShippedVersionSource;
-  registry: "npm" | "jsr";
-  license: string | null;
-  weeklyDownloads: number | null;
-  publishedAgo: string | null;
-  passed: boolean;
-  /** Present only when the dependency was not audited; `passed` is false. */
-  cause?: DependencyTrustCause;
-  /** Which lookup failed and how, present with `cause`. */
-  reason?: string;
-  /** How to resolve it, present with `cause`. */
-  notAuditedFix?: NotAuditedFix;
-}
-
-export interface DependencyTrustResult {
-  errors: DependencyTrustIssue[];
-  warnings: DependencyTrustIssue[];
-  audited: DependencyAuditSummary[];
-  passed: boolean;
-  /**
-   * The version that ships for each specifier the audit resolved, for the
-   * archive's dependency audit record (swamp-club#3662). A version the
-   * audit found unpublished is left out. Never rendered.
-   */
-  shipped?: ShippedDependency[];
-}
-
-export interface TrustThresholds {
-  minWeeklyDownloads: number;
-  maxAgeMonths: number;
-}
-
-export const DEFAULT_TRUST_THRESHOLDS: TrustThresholds = {
-  minWeeklyDownloads: 1000,
-  maxAgeMonths: 24,
-};
-
-const LICENSE_ALLOWLIST: ReadonlySet<string> = new Set([
-  "MIT",
-  "Apache-2.0",
-  "BSD-2-Clause",
-  "BSD-3-Clause",
-  "ISC",
-  "0BSD",
-  "MPL-2.0",
-  "Unlicense",
-  "CC0-1.0",
-]);
 
 const OSV_QUERY_URL = "https://api.osv.dev/v1/query";
 const NPM_REGISTRY_URL = "https://registry.npmjs.org";
 const NPM_DOWNLOADS_URL = "https://api.npmjs.org/downloads/point/last-week";
 const JSR_REGISTRY_URL = "https://jsr.io";
 const FETCH_TIMEOUT_MS = 15_000;
-/** The most of a third-party deprecation notice a finding repeats. */
-const MAX_DEPRECATION_REASON = 200;
-
-// npm's naming rules, uppercase allowed for legacy names; anything else
-// is never fetched.
-const NPM_NAME_RE =
-  /^(?:@[a-z0-9-*~][a-z0-9-*._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
-// JSR scopes and names are lowercase alphanumerics and hyphens.
-const JSR_NAME_RE = /^@[a-z0-9-]+\/[a-z0-9-]+$/;
-
-interface OsvVuln {
-  id: string;
-  severity: string;
-}
-
-interface NpmPackageFacts {
-  version: string;
-  license: string | null;
-  /** The version that ships is deprecated. */
-  deprecated: boolean;
-  /**
-   * Whether the package's latest is deprecated too. A deprecated version
-   * whose latest is not is a warning; when both are (or this is unknown),
-   * the package is deprecated and that is an error.
-   */
-  latestDeprecated?: boolean;
-  /** npm's deprecation notice for the version that ships. */
-  deprecationReason?: string;
-  /** The newest stable version that is not deprecated, when one exists. */
-  suggestedVersion?: string;
-  maintainerCount: number;
-  weeklyDownloads: number | null;
-  lastPublish: string | null;
-}
-
-/** What the npm lookup returns: the packument, read once per package. */
-interface NpmPackument {
-  latestVersion: string;
-  /** Every version the packument lists. */
-  publishedVersions: string[];
-  distTags: Record<string, string>;
-  manifests: Record<string, Record<string, unknown>>;
-  packageLevel: Record<string, unknown>;
-  weeklyDownloads: number | null;
-  lastPublish: string | null;
-}
-
-/** What JSR's `meta.json` says about one package. */
-interface JsrPackageMeta {
-  latest: string | null;
-  versions: string[];
-  yanked: Set<string>;
-}
-
-/** A lookup's outcome: its data, or why the service could not answer. */
-type Lookup<T> =
-  | { kind: "found"; value: T }
-  | { kind: "unavailable"; reason: string };
 
 export type Fetcher = (
   url: string | URL,
   init?: RequestInit,
 ) => Promise<Response>;
-
-export function monthsSince(iso: string, now: Date = new Date()): number {
-  const then = new Date(iso);
-  const diffMs = now.getTime() - then.getTime();
-  return Math.floor(diffMs / (1000 * 60 * 60 * 24 * 30.44));
-}
-
-export function cvssToSeverity(score: number): string {
-  if (score >= 9.0) return "CRITICAL";
-  if (score >= 7.0) return "HIGH";
-  if (score >= 4.0) return "MEDIUM";
-  if (score > 0.0) return "LOW";
-  return "UNKNOWN";
-}
-
-const CVSS_V3_AV: Record<string, number> = {
-  N: 0.85,
-  A: 0.62,
-  L: 0.55,
-  P: 0.20,
-};
-const CVSS_V3_AC: Record<string, number> = { L: 0.77, H: 0.44 };
-const CVSS_V3_PR_U: Record<string, number> = { N: 0.85, L: 0.62, H: 0.27 };
-const CVSS_V3_PR_C: Record<string, number> = { N: 0.85, L: 0.68, H: 0.50 };
-const CVSS_V3_UI: Record<string, number> = { N: 0.85, R: 0.62 };
-const CVSS_V3_CIA: Record<string, number> = { N: 0, L: 0.22, H: 0.56 };
-
-export function parseCvssV3BaseScore(vector: string): number | null {
-  if (!vector.startsWith("CVSS:3")) return null;
-  const parts: Record<string, string> = {};
-  for (const seg of vector.split("/")) {
-    const [k, v] = seg.split(":");
-    if (k && v) parts[k] = v;
-  }
-  const av = CVSS_V3_AV[parts.AV ?? ""];
-  const ac = CVSS_V3_AC[parts.AC ?? ""];
-  const scope = parts.S;
-  const pr = scope === "C"
-    ? CVSS_V3_PR_C[parts.PR ?? ""]
-    : CVSS_V3_PR_U[parts.PR ?? ""];
-  const ui = CVSS_V3_UI[parts.UI ?? ""];
-  const c = CVSS_V3_CIA[parts.C ?? ""];
-  const i = CVSS_V3_CIA[parts.I ?? ""];
-  const a = CVSS_V3_CIA[parts.A ?? ""];
-  if (
-    av == null || ac == null || pr == null || ui == null ||
-    c == null || i == null || a == null || !scope
-  ) {
-    return null;
-  }
-  const iss = 1 - (1 - c) * (1 - i) * (1 - a);
-  if (iss <= 0) return 0;
-  const exploitability = 8.22 * av * ac * pr * ui;
-  const impact = scope === "C"
-    ? 7.52 * (iss - 0.029) - 3.25 * Math.pow(iss - 0.02, 15)
-    : 6.42 * iss;
-  if (impact <= 0) return 0;
-  const raw = scope === "C"
-    ? 1.08 * (impact + exploitability)
-    : impact + exploitability;
-  return Math.min(Math.ceil(raw * 10) / 10, 10);
-}
-
-function extractSeverity(vuln: Record<string, unknown>): string {
-  const dbSpecific = vuln.database_specific as
-    | Record<string, unknown>
-    | undefined;
-  if (dbSpecific && typeof dbSpecific.severity === "string") {
-    const upper = dbSpecific.severity.toUpperCase();
-    if (upper === "MODERATE") return "MEDIUM";
-    return upper;
-  }
-  const sevArr = vuln.severity;
-  if (Array.isArray(sevArr) && sevArr.length > 0) {
-    let highest: string = "UNKNOWN";
-    for (const entry of sevArr) {
-      const obj = entry as Record<string, unknown>;
-      let numeric: number | null = null;
-      if (typeof obj.score === "number") {
-        numeric = obj.score;
-      } else if (typeof obj.score === "string") {
-        numeric = parseCvssV3BaseScore(obj.score);
-      }
-      if (numeric !== null) {
-        if (numeric >= 9.0) return "CRITICAL";
-        if (numeric >= 7.0) {
-          highest = "HIGH";
-        } else if (numeric >= 4.0 && highest !== "HIGH") {
-          highest = "MEDIUM";
-        } else if (numeric < 4.0 && highest === "UNKNOWN") {
-          highest = "LOW";
-        }
-      }
-    }
-    return highest;
-  }
-  return "UNKNOWN";
-}
-
-function normaliseVulns(body: unknown): OsvVuln[] {
-  if (!body || typeof body !== "object") return [];
-  const vulns = (body as Record<string, unknown>).vulns;
-  if (!Array.isArray(vulns)) return [];
-  return vulns.map((v) => {
-    const obj = v as Record<string, unknown>;
-    return {
-      id: String(obj.id ?? "OSV-UNKNOWN"),
-      severity: extractSeverity(obj),
-    };
-  });
-}
-
-export function parseSpdxLicense(
-  license: string | null | undefined,
-): string[] {
-  if (!license) return [];
-  return license
-    .replace(/[()]/g, " ")
-    .split(/\s+(?:AND|OR|WITH)\s+/i)
-    .map((term) => term.trim())
-    .filter(Boolean);
-}
-
-export function licenseAllowed(license: string | null | undefined): boolean {
-  const terms = parseSpdxLicense(license);
-  if (terms.length === 0) return false;
-  return terms.every((term) => LICENSE_ALLOWLIST.has(term));
-}
 
 async function fetchWithTimeout(
   url: string,
@@ -366,7 +92,7 @@ async function queryOsvVulns(
   version: string,
   fetcher: Fetcher,
   signal?: AbortSignal,
-): Promise<Lookup<OsvVuln[]>> {
+): Promise<Lookup<OsvVulnerability[]>> {
   try {
     const resp = await fetchWithTimeout(
       OSV_QUERY_URL,
@@ -385,17 +111,21 @@ async function queryOsvVulns(
       await resp.body?.cancel();
       return { kind: "unavailable", reason: `HTTP ${resp.status}` };
     }
-    return { kind: "found", value: normaliseVulns(await resp.json()) };
+    return { kind: "found", value: parseOsvResponse(await resp.json()) };
   } catch (error) {
+    if (error instanceof MalformedOsvResponseError) {
+      return { kind: "unavailable", reason: error.message };
+    }
     return { kind: "unavailable", reason: describeFailure(error, signal) };
   }
 }
 
-async function fetchNpmFacts(
+async function fetchNpmPackument(
   name: string,
   fetcher: Fetcher,
   signal?: AbortSignal,
-): Promise<Lookup<NpmPackument>> {
+): Promise<NpmLookup> {
+  if (!npmNameValid(name)) return { kind: "invalid-name" };
   // The download count is a soft signal: its failure leaves it null and
   // never makes the package metadata lookup, or the audit, fail.
   const [pkgSettled, downloadsSettled] = await Promise.allSettled([
@@ -414,13 +144,10 @@ async function fetchNpmFacts(
   }
   const pkgResp = pkgSettled.value;
 
-  let weeklyDownloads: number | null = null;
+  let downloadsBody: unknown = null;
   if (downloadsResp?.ok) {
     try {
-      const dlBody = await downloadsResp.json() as Record<string, unknown>;
-      if (typeof dlBody.downloads === "number") {
-        weeklyDownloads = dlBody.downloads;
-      }
+      downloadsBody = await downloadsResp.json();
     } catch {
       // An unreadable count is as good as none.
     }
@@ -433,126 +160,21 @@ async function fetchNpmFacts(
       await pkgResp.body?.cancel();
       return { kind: "unavailable", reason: `HTTP ${pkgResp.status}` };
     }
-    const pkgBody = await pkgResp.json() as Record<string, unknown>;
-
-    const distTags: Record<string, string> = {};
-    const rawTags = pkgBody["dist-tags"];
-    if (rawTags && typeof rawTags === "object") {
-      for (const [tag, value] of Object.entries(rawTags)) {
-        if (typeof value === "string") distTags[tag] = value;
-      }
-    }
-    const latestVersion = distTags.latest ??
-      String(pkgBody.version ?? "unknown");
-    const manifests: Record<string, Record<string, unknown>> = {};
-    if (pkgBody.versions && typeof pkgBody.versions === "object") {
-      for (
-        const [version, manifest] of Object.entries(
-          pkgBody.versions as Record<string, unknown>,
-        )
-      ) {
-        if (manifest && typeof manifest === "object") {
-          manifests[version] = manifest as Record<string, unknown>;
-        }
-      }
-    }
-
-    const time = pkgBody.time as Record<string, string> | undefined;
-    const lastPublish = time?.[latestVersion] ?? time?.modified ?? null;
-
     return {
       kind: "found",
-      value: {
-        latestVersion,
-        publishedVersions: Object.keys(manifests),
-        distTags,
-        manifests,
-        packageLevel: pkgBody,
-        weeklyDownloads,
-        lastPublish,
-      },
+      value: parseNpmPackument(await pkgResp.json(), downloadsBody),
     };
   } catch (error) {
     return { kind: "unavailable", reason: describeFailure(error, signal) };
   }
 }
 
-function licenseOf(raw: unknown): string | null {
-  if (typeof raw === "string") return raw;
-  if (
-    raw && typeof raw === "object" &&
-    typeof (raw as Record<string, unknown>).type === "string"
-  ) {
-    return (raw as Record<string, unknown>).type as string;
-  }
-  return null;
-}
-
-/** npm marks a deprecated version with a non-empty notice. */
-function deprecationOf(raw: unknown): string | null {
-  if (typeof raw === "string") return raw.length > 0 ? raw : null;
-  return raw === true ? "" : null;
-}
-
-/** A third-party notice made safe for one terminal line. */
-function sanitiseNotice(notice: string): string {
-  // Control characters, and the bidi and zero-width format characters that
-  // could reorder or hide part of the line.
-  const flat = notice.replace(
-    // deno-lint-ignore no-control-regex
-    /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]+/g,
-    " ",
-  ).replace(/\s+/g, " ").trim();
-  return flat.length > MAX_DEPRECATION_REASON
-    ? `${flat.slice(0, MAX_DEPRECATION_REASON - 1)}…`
-    : flat;
-}
-
-/**
- * The facts for the version that ships: license, maintainers and
- * deprecation from its own manifest. The age stays the package's latest
- * publish: it measures whether the package is maintained, not the pin.
- * The caller reports a version the packument does not list as not audited;
- * its facts then come from the package level only, never from latest.
- */
-function factsFor(packument: NpmPackument, version: string): NpmPackageFacts {
-  const pkg = packument.packageLevel;
-  const latest = packument.manifests[packument.latestVersion];
-  const shipped: Record<string, unknown> | undefined =
-    packument.manifests[version];
-  const latestNotice = deprecationOf(latest?.deprecated ?? pkg.deprecated);
-  const notice = deprecationOf(shipped?.deprecated ?? pkg.deprecated);
-  const maintainers = shipped?.maintainers ?? pkg.maintainers;
-  const suggestion = notice === null ? null : suggestVersion(
-    version,
-    packument.publishedVersions,
-    new Set(
-      packument.publishedVersions.filter((v) =>
-        deprecationOf(packument.manifests[v]?.deprecated ?? pkg.deprecated) !==
-          null
-      ),
-    ),
-  );
-  return {
-    version,
-    license: licenseOf(shipped?.license ?? pkg.license),
-    deprecated: notice !== null,
-    latestDeprecated: latestNotice !== null,
-    ...(notice ? { deprecationReason: sanitiseNotice(notice) } : {}),
-    ...(notice !== null && suggestion !== null
-      ? { suggestedVersion: suggestion }
-      : {}),
-    maintainerCount: Array.isArray(maintainers) ? maintainers.length : 0,
-    weeklyDownloads: packument.weeklyDownloads,
-    lastPublish: packument.lastPublish,
-  };
-}
-
 async function fetchJsrMeta(
   name: string,
   fetcher: Fetcher,
   signal?: AbortSignal,
-): Promise<Lookup<JsrPackageMeta> | { kind: "missing" }> {
+): Promise<JsrLookup> {
+  if (!jsrNameValid(name)) return { kind: "invalid-name" };
   try {
     const resp = await fetchWithTimeout(
       `${JSR_REGISTRY_URL}/${name}/meta.json`,
@@ -573,511 +195,36 @@ async function fetchJsrMeta(
       await resp.body?.cancel();
       return { kind: "unavailable", reason: "response was not JSON" };
     }
-    const body = await resp.json() as Record<string, unknown>;
-    const rawVersions = body.versions;
-    if (!rawVersions || typeof rawVersions !== "object") {
-      return { kind: "unavailable", reason: "metadata lists no versions" };
-    }
-    const versions: string[] = [];
-    const yanked = new Set<string>();
-    for (const [version, entry] of Object.entries(rawVersions)) {
-      versions.push(version);
-      if (
-        entry && typeof entry === "object" &&
-        (entry as Record<string, unknown>).yanked === true
-      ) {
-        yanked.add(version);
-      }
-    }
-    return {
-      kind: "found",
-      value: {
-        latest: typeof body.latest === "string" ? body.latest : null,
-        versions,
-        yanked,
-      },
-    };
+    return parseJsrMeta(await resp.json());
   } catch (error) {
     return { kind: "unavailable", reason: describeFailure(error, signal) };
   }
 }
 
-/**
- * HIGH, CRITICAL and UNKNOWN vulnerabilities are errors; MEDIUM ones are
- * warnings. Shared by a full audit and one whose npm lookup failed.
- */
-function evaluateVulns(
-  name: string,
-  vulns: OsvVuln[],
-): { errors: DependencyTrustIssue[]; warnings: DependencyTrustIssue[] } {
-  const errors: DependencyTrustIssue[] = [];
-  const warnings: DependencyTrustIssue[] = [];
-  for (const v of vulns) {
-    const sev = v.severity.toUpperCase();
-    if (sev === "HIGH" || sev === "CRITICAL" || sev === "UNKNOWN") {
-      errors.push({
-        dependency: name,
-        message: `vulnerability ${v.id} (${sev})`,
-      });
-    } else if (sev === "MEDIUM") {
-      warnings.push({
-        dependency: name,
-        message: `vulnerability ${v.id} (${sev})`,
-      });
-    }
-  }
-  return { errors, warnings };
-}
-
-export function evaluateNpmTrustGates(
-  name: string,
-  facts: NpmPackageFacts,
-  vulns: OsvVuln[],
-  thresholds: TrustThresholds = DEFAULT_TRUST_THRESHOLDS,
-  now: Date = new Date(),
-): { errors: DependencyTrustIssue[]; warnings: DependencyTrustIssue[] } {
-  const { errors, warnings } = evaluateVulns(name, vulns);
-
-  if (facts.deprecated && facts.latestDeprecated !== false) {
-    errors.unshift({ dependency: name, message: "package is deprecated" });
-  } else if (facts.deprecated) {
-    warnings.push({
-      dependency: name,
-      message: `version ${facts.version} is deprecated${
-        facts.deprecationReason ? `: ${facts.deprecationReason}` : ""
-      }`,
-      cause: "deprecated-version",
-      ...(facts.suggestedVersion
-        ? { suggestedVersion: facts.suggestedVersion }
-        : {}),
-      remediation: facts.suggestedVersion
-        ? `Move to ${facts.suggestedVersion}, the newest version that isn't deprecated.`
-        : "Move to a non-deprecated version of the package.",
-    });
-  }
-
-  if (!licenseAllowed(facts.license)) {
-    warnings.push({
-      dependency: name,
-      message: `license "${facts.license ?? "unknown"}" not in allowlist`,
-    });
-  }
-
-  if (facts.maintainerCount === 0) {
-    warnings.push({ dependency: name, message: "no maintainers listed" });
-  }
-
-  if (
-    facts.weeklyDownloads !== null &&
-    facts.weeklyDownloads < thresholds.minWeeklyDownloads
-  ) {
-    warnings.push({
-      dependency: name,
-      message:
-        `low weekly downloads (${facts.weeklyDownloads} < ${thresholds.minWeeklyDownloads})`,
-    });
-  }
-
-  if (facts.lastPublish) {
-    const ageMonths = monthsSince(facts.lastPublish, now);
-    if (ageMonths > thresholds.maxAgeMonths) {
-      warnings.push({
-        dependency: name,
-        message:
-          `last published ${ageMonths} months ago (threshold: ${thresholds.maxAgeMonths})`,
-      });
-    }
-  }
-
-  return { errors, warnings };
-}
-
-function formatAge(lastPublish: string | null): string | null {
-  if (!lastPublish) return null;
-  const months = monthsSince(lastPublish);
-  if (months <= 0) return "this month";
-  if (months === 1) return "1mo ago";
-  return `${months}mo ago`;
-}
-
-/** The specifier as the source writes it, without any subpath. */
-function specifierText(spec: DependencySpecifier): string {
-  return `${spec.registry}:${spec.name}${
-    spec.version !== null ? `@${spec.version}` : ""
-  }`;
-}
-
-/** What to add to a fix when the lockfile, not the source, chose the version. */
-function lockRefreshNote(
-  shipped: ShippedVersion,
-  lock: LockedDependencyVersions | undefined,
-): string {
-  return shipped.from === "installed"
-    ? " Then run `npm install` or `deno install` so node_modules holds the new version."
-    : shipped.from === "lockfile" && lock
-    ? ` Then refresh ${lock.source} so it records the new version.`
-    : "";
-}
-
-/**
- * An unpinned, range or dist-tag specifier's finding, naming the version
- * this push resolves; null for an exact pin.
- */
-function looseSpecifierFinding(
-  spec: DependencySpecifier,
-  shipped: ShippedVersion,
-  lock: LockedDependencyVersions | undefined,
-): DependencyTrustIssue | null {
-  const kind = specifierKind(spec.version);
-  if (kind === "exact") return null;
-  const phrase = kind === "unpinned"
-    ? "unpinned"
-    : kind === "range"
-    ? "a range"
-    : "a dist-tag";
-  const from = shipped.from === "lockfile" && lock
-    ? ` (from ${lock.source})`
-    : shipped.from === "installed"
-    ? " (installed in node_modules)"
-    : "";
-  return {
-    dependency: spec.name,
-    message: `${
-      specifierText(spec)
-    } is ${phrase}; audited ${shipped.version}, the version this push resolves${from}`,
-    cause: "loose-specifier",
-    remediation: shipped.from === "installed"
-      ? `Pin the exact installed version (${shipped.version}) in package.json to ensure that the audited version is the one that ships.`
-      : `Pin the exact version this push resolved (${shipped.version}) to ensure that the audited version is the one that ships.`,
-  };
-}
-
-/**
- * Names the bare imports a finding came from, so the pusher can find the
- * line. Deno resolved them under the project's config — its imports, an
- * importMap file, a scope or a workspace root (swamp-club#3612) — and the
- * module graph does not say which, so the config is not named further. In
- * a package.json project they resolved to an installed dependency
- * (swamp-club#3630).
- */
-function importedAsSuffix(
-  names: readonly string[],
-  throughPackageJson = false,
-): string {
-  return ` (imported as ${names.map((n) => `"${n}"`).join(", ")} through ${
-    throughPackageJson ? "package.json" : "the project's Deno config"
-  })`;
-}
-
-/** A specifier's audit, its findings naming the bare import it came from. */
-function attributeToImport(
-  spec: DependencySpecifier,
-  audit: SpecifierAudit,
-): SpecifierAudit {
-  if (spec.importedAs === undefined) return audit;
-  const suffix = importedAsSuffix(
-    [spec.importedAs],
-    spec.installedVersion !== undefined,
-  );
-  const attribute = (issue: DependencyTrustIssue): DependencyTrustIssue => ({
-    ...issue,
-    message: issue.message + suffix,
-  });
-  return {
-    ...audit,
-    errors: audit.errors.map(attribute),
-    warnings: audit.warnings.map(attribute),
-    summary: { ...audit.summary, importedAs: spec.importedAs },
-  };
-}
-
-/** One specifier's findings and summary. */
-interface SpecifierAudit {
-  errors: DependencyTrustIssue[];
-  warnings: DependencyTrustIssue[];
-  summary: DependencyAuditSummary;
-  /** The version that ships, unless the audit found it unpublished. */
-  shipped?: ShippedVersion;
-}
-
-/**
- * How to resolve a dependency that was not audited, by why it was not: a
- * lookup outage clears on a re-run, a wrong name or specifier never does.
- */
-export const NOT_AUDITED_FIX: Readonly<Record<NotAuditedFix, string>> = {
-  outage: "Re-run when OSV, npm and JSR are reachable.",
-  name: "Correct the package name in the import.",
-  specifier: "Change the specifier to a version the registry publishes.",
-  unexpected: "Re-run; if it fails again, report it.",
-  other: "Resolve the reason above, then re-run.",
-};
-
-function notAudited(
-  spec: DependencySpecifier,
-  reason: string,
-  summary: Omit<DependencyAuditSummary, "passed" | "cause" | "reason">,
-  fix: NotAuditedFix = "other",
-  errors: DependencyTrustIssue[] = [],
-  warnings: DependencyTrustIssue[] = [],
-): SpecifierAudit {
-  return {
-    errors,
-    warnings: [...warnings, {
-      dependency: spec.name,
-      message: `not audited: ${reason}`,
-      cause: "not-audited",
-      remediation: NOT_AUDITED_FIX[fix],
-      notAuditedFix: fix,
-    }],
-    summary: {
-      ...summary,
-      passed: false,
-      cause: "not-audited",
-      reason,
-      notAuditedFix: fix,
-    },
-  };
-}
-
-/**
- * Audits every specifier of one npm package from a single packument
- * lookup, querying OSV once per version that ships.
- */
+/** Looks up one npm package and the OSV advisories for each version it ships. */
 async function auditNpmPackage(
   name: string,
   specs: DependencySpecifier[],
   lock: LockedDependencyVersions | undefined,
   fetcher: Fetcher,
   thresholds: TrustThresholds,
+  now: Date,
   signal?: AbortSignal,
 ): Promise<SpecifierAudit[]> {
-  if (!NPM_NAME_RE.test(name)) {
-    return specs.map((spec) =>
-      notAudited(spec, "invalid npm package name", {
-        name,
-        specifier: specifierText(spec),
-        version: spec.version ?? "latest",
-        registry: "npm",
-        license: null,
-        weeklyDownloads: null,
-        publishedAgo: null,
-      }, "name")
-    );
+  const npm = await fetchNpmPackument(name, fetcher, signal);
+  const plan = planNpmPackage(name, specs, npm, lock);
+  const osv = new Map<string, Lookup<OsvVulnerability[]>>();
+  for (const version of plan.osvVersions) {
+    osv.set(version, await queryOsvVulns(name, version, fetcher, signal));
   }
-
-  const npm = await fetchNpmFacts(name, fetcher, signal);
-  const published: PublishedPackage | null = npm.kind === "found"
-    ? { versions: npm.value.publishedVersions, distTags: npm.value.distTags }
-    : null;
-  const osvByVersion = new Map<string, Promise<Lookup<OsvVuln[]>>>();
-
-  const audits: SpecifierAudit[] = [];
-  for (const spec of specs) {
-    // Without npm metadata only an exact or locked version still lets OSV
-    // answer.
-    const shipped = resolveShippedVersion(
-      "npm",
-      name,
-      spec.version,
-      lock,
-      published,
-      spec.installedVersion,
-    );
-    const version = shipped?.version ?? null;
-    let osvLookup: Promise<Lookup<OsvVuln[]>> | null = null;
-    if (version !== null) {
-      osvLookup = osvByVersion.get(version) ?? null;
-      if (osvLookup === null) {
-        osvLookup = queryOsvVulns(name, version, fetcher, signal);
-        osvByVersion.set(version, osvLookup);
-      }
-    }
-    const osv = osvLookup === null ? null : await osvLookup;
-
-    const failures: string[] = [];
-    // A wrong specifier fails the same way on every re-run; a lookup that
-    // failed may not.
-    let wrongSpecifier = false;
-    // An exact, installed or locked version still ships when npm is down,
-    // so only a version npm says it never published is left unrecorded.
-    let unpublished = false;
-    if (npm.kind === "unavailable") {
-      failures.push(`npm registry lookup failed (${npm.reason})`);
-    } else if (
-      version !== null && !Object.hasOwn(npm.value.manifests, version)
-    ) {
-      failures.push(`npm lists no version ${version}`);
-      wrongSpecifier = true;
-      unpublished = true;
-    }
-    if (osv === null) {
-      failures.push(
-        npm.kind === "found"
-          ? `OSV not queried (no published version matches ${
-            spec.version ?? "latest"
-          })`
-          : "OSV not queried (no resolvable version)",
-      );
-      if (npm.kind === "found") wrongSpecifier = true;
-    } else if (osv.kind === "unavailable") {
-      failures.push(`OSV lookup failed (${osv.reason})`);
-    }
-    const vulns = osv?.kind === "found" ? osv.value : [];
-
-    const facts = npm.kind === "found"
-      ? factsFor(npm.value, version ?? npm.value.latestVersion)
-      : null;
-    const { errors, warnings } = facts
-      ? evaluateNpmTrustGates(name, facts, vulns, thresholds)
-      : evaluateVulns(name, vulns);
-    if (shipped) {
-      const note = lockRefreshNote(shipped, lock);
-      for (const w of warnings) {
-        if (w.cause === "deprecated-version" && w.remediation) {
-          w.remediation += note;
-        }
-      }
-      const loose = looseSpecifierFinding(spec, shipped, lock);
-      if (loose) warnings.push(loose);
-    }
-
-    const summary = {
-      name,
-      specifier: specifierText(spec),
-      version: version ?? spec.version ?? "latest",
-      ...(shipped ? { resolvedFrom: shipped.from } : {}),
-      registry: "npm" as const,
-      license: facts?.license ?? null,
-      weeklyDownloads: facts?.weeklyDownloads ?? null,
-      publishedAgo: formatAge(facts?.lastPublish ?? null),
-    };
-    const audit: SpecifierAudit = failures.length > 0
-      ? notAudited(
-        spec,
-        failures.join("; "),
-        summary,
-        wrongSpecifier ? "specifier" : "outage",
-        errors,
-        warnings,
-      )
-      : {
-        errors,
-        warnings,
-        summary: { ...summary, passed: errors.length === 0 },
-      };
-    audits.push(shipped && !unpublished ? { ...audit, shipped } : audit);
-  }
-  return audits;
-}
-
-/**
- * Audits every specifier of one JSR package from a single `meta.json`
- * lookup: the package and the version that ships must exist, and a yanked
- * version warns. OSV has no JSR data, so there is no vulnerability check.
- */
-async function auditJsrPackage(
-  name: string,
-  specs: DependencySpecifier[],
-  lock: LockedDependencyVersions | undefined,
-  fetcher: Fetcher,
-  signal?: AbortSignal,
-): Promise<SpecifierAudit[]> {
-  const meta = JSR_NAME_RE.test(name)
-    ? await fetchJsrMeta(name, fetcher, signal)
-    : null;
-
-  return specs.map((spec): SpecifierAudit => {
-    const base = {
-      name,
-      specifier: specifierText(spec),
-      version: spec.version ?? "latest",
-      registry: "jsr" as const,
-      license: null,
-      weeklyDownloads: null,
-      publishedAgo: null,
-    };
-    const missing = (message: string): SpecifierAudit => ({
-      errors: [{ dependency: name, message, cause: "jsr-missing" }],
-      warnings: [],
-      summary: { ...base, passed: false },
-    });
-
-    if (meta === null) return missing("invalid JSR package name");
-    if (meta.kind === "missing") return missing("JSR package not found");
-    if (meta.kind === "unavailable") {
-      const audit = notAudited(
-        spec,
-        `JSR lookup failed (${meta.reason})`,
-        base,
-        "outage",
-      );
-      // An exact or locked version ships whether or not JSR answered.
-      const known = resolveShippedVersion(
-        "jsr",
-        name,
-        spec.version,
-        lock,
-        null,
-      );
-      return known ? { ...audit, shipped: known } : audit;
-    }
-
-    const shipped = resolveShippedVersion("jsr", name, spec.version, lock, {
-      versions: meta.value.versions,
-      distTags: meta.value.latest ? { latest: meta.value.latest } : {},
-      yanked: meta.value.yanked,
-    });
-    if (!shipped || !meta.value.versions.includes(shipped.version)) {
-      return missing(
-        `version ${
-          shipped?.version ?? spec.version ?? "latest"
-        } not found on JSR`,
-      );
-    }
-
-    const warnings: DependencyTrustIssue[] = [];
-    if (meta.value.yanked.has(shipped.version)) {
-      const suggested = suggestVersion(
-        shipped.version,
-        meta.value.versions,
-        meta.value.yanked,
-      );
-      warnings.push({
-        dependency: name,
-        message:
-          `version ${shipped.version} was withdrawn (yanked) by its author on JSR. ${
-            suggested
-              ? `Newest version that isn't yanked: ${suggested}.`
-              : "No other version is available."
-          }`,
-        cause: "jsr-yanked",
-        ...(suggested ? { suggestedVersion: suggested } : {}),
-        remediation: (suggested
-          ? `Pin jsr:${name}@${suggested} (or the newest non-yanked version your code supports).`
-          : "Wait for the author to publish a replacement, or replace the dependency.") +
-          lockRefreshNote(shipped, lock),
-      });
-    }
-    const loose = looseSpecifierFinding(spec, shipped, lock);
-    if (loose) warnings.push(loose);
-    return {
-      errors: [],
-      warnings,
-      summary: {
-        ...base,
-        version: shipped.version,
-        resolvedFrom: shipped.from,
-        passed: true,
-      },
-      shipped,
-    };
-  });
+  return evaluateNpmPackage(name, specs, npm, plan, osv, now, lock, thresholds);
 }
 
 /**
  * Audits each dependency at the version push ships: an exact pin, else the
  * version `lock` records, else what the registry resolves today. Each
- * package is looked up once, however many specifiers name it.
+ * package is looked up once, however many specifiers name it, and at most
+ * the shared dependency limit are looked up at all.
  */
 export async function checkDependencyTrust(
   specifiers: DependencySpecifier[],
@@ -1085,152 +232,47 @@ export async function checkDependencyTrust(
   thresholds: TrustThresholds = DEFAULT_TRUST_THRESHOLDS,
   signal?: AbortSignal,
   lock?: LockedDependencyVersions,
+  now: Date = new Date(),
 ): Promise<DependencyTrustResult> {
-  const allErrors: DependencyTrustIssue[] = [];
-  const allWarnings: DependencyTrustIssue[] = [];
-  const audited: DependencyAuditSummary[] = [];
-  const shipped: ShippedDependency[] = [];
-
-  const packages = new Map<string, DependencySpecifier[]>();
-  for (const spec of specifiers) {
-    const key = `${spec.registry}:${spec.name}`;
-    const group = packages.get(key);
-    if (group) group.push(spec);
-    else packages.set(key, [spec]);
-  }
-  const groups = [...packages.values()];
+  const { groups, overLimit } = groupForAudit(specifiers);
+  const audits: { spec: DependencySpecifier; audit: SpecifierAudit }[] = [];
 
   const CONCURRENCY = 5;
   for (let i = 0; i < groups.length; i += CONCURRENCY) {
     const batch = groups.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
-      batch.map(([first, ...rest]) =>
-        first.registry === "jsr"
-          ? auditJsrPackage(first.name, [first, ...rest], lock, fetcher, signal)
-          : auditNpmPackage(
-            first.name,
-            [first, ...rest],
+      batch.map(async (specs) => {
+        const name = specs[0].name;
+        return specs[0].registry === "jsr"
+          ? evaluateJsrPackage(
+            name,
+            specs,
+            await fetchJsrMeta(name, fetcher, signal),
+            lock,
+          )
+          : await auditNpmPackage(
+            name,
+            specs,
             lock,
             fetcher,
             thresholds,
+            now,
             signal,
-          )
-      ),
+          );
+      }),
     );
-
     for (const [index, result] of results.entries()) {
       const specs = batch[index];
-      if (result.status === "rejected") {
-        // Named by its bare imports only when no specifier writes it out.
-        const bare = specs.every((spec) => spec.importedAs !== undefined)
-          ? [...new Set(specs.flatMap((spec) => spec.importedAs ?? []))]
-          : [];
-        allWarnings.push({
-          dependency: specs[0].name,
-          message: `not audited: audit check failed (${
-            describeFailure(result.reason)
-          })${
-            bare.length > 0
-              ? importedAsSuffix(
-                bare,
-                specs.some((spec) => spec.installedVersion !== undefined),
-              )
-              : ""
-          }`,
-          cause: "not-audited",
-          remediation: NOT_AUDITED_FIX.unexpected,
-          notAuditedFix: "unexpected",
-        });
-        continue;
-      }
-      for (const [i, raw] of result.value.entries()) {
-        const audit = attributeToImport(specs[i], raw);
-        for (const error of audit.errors) allErrors.push(error);
-        for (const warning of audit.warnings) allWarnings.push(warning);
-        audited.push(audit.summary);
-        if (audit.shipped) {
-          shipped.push({ specifier: specs[i], shipped: audit.shipped });
-        }
+      const specAudits = result.status === "fulfilled"
+        ? result.value
+        : failedPackageAudits(specs, describeFailure(result.reason));
+      for (const [j, audit] of specAudits.entries()) {
+        audits.push({ spec: specs[j], audit });
       }
     }
   }
-
-  return {
-    errors: allErrors,
-    warnings: allWarnings,
-    audited,
-    passed: allErrors.length === 0,
-    shipped,
-  };
-}
-
-/**
- * The findings that cost both points of the rubric's dependency-trust factor
- * besides an unaudited dependency: every error, a deprecated shipped version
- * and a yanked JSR version. Push only warns about the last two (`--yes`
- * accepts them) but the rubric scores against them, as the registry's
- * scorecard does.
- */
-export function dependencyTrustBlockerCount(
-  result: DependencyTrustResult,
-): number {
-  return result.errors.length +
-    result.warnings.filter((w) =>
-      w.cause === "deprecated-version" || w.cause === "jsr-yanked"
-    ).length;
-}
-
-/** How many dependencies have a loose specifier; each costs one point. */
-export function looseSpecifierCount(result: DependencyTrustResult): number {
-  return new Set(
-    result.warnings
-      .filter((w) => w.cause === "loose-specifier")
-      .map((w) => w.dependency),
-  ).size;
-}
-
-/**
- * The distinct fixes the unaudited dependencies need; a finding without
- * one counts as `other`.
- */
-export function notAuditedFixes(
-  result: Pick<DependencyTrustResult, "warnings">,
-): NotAuditedFix[] {
-  return [
-    ...new Set(
-      result.warnings
-        .filter((w) => w.cause === "not-audited")
-        .map((w) => w.notAuditedFix ?? "other"),
-    ),
-  ];
-}
-
-/** Whether every unaudited dependency is down to a lookup outage alone. */
-export function onlyOutagesNotAudited(
-  fixes: readonly NotAuditedFix[],
-): boolean {
-  return fixes.length > 0 && fixes.every((fix) => fix === "outage");
-}
-
-/**
- * The specifiers no published version matches, as the source (or its
- * import map) writes them.
- */
-export function unpublishedSpecifiers(result: DependencyTrustResult): string[] {
-  return [
-    ...new Set(
-      result.audited
-        .filter((a) => a.notAuditedFix === "specifier")
-        .map((a) => a.specifier),
-    ),
-  ];
-}
-
-/** How many dependencies a lookup failure left unaudited. */
-export function notAuditedCount(result: DependencyTrustResult): number {
-  return new Set(
-    result.warnings
-      .filter((w) => w.cause === "not-audited")
-      .map((w) => w.dependency),
-  ).size;
+  for (const [j, audit] of overLimitAudits(overLimit).entries()) {
+    audits.push({ spec: overLimit[j], audit });
+  }
+  return pushResult(audits);
 }

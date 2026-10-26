@@ -19,10 +19,14 @@
 
 /**
  * Why `deno doc` could not analyse an extension's source, in a short
- * sentence that names only what failed to resolve. Mirrors swamp-club's
- * `lib/domain/scorecard/doc-failure.ts` (swamp-club#3370), so the CLI's
- * quality run and the registry's scorecard describe a failure the same way.
+ * sentence that names only what failed to resolve (swamp-club#3370). The
+ * CLI's quality run and the registry's scorecard both describe a failure
+ * with this module.
+ *
+ * @module
  */
+
+import { redactPaths, stripAnsi } from "./text.ts";
 
 /** Longest description returned. */
 export const MAX_DOC_FAILURE_CHARS = 300;
@@ -42,12 +46,10 @@ const IMPORTED_AT_RE = /^\s*at file:\/\/(.+?):\d+:\d+\s*$/;
 const IMPORT_ACCESS_RE = /Requires import access to "([^"]+)"/;
 
 // deno-lint-ignore no-control-regex
-const ANSI_RE = /\x1b\[[0-9;]*m/g;
-// deno-lint-ignore no-control-regex
 const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
 function clean(text: string): string {
-  return text.replace(ANSI_RE, "").replace(CONTROL_RE, "");
+  return stripAnsi(text).replace(CONTROL_RE, "");
 }
 
 function quoteSpecifier(specifier: string): string {
@@ -55,10 +57,6 @@ function quoteSpecifier(specifier: string): string {
   return s.length > MAX_SPECIFIER_CHARS
     ? `${s.slice(0, MAX_SPECIFIER_CHARS - 1)}…`
     : s;
-}
-
-function redactPaths(message: string): string {
-  return message.replace(/\/[^\s:]*/g, "<redacted>");
 }
 
 function relativeTo(roots: string[], path: string): string {
@@ -157,7 +155,7 @@ export function describeDocFailure(output: string, roots: string[]): string {
  * Describe a `deno doc` failure that the dependency audit explains: npm
  * publishes no version matching these specifiers, which fails deno's whole
  * npm resolution, so deno's own output names whichever import it was
- * resolving. CLI-only; swamp-club's scorer has no audit to consult.
+ * resolving. Only the CLI consults the audit before scoring.
  */
 export function describeUnpublishedSpecifiers(specifiers: string[]): string {
   return cap(

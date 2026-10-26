@@ -1,5 +1,5 @@
 {
-  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Copy verbatim; the swamp copy is the source. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier, given the registry's answer; `scorecardMessage`, where present, is the scorecard's wording of the same finding. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier`, 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency. `installed`, on a resolution or record vector, is the version a package.json project holds in node_modules (swamp-club#3630). `record`: the dependency-audit.json entry push writes for one import (swamp-club#3662); `source` says how the source wrote it (`written` as npm:/jsr:, `import-map` as a bare import the Deno config resolves, `package-json` as a bare import resolved to the installed package), `spec` is the version the audit reads (for `package-json`, the range package.json declares, or the installed version when it declares none), and `expect` is the entry, or null when none is written. The entry's `spec` is what the shipped source writes after `@`: package.json-mode imports ship pinned to the installed version. `recordEntries`: whether the registry uses a record entry as the version that ships (`use`) or ignores it and resolves the dependency itself (`ignore`): it uses one only when the registry is npm or jsr, the version is a plain semver (no `v` or `=`), the spec admits it (an exact spec names it, a range contains it, a dist-tag or no spec admits any version), and `published` lists it.",
+  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Shipped in @swamp-club/extension-scoring as vectors/dependency_audit.json; swamp and the registry both test against the package's copy. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier (`expect`) and the registry's scorecard stores (`scorecard`), given npm's packument (`npm`; absent means npm answers 404, `npmStatus` an error status), JSR's meta.json (`jsr`) and OSV's answer (`osv`; absent means no vulnerabilities). The packument's `time.modified` is the moment the test runs, and weekly downloads are 50,000. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier`, 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency. `installed`, on a resolution or record vector, is the version a package.json project holds in node_modules (swamp-club#3630). `record`: the dependency-audit.json entry push writes for one import (swamp-club#3662); `source` says how the source wrote it (`written` as npm:/jsr:, `import-map` as a bare import the Deno config resolves, `package-json` as a bare import resolved to the installed package), `spec` is the version the audit reads (for `package-json`, the range package.json declares, or the installed version when it declares none), and `expect` is the entry, or null when none is written. The entry's `spec` is what the shipped source writes after `@`: package.json-mode imports ship pinned to the installed version. `recordEntries`: whether the registry uses a record entry as the version that ships (`use`) or ignores it and resolves the dependency itself (`ignore`): it uses one only when the registry is npm or jsr, the version is a plain semver (no `v` or `=`), the spec admits it (an exact spec names it, a range contains it, a dist-tag or no spec admits any version), and `published` lists it.",
   "resolution": [
     {
       "name": "exact pin",
@@ -402,7 +402,17 @@
           "cause": "deprecated-version",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "version 1.0.0 is deprecated: Use 2.x",
+            "cause": "deprecated-version"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "deprecated pin of a deprecated package",
@@ -440,7 +450,16 @@
           "message": "package is deprecated",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "package is deprecated"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "good pin, latest deprecated",
@@ -471,7 +490,11 @@
           }
         }
       },
-      "expect": []
+      "expect": [],
+      "scorecard": {
+        "findings": [],
+        "earnedPoints": 2
+      }
     },
     {
       "name": "npm range",
@@ -509,7 +532,16 @@
           "pointsLost": 1
         }
       ],
-      "scorecardMessage": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version the registry resolved"
+      "scorecard": {
+        "findings": [
+          {
+            "list": "warnings",
+            "message": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version the registry resolved",
+            "cause": "loose-specifier"
+          }
+        ],
+        "earnedPoints": 1
+      }
     },
     {
       "name": "npm unpinned",
@@ -539,7 +571,16 @@
           "pointsLost": 1
         }
       ],
-      "scorecardMessage": "npm:pkg is unpinned; audited 1.2.0, the version the registry resolved"
+      "scorecard": {
+        "findings": [
+          {
+            "list": "warnings",
+            "message": "npm:pkg is unpinned; audited 1.2.0, the version the registry resolved",
+            "cause": "loose-specifier"
+          }
+        ],
+        "earnedPoints": 1
+      }
     },
     {
       "name": "npm dist-tag",
@@ -569,7 +610,16 @@
           "pointsLost": 1
         }
       ],
-      "scorecardMessage": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version the registry resolved"
+      "scorecard": {
+        "findings": [
+          {
+            "list": "warnings",
+            "message": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version the registry resolved",
+            "cause": "loose-specifier"
+          }
+        ],
+        "earnedPoints": 1
+      }
     },
     {
       "name": "npm range from the lock",
@@ -610,7 +660,16 @@
           "pointsLost": 1
         }
       ],
-      "scorecardMessage": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version the registry resolved (from deno.lock)"
+      "scorecard": {
+        "findings": [
+          {
+            "list": "warnings",
+            "message": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version the registry resolved (from deno.lock)",
+            "cause": "loose-specifier"
+          }
+        ],
+        "earnedPoints": 1
+      }
     },
     {
       "name": "jsr version exists",
@@ -626,7 +685,11 @@
           }
         }
       },
-      "expect": []
+      "expect": [],
+      "scorecard": {
+        "findings": [],
+        "earnedPoints": 2
+      }
     },
     {
       "name": "jsr version yanked",
@@ -652,7 +715,17 @@
           "cause": "jsr-yanked",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "version 0.225.0 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 1.0.0.",
+            "cause": "jsr-yanked"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "jsr version missing",
@@ -675,7 +748,17 @@
           "cause": "jsr-missing",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "version 0.0.999 not found on JSR",
+            "cause": "jsr-missing"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "jsr range nothing satisfies",
@@ -698,7 +781,17 @@
           "cause": "jsr-missing",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "version ^9.0.0 not found on JSR",
+            "cause": "jsr-missing"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "jsr package missing",
@@ -716,7 +809,17 @@
           "cause": "jsr-missing",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "JSR package not found",
+            "cause": "jsr-missing"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "jsr invalid name",
@@ -739,7 +842,17 @@
           "cause": "jsr-missing",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "invalid JSR package name",
+            "cause": "jsr-missing"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "jsr outage",
@@ -757,7 +870,16 @@
           "cause": "not-audited",
           "pointsLost": 2
         }
-      ]
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "notAudited",
+            "message": "JSR lookup failed (HTTP 503)"
+          }
+        ],
+        "earnedPoints": 0
+      }
     },
     {
       "name": "jsr range",
@@ -781,7 +903,414 @@
           "pointsLost": 1
         }
       ],
-      "scorecardMessage": "jsr:@std/assert@1 is a range; audited 1.0.2, the version the registry resolved"
+      "scorecard": {
+        "findings": [
+          {
+            "list": "warnings",
+            "message": "jsr:@std/assert@1 is a range; audited 1.0.2, the version the registry resolved",
+            "cause": "loose-specifier"
+          }
+        ],
+        "earnedPoints": 1
+      }
+    },
+    {
+      "name": "unscoped jsr name",
+      "registry": "jsr",
+      "package": "foo",
+      "spec": "1",
+      "jsr": {
+        "status": 200,
+        "body": {
+          "latest": "1.0.0",
+          "versions": {
+            "1.0.0": {}
+          }
+        }
+      },
+      "expect": [
+        {
+          "severity": "error",
+          "message": "invalid JSR package name",
+          "cause": "jsr-missing",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "invalid JSR package name",
+            "cause": "jsr-missing"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "OSV severity OSV does not define",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
+        }
+      },
+      "osv": {
+        "status": 200,
+        "body": {
+          "vulns": [
+            {
+              "id": "GHSA-2",
+              "database_specific": {
+                "severity": "important"
+              }
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "severity": "error",
+          "message": "vulnerability GHSA-2 (UNKNOWN)",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "UNKNOWN vulnerability: GHSA-2"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "OSV severity list with a null entry",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
+        }
+      },
+      "osv": {
+        "status": 200,
+        "body": {
+          "vulns": [
+            {
+              "id": "GHSA-3",
+              "severity": [
+                null
+              ]
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "severity": "error",
+          "message": "vulnerability GHSA-3 (UNKNOWN)",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "UNKNOWN vulnerability: GHSA-3"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "OSV vulns that are not a list",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
+        }
+      },
+      "osv": {
+        "status": 200,
+        "body": {
+          "vulns": {}
+        }
+      },
+      "expect": [
+        {
+          "severity": "warning",
+          "message": "not audited: OSV lookup failed (OSV returned a vulns field that is not a list)",
+          "cause": "not-audited",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "notAudited",
+            "message": "OSV lookup failed (OSV returned a vulns field that is not a list)"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "npm lists the version without a manifest",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": null
+        }
+      },
+      "expect": [
+        {
+          "severity": "warning",
+          "message": "not audited: npm lists no version 1.0.0",
+          "cause": "not-audited",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "notAudited",
+            "message": "npm lists no version 1.0.0"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "deprecated version with no latest dist-tag",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "version": "1.0.0",
+        "versions": {
+          "1.0.0": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ],
+            "deprecated": "gone"
+          }
+        }
+      },
+      "expect": [
+        {
+          "severity": "warning",
+          "message": "version 1.0.0 is deprecated: gone",
+          "cause": "deprecated-version",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "version 1.0.0 is deprecated: gone",
+            "cause": "deprecated-version"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "npm down with an OSV hit on an exact pin",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npmStatus": 503,
+      "osv": {
+        "status": 200,
+        "body": {
+          "vulns": [
+            {
+              "id": "GHSA-4",
+              "database_specific": {
+                "severity": "HIGH"
+              }
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "severity": "error",
+          "message": "vulnerability GHSA-4 (HIGH)",
+          "pointsLost": 2
+        },
+        {
+          "severity": "warning",
+          "message": "not audited: npm registry lookup failed (HTTP 503)",
+          "cause": "not-audited",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "blockers",
+            "message": "HIGH vulnerability: GHSA-4"
+          },
+          {
+            "list": "notAudited",
+            "message": "npm registry lookup failed (HTTP 503)"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "invalid npm name",
+      "registry": "npm",
+      "package": "Foo Bar",
+      "spec": "1.0.0",
+      "expect": [
+        {
+          "severity": "warning",
+          "message": "not audited: invalid npm package name",
+          "cause": "not-audited",
+          "pointsLost": 2
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "notAudited",
+            "message": "invalid npm package name"
+          }
+        ],
+        "earnedPoints": 0
+      }
+    },
+    {
+      "name": "dependency with no license",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": {
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
+        }
+      },
+      "expect": [
+        {
+          "severity": "warning",
+          "message": "license \"unknown\" not in allowlist",
+          "pointsLost": 0
+        }
+      ],
+      "scorecard": {
+        "findings": [
+          {
+            "list": "warnings",
+            "message": "license \"unknown\" not in allowlist"
+          }
+        ],
+        "earnedPoints": 2
+      }
+    },
+    {
+      "name": "dependency license an SPDX OR of allowed licenses",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": {
+            "license": "MIT OR Apache-2.0",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
+        }
+      },
+      "expect": [],
+      "scorecard": {
+        "findings": [],
+        "earnedPoints": 2
+      }
+    },
+    {
+      "name": "no maintainers listed anywhere",
+      "registry": "npm",
+      "package": "pkg",
+      "spec": "1.0.0",
+      "npm": {
+        "dist-tags": {
+          "latest": "1.0.0"
+        },
+        "versions": {
+          "1.0.0": {
+            "license": "MIT"
+          }
+        }
+      },
+      "expect": [],
+      "scorecard": {
+        "findings": [],
+        "earnedPoints": 2
+      }
     }
   ],
   "scoring": [

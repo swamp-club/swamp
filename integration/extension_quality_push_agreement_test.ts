@@ -44,7 +44,9 @@ import {
 import { analyzeExtensionSafety } from "../src/domain/extensions/extension_safety_analyzer.ts";
 import { checkExtensionQuality } from "../src/domain/extensions/extension_quality_checker.ts";
 import { checkReviewRules } from "../src/domain/extensions/extension_review_rules.ts";
-import { extractDependencySpecifiers } from "../src/domain/extensions/extension_dependency_extractor.ts";
+import {
+  extractDependencySpecifiers,
+} from "../src/domain/extensions/extension_dependency_extractor.ts";
 import type { RubricScoreDeps } from "../src/domain/extensions/extension_rubric_scorer.ts";
 import { extractTarGz } from "../src/infrastructure/archive/tar_archive.ts";
 import type { ReviewFinding } from "../src/domain/extensions/extension_review_rules.ts";
@@ -122,7 +124,7 @@ function scoreDeps(): RubricScoreDeps {
     runDeno: (args) =>
       Promise.resolve({
         success: true,
-        stdout: args[0] === "doc" && args[1] === "--json"
+        stdout: args[0] === "doc" && args.includes("--json")
           ? JSON.stringify({ version: 1, nodes: {} })
           : "",
         stderr: "",
@@ -139,8 +141,8 @@ function bareZodDocFailureScoreDeps(): RubricScoreDeps {
   return {
     extractTarball: extractTarGz,
     runDeno: (args) => {
-      if (args[0] === "doc" && args[1] === "--json") {
-        const url = toFileUrl(args[2]).href;
+      if (args[0] === "doc" && args.includes("--json")) {
+        const url = toFileUrl(args[args.length - 1]).href;
         return Promise.resolve({
           success: false,
           stdout: "",

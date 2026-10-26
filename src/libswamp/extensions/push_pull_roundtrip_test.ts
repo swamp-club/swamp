@@ -612,7 +612,7 @@ Deno.test(
 );
 
 Deno.test(
-  "round-trip: paths.base=manifest nested model entry doubles archive path (issue 1855)",
+  "round-trip: paths.base=manifest nested model entry doubles archive path, and the scorer reads it there (issue 1855, swamp-club#3781)",
   async () => {
     const { collectEntrypoints, findManifestRoot } = await import(
       "../../domain/extensions/extension_rubric_scorer.ts"
@@ -685,23 +685,14 @@ Deno.test(
       // The archive places the model at the doubled path.
       await Deno.stat(join(extRoot, "models", "models", "project.ts"));
 
-      // The scorer looks for it at the un-doubled path, which does NOT exist.
+      // The scorer prefixes every entry with its kind directory, as the
+      // registry does, so it analyses the file where the archive put it
+      // (swamp-club#3781).
       const entrypoints = collectEntrypoints(extRoot, extRoot, manifest);
       assertEquals(entrypoints, [
-        join(extRoot, "models", "project.ts"),
+        join(extRoot, "models", "models", "project.ts"),
       ]);
-
-      // The entrypoint the scorer expects does not exist in the archive —
-      // this is the mismatch that causes empty contentTypes/contentMetadata.
-      // CLI-layer validation in resolveExtensionFiles now rejects this
-      // manifest shape before it reaches extensionPushPrepare.
-      let found = true;
-      try {
-        await Deno.stat(entrypoints[0]);
-      } catch {
-        found = false;
-      }
-      assertEquals(found, false);
+      await Deno.stat(entrypoints[0]);
     } finally {
       await Deno.remove(src, { recursive: true }).catch(() => {});
       await Deno.remove(dst, { recursive: true }).catch(() => {});

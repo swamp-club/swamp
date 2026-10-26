@@ -33,11 +33,11 @@ import {
   ExtensionPackageCache,
   type PackageCacheHashInput,
 } from "../../domain/extensions/extension_package_cache.ts";
+import type { RubricScoreDeps } from "../../domain/extensions/extension_rubric_scorer.ts";
 import {
   type DocOutput,
   RUBRIC_VERSION,
-  type RubricScoreDeps,
-} from "../../domain/extensions/extension_rubric_scorer.ts";
+} from "@swamp-club/extension-scoring/rubric";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import type {
@@ -227,7 +227,7 @@ function fakeScoreDeps(
     },
     runDeno: (args: string[], cwd: string) => {
       onRunDeno?.(args, cwd);
-      if (args[0] === "doc" && args[1] === "--json") {
+      if (args[0] === "doc" && args.includes("--json")) {
         return Promise.resolve({
           success: true,
           stdout: JSON.stringify(MINIMAL_DOC_OUTPUT),
@@ -1693,7 +1693,7 @@ Deno.test("extensionQuality: a quality.yaml line entry accepts a code-block find
   });
 });
 
-Deno.test("extensionQuality: the manifest description is checked on the author's own lines", async () => {
+Deno.test("extensionQuality: the parsed manifest description is checked, reported on its description line (swamp-club#3781)", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifestPath = join(repoDir, "manifest.yaml");
     await Deno.writeTextFile(
@@ -1710,15 +1710,20 @@ Deno.test("extensionQuality: the manifest description is checked on the author's
         "",
       ].join("\n"),
     );
-    const input = makeQualityInput(repoDir, makeManifest(), {
-      prepareInput: { manifestPath },
-    });
+    const input = makeQualityInput(
+      repoDir,
+      makeManifest({
+        description:
+          "Echoes input.\n\n    --global-arg 'apiToken=vault://v/k'\n",
+      }),
+      { prepareInput: { manifestPath } },
+    );
     const data = completedData(
       await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
     );
     const warnings = secretDocsWarnings(data);
-    assertEquals(warnings.map((w) => [w.file, w.line]), [[manifestPath, 6]]);
-    assertStringIncludes(warnings[0].message, "Line 6 (description)");
+    assertEquals(warnings.map((w) => [w.file, w.line]), [[manifestPath, 3]]);
+    assertStringIncludes(warnings[0].message, "Line 3 (description)");
   });
 });
 
@@ -1749,5 +1754,63 @@ Deno.test("extensionQuality: describe strings are checked, test files and includ
       secretDocsWarnings(data).map((w) => [w.file, w.line]),
       [[model, 2]],
     );
+  });
+});
+
+Deno.test("extensionQuality: a YAML comment beside the description is not documentation (swamp-club#3781)", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifestPath = join(repoDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      [
+        "manifestVersion: 1",
+        'name: "@testuser/test-ext"',
+        "description: Fetches records  # swamp vault put prod token hunter2",
+        "models:",
+        "  - echo.ts",
+        "",
+      ].join("\n"),
+    );
+    const input = makeQualityInput(
+      repoDir,
+      makeManifest({ description: "Fetches records" }),
+      { prepareInput: { manifestPath } },
+    );
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    assertEquals(secretDocsWarnings(data), []);
+  });
+});
+
+Deno.test("extensionQuality: documentation over the size cap is unchecked, fails secret-safe-docs and cannot be accepted (swamp-club#3781)", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const changelog = join(repoDir, "CHANGELOG.md");
+    await Deno.writeTextFile(
+      changelog,
+      "# Changes\n" + "x".repeat(1024 * 1024),
+    );
+    await Deno.writeTextFile(
+      join(repoDir, "quality.yaml"),
+      [
+        "version: 1",
+        "accept:",
+        "  - rule: secret-unsafe-docs",
+        "    reason: every finding",
+        "",
+      ].join("\n"),
+    );
+    const manifest = makeManifest({ additionalFiles: ["CHANGELOG.md"] });
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: { additionalFilePaths: [changelog] },
+      hashInput: { additionalFilePaths: [changelog] },
+    });
+    const data = completedData(
+      await collect(extensionQuality(ctx, makeQualityDeps(cacheRoot), input)),
+    );
+    const warnings = secretDocsWarnings(data);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0].message, "files/CHANGELOG.md");
+    assertEquals(secretDocsFactor(data)?.status, "missing");
   });
 });

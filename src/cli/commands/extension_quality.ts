@@ -59,6 +59,7 @@ import { readOnlyLockFor } from "../../infrastructure/runtime/deno_lockfile_read
 interface ExtensionQualityOptions extends GlobalOptions {
   repoDir?: string;
   extensionsDir?: string;
+  isolated?: boolean;
 }
 
 export const extensionQualityCommand = new Command()
@@ -69,6 +70,10 @@ export const extensionQualityCommand = new Command()
   .example(
     "Score extension",
     "swamp extension quality extensions/behaviors/my-behavior/manifest.yaml",
+  )
+  .example(
+    "Score as the registry does, without the local Deno cache",
+    "swamp extension quality extensions/behaviors/my-behavior/manifest.yaml --isolated",
   )
   .example(
     "Machine-readable output",
@@ -82,6 +87,10 @@ export const extensionQualityCommand = new Command()
   .option(
     "--extensions-dir <dir:string>",
     "Extensions root: the directory that contains extensions/ (behaviors, workflows and skills resolve from it; env: SWAMP_EXTENSIONS_DIR)",
+  )
+  .option(
+    "--isolated",
+    "Run deno doc as the registry does: an empty dependency cache and no registry tokens or npm config from the environment. Slower; use it when a private import or a warm cache could make the local score differ from the registry's",
   )
   .action(
     async function (options: ExtensionQualityOptions, manifestPath: string) {
@@ -231,6 +240,7 @@ export const extensionQualityCommand = new Command()
             bareImports: resolved.bareImports,
             symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
           },
+          isolated: options.isolated === true,
         }),
         renderer.handlers({ manifestDir, repoDir, cwd }),
       );

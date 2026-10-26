@@ -18,14 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
-import { extractContentMetadata } from "./extension_content_extractor.ts";
 import {
   type ArgumentSchemas,
-  argumentSchemas,
   detectSecretDocs,
   MAX_SCANNED_LINE_LENGTH,
-} from "./extension_secret_docs_detector.ts";
+} from "./detector.ts";
 
 const fenced = (...lines: string[]) =>
   ["# Setup", "", "```bash", ...lines, "```", ""].join("\n");
@@ -274,44 +271,4 @@ Deno.test("detectSecretDocs: lines over the cap are skipped", () => {
   const long = "swamp vault set v k " + "x".repeat(MAX_SCANNED_LINE_LENGTH);
   assertEquals(flaggedLines(fenced(long)), []);
   assertEquals(detectSecretDocs(long, "plain"), []);
-});
-
-Deno.test("detectSecretDocs: a namespaced zod field counts as declared, and as sensitive when marked", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const modelsDir = join(tmpDir, "models");
-    await Deno.mkdir(modelsDir, { recursive: true });
-    const modelFile = join(modelsDir, "model.ts");
-    await Deno.writeTextFile(
-      modelFile,
-      [
-        'import { z } from "npm:zod@4";',
-        "export const model = {",
-        '  type: "test/namespaced-secrets",',
-        '  version: "2026.10.23.1",',
-        "  globalArguments: z.object({",
-        "    pin: z.coerce.number().meta({ sensitive: true }),",
-        "    tokenExpiry: z.iso.datetime(),",
-        "  }),",
-        "  methods: {},",
-        "};",
-      ].join("\n"),
-    );
-    const schemas = argumentSchemas(
-      await extractContentMetadata([modelFile], modelsDir, []),
-    );
-
-    // As for a z.string() field: the sensitive mark decides, not the name.
-    assertEquals(flaggedLines(fenced("--global-arg pin=1234"), schemas), [4]);
-    assertEquals(
-      flaggedLines(fenced("--global-arg tokenExpiry=2026-10-23"), schemas),
-      [],
-    );
-    assertEquals(
-      flaggedLines(fenced("--global-arg tokenExpiry=2026-10-23")),
-      [4],
-    );
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
 });

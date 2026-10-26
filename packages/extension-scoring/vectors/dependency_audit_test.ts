@@ -1,0 +1,324 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals } from "@std/assert";
+import vectors from "./dependency_audit.json" with { type: "json" };
+import {
+  auditRecordEntryUsable,
+  buildDependencyAuditRecord,
+  type DependencyRegistry,
+  type DependencySpecifier,
+  dependencyTrustEarnedPoints,
+  evaluateJsrPackage,
+  evaluateNpmPackage,
+  type JsrLookup,
+  jsrNameValid,
+  type LockedDependencyVersions,
+  type Lookup,
+  type NpmLookup,
+  npmNameValid,
+  type OsvVulnerability,
+  parseDependencyAuditRecord,
+  parseJsrMeta,
+  parseNpmPackument,
+  parseOsvResponse,
+  planNpmPackage,
+  pushResult,
+  resolveShippedVersion,
+  scorecardResult,
+  type SpecifierAudit,
+  specifierKind,
+} from "../dependency_audit/mod.ts";
+
+// The registry's path through the shared evaluator: no fetching, the
+// answers each vector gives handed straight to it.
+
+interface FindingVector {
+  name: string;
+  registry: DependencyRegistry;
+  package: string;
+  spec: string | null;
+  locked?: string[];
+  npm?: Record<string, unknown>;
+  npmStatus?: number;
+  jsr?: { status: number; body: unknown };
+  osv?: { status: number; body: unknown };
+  expect: {
+    severity: string;
+    message: string;
+    cause?: string;
+    pointsLost: number;
+  }[];
+  scorecard: {
+    findings: { list: string; message: string; cause?: string }[];
+    earnedPoints: number;
+  };
+}
+
+function lockOf(
+  versions: string[] | undefined,
+  lockedFor?: string,
+): LockedDependencyVersions | undefined {
+  if (!versions) return undefined;
+  return {
+    source: "deno.lock",
+    resolvedFor: () => lockedFor,
+    versionsFor: () => versions,
+  };
+}
+
+function audit(v: FindingVector): {
+  spec: DependencySpecifier;
+  audit: SpecifierAudit;
+} {
+  const spec: DependencySpecifier = {
+    name: v.package,
+    version: v.spec,
+    registry: v.registry,
+    sourceFile: "model.ts",
+  };
+  const lock = lockOf(v.locked);
+  if (v.registry === "jsr") {
+    const jsr = v.jsr!;
+    const meta: JsrLookup = !jsrNameValid(v.package)
+      ? { kind: "invalid-name" }
+      : jsr.status === 404
+      ? { kind: "missing" }
+      : jsr.status !== 200
+      ? { kind: "unavailable", reason: `HTTP ${jsr.status}` }
+      : parseJsrMeta(jsr.body);
+    return {
+      spec,
+      audit: evaluateJsrPackage(v.package, [spec], meta, lock)[0],
+    };
+  }
+  const npm: NpmLookup = !npmNameValid(v.package)
+    ? { kind: "invalid-name" }
+    : v.npmStatus
+    ? { kind: "unavailable", reason: `HTTP ${v.npmStatus}` }
+    : !v.npm
+    ? { kind: "unavailable", reason: "HTTP 404" }
+    : {
+      kind: "found",
+      value: parseNpmPackument(
+        { ...v.npm, time: { modified: new Date().toISOString() } },
+        { downloads: 50_000 },
+      ),
+    };
+  const plan = planNpmPackage(v.package, [spec], npm, lock);
+  const osv = new Map<string, Lookup<OsvVulnerability[]>>();
+  for (const version of plan.osvVersions) {
+    const status = v.osv?.status ?? 200;
+    try {
+      osv.set(
+        version,
+        status === 200
+          ? {
+            kind: "found",
+            value: parseOsvResponse(v.osv?.body ?? { vulns: [] }),
+          }
+          : { kind: "unavailable", reason: `HTTP ${status}` },
+      );
+    } catch (error) {
+      osv.set(version, {
+        kind: "unavailable",
+        reason: (error as Error).message,
+      });
+    }
+  }
+  return {
+    spec,
+    audit: evaluateNpmPackage(
+      v.package,
+      [spec],
+      npm,
+      plan,
+      osv,
+      new Date(),
+      lock,
+    )[0],
+  };
+}
+
+for (const v of vectors.findings as FindingVector[]) {
+  Deno.test(`dependency audit vectors: reports ${v.name}`, () => {
+    const entries = [audit(v)];
+    const push = pushResult(entries);
+    const reported = [
+      ...push.errors.map((e) => ({ severity: "error", ...e })),
+      ...push.warnings.map((w) => ({ severity: "warning", ...w })),
+    ].map(({ severity, message, cause }) => ({
+      severity,
+      message,
+      ...(cause ? { cause } : {}),
+    }));
+    assertEquals(
+      reported,
+      v.expect.map(({ severity, message, cause }) => ({
+        severity,
+        message,
+        ...(cause ? { cause } : {}),
+      })),
+    );
+
+    const scorecard = scorecardResult(entries);
+    assertEquals(
+      [
+        ...scorecard.blockers.map((b) => ({
+          list: "blockers",
+          message: b.reason,
+          ...(b.cause ? { cause: b.cause } : {}),
+        })),
+        ...scorecard.warnings.map((w) => ({
+          list: "warnings",
+          message: w.reason,
+          ...(w.cause ? { cause: w.cause } : {}),
+        })),
+        ...scorecard.notAudited.map((n) => ({
+          list: "notAudited",
+          message: n.reason,
+        })),
+      ],
+      v.scorecard.findings,
+    );
+    assertEquals(scorecard.earnedPoints, v.scorecard.earnedPoints);
+    // each finding costs what the vector says, and the factor what the worst costs
+    assertEquals(
+      scorecard.earnedPoints,
+      2 - Math.max(0, ...v.expect.map((f) => f.pointsLost)),
+    );
+  });
+}
+
+interface Published {
+  versions: string[];
+  distTags: Record<string, string>;
+  yanked?: string[];
+}
+
+const resolution = vectors.resolution as unknown as {
+  name: string;
+  registry: string;
+  spec: string | null;
+  locked?: string[];
+  lockedFor?: string;
+  installed?: string;
+  published: Published;
+  expect: { version: string | null; from?: string; kind: string };
+}[];
+
+const records = vectors.record as unknown as {
+  name: string;
+  source: string;
+  registry: string;
+  package: string;
+  spec: string | null;
+  locked?: string[];
+  lockedFor?: string;
+  installed?: string;
+  published: Published;
+  expect: { spec: string | null; version: string; from: string } | null;
+}[];
+
+for (const v of resolution) {
+  Deno.test(`dependency audit vectors: resolves ${v.name}`, () => {
+    const shipped = resolveShippedVersion(
+      v.registry as DependencyRegistry,
+      "pkg",
+      v.spec,
+      lockOf(v.locked, v.lockedFor),
+      { ...v.published, yanked: new Set(v.published.yanked ?? []) },
+      v.installed,
+    );
+    assertEquals(shipped?.version ?? null, v.expect.version);
+    if (v.expect.from) assertEquals(shipped?.from, v.expect.from);
+    assertEquals(specifierKind(v.spec), v.expect.kind);
+  });
+}
+
+for (const v of records) {
+  Deno.test(`dependency audit vectors: records ${v.name} and reads it back`, () => {
+    const registry = v.registry as DependencyRegistry;
+    const specifier: DependencySpecifier = {
+      name: v.package,
+      version: v.spec,
+      registry,
+      sourceFile: "models/a.ts",
+      ...(v.source === "written" ? {} : { importedAs: v.package }),
+      ...(v.installed !== undefined ? { installedVersion: v.installed } : {}),
+    };
+    const shipped = resolveShippedVersion(
+      registry,
+      v.package,
+      v.spec,
+      lockOf(v.locked, v.lockedFor),
+      { versions: v.published.versions, distTags: v.published.distTags },
+      v.installed,
+    );
+    const record = buildDependencyAuditRecord(
+      shipped ? [{ specifier, shipped }] : [],
+    );
+    assertEquals(
+      record.dependencies,
+      v.expect ? [{ registry, name: v.package, ...v.expect }] : [],
+    );
+    if (!v.expect) return;
+    const read = parseDependencyAuditRecord(JSON.stringify(record));
+    assertEquals(
+      read?.recordedFor(registry, v.package, v.expect.spec)?.version,
+      v.expect.version,
+    );
+  });
+}
+
+for (const v of vectors.recordEntries) {
+  Deno.test(`dependency audit vectors: a record entry whose ${v.name} is ${v.expect}d`, () => {
+    const use = auditRecordEntryUsable(v.entry) &&
+      v.published.includes(v.entry.version);
+    assertEquals(use ? "use" : "ignore", v.expect);
+  });
+}
+
+const scoring = vectors.scoring as {
+  name: string;
+  findings: { severity: string; cause?: string }[];
+  earnedPoints: number;
+}[];
+
+for (const sc of scoring) {
+  Deno.test(`dependency audit vectors: scores ${sc.name}`, () => {
+    const costs = (f: { severity: string; cause?: string }) =>
+      f.severity === "error" ||
+      ["not-audited", "deprecated-version", "jsr-yanked"].includes(
+        f.cause ?? "",
+      );
+    assertEquals(
+      dependencyTrustEarnedPoints({
+        blockerCount: sc.findings.filter((f) =>
+          costs(f) && f.cause !== "not-audited"
+        ).length,
+        notAuditedCount: sc.findings.filter((f) => f.cause === "not-audited")
+          .length,
+        looseCount: sc.findings.filter((f) => f.cause === "loose-specifier")
+          .length,
+      }),
+      sc.earnedPoints,
+    );
+  });
+}

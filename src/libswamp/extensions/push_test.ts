@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
-  type DependencySpecifier,
   extractDependencySpecifiers,
 } from "../../domain/extensions/extension_dependency_extractor.ts";
+import type {
+  DependencySpecifier,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { walk } from "@std/fs";
 import { join, relative } from "@std/path";

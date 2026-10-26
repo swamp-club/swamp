@@ -21,10 +21,11 @@ import { format, satisfies, tryParse, tryParseRange } from "@std/semver";
 import {
   type DependencyRegistry,
   exactVersion,
+  type RecordedDependencyVersions,
   type ShippedVersion,
   type ShippedVersionSource,
-} from "./dependency_version_resolution.ts";
-import type { DependencySpecifier } from "./extension_dependency_extractor.ts";
+} from "./resolution.ts";
+import type { DependencySpecifier } from "./specifiers.ts";
 
 /**
  * The dependency audit record (swamp-club#3662): the version push audited
@@ -84,7 +85,8 @@ export interface ShippedDependency {
  * is a plain semver, and the spec admits it (an exact spec names it, a range
  * contains it). A dist-tag or no spec admits any version. The registry
  * ignores an entry that fails this, or whose version is not published, and
- * resolves that dependency itself.
+ * resolves that dependency itself. Push writes only entries that pass, and
+ * the registry reads only those.
  */
 export function auditRecordEntryUsable(
   entry: {
@@ -164,4 +166,75 @@ export function serializeDependencyAuditRecord(
     null,
     2,
   ) + "\n";
+}
+
+/** The largest record the registry reads. */
+export const MAX_DEPENDENCY_AUDIT_RECORD_BYTES = 1024 * 1024;
+
+const SOURCES: ReadonlySet<string> = new Set<ShippedVersionSource>([
+  "exact",
+  "installed",
+  "lockfile",
+  "registry",
+]);
+
+function keyOf(
+  registry: DependencyRegistry,
+  name: string,
+  spec: string | null,
+): string {
+  return JSON.stringify([registry, name, spec]);
+}
+
+/**
+ * Reads a record from an archive. The author writes it, so anything off
+ * format reads as no record, an entry it does not use reads as no entry,
+ * and an unknown `from` reads as `registry`. The first entry for a key
+ * wins.
+ */
+export function parseDependencyAuditRecord(
+  text: string,
+): RecordedDependencyVersions | null {
+  let body: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return null;
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (body.recordVersion !== DEPENDENCY_AUDIT_RECORD_VERSION) return null;
+  if (!Array.isArray(body.dependencies)) return null;
+
+  const entries = new Map<
+    string,
+    { version: string; from: ShippedVersionSource }
+  >();
+  for (const raw of body.dependencies) {
+    if (!raw || typeof raw !== "object") continue;
+    const { registry, name, spec, version, from } = raw as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof registry !== "string" || typeof name !== "string" ||
+      (spec !== null && typeof spec !== "string") ||
+      typeof version !== "string"
+    ) continue;
+    const entry = { registry, name, spec, version };
+    if (!auditRecordEntryUsable(entry)) continue;
+    const key = keyOf(registry as DependencyRegistry, name, spec);
+    if (entries.has(key)) continue;
+    entries.set(key, {
+      version,
+      from: typeof from === "string" && SOURCES.has(from)
+        ? from as ShippedVersionSource
+        : "registry",
+    });
+  }
+
+  return {
+    recordedFor: (registry, name, specVersion) =>
+      entries.get(keyOf(registry, name, specVersion)),
+  };
 }

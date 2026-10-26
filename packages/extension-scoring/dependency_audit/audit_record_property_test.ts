@@ -23,8 +23,8 @@ import {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
   type ShippedDependency,
-} from "./dependency_audit_record.ts";
-import type { ShippedVersionSource } from "./dependency_version_resolution.ts";
+} from "./audit_record.ts";
+import type { ShippedVersionSource } from "./resolution.ts";
 
 const versionArb = fc.tuple(
   fc.integer({ min: 0, max: 3 }),

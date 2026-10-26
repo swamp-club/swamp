@@ -36,7 +36,7 @@ import type {
   ExtractedWorkflowJob,
   ExtractedWorkflowStep,
 } from "./extension_content.ts";
-import { MARKED_SENSITIVE } from "./extension_review_rules.ts";
+import { MARKED_SENSITIVE } from "@swamp-club/extension-scoring/secret-docs";
 
 /**
  * Reads a source file for its metadata, refusing a symlink: the safety gate

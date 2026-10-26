@@ -24,8 +24,8 @@ import {
   DEPENDENCY_AUDIT_RECORD_FILENAME,
   serializeDependencyAuditRecord,
   type ShippedDependency,
-} from "./dependency_audit_record.ts";
-import type { DependencySpecifier } from "./extension_dependency_extractor.ts";
+} from "./audit_record.ts";
+import type { DependencySpecifier } from "./specifiers.ts";
 
 function spec(
   name: string,

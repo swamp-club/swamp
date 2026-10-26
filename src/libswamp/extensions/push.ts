@@ -67,8 +67,12 @@ import {
   type SafetyIssue,
 } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityCheckResult } from "../../domain/extensions/extension_quality_checker.ts";
-import type { DependencySpecifier } from "../../domain/extensions/extension_dependency_extractor.ts";
-import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type {
+  DependencySpecifier,
+} from "@swamp-club/extension-scoring/dependency-audit";
+import type {
+  DependencyTrustResult,
+} from "@swamp-club/extension-scoring/dependency-audit";
 import type {
   ExtensionContentKind,
   ExtensionReviewInput,
@@ -654,8 +658,12 @@ import {
   checkExtensionQuality,
   checkUpgradeChainConsistency,
 } from "../../domain/extensions/extension_quality_checker.ts";
-import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
-import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import {
+  extractDependencySpecifiers,
+} from "../../domain/extensions/extension_dependency_extractor.ts";
+import {
+  checkDependencyTrust,
+} from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import {
   bundleExtension,
@@ -667,12 +675,17 @@ import {
 } from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
 import {
+  type ArchiveFile,
   type ArgumentSchemas,
   argumentSchemas,
   detectSecretDocs,
-  manifestDescriptionLines,
-  type SecretDocsForm,
-} from "../../domain/extensions/extension_secret_docs_detector.ts";
+  markdownImports,
+  MAX_SECRET_DOCS_FILE_BYTES,
+  MAX_SECRET_DOCS_FILES,
+  SECRET_UNSAFE_DOCS_RULE,
+  secretDocsTargets,
+} from "@swamp-club/extension-scoring/secret-docs";
+import { isAuditedCodeFile } from "@swamp-club/extension-scoring/dependency-audit";
 import { declaresExport } from "../../domain/extensions/export_declaration.ts";
 import {
   type ModelCatalogGap,
@@ -692,7 +705,7 @@ import {
   DEPENDENCY_AUDIT_RECORD_FILENAME,
   type DependencyAuditRecord,
   serializeDependencyAuditRecord,
-} from "../../domain/extensions/dependency_audit_record.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
 import {
   type BareImportResolver,
   bareImportResolverFrom,
@@ -732,7 +745,7 @@ import {
 import {
   type ManifestLicenseWarning,
   manifestLicenseWarning,
-} from "../../domain/licensing/manifest_license_policy.ts";
+} from "@swamp-club/extension-scoring/licensing";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
   type ApiCallRecorder,
@@ -1325,12 +1338,19 @@ export async function extensionPushPrepare(
 
   // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
+  // Every non-test code file the archive ships, as the registry reads it
+  // (swamp-club#3781): the planned sources exist before the archive is
+  // built and on a cache hit alike; include and additional files ship
+  // beside them (a worker under files/ runs as code too).
   const sourceFiles = [
-    ...gated.allModelFiles,
-    ...gated.allVaultFiles,
-    ...gated.allDatastoreFiles,
-    ...gated.allReportFiles,
-    ...gated.allWebhookFiles,
+    ...new Set([
+      ...gated.sourcePlan.entries
+        .filter((e) => isAuditedCodeFile(e.archivePath))
+        .map((e) => e.sourcePath),
+      ...[...gated.includeFilePaths, ...gated.additionalFilePaths].filter((p) =>
+        isAuditedCodeFile(p.replaceAll("\\", "/"))
+      ),
+    ]),
   ];
   const specifiers = await deps.extractDependencySpecifiers(
     sourceFiles,
@@ -1955,48 +1975,58 @@ async function behaviorSpellingUses(
 }
 
 /**
- * The secret-unsafe-docs findings: the packaged Markdown files, the
- * manifest's description on the author's own lines (push re-emits the
- * manifest into the archive, so its lines differ there), and the describe
- * and description strings of the extension's sources. Symlinks are never
- * read, and test files are not documentation.
+ * The secret-unsafe-docs findings, over the files the shared selector picks
+ * from the archive push builds (swamp-club#3781): Markdown that is not a
+ * binary, an include file or data a module imports, the describe and
+ * description strings of every code module, and the manifest's parsed
+ * description. Findings are reported at the author's own files and lines.
+ * Symlinks are never read. Documentation a cap leaves unread is reported
+ * as one finding no acceptance can cover, since the registry fails the
+ * factor while any is unchecked.
  */
 async function secretUnsafeDocs(
   input: ExtensionPushPrepareInput,
   files: string[],
   schemas: ArgumentSchemas | undefined,
 ): Promise<ReviewFinding[]> {
-  const sources = [
-    ...input.allModelFiles,
-    ...input.allVaultFiles,
-    ...input.allDatastoreFiles,
-    ...input.allReportFiles,
-    ...input.allWebhookFiles,
-  ].filter((f) => extname(f) === ".ts" && !f.endsWith("_test.ts"));
-  // Include, data and binary files are packaged but, as for every other
-  // quality check, not the extension's own docs.
-  const notDocs = new Set([
-    ...input.includeFilePaths,
-    ...Object.values(input.dataFilesByKind ?? {}).flat(),
-    ...input.binaryFilePaths,
+  const candidates = new Set([
+    ...files,
+    ...input.sourcePlan.entries.map((e) => e.sourcePath),
   ]);
-  const targets: Array<{ file: string; form: SecretDocsForm }> = [
-    ...files.filter((f) =>
-      extname(f).toLowerCase() === ".md" && !notDocs.has(f)
-    ).map((file) => ({
-      file,
-      form: "markdown" as const,
-    })),
-    ...[...new Set(sources)].map((file) => ({
-      file,
-      form: "source" as const,
-    })),
-  ];
+  const authorOf = new Map<string, string>();
+  const listing: ArchiveFile[] = [];
+  for (const file of candidates) {
+    const archivePath = archivePathFor(input, file);
+    if (archivePath === undefined || authorOf.has(archivePath)) continue;
+    let size: number;
+    try {
+      const info = await Deno.lstat(file);
+      if (info.isSymlink || !info.isFile) continue;
+      size = info.size;
+    } catch {
+      continue;
+    }
+    authorOf.set(archivePath, file);
+    listing.push({ path: archivePath, size });
+  }
+
+  const importedMarkdown = new Set<string>();
+  for (const { path } of listing) {
+    if (!isAuditedCodeFile(path)) continue;
+    const content = await readUnlessSymlink(authorOf.get(path)!);
+    if (content === undefined) continue;
+    for (const md of markdownImports(path, content)) importedMarkdown.add(md);
+  }
+  const { targets, unread } = secretDocsTargets(
+    listing,
+    input.manifest,
+    importedMarkdown,
+  );
 
   const findings: ReviewFinding[] = [];
   const report = (file: string, line: number, message: string) =>
     findings.push({
-      ruleId: "secret-unsafe-docs",
+      ruleId: SECRET_UNSAFE_DOCS_RULE,
       dimension: "Credentials & Secrets",
       severity: "medium",
       file,
@@ -2005,7 +2035,8 @@ async function secretUnsafeDocs(
       remediation: remediationFor("secret-unsafe-docs"),
     });
 
-  for (const { file, form } of targets) {
+  for (const { path, form } of targets) {
+    const file = authorOf.get(path)!;
     const content = await readUnlessSymlink(file);
     if (content === undefined) continue;
     for (const f of detectSecretDocs(content, form, schemas)) {
@@ -2013,23 +2044,44 @@ async function secretUnsafeDocs(
     }
   }
 
-  const manifestPath = input.manifestPath ??
-    join(input.manifestDir, "manifest.yaml");
-  const manifestText = await readUnlessSymlink(manifestPath);
-  const description = manifestText === undefined
-    ? undefined
-    : manifestDescriptionLines(manifestText);
-  if (description) {
-    for (
-      const f of detectSecretDocs(description.text, "plain", schemas)
-    ) {
-      const line = description.line + f.line - 1;
+  // The parsed description, as the registry reads it: a YAML comment or an
+  // escape is never documentation. Its findings all sit on the description
+  // line, so accepting that line accepts them all, as the registry's
+  // fileless description acceptance does.
+  const description = input.manifest.description;
+  if (typeof description === "string" && description.length > 0) {
+    const manifestPath = input.manifestPath ??
+      join(input.manifestDir, "manifest.yaml");
+    const manifestText = await readUnlessSymlink(manifestPath);
+    const keyLine = manifestText === undefined ? 1 : Math.max(
+      1,
+      manifestText.split("\n").findIndex((l) =>
+        /^["']?description["']?\s*:/.test(l)
+      ) + 1,
+    );
+    for (const f of detectSecretDocs(description, "plain", schemas)) {
       report(
         manifestPath,
-        line,
-        f.message.replace(/^Line \d+/, `Line ${line} (description)`),
+        keyLine,
+        f.message.replace(/^Line \d+/, `Line ${keyLine} (description)`),
       );
     }
+  }
+  if (unread.length > 0) {
+    findings.push({
+      ruleId: SECRET_UNSAFE_DOCS_RULE,
+      dimension: "Credentials & Secrets",
+      severity: "medium",
+      file: "(extension)",
+      message:
+        `Documentation not checked for secrets: ${
+          unread.slice(0, 3).join(", ")
+        }${unread.length > 3 ? ` and ${unread.length - 3} more` : ""}. ` +
+        `Files over ${MAX_SECRET_DOCS_FILE_BYTES / (1024 * 1024)} MiB, or ` +
+        `past ${MAX_SECRET_DOCS_FILES} files, are not read, and the ` +
+        "registry scores unchecked documentation as unsafe.",
+      remediation: "Split or shrink the listed files.",
+    });
   }
   return findings;
 }
@@ -2164,13 +2216,7 @@ export async function runQualityFindings(
 
   // Docs that put a secret in plaintext or reference a vault with syntax
   // swamp does not support (swamp-club#3757).
-  for (
-    const finding of await secretUnsafeDocs(
-      input,
-      files,
-      schemas,
-    )
-  ) {
+  for (const finding of await secretUnsafeDocs(input, files, schemas)) {
     reviewRulesResult.warnings.push(finding);
   }
 
@@ -2226,6 +2272,15 @@ export async function runQualityFindings(
     [...safetyWarnings, ...reviewRulesResult.warnings],
     directives,
   );
+  // Unread documentation is unknown, not accepted: no directive covers it.
+  const unread = applied.accepted.filter((a) =>
+    a.finding.ruleId === SECRET_UNSAFE_DOCS_RULE &&
+    a.finding.file === "(extension)"
+  );
+  if (unread.length > 0) {
+    applied.accepted = applied.accepted.filter((a) => !unread.includes(a));
+    for (const a of unread) applied.remaining.push(a.finding);
+  }
   const remainingSafety: SafetyIssue[] = [];
   const remainingReview: ReviewFinding[] = [];
   for (const finding of applied.remaining) {

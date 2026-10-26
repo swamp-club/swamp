@@ -25,12 +25,14 @@ import {
 import {
   createRubricScoreDeps,
   predictPublishedPrivate,
-  type PrivateSourceStanding,
-  RUBRIC_VERSION,
   type RubricScore,
   type RubricScoreDeps,
   scoreExtensionTarball,
 } from "../../domain/extensions/extension_rubric_scorer.ts";
+import {
+  type PrivateSourceStanding,
+  RUBRIC_VERSION,
+} from "@swamp-club/extension-scoring/rubric";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { collectiveOf } from "../../domain/extensions/extension_publish_checks.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
@@ -49,8 +51,8 @@ import {
   notAuditedCount,
   notAuditedFixes,
   unpublishedSpecifiers,
-} from "../../domain/extensions/extension_dependency_trust_checker.ts";
-import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
+} from "@swamp-club/extension-scoring/dependency-audit";
+import type { ManifestLicenseWarning } from "@swamp-club/extension-scoring/licensing";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import {
@@ -107,6 +109,11 @@ export interface ExtensionQualityData {
 export interface ExtensionQualityInput {
   prepareInput: ExtensionPushPrepareInput;
   hashInput: PackageCacheHashInput;
+  /**
+   * Run `deno doc` as the registry does — an empty cache and no inherited
+   * registry credentials — instead of with the local cache and environment.
+   */
+  isolated?: boolean;
 }
 
 /**
@@ -136,7 +143,10 @@ export interface ExtensionQualityDeps {
   pushPrepareDeps: ExtensionPushPrepareDeps;
   cache: ExtensionPackageCache;
   ensureDenoPath: () => Promise<string>;
-  makeScoreDeps: (denoPath: string) => RubricScoreDeps;
+  makeScoreDeps: (
+    denoPath: string,
+    options?: { isolated?: boolean },
+  ) => RubricScoreDeps;
   privateSourceLookup: PrivateSourceLookupDeps;
 }
 
@@ -151,8 +161,13 @@ export function createExtensionQualityDeps(
     pushPrepareDeps,
     cache,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
-    makeScoreDeps: (denoPath) =>
-      createRubricScoreDeps(denoPath, extractTarGz, denoRuntime.getDenoEnv()),
+    makeScoreDeps: (denoPath, options) =>
+      createRubricScoreDeps(
+        denoPath,
+        extractTarGz,
+        denoRuntime.getDenoEnv(),
+        options?.isolated === true,
+      ),
     privateSourceLookup: {
       loadCredentials: () => pushPrepareDeps.loadCredentials(),
       whoami: (serverUrl, apiKey, signal) =>
@@ -326,15 +341,14 @@ export async function* extensionQuality(
         input.prepareInput.manifest,
       );
       const denoPath = await deps.ensureDenoPath();
-      const scoreDeps = deps.makeScoreDeps(denoPath);
+      const scoreDeps = deps.makeScoreDeps(denoPath, {
+        isolated: input.isolated === true,
+      });
       const score = await scoreExtensionTarball(
         archiveBytes,
         input.prepareInput.manifest,
         scoreDeps,
         {
-          dependencyTrustPassed: dependencyTrustBlockerCount(
-            prepared.dependencyTrustResult,
-          ) === 0,
           dependencyTrustBlockerCount: dependencyTrustBlockerCount(
             prepared.dependencyTrustResult,
           ),

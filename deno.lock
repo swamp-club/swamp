@@ -2822,6 +2822,13 @@
           ]
         }
       },
+      "packages/extension-scoring": {
+        "dependencies": [
+          "jsr:@std/assert@^1.0.19",
+          "jsr:@std/semver@^1.0.8",
+          "npm:fast-check@^3.23.2"
+        ]
+      },
       "packages/testing": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",

@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { checkDependencyTrust } from "../src/domain/extensions/extension_dependency_trust_checker.ts";
+import {
+  checkDependencyTrust,
+} from "../src/domain/extensions/extension_dependency_trust_checker.ts";
 import {
   buildFindingsReport,
   renderFindingsReport,
