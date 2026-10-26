@@ -256,8 +256,12 @@ const CONNECTION_STRING_RE =
 
 // IPv4
 // The lookbehind also excludes a dot so a match cannot start partway into a
-// longer dotted run.
-const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b/g;
+// longer dotted run. The lookahead refuses a quad that runs on as a version:
+// a hyphen and a letter (the WSL2 kernel release 6.18.33.2-microsoft-standard)
+// or a dot and a digit (a fifth group, an OID such as 1.3.6.1.4.1). A hyphen
+// and a digit (10.0.0.1-10.0.0.5) and a dot and a letter (10.0.0.5.nip.io)
+// still match, since an address can stand there.
+const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}\b(?!-[A-Za-z]|\.\d)/g;
 
 // IPv6 candidates: every token of word characters joined by two or more
 // colons, taken whole and judged by redactColonToken. Reading the whole token
@@ -1007,10 +1011,12 @@ function applyRedactions(
     (token: string) => redactColonToken(token, placeholders, count),
   );
 
-  // 13. IPv4 (the regex requires exactly 4 octets, so 3-segment version
-  //     strings like "1.23.4" never match — no version guard needed)
+  // 13. IPv4 (the regex requires exactly 4 octets and refuses a quad that
+  //     runs on as a version, so "1.23.4" and "6.18.33.2-microsoft" never
+  //     match). A group above 255 means the quad is not an address.
   result = result.replace(IPV4_RE, (match) => {
     if (isSafeIpv4(match)) return match;
+    if (match.split(".").some((part) => Number(part) > 255)) return match;
     count("IP address");
     return placeholders.get("IP", match);
   });
