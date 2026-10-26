@@ -288,6 +288,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/op.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/partition.ts",
   "src/serve/datastore_api.ts -> src/domain/datastore_v3/partition_key.ts",
+  "src/serve/datastore_api.ts -> src/domain/datastore_v3/read_model.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/chunk_ingest.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/forwarded_commit.ts",
   "src/serve/datastore_api.ts -> src/infrastructure/datastore_v3/upload_ledger.ts",
