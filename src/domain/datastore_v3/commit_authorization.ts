@@ -57,6 +57,7 @@ import { bindKey, type KeyBindingRefusal } from "./intent_key_paths.ts";
 import type { DataVersionOp, Op, PutOp, TombstoneOp } from "./op.ts";
 import { type DefinitionKind, partitionOf } from "./partition_key.ts";
 import type { PartitionKey } from "./partition_key.ts";
+import type { RecordKey } from "./record_key.ts";
 
 /** Why a forwarded commit was refused. */
 export type CommitRefusalReason =
@@ -158,7 +159,7 @@ const CONTENT_CHECKED_PUTS: ReadonlySet<string> = new Set([
 ]);
 
 /** The resource every admin-only operation is decided on. */
-const ADMIN_RESOURCE: AccessResource = {
+export const ADMIN_RESOURCE: AccessResource = {
   kind: "access",
   name: "*",
   fields: {},
@@ -497,6 +498,32 @@ export async function readAccessOf(
 }
 
 /**
+ * What a caller needs to read one record of a behavior definition's config
+ * partition named `name`, decided as {@link readAccessOf} decides the op that
+ * wrote it: by the behavior type its key names. A control-plane or
+ * restricted type, or a key that names no type, needs admin
+ * (swamp-club#3938).
+ */
+export async function definitionRecordReadAccessOf(
+  name: string,
+  key: RecordKey,
+  resolver: AggregateResourceResolver,
+): Promise<RequiredAccess> {
+  const intent: Intent = {
+    kind: "definition.edit",
+    definition: { kind: "model", name },
+  };
+  const write = await definitionAccessOf(
+    { intent, kind: "put", key },
+    intent.definition,
+    resolver,
+  );
+  return write.action === "admin"
+    ? write
+    : { action: "read", resource: write.resource };
+}
+
+/**
  * What a caller needs to read anything a partition holds, for a chunk read
  * or a catch-up of the whole partition. It is conservative: a behavior's
  * partition holds its data and its outputs, so both reads are needed. An
@@ -582,7 +609,7 @@ export async function partitionReadAccessOf(
 }
 
 async function definitionAccessOf(
-  op: PutOp | TombstoneOp,
+  op: Pick<PutOp | TombstoneOp, "intent" | "kind" | "key">,
   definition: { readonly kind: DefinitionKind; readonly name: string },
   resolver: AggregateResourceResolver,
 ): Promise<RequiredAccess> {
