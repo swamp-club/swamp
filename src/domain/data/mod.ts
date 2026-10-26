@@ -48,6 +48,7 @@ export {
   isReservedDataName,
   isReservedTagKey,
   RESERVED_DATA_NAMES,
+  RESERVED_TAG_KEYS,
   RESERVED_TAG_PREFIX,
 } from "./data.ts";
 

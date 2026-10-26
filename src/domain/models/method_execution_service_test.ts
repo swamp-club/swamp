@@ -1037,7 +1037,8 @@ function reservedTagModel(specTags: {
   return { model, runs: () => runs };
 }
 
-const RESERVED_TAG_RUN_SOURCES: Array<{
+/** Where a reserved tag enters a run, and how the refusal names it. */
+function reservedTagRunSources(tag: Record<string, string>): Array<{
   label: string;
   definitionTags?: Record<string, string>;
   specTags?: {
@@ -1046,66 +1047,73 @@ const RESERVED_TAG_RUN_SOURCES: Array<{
   };
   context?: Partial<MethodContext>;
   expected: string;
-}> = [
-  {
-    label: "the definition's tags",
-    definitionTags: RESERVED_TAG,
-    expected: "from the behavior definition's tags",
-  },
-  {
-    label: "a resource spec's default tags",
-    specTags: { resource: RESERVED_TAG },
-    expected:
-      "from the default tags of resource spec 'out' in behavior type 'test/reserved-tags'",
-  },
-  {
-    label: "a file spec's default tags",
-    specTags: { file: RESERVED_TAG },
-    expected:
-      "from the default tags of file spec 'log' in behavior type 'test/reserved-tags'",
-  },
-  {
-    label: "--tag",
-    context: { runtimeTags: RESERVED_TAG },
-    expected: "from --tag",
-  },
-  {
-    label: "the workflow's tags",
-    context: { tagOverrides: { workflow: "wf", ...RESERVED_TAG } },
-    expected: "from the workflow's tags",
-  },
-  {
-    label: "a data output override",
-    context: { dataOutputOverrides: [{ specName: "out", tags: RESERVED_TAG }] },
-    expected: "from the data output override for spec 'out'",
-  },
-];
+}> {
+  return [
+    {
+      label: "the definition's tags",
+      definitionTags: tag,
+      expected: "from the behavior definition's tags",
+    },
+    {
+      label: "a resource spec's default tags",
+      specTags: { resource: tag },
+      expected:
+        "from the default tags of resource spec 'out' in behavior type 'test/reserved-tags'",
+    },
+    {
+      label: "a file spec's default tags",
+      specTags: { file: tag },
+      expected:
+        "from the default tags of file spec 'log' in behavior type 'test/reserved-tags'",
+    },
+    {
+      label: "--tag",
+      context: { runtimeTags: tag },
+      expected: "from --tag",
+    },
+    {
+      label: "the workflow's tags",
+      context: { tagOverrides: { workflow: "wf", ...tag } },
+      expected: "from the workflow's tags",
+    },
+    {
+      label: "a data output override",
+      context: { dataOutputOverrides: [{ specName: "out", tags: tag }] },
+      expected: "from the data output override for spec 'out'",
+    },
+  ];
+}
 
-for (const source of RESERVED_TAG_RUN_SOURCES) {
-  Deno.test(`executeWorkflow: refuses a reserved tag from ${source.label} before the method runs`, async () => {
-    const service = new DefaultMethodExecutionService();
-    const { model, runs } = reservedTagModel(source.specTags ?? {});
-    const definition = Definition.create({
-      name: "reserved-tags",
-      globalArguments: {},
-      ...(source.definitionTags ? { tags: source.definitionTags } : {}),
-    });
-    const { context } = createTestContext({
-      modelType: model.type,
-      ...source.context,
-    });
+// swamp-club#3684: specName is reserved like a _swamp. key.
+for (
+  const [key, value] of [
+    ["_swamp.sensitiveFields", RESERVED_TAG["_swamp.sensitiveFields"]],
+    ["specName", "forged-spec"],
+  ]
+) {
+  for (const source of reservedTagRunSources({ [key]: value })) {
+    Deno.test(`executeWorkflow: refuses a reserved ${key} tag from ${source.label} before the method runs`, async () => {
+      const service = new DefaultMethodExecutionService();
+      const { model, runs } = reservedTagModel(source.specTags ?? {});
+      const definition = Definition.create({
+        name: "reserved-tags",
+        globalArguments: {},
+        ...(source.definitionTags ? { tags: source.definitionTags } : {}),
+      });
+      const { context } = createTestContext({
+        modelType: model.type,
+        ...source.context,
+      });
 
-    const error = await assertRejects(
-      () => service.executeWorkflow(definition, model, "run", context),
-      Error,
-      `Tag '_swamp.sensitiveFields' ${source.expected} is reserved`,
-    );
-    assertEquals(
-      (error as Error).message.includes(RESERVED_TAG["_swamp.sensitiveFields"]),
-      false,
-    );
-    assertEquals(runs(), 0);
-  });
+      const error = await assertRejects(
+        () => service.executeWorkflow(definition, model, "run", context),
+        Error,
+        `Tag '${key}' ${source.expected} is reserved`,
+      );
+      assertEquals((error as Error).message.includes(value), false);
+      assertEquals(runs(), 0);
+    });
+  }
 }
 
 Deno.test("executeWorkflow: runs when no tag source holds a reserved key", async () => {

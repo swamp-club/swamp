@@ -956,12 +956,14 @@ add the key lists of the second as more paths (`readSensitiveFieldPlaces()`);
 
 Read sites parse the tags to pick the fields to resolve. A record is untagged
 when it was written before the tag existed, or when nothing was vaulted at write
-time (the writer sets the tag only after vaulting a field). For an untagged
-record, call sites with schema access fall back to `extractSensitiveFields()` on
-the resource spec the record's `specName` tag names; those without skip
+time (the writer sets the tag only after vaulting a field). Every writer also
+stamps `_swamp.kind` (`resource` or `file`) after all user tag sources, so a
+stamped record without the sensitive-fields tag had nothing vaulted, and nothing
+in it resolves. Only an untagged record without the stamp, written before it
+existed, takes the fallback: call sites with schema access use
+`extractSensitiveFields()` on the resource spec the record's `specName` tag
+names, when its `type` tag is `resource`; those without schema access skip
 resolution (secure default).
-The fallback's trust in `specName`, which workflow tags and `--tag` can
-override, is tracked as swamp-club#3684.
 
 `readResource` is the one caller with schema access, on both executors:
 `getSensitiveFieldsForResolution()` decides the fields, and the worker builds
@@ -989,6 +991,19 @@ Records written before that refusal may carry a user-supplied tag, and readers
 still trust it; a stored tag cannot be told apart from one the vaulting step
 wrote. `swamp data query '"_swamp.sensitiveFields" in tags'` lists the records
 that carry it, to review against their specs' sensitive fields.
+
+The fallback once trusted a `specName` that workflow tags, `--tag` and data
+output overrides could overwrite. Pointed at a `sensitiveOutput` or
+schema-sensitive spec, a forged `specName` made reference-shaped method output
+in an untagged record resolve to the reader's vault plaintext, and so did a
+file record under a file spec sharing a sensitive resource spec's name. The
+stamp closes both routes for every record written since, and `specName` is now
+refused from every user source like a `_swamp.` key (swamp-club#3684). Records
+without the stamp, whether written before the change or by an older swamp
+binary sharing the datastore, still take the fallback with whatever `specName`
+and `type` they carry, which cannot be told apart from the writer's own.
+`swamp data query 'tags.type == "resource" && !("_swamp.kind" in tags) && !("_swamp.sensitiveFields" in tags)'`
+lists them, to review against the spec each one names.
 
 `resolveSensitiveVaultRefs()` does the resolution and
 `parseSensitiveFieldsTag()` parses the three tags, both in

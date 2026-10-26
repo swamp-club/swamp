@@ -3579,12 +3579,54 @@ Deno.test("validateModel: Tags fails on a reserved key in a spec's default tags"
   );
 });
 
+Deno.test("validateModel: Tags fails on specName in the definition's tags or a spec's default tags (swamp-club#3684)", async () => {
+  const service = new DefaultModelValidationService();
+
+  const fromDefinition = await service.validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      tags: { specName: "forged-spec" },
+    }),
+    testExprModel,
+  );
+  const definitionTags = fromDefinition.results.find((r) => r.name === "Tags");
+  assertEquals(definitionTags?.passed, false);
+  assertStringIncludes(
+    definitionTags?.error ?? "",
+    "Tag 'specName' from the behavior definition's tags is reserved: swamp writes the 'specName' tag itself",
+  );
+  assertEquals((definitionTags?.error ?? "").includes("forged-spec"), false);
+
+  const fromSpec = await service.validateModel(
+    Definition.create({
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+    }),
+    {
+      ...testExprModel,
+      files: {
+        log: {
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 5,
+          tags: { specName: "forged-spec" },
+        },
+      },
+    },
+  );
+  assertStringIncludes(
+    fromSpec.results.find((r) => r.name === "Tags")?.error ?? "",
+    `Tag 'specName' from the default tags of file spec 'log' in behavior type '${testExprModel.type.normalized}'`,
+  );
+});
+
 Deno.test("validateModel: Tags passes for lookalike keys", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "hello" },
-    tags: { "swamp.sensitiveFields": "a", "_SWAMP.x": "b" },
+    tags: { "swamp.sensitiveFields": "a", "_SWAMP.x": "b", SpecName: "c" },
   });
 
   const { results } = await service.validateModel(definition, testExprModel);

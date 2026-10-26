@@ -984,10 +984,24 @@ Deno.test("isReservedTagKey: returns false for lookalike keys", () => {
   assertEquals(isReservedTagKey(" _swamp.sensitiveFields"), false);
 });
 
+Deno.test("isReservedTagKey: returns true for the specName key the writers set (swamp-club#3684)", () => {
+  assertEquals(isReservedTagKey("specName"), true);
+  assertEquals(isReservedTagKey("SpecName"), false);
+  assertEquals(isReservedTagKey("specname"), false);
+  assertEquals(isReservedTagKey("specNames"), false);
+  assertEquals(isReservedTagKey(" specName"), false);
+  assertEquals(isReservedTagKey("modelName"), false);
+  assertEquals(isReservedTagKey("type"), false);
+});
+
 Deno.test("findReservedTagKey: returns the reserved key, or undefined when none", () => {
   assertEquals(
     findReservedTagKey({ env: "prod", "_swamp.sensitiveFields": "*" }),
     "_swamp.sensitiveFields",
+  );
+  assertEquals(
+    findReservedTagKey({ env: "prod", specName: "creds" }),
+    "specName",
   );
   assertEquals(findReservedTagKey({ env: "prod", team: "infra" }), undefined);
   assertEquals(findReservedTagKey({}), undefined);

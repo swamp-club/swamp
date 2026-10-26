@@ -584,10 +584,10 @@ Deno.test("DataPlane: resource write overrides from a worker land on the saved r
             lifetime: "7d",
             garbageCollection: 3,
             // Method tags rank below the auto-injected and workflow tags,
-            // exactly as for a local write.
+            // exactly as for a local write. specName is reserved, so it is
+            // refused rather than outranked (swamp-club#3684).
             tags: {
               provider: "claude",
-              specName: "forged",
               modelName: "forged",
               workflow: "forged",
             },
@@ -752,28 +752,30 @@ Deno.test("DataPlane: a refused file writer open is a 400 naming the reason, and
   });
 });
 
-Deno.test("DataPlane: a reserved tag in a resource write is a 400 and saves nothing (swamp-club#3635)", async () => {
-  await withHarness(async (h) => {
-    h.dispatches.register(activeDispatch());
+Deno.test("DataPlane: a reserved tag in a resource write is a 400 and saves nothing (swamp-club#3635, swamp-club#3684)", async () => {
+  for (const key of ["_swamp.sensitiveFields", "specName"]) {
+    await withHarness(async (h) => {
+      h.dispatches.register(activeDispatch());
 
-    const refused = await h.plane.handle(
-      request("/data/resource", {
-        method: "POST",
-        body: JSON.stringify({
-          specName: "result",
-          name: "result",
-          data: { value: "x" },
-          overrides: { tags: { "_swamp.sensitiveFields": "*" } },
+      const refused = await h.plane.handle(
+        request("/data/resource", {
+          method: "POST",
+          body: JSON.stringify({
+            specName: "result",
+            name: "result",
+            data: { value: "x" },
+            overrides: { tags: { [key]: "*" } },
+          }),
         }),
-      }),
-    );
-    assertEquals(refused?.status, 400);
-    assertStringIncludes(
-      await refused!.text(),
-      "Tag '_swamp.sensitiveFields' from the write overrides of resource spec 'result'",
-    );
-    assertEquals(h.stored.size, 0);
-  });
+      );
+      assertEquals(refused?.status, 400, key);
+      assertStringIncludes(
+        await refused!.text(),
+        `Tag '${key}' from the write overrides of resource spec 'result'`,
+      );
+      assertEquals(h.stored.size, 0, key);
+    });
+  }
 });
 
 Deno.test("DataPlane: file writer session — open, durable lines, finalize", async () => {

@@ -111,6 +111,34 @@ Deno.test("reservedWorkflowTags: finds the workflow's tags and every step overri
   assertEquals(atSteps(found[0]).text, found[0].refusal.text);
 });
 
+Deno.test("reservedWorkflowTags: finds a specName tag in the workflow's tags, a step override and a nested workflow (swamp-club#3684)", async () => {
+  const forged = { specName: "creds" };
+  const child = workflowOf("child", [
+    { name: "inner", task: model("m"), overrideTags: forged },
+  ]);
+  const found = await reservedWorkflowTags(
+    workflowOf("wf", [
+      { name: "one", task: model("m"), overrideTags: forged },
+      { name: "two", task: StepTask.workflow("child") },
+    ], forged),
+    lookupsOf({}, [child]),
+  );
+
+  assertEquals(found.map((f) => f.steps.map((s) => s.stepName)), [
+    [],
+    ["one"],
+    ["two", "inner"],
+  ]);
+  for (const f of found) {
+    assertStringIncludes(f.refusal.text, "Tag 'specName' from");
+    assertStringIncludes(
+      f.refusal.text,
+      "swamp writes the 'specName' tag itself",
+    );
+    assertEquals(f.refusal.text.includes("creds"), false);
+  }
+});
+
 Deno.test("reservedWorkflowTags: is empty for a workflow without reserved keys", async () => {
   assertEquals(
     await reservedWorkflowTags(

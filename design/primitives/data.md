@@ -54,7 +54,7 @@ stored as `metadata.yaml` and validated by `DataMetadataSchema`
 | `lifetime`               | `Nm/h/d/w/mo/y`, `ephemeral`, `infinite`, `job`, `workflow`; zero durations become `workflow`                                                | `data_metadata.ts` `LifetimeSchema`, `normalizeLifetime` |
 | `garbageCollection`      | Keep N versions (integer) or versions younger than a duration                                                                                | `data_metadata.ts` `GarbageCollectionSchema`             |
 | `streaming`              | Line-oriented file written incrementally                                                                                                     | `data_writer.ts` `writeLine`                             |
-| `tags`                   | String map; must contain `type`. Writers add `specName` and `modelName`                                                                      | `data_metadata.ts`; `data_writer.ts`                     |
+| `tags`                   | String map; must contain `type`. Writers add `specName`, `modelName` and `_swamp.kind`                                                                      | `data_metadata.ts`; `data_writer.ts`                     |
 | `ownerDefinition`        | `ownerType` (`model-method`, `workflow-step`, `manual`) + `ownerRef` (the behavior id); workflow provenance (below); legacy `definitionHash` | `data_metadata.ts` `OwnerDefinitionSchema`               |
 | `size`, `checksum`       | Byte length and SHA-256 of `raw`                                                                                                             | `unified_data_repository.ts` `computeChecksum`           |
 | `lifecycle`, `renamedTo` | `deleted` marks a tombstone; `renamedTo` makes it a forwarding tombstone                                                                     | `data.ts` `withDeletionMarker`, `withRenameMarker`       |
@@ -158,13 +158,18 @@ tag overrides (which also feed `ownerDefinition.workflowRunId` etc.). Next come
 runtime tags from `--tag KEY=VALUE` on `swamp behavior run` /
 `swamp workflow run` (`src/cli/commands/model_method_run.ts`,
 `workflow_run.ts`). Last is the definition-level `dataOutputOverrides` for that
-spec: lifetime, GC, tags, vary, vault name (`data_output_override.ts`).
+spec: lifetime, GC, tags, vary, vault name (`data_output_override.ts`). After
+every source, each writer stamps `_swamp.kind` (`resource` or `file`,
+`RECORD_KIND_TAG`), and the resource writer adds `_swamp.sensitiveFields` when
+it vaults a field.
 
 Tag keys under the `_swamp.` prefix are reserved for swamp. Readers trust them
 as swamp's own: `_swamp.sensitiveFields` chooses which fields resolve vault
 references, so the vaulting step must be the only way one reaches a record
-(swamp-club#3635). A key under the prefix from any user source is refused, never
-dropped, and as early as the source is known:
+(swamp-club#3635), and `_swamp.kind` tells readers which writer made a record
+(swamp-club#3684). The `specName` key is reserved too (`RESERVED_TAG_KEYS`): the
+writers set it, and readers find a record's spec by it. A reserved key from any
+user source is refused, never dropped, and as early as the source is known:
 
 - `behavior validate` fails its Tags check on the definition's tags and the
   type's spec defaults. `workflow validate` fails on the workflow's tags, each
@@ -187,7 +192,8 @@ dropped, and as early as the source is known:
 
 The refusal is `reservedRunTagRefusal` and `reservedTagRefusal` in
 `data_writer.ts` (`assertNoReservedRunTags` and `assertNoReservedTags` throw
-them); `RESERVED_TAG_PREFIX` and `isReservedTagKey` are in `data.ts`.
+them); `RESERVED_TAG_PREFIX`, `RESERVED_TAG_KEYS` and `isReservedTagKey` are in
+`data.ts`.
 `integration/reserved_tag_rules_test.ts` pins the files that may spell a
 reserved key.
 
