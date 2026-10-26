@@ -37,6 +37,7 @@ import { withSyncGate } from "./sync_gate.ts";
 import type { DetachedNestedRunData } from "../libswamp/workflows/nested_runs.ts";
 import type { CascadedNestedRunData } from "../libswamp/workflows/nested_cascade.ts";
 import { serveNestedCascade } from "./nested_run_cascade.ts";
+import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
 import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -161,7 +162,14 @@ export function ownerGoneDecider(
         ctx.controlPlaneStore.get(`heartbeats/${run.instanceId}`),
       ]);
       if (own === null) return { gone: false, why: OWNER_UNKNOWN };
-      return theirs === null
+      // A stopped record is what an instance leaves when it stopped without
+      // pushing its interrupted runs (swamp-club#3958): it is gone.
+      const theirRecord = theirs === null
+        ? null
+        : InstanceHeartbeatService.parseRecord(theirs);
+      return theirs === null ||
+          (theirRecord !== null &&
+            InstanceHeartbeatService.isStopped(theirRecord))
         ? { gone: true }
         : { gone: false, why: OWNER_INSTANCE_ALIVE };
     }

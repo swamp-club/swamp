@@ -2881,7 +2881,11 @@ export async function collectClusterInstances(
       const isLocal = record.instanceId === opts.instanceId;
       const age = Date.now() - new Date(record.heartbeatAt).getTime();
       let status: string;
-      if (isNaN(age)) {
+      if (InstanceHeartbeatService.isStopped(record)) {
+        // Left by an instance that stopped with runs it could not push
+        // (swamp-club#3958), until a peer reconciles it.
+        status = "stopped";
+      } else if (isNaN(age)) {
         status = "unreachable";
       } else if (age <= degradedThresholdMs) {
         status = "healthy";

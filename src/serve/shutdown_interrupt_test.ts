@@ -29,8 +29,16 @@ import { createSyncGate } from "./sync_gate.ts";
 import {
   interruptShutdownRuns,
   type ShutdownInterruptDeps,
+  stopHeartbeatAtShutdown,
 } from "./shutdown_interrupt.ts";
+import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { join } from "@std/path";
+import {
+  readUnpushedInterrupts,
+  UNPUSHED_INTERRUPTS_FILE,
+} from "./unpushed_interrupts.ts";
+import type { ActiveRunStatus } from "../domain/models/active_run.ts";
 
 await initializeLogging({});
 
@@ -169,7 +177,11 @@ Deno.test("interruptShutdownRuns: a failed push is reported, not thrown", async 
     },
   });
 
-  assertEquals(result, { interrupted: [run.id], pushError: "S3 unreachable" });
+  assertEquals(result, {
+    interrupted: [run.id],
+    pushError: "S3 unreachable",
+    unpushed: [run.id],
+  });
   assertEquals(events, ["load", `save ${run.id} interrupted`]);
 });
 
@@ -199,6 +211,7 @@ Deno.test("interruptShutdownRuns: a push that never settles is cut off at the de
   assertEquals(result, {
     interrupted: [run.id],
     pushError: "timed out after 10ms",
+    unpushed: [run.id],
   });
   assertEquals(signal?.aborted, true);
 });
@@ -226,6 +239,7 @@ Deno.test("interruptShutdownRuns: a gate held by a pull is cut off at the deadli
     assertEquals(result, {
       interrupted: [run.id],
       pushError: "timed out after 10ms",
+      unpushed: [run.id],
     });
     assertEquals(events, ["load", `save ${run.id} interrupted`]);
   } finally {
@@ -274,4 +288,265 @@ Deno.test("interruptShutdownRuns: no aborted workflow run loads nothing and push
 
   assertEquals(result, { interrupted: [] });
   assertEquals(events, []);
+});
+
+/** A run tracker that records each row completion. */
+function tracker(
+  rows: Map<string, ActiveRunStatus> = new Map(),
+): ShutdownInterruptDeps["runTracker"] & { completed: string[] } {
+  const completed: string[] = [];
+  return {
+    completed,
+    complete: (runId, status, reason) => {
+      // As the store does: only a running or suspended row is completed.
+      const current = rows.get(runId) ?? "running";
+      if (current !== "running" && current !== "suspended") return;
+      rows.set(runId, status);
+      completed.push(`${runId} ${status} ${reason}`);
+    },
+  };
+}
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("interruptShutdownRuns: settles the tracker row of each interrupted run (swamp-club#3958)", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { repoContext } = harness([run], wf.id);
+  const runTracker = tracker();
+
+  const result = await interruptShutdownRuns([active(run)], {
+    repoContext,
+    syncService: { pushChanged: () => Promise.resolve(1) },
+    runTracker,
+  });
+
+  assertEquals(result, { interrupted: [run.id] });
+  assertEquals(runTracker.completed, [`${run.id} interrupted server_shutdown`]);
+});
+
+Deno.test("interruptShutdownRuns: a row the run already settled as cancelled is left alone", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  run.endAsCancelled("server shutdown");
+  const { repoContext } = harness([run], wf.id);
+  const runTracker = tracker(new Map([[run.id, "cancelled"]]));
+
+  await interruptShutdownRuns([active(run)], { repoContext, runTracker });
+
+  assertEquals(runTracker.completed, []);
+});
+
+Deno.test("interruptShutdownRuns: a run that completed during the drain keeps its tracker row", async () => {
+  const wf = workflow();
+  const done = runningRun(wf);
+  done.complete();
+  const { repoContext } = harness([done], wf.id);
+  const runTracker = tracker();
+
+  await interruptShutdownRuns([active(done)], { repoContext, runTracker });
+
+  assertEquals(runTracker.completed, []);
+});
+
+Deno.test("interruptShutdownRuns: a run whose save failed still settles its row and is reported unpushed", async () => {
+  const wf = workflow();
+  const saved = runningRun(wf);
+  const failing = runningRun(wf);
+  const { repoContext } = harness([saved, failing], wf.id);
+  const save = repoContext.workflowRunRepo.save;
+  const runTracker = tracker();
+
+  const result = await interruptShutdownRuns(
+    [active(saved), active(failing)],
+    {
+      repoContext: {
+        ...repoContext,
+        workflowRunRepo: {
+          ...repoContext.workflowRunRepo,
+          save: (wid, run) =>
+            run.id === failing.id
+              ? Promise.reject(new Error("disk full"))
+              : save(wid, run),
+        },
+      },
+      syncService: { pushChanged: () => Promise.resolve(1) },
+      runTracker,
+    },
+  );
+
+  assertEquals(result, { interrupted: [saved.id], unpushed: [failing.id] });
+  assertEquals(runTracker.completed, [
+    `${saved.id} interrupted server_shutdown`,
+    `${failing.id} interrupted server_shutdown`,
+  ]);
+});
+
+Deno.test("interruptShutdownRuns: a failed load settles every aborted run's row and reports them unpushed", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { repoContext } = harness([run], wf.id);
+  const runTracker = tracker();
+
+  const result = await interruptShutdownRuns([active(run)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        findGlobalByStatus: () => Promise.reject(new Error("unreadable")),
+      },
+    },
+    syncService: { pushChanged: () => Promise.resolve(1) },
+    runTracker,
+  });
+
+  assertEquals(result, { interrupted: [], unpushed: [run.id] });
+  assertEquals(runTracker.completed, [`${run.id} interrupted server_shutdown`]);
+});
+
+Deno.test("interruptShutdownRuns: records the runs a failed push left for the next start", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { repoContext } = harness([run], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+
+    await interruptShutdownRuns([active(run)], {
+      repoContext,
+      syncService: {
+        pushChanged: () => Promise.reject(new Error("S3 unreachable")),
+      },
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(await readUnpushedInterrupts(marker), {
+      present: true,
+      runs: [{ runId: run.id, workflowId: wf.id }],
+    });
+  });
+});
+
+Deno.test("interruptShutdownRuns: a pushed run records nothing for the next start", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { repoContext } = harness([run], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+
+    await interruptShutdownRuns([active(run)], {
+      repoContext,
+      syncService: { pushChanged: () => Promise.resolve(1) },
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(await readUnpushedInterrupts(marker), { present: false });
+  });
+});
+
+Deno.test("interruptShutdownRuns: a marker that cannot be written is logged, not thrown", async () => {
+  await withTempDir(async (dir) => {
+    const wf = workflow();
+    const run = runningRun(wf);
+    const { repoContext } = harness([run], wf.id);
+
+    const result = await interruptShutdownRuns([active(run)], {
+      repoContext,
+      syncService: {
+        pushChanged: () => Promise.reject(new Error("S3 unreachable")),
+      },
+      unpushedMarkerPath: join(dir, "missing-dir", UNPUSHED_INTERRUPTS_FILE),
+    });
+
+    assertEquals(result.unpushed, [run.id]);
+  });
+});
+
+Deno.test("interruptShutdownRuns: on a filesystem datastore nothing is reported unpushed", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  const { repoContext } = harness([run], wf.id);
+
+  const result = await interruptShutdownRuns([active(run)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        save: () => Promise.reject(new Error("disk full")),
+      },
+    },
+  });
+
+  assertEquals(result, { interrupted: [] });
+});
+
+function recordingStore(events: string[]): ControlPlaneStore {
+  return {
+    put: (key) => {
+      events.push(`put ${key}`);
+      return Promise.resolve();
+    },
+    get: () => Promise.resolve(null),
+    delete: (key) => {
+      events.push(`delete ${key}`);
+      return Promise.resolve();
+    },
+    list: () => Promise.resolve([]),
+  };
+}
+
+const ABORTED = {
+  runId: "run-1",
+  kind: "workflow-run" as const,
+  resourceName: "slow",
+  resourceId: "00000000-0000-4000-8000-000000000001",
+  startedAt: new Date(),
+};
+
+Deno.test("stopHeartbeatAtShutdown: with nothing unpushed the heartbeat is deleted and no record is written", async () => {
+  const events: string[] = [];
+  await stopHeartbeatAtShutdown(
+    {
+      stop: (options) => {
+        events.push(`stop ${options?.leaveStoppedRecord ?? false}`);
+        return Promise.resolve();
+      },
+    },
+    {
+      store: recordingStore(events),
+      instanceId: "inst",
+      aborted: [ABORTED],
+      unpushed: [],
+    },
+  );
+  assertEquals(events, ["stop false"]);
+});
+
+Deno.test("stopHeartbeatAtShutdown: writes the unpushed runs' active-run records back before leaving a stopped heartbeat (swamp-club#3958)", async () => {
+  const events: string[] = [];
+  await stopHeartbeatAtShutdown(
+    {
+      stop: (options) => {
+        events.push(`stop ${options?.leaveStoppedRecord ?? false}`);
+        return Promise.resolve();
+      },
+    },
+    {
+      store: recordingStore(events),
+      instanceId: "inst",
+      aborted: [ABORTED, { ...ABORTED, runId: "run-pushed" }],
+      unpushed: ["run-1"],
+    },
+  );
+  assertEquals(events, ["put active-runs/inst/run-1", "stop true"]);
 });

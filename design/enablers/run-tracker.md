@@ -98,6 +98,11 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    abort. `swamp behavior cancel` stops its run with a plain abort, so it then
    records its `--reason` with `recordCancelReason`, which only fills the
    reason on a `cancelled` row that has none.
+   `swamp serve` shutdown completes the row of each workflow run it aborts as
+   `interrupted` with reason `server_shutdown`, whether or not it could save
+   or push the run's record (`interruptShutdownRuns`,
+   `src/serve/shutdown_interrupt.ts`). A row left `running` would make the
+   next boot's reaper skip the run as still running (swamp-club#3958).
 4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
    check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
    runs become `interrupted`, not `failed`, so they are eligible for checkpoint

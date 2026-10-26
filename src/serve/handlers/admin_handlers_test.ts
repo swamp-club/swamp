@@ -219,6 +219,24 @@ Deno.test("collectClusterInstances: unreachable for invalid timestamp", async ()
   assertEquals(instances[0].status, "unreachable");
 });
 
+Deno.test("collectClusterInstances: stopped status for a stopped record, however recent (swamp-club#3958)", async () => {
+  const now = new Date().toISOString();
+  const store = makeStore([{
+    ...makeHeartbeat("inst-1", now),
+    stoppedAt: now,
+  }]);
+  const ac = new AbortController();
+
+  const instances = await collectClusterInstances({
+    controlPlaneStore: store,
+    instanceId: "other-id",
+    signal: ac.signal,
+  });
+
+  assertEquals(instances.length, 1);
+  assertEquals(instances[0].status, "stopped");
+});
+
 Deno.test("collectClusterInstances: standalone fallback when no heartbeats", async () => {
   const store = makeStore([]);
   const ac = new AbortController();

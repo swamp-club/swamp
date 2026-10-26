@@ -25,6 +25,12 @@ const logger = getSwampLogger(["serve", "heartbeat"]);
 
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export const DEFAULT_STALE_TTL_MS = 90_000;
+/**
+ * How long a stop waits for the write of its stopped record. The record is
+ * written when the datastore was too slow for the shutdown push, so it may
+ * be slow for this write too; the last periodic record is left either way.
+ */
+export const STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS = 5_000;
 
 export interface HeartbeatRecord {
   instanceId: string;
@@ -39,6 +45,13 @@ export interface HeartbeatRecord {
    * command, goes by it.
    */
   staleTtlMs?: number;
+  /**
+   * When the instance stopped. A stopped record is dead at once: an
+   * instance that stopped without pushing its interrupted runs leaves one
+   * instead of deleting its heartbeat, so a peer reconciles it
+   * (swamp-club#3958).
+   */
+  stoppedAt?: string;
 }
 
 export class InstanceHeartbeatService {
@@ -51,6 +64,8 @@ export class InstanceHeartbeatService {
   readonly #address: string | undefined;
   readonly #staleTtlMs: number | undefined;
   #timer: ReturnType<typeof setInterval> | null = null;
+  /** The periodic writes in flight; none of them rejects. */
+  readonly #ticks = new Set<Promise<void>>();
 
   constructor(
     store: ControlPlaneStore,
@@ -76,20 +91,37 @@ export class InstanceHeartbeatService {
     await this.#write();
     this.#timer = runDetached(() =>
       setInterval(() => {
-        this.#write().catch((err) => {
-          logger.warn("Heartbeat write failed: {error}", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
+        const tick: Promise<void> = this.#write()
+          .catch((err) => {
+            logger.warn("Heartbeat write failed: {error}", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          })
+          .finally(() => this.#ticks.delete(tick));
+        this.#ticks.add(tick);
       }, this.#intervalMs)
     );
     Deno.unrefTimer(this.#timer);
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Stops the heartbeat and deletes its record, or with `leaveStoppedRecord`
+   * writes a stopped one in its place. A stopped record that cannot be
+   * written in {@link STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS} is logged, and the
+   * last periodic record is left to go stale: never deleted.
+   */
+  async stop(
+    options: { leaveStoppedRecord?: boolean; writeTimeoutMs?: number } = {},
+  ): Promise<void> {
     if (this.#timer !== null) {
       clearInterval(this.#timer);
       this.#timer = null;
+    }
+    if (options.leaveStoppedRecord) {
+      await this.#writeStopped(
+        options.writeTimeoutMs ?? STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS,
+      );
+      return;
     }
     try {
       await this.#store.delete(`heartbeats/${this.#instanceId}`);
@@ -100,7 +132,36 @@ export class InstanceHeartbeatService {
     }
   }
 
-  async #write(): Promise<void> {
+  async #writeStopped(timeoutMs: number): Promise<void> {
+    // After the periodic writes in flight, so none of them can land last
+    // and take the stopped record's place. The bound covers both.
+    const stoppedAt = new Date().toISOString();
+    const write = Promise.all([...this.#ticks]).then(() =>
+      this.#write(stoppedAt)
+    );
+    // Handled here as well, so a write that outlives the bound never
+    // rejects unhandled.
+    write.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    try {
+      await Promise.race([write, deadline]);
+    } catch (err) {
+      logger.warn(
+        "Stopped heartbeat write on shutdown failed; the last heartbeat is left to go stale: {error}",
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #write(stoppedAt?: string): Promise<void> {
     const record: HeartbeatRecord = {
       instanceId: this.#instanceId,
       hostname: this.#hostname,
@@ -111,6 +172,7 @@ export class InstanceHeartbeatService {
       ...(this.#staleTtlMs !== undefined
         ? { staleTtlMs: this.#staleTtlMs }
         : {}),
+      ...(stoppedAt !== undefined ? { stoppedAt } : {}),
     };
     await this.#store.put(
       `heartbeats/${this.#instanceId}`,
@@ -118,10 +180,16 @@ export class InstanceHeartbeatService {
     );
   }
 
+  /** Whether `record` was left by an instance that stopped. */
+  static isStopped(record: HeartbeatRecord): boolean {
+    return record.stoppedAt !== undefined;
+  }
+
   static isStale(
     record: HeartbeatRecord,
     ttlMs = DEFAULT_STALE_TTL_MS,
   ): boolean {
+    if (InstanceHeartbeatService.isStopped(record)) return true;
     const heartbeatTime = new Date(record.heartbeatAt).getTime();
     if (isNaN(heartbeatTime)) return true;
     return Date.now() - heartbeatTime > ttlMs;
@@ -136,7 +204,10 @@ export class InstanceHeartbeatService {
         typeof parsed.pid === "number" &&
         typeof parsed.startedAt === "string" &&
         typeof parsed.heartbeatAt === "string" &&
-        (parsed.address === undefined || typeof parsed.address === "string")
+        (parsed.address === undefined ||
+          typeof parsed.address === "string") &&
+        (parsed.stoppedAt === undefined ||
+          typeof parsed.stoppedAt === "string")
       ) {
         return parsed as HeartbeatRecord;
       }

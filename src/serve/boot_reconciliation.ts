@@ -38,7 +38,11 @@ import {
   DEFAULT_STALE_TTL_MS,
   InstanceHeartbeatService,
 } from "./instance_heartbeat.ts";
-import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
+import {
+  cleanupActiveRunsForInstance,
+  listActiveRunsForInstance,
+} from "./active_run_tracker.ts";
+import { isUuid } from "../domain/models/model_lookup.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import { isSensitiveHeader } from "./webhook.ts";
@@ -51,6 +55,13 @@ import type {
   VaultProvider,
 } from "../domain/vaults/vault_provider.ts";
 import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
+import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+  type WorkflowId,
+  type WorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
 import {
   cancelOrphanedMethodRuns,
   goneInstanceIds,
@@ -527,6 +538,63 @@ export async function replayPendingRuns(
 export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 /**
+ * How many passes may fail to read or fetch a claimed instance's workflow
+ * runs before that instance is cleaned up anyway. A lasting failure, such
+ * as a record that cannot be parsed or a refused fetch, would otherwise keep
+ * every peer reclaiming it on every pass (swamp-club#3958).
+ */
+export const MAX_RECONCILE_ATTEMPTS = 5;
+
+/**
+ * How long a count of failed passes is kept without a new failure: past it,
+ * {@link cleanupExpiredClaims} removes one an instance no longer needs.
+ */
+export const RECONCILE_ATTEMPTS_TTL_MS = 60 * 60 * 1000;
+
+const RECONCILE_ATTEMPTS_PREFIX = "claims/reconcile-attempts/";
+
+/**
+ * Counts one more failed pass for `instanceId` and returns the count. A
+ * count that cannot be read starts again at one; one that cannot be written
+ * is logged, so a store that keeps failing still retries.
+ */
+async function countFailedAttempt(
+  store: ControlPlaneStore,
+  instanceId: string,
+): Promise<number> {
+  const key = `${RECONCILE_ATTEMPTS_PREFIX}${instanceId}`;
+  let attempts = 1;
+  try {
+    const data = await store.get(key);
+    if (data) {
+      const previous = JSON.parse(new TextDecoder().decode(data))?.attempts;
+      if (typeof previous === "number" && Number.isInteger(previous)) {
+        attempts = previous + 1;
+      }
+    }
+  } catch {
+    // Unreadable: counted from one.
+  }
+  try {
+    await store.put(
+      key,
+      new TextEncoder().encode(
+        JSON.stringify({ attempts, updatedAt: new Date().toISOString() }),
+      ),
+    );
+  } catch (err: unknown) {
+    logger.warn(
+      "Failed to record a failed reconcile pass for instance {instanceId}: {error}",
+      {
+        instanceId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+  }
+  return attempts;
+}
+
+/**
  * How often a live owner refreshes its tracker rows (the interval the
  * workflow execution service heartbeats on). A row owned on another host is
  * only judged once it has missed two of these, however small `--stale-ttl`
@@ -567,6 +635,28 @@ export interface ReconcileRemoteInterruptedRunsDeps {
   ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
   /** This process's pid. Defaults to `Deno.pid`. */
   selfPid?: number;
+  /**
+   * Resolves a workflow name to its id, for an active-run record that names
+   * its workflow only by name (a scheduled run's).
+   */
+  resolveWorkflowId?: (name: string) => Promise<string | undefined>;
+  /**
+   * Brings one workflow run record of a claimed instance into the cache
+   * from the remote datastore, when the cache holds none. This instance's
+   * cache holds another instance's run only if it hydrated after the run
+   * started, so without it only the runs the cache holds are settled
+   * (swamp-club#3958).
+   */
+  refreshRunRecord?: (
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ) => Promise<void>;
+  /**
+   * Pushes the workflow runs the pass interrupted, so the datastore does not
+   * keep them `running`. Called once, when the pass interrupted any; a
+   * failure is logged, not thrown.
+   */
+  pushReaped?: () => Promise<void>;
 }
 
 /**
@@ -700,7 +790,126 @@ export async function reconcileRemoteInterruptedRuns(
     );
   }
 
+  // Read before the cleanup below deletes them: the active-run records name
+  // the claimed instances' workflow runs, which this cache may not hold.
+  const claimedWorkflowRuns: {
+    instanceId: string;
+    workflowId: WorkflowId;
+    runId: WorkflowRunId;
+  }[] = [];
+  // Claimed instances whose runs could not all be read or refreshed. Their
+  // active-run records, heartbeat and claim are left for a later pass to
+  // retry: once they are gone, nothing names those runs.
+  const retryInstances = new Set<string>();
+  if (deps.workflowRunRepo) {
+    for (const claimedId of claimedInstanceIds) {
+      try {
+        const records = await listActiveRunsForInstance(
+          deps.controlPlaneStore,
+          claimedId,
+        );
+        for (const { runId, record } of records) {
+          if (record.runKind === "method-run") continue;
+          // A scheduled run's record names its workflow only by name.
+          const workflowId = record.resourceId ??
+            (deps.resolveWorkflowId && typeof record.resourceName === "string"
+              ? await deps.resolveWorkflowId(record.resourceName).catch(
+                () => undefined,
+              )
+              : undefined);
+          // Both ids name a file in the cache, and the record comes from a
+          // store other writers can reach.
+          if (
+            workflowId === undefined || !isUuid(workflowId) || !isUuid(runId)
+          ) {
+            logger.info(
+              "Not refreshing workflow run {runId} of instance {instanceId}: its active-run record names no workflow id",
+              { runId, instanceId: claimedId },
+            );
+            continue;
+          }
+          claimedWorkflowRuns.push({
+            instanceId: claimedId,
+            workflowId: createWorkflowId(workflowId),
+            runId: createWorkflowRunId(runId),
+          });
+        }
+      } catch (err: unknown) {
+        retryInstances.add(claimedId);
+        logger.warn(
+          "Failed to read the active-run records of instance {instanceId}: {error}",
+          {
+            instanceId: claimedId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+  }
+
+  const refreshed: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+  if (deps.workflowRunRepo) {
+    const workflowRunRepo = deps.workflowRunRepo;
+    for (const { instanceId, workflowId, runId } of claimedWorkflowRuns) {
+      try {
+        // A record the cache holds is never replaced: it may carry a change
+        // not pushed yet, such as the interrupt a restarted checkout's
+        // previous instance could not push. It is still read by id, since
+        // the status index may not name it.
+        let run = await workflowRunRepo.findById(workflowId, runId);
+        if (!run && deps.refreshRunRecord) {
+          await deps.refreshRunRecord(workflowId, runId);
+          run = await workflowRunRepo.findById(workflowId, runId);
+        }
+        if (run) refreshed.push({ run, workflowId });
+      } catch (err: unknown) {
+        retryInstances.add(instanceId);
+        logger.warn(
+          "Failed to refresh workflow run {runId} from the datastore; instance {instanceId} is left for a later pass to reconcile again: {error}",
+          {
+            runId,
+            instanceId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+  }
+
+  for (const claimedId of retryInstances) {
+    const attempts = await countFailedAttempt(
+      deps.controlPlaneStore,
+      claimedId,
+    );
+    if (attempts < MAX_RECONCILE_ATTEMPTS) continue;
+    retryInstances.delete(claimedId);
+    logger.error(
+      "Gave up fetching the workflow runs of instance {instanceId} after {attempts} failed reconcile passes; cleaning it up. A run it left running that this instance could not fetch may stay running in the datastore: settle it with 'swamp workflow cancel <workflow> --run <run id>'",
+      { instanceId: claimedId, attempts },
+    );
+  }
+
   for (const claimedId of claimedInstanceIds) {
+    if (retryInstances.has(claimedId)) {
+      // Released, so this pass or another instance's claims it again.
+      await deps.controlPlaneStore
+        .delete(`claims/reconcile-instance/${claimedId}`)
+        .catch((err: unknown) => {
+          logger.warn(
+            "Failed to release the reconcile claim on instance {instanceId}: {error}",
+            {
+              instanceId: claimedId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        });
+      continue;
+    }
+    await deps.controlPlaneStore
+      .delete(`${RECONCILE_ATTEMPTS_PREFIX}${claimedId}`)
+      .catch(() => {
+        // A count left behind is swept by cleanupExpiredClaims.
+      });
     const activeRunsCleaned = await cleanupActiveRunsForInstance(
       deps.controlPlaneStore,
       claimedId,
@@ -715,16 +924,44 @@ export async function reconcileRemoteInterruptedRuns(
 
   if (deps.workflowRunRepo) {
     const workflowRunRepo = deps.workflowRunRepo;
+    let yamlReaped = 0;
+    const pushReaped = deps.pushReaped;
     try {
       await runInRootUnitOfWork(
         { markDirty: deps.markDirty },
-        { flush: undefined },
+        {
+          // One push of what the pass interrupted, so the datastore does not
+          // keep those runs running (swamp-club#3958). It also carries the
+          // method-run cancellations staged before it.
+          flush: pushReaped
+            ? async () => {
+              if (yamlReaped === 0) return;
+              try {
+                await pushReaped();
+              } catch (err: unknown) {
+                logger.warn(
+                  "Failed to push {count} workflow run(s) reaped from dead remote instances: {error}",
+                  {
+                    count: yamlReaped,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                );
+              }
+            }
+            : undefined,
+          pushWhen: "completed",
+        },
         async () => {
           // Whatever their age: a run resumed long after it started is as
-          // orphaned as a recent one (swamp-club#2518).
+          // orphaned as a recent one (swamp-club#2518). The status index
+          // may not name a run just refreshed, so those are read directly.
           const yamlRuns = await workflowRunRepo.findGlobalByStatus(
             "running",
           );
+          const seen = new Set(yamlRuns.map(({ run }) => run.id));
+          for (const entry of refreshed) {
+            if (!seen.has(entry.run.id)) yamlRuns.push(entry);
+          }
           for (const { run, workflowId } of yamlRuns) {
             if (!run.instanceId || !deadSet.has(run.instanceId)) continue;
             if (run.status !== "running") continue;
@@ -734,6 +971,7 @@ export async function reconcileRemoteInterruptedRuns(
             run.interruptOrphaned("remote_instance_dead");
             await workflowRunRepo.save(workflowId, run);
             reaped++;
+            yamlReaped++;
             logger.warn(
               "Reaped YAML workflow run {runId} from dead remote instance {instanceId}",
               { runId: run.id, instanceId: deadInstanceId },
@@ -749,7 +987,8 @@ export async function reconcileRemoteInterruptedRuns(
     }
   }
 
-  for (const key of claimedHeartbeatKeys) {
+  for (const [index, key] of claimedHeartbeatKeys.entries()) {
+    if (retryInstances.has(claimedInstanceIds[index])) continue;
     await deps.controlPlaneStore.delete(key).catch((err: unknown) => {
       logger.warn(
         "Failed to delete stale heartbeat {key}: {error}",
@@ -790,6 +1029,28 @@ export async function cleanupExpiredClaims(
         cleaned++;
       }
     } catch {
+      await deps.controlPlaneStore.delete(key).catch(() => {});
+      cleaned++;
+    }
+  }
+  // Counts of failed passes for instances no pass has failed on lately.
+  for (
+    const key of await deps.controlPlaneStore.list(RECONCILE_ATTEMPTS_PREFIX)
+  ) {
+    const data = await deps.controlPlaneStore.get(key);
+    if (!data) continue;
+    let age = NaN;
+    try {
+      const record = JSON.parse(new TextDecoder().decode(data)) as {
+        updatedAt?: unknown;
+      };
+      if (typeof record.updatedAt === "string") {
+        age = Date.now() - new Date(record.updatedAt).getTime();
+      }
+    } catch {
+      // Unparseable: removed below.
+    }
+    if (Number.isNaN(age) || age > RECONCILE_ATTEMPTS_TTL_MS) {
       await deps.controlPlaneStore.delete(key).catch(() => {});
       cleaned++;
     }

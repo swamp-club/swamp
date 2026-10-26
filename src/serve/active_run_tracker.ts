@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
-import type { RunKind } from "./active_run_registry.ts";
+import type { ActiveRun, RunKind } from "./active_run_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "active-run-tracker"]);
@@ -126,6 +126,46 @@ export function writeActiveRun(
   );
 }
 
+/**
+ * Writes the active-run records of `runs` back and waits up to `timeoutMs`
+ * for every write queued for the instance to land. A stopping serve calls it
+ * for the runs it could not push before it leaves a stopped heartbeat: a run
+ * that ended during the abort grace deleted its own record, and a peer finds
+ * the runs it must settle only through these records (swamp-club#3958).
+ * Queued behind that delete, the write lands after it. Returns whether the
+ * writes settled in time; a failed write is logged, as any write is.
+ */
+export async function keepActiveRunRecords(
+  store: ControlPlaneStore,
+  instanceId: string,
+  runs: ReadonlyArray<
+    & Pick<ActiveRun, "runId" | "kind" | "resourceName" | "startedAt">
+    & Partial<Pick<ActiveRun, "resourceId">>
+  >,
+  timeoutMs: number,
+): Promise<boolean> {
+  for (const run of runs) {
+    writeActiveRun(store, instanceId, run.runId, {
+      resourceName: run.resourceName,
+      ...(run.resourceId !== undefined ? { resourceId: run.resourceId } : {}),
+      runKind: run.kind,
+      startedAt: run.startedAt.toISOString(),
+    });
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      activeRunWritesSettled(store, instanceId).then(() => true),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function deleteActiveRun(
   store: ControlPlaneStore,
   instanceId: string,
@@ -198,6 +238,29 @@ export async function findActiveRunByRunId(
     }
   }
   return null;
+}
+
+/**
+ * The active-run records `instanceId` left, by run id. A record that cannot
+ * be read or parsed is left out.
+ */
+export async function listActiveRunsForInstance(
+  store: ControlPlaneStore,
+  instanceId: string,
+): Promise<{ runId: string; record: ActiveRunRecord }[]> {
+  const prefix = `active-runs/${instanceId}/`;
+  const runs: { runId: string; record: ActiveRunRecord }[] = [];
+  for (const key of await store.list(prefix)) {
+    const data = await store.get(key);
+    if (!data) continue;
+    try {
+      const record = JSON.parse(decoder.decode(data)) as ActiveRunRecord;
+      runs.push({ runId: key.slice(prefix.length), record });
+    } catch {
+      continue;
+    }
+  }
+  return runs;
 }
 
 export async function cleanupActiveRunsForInstance(
