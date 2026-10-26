@@ -215,6 +215,27 @@ Deno.test("inboxSummary: a body cut off by the signal returns failed", async () 
   });
 });
 
+Deno.test("inboxSummary: an etag no header may carry returns failed rather than throwing", async () => {
+  const { client, requests } = stubClient(() => Response.json(fixture.summary));
+  assertEquals(await client.inboxSummary(KEY, '"v\n1"', signal()), {
+    kind: "failed",
+    reason: "invalid request header",
+  });
+  assertEquals(requests.length, 0);
+});
+
+/** A 200 whose body errors with `error` after its first bytes. */
+function brokenBody(error: Error, onStart?: () => void): Response {
+  const stream = new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('{"messages":'));
+      onStart?.();
+      c.error(error);
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
 // ---------------------------------------------------------------------------
 // listInboxMessages
 // ---------------------------------------------------------------------------
@@ -339,6 +360,44 @@ Deno.test("listInboxMessages: a malformed envelope throws", async () => {
     () => client.listInboxMessages(KEY),
     UserError,
     "malformed inbox page",
+  );
+});
+
+Deno.test("listInboxMessages: a body cut off by the caller's signal rethrows the abort", async () => {
+  const controller = new AbortController();
+  const { client } = stubClient(() =>
+    brokenBody(
+      new DOMException("aborted", "AbortError"),
+      () => controller.abort(),
+    )
+  );
+  const err = await assertRejects(
+    () => client.listInboxMessages(KEY, {}, controller.signal),
+    DOMException,
+  );
+  assertEquals(err.name, "AbortError");
+});
+
+Deno.test("listInboxMessages: a body read that times out says so, not malformed", async () => {
+  const { client } = stubClient(() =>
+    brokenBody(new DOMException("timed out", "TimeoutError"))
+  );
+  const err = await assertRejects(
+    () => client.listInboxMessages(KEY),
+    UserError,
+  );
+  assertEquals(err.code, "timeout");
+  assertStringIncludes(err.message, "timed out");
+});
+
+Deno.test("getInboxMessage: a dropped connection while reading says so, not malformed", async () => {
+  const { client } = stubClient(() =>
+    brokenBody(new TypeError("connection reset"))
+  );
+  await assertRejects(
+    () => client.getInboxMessage(KEY, fixture.message.id),
+    UserError,
+    "Could not read the answer from https://club.test: connection reset",
   );
 });
 

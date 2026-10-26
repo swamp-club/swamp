@@ -55,12 +55,17 @@ const INBOX_REQUIRES_USER_MESSAGE =
 /** The most ids `POST /api/inbox/read` accepts in one request. */
 const MARK_READ_BATCH_SIZE = 100;
 
-/** The parsed JSON body, or undefined when it is not JSON. */
+/**
+ * The parsed JSON body, or undefined when it is not JSON. A body that could
+ * not be read (an abort, a timeout, a dropped connection) still throws: it
+ * says nothing about the body's shape.
+ */
 async function readJson(res: Response): Promise<unknown> {
   try {
     return await res.json();
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
   }
 }
 
@@ -1252,10 +1257,16 @@ export class SwampClubClient {
     etag: string | null,
     signal: AbortSignal,
   ): Promise<InboxSummaryResult> {
-    const headers = mergeIdentityHeaders(this.identity, {
-      "x-api-key": apiKey,
-      ...(etag !== null ? { "If-None-Match": etag } : {}),
-    });
+    let headers: Headers;
+    try {
+      headers = mergeIdentityHeaders(this.identity, {
+        "x-api-key": apiKey,
+        ...(etag !== null ? { "If-None-Match": etag } : {}),
+      });
+    } catch {
+      // A key or a cached etag holding a character no header may carry.
+      return { kind: "failed", reason: "invalid request header" };
+    }
     const doFetch = this.options.fetch ?? globalThis.fetch;
     let res: Response;
     try {
@@ -1340,9 +1351,14 @@ export class SwampClubClient {
       signal,
     );
     if (!res.ok) {
-      throw await this.inboxError(res, "list your inbox", NO_INBOX_MESSAGE);
+      throw await this.inboxError(
+        res,
+        "list your inbox",
+        NO_INBOX_MESSAGE,
+        signal,
+      );
     }
-    const page = parseInboxMessagePage(await readJson(res));
+    const page = parseInboxMessagePage(await this.readInboxJson(res, signal));
     if (!page) {
       throw new UserError("Swamp Club returned a malformed inbox page.");
     }
@@ -1365,9 +1381,10 @@ export class SwampClubClient {
         res,
         `fetch message ${id}`,
         `Message ${id} not found.`,
+        signal,
       );
     }
-    const message = parseInboxMessage(await readJson(res));
+    const message = parseInboxMessage(await this.readInboxJson(res, signal));
     if (!message) {
       throw new UserError(
         `Swamp Club returned a malformed answer for message ${id}.`,
@@ -1408,9 +1425,10 @@ export class SwampClubClient {
           res,
           "mark messages read",
           NO_INBOX_MESSAGE,
+          signal,
         );
       }
-      const read = parseInboxReadIds(await readJson(res));
+      const read = parseInboxReadIds(await this.readInboxJson(res, signal));
       if (!read) {
         throw new UserError(
           "Swamp Club returned a malformed answer to marking messages read.",
@@ -1429,8 +1447,9 @@ export class SwampClubClient {
     res: Response,
     action: string,
     notFoundMessage: string,
+    signal?: AbortSignal,
   ): Promise<UserError> {
-    const code = parseInboxErrorCode(await readJson(res));
+    const code = parseInboxErrorCode(await this.readInboxJson(res, signal));
     if (res.status === 401) {
       return new UserError(
         'Swamp Club rejected your API key. Run "swamp auth login".',
@@ -1446,6 +1465,33 @@ export class SwampClubClient {
         ? `Failed to ${action} (HTTP ${res.status}): ${detail}`
         : `Failed to ${action} (HTTP ${res.status}).`,
     );
+  }
+
+  /**
+   * The parsed JSON body of an inbox answer, or undefined when it is not
+   * JSON. A body cut off by the caller's signal rethrows the abort, as the
+   * fetch helper does; a timeout or a dropped connection is a UserError that
+   * says so, never a malformed answer.
+   */
+  private async readInboxJson(
+    res: Response,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    try {
+      return await readJson(res);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new UserError(
+          `Reading the answer from ${this.serverUrl} timed out.`,
+          "timeout",
+        );
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Could not read the answer from ${this.serverUrl}: ${message}`,
+      );
+    }
   }
 
   private async fetch(
