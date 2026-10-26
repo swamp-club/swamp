@@ -1961,11 +1961,7 @@ export async function handleModelOutputSearch(
       findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
       findAllOutputsGlobalSince: (cutoff) =>
         outputRepo.findAllGlobalSince(cutoff),
-      findDefinitionById: (type, definitionId) =>
-        definitionRepo.findById(
-          ModelType.create(type.normalized),
-          createDefinitionId(definitionId),
-        ),
+      findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
       resolveModel: async (idOrName) => {
         const found = new Map<string, ModelOutputSearchModel>();
         const add = (definition: Definition, type: ModelType) => {
@@ -2299,11 +2295,7 @@ export async function handleModelMethodHistorySearch(
 
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
-      findDefinitionById: (type, definitionId) =>
-        definitionRepo.findById(
-          ModelType.create(type.normalized),
-          createDefinitionId(definitionId),
-        ),
+      findAllDefinitions: () => definitionRepo.findAllIncludingAutoGlobal(),
     };
 
     let result: Record<string, unknown> | undefined;
