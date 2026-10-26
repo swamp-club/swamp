@@ -6280,7 +6280,8 @@ to the same write. The checks the handlers share are one implementation
   workflow holds, or one that records (a behavior's data, a workflow's runs)
   are still stored under, nor a name another live definition holds (of any
   type, for a behavior), except an auto-definition promoted to its own name.
-  These are checked again under the lock.
+  The id checks run again under the lock; two creates of one name share the
+  name's config partition, so its head orders them.
 - **Behavior and workflow edits**: `write` on the result, `tag` for a retag
   or rename, and the expressions and steps the edit adds
   (`authorizeExpressionReferences`, `authorizeWorkflowEdit`); a create is an

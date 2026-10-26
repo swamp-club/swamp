@@ -428,7 +428,11 @@ function judgeStep(
   ) {
     actions.add("approve");
   }
-  if (gate && entered) {
+  // A gate a run skips (its guard false) was never waited on: skipping it
+  // decides nothing. Skipping a gate that waits does.
+  const skippedUnreached = step.status === "skipped" &&
+    prior?.status !== "waiting_approval";
+  if (gate && entered && !skippedUnreached) {
     const settledByCancel = step.status === "failed" &&
       step.settledByAbort === true &&
       (runStatus === "cancelled" || runStatus === "failed");

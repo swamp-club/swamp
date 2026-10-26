@@ -545,3 +545,28 @@ Deno.test("judgeRunRecord: a gate the stored workflow no longer names cannot be 
     ["approve"],
   );
 });
+
+Deno.test("judgeRunRecord: a gate the run skips without waiting on it needs only run; skipping a waiting gate needs approve", () => {
+  assertEquals(
+    [
+      ...judge(
+        run([step("gate", { status: "pending" })]),
+        run([step("gate", { status: "skipped" })]),
+      ).actions,
+    ],
+    [],
+  );
+  assertEquals(
+    [...judge(undefined, run([step("gate", { status: "skipped" })])).actions],
+    [],
+  );
+  assertEquals(
+    [
+      ...judge(
+        run([step("gate", { status: "waiting_approval", startedAt: STARTED })]),
+        run([step("gate", { status: "skipped", startedAt: STARTED })]),
+      ).actions,
+    ],
+    ["approve"],
+  );
+});
