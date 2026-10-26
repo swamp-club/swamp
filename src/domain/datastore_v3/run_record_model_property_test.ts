@@ -421,7 +421,6 @@ type ForgeryChoice = typeof forgeryChoice extends fc.Arbitrary<infer T> ? T
 
 /** The attacker's next record (and stored kinds), from the current one. */
 function forge(
-  specs: readonly StepSpec[],
   record: WorkflowRunData,
   kinds: StoredKinds,
   choice: ForgeryChoice,
@@ -580,7 +579,6 @@ function forge(
 }
 
 function judge(
-  specs: readonly StepSpec[],
   kinds: StoredKinds,
   before: WorkflowRunData | undefined,
   after: WorkflowRunData,
@@ -596,7 +594,6 @@ function judge(
     isServeInstance: (id) => id === "serve-1",
     now: NOW,
   });
-  void specs;
 }
 
 /** What the oracle remembers of a gate that is waiting. */
@@ -781,7 +778,7 @@ function play(
     specs.map((s) => [key(s.job, s.template ?? s.name), storedKindOf(s.kind)]),
   );
   let record = initial(specs);
-  const created = judge(specs, kinds, undefined, record);
+  const created = judge(kinds, undefined, record);
   assertEquals(created.refusal, undefined, "a run's first record");
   assertEquals([...created.actions], []);
   const oracle = new Oracle();
@@ -792,7 +789,7 @@ function play(
       const moves = legitimateMoves(specs, record);
       if (moves.length === 0) continue;
       const move = moves[next.legit % moves.length];
-      const judged = judge(specs, kinds, record, move.record);
+      const judged = judge(kinds, record, move.record);
       if (!tampered) {
         bump(coverage.legit, move.label);
         assertEquals(
@@ -813,8 +810,8 @@ function play(
       continue;
     }
     bump(coverage.forged, next.forge.kind);
-    const forged = forge(specs, record, kinds, next.forge);
-    const judged = judge(specs, forged.kinds, record, forged.record);
+    const forged = forge(record, kinds, next.forge);
+    const judged = judge(forged.kinds, record, forged.record);
     if (judged.refusal !== undefined) {
       coverage.refused++;
       continue;
