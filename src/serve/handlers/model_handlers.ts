@@ -2493,6 +2493,13 @@ export async function handleModelEvaluate(
     ) return;
     model = targetArgument(target, modelIdOrName);
   }
+  // A later --last-evaluated run replays what evaluate saves, so it saves
+  // only what the caller may run, as the runs that write the same file are
+  // decided (swamp-club#3940). A caller who may only read gets the
+  // evaluation back unsaved.
+  const runnable = resourceDecider(socket, principal, "run", ctx);
+  const persist = (entry: DefinitionLookupResult) =>
+    runnable(modelAccessResource(entry, "model"));
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
@@ -2511,6 +2518,7 @@ export async function handleModelEvaluate(
         byId: model?.byId,
         expectedName: model?.expectedName,
         include,
+        persist,
       }),
       {
         evaluating: () => {},

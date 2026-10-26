@@ -1399,3 +1399,56 @@ Deno.test("forEach: a step name whose expression fails to evaluate keeps the raw
     "deploy-${{ self.env.missing() }}-1",
   ]);
 });
+
+Deno.test("workflowEvaluate: persist leaves a rejected workflow unsaved, with and without inputs (swamp-club#3940)", async () => {
+  const saved: unknown[] = [];
+  const deps = makeDeps({
+    saveEvaluatedWorkflow: (...args) => {
+      saved.push(args);
+      return Promise.resolve();
+    },
+  });
+  const seen: string[] = [];
+  const persist = ({ name }: { name: string }) => {
+    seen.push(name);
+    return false;
+  };
+
+  for (const inputs of [{}, { msg: "planted" }]) {
+    const events = await collect<WorkflowEvaluateEvent>(
+      workflowEvaluate(createLibSwampContext(), deps, {
+        workflowIdOrName: "my-workflow",
+        inputs,
+        persist,
+      }),
+    );
+    const completed = events[1] as Extract<
+      WorkflowEvaluateEvent,
+      { kind: "completed" }
+    >;
+    const data = completed.data as WorkflowEvaluateItemData;
+    assertEquals(data.saved, false);
+    assertEquals(data.outputPath, undefined);
+  }
+
+  const all = await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, { inputs: {}, persist }),
+  );
+  const completed = all[1] as Extract<
+    WorkflowEvaluateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as WorkflowEvaluateAllData;
+  assertEquals(data.items.map((i) => i.saved), [false]);
+  assertEquals(seen, ["my-workflow", "my-workflow", "my-workflow"]);
+  assertEquals(saved, []);
+
+  await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+      inputs: { msg: "chosen" },
+      persist: () => true,
+    }),
+  );
+  assertEquals(saved.length, 1);
+});

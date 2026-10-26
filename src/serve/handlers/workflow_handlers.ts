@@ -3083,6 +3083,14 @@ export async function handleWorkflowEvaluate(
     ) return;
     workflow = targetArgument(target, workflowIdOrName);
   }
+  // A later --last-evaluated run replays what evaluate saves, inputs
+  // included, so it saves only what the caller may run, as the runs that
+  // write the same file are decided (swamp-club#3940). A caller who may
+  // only read gets the evaluation back unsaved.
+  const runnable = resourceDecider(socket, principal, "run", ctx);
+  const persist = (
+    candidate: { name: string; tags: Record<string, string> },
+  ) => runnable(workflowAccessResource(candidate));
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
@@ -3104,6 +3112,7 @@ export async function handleWorkflowEvaluate(
         expectedName: workflow?.expectedName,
         inputs: payload?.inputs ?? {},
         include,
+        persist,
       }),
       {
         evaluating: () => {},

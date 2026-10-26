@@ -64,6 +64,8 @@ export interface ModelEvaluateItemData {
   type: string;
   hadExpressions: boolean;
   outputPath?: string;
+  /** False when the evaluation was not saved; see `persist`. */
+  saved?: false;
   globalArguments?: Record<string, unknown>;
 }
 
@@ -99,6 +101,13 @@ export interface ModelEvaluateInput {
    * neither written nor returned.
    */
   include?: (entry: { definition: Definition; type: ModelType }) => boolean;
+  /**
+   * Saves only the evaluated definitions this accepts; the others are
+   * evaluated and returned unsaved, with no output path. A later
+   * `--last-evaluated` run replays what is saved, so serve saves only what
+   * the caller may run (swamp-club#3940). Absent, everything is saved.
+   */
+  persist?: (entry: { definition: Definition; type: ModelType }) => boolean;
 }
 
 /** Type guard to check if data is ModelEvaluateAllData. */
@@ -278,6 +287,8 @@ async function* evaluateAll(
   deps: ModelEvaluateDeps,
   include: (entry: { definition: Definition; type: ModelType }) => boolean =
     () => true,
+  persist: (entry: { definition: Definition; type: ModelType }) => boolean =
+    () => true,
 ): AsyncIterable<ModelEvaluateEvent> {
   const sensitiveValues = new RunSensitiveValues();
   const results = (await deps.evaluateAllDefinitions(sensitiveValues)).filter(
@@ -286,14 +297,22 @@ async function* evaluateAll(
   const items: ModelEvaluateItemData[] = [];
 
   for (const result of results) {
-    await saveWithoutSecrets(deps, result, sensitiveValues);
-    items.push({
+    const item: ModelEvaluateItemData = {
       id: result.definition.id,
       name: result.definition.name,
       type: result.type.normalized,
       hadExpressions: result.hadExpressions,
-      outputPath: deps.getEvaluatedPath(result.type, result.definition.id),
-    });
+    };
+    if (persist(result)) {
+      await saveWithoutSecrets(deps, result, sensitiveValues);
+      item.outputPath = deps.getEvaluatedPath(
+        result.type,
+        result.definition.id,
+      );
+    } else {
+      item.saved = false;
+    }
+    items.push(item);
   }
 
   yield {
@@ -312,6 +331,8 @@ async function* evaluateSingle(
   modelIdOrName: string,
   byId: boolean,
   expectedName?: string,
+  persist: (entry: { definition: Definition; type: ModelType }) => boolean =
+    () => true,
 ): AsyncIterable<ModelEvaluateEvent> {
   const lookupDefinition = selectLookup(
     "model evaluate",
@@ -333,7 +354,11 @@ async function* evaluateSingle(
     type,
     sensitiveValues,
   );
-  await saveWithoutSecrets(deps, result, sensitiveValues, definition);
+  // Decided on the definition looked up, the one that would be saved.
+  const save = persist(lookupResult);
+  if (save) {
+    await saveWithoutSecrets(deps, result, sensitiveValues, definition);
+  }
 
   yield {
     kind: "completed",
@@ -342,7 +367,9 @@ async function* evaluateSingle(
       name: result.definition.name,
       type: type.normalized,
       hadExpressions: result.hadExpressions,
-      outputPath: deps.getEvaluatedPath(type, result.definition.id),
+      ...(save
+        ? { outputPath: deps.getEvaluatedPath(type, result.definition.id) }
+        : { saved: false as const }),
       // Shown with sensitive values masked; the cache holds references.
       globalArguments: sensitiveValues.masked(
         result.definition.globalArguments,
@@ -361,13 +388,14 @@ export async function* modelEvaluate(
     yield { kind: "evaluating" };
 
     if (!input.modelIdOrName) {
-      yield* evaluateAll(deps, input.include);
+      yield* evaluateAll(deps, input.include, input.persist);
     } else {
       yield* evaluateSingle(
         deps,
         input.modelIdOrName,
         input.byId ?? false,
         input.expectedName,
+        input.persist,
       );
     }
   });

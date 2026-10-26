@@ -116,6 +116,8 @@ export interface WorkflowEvaluateItemData {
   hadExpressions: boolean;
   forEachExpanded?: boolean;
   outputPath?: string;
+  /** False when the evaluation was not saved; see `persist`. */
+  saved?: false;
   jobs?: JobData[];
 }
 
@@ -153,6 +155,16 @@ export interface WorkflowEvaluateInput {
    * accepts. Each workflow evaluates on its own, so the others are skipped.
    */
   include?: (
+    workflow: { name: string; tags: Record<string, string> },
+  ) => boolean;
+  /**
+   * Saves only the evaluated workflows this accepts; the others are
+   * evaluated and returned unsaved, with no output path. A later
+   * `--last-evaluated` run replays what is saved, inputs included, so serve
+   * saves only what the caller may run (swamp-club#3940). Absent, everything
+   * is saved.
+   */
+  persist?: (
     workflow: { name: string; tags: Record<string, string> },
   ) => boolean;
 }
@@ -301,6 +313,7 @@ async function evaluateWorkflowInternal(
   deps: WorkflowEvaluateDeps,
   workflow: Workflow,
   inputs: Record<string, unknown>,
+  save = true,
 ): Promise<WorkflowEvaluateItemData> {
   const workflowData = workflow.toData();
   const expressions = extractExpressions(workflowData, "", isAssertExprPath);
@@ -337,6 +350,14 @@ async function evaluateWorkflowInternal(
   const inputsProvenance = workflowInputsProvenance(coercedInputs, workflow);
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
+    if (!save) {
+      return {
+        id: workflow.id,
+        name: workflow.name,
+        hadExpressions: false,
+        saved: false,
+      };
+    }
     await deps.saveEvaluatedWorkflow(
       workflow,
       ProvenanceMap.authored(),
@@ -674,25 +695,29 @@ async function evaluateWorkflowInternal(
     sensitiveValues,
     expandedProvenance,
   );
-  await deps.saveEvaluatedWorkflow(
-    persisted.workflow,
-    // Raw-copy coordinates are retained for readers; replay aligns from
-    // the persisted-coordinate map.
-    expandedProvenance,
-    authoredExpressions,
-    persisted.writtenReferences,
-    recordableEvaluatedInputs(coercedInputs, sensitiveValues, {
-      provenance: inputsProvenance,
-    }),
-    persisted.persistedProvenance,
-  );
+  if (save) {
+    await deps.saveEvaluatedWorkflow(
+      persisted.workflow,
+      // Raw-copy coordinates are retained for readers; replay aligns from
+      // the persisted-coordinate map.
+      expandedProvenance,
+      authoredExpressions,
+      persisted.writtenReferences,
+      recordableEvaluatedInputs(coercedInputs, sensitiveValues, {
+        provenance: inputsProvenance,
+      }),
+      persisted.persistedProvenance,
+    );
+  }
 
   return {
     id: workflow.id,
     name: workflow.name,
     hadExpressions: evaluatedValues.size > 0 || forEachExpanded,
     forEachExpanded,
-    outputPath: deps.getEvaluatedPath(workflow.id),
+    ...(save
+      ? { outputPath: deps.getEvaluatedPath(workflow.id) }
+      : { saved: false as const }),
     // Shown with sensitive values masked; the cache holds references.
     jobs: sensitiveValues.masked(
       expandedWorkflowData.jobs,
@@ -708,6 +733,9 @@ async function* evaluateAll(
   include: (
     workflow: { name: string; tags: Record<string, string> },
   ) => boolean = () => true,
+  persist: (
+    workflow: { name: string; tags: Record<string, string> },
+  ) => boolean = () => true,
 ): AsyncIterable<WorkflowEvaluateEvent> {
   const allWorkflows = (await deps.findAllWorkflows()).filter((workflow) =>
     include({ name: workflow.name, tags: workflow.tags ?? {} })
@@ -720,6 +748,7 @@ async function* evaluateAll(
       deps,
       workflow,
       inputs,
+      persist({ name: workflow.name, tags: workflow.tags ?? {} }),
     );
     items.push(result);
   }
@@ -742,6 +771,9 @@ async function* evaluateSingle(
   inputs: Record<string, unknown>,
   byId: boolean,
   expectedName?: string,
+  persist: (
+    workflow: { name: string; tags: Record<string, string> },
+  ) => boolean = () => true,
 ): AsyncIterable<WorkflowEvaluateEvent> {
   const lookupRepo = {
     findByName: deps.findWorkflowByName,
@@ -756,7 +788,14 @@ async function* evaluateSingle(
     return;
   }
 
-  const item = await evaluateWorkflowInternal(ctx, deps, workflow, inputs);
+  // Decided on the workflow looked up, the one that would be saved.
+  const item = await evaluateWorkflowInternal(
+    ctx,
+    deps,
+    workflow,
+    inputs,
+    persist({ name: workflow.name, tags: workflow.tags ?? {} }),
+  );
 
   yield { kind: "completed", data: item };
 }
@@ -771,7 +810,13 @@ export async function* workflowEvaluate(
     yield { kind: "evaluating" };
 
     if (!input.workflowIdOrName) {
-      yield* evaluateAll(ctx, deps, input.inputs, input.include);
+      yield* evaluateAll(
+        ctx,
+        deps,
+        input.inputs,
+        input.include,
+        input.persist,
+      );
     } else {
       yield* evaluateSingle(
         ctx,
@@ -780,6 +825,7 @@ export async function* workflowEvaluate(
         input.inputs,
         input.byId ?? false,
         input.expectedName,
+        input.persist,
       );
     }
   });

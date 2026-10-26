@@ -87,3 +87,22 @@ Deno.test("LogModelEvaluateRenderer: the behavior surface says behavior", () => 
   assertEquals(render(item, "behavior").slice(1), render(item).slice(1));
   assertEquals(render(all, "behavior").slice(1), render(all).slice(1));
 });
+
+Deno.test("LogModelEvaluateRenderer: an unsaved evaluation says why it was not saved", () => {
+  const unsaved: ModelEvaluateItemData = {
+    id: "def-1",
+    name: "my-server",
+    type: "aws-ec2",
+    hadExpressions: true,
+    saved: false,
+  };
+  assertEquals(render(unsaved, "behavior"), [
+    'Evaluated behavior definition: "my-server" ("aws-ec2")',
+    "  Expressions evaluated",
+    "  Not saved: saving needs run on the behavior",
+  ]);
+  assertEquals(
+    render({ items: [unsaved], total: 1, evaluated: 1 })[2],
+    "    Not saved: saving needs run on the model",
+  );
+});

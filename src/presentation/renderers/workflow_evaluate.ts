@@ -71,6 +71,9 @@ class LogWorkflowEvaluateRenderer implements Renderer<WorkflowEvaluateEvent> {
     if (item.outputPath) {
       logger.info("  Output: {outputPath}", { outputPath: item.outputPath });
     }
+    if (item.saved === false) {
+      logger.info("  Not saved: saving needs run on the workflow");
+    }
   }
 
   private renderAll(data: WorkflowEvaluateAllData): void {
@@ -91,6 +94,9 @@ class LogWorkflowEvaluateRenderer implements Renderer<WorkflowEvaluateEvent> {
         logger.info("    Output: {outputPath}", {
           outputPath: item.outputPath,
         });
+      }
+      if (item.saved === false) {
+        logger.info("    Not saved: saving needs run on the workflow");
       }
     }
   }

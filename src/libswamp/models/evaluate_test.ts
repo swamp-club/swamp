@@ -564,3 +564,61 @@ Deno.test("createModelEvaluateDeps: lookupModelDefinition loads extensions to fi
     }
   });
 });
+
+Deno.test("modelEvaluate: persist leaves a rejected model unsaved, for one model and for all (swamp-club#3940)", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const entry = (name: string) => ({
+    definition: Definition.create({ name, version: 1 }),
+    type: modelType,
+    hadExpressions: true,
+    authoredExpressions: new Set<string>(),
+  });
+  const saved: string[] = [];
+  const seen: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: () => Promise.resolve(entry("one")),
+    evaluateDefinition: (definition) =>
+      Promise.resolve({ ...entry("one"), definition }),
+    evaluateAllDefinitions: () =>
+      Promise.resolve([entry("runnable"), entry("readable")]),
+    saveEvaluatedDefinition: (_type, definition) => {
+      saved.push(definition.name);
+      return Promise.resolve();
+    },
+  });
+  const persist = ({ definition }: { definition: Definition }) => {
+    seen.push(definition.name);
+    return definition.name === "runnable";
+  };
+
+  const single = await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, {
+      modelIdOrName: "one",
+      persist,
+    }),
+  );
+  const one = single[1] as Extract<ModelEvaluateEvent, { kind: "completed" }>;
+  const item = one.data as ModelEvaluateItemData;
+  assertEquals(item.saved, false);
+  assertEquals(item.outputPath, undefined);
+  assertEquals(item.globalArguments, {});
+  assertEquals(seen, ["one"]);
+  assertEquals(saved, []);
+
+  const events = await collect<ModelEvaluateEvent>(
+    modelEvaluate(createLibSwampContext(), deps, { persist }),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (
+    completed?.kind !== "completed" || !isModelEvaluateAllData(completed.data)
+  ) {
+    throw new Error("expected all data");
+  }
+  assertEquals(
+    completed.data.items.map((
+      i,
+    ) => [i.name, i.saved, i.outputPath !== undefined]),
+    [["runnable", undefined, true], ["readable", false, false]],
+  );
+  assertEquals(saved, ["runnable"]);
+});
