@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { stripAnsiCode } from "@std/fmt/colors";
+import { bold, cyan, dim, stripAnsiCode } from "@std/fmt/colors";
 import type {
   AuthWhoamiEvent,
   WhoamiCollectiveEntitlement,
@@ -256,18 +256,20 @@ function makeEntitledIdentity(
 function captureLog(
   identity: WhoamiIdentity,
   mode: OutputMode,
-  options?: { effectiveServeUrl?: string },
+  options?: { effectiveServeUrl?: string; raw?: boolean },
 ): string {
+  const { raw, ...rendererOptions } = options ?? {};
   const logs: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => logs.push(msg);
   try {
-    const renderer = createAuthWhoamiRenderer(mode, options);
+    const renderer = createAuthWhoamiRenderer(mode, rendererOptions);
     renderer.handlers().completed({ kind: "completed", identity });
   } finally {
     console.log = originalLog;
   }
-  return stripAnsiCode(logs.join("\n"));
+  const output = logs.join("\n");
+  return raw ? output : stripAnsiCode(output);
 }
 
 Deno.test("LogAuthWhoamiRenderer - no entitlement renders the pre-entitlement output", () => {
@@ -729,4 +731,172 @@ Deno.test("JsonAuthWhoamiRenderer - collective token includes the fingerprint", 
     "json",
   );
   assertEquals(JSON.parse(output).fingerprint, "7cba95208c56e033");
+});
+
+// --- characterisation of whoami's standing output (swamp-club#3947) ---
+// Pinned before the standing helpers moved to collective_standing.ts and
+// rollUpPlanName to libswamp; the move must not change a byte of either mode.
+
+const adminEntitlements: WhoamiCollectiveEntitlement[] = [
+  {
+    slug: "acme",
+    plan: "team",
+    planName: "Team",
+    subscriptionStatus: "active",
+    trial: null,
+    privateExtensions: "allowed",
+  },
+  {
+    slug: "alice",
+    plan: "personal",
+    planName: "Personal License",
+    subscriptionStatus: null,
+    trial: null,
+    privateExtensions: "paywalled",
+  },
+  {
+    slug: "swamp",
+    plan: "admin",
+    planName: "Admin",
+    trial: null,
+    privateExtensions: "allowed",
+  },
+  {
+    slug: "bob",
+    plan: "free",
+    planName: "Free",
+    trial: {
+      state: "active",
+      startedAt: "2026-10-04T00:00:00.000Z",
+      endsAt: "2026-11-03T00:00:00.000Z",
+      daysRemaining: 20,
+    },
+    privateExtensions: "allowed",
+  },
+  {
+    slug: "skunk-ape",
+    plan: "free",
+    planName: "Free",
+    trial: null,
+    privateExtensions: "allowed",
+  },
+  {
+    slug: "dave",
+    plan: "free",
+    planName: "Free",
+    trial: endedTrial,
+    privateExtensions: "trial-ended",
+  },
+  {
+    slug: "erin",
+    plan: "free",
+    planName: "Free",
+    trial: null,
+    privateExtensions: "paywalled",
+  },
+];
+
+Deno.test("LogAuthWhoamiRenderer - an Admin roll-up names the plan above every standing", () => {
+  const output = captureLog(
+    makeEntitledIdentity(adminEntitlements, "admin"),
+    "log",
+  );
+
+  assertEquals(
+    output,
+    [
+      "alice (alice@example.com) on https://club.example.com",
+      "Plan: Admin",
+      "Collectives:",
+      "  acme       Team  active",
+      "  alice      Personal License",
+      "  swamp      Admin",
+      "  bob        trial: 20 days left (ends 2026-11-03)",
+      "  skunk-ape  covered",
+      "  dave       trial ended",
+      "  erin",
+    ].join("\n"),
+  );
+});
+
+Deno.test("LogAuthWhoamiRenderer - standing output keeps its colours", () => {
+  // Built from the same colour functions, so it holds with colour on or off
+  // while still pinning which style wraps which text.
+  const output = captureLog(
+    makeEntitledIdentity(adminEntitlements, "admin"),
+    "log",
+    { raw: true },
+  );
+
+  assertEquals(
+    output,
+    [
+      "alice (alice@example.com) on https://club.example.com",
+      `${bold(cyan("Plan:"))} ${bold("Admin")}`,
+      cyan("Collectives:"),
+      [
+        `  ${bold("acme     ")}  Team  ${dim("active")}`,
+        `  ${bold("alice    ")}  Personal License`,
+        `  ${bold("swamp    ")}  Admin`,
+        `  ${bold("bob      ")}  ${
+          dim("trial: 20 days left (ends 2026-11-03)")
+        }`,
+        `  ${bold("skunk-ape")}  ${dim("covered")}`,
+        `  ${bold("dave     ")}  ${dim("trial ended")}`,
+        `  ${bold("erin")}`,
+      ].join("\n"),
+    ].join("\n"),
+  );
+});
+
+Deno.test("LogAuthWhoamiRenderer - a Personal License with no subscription status renders no note", () => {
+  const output = captureLog(
+    makeEntitledIdentity([
+      {
+        slug: "alice",
+        plan: "personal",
+        planName: "Personal License",
+        subscriptionStatus: null,
+        trial: null,
+      },
+    ], "personal"),
+    "log",
+  );
+
+  assertEquals(
+    output,
+    [
+      "alice (alice@example.com) on https://club.example.com",
+      "Plan: Personal License",
+      "Collectives:",
+      "  alice  Personal License",
+    ].join("\n"),
+  );
+});
+
+Deno.test("JsonAuthWhoamiRenderer - an Admin identity serializes exactly as before", () => {
+  const output = captureLog(
+    makeEntitledIdentity(adminEntitlements, "admin"),
+    "json",
+  );
+
+  assertEquals(
+    output,
+    JSON.stringify(
+      {
+        authenticated: true,
+        serverUrl: "https://club.example.com",
+        id: "user-1",
+        username: "alice",
+        email: "alice@example.com",
+        name: "Alice",
+        collectives: adminEntitlements.map((c) => c.slug),
+        plan: "admin",
+        collectiveEntitlements: adminEntitlements,
+      },
+      null,
+      2,
+    ),
+  );
+  assertEquals("planName" in JSON.parse(output), false);
 });
