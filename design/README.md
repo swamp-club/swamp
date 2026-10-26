@@ -101,6 +101,7 @@ Write in plain English:
 | [audit](./surfaces/audit.md)                     | Hook command log; to fold into agent-interface.md |
 | [audit-doctor](./surfaces/audit-doctor.md)       | To fold into agent-interface.md                   |
 | [auth-gate](./surfaces/auth-gate.md)             | Account requirement, signed proofs, fail-open     |
+| [inbox](./surfaces/inbox.md)                     | Inbox API contract and how the CLI uses it        |
 | [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
 | [local-dashboard](./surfaces/local-dashboard.md) | The dashboard on local repos, no serve running    |
 | [workspace](./surfaces/workspace.md)             | The workspace registry and `swamp workspace`      |

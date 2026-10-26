@@ -1,0 +1,73 @@
+{
+  "summary": {
+    "unread": 2,
+    "newestId": "01JBX5Q8ZK0000000000000104",
+    "newestAt": "2026-10-26T09:00:00.000Z",
+    "pollAfterSeconds": 900
+  },
+  "messagesPage": {
+    "messages": [
+      {
+        "id": "01JBX5Q8ZK0000000000000104",
+        "kind": "announcement",
+        "title": "swamp 1.42 is out",
+        "body": "## What's new\n\n- `swamp inbox` shows messages from Swamp Club.\n- Faster `swamp data query`.\n",
+        "createdAt": "2026-10-26T09:00:00.000Z",
+        "link": "https://swamp-club.com/blog/swamp-1-42",
+        "action": {
+          "label": "Update now",
+          "command": "swamp update"
+        },
+        "readAt": null
+      },
+      {
+        "id": "01JBX5Q8ZK00000000000000ZX",
+        "kind": "issue_update",
+        "title": "Your issue #3990 shipped",
+        "body": "The fix for **#3990** is in swamp 1.42.",
+        "createdAt": "2026-10-25T17:30:00.000Z",
+        "link": "https://swamp-club.com/lab/3990",
+        "readAt": null
+      },
+      {
+        "id": "01JBX5Q8ZK00000000000000ZP",
+        "kind": "points",
+        "title": "You earned 50 points",
+        "body": "Thanks for filing a reproducible bug.",
+        "createdAt": "2026-10-24T12:00:00.000Z",
+        "readAt": "2026-10-24T13:15:00.000Z"
+      },
+      {
+        "id": "01JBX5Q8ZK00000000000000ZF",
+        "kind": "direct",
+        "title": "A note from the Swamp Club team",
+        "body": "Hi,\n\nThanks for trying the inbox early.\n",
+        "createdAt": "2026-10-23T08:45:00.000Z",
+        "readAt": "2026-10-23T09:00:00.000Z"
+      }
+    ],
+    "nextCursor": "01JBX5Q8ZK00000000000000ZF"
+  },
+  "message": {
+    "id": "01JBX5Q8ZK0000000000000104",
+    "kind": "announcement",
+    "title": "swamp 1.42 is out",
+    "body": "## What's new\n\n- `swamp inbox` shows messages from Swamp Club.\n- Faster `swamp data query`.\n",
+    "createdAt": "2026-10-26T09:00:00.000Z",
+    "link": "https://swamp-club.com/blog/swamp-1-42",
+    "action": {
+      "label": "Update now",
+      "command": "swamp update"
+    },
+    "readAt": null
+  },
+  "markRead": {
+    "read": [
+      "01JBX5Q8ZK0000000000000104",
+      "01JBX5Q8ZK00000000000000ZX"
+    ]
+  },
+  "inboxRequiresUser": {
+    "error": "inbox_requires_user"
+  }
+}
