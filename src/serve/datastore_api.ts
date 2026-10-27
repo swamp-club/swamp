@@ -897,6 +897,11 @@ class DatastoreApi {
         this.#resolver,
       );
     } else {
+      // A run's claim is taken only for a run whose record serve already
+      // holds (a resume or take-over: the client's run.create commit lands
+      // first). A run serve does not know is decided on its id, so only a
+      // wildcard grant holds it; claiming before the record lands would
+      // need the record's workflow here instead (swamp-club#3985).
       const found = await this.#deps.ctx.repoContext.workflowRunRepo
         .findGlobalById(createWorkflowRunId(target.runId));
       required = found === null

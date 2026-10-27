@@ -1018,6 +1018,22 @@ export async function configureStartupExtensions(
  * itself never counts, and a `serverAddress` in `.swamp.yaml` is not
  * considered here (such checkouts still resolve at startup).
  */
+/**
+ * Whether this invocation runs locally with serve as its v3 datastore's
+ * upstream (swamp-club#3985): a data-plane command in a format-3 checkout.
+ * `--detach` asks serve to keep a run going, which only a run on serve can
+ * do, so an address from the environment or `.swamp.yaml` still sends it
+ * there.
+ */
+export function runsLocallyWithServeUpstream(
+  marker: RepoMarkerData | null,
+  commandInfo: { optionKeys: string[] },
+): boolean {
+  if (commandInfo.optionKeys.includes("--detach")) return false;
+  return markerSaysV3(marker) &&
+    serveUpstreamRunsLocally(serveUpstreamCommandPath());
+}
+
 export function isThinClientCommand(
   commandInfo: { command: string; optionKeys: string[] },
   readEnv: (name: string) => string | undefined = (name) => Deno.env.get(name),
@@ -2632,10 +2648,7 @@ async function runInvocation(
   // A v3 checkout written through serve runs its data-plane commands here,
   // with serve as the datastore's upstream: only an explicit --server sends
   // them to serve (swamp-club#3985).
-  setImplicitServeRouting(
-    !(markerSaysV3(marker) &&
-      serveUpstreamRunsLocally(serveUpstreamCommandPath())),
-  );
+  setImplicitServeRouting(!runsLocallyWithServeUpstream(marker, commandInfo));
 
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
@@ -2683,8 +2696,7 @@ async function runInvocation(
             thinClient: isThinClientCommand(
               commandInfo,
               undefined,
-              markerSaysV3(marker) &&
-                serveUpstreamRunsLocally(serveUpstreamCommandPath()),
+              runsLocallyWithServeUpstream(marker, commandInfo),
             ),
             deferCatalog: defersExtensionCatalog(commandInfo),
             suppressWarning: (warning) =>

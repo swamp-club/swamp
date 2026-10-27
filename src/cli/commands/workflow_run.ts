@@ -262,7 +262,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement (env: SWAMP_SERVE_URL).",
+    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement (env: SWAMP_SERVE_URL; in a checkout whose datastore is format 3, only this flag or --detach runs it on serve, and the env makes serve its datastore's upstream).",
   )
   .option(
     "--detach",

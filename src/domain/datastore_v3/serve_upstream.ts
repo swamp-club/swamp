@@ -88,7 +88,10 @@ export class ServeUpstreamTarget {
     if (token !== undefined) {
       if (token === "" || /\s/.test(token) || CONTROL_CHAR_RE.test(token)) {
         throw new UserError(
-          "The serve token is empty or holds whitespace or control characters",
+          "The serve token is empty or holds whitespace or control " +
+            "characters. Check SWAMP_SERVER_TOKEN or the file " +
+            "SWAMP_SERVER_TOKEN_FILE names, or log in again with " +
+            "'swamp auth server-login --server <url>'.",
         );
       }
     }

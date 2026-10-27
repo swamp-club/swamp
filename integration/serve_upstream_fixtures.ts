@@ -43,6 +43,7 @@ import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { resetServeUpstreamBindingsForTesting } from "../src/infrastructure/datastore_v3/serve_upstream_registry.ts";
 import {
   initializeV3Datastore,
+  resetStaleReadWarningForTesting,
   setV3DatastoreFaultsForTesting,
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
@@ -350,6 +351,8 @@ export async function endCommand(): Promise<void> {
       await closeV3Datastores();
     } finally {
       resetServeUpstreamBindingsForTesting();
+      // One process stands for many commands here: each warns afresh.
+      resetStaleReadWarningForTesting();
     }
   }
 }

@@ -7310,3 +7310,24 @@ Deno.test("execute: a refused parse registers the sensitive value with the run's
     );
   }
 });
+
+Deno.test("executeWorkflow - a remote-placed step with no worker dispatcher names --server, which runs the workflow on serve (swamp-club#3985)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    globalArguments: {},
+  });
+  setRemoteStepDispatcher(null);
+  const { context } = createTestContext({
+    modelType: model.type,
+    dataRepository: createMockDataRepoWithData([]),
+    placement: { labels: { tier: "remote" } },
+  });
+  const error = await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+  );
+  assertStringIncludes(error.message, "no worker dispatcher is active");
+  assertStringIncludes(error.message, "pass --server <url>");
+});

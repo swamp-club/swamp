@@ -32,6 +32,7 @@ import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { V3_SERVE_UNREACHABLE_CODE } from "../src/infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
+import { v3DatastoreFor } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   SERVE_COPY_HOLDS_UNLANDED_CODE,
   ServeCopyHoldsUnlandedCommitsError,
@@ -138,7 +139,14 @@ Deno.test({
           scratch,
           client,
           env,
-          (repos) => latestOf(repos, type, web, "vpc"),
+          async (repos) => {
+            // A second catch-up in the same command, as a longer command
+            // makes: still one warning.
+            await v3DatastoreFor(client.repoDir, {
+              path: serveUpstreamLocalRoot(client.repoDir, serve.origin, ""),
+            }).catchUp();
+            return await latestOf(repos, type, web, "vpc");
+          },
         );
       });
       assertEquals(read, { version: 1, content: "1" });
@@ -148,6 +156,14 @@ Deno.test({
           log.text.includes(`Could not reach serve at ${serve.origin}`)
         ),
         `no warning that serve was unreachable: ${JSON.stringify(logs)}`,
+      );
+      assertEquals(
+        logs.filter((log) =>
+          log.level === "warning" &&
+          log.text.includes(`Could not reach serve at ${serve.origin}`)
+        ).length,
+        1,
+        `the warning repeats within one command: ${JSON.stringify(logs)}`,
       );
       // The cause's message, never the error object, which the CLI's sink
       // renders with its whole stack.

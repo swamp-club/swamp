@@ -773,6 +773,17 @@ function sweepBatchAt(path: string): Promise<void> {
   return sweepBatches.get(path) ?? Promise.resolve();
 }
 
+/**
+ * Whether this process has warned that serve was unreachable and a read
+ * used the checkout's copy as it was (swamp-club#3985): once per command.
+ */
+let staleReadWarned = false;
+
+/** Test seam: lets the next unreachable read warn again. */
+export function resetStaleReadWarningForTesting(): void {
+  staleReadWarned = false;
+}
+
 /** Faults a test wraps around what {@link openV3Datastore} opens next. */
 export interface V3DatastoreFaults {
   /** Wraps the chunk storage, as an unreachable bucket would fail it. */
@@ -957,11 +968,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         if (serveState !== undefined && !serveState.hasReadFeed()) {
           throw new ServeNeverReadError(error.serveUrl, error.cause);
         }
-        const reason = error.cause instanceof Error
-          ? error.cause.message
-          : String(error.cause);
-        logger
-          .warn`Could not reach serve at ${error.serveUrl}, so this reads the datastore as this checkout last saw it, which may be out of date: ${reason}`;
+        // Said once per command: a command catches up many times.
+        if (!staleReadWarned) {
+          staleReadWarned = true;
+          const reason = error.cause instanceof Error
+            ? error.cause.message
+            : String(error.cause);
+          logger
+            .warn`Could not reach serve at ${error.serveUrl}, so this reads the datastore as this checkout last saw it, which may be out of date: ${reason}`;
+        }
         return;
       }
       throw error;

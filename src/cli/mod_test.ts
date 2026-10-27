@@ -38,9 +38,14 @@ import {
   resolveModelsDir,
   resolveTelemetryEndpoint,
   resolveWorkflowsDir,
+  runsLocallyWithServeUpstream,
   shouldSuppressMissingExtensionsWarning,
 } from "./mod.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
+import {
+  resetServeUpstreamCommandPath,
+  setServeUpstreamCommandPath,
+} from "./serve_upstream.ts";
 import { join, resolve } from "@std/path";
 import {
   managedConfigLockfilePath,
@@ -955,4 +960,40 @@ Deno.test("isThinClientCommand: a command that runs locally with serve as its da
     isThinClientCommand(extractCommandInfo(["model", "get", "x"]), env),
     true,
   );
+});
+
+Deno.test("runsLocallyWithServeUpstream: a data-plane command in a format-3 checkout runs locally unless it asks serve to keep a run going with --detach (swamp-club#3985)", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    datastore: { type: "filesystem", path: "/ds", format: 3 },
+  } as const;
+  try {
+    withMockedEnv({ SWAMP_DATASTORE: undefined }, () => {
+      setServeUpstreamCommandPath(["workflow", "run"]);
+      assertEquals(
+        runsLocallyWithServeUpstream(
+          marker,
+          extractCommandInfo(["workflow", "run", "wf"]),
+        ),
+        true,
+      );
+      assertEquals(
+        runsLocallyWithServeUpstream(
+          marker,
+          extractCommandInfo(["workflow", "run", "wf", "--detach"]),
+        ),
+        false,
+      );
+      assertEquals(
+        runsLocallyWithServeUpstream(
+          { ...marker, datastore: { type: "filesystem", path: "/ds" } },
+          extractCommandInfo(["workflow", "run", "wf"]),
+        ),
+        false,
+      );
+    });
+  } finally {
+    resetServeUpstreamCommandPath();
+  }
 });

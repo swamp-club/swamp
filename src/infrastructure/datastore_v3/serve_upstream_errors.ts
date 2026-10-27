@@ -248,7 +248,9 @@ export class ServeCommitMayLandError extends ServeUpstreamError {
       COMMIT_MAY_LAND_CODE,
       `Serve committed this change at seq ${seq} but could not confirm it ` +
         `(${serveMessage}), so it may already be in the v3 datastore. ` +
-        `Check the datastore before running this command again.`,
+        `The next command that writes in this checkout reads it back from ` +
+        `serve; check it there (\`swamp data versions\`, \`swamp workflow ` +
+        `history\`) before running this command again.`,
     );
     this.name = "ServeCommitMayLandError";
   }
