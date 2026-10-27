@@ -5356,7 +5356,7 @@ Deno.test("handleConnection: frames arriving on a closing session are not served
   socket.onclose?.(new CloseEvent("close"));
 });
 
-Deno.test("handleMessage: server.version lists the literal-inputs capability (swamp-club#3205)", async () => {
+Deno.test("handleMessage: server.version lists the literal-inputs and resume-from-job capabilities (swamp-club#3205, swamp-club#3815)", async () => {
   using ctx = {
     ...makeCtx(modeTokenConfig, []),
     auditEmitter: { emit: () => {} },
@@ -5373,7 +5373,10 @@ Deno.test("handleMessage: server.version lists the literal-inputs capability (sw
   const reply = parseSent(mock) as {
     payload: { capabilities?: string[] };
   };
-  assertEquals(reply.payload.capabilities, ["literal-inputs"]);
+  assertEquals(reply.payload.capabilities, [
+    "literal-inputs",
+    "resume-from-job",
+  ]);
 });
 
 // ── handleMessage: request spans (swamp-club#3741) ─────────────────────────

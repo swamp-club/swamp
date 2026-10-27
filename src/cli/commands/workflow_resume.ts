@@ -92,11 +92,13 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import {
   formatCommandTarget,
+  requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   resumeWorkflowOverServer,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { SERVE_CAPABILITY_RESUME_FROM_JOB } from "../../serve/protocol.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
@@ -243,6 +245,25 @@ export const workflowResumeCommand = withRemoteOptions(
         ? abortOnTimeout(abort, timeoutMs)
         : undefined;
       try {
+        // An older server ignores fromJob and resets the --from step in every
+        // job that has it, so --job is only sent to one that says it honours
+        // it (swamp-club#3815). The probe runs only under --job, inside the
+        // try so --timeout bounds it and the shutdown handler is disposed.
+        if (options.job !== undefined) {
+          const version = await requestServerResponse<
+            { version: string; capabilities?: string[] }
+          >(
+            { server, token, signal: abort.signal },
+            { type: "server.version" },
+          );
+          if (
+            !version.capabilities?.includes(SERVE_CAPABILITY_RESUME_FROM_JOB)
+          ) {
+            throw new UserError(
+              `The server (swamp ${version.version}) does not support --job, so it would resume the --from step in every job that has it. Upgrade swamp serve, or run without --server.`,
+            );
+          }
+        }
         await consumeStream(
           resumeWorkflowOverServer({
             server,

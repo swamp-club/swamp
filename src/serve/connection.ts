@@ -25,6 +25,7 @@
 import { z } from "zod";
 import {
   SERVE_CAPABILITY_LITERAL_INPUTS,
+  SERVE_CAPABILITY_RESUME_FROM_JOB,
   type ServerRequest,
 } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -1987,7 +1988,10 @@ export function handleMessage(
             payload: {
               version: SERVER_VERSION,
               gitSha: SERVER_GIT_SHA,
-              capabilities: [SERVE_CAPABILITY_LITERAL_INPUTS],
+              capabilities: [
+                SERVE_CAPABILITY_LITERAL_INPUTS,
+                SERVE_CAPABILITY_RESUME_FROM_JOB,
+              ],
             },
           }),
         ),

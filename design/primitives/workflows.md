@@ -2242,7 +2242,11 @@ Step "restart" is in more than one job: "host-a", "host-b". Add --job <job> to c
 
 `--job <job>` names the job of the `--from` step as written in the workflow
 YAML (an expression-named job by its unevaluated name). Serve's
-`workflow.resume` takes it as `fromJob`. It requires `--from`: alone it would
+`workflow.resume` takes it as `fromJob`. An older serve strips the unknown
+field and would reset the step in every job, so with `--server` the CLI first
+asks `server.version` and refuses `--job` unless the reply lists the
+`resume-from-job` capability (`SERVE_CAPABILITY_RESUME_FROM_JOB`). It requires
+`--from`: alone it would
 be ignored and a retry would re-run every job, so the CLI, `resolveResumableRun`
 and `resume()` all refuse it. A step name used in one job needs no `--job`. The
 `--from` hints a retry refusal or `nextActionForStatus` prints add `--job` when
