@@ -172,30 +172,32 @@ export function workflowJobOf(
 /**
  * Why a resume cannot walk `run` with `resolved`, the workflow evaluated for
  * the resume: an expression-named job of `workflow` evaluated to a name the
- * run does not have, or to a name other than the stored job it was paired
- * with when the reset was planned (a value its name reads, other than an
- * input, changed since the run). Resume finds each job's record by its
- * evaluated name, so it would reset one job and walk another. Evaluation
- * keeps the jobs and their order, so `resolved` job `i` is `workflow` job `i`.
+ * run does not have, or, for a job paired with a stored job in `resetJobs`
+ * (the stored jobs a failed run's reset reaches), to a name other than that
+ * job (a value its name reads, other than an input, changed since the run).
+ * Resume finds each job's record by its evaluated name, so it would reset
+ * one job and walk another. A job the reset does not reach is walked by
+ * whatever stored job its name evaluates to, as before; position alone
+ * cannot tell two expression-named jobs of the same shape apart, so their
+ * pairing is not held against them. Evaluation keeps the jobs and their
+ * order, so `resolved` job `i` is `workflow` job `i`.
  */
 export function evaluatedJobMismatch(
   workflow: Workflow,
   resolved: Workflow,
   run: WorkflowRun,
+  resetJobs: ReadonlySet<string>,
 ): string | undefined {
   const pairs = pairExpressionJobs(workflow, run);
-  // Unpaired, a job is only required to evaluate to a name the run has: two
-  // jobs that now evaluate to each other's stored names pass. The planner
-  // refuses a reset reaching an unpaired job, so such a job is only walked,
-  // never reset.
   for (const [i, job] of workflow.jobs.entries()) {
     if (!evaluatedName(job.name)) continue;
     const now = resolved.jobs[i]?.name;
     const paired = pairs?.get(job.name);
-    if (now !== undefined && run.getJob(now) && (paired ?? now) === now) {
+    const held = paired !== undefined && resetJobs.has(paired);
+    if (now !== undefined && run.getJob(now) && (!held || now === paired)) {
       continue;
     }
-    return paired !== undefined
+    return held
       ? `Job "${job.name}" now evaluates to "${now}", but the run stored it as "${paired}".`
       : `Job "${job.name}" now evaluates to "${now}", which is not in the run.`;
   }

@@ -2275,9 +2275,13 @@ reset that reaches an expression-named job once the jobs no longer line up is
 refused with `Start a new run.` Resume then re-evaluates the workflow and finds
 each job's record by its evaluated name, so after that evaluation, and before
 any step runs, it refuses (restoring the run as stored) when an
-expression-named job now evaluates to a name the run lacks or to another stored
-job than the one it was paired with, as when a non-input value its name reads
-changed since the run (`evaluatedJobMismatch`).
+expression-named job now evaluates to a name the run lacks, or when a job the
+reset reaches evaluates to another stored job than the one it was paired with,
+as when a non-input value its name reads changed since the run
+(`evaluatedJobMismatch`). A job the reset does not reach, and every job of a
+suspended run, is walked by whichever stored job its name evaluates to: a
+positional pairing cannot tell two expression-named jobs of the same shape
+apart, so it is not held against them.
 
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without

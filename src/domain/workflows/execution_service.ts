@@ -4553,6 +4553,8 @@ export class WorkflowExecutionService {
     snapshot: WorkflowRunData;
     resumeInputs: Record<string, unknown>;
     claim: ContinuationClaim | undefined;
+    /** The stored jobs a failed run's reset reaches; empty otherwise. */
+    resetJobs: ReadonlySet<string>;
   }> {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
@@ -4758,7 +4760,8 @@ export class WorkflowExecutionService {
       await this.releaseSuspension(claim);
       throw error;
     }
-    return { existingRun, snapshot, resumeInputs, claim };
+    const resetJobs = new Set(reset?.steps.map((ref) => ref.jobName) ?? []);
+    return { existingRun, snapshot, resumeInputs, claim, resetJobs };
   }
 
   /**
@@ -4941,7 +4944,8 @@ export class WorkflowExecutionService {
     // Taken over under the run's claim, which is released before anything
     // executes: a cancel either lands first and is seen here, or finds the
     // run running under this process (swamp-club#2919).
-    const { existingRun, snapshot, resumeInputs, claim } = await this.runClaims
+    const { existingRun, snapshot, resumeInputs, claim, resetJobs } = await this
+      .runClaims
       .withClaim(
         located.id,
         () =>
@@ -5085,13 +5089,15 @@ export class WorkflowExecutionService {
       );
       warnForeignTaskArguments(workflow.name, evaluated.foreignTaskArguments);
       const resolvedWorkflow = evaluated.workflow;
-      // An expression-named job must evaluate to the stored job the reset
-      // was planned against: resume walks records by evaluated name. Refused
-      // here, before execution, so the run is restored as it was.
+      // An expression-named job the reset reaches must evaluate to the
+      // stored job it was planned against, and every one to a job the run
+      // has: resume walks records by evaluated name. Refused here, before
+      // execution, so the run is restored as it was.
       const mismatch = evaluatedJobMismatch(
         workflow,
         resolvedWorkflow,
         existingRun,
+        resetJobs,
       );
       if (mismatch !== undefined) {
         throw new UserError(

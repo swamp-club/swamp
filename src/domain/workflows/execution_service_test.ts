@@ -12633,8 +12633,9 @@ Deno.test("resume: --from re-runs only the kept step when a shared step name is 
 
 Deno.test("resume: refuses, and restores the run, when an expression-named job evaluates to another stored name than its pairing", async () => {
   await withTempDir(async (tempDir) => {
-    // Stored as site-west and site-east. The edit keeps the jobs in place but
-    // makes the second evaluate to site-west, the first job's stored name.
+    // Stored as site-west and site-east. The edit keeps the jobs in place:
+    // the retry resets site-east through the second job, and the first job
+    // now evaluates to site-north, which the run does not have.
     const before = shapedWorkflow([
       { name: "site-${{ 'west' }}", steps: [modelStep("restart")] },
       { name: "site-${{ 'east' }}", steps: [modelStep("restart")] },
@@ -12660,7 +12661,7 @@ Deno.test("resume: refuses, and restores the run, when an expression-named job e
     await assertRejects(
       () => drainResume(service, before.name, failed.id),
       UserError,
-      `Job "site-\${{ 'north' }}" now evaluates to "site-north", but the run stored it as "site-west".`,
+      `Job "site-\${{ 'north' }}" now evaluates to "site-north", which is not in the run.`,
     );
     assertEquals(
       JSON.stringify((await runRepo.findById(before.id, failed.id))!.toData()),

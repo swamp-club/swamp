@@ -166,33 +166,57 @@ Deno.test("evaluatedJobMismatch: accepts jobs that evaluate to the stored jobs t
   const wf = workflowOf(A, "literal");
   const run = runOf(wf, "site-west", "literal");
   assertEquals(
-    evaluatedJobMismatch(wf, workflowOf("site-west", "literal"), run),
+    evaluatedJobMismatch(
+      wf,
+      workflowOf("site-west", "literal"),
+      run,
+      new Set(["site-west"]),
+    ),
     undefined,
   );
 });
 
-Deno.test("evaluatedJobMismatch: refuses a job that now evaluates to a name the run lacks, or to another stored job", () => {
+Deno.test("evaluatedJobMismatch: refuses a reset job that now evaluates to another stored job, and any job evaluating to a name the run lacks", () => {
   const env = "site-${{ env.REGION }}";
-  const wf = workflowOf(env, "site-other");
-  const run = runOf(wf, "site-north", "site-other");
-  assertEquals(
-    evaluatedJobMismatch(wf, workflowOf("site-south", "site-other"), run),
-    'Job "site-${{ env.REGION }}" now evaluates to "site-south", but the run stored it as "site-north".',
-  );
   const two = workflowOf(env, B);
   const stored = runOf(two, "site-north", "site-east");
   assertEquals(
-    evaluatedJobMismatch(two, workflowOf("site-east", "site-east"), stored),
+    evaluatedJobMismatch(
+      two,
+      workflowOf("site-east", "site-east"),
+      stored,
+      new Set(["site-north"]),
+    ),
     'Job "site-${{ env.REGION }}" now evaluates to "site-east", but the run stored it as "site-north".',
+  );
+  const wf = workflowOf(env, "site-other");
+  const run = runOf(wf, "site-north", "site-other");
+  assertEquals(
+    evaluatedJobMismatch(
+      wf,
+      workflowOf("site-south", "site-other"),
+      run,
+      new Set(),
+    ),
+    'Job "site-${{ env.REGION }}" now evaluates to "site-south", which is not in the run.',
   );
 });
 
-Deno.test("pairExpressionJobs: a name with an unclosed opener fits only itself", () => {
-  const unclosed = "site-${{ inputs.a";
-  const wf = workflowOf(unclosed);
+Deno.test("evaluatedJobMismatch: a job the reset does not reach is walked by the stored job its name evaluates to", () => {
+  // Two expression-named jobs of the same shape swapped since the run: the
+  // positional pairing is wrong, but nothing was reset in them, as on a
+  // suspended run or a reset of a literal job.
+  const ea = "site-${{ env.A }}";
+  const eb = "site-${{ env.B }}";
+  const swapped = workflowOf(eb, ea, "literal");
+  const run = runOf(swapped, "site-west", "site-east", "literal");
+  const resolved = workflowOf("site-east", "site-west", "literal");
   assertEquals(
-    pairExpressionJobs(wf, runOf(wf, unclosed)),
-    new Map([[unclosed, unclosed]]),
+    evaluatedJobMismatch(swapped, resolved, run, new Set()),
+    undefined,
   );
-  assertEquals(pairExpressionJobs(wf, runOf(wf, "site-west")), undefined);
+  assertEquals(
+    evaluatedJobMismatch(swapped, resolved, run, new Set(["literal"])),
+    undefined,
+  );
 });
