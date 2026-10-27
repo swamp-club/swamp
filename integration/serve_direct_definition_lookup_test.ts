@@ -48,6 +48,7 @@ import {
   DefinitionIdIndex,
 } from "../src/infrastructure/persistence/definition_id_index.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { statRecord } from "../src/infrastructure/persistence/workflow_run_index.ts";
 
 const STORED = 200;
 const RUNNER = ModelType.create("test/runner");
@@ -95,14 +96,15 @@ async function settle(dir: string): Promise<void> {
 /**
  * Serve's wiring of a direct-type step over `ctx` (src/serve/deps.ts), with
  * the definition index serve attaches as it starts, reading files through a
- * source that records each path read.
+ * source that records each path read. The index runs on the real clock, but
+ * reports each path in `settled` with the ctime `OLD`: a file the test dated
+ * long ago still has the ctime of when the test wrote it, while on a server
+ * stored definitions have long settled. Directories and every file written
+ * after keep their real stats, so the racy window still applies to them.
  */
-function serveWiring(
-  repoDir: string,
-  ctx: RepositoryContext,
-  clockAheadMs: number,
-) {
+function serveWiring(repoDir: string, ctx: RepositoryContext) {
   const reads: string[] = [];
+  const settled = new Set<string>();
   const repo = ctx.definitionRepo;
   const source: DefinitionFileSource = {
     definitionRoots: () => repo.definitionRoots(),
@@ -112,7 +114,14 @@ function serveWiring(
     },
   };
   repo.useNameIndex(
-    new DefinitionIdIndex(source, { now: () => Date.now() + clockAheadMs }),
+    new DefinitionIdIndex(source, {
+      stat: async (path) => {
+        const stat = await statRecord(path);
+        return stat && settled.has(path)
+          ? { ...stat, ctimeMs: OLD.getTime() }
+          : stat;
+      },
+    }),
   );
   const autoDefRepo = new YamlDefinitionRepository(
     repoDir,
@@ -143,17 +152,11 @@ function serveWiring(
       undefined,
       ctx.autoDefinitionsDir,
     );
-  return { resolve, reads };
+  return { resolve, reads, settled };
 }
 
-/**
- * Runs `fn` over a fresh repository wired as serve wires it. With
- * `clockAheadMs`, the index's clock runs that far ahead, so files the test
- * dated long ago count as settled although their ctime is when the test
- * wrote them; on a server, stored definitions have long settled.
- */
+/** Runs `fn` over a fresh repository wired as serve wires it. */
 async function withServeRepo(
-  clockAheadMs: number,
   fn: (
     ctx: RepositoryContext,
     wiring: ReturnType<typeof serveWiring>,
@@ -166,7 +169,7 @@ async function withServeRepo(
       repoDir: dir,
       enableIndexing: false,
     });
-    await fn(ctx, serveWiring(dir, ctx, clockAheadMs), dir);
+    await fn(ctx, serveWiring(dir, ctx), dir);
   } finally {
     if (Deno.build.os === "windows") {
       // Best-effort: EBUSY can fire when V8 hasn't GC'd native
@@ -179,7 +182,7 @@ async function withServeRepo(
 }
 
 Deno.test("integration: concurrent direct-type steps with new names each create one definition without reading a stored definition again (swamp-club#4037)", async () => {
-  await withServeRepo(60_000, async (ctx, { resolve, reads }, repoDir) => {
+  await withServeRepo(async (ctx, { resolve, reads, settled }, repoDir) => {
     const runnerDir = join(ctx.autoDefinitionsDir, RUNNER.toDirectoryPath());
     const stored = new Set<string>();
     for (let i = 0; i < STORED; i++) {
@@ -195,6 +198,7 @@ Deno.test("integration: concurrent direct-type steps with new names each create 
     }
     await settle(ctx.autoDefinitionsDir);
     await settle(join(repoDir, "models"));
+    for (const path of stored) settled.add(path);
 
     // The first lookup in a serve process builds the index: one read each.
     const cold = await resolve("first-new");
@@ -226,7 +230,7 @@ Deno.test("integration: concurrent direct-type steps with new names each create 
 });
 
 Deno.test("integration: concurrent direct-type steps of one new name through the definition index converge on one definition", async () => {
-  await withServeRepo(0, async (_ctx, { resolve }) => {
+  await withServeRepo(async (_ctx, { resolve }) => {
     const results = await Promise.all(
       Array.from({ length: 8 }, () => resolve("shared")),
     );
@@ -239,7 +243,7 @@ Deno.test("integration: concurrent direct-type steps of one new name through the
 });
 
 Deno.test("integration: through the definition index a direct-type step adopts a definition shadowing an auto-definition, and refuses a name another type holds", async () => {
-  await withServeRepo(0, async (ctx, { resolve }, repoDir) => {
+  await withServeRepo(async (ctx, { resolve }, repoDir) => {
     const runnerPath = RUNNER.toDirectoryPath();
     await writeDefinition(
       join(ctx.autoDefinitionsDir, runnerPath, "shadowed.yaml"),
@@ -271,7 +275,7 @@ Deno.test("integration: through the definition index a direct-type step adopts a
 });
 
 Deno.test("integration: through the definition index a direct-type step sees definitions another writer adds, renames and removes", async () => {
-  await withServeRepo(0, async (ctx, { resolve }) => {
+  await withServeRepo(async (ctx, { resolve }) => {
     const runnerDir = join(ctx.autoDefinitionsDir, RUNNER.toDirectoryPath());
     assertEquals((await resolve("warm")).ok, true);
 
@@ -306,7 +310,7 @@ Deno.test({
   // A file mode cannot deny root, or anyone on Windows, a read.
   ignore: Deno.build.os === "windows" || Deno.uid() === 0,
   fn: async () => {
-    await withServeRepo(0, async (ctx, { resolve }) => {
+    await withServeRepo(async (ctx, { resolve }) => {
       const path = join(
         ctx.autoDefinitionsDir,
         RUNNER.toDirectoryPath(),

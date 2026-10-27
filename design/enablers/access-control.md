@@ -944,19 +944,20 @@ With `model:@acme/*`, `behavior search` shows only matching behaviors. With
 `model:*` it shows everything. With no `read` grant for the kind, the request is
 refused.
 
-Serve finds an id's owners through a definition index it keeps between
-requests (`DefinitionIdIndex`, swamp-club#3968), instead of reading every
-definition, auto-definitions included, on each request. The index records only
-which file declares which id and which name. Serve's definition repository
-answers a lookup by name across every type from the same index
-(swamp-club#4037), so a direct-type workflow step whose definition does not
-exist yet does not read every definition to find that out. Each request first checks the stat of every
-definition directory. A directory whose stat moved, or was less than 2 s old
-when it was last listed, is listed again, and only its files whose own stat
-moved (or was that recent when read) are read. Deciding when a stat is taken
-keeps a write that lands in the same clock tick as a listing from hiding
-behind a stat that only later looks old. The request
-then reads each owner's file itself, so owners are judged on the names and tags
+Serve finds an id's owners through a definition index it keeps between requests
+(`DefinitionIdIndex`, swamp-club#3968), instead of reading every definition,
+auto-definitions included, on each request. The index records only which file
+declares which id and which name. Serve's definition repository answers a lookup
+by name across every type from the same index (swamp-club#4037), so a
+direct-type workflow step whose definition does not exist yet does not read
+every definition to find that out. A definition file serve cannot read fails
+those lookups, as it fails the owner check, until it is fixed or removed. Each
+request first checks the stat of every definition directory. A directory whose
+stat moved, or was less than 2 s old when it was last listed, is listed again,
+and only its files whose own stat moved (or was that recent when read) are read.
+Deciding when a stat is taken keeps a write that lands in the same clock tick as
+a listing from hiding behind a stat that only later looks old. The request then
+reads each owner's file itself, so owners are judged on the names and tags
 stored now. Creating, removing or renaming a definition file moves its
 directory's stat, so a change by any process is seen by the next request:
 swamp's saves and a v3 datastore's pulls replace a file by renaming a new one

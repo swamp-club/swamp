@@ -730,11 +730,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             match.definition.id as DefinitionId,
             match.path,
           );
-          this.globalNameToActualPath.set(name, {
-            path: match.path,
-            pathSegments: match.segments,
-            primary: match.primary,
-          });
+          // Only a primary hint is read while an index is attached: a
+          // definition added since may shadow an auto-definition.
+          if (match.primary) {
+            this.globalNameToActualPath.set(name, {
+              path: match.path,
+              pathSegments: match.segments,
+              primary: true,
+            });
+          }
           return match;
         }
         if (

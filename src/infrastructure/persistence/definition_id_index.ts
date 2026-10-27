@@ -176,8 +176,10 @@ const MAX_JOIN_LINKS = 8;
  * itself, so it grants nothing that access does not already give.
  * Likewise a regular file overwritten in place to declare another name is
  * not found by that name until then, so a direct-type run of the name can
- * create a second definition of it. Editors, git and `save()` replace a
- * file by renaming one over it, which moves the directory's stat.
+ * create a second definition of it. Git, `save()` and editors that save
+ * through a temporary file replace a file by renaming one over it, which
+ * moves the directory's stat; an editor that writes the file in place does
+ * not.
  *
  * Listing a directory is shared by the requests that may share it, and
  * stops once every one of them has been cancelled. A listing replaces the
@@ -598,7 +600,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
       if (!dir || !file || isSymlink === null) {
-        this.#unindex({ id: key.id, name: key.name }, path);
+        this.#unindex(file ?? { id: key.id, name: key.name }, path);
         continue;
       }
       const read = await this.#source.readDefinitionFile(
