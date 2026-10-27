@@ -38,15 +38,22 @@ import type { ExpressionLocation } from "../../domain/expressions/expression.ts"
 import {
   extractExpressions,
   readSetMap,
+  rewriteExpressions,
   stripExpressionFields,
 } from "../../domain/expressions/expression_parser.ts";
 import {
   type DirectInputsProvenance,
+  isAtOrUnder,
   keySegment,
   ProvenanceMap,
   routedGlobalProvenance,
 } from "../../domain/expressions/provenance_map.ts";
 import { isDeferredExpression } from "../../domain/expressions/deferred_expression.ts";
+import {
+  refusedOccurrenceLine,
+  storedTextRefusal,
+} from "../../domain/expressions/swamp_namespaces.ts";
+import { literalOccurrence } from "../../domain/expressions/cel_grammar.ts";
 import {
   type AuthoredExpressions,
   collectAuthoredExpressions,
@@ -56,6 +63,8 @@ import {
   literalSensitiveGlobalArgsMessage,
   maskRefusedIssues,
   schemaThrowMessage,
+  sensitiveGlobalArgPaths,
+  withheldSensitiveTextLine,
 } from "../../domain/models/sensitive_field_extractor.ts";
 import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
 import type { SwampError } from "../errors.ts";
@@ -236,8 +245,9 @@ export function createAutoDefinitionLock(
 /**
  * Expressions in the global arguments the caller cannot vouch for: text that
  * arrived through data substitution rather than being written by an author.
- * Persisting such text would turn it into an authored expression on every
- * later load of the definition, so it is refused before any save.
+ * Persisting such text as it is would turn it into an authored expression on
+ * every later load of the definition, so it is stored wrapped in `literal()`
+ * or refused (see {@link storableGlobalArgs}).
  */
 function findUnvouchedGlobalArgExpressions(
   globalArgs: Record<string, unknown>,
@@ -251,7 +261,8 @@ function findUnvouchedGlobalArgExpressions(
  * Expressions in global arguments about to be persisted that sit in data.
  * Decided by position, whatever the authored set says: once stored, the
  * definition is read back as authored source, so data must never reach it
- * holding expression text, even text an author also wrote.
+ * as expression text swamp would evaluate, even text an author also wrote
+ * (see {@link storableGlobalArgs}).
  */
 function findDataRangeGlobalArgExpressions(
   persistedGlobal: Record<string, unknown>,
@@ -277,17 +288,46 @@ function findDataRangeGlobalArgExpressions(
   );
 }
 
+/**
+ * The global arguments to store, given the occurrences in them that nothing
+ * vouches for (`found`), and a line for each occurrence that cannot be
+ * stored. Another templating system's text, such as `${{ github.sha }}`
+ * produced by a `literal()` call, is stored wrapped in a `literal()` call of
+ * its own (see {@link literalOccurrence}): every later load evaluates that
+ * constant to the same text, as data, and evaluates nothing inside it. Text
+ * swamp would own is refused (see {@link storedTextRefusal}), and so is any
+ * expression text in a sensitive field, which would be stored in cleartext.
+ */
+function storableGlobalArgs(
+  globalArgs: Record<string, unknown>,
+  found: ExpressionLocation[],
+  sensitivePaths: readonly string[],
+): { stored: Record<string, unknown>; refused: string[] } {
+  if (found.length === 0) return { stored: globalArgs, refused: [] };
+  const occurrenceKey = (e: ExpressionLocation) => `${e.path}\0${e.start}`;
+  const unvouched = new Set(found.map(occurrenceKey));
+  const refused = new Set<string>();
+  const stored = rewriteExpressions(globalArgs, (e) => {
+    if (!unvouched.has(occurrenceKey(e))) return undefined;
+    if (sensitivePaths.some((path) => isAtOrUnder(e.path, path))) {
+      refused.add(withheldSensitiveTextLine(e.path));
+      return undefined;
+    }
+    const reason = storedTextRefusal(e.celExpression);
+    if (reason === undefined) return literalOccurrence(e.raw);
+    refused.add(refusedOccurrenceLine(e.path, e.raw, reason));
+    return undefined;
+  }) as Record<string, unknown>;
+  return { stored, refused: [...refused] };
+}
+
 function unvouchedGlobalArgsMessage(
   definitionName: string,
-  unvouched: ExpressionLocation[],
+  unvouched: string[],
 ): string {
-  // The raw-text and data-range checks can name the same occurrence.
-  const lines = [
-    ...new Set(unvouched.map((e) => `  ${e.path}: ${e.raw}`)),
-  ];
-  return `Refusing to persist definition '${definitionName}': the following global arguments hold expression text that was not written in the workflow or definition source, so it arrived as data content:\n${
-    lines.join("\n")
-  }\nWrite the expression into the definition itself, or pass the value as a method argument instead of a global argument.`;
+  return `Refusing to persist definition '${definitionName}': the following global arguments hold expression text that was not written as an expression in the workflow or definition source (it came from data or from literal()), and it cannot be stored:\n${
+    unvouched.join("\n")
+  }\nA global argument stores another system's expression text as text, and refuses swamp's own expressions and any expression text in a sensitive field. Write the expression into the definition itself, or pass the value as a method argument instead of a global argument.`;
 }
 
 /**
@@ -336,19 +376,25 @@ async function adoptDefinition(
   const storedGlobal = existing.definition
     .globalArguments as Record<string, unknown>;
   // Compared and written in persisted form, so a sensitive value read through
-  // data is stored as its vault reference and an unchanged one causes no
-  // re-save.
-  const routedGlobal = persistedGlobal;
+  // data is stored as its vault reference, text from data is compared in the
+  // literal() form it is stored in, and an unchanged value causes no re-save.
+  const { stored: routedGlobal, refused: unvouched } = storableGlobalArgs(
+    persistedGlobal,
+    [
+      ...findUnvouchedGlobalArgExpressions(
+        persistedGlobal,
+        authoredExpressions,
+      ),
+      ...dataRangeCheck(),
+    ],
+    sensitiveGlobalArgPaths(modelDef.globalArguments, persistedGlobal),
+  );
   const globalArgsDiffer = Object.keys(routedGlobal).length > 0 &&
     !Object.entries(routedGlobal).every(([k, v]) =>
       JSON.stringify(storedGlobal?.[k]) === JSON.stringify(v)
     );
 
   if (globalArgsDiffer) {
-    const unvouched = [
-      ...findUnvouchedGlobalArgExpressions(routedGlobal, authoredExpressions),
-      ...dataRangeCheck(),
-    ];
     if (unvouched.length > 0) {
       return {
         ok: false,
@@ -622,10 +668,14 @@ export async function resolveOrCreateDefinition(
       error: validationFailed(literalSensitiveGlobalArgsMessage(leakedArgs)),
     };
   }
-  const unvouched = [
-    ...findUnvouchedGlobalArgExpressions(persistedGlobal, vouched),
-    ...dataRangeCheck(),
-  ];
+  const { stored: storedGlobal, refused: unvouched } = storableGlobalArgs(
+    persistedGlobal,
+    [
+      ...findUnvouchedGlobalArgExpressions(persistedGlobal, vouched),
+      ...dataRangeCheck(),
+    ],
+    sensitiveGlobalArgPaths(modelDef.globalArguments, persistedGlobal),
+  );
   if (unvouched.length > 0) {
     return {
       ok: false,
@@ -640,7 +690,7 @@ export async function resolveOrCreateDefinition(
       name: definitionName,
       type: resolvedType.normalized,
       typeVersion: modelDef.version,
-      globalArguments: persistedGlobal,
+      globalArguments: storedGlobal,
     });
     await observeDiagnosticPhase("definition_save", {
       "swamp.diagnostic.definition_outcome": "created",
@@ -680,10 +730,11 @@ export async function resolveOrCreateDefinition(
             resolvedType,
             modelDef,
             routed,
-            authoredExpressions,
-            // The winner's definition is compared against the routed values;
-            // dataRangeCheck still examines this call's own persisted form.
-            routed.globalArguments,
+            // Compared and stored in persisted form, as on the fast path, so
+            // the occurrences dataRangeCheck finds are positions in the value
+            // that is stored.
+            vouched,
+            persistedGlobal,
             dataRangeCheck,
           );
         }

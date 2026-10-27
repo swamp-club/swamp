@@ -174,6 +174,60 @@ export function isBlankConstant(celExpression: string): boolean {
 }
 
 /**
+ * A `${{ literal('...') }}` occurrence that evaluates to `text`. The string
+ * is single-quoted and escapes only what a single-quoted CEL string cannot
+ * hold: the quote, the backslash and the two line breaks. A `}}` in `text`
+ * sits inside that string, where the expression scanner does not end an
+ * occurrence.
+ */
+export function literalOccurrence(text: string): string {
+  const quoted = text.replace(
+    /[\\'\n\r]/g,
+    (ch) => ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : `\\${ch}`,
+  );
+  return `\${{ literal('${quoted}') }}`;
+}
+
+/**
+ * The text every `literal('...')` call in an expression produces, wherever
+ * the call sits, or undefined when the text does not parse or nests too
+ * deeply to walk. A call whose argument is not a string constant produces no
+ * text of its own.
+ */
+export function literalCallTexts(celExpression: string): string[] | undefined {
+  const ast = parseForEvaluation(celExpression);
+  if (ast === undefined) return undefined;
+  const texts: string[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object" || value === null || !("op" in value)) {
+      return;
+    }
+    const node = value as ASTNode;
+    if (node.op === "value") return;
+    if (
+      node.op === "call" && node.args[0] === "literal" &&
+      node.args[1].length === 1 && node.args[1][0].op === "value" &&
+      typeof node.args[1][0].args === "string"
+    ) {
+      texts.push(node.args[1][0].args);
+      return;
+    }
+    visit(node.args);
+  };
+  try {
+    visit(ast);
+  } catch (error) {
+    if (error instanceof RangeError) return undefined;
+    throw error;
+  }
+  return texts;
+}
+
+/**
  * CEL macros whose first argument binds a local variable for the remaining
  * arguments. A variable bound this way shadows a root identifier.
  */

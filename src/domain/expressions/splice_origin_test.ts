@@ -110,6 +110,26 @@ Deno.test("spliceOrigin: a computed result reading data is data except vouched o
   );
 });
 
+Deno.test("spliceOrigin: expression text literal() produces is data, even where the same text is authored", () => {
+  // The bound input holds T authored, and literal() produces T again.
+  const c = ctx({ b: T }, {});
+  assertEquals(
+    spliceOrigin(`literal('${T}')`, c, T).map.overlapsData("", 0, T.length),
+    true,
+  );
+  const value = `${T} ${T}`;
+  const origin = spliceOrigin(`inputs.b + ' ' + literal('${T}')`, c, value);
+  assertEquals(
+    origin.map.overlapsData("", value.length - T.length, value.length),
+    true,
+  );
+  // literal() text with no expression in it leaves the result authored.
+  assertEquals(
+    spliceOrigin("literal('{{ x }}')", c, "{{ x }}").map.isAuthored,
+    true,
+  );
+});
+
 Deno.test("attachBindingProvenance: replaces the namespaces it names and keeps the others", () => {
   const c = ctx({}, { inputs: ProvenanceMap.data() });
   attachBindingProvenance(c, { self: ProvenanceMap.data() });

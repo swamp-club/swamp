@@ -19,6 +19,8 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import { literalOccurrence } from "../../domain/expressions/cel_grammar.ts";
 import {
   AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS,
   autoDefinitionLockKey,
@@ -467,6 +469,245 @@ Deno.test("resolveOrCreateDefinition: refuses to persist global-arg expression t
   );
   assertEquals(vouched.ok, true);
   assertEquals(saved, 1);
+});
+
+Deno.test("resolveOrCreateDefinition: stores unvouched foreign global-arg text wrapped in literal()", async () => {
+  // Another templating system's text from data is stored as a literal() call
+  // that evaluates to the same text, so no later load evaluates what it
+  // holds (swamp-club#3389).
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const saved: Definition[] = [];
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: (_type: ModelType, definition: Definition) => {
+      saved.push(definition);
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/model/${id}.yaml`,
+  };
+  // The quoted swamp reference inside the last occurrence's string is part
+  // of that one occurrence. The others would evaluate if stored bare.
+  const occurrences = [
+    "${{ github.sha }}",
+    "${{ true || github.sha }}",
+    "${{ toJSON(matrix) }}",
+    "${{ needs.build-env.outputs.url }}",
+    "${{ needs.build-2.result }}",
+    "${{ needs.e2e-tests.result }}",
+    "${{ matrix.os-2022 }}",
+    '${{ github.title == \'${{ vault.get("v", "k") }}\' }}',
+  ];
+  const region = occurrences.join(" on ");
+  const stored = occurrences.map(literalOccurrence).join(" on ");
+  const data = {
+    inputs: ProvenanceMap.authored().withWholeData("region"),
+    globalArgs: ProvenanceMap.authored(),
+  };
+  const run = (existing: Definition | null) =>
+    resolveOrCreateDefinition(
+      {
+        ...deps,
+        lookupDefinition: () =>
+          Promise.resolve(
+            existing && { definition: existing, type: resolvedType },
+          ),
+      },
+      "test/model",
+      "foreign",
+      "run",
+      { region, id: "abc" },
+      resolvedType,
+      modelDef,
+      undefined,
+      undefined,
+      new Set(),
+      undefined,
+      data,
+    );
+
+  const created = await run(null);
+  assertEquals(created.ok, true);
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].globalArguments, { region: stored });
+  // This run itself receives the text as it is.
+  if (created.ok) {
+    assertEquals(created.definition.globalArguments, { region });
+  }
+
+  const existingDef = Definition.create({
+    name: "foreign",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "plain" },
+  });
+  const updated = await run(existingDef);
+  assertEquals(updated.ok, true);
+  assertEquals(saved.length, 2);
+  assertEquals(existingDef.globalArguments, { region: stored });
+  if (updated.ok) {
+    assertEquals(updated.definition.globalArguments, { region });
+  }
+
+  // Compared in the form it is stored in, so the same text is no change.
+  const again = await run(existingDef);
+  assertEquals(again.ok, true);
+  assertEquals(saved.length, 2);
+  if (again.ok) assertEquals(again.globalArgsUpdated, false);
+});
+
+// Foreign text may be stored, but never in a sensitive field:
+// any constant inside it would be written in cleartext. A record key outside
+// plain identifier characters names the field differently in schema walks
+// and in expression paths, and must still be found.
+const SENSITIVE_TEXT = "${{ github.x == 'ghp_TOKEN' }}";
+for (
+  const [name, field, value] of [
+    ["field", "apiKey", SENSITIVE_TEXT],
+    ["record key", "headers", { "x api:key": SENSITIVE_TEXT }],
+  ] as const
+) {
+  Deno.test(`resolveOrCreateDefinition: refuses unvouched foreign text in a sensitive global arg (${name})`, async () => {
+    const modelDef = createTestModelDef(
+      z.object({
+        region: z.string().optional(),
+        apiKey: z.string().meta({ sensitive: true }).optional(),
+        headers: z.record(z.string(), z.string().meta({ sensitive: true }))
+          .optional(),
+      }),
+      { run: z.object({ id: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    let saved = 0;
+    const deps = {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved++;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type: ModelType, id: string) =>
+        `/tmp/models/test/model/${id}.yaml`,
+    };
+    const data = {
+      inputs: ProvenanceMap.authored().withWholeData(field),
+      globalArgs: ProvenanceMap.authored(),
+    };
+    const run = (
+      lookupDefinition: () => Promise<
+        { definition: Definition; type: ModelType } | null
+      >,
+    ) =>
+      resolveOrCreateDefinition(
+        { ...deps, lookupDefinition },
+        "test/model",
+        "keyed",
+        "run",
+        { [field]: value, id: "abc" },
+        resolvedType,
+        modelDef,
+        undefined,
+        undefined,
+        new Set(),
+        undefined,
+        data,
+      );
+
+    const created = await run(deps.lookupDefinition);
+    assertEquals(created.ok, false);
+    if (!created.ok) {
+      assertStringIncludes(created.error.message, field);
+      assertStringIncludes(created.error.message, "sensitive");
+      // The refusal never repeats the sensitive value.
+      assertEquals(created.error.message.includes("ghp_TOKEN"), false);
+    }
+
+    const existingDef = Definition.create({
+      name: "keyed",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { region: "plain" },
+    });
+    const updated = await run(() =>
+      Promise.resolve({ definition: existingDef, type: resolvedType })
+    );
+    assertEquals(updated.ok, false);
+    assertEquals(saved, 0);
+    assertEquals(existingDef.globalArguments, { region: "plain" });
+  });
+}
+
+Deno.test("resolveOrCreateDefinition: refuses global-arg data text swamp would own", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  let saved = 0;
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => {
+      saved++;
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/model/${id}.yaml`,
+  };
+  const data = {
+    inputs: ProvenanceMap.authored().withWholeData("region"),
+    globalArgs: ProvenanceMap.authored(),
+  };
+
+  for (
+    const refused of [
+      "${{ inputs.version }}",
+      "${{ env.HOME }}",
+      '${{ github.sha || vault.get("v", "k") }}',
+      "${{ steps.build-data.outputs.x }}",
+      "${{ 1 + 1 }}",
+      "${{ a | b }}",
+      // A run reads the hyphen as subtraction.
+      "${{ needs.build-vault.outputs.url }}",
+      "${{ jobs.build-vault.result }}",
+      "${{ matrix.node-18x }}",
+      "${{ needs.deploy-1a.result }}",
+    ]
+  ) {
+    // The stored text is refused by position even when the author wrote the
+    // same text elsewhere.
+    for (const authored of [new Set<string>(), new Set([refused])]) {
+      const result = await resolveOrCreateDefinition(
+        deps,
+        "test/model",
+        "refused",
+        "run",
+        { region: `${refused} beside \${{ github.sha }}`, id: "abc" },
+        resolvedType,
+        modelDef,
+        undefined,
+        undefined,
+        authored,
+        undefined,
+        data,
+      );
+      assertEquals(result.ok, false, refused);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, `region: ${refused} (`);
+        // The occurrence that can be stored is not reported.
+        assertEquals(
+          result.error.message.includes("region: ${{ github.sha }}"),
+          false,
+        );
+      }
+    }
+  }
+  assertEquals(saved, 0);
 });
 
 Deno.test("resolveOrCreateDefinition: does not save when globalArgs match", async () => {
@@ -1415,6 +1656,51 @@ Deno.test("resolveOrCreateDefinition: with lockDir race loser applies its own gl
     }
     assertEquals(saved.length, 1);
     assertEquals(saved[0].globalArguments, { message: "b" });
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: with lockDir race loser stores data text in the winner's definition wrapped in literal()", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      z.object({ message: z.string() }),
+      { record: z.object({ label: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const winnerDef = Definition.create({
+      name: "shared",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { message: "a" },
+    });
+    const saved: Definition[] = [];
+    const message = "sha ${{ github.sha }}";
+
+    const result = await resolveOrCreateDefinition(
+      raceLoserDeps(winnerDef, resolvedType, modelDef, saved),
+      "test/model",
+      "shared",
+      "record",
+      { label: "b" },
+      resolvedType,
+      modelDef,
+      { message },
+      lockDir,
+      new Set(),
+      undefined,
+      {
+        inputs: ProvenanceMap.authored(),
+        globalArgs: ProvenanceMap.authored().withWholeData("message"),
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.definition.globalArguments, { message });
+    }
+    assertEquals(saved.length, 1);
+    assertEquals(saved[0].globalArguments, {
+      message: `sha ${literalOccurrence("${{ github.sha }}")}`,
+    });
   });
 });
 

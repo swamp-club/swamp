@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { extractExpressions } from "../expressions/expression_parser.ts";
 import { z } from "zod";
 import {
   buildSensitiveArgRemediations,
@@ -41,7 +42,9 @@ import {
   schemaHoldsSensitiveFields,
   schemaThrew,
   schemaThrowMessage,
+  sensitiveGlobalArgPaths,
   setNestedValue,
+  withheldSensitiveTextLine,
 } from "./sensitive_field_extractor.ts";
 
 Deno.test("extractSensitiveFields: simple sensitive field", () => {
@@ -2368,4 +2371,34 @@ Deno.test("findSensitiveResourceValues: finds every present value extractSensiti
       }
     }
   }
+});
+
+Deno.test("sensitiveGlobalArgPaths: names each sensitive field holding a value as expression extraction does", () => {
+  const schema = z.object({
+    region: z.string().optional(),
+    apiKey: z.string().meta({ sensitive: true }).optional(),
+    headers: z.record(z.string(), z.string().meta({ sensitive: true }))
+      .optional(),
+    keys: z.array(z.string().meta({ sensitive: true })).optional(),
+  });
+  // Each path is the one expression extraction reports for that value.
+  const args = {
+    region: "r",
+    apiKey: "${{ a }}",
+    headers: { "x api:key": "${{ b }}" },
+    keys: ["${{ c }}"],
+  };
+  assertEquals(
+    sensitiveGlobalArgPaths(schema, args).sort(),
+    extractExpressions(args).map((e) => e.path).sort(),
+  );
+  assertEquals(sensitiveGlobalArgPaths(schema, { region: "r" }), []);
+  assertEquals(sensitiveGlobalArgPaths(undefined, { apiKey: "k" }), []);
+});
+
+Deno.test("withheldSensitiveTextLine: names the path and never the value", () => {
+  assertEquals(
+    withheldSensitiveTextLine("apiKey"),
+    "  apiKey: (value withheld) (is in a sensitive field, which would store it in cleartext)",
+  );
 });
