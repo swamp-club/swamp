@@ -13,9 +13,9 @@ changes what the work does, and a phase that cannot be exported is dropped
 without failing the work.
 
 Worker enrollment preparation (lab #3986), run-detail output resolution
-(#4002) and output retention (#4004) are instrumented. Two more areas use the
-same contract as they are added: worker deletion and prune (#4003) and
-access-data polling (#4005).
+(#4002), output retention (#4004) and access-data polling (#4005) are
+instrumented. One more area uses the same contract as it is added: worker
+deletion and prune (#4003).
 
 Phases are observations of the
 [remote telemetry contract](./remote-execution-telemetry.md)
@@ -33,6 +33,7 @@ Every phase is a span named `swamp.diagnostic.<phase>` with:
 | `swamp.diagnostic.area`                                          | string    | The path: `enrollment`, `step_outputs`, `worker_delete`, `output_retention`, `access_poll`          |
 | `swamp.diagnostic.phase`                                         | string    | The phase name, as in the span name                                                                 |
 | `swamp.outcome`                                                  | string    | `ok`, `error`, `timeout`, `cancelled`, `closed`; span status is OK only for `ok`                    |
+| `swamp.diagnostic.result`                                        | string    | When set, what the phase achieved: `completed`, `partial`, `applied`, `no_change`, `skipped`        |
 | `swamp.diagnostic.cancel_observed`                               | bool      | Set where the area has a cancellation signal: whether this process had seen it when the phase ended |
 | `swamp.phase.local_ms`                                           | number    | Monotonic elapsed time of the phase                                                                 |
 | `swamp.phase.child_covered_ms`                                   | number    | The part covered by child observations, unioned, never summed                                       |
@@ -47,8 +48,11 @@ phases any area may run (`definition_lookup`, `definition_scan`, `lock_wait`,
 `lock_held`, `gate_wait`). A span that already existed can count as a phase
 instead of being duplicated: it carries the area and phase attributes but keeps
 its own name, and is not an observation, so it has no `swamp.outcome` and no
-coverage fields (the sync gate's wait span is `gate_wait`). Attributes a caller sets around shared code, such as
-`swamp.diagnostic.lookup_attempt`, are inherited by every phase under it.
+coverage fields (the sync gate's wait span is `gate_wait`). A poller's gated
+pull has no such span, so the access poller's `gate_wait` is an observation
+named `swamp.diagnostic.gate_wait`, with an outcome. Attributes a caller sets
+around shared code, such as `swamp.diagnostic.lookup_attempt`, are inherited by
+every phase under it.
 
 Values are counts, durations, booleans and fixed strings. One exception:
 `swamp.diagnostic.definition_type` is the model type a lookup asked for (such as
@@ -72,7 +76,9 @@ code (the definition repository, the name index, file locks, the output
 repository, the sync gate) exports phases only
 while an area is active, so other callers look as before. An area wraps only the
 awaited work being measured, never a call that arms timers or starts background
-work, since that work would inherit it.
+work, since that work would inherit it. Work an area schedules but does not own,
+such as the policy snapshot rebuild a change event sets off, is armed outside
+any area.
 
 ### Sampling and opt-out
 
@@ -319,6 +325,66 @@ is cut short: this area has no `cancelled` outcome and no `cancel_observed`. A
 pass stopped before a batch exports no phases for it. Output records are read
 through `YamlOutputRepository` on every datastore; there is no other branch.
 
+## Access-data polling
+
+Parent: the `swamp.serve.poll` span with `swamp.serve.poller = access_data`,
+the root of each cycle's own trace. Inside it, `poll_cycle` holds the cycle's
+phases. Every phase of the cycle carries `swamp.diagnostic.source_mode`:
+
+- `local_change_source`: a v2 filesystem datastore with no sync service. Peers
+  share the files, so the poller fingerprints the grant and group directories.
+  There is no gate and no pull.
+- `sync_pull`: a datastore with a sync service (S3, GCS, a custom datastore
+  that syncs). The poller pulls the grant and group subdirectories under the
+  sync gate.
+
+A v3 datastore, or a custom one without a sync service, has no poller and
+exports nothing.
+
+| Phase                 | Parent       | Attributes                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `poll_cycle`          | poll span    | `changed` (absent when the pull never ran); `reload_reason` (`changed`, `pending_retry`, `unreadable_retry`, `none`); `unreadable_records` when it checked for a retry; `result` (`applied`, `no_change`, `skipped`); `consecutive_failures` when it failed. Outcome `cancelled` when `stop()` ended its gate wait and nothing was reloaded                                                                                                          |
+| `change_detection`    | `poll_cycle` | Local only. `records` (record directories fingerprinted; a watched directory that could not be listed is an unreadable entry, not a record), `entries` (entries examined in them), `unreadable_entries`, `changed` (peer changes), `own_changes_excluded` (changes that were this process's own writes), `baseline_missing` (bool: no baseline, so the cycle reloads without comparing; `changed` is then absent)                                    |
+| `gate_wait`           | `poll_cycle` | Sync pull with a gate only. An observation, `swamp.diagnostic.gate_wait`, not the tagged gate span. `gate_mode` (`opportunistic`, `queued`), `consecutive_skips` (before this wait), `attempts` (opportunistic tries), `acquired` (bool). Outcome `ok` when acquired or skipped because the gate stayed busy, `timeout` when a queued wait ran out its bound, `cancelled` when `stop()` ended it                                                     |
+| `remote_pull`         | `poll_cycle` | Sync pull only, when the gate was acquired or there is none. `count_reported` (bool: whether the datastore returned a count), `changed` when it did. Outcome `timeout` when the pull ran past its deadline                                                                                                                                                                                                                                           |
+| `catalog_invalidate`  | `poll_cycle` | When `changed` > 0: drops the catalog's cached state                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `snapshot_queue_wait` | `poll_cycle` | On every reload. `builds_ahead`: snapshot builds queued or running before this one                                                                                                                                                                                                                                                                                                                                                                   |
+| `snapshot_build`      | `poll_cycle` | On every reload. `records_listed` (grant and group records the listing found), `records_read` (reads attempted; a record whose listing entry could not be read is listed but not read), `grants_active`, `groups`, `unreadable` (records left out or kept from an earlier read), `snapshot_unchanged` (bool: the same grants and groups as the last build), `list_work_ms` (the concurrent grant and group listing), `read_work_ms`, `parse_work_ms` |
+
+`result` is `applied` when the cycle reloaded the snapshot, `skipped` when the
+pull never ran (the gate stayed busy, or `stop()` ended the wait) and nothing
+forced a reload, and `no_change` otherwise. Only a `skipped` cycle whose wait
+`stop()` ended is `cancelled`; one that still applied a pending reload ends
+`ok`. `stop()` never interrupts a running pull or reload, so a cycle that had
+acquired the gate, or a local cycle, finishes `ok` with
+`cancel_observed=true`. A failed cycle has the error's outcome and no `result`;
+its failed child says where. A pull that times out ends `remote_pull` with
+`timeout` and `poll_cycle` with `error`.
+
+`reload_reason` says why a reload ran. `pending_retry` is a reload a failed
+earlier cycle left behind. `unreadable_retry` rebuilds a snapshot that is
+missing records it could not read (not corrupt ones, which never read by
+themselves); `unreadable_records` counts those records.
+
+The snapshot is always rebuilt; nothing is reused. `snapshot_unchanged` says
+whether the rebuild produced the same policy, so a retry that changed nothing is
+visible. `snapshot_queue_wait` is time spent behind other builds, such as the
+debounced rebuild a local grant or group write sets off. That rebuild is not
+exported: it belongs to no poll, so the queue wait is all of it a poll shows.
+`list_work_ms` is one measurement of two concurrent listings; `read_work_ms`
+and `parse_work_ms` are per-record and sequential. A first build that fails on
+unreadable records keeps its counts and ends `error`.
+
+Shared phases (`definition_lookup`, `lock_wait` and the rest) appear under a
+pull or a build when the datastore or repository code they reach runs them.
+
+Volume: an unchanged cycle exports two phases on a local source, three on a
+sync pull with a gate, and a reload adds up to three more, whatever the size of
+the catalog. At
+the default 30-second interval that is about 2,880 cycles a day per instance.
+`swamp.execution.*` metrics, when enabled, gain the seven `diagnostic.<phase>`
+operation labels above.
+
 ## Queries
 
 The examples use Axiom APL against a dataset that receives these traces (here
@@ -360,8 +426,9 @@ Phase latency by phase, outcome and build:
 | sort by p95_ms desc
 ```
 
-`gate_wait` has no `swamp.outcome`, so it groups under an empty outcome; read
-`sync_gate.acquired` for whether the gate was taken.
+The sync gate's tagged `gate_wait` has no `swamp.outcome`, so it groups under an
+empty outcome; read `sync_gate.acquired` for whether the gate was taken. The
+access poller's `gate_wait` has an outcome and `swamp.diagnostic.acquired`.
 
 One operation's breakdown, by trace id:
 
@@ -639,6 +706,118 @@ sum is larger. A batch from a build without the phases has no
 instead. To summarise a window, follow it with
 `| summarize n=count(), p50_ms=percentile(batch_ms,50), p95_ms=percentile(batch_ms,95), max_ms=max(batch_ms) by dominant, outcome`.
 
+Access polls: phase latency by phase, source mode, outcome and build:
+
+```apl
+['swamp-serve-traces']
+| where _time between (datetime(2026-10-26T00:00:00Z) .. datetime(2026-10-27T00:00:00Z))
+| where ['service.name'] == 'swamp-serve-vm'
+| extend a=['attributes.custom']
+| where tostring(a['swamp.diagnostic.area']) == 'access_poll'
+| extend phase=tostring(a['swamp.diagnostic.phase']),
+         mode=tostring(a['swamp.diagnostic.source_mode']),
+         outcome=tostring(a['swamp.outcome']),
+         version=tostring(['resource.custom']['swamp.version']),
+         ms=duration/1ms
+| summarize n=count(), p50_ms=percentile(ms,50), p95_ms=percentile(ms,95), max_ms=max(ms)
+  by phase, mode, outcome, version
+| sort by p95_ms desc
+```
+
+One poll's breakdown is the single-trace query above, with the `trace_id` of a
+`swamp.serve.poll` span.
+
+Which stage dominated each access poll: a file scan, gate contention, a slow
+pull, waiting behind another snapshot build, or the build itself:
+
+```apl
+let from = datetime(2026-10-26T00:00:00Z);
+let to = datetime(2026-10-27T00:00:00Z);
+let stages = ['swamp-serve-traces']
+  | where _time between (from .. to)
+  | where ['service.name'] == 'swamp-serve-vm'
+  | extend a=['attributes.custom']
+  | where tostring(a['swamp.diagnostic.area']) == 'access_poll'
+  | extend phase=tostring(a['swamp.diagnostic.phase']), ms=duration/1ms
+  | summarize detect_ms=sumif(ms, phase == 'change_detection'),
+              gate_ms=sumif(ms, phase == 'gate_wait'),
+              pull_ms=sumif(ms, phase == 'remote_pull'),
+              queue_ms=sumif(ms, phase == 'snapshot_queue_wait'),
+              build_ms=sumif(ms, phase == 'snapshot_build')
+    by trace_id;
+['swamp-serve-traces']
+| where _time between (from .. to)
+| where ['service.name'] == 'swamp-serve-vm'
+| where name == 'swamp.diagnostic.poll_cycle'
+| extend a=['attributes.custom']
+| project trace_id, cycle_ms=duration/1ms,
+          mode=tostring(a['swamp.diagnostic.source_mode']),
+          reason=tostring(a['swamp.diagnostic.reload_reason']),
+          result=tostring(a['swamp.diagnostic.result']),
+          outcome=tostring(a['swamp.outcome'])
+| join kind=leftouter (stages) on trace_id
+| extend detect_ms=coalesce(detect_ms, 0.0), gate_ms=coalesce(gate_ms, 0.0),
+         pull_ms=coalesce(pull_ms, 0.0), queue_ms=coalesce(queue_ms, 0.0),
+         build_ms=coalesce(build_ms, 0.0)
+| extend dominant=case(
+    detect_ms >= max_of(gate_ms, pull_ms, queue_ms, build_ms), 'change_detection',
+    gate_ms >= max_of(pull_ms, queue_ms, build_ms), 'gate_wait',
+    pull_ms >= max_of(queue_ms, build_ms), 'remote_pull',
+    queue_ms >= build_ms, 'snapshot_queue_wait',
+    'snapshot_build')
+| summarize n=count(), p50_ms=percentile(cycle_ms,50), p95_ms=percentile(cycle_ms,95),
+            max_ms=max(cycle_ms)
+  by mode, dominant, reason, result, outcome
+```
+
+Each poll is its own trace with one `poll_cycle`, and its stages run one after
+another, so each column is that stage's share of the cycle's wall time. The
+columns are compared, never added. A local poll has no gate or pull and a sync
+poll no detection; their columns are zero, not missing work. Catalog
+invalidation is in-memory and is left out of the comparison; the cycle's
+`swamp.phase.uncovered_ms` holds it and the cycle's own work.
+
+Gate contention on sync pulls: how often the poller waited, skipped or queued:
+
+```apl
+['swamp-serve-traces']
+| where _time between (datetime(2026-10-26T00:00:00Z) .. datetime(2026-10-27T00:00:00Z))
+| where ['service.name'] == 'swamp-serve-vm'
+| where name == 'swamp.diagnostic.gate_wait'
+| extend a=['attributes.custom']
+| where tostring(a['swamp.diagnostic.area']) == 'access_poll'
+| extend gate_mode=tostring(a['swamp.diagnostic.gate_mode']),
+         acquired=tobool(a['swamp.diagnostic.acquired']),
+         attempts=toint(a['swamp.diagnostic.attempts']),
+         outcome=tostring(a['swamp.outcome']),
+         ms=duration/1ms
+| summarize n=count(), p95_ms=percentile(ms,95), max_ms=max(ms), max_attempts=max(attempts)
+  by gate_mode, acquired, outcome
+```
+
+Snapshot builds against the size of the access catalog:
+
+```apl
+['swamp-serve-traces']
+| where _time between (datetime(2026-10-26T00:00:00Z) .. datetime(2026-10-27T00:00:00Z))
+| where ['service.name'] == 'swamp-serve-vm'
+| where name == 'swamp.diagnostic.snapshot_build'
+| extend a=['attributes.custom']
+| where tostring(a['swamp.diagnostic.area']) == 'access_poll'
+| extend records=toint(a['swamp.diagnostic.records_read']),
+         unreadable=toint(a['swamp.diagnostic.unreadable']),
+         unchanged=tobool(a['swamp.diagnostic.snapshot_unchanged']),
+         list_ms=todouble(a['swamp.diagnostic.list_work_ms']),
+         read_ms=todouble(a['swamp.diagnostic.read_work_ms']),
+         outcome=tostring(a['swamp.outcome']),
+         ms=duration/1ms
+| extend records_bucket=bin(records, 100), has_unreadable=unreadable > 0
+| summarize n=count(), p50_ms=percentile(ms,50), p95_ms=percentile(ms,95), max_ms=max(ms),
+            max_records=max(records), avg_list_work_ms=avg(list_ms),
+            avg_read_work_ms=avg(read_ms)
+  by records_bucket, unchanged, has_unreadable, outcome
+```
+
 ## What this does not establish
 
 `integration/worker_enroll_phase_telemetry_test.ts` drives a real gateway
@@ -664,6 +843,15 @@ It checks that names, parent ids, value types, outcomes and statuses survive
 export for a mixed batch (eligible, protected and unexpired outputs), an empty
 batch and one that fails after removing some outputs, and that a batch's span
 count is the same for 10 and 300 outputs.
+
+`integration/access_poll_phase_telemetry_test.ts` does the same for access
+polls. It runs the real poller, change source, policy snapshot loader and sync
+gate, with an in-process sync service on the sync-pull branch. It covers
+unchanged and changed polls, corrupt and unreadable records, skipped,
+failed, timed-out and stopped pulls, and checks that a poll's phase count is the
+same with 2 and 300 grants and that no attribute names a path, a record id or
+record content. Overhead was not measured, and the access poll queries have not
+been run against a dataset.
 
 Against production `swamp-serve-traces` (2026-10-27, build `b4dd513d`, before
 these phases shipped), the field paths and types above were confirmed on real

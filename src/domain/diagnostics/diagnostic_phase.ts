@@ -73,7 +73,14 @@ const AREA_PHASES = {
     "orphan_log_sweep",
     "batch_commit",
   ],
-  access_poll: [],
+  access_poll: [
+    "poll_cycle",
+    "change_detection",
+    "remote_pull",
+    "catalog_invalidate",
+    "snapshot_queue_wait",
+    "snapshot_build",
+  ],
 } as const satisfies Record<DiagnosticArea, readonly string[]>;
 
 export type DiagnosticPhase =
@@ -176,11 +183,23 @@ export class PhaseTally {
   }
 }
 
+/**
+ * What a phase achieved, beside `swamp.outcome` (which says only whether it
+ * raised): a poll that found nothing to apply still ends `ok`.
+ */
+export type DiagnosticResult =
+  | "completed"
+  | "partial"
+  | "applied"
+  | "no_change"
+  | "skipped";
+
 /** A started phase. A phase started outside any area is a silent no-op. */
 export interface DiagnosticPhaseHandle {
   readonly recording: boolean;
   readonly tally: PhaseTally;
   attributes(values: ObservationAttributes): void;
+  result(value: DiagnosticResult): void;
   /** Runs `fn` as this phase: spans and tallies it starts are its children. */
   run<T>(fn: () => T): T;
   /** Exports the tally and ends the phase. Later calls do nothing. */
@@ -203,6 +222,7 @@ const silentPhase: DiagnosticPhaseHandle = {
   recording: false,
   tally: silentTally,
   attributes: () => {},
+  result: () => {},
   run: (fn) => fn(),
   end: () => {},
   fail: () => {},
@@ -255,6 +275,14 @@ export function withDiagnosticArea<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   return scope.run({ area, signal }, fn);
+}
+
+/**
+ * Runs `fn` outside any area: for work scheduled from an area that is not
+ * part of it, such as a debounced rebuild a change event set off.
+ */
+export function outsideDiagnosticArea<T>(fn: () => T): T {
+  return scope.exit(fn);
 }
 
 /**
@@ -335,6 +363,13 @@ export function startDiagnosticPhase(
     tally,
     attributes: (values) => {
       if (recording) quietly(() => observation.attributes(values));
+    },
+    result: (value) => {
+      if (recording) {
+        quietly(() =>
+          observation.attributes({ "swamp.diagnostic.result": value })
+        );
+      }
     },
     run: (fn) => scope.run(store, () => observation.run(fn)),
     end,

@@ -32,14 +32,19 @@ import {
   withSharedSyncGate,
   withSyncGate,
 } from "./sync_gate.ts";
-import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import {
+  type DatastoreSyncService,
+  SyncTimeoutError,
+} from "../domain/datastore/datastore_sync_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { withDiagnosticArea } from "../domain/diagnostics/diagnostic_phase.ts";
 import { SpanStatusCode, withSpan } from "../infrastructure/tracing/mod.ts";
 import {
+  diagnosticPhases,
   findSpan,
   isChildOf,
   withCapturedSpans,
+  withObservedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
 
 /** Yields to the event loop so a concurrent unit can make progress. */
@@ -550,4 +555,183 @@ Deno.test("withRunSyncGate: a push that must run alone takes the gate exclusivel
   finishPull();
   await Promise.all([pull, alone]);
   assertEquals(order, ["pull start", "pull end", "alone (exclusive=true)"]);
+});
+
+// Diagnostic phases of a gated pull in the access_poll area (swamp-club#4005).
+
+Deno.test("gatedPull: in the access_poll area the wait and the pull are sibling phases", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    const result = await withSpan(
+      "outer",
+      {},
+      () =>
+        withDiagnosticArea(
+          "access_poll",
+          () =>
+            gatedPull(gate, "test", () => Promise.resolve(4), {
+              state: { consecutiveSkips: 2 },
+              timing: FAST_TIMING,
+              delay: instantDelay().delay,
+            }),
+        ),
+    );
+    assertEquals(result, 4);
+    const outer = findSpan(spans, "outer");
+    const wait = findSpan(spans, "swamp.diagnostic.gate_wait");
+    const pull = findSpan(spans, "swamp.diagnostic.remote_pull");
+    assert(isChildOf(wait, outer));
+    assert(isChildOf(pull, outer));
+    assert(spans.indexOf(wait) < spans.indexOf(pull));
+    assertEquals(
+      wait.attributes["swamp.diagnostic.gate_mode"],
+      "opportunistic",
+    );
+    assertEquals(wait.attributes["swamp.diagnostic.consecutive_skips"], 2);
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], true);
+    assertEquals(wait.attributes["swamp.diagnostic.attempts"], 1);
+    assertEquals(wait.attributes["swamp.outcome"], "ok");
+    assertEquals(pull.attributes["swamp.diagnostic.changed"], 4);
+    assertEquals(pull.attributes["swamp.diagnostic.count_reported"], true);
+    assertEquals(pull.attributes["swamp.outcome"], "ok");
+  });
+});
+
+Deno.test("gatedPull: a skipped cycle is a gate_wait that did not acquire, ok and with no pull", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await gate.acquireShared();
+    const state: PollerGateState = { consecutiveSkips: 0 };
+    await withDiagnosticArea(
+      "access_poll",
+      () =>
+        gatedPull(gate, "test", () => Promise.resolve(1), {
+          state,
+          timing: FAST_TIMING,
+          delay: instantDelay().delay,
+        }),
+    );
+    gate.releaseShared();
+    const wait = findSpan(spans, "swamp.diagnostic.gate_wait");
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
+    assertEquals(wait.attributes["swamp.outcome"], "ok");
+    // One try at 0, 1, ... 5ms of a 5ms window, every 1ms.
+    assertEquals(wait.attributes["swamp.diagnostic.attempts"], 6);
+    assertEquals(diagnosticPhases(spans, "remote_pull").length, 0);
+    assertEquals(state.consecutiveSkips, 1);
+  });
+});
+
+Deno.test("gatedPull: a stop during the wait ends gate_wait cancelled", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await gate.acquireShared();
+    const stop = new AbortController();
+    await withDiagnosticArea(
+      "access_poll",
+      () =>
+        gatedPull(gate, "test", () => Promise.resolve(1), {
+          signal: stop.signal,
+          timing: { retryMs: 1, windowMs: 1_000_000 },
+          delay: instantDelay((calls) => {
+            if (calls === 2) stop.abort();
+          }).delay,
+        }),
+      stop.signal,
+    );
+    gate.releaseShared();
+    const wait = findSpan(spans, "swamp.diagnostic.gate_wait");
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
+    assertEquals(wait.attributes["swamp.outcome"], "cancelled");
+    assertEquals(wait.attributes["swamp.diagnostic.cancel_observed"], true);
+    assertEquals(diagnosticPhases(spans, "remote_pull").length, 0);
+  });
+});
+
+Deno.test("gatedPull: a queued wait that runs out its bound ends gate_wait timeout", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await gate.acquireShared();
+    const state: PollerGateState = {
+      consecutiveSkips: POLLER_ESCALATE_AFTER_SKIPS,
+    };
+    // The bound's timer is unref'd, so a ref'd tick keeps the loop alive.
+    await Promise.all([
+      withDiagnosticArea(
+        "access_poll",
+        () =>
+          gatedPull(gate, "test", () => Promise.resolve(1), {
+            state,
+            queuedWaitMs: 1,
+          }),
+      ),
+      tick(20),
+    ]);
+    gate.releaseShared();
+    const wait = findSpan(spans, "swamp.diagnostic.gate_wait");
+    assertEquals(wait.attributes["swamp.diagnostic.gate_mode"], "queued");
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
+    assertEquals(wait.attributes["swamp.outcome"], "timeout");
+    assertEquals(diagnosticPhases(spans, "remote_pull").length, 0);
+    assertEquals(state.consecutiveSkips, POLLER_ESCALATE_AFTER_SKIPS + 1);
+  });
+});
+
+Deno.test("gatedPull: without a gate exports only the pull, and a pull with no count says so", async () => {
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea(
+      "access_poll",
+      () => gatedPull(undefined, "test", () => Promise.resolve()),
+    );
+    assertEquals(diagnosticPhases(spans, "gate_wait").length, 0);
+    const pull = findSpan(spans, "swamp.diagnostic.remote_pull");
+    assertEquals(pull.attributes["swamp.diagnostic.count_reported"], false);
+    assertEquals(pull.attributes["swamp.diagnostic.changed"], undefined);
+  });
+});
+
+Deno.test("gatedPull: a pull that times out ends remote_pull timeout, and one that throws ends error", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    for (
+      const error of [
+        new SyncTimeoutError("test", "pull", 5),
+        new Error("bucket unreachable"),
+      ]
+    ) {
+      let thrown: unknown;
+      try {
+        await withDiagnosticArea(
+          "access_poll",
+          () =>
+            gatedPull(gate, "test", () => Promise.reject(error), {
+              timing: FAST_TIMING,
+              delay: instantDelay().delay,
+            }),
+        );
+      } catch (caught) {
+        thrown = caught;
+      }
+      assertEquals(thrown, error);
+      assertEquals(gate.exclusiveHeld, false);
+    }
+    const [timedOut, failed] = diagnosticPhases(spans, "remote_pull");
+    assertEquals(timedOut.attributes["swamp.outcome"], "timeout");
+    assertEquals(failed.attributes["swamp.outcome"], "error");
+    assertEquals(timedOut.status.code, SpanStatusCode.ERROR);
+  });
+});
+
+Deno.test("gatedPull: outside a diagnostic area, as the config and runtime pollers call it, exports no phases", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await gatedPull(gate, "test", () => Promise.resolve(2), {
+      timing: FAST_TIMING,
+      delay: instantDelay().delay,
+    });
+    assertEquals(
+      spans.filter((s) => s.name.startsWith("swamp.diagnostic.")).length,
+      0,
+    );
+  });
 });

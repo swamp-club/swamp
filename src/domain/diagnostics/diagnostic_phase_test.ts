@@ -23,6 +23,7 @@ import {
   currentDiagnosticTally,
   diagnosticSpanAttributes,
   observeDiagnosticPhase,
+  outsideDiagnosticArea,
   PhaseTally,
   startDiagnosticPhase,
   utf8ByteLength,
@@ -377,4 +378,66 @@ Deno.test("diagnosticSpanAttributes: tags a span as a phase only inside an area 
         return Promise.resolve();
       }),
   );
+});
+
+// Shared additions used by the access_poll area (swamp-club#4005).
+
+Deno.test("startDiagnosticPhase: the access_poll area exports its own phases and not another area's", async () => {
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea("access_poll", () => {
+      startDiagnosticPhase("poll_cycle").end();
+      startDiagnosticPhase("gate_wait").end();
+      startDiagnosticPhase("prepare").end();
+      return Promise.resolve();
+    });
+    await withDiagnosticArea("enrollment", () => {
+      startDiagnosticPhase("poll_cycle").end();
+      return Promise.resolve();
+    });
+    const [cycle] = diagnosticPhases(spans, "poll_cycle");
+    assertEquals(diagnosticPhases(spans, "poll_cycle").length, 1);
+    assertEquals(cycle.attributes["swamp.diagnostic.area"], "access_poll");
+    assertEquals(diagnosticPhases(spans, "gate_wait").length, 1);
+    assertEquals(diagnosticPhases(spans, "prepare").length, 0);
+  });
+});
+
+Deno.test("DiagnosticPhaseHandle.result: records what the phase achieved, apart from its outcome", async () => {
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea("access_poll", () => {
+      const phase = startDiagnosticPhase("poll_cycle");
+      phase.result("no_change");
+      phase.end();
+      return Promise.resolve();
+    });
+    const phase = startDiagnosticPhase("poll_cycle");
+    phase.result("applied");
+    phase.end();
+    const [span] = diagnosticPhases(spans, "poll_cycle");
+    assertEquals(diagnosticPhases(spans, "poll_cycle").length, 1);
+    assertEquals(span.attributes["swamp.diagnostic.result"], "no_change");
+    assertEquals(span.attributes["swamp.outcome"], "ok");
+  });
+});
+
+Deno.test("outsideDiagnosticArea: work scheduled from inside an area carries no area", async () => {
+  await withObservedSpans(async (spans) => {
+    let inside: string | undefined;
+    let outside: string | undefined = "unset";
+    await withDiagnosticArea("access_poll", async () => {
+      inside = currentDiagnosticArea();
+      await new Promise<void>((resolve) =>
+        outsideDiagnosticArea(() =>
+          setTimeout(() => {
+            outside = currentDiagnosticArea();
+            startDiagnosticPhase("snapshot_build").end();
+            resolve();
+          }, 0)
+        )
+      );
+    });
+    assertEquals(inside, "access_poll");
+    assertEquals(outside, undefined);
+    assertEquals(diagnosticPhases(spans, "snapshot_build").length, 0);
+  });
 });

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -54,6 +55,12 @@ import { UnreadableAccessRecordsError } from "./unreadable_access_records.ts";
 import { MissingConditionFieldError } from "./condition_fields.ts";
 import { UserError } from "../errors.ts";
 import type { PrincipalContext } from "./principal_context.ts";
+import { withDiagnosticArea } from "../diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
 
 await initializeLogging({});
 
@@ -1831,4 +1838,197 @@ Deno.test("PolicySnapshotLoader.load: a record whose cause changes under the sam
     loader.unreadable.map((r) => [r.cause, r.errorName]),
     [["corrupt", "SyntaxError"]],
   );
+});
+
+// Diagnostic phases of the access-data poll's snapshot reload
+// (swamp-club#4005).
+
+function accessDataRepo(): UnifiedDataRepository {
+  return createMockDataRepo(
+    [
+      { attrs: makeGrant(), modelId: "g1", dataName: "grant-main" },
+      { attrs: makeGrant(), modelId: "g2", dataName: "grant-main" },
+    ],
+    [{
+      attrs: makeGroup("devs", ["adam"]),
+      modelId: "grp1",
+      dataName: "group-main",
+    }],
+  );
+}
+
+function diagnosticSpans(spans: readonly { name: string }[]) {
+  return spans.filter((s) => s.name.startsWith("swamp.diagnostic."));
+}
+
+Deno.test("PolicySnapshotLoader.load: in the access_poll area exports the queue wait, then the build with its counts", async () => {
+  await withObservedSpans(async (spans) => {
+    const loader = new PolicySnapshotLoader(accessDataRepo(), new EventBus());
+    try {
+      await withDiagnosticArea("access_poll", () => loader.load());
+      await withDiagnosticArea("access_poll", () => loader.load());
+    } finally {
+      await loader.dispose();
+    }
+    const [queued] = diagnosticPhases(spans, "snapshot_queue_wait");
+    const [first, second] = diagnosticPhases(spans, "snapshot_build");
+    assert(spans.indexOf(queued) < spans.indexOf(first));
+    assertEquals(queued.attributes["swamp.diagnostic.builds_ahead"], 0);
+    assertEquals(first.attributes["swamp.diagnostic.records_listed"], 3);
+    assertEquals(first.attributes["swamp.diagnostic.records_read"], 3);
+    assertEquals(first.attributes["swamp.diagnostic.grants_active"], 2);
+    assertEquals(first.attributes["swamp.diagnostic.groups"], 1);
+    assertEquals(first.attributes["swamp.diagnostic.unreadable"], 0);
+    for (const work of ["list", "read", "parse"]) {
+      assertEquals(
+        typeof first.attributes[`swamp.diagnostic.${work}_work_ms`],
+        "number",
+      );
+    }
+    assertEquals(
+      first.attributes["swamp.diagnostic.snapshot_unchanged"],
+      false,
+    );
+    assertEquals(first.attributes["swamp.outcome"], "ok");
+    assertEquals(
+      second.attributes["swamp.diagnostic.snapshot_unchanged"],
+      true,
+    );
+  });
+});
+
+Deno.test("PolicySnapshotLoader.load: a poll's build queued behind another build counts it as ahead, and only the poll's build is exported", async () => {
+  await withObservedSpans(async (spans) => {
+    const repo = accessDataRepo();
+    const findAllForType = repo.findAllForType.bind(repo);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => release = resolve);
+    let block = true;
+    repo.findAllForType = async (...args) => {
+      if (block) await blocked;
+      return await findAllForType(...args);
+    };
+    const loader = new PolicySnapshotLoader(repo, new EventBus());
+    try {
+      const outside = loader.load();
+      const poll = withDiagnosticArea("access_poll", () => loader.load());
+      block = false;
+      release();
+      await Promise.all([outside, poll]);
+    } finally {
+      await loader.dispose();
+    }
+    const [queued] = diagnosticPhases(spans, "snapshot_queue_wait");
+    assertEquals(queued.attributes["swamp.diagnostic.builds_ahead"], 1);
+    assertEquals(diagnosticPhases(spans, "snapshot_build").length, 1);
+  });
+});
+
+Deno.test("PolicySnapshotLoader.load: a corrupt record on a later build counts as unreadable, and a failing first build keeps its counts", async () => {
+  await withObservedSpans(async (spans) => {
+    const records = new Map<string, FakeRecord>([
+      ["d", { kind: "grant", attrs: makeGrant({ effect: "deny" }) }],
+    ]);
+    const loader = new PolicySnapshotLoader(
+      createChangingDataRepo(records),
+      new EventBus(),
+      "manual",
+    );
+    const bad = new Map<string, FakeRecord>([
+      ["bad-json", { kind: "grant", unreadable: "json" }],
+    ]);
+    const first = new PolicySnapshotLoader(
+      createChangingDataRepo(bad),
+      new EventBus(),
+      "manual",
+    );
+    try {
+      await withDiagnosticArea("access_poll", () => loader.load());
+      records.set("d", { kind: "grant", unreadable: "json" });
+      await capturingLoaderLogs(async () => {
+        await withDiagnosticArea("access_poll", () => loader.load());
+      });
+      await assertRejects(
+        () => withDiagnosticArea("access_poll", () => first.load()),
+        UnreadableAccessRecordsError,
+      );
+    } finally {
+      await loader.dispose();
+      await first.dispose();
+    }
+    const [whole, missing, failed] = diagnosticPhases(spans, "snapshot_build");
+    assertEquals(whole.attributes["swamp.diagnostic.unreadable"], 0);
+    assertEquals(missing.attributes["swamp.diagnostic.unreadable"], 1);
+    // The last-known deny is kept, so it still counts as active.
+    assertEquals(missing.attributes["swamp.diagnostic.grants_active"], 1);
+    assertEquals(missing.attributes["swamp.outcome"], "ok");
+    assertEquals(failed.attributes["swamp.diagnostic.unreadable"], 1);
+    assertEquals(failed.attributes["swamp.diagnostic.records_read"], 1);
+    assertEquals(failed.attributes["swamp.outcome"], "error");
+  });
+});
+
+Deno.test("PolicySnapshotLoader.load: outside a diagnostic area exports no phases", async () => {
+  await withObservedSpans(async (spans) => {
+    const loader = new PolicySnapshotLoader(accessDataRepo(), new EventBus());
+    try {
+      await loader.load();
+    } finally {
+      await loader.dispose();
+    }
+    assertEquals(diagnosticSpans(spans).length, 0);
+  });
+});
+
+Deno.test("PolicySnapshotLoader: a rebuild an event schedules from inside the access_poll area is not exported as poll work", async () => {
+  await withObservedSpans(async (spans) => {
+    let grantReads = 0;
+    const repo = accessDataRepo();
+    const findAllForType = repo.findAllForType.bind(repo);
+    repo.findAllForType = (type, ...rest) => {
+      const name = typeof type === "string" ? type : type.normalized;
+      if (name === GRANT_MODEL_TYPE.normalized) grantReads++;
+      return findAllForType(type, ...rest);
+    };
+    const eventBus = new EventBus();
+    const loader = new PolicySnapshotLoader(repo, eventBus);
+    try {
+      await loader.load();
+      await withDiagnosticArea(
+        "access_poll",
+        () => eventBus.publish(createModelCreated("swamp/grant", "g3", "g3")),
+      );
+      await waitFor(() => grantReads >= 2, "event-driven rebuild");
+    } finally {
+      await loader.dispose();
+    }
+    assertEquals(diagnosticSpans(spans).length, 0);
+  });
+});
+
+Deno.test("PolicySnapshotLoader.load: a record the listing could not read is listed but not read", async () => {
+  await withObservedSpans(async (spans) => {
+    const records = new Map<string, FakeRecord>([
+      ["d", { kind: "grant", attrs: makeGrant({ effect: "deny" }) }],
+      ["ok", { kind: "grant", attrs: makeGrant() }],
+    ]);
+    const loader = new PolicySnapshotLoader(
+      createChangingDataRepo(records),
+      new EventBus(),
+      "manual",
+    );
+    try {
+      await loader.load();
+      records.set("d", { kind: "grant", unreadable: "metadata" });
+      await capturingLoaderLogs(async () => {
+        await withDiagnosticArea("access_poll", () => loader.load());
+      });
+    } finally {
+      await loader.dispose();
+    }
+    const [build] = diagnosticPhases(spans, "snapshot_build");
+    assertEquals(build.attributes["swamp.diagnostic.records_listed"], 2);
+    assertEquals(build.attributes["swamp.diagnostic.records_read"], 1);
+    assertEquals(build.attributes["swamp.diagnostic.unreadable"], 1);
+  });
 });

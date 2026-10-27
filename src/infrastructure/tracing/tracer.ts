@@ -248,8 +248,10 @@ export function withRootSpan<T>(
 /**
  * Runs one cycle of a `swamp serve` background poller as the root of its own
  * trace: a `swamp.serve.poll` span whose `swamp.serve.poller` attribute names
- * the poller. Everything the cycle does — sync-gate waits, datastore pulls,
- * datastore extension calls — nests under it.
+ * the poller. Every span the cycle starts nests under it. A poller's gated
+ * pull has no span of its own, except the access-data poller's, whose gate
+ * wait and pull are diagnostic phases
+ * (design/enablers/serve-phase-telemetry.md).
  */
 export function withPollCycleSpan<T>(
   poller: string,

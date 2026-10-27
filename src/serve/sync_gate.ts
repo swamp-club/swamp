@@ -79,7 +79,12 @@ import { type RunSyncLane, RunSyncLanes } from "./run_sync_lanes.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../infrastructure/tracing/mod.ts";
-import { diagnosticSpanAttributes } from "../domain/diagnostics/diagnostic_phase.ts";
+import { SyncTimeoutError } from "../domain/datastore/datastore_sync_service.ts";
+import {
+  diagnosticSpanAttributes,
+  type PhaseTally,
+  startDiagnosticPhase,
+} from "../domain/diagnostics/diagnostic_phase.ts";
 
 const logger = getSwampLogger(["serve", "sync-gate"]);
 
@@ -387,6 +392,11 @@ export interface GatedPullOptions {
   timing?: PollerGateTiming;
   /** Delay between retries. Injectable so tests drive the retry loop. */
   delay?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Bound on an escalated, queued wait. Defaults to
+   * {@link GATE_WAIT_TIMEOUT_MS}; injectable so tests can let it run out.
+   */
+  queuedWaitMs?: number;
 }
 
 /**
@@ -409,6 +419,12 @@ export interface GatedPullOptions {
  * AbortSignal AND races a deadline, so the gate is released even when an
  * extension ignores the signal — otherwise one hung pull would stall every
  * mutation and run on the server.
+ *
+ * In the access_poll diagnostic area the wait and the pull are the
+ * `gate_wait` and `remote_pull` phases (design/enablers/serve-phase-telemetry.md).
+ * A gated pull has no `swamp.serve.sync_gate.wait` span to tag, so its
+ * `gate_wait` is an observation of its own. Outside any area they export
+ * nothing.
  */
 export async function gatedPull(
   gate: SyncGate | undefined,
@@ -416,8 +432,23 @@ export async function gatedPull(
   pull: (signal: AbortSignal) => Promise<number | void>,
   options: GatedPullOptions = {},
 ): Promise<number | void> {
-  const runPull = () =>
-    runBoundedSync(label, "pull", POLLER_PULL_TIMEOUT_MS, pull);
+  const runPull = async () => {
+    const phase = startDiagnosticPhase("remote_pull");
+    try {
+      const changed = await phase.run(() =>
+        runBoundedSync(label, "pull", POLLER_PULL_TIMEOUT_MS, pull)
+      );
+      const reported = typeof changed === "number";
+      phase.attributes({ "swamp.diagnostic.count_reported": reported });
+      if (reported) phase.tally.add("changed", changed);
+      phase.end();
+      return changed;
+    } catch (error) {
+      if (error instanceof SyncTimeoutError) phase.end("timeout");
+      else phase.fail(error);
+      throw error;
+    }
+  };
   if (!gate) return runPull();
 
   const state = options.state ?? { consecutiveSkips: 0 };
@@ -427,9 +458,31 @@ export async function gatedPull(
     logger
       .info`${label} queueing for the sync gate after ${skips} skipped cycles; run syncs wait behind it until it pulls`;
   }
-  const acquired = escalate
-    ? await acquireQueued(gate, options.signal)
-    : await acquireOpportunistically(gate, options);
+  const wait = startDiagnosticPhase("gate_wait", {
+    "swamp.diagnostic.gate_mode": escalate ? "queued" : "opportunistic",
+    "swamp.diagnostic.consecutive_skips": state.consecutiveSkips,
+  });
+  let acquired: boolean;
+  try {
+    acquired = escalate
+      ? await acquireQueued(gate, options.signal, options.queuedWaitMs)
+      : await acquireOpportunistically(gate, options, wait.tally);
+  } catch (error) {
+    wait.fail(error);
+    throw error;
+  }
+  wait.attributes({ "swamp.diagnostic.acquired": acquired });
+  // A busy gate is a skip, not a failure; a stop ends the wait cancelled,
+  // and a queued wait that runs out its bound is a timeout.
+  wait.end(
+    acquired
+      ? "ok"
+      : options.signal?.aborted
+      ? "cancelled"
+      : escalate
+      ? "timeout"
+      : "ok",
+  );
 
   if (!acquired) {
     if (options.signal?.aborted) return undefined;
@@ -451,11 +504,13 @@ export async function gatedPull(
 async function acquireOpportunistically(
   gate: SyncGate,
   options: GatedPullOptions,
+  tally: PhaseTally,
 ): Promise<boolean> {
   const { retryMs, windowMs } = options.timing ?? pollerGateTiming(30_000);
   const delay = options.delay ?? unrefDelay;
   for (let waited = 0;; waited += retryMs) {
     if (options.signal?.aborted) return false;
+    tally.add("attempts");
     if (gate.tryAcquire()) return true;
     if (waited >= windowMs) return false;
     await delay(retryMs, options.signal);
@@ -465,9 +520,10 @@ async function acquireOpportunistically(
 async function acquireQueued(
   gate: SyncGate,
   signal: AbortSignal | undefined,
+  waitMs = GATE_WAIT_TIMEOUT_MS,
 ): Promise<boolean> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GATE_WAIT_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), waitMs);
   Deno.unrefTimer(timer);
   const onStop = () => controller.abort();
   signal?.addEventListener("abort", onStop, { once: true });
