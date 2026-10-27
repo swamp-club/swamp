@@ -482,6 +482,23 @@ function isAstNode(value: unknown): value is ASTNode {
 }
 
 /**
+ * Refuses a `data.version()` version that is not a whole number. A record's
+ * `version` reaches CEL as a double, so `data.version()` takes a double as
+ * well as an int; only a whole one can name a version.
+ */
+function requireWholeVersion(
+  modelName: string,
+  dataName: string,
+  version: unknown,
+): void {
+  const value = Number(version);
+  if (Number.isInteger(value)) return;
+  throw new Error(
+    `data.version("${modelName}", "${dataName}", ${value}): the version must be a whole number`,
+  );
+}
+
+/**
  * Wrapper class for data namespace context objects.
  */
 export class CelDataNamespace {
@@ -644,6 +661,7 @@ export class CelDataNamespace {
     if (typeof fn === "function") {
       // 4-arg form: version(model, name, varyValues[], version)
       if (Array.isArray(versionOrVary)) {
+        requireWholeVersion(modelName, dataName, version);
         const resolvedName = versionOrVary.length > 0
           ? composeDataName(
             dataName,
@@ -663,6 +681,7 @@ export class CelDataNamespace {
         );
       }
       // 3-arg form: version(model, name, version)
+      requireWholeVersion(modelName, dataName, versionOrVary);
       return this.recordMiss(
         (fn as (m: string, d: string, v: number) => unknown)(
           modelName,
@@ -1031,6 +1050,23 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
       ),
   );
 
+  // A record's version is a double, so data.latest(...).version - 1 and the
+  // elements of data.listVersions() reach data.version as doubles.
+  env.registerFunction(
+    "CelDataNamespace.version(string, string, double): dyn",
+    (
+      receiver: CelDataNamespace,
+      modelName: string,
+      dataName: string,
+      version: unknown,
+    ) =>
+      fromAccessor(
+        receiver,
+        receiver.version(modelName, dataName, version),
+        "data.version",
+      ),
+  );
+
   env.registerFunction(
     "CelDataNamespace.listVersions(string, string): dyn",
     (receiver: CelDataNamespace, modelName: string, dataName: string) =>
@@ -1060,6 +1096,27 @@ function buildInternalEnvironment(mode: SecretMode): Environment {
 
   env.registerFunction(
     "CelDataNamespace.version(string, string, list<dyn>, int): dyn",
+    (
+      receiver: CelDataNamespace,
+      modelName: string,
+      dataName: string,
+      varyValues: unknown[],
+      version: unknown,
+    ) =>
+      fromAccessor(
+        receiver,
+        receiver.version(
+          modelName,
+          dataName,
+          toDestination(varyValues, "the vary values of data.version"),
+          version,
+        ),
+        "data.version",
+      ),
+  );
+
+  env.registerFunction(
+    "CelDataNamespace.version(string, string, list<dyn>, double): dyn",
     (
       receiver: CelDataNamespace,
       modelName: string,

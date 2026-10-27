@@ -72,6 +72,9 @@ removed in a future release.
 # Specific version — reach for data.version() when you need history
 previousConfig: ${{ data.version("my-model", "config", 1).attributes.setting }}
 
+# The version before the latest — .version arithmetic passes straight through
+priorConfig: ${{ data.version("my-model", "config", data.latest("my-model", "config").version - 1).attributes.setting }}
+
 # Multi-field predicate — reach for data.query() when no shortcut fits
 prodFailures: ${{ data.query('modelName == "scanner" && tags.env == "prod" && attributes.status == "failed"') }}
 ```
