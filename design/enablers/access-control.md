@@ -947,7 +947,10 @@ refused.
 Serve finds an id's owners through a definition index it keeps between
 requests (`DefinitionIdIndex`, swamp-club#3968), instead of reading every
 definition, auto-definitions included, on each request. The index records only
-which file declares which id. Each request first checks the stat of every
+which file declares which id and which name. Serve's definition repository
+answers a lookup by name across every type from the same index
+(swamp-club#4037), so a direct-type workflow step whose definition does not
+exist yet does not read every definition to find that out. Each request first checks the stat of every
 definition directory. A directory whose stat moved, or was less than 2 s old
 when it was last listed, is listed again, and only its files whose own stat
 moved (or was that recent when read) are read. Deciding when a stat is taken

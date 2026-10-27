@@ -66,6 +66,7 @@ import {
 } from "./paths.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
+import type { DefinitionNameIndex } from "./definition_id_index.ts";
 import {
   currentDiagnosticTally,
   startDiagnosticPhase,
@@ -159,6 +160,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     string,
     { path: string; pathSegments: string[]; primary: boolean }
   >();
+  /** Answers {@link findByNameGlobal} once attached: see {@link useNameIndex}. */
+  private nameIndex: DefinitionNameIndex | undefined;
 
   constructor(
     private readonly repoDir: string,
@@ -636,13 +639,29 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
+  /**
+   * Answers {@link findByNameGlobal} through `index` from now on, instead of
+   * walking every definition on each lookup that no hint answers
+   * (swamp-club#4037). `swamp serve` attaches the definition index it keeps
+   * for its lifetime, once, as it starts; a CLI command attaches none, as
+   * building an index reads every definition where a walk for an existing
+   * name stops at the first match. Throws when an index is already attached.
+   */
+  useNameIndex(index: DefinitionNameIndex): void {
+    if (this.nameIndex) {
+      throw new Error("This definition repository already has a name index");
+    }
+    this.nameIndex = index;
+  }
+
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    // This method has no name-derived fast path at all — without a hint every
-    // call re-walks and re-parses every definition in the repository until it
-    // hits a match. The running diagnostic phase, if any, counts which step
-    // answered; the walks count their reads (files_read, read_work_ms).
+    // Without a name index this method has no name-derived fast path at all —
+    // without a hint every call re-walks and re-parses every definition in
+    // the repository until it hits a match. The running diagnostic phase, if
+    // any, counts which step answered; the walks count their reads
+    // (files_read, read_work_ms).
     const tally = currentDiagnosticTally();
     const hint = this.globalNameToActualPath.get(name);
     if (hint?.primary) {
@@ -652,6 +671,9 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         return hinted;
       }
       this.globalNameToActualPath.delete(name);
+    }
+    if (this.nameIndex) {
+      return await this.findByNameInIndex(this.nameIndex, name);
     }
 
     tally.add("primary_walks");
@@ -686,6 +708,57 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
     return null;
+  }
+
+  /**
+   * {@link findByNameGlobal}'s answer from a name index, as a
+   * `definition_lookup` phase. A miss fails as the walk's does on an
+   * auto-definition the datastore could not materialise (swamp-club#3617).
+   */
+  private async findByNameInIndex(
+    index: DefinitionNameIndex,
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const lookup = startDiagnosticPhase("definition_lookup", {
+      "swamp.diagnostic.lookup_method": "global_index",
+    });
+    try {
+      const found = await lookup.run(async () => {
+        const match = await index.findByName(name);
+        if (match) {
+          this.idToActualPath.set(
+            match.definition.id as DefinitionId,
+            match.path,
+          );
+          this.globalNameToActualPath.set(name, {
+            path: match.path,
+            pathSegments: match.segments,
+            primary: match.primary,
+          });
+          return match;
+        }
+        if (
+          this.secondaryBaseDir && this.unreadableContent &&
+          isFilenameSafeDefinitionName(name)
+        ) {
+          await this.throwIfUnreadableByName(this.secondaryBaseDir, name);
+        }
+        return null;
+      });
+      lookup.attributes({
+        "swamp.diagnostic.hit": found !== null,
+        "swamp.diagnostic.source": found === null
+          ? "none"
+          : found.primary
+          ? "primary"
+          : "auto",
+      });
+      lookup.end();
+      return found && { definition: found.definition, type: found.type };
+    } catch (error) {
+      lookup.fail(error);
+      throw error;
+    }
   }
 
   async isAutoDefinition(

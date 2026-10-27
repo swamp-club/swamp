@@ -26,7 +26,11 @@ import type {
   DefinitionOwnerView,
 } from "../../domain/definitions/repositories.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { observeDiagnosticPhase } from "../../domain/diagnostics/diagnostic_phase.ts";
+import type { ObservationAttributes } from "../../domain/remote/observability.ts";
+import {
+  type DiagnosticPhase,
+  observeDiagnosticPhase,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import { activeSpanLink, type Link, withSpan } from "../tracing/mod.ts";
 import { RUN_INDEX_RACY_WINDOW_MS } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
@@ -53,6 +57,25 @@ const MAX_OPEN_FILES = 32;
 const BROKEN = Symbol("broken");
 
 type FoundDefinition = { definition: Definition; type: ModelType };
+
+/** A definition found by name, with where its file is. */
+export interface NamedDefinitionMatch {
+  definition: Definition;
+  type: ModelType;
+  path: string;
+  /** Its directory's path below its root, as a scan reports it. */
+  segments: string[];
+  /** Whether it is in the first root, the definitions directory. */
+  primary: boolean;
+}
+
+/**
+ * Finds the definition a global lookup by name finds: the first file, in the
+ * order a scan of every definition reads them, that declares the name.
+ */
+export interface DefinitionNameIndex {
+  findByName(name: string): Promise<NamedDefinitionMatch | null>;
+}
 
 /**
  * The definition files an index reads: a {@link YamlDefinitionRepository}.
@@ -83,6 +106,8 @@ export interface DefinitionIdIndexOptions {
 interface IndexedFile {
   /** The id it declared when last read; undefined when it did not parse. */
   id: string | undefined;
+  /** The name it declared when last read; undefined when it did not parse. */
+  name: string | undefined;
   /**
    * Its stat when read, kept only when old enough to rule out a change
    * within the same clock tick. Undefined when there was none to keep, or a
@@ -124,13 +149,14 @@ interface ValidationCounts {
 const MAX_JOIN_LINKS = 8;
 
 /**
- * Which file declares which definition id, kept between requests by `swamp
- * serve` so authorizing what a request reads does not parse every
- * definition each time (swamp-club#3968).
+ * Which file declares which definition id and name, kept between requests by
+ * `swamp serve` so authorizing what a request reads does not parse every
+ * definition each time (swamp-club#3968), and neither does a global lookup
+ * of a definition name that has no definition yet (swamp-club#4037).
  *
  * Only locations are kept, never definitions: a lookup reads each file that
- * declared the id now, so its name and tags are current, and moves a file
- * that no longer declares it. {@link begin} checks every directory's stat,
+ * declared the id or name now, so what it returns is current, and moves a
+ * file that no longer declares it. {@link begin} checks every directory's stat,
  * as {@link RunIndexCache} does a run index: a directory whose stat moved,
  * or was too recent when it was listed to rule out a change within the same
  * clock tick, is listed again, and of its files only those whose own stat
@@ -148,6 +174,10 @@ const MAX_JOIN_LINKS = 8;
  * would bring, by its name or its tags, does not apply. Writing it needs
  * write access to the definitions, which can change any owner's file
  * itself, so it grants nothing that access does not already give.
+ * Likewise a regular file overwritten in place to declare another name is
+ * not found by that name until then, so a direct-type run of the name can
+ * create a second definition of it. Editors, git and `save()` replace a
+ * file by renaming one over it, which moves the directory's stat.
  *
  * Listing a directory is shared by the requests that may share it, and
  * stops once every one of them has been cancelled. A listing replaces the
@@ -163,6 +193,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
   ) => Promise<RecordFingerprint | undefined | null>;
   readonly #dirs = new Map<string, IndexedDir>();
   readonly #pathsById = new Map<string, Set<string>>();
+  readonly #pathsByName = new Map<string, Set<string>>();
   #definitions = 0;
   readonly #openFiles = new Semaphore(MAX_OPEN_FILES);
   readonly #listing = new Map<
@@ -198,7 +229,35 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     // Inside a diagnostic area that lists it, the check is its owner_index
     // phase, so definition files it reads are counted apart from the
     // request's other work (design/enablers/serve-phase-telemetry.md).
-    await observeDiagnosticPhase("owner_index", {}, async (phase) => {
+    await this.#check("owner_index", {}, signal);
+    return { findAllById: (id) => this.#findAllById(id, signal) };
+  }
+
+  /**
+   * Checks the index against the definitions stored now, as {@link begin}
+   * does, and returns the first file in scan order that declares `name`,
+   * read now: definitions before auto-definitions, so a definition shadows
+   * an auto-definition of the same name, as a scan of every definition does.
+   */
+  async findByName(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<NamedDefinitionMatch | null> {
+    signal?.throwIfAborted();
+    await this.#check("definition_scan", {
+      "swamp.diagnostic.scan_root": "all",
+      "swamp.diagnostic.scan_strategy": "global_index",
+    }, signal);
+    const [found] = await this.#readDeclaring({ name }, true, signal);
+    return found ?? null;
+  }
+
+  async #check(
+    phaseName: DiagnosticPhase,
+    attributes: ObservationAttributes,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    await observeDiagnosticPhase(phaseName, attributes, async (phase) => {
       const cold = this.#dirs.size === 0;
       const counts: ValidationCounts = {
         dirsChecked: 0,
@@ -261,7 +320,6 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         });
       }
     });
-    return { findAllById: (id) => this.#findAllById(id, signal) };
   }
 
   async #validateDir(
@@ -418,6 +476,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     if (stat === BROKEN) {
       files.set(entry.name, {
         id: undefined,
+        name: undefined,
         fingerprint: undefined,
         isSymlink: entry.isSymlink,
       });
@@ -431,6 +490,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       if (entry.isSymlink) {
         files.set(entry.name, {
           id: undefined,
+          name: undefined,
           fingerprint: undefined,
           isSymlink: true,
         });
@@ -451,6 +511,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     );
     files.set(entry.name, {
       id: found?.definition.id,
+      name: found?.definition.name,
       fingerprint,
       isSymlink: entry.isSymlink,
     });
@@ -491,7 +552,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       parsed++;
       if (!this.#isCurrent(filePath, file)) continue;
       file.fingerprint = fingerprint;
-      this.#reassign(filePath, file, found?.definition.id);
+      this.#reassign(filePath, file, found?.definition);
     }
     return parsed;
   }
@@ -500,13 +561,34 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     id: string,
     signal: AbortSignal | undefined,
   ): Promise<FoundDefinition[]> {
-    const paths = [...this.#pathsById.get(id) ?? []]
+    const found = await this.#readDeclaring({ id }, false, signal);
+    return found.map(({ definition, type }) => ({ definition, type }));
+  }
+
+  /**
+   * Reads each file indexed under `key` now, in the order a scan of every
+   * definition reads them, and returns those that still declare it: only
+   * the first with `firstOnly`.
+   */
+  async #readDeclaring(
+    key: { id: string; name?: undefined } | { id?: undefined; name: string },
+    firstOnly: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<NamedDefinitionMatch[]> {
+    const indexed = key.id !== undefined
+      ? this.#pathsById.get(key.id)
+      : this.#pathsByName.get(key.name);
+    const declares = (definition: Definition) =>
+      key.id !== undefined
+        ? definition.id === key.id
+        : definition.name === key.name;
+    const paths = [...indexed ?? []]
       .map((path) => ({ path, dir: this.#dirs.get(dirname(path)) }))
       .sort((a, b) =>
         (a.dir?.root ?? 0) - (b.dir?.root ?? 0) ||
         comparePathsBySegment(a.path, b.path)
       );
-    const found: FoundDefinition[] = [];
+    const found: NamedDefinitionMatch[] = [];
     for (const { path, dir } of paths) {
       signal?.throwIfAborted();
       const file = dir?.files.get(basename(path));
@@ -516,7 +598,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       // Gone since it was listed (the view lasts the whole request): it owns
       // nothing, and is no broken definition to warn about.
       if (!dir || !file || isSymlink === null) {
-        this.#unindex(id, path);
+        this.#unindex({ id: key.id, name: key.name }, path);
         continue;
       }
       const read = await this.#source.readDefinitionFile(
@@ -524,8 +606,15 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         [...dir.segments],
         isSymlink,
       );
-      if (read?.definition.id === id) {
-        found.push(read);
+      if (read && declares(read.definition)) {
+        found.push({
+          definition: read.definition,
+          type: read.type,
+          path,
+          segments: [...dir.segments],
+          primary: dir.root === 0,
+        });
+        if (firstOnly) break;
         continue;
       }
       // Rewritten since it was listed: index it under what it declares now,
@@ -533,7 +622,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       // entry while this read ran already says what the file declares.
       if (!this.#isCurrent(path, file)) continue;
       file.fingerprint = undefined;
-      this.#reassign(path, file, read?.definition.id);
+      this.#reassign(path, file, read?.definition);
     }
     return found;
   }
@@ -610,14 +699,14 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     }
     if (previous) {
       for (const [name, file] of previous.files) {
-        this.#unindex(file.id, join(path, name));
+        this.#unindex(file, join(path, name));
       }
       for (const name of previous.dirs) {
         if (!dir.dirs.includes(name)) this.#drop(join(path, name));
       }
     }
     for (const [name, file] of dir.files) {
-      this.#index(file.id, join(path, name));
+      this.#index(file, join(path, name));
     }
     this.#dirs.set(path, dir);
   }
@@ -628,7 +717,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     if (!dir) return;
     this.#dirs.delete(path);
     for (const [name, file] of dir.files) {
-      this.#unindex(file.id, join(path, name));
+      this.#unindex(file, join(path, name));
     }
     for (const name of dir.dirs) this.#drop(join(path, name));
   }
@@ -638,28 +727,59 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     return this.#dirs.get(dirname(path))?.files.get(basename(path)) === file;
   }
 
-  #reassign(path: string, file: IndexedFile, id: string | undefined): void {
-    this.#unindex(file.id, path);
-    file.id = id;
-    this.#index(id, path);
+  #reassign(
+    path: string,
+    file: IndexedFile,
+    definition: Definition | undefined,
+  ): void {
+    this.#unindex(file, path);
+    file.id = definition?.id;
+    file.name = definition?.name;
+    this.#index(file, path);
   }
 
-  #index(id: string | undefined, path: string): void {
-    if (id === undefined) return;
-    const paths = this.#pathsById.get(id);
-    if (paths?.has(path)) return;
-    if (paths) paths.add(path);
-    else this.#pathsById.set(id, new Set([path]));
-    this.#definitions++;
+  #index(
+    file: { id: string | undefined; name: string | undefined },
+    path: string,
+  ): void {
+    if (addPath(this.#pathsById, file.id, path)) this.#definitions++;
+    addPath(this.#pathsByName, file.name, path);
   }
 
-  #unindex(id: string | undefined, path: string): void {
-    if (id === undefined) return;
-    const paths = this.#pathsById.get(id);
-    if (!paths?.delete(path)) return;
-    this.#definitions--;
-    if (paths.size === 0) this.#pathsById.delete(id);
+  #unindex(
+    file: { id: string | undefined; name: string | undefined },
+    path: string,
+  ): void {
+    if (removePath(this.#pathsById, file.id, path)) this.#definitions--;
+    removePath(this.#pathsByName, file.name, path);
   }
+}
+
+/** Adds `path` under `key`; whether it was not there already. */
+function addPath(
+  paths: Map<string, Set<string>>,
+  key: string | undefined,
+  path: string,
+): boolean {
+  if (key === undefined) return false;
+  const keyed = paths.get(key);
+  if (keyed?.has(path)) return false;
+  if (keyed) keyed.add(path);
+  else paths.set(key, new Set([path]));
+  return true;
+}
+
+/** Removes `path` from under `key`; whether it was there. */
+function removePath(
+  paths: Map<string, Set<string>>,
+  key: string | undefined,
+  path: string,
+): boolean {
+  if (key === undefined) return false;
+  const keyed = paths.get(key);
+  if (!keyed?.delete(path)) return false;
+  if (keyed.size === 0) paths.delete(key);
+  return true;
 }
 
 /**

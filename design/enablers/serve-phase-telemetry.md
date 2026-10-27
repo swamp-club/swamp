@@ -126,10 +126,18 @@ below.
 `secondary_index`, or `none` for a miss. New values may be added. Lookup is
 scoped to one type: a worker lookup reads only worker definitions.
 
+A lookup by name across every type, such as the one a direct-type workflow step
+makes, is a `definition_lookup` with `lookup_method=global_index` in `swamp
+serve` (lab #4037). It sets `hit` and `source` and runs under whatever phase
+called it (`prepare` and `lock_held` in a direct run, `definition_resolve` in a
+worker delete). A hint from an earlier lookup still answers before it, as the
+`name_hint_hits` counter. Outside serve, this lookup walks every definition and
+opens no phase.
+
 `bytes_read` counts the UTF-8 length of the text read, which can differ from the
 file's size on disk when it holds invalid byte sequences.
 
-`definition_scan` comes in two strategies:
+`definition_scan` comes in three strategies:
 
 - `full_listing` (`scan_root=primary`): every definition file of the type under
   `models/`. `files_examined`, `files_read`, `bytes_read`, `broken_files`
@@ -145,6 +153,12 @@ file's size on disk when it holds invalid byte sequences.
   files the index read. The index's own `swamp.definition.name_index.validate`
   span (`name_index.entries`, `name_index.relisted`, `name_index.files_parsed`)
   nests under the scan of the lookup that ran it.
+- `global_index` (`scan_root=all`): the check of serve's definition index (lab
+  #3968) that a `global_index` lookup runs before it reads the files declaring
+  the name. It carries the same attributes as `owner_index` below (`cache`,
+  `definitions`, `dirs_checked`, `dirs_relisted`, `dirs_joined`,
+  `files_parsed`, `files_joined`), and the
+  `swamp.serve.definition_index.validate` span nests under it.
 
 The lookup under the creation lock is the `definition_lookup` with
 `lookup_attempt=recheck`. Its scans inherit the label, so a duplicate scan is
@@ -253,7 +267,7 @@ own; it is not a phase of this area.
 | `eligibility`              | `prune_pass`         | `considered`, `eligible`, and one of `skipped_not_disconnected`, `skipped_no_disconnect_time`, `skipped_within_grace` per kept worker                                                             |
 | `delete_loop`              | `prune_pass`         | `sequential=true`, `batch_size`, `attempted`, `deleted`, `failed`; `result` `completed` or `partial`                                                                                             |
 | `model_delete`             | `swamp.model.delete` | One per worker. `definition_type`; a refused delete ends `error` with `refusal` (`not_found`, `workflow_referenced`, `live_data`)                                                                |
-| `definition_resolve`       | `model_delete`       | `hit`; `name_hint_hits`, `primary_walks`, `secondary_walks`; `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms` for the definitions a walk read                                         |
+| `definition_resolve`       | `model_delete`       | `hit`; `name_hint_hits`, `primary_walks`, `secondary_walks`; `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms` for the definitions a walk read. In serve no walk runs: a `definition_lookup` with `lookup_method=global_index` nests under it instead |
 | `workflow_reference_check` | `model_delete`       | `workflows` (every workflow, loaded), `referencing`, `reference_match_work_ms`                                                                                                                   |
 | `data_discovery`           | `model_delete`       | `artifacts`                                                                                                                                                                                      |
 | `expiry_check`             | `model_delete`       | `checker` (whether expiry is checked at all), `checked`, `expired`, `live`, `check_failed`                                                                                                       |
@@ -283,10 +297,10 @@ early, or `binding_cleanup` raised. Counters bumped per item or event
 (`eligible`, `skipped_*`, `attempted`, `deleted`, `checked`, `*_walks`) are
 missing, not zero, when nothing happened.
 
-Repeated discovery shows in the per-worker counters. Resolving a worker's
-definition by name walks every definition in the repository until a hint from an
-earlier lookup spares it (`primary_walks`, `files_read` against
-`name_hint_hits`). The reference check loads every workflow. Output discovery
+Repeated discovery shows in the per-worker counters. Outside serve, resolving a
+worker's definition by name walks every definition in the repository until a
+hint from an earlier lookup spares it (`primary_walks`, `files_read` against
+`name_hint_hits`); serve answers it from its definition index. The reference check loads every workflow. Output discovery
 reads every output record of the worker type to find one worker's (`files_read`
 against `outputs`). Removing one output reads its method's records until it
 finds the file (`search_files_read`). All of these repeat for each worker in a
