@@ -334,6 +334,9 @@ export async function startBaselineOrchestrator(
     shutdown: async () => {
       gateway.dispose();
       await server.shutdown();
+      // Bookkeeping a dispatch records without waiting (a pending dispatch's
+      // end) lands before the test removes the repo (swamp-club#4038).
+      await dispatchService.settled();
     },
   };
 }

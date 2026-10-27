@@ -105,7 +105,10 @@ function createHarness(options?: {
   workers?: WorkerSnapshot[];
   queueTimeoutMs?: number;
   /** Settles each transition when it settles; resolved at once when absent. */
-  holdTransition?: (methodName: string) => Promise<void>;
+  holdTransition?: (
+    methodName: string,
+    inputs: Record<string, unknown>,
+  ) => Promise<void>;
 }) {
   const pool = new Map<string, WorkerSnapshot>(
     (options?.workers ?? [snapshot({ name: "w1" })]).map((w) => [w.name, w]),
@@ -163,7 +166,8 @@ function createHarness(options?: {
         inputs: input.inputs,
       });
       transitionScopes.push(currentVaultAccess());
-      return options?.holdTransition?.(input.methodName) ?? Promise.resolve();
+      return options?.holdTransition?.(input.methodName, input.inputs) ??
+        Promise.resolve();
     },
     captureEnvironment: () => ({ SHIPPED: "yes" }),
   });
@@ -246,6 +250,147 @@ Deno.test("DispatchService: each lease transition runs in a dispatch-tail span (
       ],
     );
   });
+});
+
+function workerPool(count: number): WorkerSnapshot[] {
+  return Array.from(
+    { length: count },
+    (_, i) => snapshot({ name: `w${String(i).padStart(2, "0")}` }),
+  );
+}
+
+Deno.test("DispatchService: a burst of completions waits on no other lease (swamp-club#4038)", async () => {
+  await withCapturedSpans(async (spans) => {
+    const burst = 25;
+    const h = createHarness({ workers: workerPool(burst) });
+    // Every worker returns at once, once all of them hold a dispatch.
+    const release = Promise.withResolvers<void>();
+    let arrived = 0;
+    h.setBehavior(async () => {
+      if (++arrived === burst) release.resolve();
+      await release.promise;
+      return { status: "success", outputs: [], logs: [], durationMs: 1 };
+    });
+
+    const results = await Promise.all(
+      Array.from(
+        { length: burst },
+        () => h.service.executeRemote(stepRequest()),
+      ),
+    );
+
+    assertEquals(results.length, burst);
+    const completions = spans.filter((s) =>
+      s.name === "swamp.serve.transition" &&
+      s.attributes["swamp.transition.operation"] === "step_lease.complete"
+    );
+    assertEquals(completions.length, burst);
+    assertEquals(
+      completions.map((s) => s.attributes["swamp.transition.queue_depth"]),
+      Array(burst).fill(0),
+    );
+  });
+});
+
+Deno.test("DispatchService: a slow completion holds only its own lease (swamp-club#4038)", async () => {
+  const burst = 25;
+  const heldComplete = Promise.withResolvers<void>();
+  let heldLease: unknown;
+  const h = createHarness({
+    workers: workerPool(burst),
+    holdTransition: (methodName, inputs) => {
+      if (methodName !== "complete" || heldLease !== undefined) {
+        return Promise.resolve();
+      }
+      heldLease = inputs.leaseId;
+      return heldComplete.promise;
+    },
+  });
+
+  let finished = 0;
+  const steps = Array.from(
+    { length: burst },
+    () =>
+      h.service.executeRemote(stepRequest()).then((result) => {
+        finished++;
+        return result;
+      }),
+  );
+  // Every other step's acquire and complete land while one complete is held.
+  await waitFor(() => finished === burst - 1, "every other step to finish");
+  const transitionsOf = (methodName: string) =>
+    h.transitions.filter((t) => t.methodName === methodName).length;
+  assertEquals(transitionsOf("acquire"), burst);
+  assertEquals(transitionsOf("complete"), burst);
+
+  heldComplete.resolve();
+  assertEquals((await Promise.all(steps)).length, burst);
+});
+
+Deno.test("DispatchService: a held pending-dispatch record holds no lease (swamp-club#4038)", async () => {
+  const heldEnqueue = Promise.withResolvers<void>();
+  const h = createHarness({
+    queueTimeoutMs: 60_000,
+    holdTransition: (methodName) =>
+      methodName === "enqueue" ? heldEnqueue.promise : Promise.resolve(),
+  });
+  const controller = new AbortController();
+  // No worker carries the label, so this step queues and records it.
+  const queued = h.service.executeRemote(stepRequest({
+    placement: { labels: { gpu: "true" }, platform: "linux" },
+    signal: controller.signal,
+  }));
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "enqueue"),
+    "the step to queue",
+  );
+
+  await h.service.executeRemote(stepRequest());
+  assertEquals(
+    h.transitions.map((t) => t.methodName).filter((m) => m !== "enqueue"),
+    ["acquire", "complete"],
+  );
+
+  controller.abort();
+  await assertRejects(() => queued, DOMException);
+  heldEnqueue.resolve();
+  await h.service.settled();
+});
+
+Deno.test("DispatchService: one lease's transitions stay in order when a cancel races its first write (swamp-club#4038)", async () => {
+  const heldMark = Promise.withResolvers<void>();
+  const h = createHarness({
+    holdTransition: (methodName) =>
+      methodName === "mark_writes" ? heldMark.promise : Promise.resolve(),
+  });
+  let writing: Promise<void> | undefined;
+  h.setBehavior((name, params) => {
+    const registration = h.dispatches.forDispatch(name, params.dispatchId)!;
+    writing = h.service.recordFirstWrite(registration);
+    return Promise.reject(
+      new RpcError({ code: "cancelled", message: "aborted on worker" }),
+    );
+  });
+
+  const step = h.service.executeRemote(stepRequest());
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "mark_writes"),
+    "the first write to be recorded",
+  );
+  // A full turn, so a fail that skipped the queue would have run.
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["acquire", "mark_writes"],
+  );
+
+  heldMark.resolve();
+  await assertRejects(() => step, DOMException);
+  await writing;
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["acquire", "mark_writes", "fail"],
+  );
 });
 
 Deno.test("DispatchService: the step lease records the workflow run it serves", async () => {
