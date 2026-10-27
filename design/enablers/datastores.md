@@ -36,10 +36,10 @@ An external path suits shared NFS mounts, or keeps runtime data out of git.
 **Durable v2 writes** (swamp-club#4017). On a v2 datastore (this backend, and
 the local cache of a v2 extension datastore) whose `durable` setting is on (it
 is off by default, below), a data version is synced before anything publishes
-it. `FileSystemUnifiedDataRepository` writes `metadata.yaml`
-and `raw` through the synced atomic write (`atomic_write.ts`: the temp file
-synced, renamed, the directory synced), syncs the version directory once, then
-the data-name and model directories, and only then moves the `latest` marker,
+it. `FileSystemUnifiedDataRepository` writes `metadata.yaml` and `raw` through
+the synced atomic write (`atomic_write.ts`: the temp file synced, renamed, the
+directory synced), syncs the version directory once, then the data-name and
+model directories, and only then moves the `latest` marker,
 itself written synced, and writes the catalog row. A writer that creates
 directories syncs the parent of each one (`make_directories.ts`). The per-model
 lock creates a new model's directories before the repository writes under

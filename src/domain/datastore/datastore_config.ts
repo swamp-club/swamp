@@ -233,9 +233,10 @@ export interface CustomDatastoreConfig {
   /** Namespace for giga-swamp multi-repo shared datastores */
   readonly namespace?: string;
   /**
-   * Whether data writes to the local cache are synced to disk before they are published, so
-   * they survive a power cut (swamp-club#4017). Absent means off: writes
-   * are atomic but unsynced. See {@link resolveDurableWrites}.
+   * Whether data writes to the local cache are synced to disk before they
+   * are published, so they survive a power cut (swamp-club#4017). Absent
+   * means off: writes are atomic but unsynced. See
+   * {@link resolveDurableWrites}.
    */
   readonly durable?: boolean;
 }

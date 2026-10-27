@@ -800,7 +800,7 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | `resolveModel`   | `findDefinitionByIdOrName` over the definition repository                             | ws        | Workflow step behavior resolution. Skips control-plane definitions, so one cannot shadow a behavior               |
 | resource write   | `POST /data/resource` → `writeResource`                                               | h2        | Durable immediately. Carries the method's `overrides` (tags, lifetime, garbageCollection), validated at serve     |
 | resource delete  | `DELETE /data/resource`                                                               | h2        |                                                                                                                   |
-| file write       | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2        | `writeLine` lands per request (live logs). The open carries the writer's `overrides`, validated at serve     |
+| file write       | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2        | `writeLine` lands per request (live logs). The open carries the writer's `overrides`, validated at serve          |
 | extension assets | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`               | h2        | Cacheable by fingerprint                                                                                          |
 | `log` / `event`  | run-event stream                                                                      | ws        | `rpc.stream` frames; flows to client and the run log (below)                                                      |
 
