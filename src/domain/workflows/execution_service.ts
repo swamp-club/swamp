@@ -126,6 +126,7 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
+import { evaluatedJobMismatch } from "./job_pairing.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   FROM_JOB_WITHOUT_FROM,
@@ -5084,6 +5085,19 @@ export class WorkflowExecutionService {
       );
       warnForeignTaskArguments(workflow.name, evaluated.foreignTaskArguments);
       const resolvedWorkflow = evaluated.workflow;
+      // An expression-named job must evaluate to the stored job the reset
+      // was planned against: resume walks records by evaluated name. Refused
+      // here, before execution, so the run is restored as it was.
+      const mismatch = evaluatedJobMismatch(
+        workflow,
+        resolvedWorkflow,
+        existingRun,
+      );
+      if (mismatch !== undefined) {
+        throw new UserError(
+          `${mismatch} Start a new run. See 'swamp workflow history logs ${existingRun.id}'.`,
+        );
+      }
       const sanitizedTasks = evaluated.sanitizedTasks;
       const stepProvenance = evaluated.stepProvenance;
       const workflowProvenance = evaluated.provenance;

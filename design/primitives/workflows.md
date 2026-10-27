@@ -2269,7 +2269,12 @@ paired (`pairExpressionJobs` in `src/domain/workflows/job_pairing.ts`). Reset, r
 that pairing, so `--job 'site-${{ inputs.b }}'` resets only the job it
 evaluated to, and a retry re-runs a failed step of an expression-named job. A
 reset that reaches an expression-named job once the jobs no longer line up is
-refused with `Start a new run.`
+refused with `Start a new run.` Resume then re-evaluates the workflow and finds
+each job's record by its evaluated name, so after that evaluation, and before
+any step runs, it refuses (restoring the run as stored) when an
+expression-named job now evaluates to a name the run lacks or to another stored
+job than the one it was paired with, as when a non-input value its name reads
+changed since the run (`evaluatedJobMismatch`).
 
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without

@@ -12631,6 +12631,48 @@ Deno.test("resume: --from re-runs only the kept step when a shared step name is 
   });
 });
 
+Deno.test("resume: refuses, and restores the run, when an expression-named job evaluates to another stored name than its pairing", async () => {
+  await withTempDir(async (tempDir) => {
+    // Stored as site-west and site-east. The edit keeps the jobs in place but
+    // makes the second evaluate to site-west, the first job's stored name.
+    const before = shapedWorkflow([
+      { name: "site-${{ 'west' }}", steps: [modelStep("restart")] },
+      { name: "site-${{ 'east' }}", steps: [modelStep("restart")] },
+    ]);
+    const { workflowRepo, runRepo, executor, service } = await setupRetry(
+      tempDir,
+      before,
+    );
+    executor.failing.add("site-east/restart");
+    const failed = await service.execute(before.name);
+    assertEquals(failed.status, "failed");
+    assertEquals(failed.jobs.map((j) => j.jobName), ["site-west", "site-east"]);
+    await workflowRepo.save(shapedWorkflow([
+      { name: "site-${{ 'north' }}", steps: [modelStep("restart")] },
+      { name: "site-${{ 'west' }}", steps: [modelStep("restart")] },
+    ], before.id));
+    executor.failing.clear();
+    const stored = JSON.stringify(
+      (await runRepo.findById(before.id, failed.id))!.toData(),
+    );
+    const calls = [...executor.calls.values()].reduce((a, b) => a + b, 0);
+
+    await assertRejects(
+      () => drainResume(service, before.name, failed.id),
+      UserError,
+      `Job "site-\${{ 'north' }}" now evaluates to "site-north", but the run stored it as "site-west".`,
+    );
+    assertEquals(
+      JSON.stringify((await runRepo.findById(before.id, failed.id))!.toData()),
+      stored,
+    );
+    assertEquals(
+      [...executor.calls.values()].reduce((a, b) => a + b, 0),
+      calls,
+    );
+  });
+});
+
 /** swamp-club#3815: jobs a and b each have a step "s"; b depends on a. */
 function sharedStepNameWorkflow(): Workflow {
   return shapedWorkflow([

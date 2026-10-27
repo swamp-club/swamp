@@ -766,6 +766,39 @@ Deno.test("planFailedRunResume: a --from step moved into a job the run does not 
   );
 });
 
+Deno.test("planFailedRunResume: a forEach --from step whose older iterations lack forEachTemplate is not refused as moved", () => {
+  const wf = workflow([
+    { name: "a", steps: [each("deploy")] },
+    { name: "b", steps: [plain("other")] },
+  ]);
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: "failed",
+    jobs: [
+      {
+        jobName: "a",
+        status: "failed",
+        steps: [
+          { stepName: "deploy-dev", status: "succeeded" },
+          { stepName: "deploy-qa", status: "failed" },
+        ],
+      },
+      {
+        jobName: "b",
+        status: "succeeded",
+        steps: [
+          { stepName: "other", status: "succeeded" },
+          { stepName: "deploy", status: "succeeded" },
+        ],
+      },
+    ],
+  });
+  const plan = planFailedRunResume(wf, run, { step: "deploy", job: "a" });
+  assertEquals(sortRefs(plan.steps), ["a/deploy-dev", "a/deploy-qa"]);
+});
+
 Deno.test("planFailedRunResume: an unknown --from step lists each step name once", () => {
   const { wf, run } = sharedNameRun();
   assertStringIncludes(

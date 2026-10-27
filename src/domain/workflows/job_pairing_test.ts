@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { Job } from "./job.ts";
-import { pairExpressionJobs, workflowJobOf } from "./job_pairing.ts";
+import {
+  evaluatedJobMismatch,
+  pairExpressionJobs,
+  workflowJobOf,
+} from "./job_pairing.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
@@ -156,4 +160,29 @@ Deno.test("pairExpressionJobs: a name with many expressions is checked in one pa
   const wf = workflowOf(template);
   const stored = "a".repeat(5_000);
   assertEquals(pairExpressionJobs(wf, runOf(wf, stored)), undefined);
+});
+
+Deno.test("evaluatedJobMismatch: accepts jobs that evaluate to the stored jobs they were paired with", () => {
+  const wf = workflowOf(A, "literal");
+  const run = runOf(wf, "site-west", "literal");
+  assertEquals(
+    evaluatedJobMismatch(wf, workflowOf("site-west", "literal"), run),
+    undefined,
+  );
+});
+
+Deno.test("evaluatedJobMismatch: refuses a job that now evaluates to a name the run lacks, or to another stored job", () => {
+  const env = "site-${{ env.REGION }}";
+  const wf = workflowOf(env, "site-other");
+  const run = runOf(wf, "site-north", "site-other");
+  assertEquals(
+    evaluatedJobMismatch(wf, workflowOf("site-south", "site-other"), run),
+    'Job "site-${{ env.REGION }}" now evaluates to "site-south", but the run stored it as "site-north".',
+  );
+  const two = workflowOf(env, B);
+  const stored = runOf(two, "site-north", "site-east");
+  assertEquals(
+    evaluatedJobMismatch(two, workflowOf("site-east", "site-east"), stored),
+    'Job "site-${{ env.REGION }}" now evaluates to "site-east", but the run stored it as "site-north".',
+  );
 });

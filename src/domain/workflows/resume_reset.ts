@@ -380,6 +380,20 @@ function movedEntry(
     : entry.jobName;
   const own = ownName !== undefined ? run.getJob(ownName) : undefined;
   if (!own || holds(own)) return undefined;
+  // Iterations of a forEach entry step stored before forEachTemplate was
+  // recorded are named after it, as the legacy prefix match in
+  // selectResetRecords reads them: a record that is not itself a step of the
+  // job.
+  const ownJob = workflow.getJob(entry.jobName);
+  if (
+    ownJob?.getStep(name)?.forEach !== undefined &&
+    own.steps.some((s) =>
+      s.forEachTemplate === undefined && s.stepName.startsWith(`${name}-`) &&
+      !ownJob.getStep(s.stepName)
+    )
+  ) {
+    return undefined;
+  }
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
   const storedIn = run.jobs.find((j) => {
     const job = workflowJobOf(workflow, j, pairs);
