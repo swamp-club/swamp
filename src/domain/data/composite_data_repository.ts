@@ -127,7 +127,12 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     options?: { deferred?: boolean },
   ): Promise<
-    { version: number; contentPath: string; priorVersions: number[] }
+    {
+      version: number;
+      contentPath: string;
+      priorVersions: number[];
+      durable?: boolean;
+    }
   > {
     const repo = this.routeWrite(data);
     const allocated = await repo.allocateVersion(type, modelId, data, options);
@@ -149,6 +154,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
+    options?: { contentSynced?: boolean },
   ): Promise<{ size: number; checksum: string }> {
     return this.routeWrite(data).finalizeVersion(
       type,
@@ -156,6 +162,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       data,
       version,
       priorVersions,
+      options,
     );
   }
 
@@ -612,6 +619,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
+    options?: { contentSynced?: boolean },
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {
@@ -622,6 +630,7 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
       data,
       version,
       priorVersions,
+      options,
     );
     this.recordDeferredIssuer(repo, type, modelId, data.name, version);
     return result;

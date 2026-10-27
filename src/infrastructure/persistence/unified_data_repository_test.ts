@@ -24,7 +24,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { dirname, join } from "@std/path";
+import { dirname, join, relative, SEPARATOR } from "@std/path";
 import { hostname } from "node:os";
 import { processHostIdentity } from "../runtime/process.ts";
 import {
@@ -49,6 +49,15 @@ import {
   withDiagnosticArea,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { findSpan, withObservedSpans } from "../tracing/span_test_helpers.ts";
+import type { AtomicWriteSync } from "./atomic_write.ts";
+import { runInUnitOfWork } from "./unit_of_work_scope.ts";
+import { createCommitLogUnitOfWork } from "../datastore_v3/commit_log_unit_of_work.ts";
+import {
+  contextHook,
+  MemorySink,
+  unitOptions,
+} from "../datastore_v3/commit_log_test_helpers.ts";
+import { MemoryStorage } from "../../domain/datastore_v3/v3_test_helpers.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -3710,4 +3719,461 @@ Deno.test("delete: measures file removal, catalog upkeep and staging into the ru
       await Deno.remove(tmpDir, { recursive: true });
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Durable v2 writes (swamp-club#4017)
+// ---------------------------------------------------------------------------
+
+interface DurableHarness {
+  repo: FileSystemUnifiedDataRepository;
+  dir: string;
+  /** Sync and catalog events in order, paths relative to the repo dir. */
+  events: string[];
+  /** A path's label in `events`. */
+  label: (path: string) => string;
+}
+
+/**
+ * A v2 repository whose sync hooks and catalog publishing calls record
+ * what they did, in order.
+ */
+async function withDurableRepo(
+  fn: (h: DurableHarness) => Promise<void>,
+  options: {
+    baseDir?: (dir: string) => string;
+    hooks?: (h: Omit<DurableHarness, "repo">) => Partial<AtomicWriteSync>;
+  } = {},
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-durable-test-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  const events: string[] = [];
+  const label = (path: string) =>
+    relative(dir, path).split(SEPARATOR).join("/") || ".";
+  const upsert = catalogStore.upsertNewVersion.bind(catalogStore);
+  catalogStore.upsertNewVersion = (row) => {
+    events.push("catalog");
+    return upsert(row);
+  };
+  const settle = catalogStore.settlePending.bind(catalogStore);
+  catalogStore.settlePending = (...args) => {
+    events.push("settle");
+    return settle(...args);
+  };
+  const hooks: AtomicWriteSync = {
+    syncFile: async (file, paths) => {
+      await file.sync();
+      events.push(`file ${label(paths.target)}`);
+    },
+    syncDirectory: (d) => {
+      events.push(`dir ${label(d)}`);
+      return Promise.resolve();
+    },
+    ...options.hooks?.({ dir, events, label }),
+  };
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      options.baseDir?.(dir),
+      catalogStore,
+      undefined,
+      undefined,
+      SOLO_NAMESPACE,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      hooks,
+    );
+    await fn({ repo, dir, events, label });
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+/** Asserts `first` was recorded, and before every `then` event. */
+function assertBefore(events: string[], first: string, ...then: string[]) {
+  const at = events.indexOf(first);
+  assert(at >= 0, `${first} missing from ${JSON.stringify(events)}`);
+  for (const later of then) {
+    const laterAt = events.lastIndexOf(later);
+    assert(laterAt >= 0, `${later} missing from ${JSON.stringify(events)}`);
+    assert(at < laterAt, `${first} not before ${later}: ${events}`);
+  }
+}
+
+const dataDir = ".swamp/data/test/model/m1";
+
+Deno.test("save: on v2, syncs the version files and the directories that reach them before the marker and the catalog", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await repo.save(testType, "m1", makeJsonData("state"), bytes("{}"));
+    const v1 = `${dataDir}/state/1`;
+    for (const content of [`file ${v1}/metadata.yaml`, `file ${v1}/raw`]) {
+      assertBefore(
+        events,
+        content,
+        `dir ${v1}`,
+        `file ${dataDir}/state/latest`,
+      );
+    }
+    assertBefore(
+      events,
+      `dir ${v1}`,
+      `dir ${dataDir}/state`,
+      `dir ${dataDir}`,
+      `file ${dataDir}/state/latest`,
+    );
+    // The data-name directory is synced again for the marker's rename.
+    assertBefore(events, `file ${dataDir}/state/latest`, "catalog");
+    assertEquals(events.at(-2), `dir ${dataDir}/state`);
+    assertEquals(events.at(-1), "catalog");
+  });
+});
+
+Deno.test("save: on v2, a first version syncs the parent of every directory it created", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await repo.save(testType, "m1", makeJsonData("state"), bytes("{}"));
+    for (
+      const parent of [
+        ".",
+        ".swamp",
+        ".swamp/data",
+        ".swamp/data/test",
+        ".swamp/data/test/model",
+        dataDir,
+      ]
+    ) {
+      assertBefore(events, `dir ${parent}`, `file ${dataDir}/state/latest`);
+    }
+    events.length = 0;
+    await repo.save(testType, "m1", makeJsonData("state"), bytes("{}"));
+    assertEquals(events.includes("dir .swamp/data/test"), false);
+    // A writer that finds the data-name directory present still syncs the
+    // model directory, which holds its entry.
+    assertBefore(events, `dir ${dataDir}`, `file ${dataDir}/state/latest`);
+  });
+});
+
+Deno.test("save: on v2, a data-name directory removed and recreated is synced into its model directory again", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await repo.save(testType, "m1", makeJsonData("gone"), bytes("{}"));
+    await repo.save(testType, "m1", makeJsonData("kept"), bytes("{}"));
+    await Deno.remove(repo.getDataNameDir(testType, "m1", "gone"), {
+      recursive: true,
+    });
+    events.length = 0;
+    await repo.save(testType, "m1", makeJsonData("gone"), bytes("{}"));
+    assertBefore(events, `dir ${dataDir}`, `file ${dataDir}/gone/latest`);
+    assertEquals(events.includes("dir .swamp/data/test/model"), false);
+  });
+});
+
+Deno.test("save: on v2, the first write in a new namespace syncs the datastore directory that holds it", async () => {
+  await withDurableRepo(
+    async ({ repo, dir, events }) => {
+      await Deno.mkdir(join(dir, "ds"));
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("{}"));
+      assertBefore(
+        events,
+        "dir ds",
+        "file ds/ns/data/test/model/m1/state/latest",
+      );
+      assertBefore(
+        events,
+        "dir ds/ns",
+        "file ds/ns/data/test/model/m1/state/latest",
+      );
+    },
+    { baseDir: (dir) => join(dir, "ds", "ns", "data") },
+  );
+});
+
+Deno.test("allocateVersion: on v2, reports durable and syncs the parents of directories it created before returning", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const allocated = await repo.allocateVersion(
+      testType,
+      "m1",
+      makeJsonData("stream"),
+    );
+    assertEquals(allocated.durable, true);
+    // Its data-name directory and every directory above it were created.
+    assert(events.includes(`dir ${dataDir}`));
+    assert(events.includes("dir .swamp/data"));
+  });
+});
+
+Deno.test("saveDeferred and advanceLatestMarkers: on v2, the version is durable before it settles and the marker moves", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const receipt = await repo.saveDeferred(
+      testType,
+      "m1",
+      makeJsonData("state"),
+      bytes("{}"),
+    );
+    const v1 = `${dataDir}/state/1`;
+    assert(events.includes(`file ${v1}/raw`));
+    assert(events.includes(`dir ${dataDir}/state`));
+    await repo.advanceLatestMarkers([receipt]);
+    assertBefore(
+      events,
+      `file ${v1}/raw`,
+      "settle",
+      `file ${dataDir}/state/latest`,
+      "catalog",
+    );
+    assertBefore(events, `dir ${v1}`, "settle");
+  });
+});
+
+Deno.test("advanceLatestMarkers: on v2, a writer that never finalized has its raw, version directory and reach synced before it settles", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const allocated = await repo.allocateVersion(
+      testType,
+      "m1",
+      makeJsonData("log"),
+      { deferred: true },
+    );
+    await Deno.writeTextFile(allocated.contentPath, "partial line\n");
+    events.length = 0;
+    await repo.advanceLatestMarkers([{
+      type: testType,
+      modelId: "m1",
+      dataName: "log",
+      version: allocated.version,
+    }]);
+    const v1 = `${dataDir}/log/1`;
+    assertBefore(
+      events,
+      `file ${v1}/raw`,
+      `dir ${v1}`,
+      "settle",
+      `file ${dataDir}/log/latest`,
+    );
+    assertBefore(events, `dir ${dataDir}/log`, "settle");
+    assertBefore(events, `dir ${dataDir}`, "settle");
+  });
+});
+
+Deno.test("append: on v2, syncs the appended content and the metadata before the catalog", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await repo.save(testType, "m1", makeStreamingData("log"), bytes("a\n"));
+    events.length = 0;
+    await repo.append(testType, "m1", "log", bytes("b\n"));
+    const v1 = `${dataDir}/log/1`;
+    assertBefore(events, `file ${v1}/raw`, `file ${v1}/metadata.yaml`);
+    assertBefore(events, `file ${v1}/metadata.yaml`, `dir ${v1}`, "catalog");
+  });
+});
+
+Deno.test("finalizeVersion: on v2, syncs raw only when the writer did not", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    for (const contentSynced of [true, false]) {
+      const name = contentSynced ? "streamed" : "subprocess";
+      const data = makeJsonData(name);
+      const allocated = await repo.allocateVersion(testType, "m1", data);
+      await Deno.writeTextFile(allocated.contentPath, "{}");
+      if (!contentSynced && Deno.build.os !== "windows") {
+        // A subprocess may leave its output read-only.
+        await Deno.chmod(allocated.contentPath, 0o444);
+      }
+      events.length = 0;
+      await repo.finalizeVersion(
+        testType,
+        "m1",
+        data,
+        allocated.version,
+        allocated.priorVersions,
+        { contentSynced },
+      );
+      const v1 = `${dataDir}/${name}/1`;
+      assertEquals(events.includes(`file ${v1}/raw`), !contentSynced);
+      assertBefore(
+        events,
+        `file ${v1}/metadata.yaml`,
+        `dir ${v1}`,
+        `dir ${dataDir}/${name}`,
+        `file ${dataDir}/${name}/latest`,
+        "catalog",
+      );
+      if (!contentSynced) {
+        assertBefore(events, `file ${v1}/raw`, `file ${v1}/metadata.yaml`);
+      }
+    }
+  });
+});
+
+Deno.test("finalizeVersionDeferred: on v2, the version is synced before its pending row is completed", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const data = makeJsonData("deferred");
+    const allocated = await repo.allocateVersion(testType, "m1", data, {
+      deferred: true,
+    });
+    await Deno.writeTextFile(allocated.contentPath, "{}");
+    events.length = 0;
+    await repo.finalizeVersionDeferred(
+      testType,
+      "m1",
+      data,
+      allocated.version,
+      allocated.priorVersions,
+    );
+    const v1 = `${dataDir}/deferred/1`;
+    assertBefore(events, `file ${v1}/raw`, `file ${v1}/metadata.yaml`);
+    assertBefore(events, `dir ${v1}`, `dir ${dataDir}/deferred`);
+    assertEquals(events.includes("catalog"), false);
+  });
+});
+
+Deno.test("rename: on v2, the copy and the tombstone are each synced before their marker", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    await repo.save(testType, "m1", makeJsonData("old"), bytes("{}"));
+    events.length = 0;
+    await repo.rename(testType, "m1", "old", "new");
+    assertBefore(
+      events,
+      `file ${dataDir}/new/1/raw`,
+      `dir ${dataDir}/new/1`,
+      `file ${dataDir}/new/latest`,
+    );
+    assertBefore(
+      events,
+      `file ${dataDir}/old/2/raw`,
+      `dir ${dataDir}/old/2`,
+      `dir ${dataDir}/old`,
+      `file ${dataDir}/old/latest`,
+    );
+  });
+});
+
+Deno.test("delete: on v2, rewrites the marker durably and never removes it first", async () => {
+  await withDurableRepo(
+    async ({ repo, events }) => {
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("1"));
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("2"));
+      events.length = 0;
+      await repo.delete(testType, "m1", "state", 2);
+      assert(events.includes(`file ${dataDir}/state/latest present`));
+      assertEquals(
+        await Deno.readTextFile(
+          join(repo.getDataNameDir(testType, "m1", "state"), "latest"),
+        ),
+        "1",
+      );
+    },
+    {
+      hooks: ({ events, label }) => ({
+        syncFile: async (file, paths) => {
+          await file.sync();
+          let present = true;
+          try {
+            await Deno.stat(paths.target);
+          } catch {
+            present = false;
+          }
+          events.push(
+            `file ${label(paths.target)}${present ? " present" : ""}`,
+          );
+        },
+      }),
+    },
+  );
+});
+
+Deno.test({
+  name: "delete: on v2, still replaces a legacy latest symlink",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withDurableRepo(async ({ repo }) => {
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("1"));
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("2"));
+      const latest = join(
+        repo.getDataNameDir(testType, "m1", "state"),
+        "latest",
+      );
+      await Deno.remove(latest);
+      await Deno.symlink("2", latest, { type: "dir" });
+      await repo.delete(testType, "m1", "state", 2);
+      assertEquals((await Deno.lstat(latest)).isSymlink, false);
+      assertEquals(await Deno.readTextFile(latest), "1");
+    });
+  },
+});
+
+Deno.test("finalizeVersion: on v2, a lower version that finishes last never moves the marker back (swamp-club#2520)", async () => {
+  let releaseLower!: () => void;
+  const lowerHeld = new Promise<void>((resolve) => releaseLower = resolve);
+  await withDurableRepo(
+    async ({ repo }) => {
+      const data = makeJsonData("state");
+      const first = await repo.allocateVersion(testType, "m1", data);
+      const second = await repo.allocateVersion(testType, "m1", data);
+      await Deno.writeTextFile(first.contentPath, "1");
+      await Deno.writeTextFile(second.contentPath, "2");
+      await Promise.all([
+        repo.finalizeVersion(testType, "m1", data, first.version),
+        repo.finalizeVersion(testType, "m1", data, second.version),
+      ]);
+      const nameDir = repo.getDataNameDir(testType, "m1", "state");
+      assertEquals(await Deno.readTextFile(join(nameDir, "latest")), "2");
+      const leftovers: string[] = [];
+      for await (const entry of Deno.readDir(nameDir)) {
+        if (entry.name.endsWith(".tmp")) leftovers.push(entry.name);
+      }
+      assertEquals(leftovers, []);
+    },
+    {
+      hooks: () => ({
+        syncFile: async (file, paths) => {
+          await file.sync();
+          if (
+            paths.target.endsWith("latest") &&
+            (await Deno.readTextFile(paths.temp)) === "1"
+          ) {
+            await lowerHeld;
+          }
+        },
+        syncDirectory: async (d) => {
+          try {
+            if ((await Deno.readTextFile(join(d, "latest"))) === "2") {
+              releaseLower();
+            }
+          } catch {
+            // No marker yet
+          }
+        },
+      }),
+    },
+  );
+});
+
+Deno.test("save: on v3, the version is not synced by the repository", async () => {
+  await withDurableRepo(async ({ repo, events }) => {
+    const unit = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(new MemorySink(), new MemoryStorage()),
+    );
+    try {
+      await runInUnitOfWork(unit, async () => {
+        const modelId = crypto.randomUUID();
+        await repo.save(testType, modelId, makeJsonData("state"), bytes("{}"));
+        const allocated = await repo.allocateVersion(
+          testType,
+          modelId,
+          makeJsonData("stream"),
+        );
+        assertEquals(allocated.durable, false);
+      });
+    } finally {
+      await unit.abandon();
+    }
+    assertEquals(
+      events.filter((e) => e.startsWith("file ") || e.startsWith("dir ")),
+      [],
+    );
+  });
 });

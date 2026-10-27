@@ -6085,3 +6085,121 @@ Deno.test("createResourceWriter: an update that reads its prior state and writes
     "deploying stage production",
   );
 });
+
+// --- Durable streamed content (swamp-club#4017) ---
+
+/**
+ * A repository that allocates a real temp file, reports `durable`, and
+ * records the options each finalize is given.
+ */
+async function withDurableAllocation(
+  durable: boolean | undefined,
+  fn: (
+    repo: UnifiedDataRepository,
+    finalized: ({ contentSynced?: boolean } | undefined)[],
+  ) => Promise<void>,
+): Promise<void> {
+  const tmpFile = await Deno.makeTempFile();
+  const finalized: ({ contentSynced?: boolean } | undefined)[] = [];
+  try {
+    const repo: UnifiedDataRepository = {
+      ...createMockRepo(),
+      allocateVersion: () =>
+        Promise.resolve({
+          version: 1,
+          contentPath: tmpFile,
+          priorVersions: [],
+          ...(durable === undefined ? {} : { durable }),
+        }),
+      finalizeVersion: (_type, _id, _data, _version, _prior, options) => {
+        finalized.push(options);
+        return Promise.resolve({ size: 0, checksum: "mock-checksum" });
+      },
+    };
+    await fn(repo, finalized);
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+}
+
+function streamOf(...chunks: string[]): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(new TextEncoder().encode(chunk));
+      }
+      controller.close();
+    },
+  });
+}
+
+Deno.test("DataWriter.writeStream: on a durable allocation, syncs its own handle and tells finalize", async () => {
+  await withDurableAllocation(true, async (repo, finalized) => {
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    await createFileWriter("log", "test-log").writeStream(
+      streamOf("a\n", "b\n"),
+    );
+    assertEquals(finalized, [{ contentSynced: true }]);
+  });
+});
+
+Deno.test("DataWriter.writeStream: without a durable allocation, does not claim the content is synced", async () => {
+  await withDurableAllocation(undefined, async (repo, finalized) => {
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    await createFileWriter("log", "test-log").writeStream(streamOf("a\n"));
+    assertEquals(finalized, [{ contentSynced: false }]);
+  });
+});
+
+Deno.test("DataWriter.writeLine and getFilePath: leave the content for finalize to sync", async () => {
+  await withDurableAllocation(true, async (repo, finalized) => {
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    const lines = createFileWriter("log", "lines");
+    await lines.writeLine("one");
+    await lines.finalize();
+    const subprocess = createFileWriter("log", "subprocess");
+    await Deno.writeTextFile(await subprocess.getFilePath(), "out");
+    await subprocess.finalize();
+    assertEquals(finalized, [{ contentSynced: false }, {
+      contentSynced: false,
+    }]);
+  });
+});
+
+Deno.test("DataWriter.writeStream: a stream error is not hidden by the sync, and nothing is finalized", async () => {
+  await withDurableAllocation(true, async (repo, finalized) => {
+    const { createFileWriter } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+    const failing = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+        controller.error(new Error("upstream closed"));
+      },
+    });
+    await assertRejects(
+      () => createFileWriter("log", "test-log").writeStream(failing),
+      Error,
+      "upstream closed",
+    );
+    assertEquals(finalized, []);
+  });
+});

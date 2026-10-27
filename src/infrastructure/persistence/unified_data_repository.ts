@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { existsSync } from "@std/fs";
-import { join, relative, resolve, SEPARATOR } from "@std/path";
+import { dirname, join, relative, resolve, SEPARATOR } from "@std/path";
 import { dirname as posixDirname } from "@std/path/posix";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
@@ -43,7 +43,14 @@ import {
   type DataWrite,
   ModelChanges,
 } from "../../domain/datastore_v3/repository_changes.ts";
-import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
+import {
+  atomicWriteFile,
+  type AtomicWriteSync,
+  atomicWriteTextFile,
+  syncExistingFile,
+  writeSyncedTempFile,
+} from "./atomic_write.ts";
+import { syncDirectory } from "./sync_directory.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   assertContainedPath,
@@ -261,8 +268,97 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
      * no file.
      */
     public readonly unreadableContent?: UnreadableContentLookup,
+    /**
+     * How v2 writes are synced (swamp-club#4017); the defaults in
+     * production, recording hooks in tests.
+     */
+    private readonly durableWriteHooks: AtomicWriteSync = {},
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
+  }
+
+  /**
+   * The sync option of a v2 write, or undefined on v3 (swamp-club#4017). On
+   * v2 a version's files, and the directory entries that reach them, are
+   * synced before anything publishes it: the latest marker moving to it, a
+   * non-pending catalog row, or a settled one. v3 writes stay unsynced: its
+   * commits are durable and replay rewrites the checkout (swamp-club#3617).
+   */
+  private durableSync(): AtomicWriteSync | undefined {
+    return typedStagingActive(this.markDirty)
+      ? undefined
+      : this.durableWriteHooks;
+  }
+
+  private async syncDir(sync: AtomicWriteSync, dir: string): Promise<void> {
+    await (sync.syncDirectory ?? syncDirectory)(dir);
+  }
+
+  /**
+   * Syncs the directories that reach a version's directory: the data-name
+   * directory, which holds the version directory's entry, and the model
+   * directory, which holds the data-name directory's. The model directory
+   * is synced on every write, by whichever writer, so a data-name directory
+   * that GC removed and a later save recreated is durable before either
+   * writer publishes under it.
+   */
+  private async syncVersionReach(
+    sync: AtomicWriteSync,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void> {
+    await settleAll([
+      this.syncDir(sync, this.getDataNameDir(type, modelId, dataName)),
+      this.syncDir(sync, this.getModelDataDir(type, modelId)),
+    ]);
+  }
+
+  /**
+   * Syncs raw a writer streamed in, on v2, unless the writer synced it on
+   * its own handle: content a subprocess wrote through `getFilePath`, or
+   * lines `writeLine` appended through a handle per line.
+   */
+  private async syncWrittenContent(
+    sync: AtomicWriteSync | undefined,
+    contentPath: string,
+    options: { contentSynced?: boolean } | undefined,
+  ): Promise<void> {
+    if (sync === undefined || options?.contentSynced) return;
+    await syncExistingFile(contentPath, sync);
+  }
+
+  /**
+   * Writes a version's metadata.yaml and raw. On v2 both are written and
+   * synced concurrently, then the version directory once, then the reach,
+   * so the version is durable when this returns; on v3 they are written as
+   * before.
+   */
+  private async writeVersionFiles(
+    sync: AtomicWriteSync | undefined,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    metadataContent: string,
+    content: Uint8Array,
+  ): Promise<void> {
+    const metadataPath = this.getMetadataPath(type, modelId, dataName, version);
+    const contentPath = this.getContentPath(type, modelId, dataName, version);
+    await assertSafePath(metadataPath, this.baseDir);
+    await assertSafePath(contentPath, this.baseDir);
+    if (sync === undefined) {
+      await atomicWriteTextFile(metadataPath, metadataContent);
+      await atomicWriteFile(contentPath, content);
+      return;
+    }
+    const files = { ...sync, syncParent: false };
+    await settleAll([
+      atomicWriteTextFile(metadataPath, metadataContent, { sync: files }),
+      atomicWriteFile(contentPath, content, { sync: files }),
+    ]);
+    await this.syncDir(sync, this.getPath(type, modelId, dataName, version));
+    await this.syncVersionReach(sync, type, modelId, dataName);
   }
 
   /**
@@ -1226,32 +1322,22 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         checksum,
       });
 
-      // Save metadata
-      const metadataPath = this.getMetadataPath(
-        type,
-        modelId,
-        data.name,
-        newVersion,
-      );
-      const boundary = this.baseDir;
-      await assertSafePath(metadataPath, boundary);
+      // Save metadata and content, durable on v2 before the marker moves
       const metadata = dataToSave.toData();
       // Remove undefined values
       const cleanData = JSON.parse(JSON.stringify(metadata));
       const metadataContent = stringifyYaml(
         cleanData as Record<string, unknown>,
       );
-      await atomicWriteTextFile(metadataPath, metadataContent);
-
-      // Save content
-      const contentPath = this.getContentPath(
+      await this.writeVersionFiles(
+        this.durableSync(),
         type,
         modelId,
         data.name,
         newVersion,
+        metadataContent,
+        content,
       );
-      await assertSafePath(contentPath, boundary);
-      await atomicWriteFile(contentPath, content);
 
       // Update latest marker
       await this.advanceLatestMarker(type, modelId, data.name, newVersion);
@@ -1343,29 +1429,22 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // delete and GC never mistake the new version for a promoted one.
         this.upsertPendingRow(type, modelId, dataToSave);
 
-        const metadataPath = this.getMetadataPath(
-          type,
-          modelId,
-          data.name,
-          newVersion,
-        );
-        const boundary = this.baseDir;
-        await assertSafePath(metadataPath, boundary);
         const metadata = dataToSave.toData();
         const cleanData = JSON.parse(JSON.stringify(metadata));
         const metadataContent = stringifyYaml(
           cleanData as Record<string, unknown>,
         );
-        await atomicWriteTextFile(metadataPath, metadataContent);
-
-        const contentPath = this.getContentPath(
+        // Durable on v2 before the receipt returns, so promotion only ever
+        // settles a synced version; a failed sync rolls back below.
+        await this.writeVersionFiles(
+          this.durableSync(),
           type,
           modelId,
           data.name,
           newVersion,
+          metadataContent,
+          content,
         );
-        await assertSafePath(contentPath, boundary);
-        await atomicWriteFile(contentPath, content);
       } catch (error) {
         // No receipt reaches the caller, so nothing else would roll this
         // version back; its pending row would stay under this live process.
@@ -1447,9 +1526,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           ),
         )
         : undefined;
+      const sync = this.durableSync();
       const file = await Deno.open(contentPath, { append: true });
       try {
         await file.write(content);
+        // On v2 the appended bytes are synced on the handle that wrote
+        // them, before the metadata and catalog record the new size.
+        if (sync !== undefined) {
+          await (sync.syncFile ?? ((f: Deno.FsFile) => f.sync()))(file, {
+            temp: contentPath,
+            target: contentPath,
+          });
+        }
       } finally {
         file.close();
       }
@@ -1471,6 +1559,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       await atomicWriteTextFile(
         metadataPath,
         stringifyYaml(cleanData as Record<string, unknown>),
+        sync === undefined ? undefined : { sync },
       );
 
       // Update catalog with new size
@@ -2062,29 +2151,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           }),
         );
 
-        const metadataPath = this.getMetadataPath(
-          type,
-          modelId,
-          oldName,
-          tombstoneVersion,
-        );
-        const boundary = this.baseDir;
-        await assertSafePath(metadataPath, boundary);
         const metadata = tombstoneData.toData();
         const cleanData = JSON.parse(JSON.stringify(metadata));
         const metadataYaml = stringifyYaml(
           cleanData as Record<string, unknown>,
         );
-        await atomicWriteTextFile(metadataPath, metadataYaml);
-
-        const contentPath = this.getContentPath(
+        await this.writeVersionFiles(
+          this.durableSync(),
           type,
           modelId,
           oldName,
           tombstoneVersion,
+          metadataYaml,
+          tombstoneContent,
         );
-        await assertSafePath(contentPath, boundary);
-        await atomicWriteFile(contentPath, tombstoneContent);
 
         // Update latest marker to point to tombstone
         await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
@@ -2203,7 +2283,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     options?: { deferred?: boolean },
   ): Promise<
-    { version: number; contentPath: string; priorVersions: number[] }
+    {
+      version: number;
+      contentPath: string;
+      priorVersions: number[];
+      durable?: boolean;
+    }
   > {
     // Reject reserved data names that collide with internal markers
     if (isReservedDataName(data.name)) {
@@ -2264,7 +2349,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         newVersion,
       );
 
-      return { version: newVersion, contentPath, priorVersions };
+      // On v2 the writer syncs what it streams in (swamp-club#4017).
+      return {
+        version: newVersion,
+        contentPath,
+        priorVersions,
+        durable: this.durableSync() !== undefined,
+      };
     });
   }
 
@@ -2274,6 +2365,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
+    options?: { contentSynced?: boolean },
   ): Promise<{ size: number; checksum: string }> {
     // Version is known here (allocateVersion has already run); pass the
     // version directory as the per-call signal.
@@ -2292,6 +2384,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const content = await Deno.readFile(contentPath);
       const size = content.length;
       const checksum = await this.computeChecksum(content);
+      const sync = this.durableSync();
+      await this.syncWrittenContent(sync, contentPath, options);
 
       // Create the data with updated version, size, and checksum
       const dataToSave = data.withNewVersion({
@@ -2312,7 +2406,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const metadataContent = stringifyYaml(
         cleanData as Record<string, unknown>,
       );
-      await atomicWriteTextFile(metadataPath, metadataContent);
+      // On v2 the metadata's directory sync also covers raw's entry.
+      await atomicWriteTextFile(
+        metadataPath,
+        metadataContent,
+        sync === undefined ? undefined : { sync },
+      );
+      if (sync !== undefined) {
+        await this.syncVersionReach(sync, type, modelId, data.name);
+      }
 
       // Update latest marker
       await this.advanceLatestMarker(type, modelId, data.name, version);
@@ -2363,6 +2465,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
     _priorVersions?: number[],
+    options?: { contentSynced?: boolean },
   ): Promise<
     { receipt: DeferredWriteReceipt; size: number; checksum: string }
   > {
@@ -2379,6 +2482,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const content = await Deno.readFile(contentPath);
       const size = content.length;
       const checksum = await this.computeChecksum(content);
+      const sync = this.durableSync();
+      await this.syncWrittenContent(sync, contentPath, options);
 
       const dataToSave = data.withNewVersion({ version, size, checksum });
 
@@ -2393,7 +2498,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const metadataContent = stringifyYaml(
         cleanData as Record<string, unknown>,
       );
-      await atomicWriteTextFile(metadataPath, metadataContent);
+      await atomicWriteTextFile(
+        metadataPath,
+        metadataContent,
+        sync === undefined ? undefined : { sync },
+      );
+      if (sync !== undefined) {
+        await this.syncVersionReach(sync, type, modelId, data.name);
+      }
 
       this.upsertPendingRow(type, modelId, dataToSave);
 
@@ -2418,6 +2530,37 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.dataName,
           receipt.version,
         );
+        // A writer that never finalized left raw that nothing synced. On v2
+        // it, the version directory holding its entry and the reach are
+        // synced before the row settles or the marker names it, since
+        // content reads go through the marker without the metadata.
+        const sync = this.durableSync();
+        if (data === null && sync !== undefined) {
+          await syncExistingFile(
+            this.getContentPath(
+              receipt.type,
+              receipt.modelId,
+              receipt.dataName,
+              receipt.version,
+            ),
+            sync,
+          );
+          await this.syncDir(
+            sync,
+            this.getPath(
+              receipt.type,
+              receipt.modelId,
+              receipt.dataName,
+              receipt.version,
+            ),
+          );
+          await this.syncVersionReach(
+            sync,
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+          );
+        }
         // Settle the pending row before the marker moves, so a failure or
         // crash between the two never leaves a version the marker names
         // looking like an orphan GC may reclaim. A version without metadata
@@ -3246,6 +3389,45 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * Creates the data-name directory and any missing directory above it, one
+   * level at a time, as a recursive mkdir would. On v2 the parent of each
+   * directory created here is synced before this returns, so its entry is
+   * durable before any version under it is published (swamp-club#4017): a
+   * directory sync makes the directory's own entries durable, not its entry
+   * in its parent. A directory a concurrent writer created is left to that
+   * writer.
+   */
+  private async makeDataNameDir(dataNameDir: string): Promise<void> {
+    const created: string[] = [];
+    const pending = [dataNameDir];
+    while (pending.length > 0) {
+      const dir = pending[pending.length - 1];
+      try {
+        await Deno.mkdir(dir);
+        created.push(dir);
+        pending.pop();
+      } catch (error) {
+        if (error instanceof Deno.errors.AlreadyExists) {
+          pending.pop();
+          continue;
+        }
+        const parent = dirname(dir);
+        if (!(error instanceof Deno.errors.NotFound) || parent === dir) {
+          throw error;
+        }
+        pending.push(parent);
+      }
+    }
+    const sync = this.durableSync();
+    if (sync === undefined || created.length === 0) return;
+    await settleAll(
+      [...new Set(created.map((dir) => dirname(dir)))].map((dir) =>
+        this.syncDir(sync, dir)
+      ),
+    );
+  }
+
+  /**
    * Atomically allocates a new version directory using mkdir as a claim mechanism.
    * On collision (AlreadyExists), increments the version and retries.
    */
@@ -3256,7 +3438,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   ): Promise<{ version: number; versionDir: string; priorVersions: number[] }> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
-    await Deno.mkdir(dataNameDir, { recursive: true });
+    await this.makeDataNameDir(dataNameDir);
 
     const versions = await this.listVersions(type, modelId, dataName);
     // Never below the version floor: a number deleted versions used is not
@@ -3437,6 +3619,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
     const latestPath = join(dataNameDir, "latest");
+    // On v2 the new marker is written and synced before the synchronous
+    // section below (swamp-club#4017), so no fsync runs inside it.
+    const sync = this.durableSync();
+    const syncedTmp = sync === undefined
+      ? undefined
+      : await writeSyncedTempFile(
+        latestPath,
+        new TextEncoder().encode(version.toString()),
+        sync,
+      );
 
     let current: number | null = null;
     try {
@@ -3448,6 +3640,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       current !== null && !isNaN(current) && current > version &&
       existsSync(this.getPath(type, modelId, dataName, current))
     ) {
+      if (syncedTmp !== undefined) await Deno.remove(syncedTmp).catch(() => {});
       return;
     }
 
@@ -3456,9 +3649,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     } catch {
       // Ignore if not found
     }
-    const tmpPath = join(dataNameDir, `.${crypto.randomUUID()}.tmp`);
+    const tmpPath = syncedTmp ??
+      join(dataNameDir, `.${crypto.randomUUID()}.tmp`);
     try {
-      Deno.writeTextFileSync(tmpPath, version.toString());
+      if (syncedTmp === undefined) {
+        Deno.writeTextFileSync(tmpPath, version.toString());
+      }
       Deno.renameSync(tmpPath, latestPath);
     } catch (error) {
       try {
@@ -3468,6 +3664,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       throw error;
     }
+    if (sync !== undefined) await this.syncDir(sync, dataNameDir);
   }
 
   /**
@@ -3809,15 +4006,23 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await assertSafePath(dataNameDir, this.baseDir);
     const latestPath = join(dataNameDir, "latest");
 
-    // Remove old symlink or file if it exists
+    // Remove a legacy symlink. A plain marker is replaced by the rename
+    // below, so a crash never leaves the name without one (swamp-club#4017).
     try {
-      await Deno.remove(latestPath);
+      if ((await Deno.lstat(latestPath)).isSymlink) {
+        await Deno.remove(latestPath);
+      }
     } catch {
       // Ignore if not found
     }
 
-    // Write version number as plain text
-    await atomicWriteTextFile(latestPath, version.toString());
+    // Write version number as plain text, durably on v2
+    const sync = this.durableSync();
+    await atomicWriteTextFile(
+      latestPath,
+      version.toString(),
+      sync === undefined ? undefined : { sync },
+    );
   }
 
   private async computeChecksum(content: Uint8Array): Promise<string> {
@@ -3839,6 +4044,16 @@ function throwStagingErrors(errors: readonly unknown[]): void {
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) {
     throw new AggregateError(errors, "Staging typed changes failed");
+  }
+}
+
+/**
+ * Waits for every write or sync to settle, then rethrows the first failure:
+ * a rollback after it never races a write still in flight.
+ */
+async function settleAll(work: readonly Promise<void>[]): Promise<void> {
+  for (const result of await Promise.allSettled(work)) {
+    if (result.status === "rejected") throw result.reason;
   }
 }
 

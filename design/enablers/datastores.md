@@ -33,6 +33,21 @@ datastore:
 
 An external path suits shared NFS mounts, or keeps runtime data out of git.
 
+**Durable v2 writes** (swamp-club#4017). On a v2 datastore (this backend, and
+the local cache of a v2 extension datastore) a data version is synced before
+anything publishes it. `FileSystemUnifiedDataRepository` writes `metadata.yaml`
+and `raw` through the synced atomic write (`atomic_write.ts`: the temp file
+synced, renamed, the directory synced), syncs the version directory once, then
+the data-name and model directories, and only then moves the `latest` marker,
+itself written synced, and writes the catalog row. A writer that creates
+directories syncs the parent of each one. Every sync is a full one
+(`FsFile.sync()`: fsync on Linux, `F_FULLFSYNC` on macOS, `FlushFileBuffers` on
+Windows, which cannot sync a directory). swamp-club#4032 tracks using the macOS
+ordering barrier for the default datastore instead, as v3 chunk storage does
+(below). On v3 the repository does not sync: the commit is durable and replay
+rewrites the checkout. See [data.md](../primitives/data.md#writing-data) for
+what durable means.
+
 ### S3 (via `@swamp/s3-datastore` extension)
 
 Stores runtime data in an S3 bucket. All reads and writes use a local cache at
