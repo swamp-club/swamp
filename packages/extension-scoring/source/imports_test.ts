@@ -110,8 +110,19 @@ Deno.test("importedSpecifiersAt: offsets are UTF-16 offsets", () => {
   assertEquals(source.slice(site.start, site.end), '"npm:a@1"');
 });
 
-Deno.test("importedSpecifiers: a .cts module's imports are read", () => {
-  const source = 'import x = require("npm:x@1");\nimport y from "npm:y@1";\n' +
-    "var mode = 0755;\nexport = [x, y, mode];\n";
+Deno.test("importedSpecifiers: a .cts module's import declarations are read", () => {
+  const source =
+    'import y from "npm:y@1";\nvar mode = 0755;\nexport = [y, mode];\n';
   assertEquals(importedSpecifiers(source, { path: "m.cts" }), ["npm:y@1"]);
+});
+
+Deno.test("importedSpecifiers: source and deferred phase imports are read", () => {
+  const source = 'import source wasm from "./m.wasm";\n' +
+    'import defer * as lazy from "npm:lazy@1";\n' +
+    'import vuln from "npm:vuln@1.0.0";\nexport { wasm, lazy, vuln };\n';
+  assertEquals(importedSpecifiers(source, { path: "m.ts" }), [
+    "./m.wasm",
+    "npm:lazy@1",
+    "npm:vuln@1.0.0",
+  ]);
 });

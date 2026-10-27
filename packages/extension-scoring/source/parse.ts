@@ -92,6 +92,8 @@ const SOURCE_PLUGINS: ParserPlugin[] = [
   "explicitResourceManagement",
   "decoratorAutoAccessors",
   "importAttributes",
+  "sourcePhaseImports",
+  "deferredImportEvaluation",
 ];
 
 // A module the legacy form refuses is read again with TC39 decorators,
