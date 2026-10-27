@@ -26,6 +26,7 @@ import {
   specifierKind,
   suggestVersion,
 } from "./resolution.ts";
+import { canonicalRecordedVersions } from "./canonical.ts";
 
 const NPM: PublishedPackage = {
   versions: ["1.0.0", "1.2.0", "1.2.5", "2.0.0", "2.1.0-beta.1"],
@@ -222,4 +223,103 @@ Deno.test("suggestVersion: skips excluded, prerelease and unparsable versions", 
 Deno.test("suggestVersion: null when nothing else qualifies", () => {
   assertEquals(suggestVersion("1.0.0", ["1.0.0"], new Set()), null);
   assertEquals(suggestVersion("1.0.0", [], new Set()), null);
+});
+
+function v2Record(
+  dependencies: {
+    name: string;
+    version: string;
+    from: "exact" | "lockfile" | "installed" | "registry";
+    locked: boolean;
+    writtenAs: string[];
+  }[],
+) {
+  return canonicalRecordedVersions({
+    recordVersion: 2,
+    bundles: {},
+    dependencies: dependencies.map((d) => ({
+      registry: "npm" as const,
+      spec: d.version,
+      ...d,
+    })),
+    unaudited: [],
+  });
+}
+
+Deno.test("resolveShippedVersion: a v2 record resolves only an exact specifier it lists, never through the lock, node_modules or the registry", () => {
+  const record = v2Record([{
+    name: "pkg",
+    version: "1.2.0",
+    from: "lockfile",
+    locked: true,
+    writtenAs: ["npm:pkg@^1"],
+  }]);
+  const lock = lockOf(["1.2.5"]);
+  assertEquals(
+    resolveShippedVersion("npm", "pkg", "1.2.0", lock, NPM, "1.2.5", record),
+    { version: "1.2.0", from: "lockfile", locked: true, recorded: true },
+  );
+  for (const spec of ["^1.0.0", "latest", null, "1.2.5"]) {
+    assertEquals(
+      resolveShippedVersion("npm", "pkg", spec, lock, NPM, "1.2.5", record),
+      null,
+    );
+  }
+});
+
+Deno.test("canonicalRecordedVersions: only an entry no valid lock fixed keeps the loose spelling the author wrote", () => {
+  const record = v2Record([
+    {
+      name: "a",
+      version: "1.0.0",
+      from: "registry",
+      locked: false,
+      writtenAs: ["npm:a@1.0.0", "npm:a@^1"],
+    },
+    {
+      name: "b",
+      version: "1.0.0",
+      from: "installed",
+      locked: false,
+      writtenAs: ["b"],
+    },
+    {
+      name: "c",
+      version: "1.0.0",
+      from: "installed",
+      locked: true,
+      writtenAs: ["c"],
+    },
+    // an exact import and a locked range: the entry is not locked as a
+    // whole, but its weakest source is the lock, so nothing is loose
+    {
+      name: "d",
+      version: "1.0.0",
+      from: "lockfile",
+      locked: false,
+      writtenAs: ["npm:d@1.0.0", "npm:d@^1"],
+    },
+    {
+      name: "e",
+      version: "1.0.0",
+      from: "exact",
+      locked: false,
+      writtenAs: ["npm:e@1.0.0"],
+    },
+    // an exact spelling with a subpath is still exact
+    {
+      name: "f",
+      version: "1.0.0",
+      from: "registry",
+      locked: false,
+      writtenAs: ["npm:f@1.0.0/sub", "npm:f@^1"],
+    },
+  ]);
+  const looseOf = (name: string) =>
+    record.recordedFor("npm", name, "1.0.0")?.looseAs;
+  assertEquals(
+    ["a", "b", "c", "d", "e", "f"].map(looseOf),
+    ["npm:a@^1", "b", undefined, undefined, undefined, "npm:f@^1"],
+  );
+  assertEquals(record.canonicalIssue?.("npm:zod@^4"), null);
 });

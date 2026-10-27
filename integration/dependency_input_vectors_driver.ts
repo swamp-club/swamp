@@ -306,12 +306,17 @@ export async function runVector(
       }))
       .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
     const trust = prepared.dependencyTrustResult;
+    // a URL import's origin carries the mock registry's port
     outcome.trust = {
       errors: trust.errors.map((e) =>
-        `${e.dependency}${e.cause ? ` [${e.cause}]` : ""}: ${e.message}`
+        registry.generalize(
+          `${e.dependency}${e.cause ? ` [${e.cause}]` : ""}: ${e.message}`,
+        )
       ),
       warnings: trust.warnings.map((w) =>
-        `${w.dependency}${w.cause ? ` [${w.cause}]` : ""}: ${w.message}`
+        registry.generalize(
+          `${w.dependency}${w.cause ? ` [${w.cause}]` : ""}: ${w.message}`,
+        )
       ),
     };
     outcome.reviewWarnings = prepared.reviewRulesResult.warnings.map((w) =>

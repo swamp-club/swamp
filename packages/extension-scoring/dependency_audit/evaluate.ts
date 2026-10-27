@@ -39,9 +39,13 @@ import {
   NOT_AUDITED_FIX,
   type NotAuditedFix,
 } from "./points.ts";
-import type { ShippedDependency } from "./audit_record.ts";
+import type {
+  ShippedDependency,
+  UnauditedDependency,
+  UnauditedDependencyKind,
+} from "./audit_record.ts";
 import type { JsrPackageMeta, NpmPackageFacts, NpmPackument } from "./npm.ts";
-import { factsFor, monthsSince } from "./npm.ts";
+import { factsFor, monthsSince, sanitiseDeprecationNotice } from "./npm.ts";
 import type { OsvVulnerability } from "./osv.ts";
 import {
   type LockedDependencyVersions,
@@ -437,6 +441,9 @@ function looseSpecifierFinding(
   spec: DependencySpecifier,
   shipped: ShippedVersion,
 ): Finding | null {
+  if (shipped.looseAs !== undefined) {
+    return recordedLooseFinding(spec.name, shipped.looseAs, shipped.version);
+  }
   const kind = specifierKind(spec.version);
   if (kind === "exact") return null;
   if (shipped.locked || shipped.from === "lockfile") return null;
@@ -465,6 +472,28 @@ function looseSpecifierFinding(
     `${
       specifierText(spec)
     } is ${phrase} and no lock fixed it; audited ${shipped.version}, ${by}${scorecardFrom}`,
+  );
+}
+
+/**
+ * The loose finding a v2 record carries (swamp-club#4018): the source is
+ * exact, but the author wrote `looseAs` and no valid lock fixed it.
+ */
+function recordedLooseFinding(
+  name: string,
+  looseAs: string,
+  version: string,
+): Finding {
+  return warning(
+    name,
+    {
+      message:
+        `no lock: ${looseAs} resolved to ${version} when it was pushed; commit a lock or pin exact versions (costs 1 point)`,
+      cause: "loose-specifier",
+      remediation:
+        `Commit a deno.lock, or pin the exact version push recorded (${version}).`,
+    },
+    `${looseAs} is not an exact version and no lock fixed it; audited ${version}, the version push recorded`,
   );
 }
 
@@ -522,6 +551,11 @@ export function jsrNameValid(name: string): boolean {
 export interface NpmPlan {
   /** Per specifier, in order: the version that ships, or null. */
   shipped: (ShippedVersion | null)[];
+  /**
+   * Per specifier, in order, under a v2 record: why it breaks the canonical
+   * shipped form, or null (swamp-club#4018). Absent without a v2 record.
+   */
+  canonicalIssues?: (string | null)[];
   /** The distinct versions to query OSV for. */
   osvVersions: string[];
 }
@@ -538,8 +572,10 @@ export function planNpmPackage(
   lock?: LockedDependencyVersions,
   record?: RecordedDependencyVersions,
 ): NpmPlan {
+  const canonicalIssues = canonicalIssuesOf(specs, record);
+  const issues = canonicalIssues ? { canonicalIssues } : {};
   if (npm.kind === "invalid-name") {
-    return { shipped: specs.map(() => null), osvVersions: [] };
+    return { shipped: specs.map(() => null), osvVersions: [], ...issues };
   }
   const published: PublishedPackage | null = npm.kind === "found"
     ? { versions: npm.value.publishedVersions, distTags: npm.value.distTags }
@@ -559,7 +595,34 @@ export function planNpmPackage(
   const osvVersions = [
     ...new Set(shipped.flatMap((s) => s === null ? [] : [s.version])),
   ];
-  return { shipped, osvVersions };
+  return { shipped, osvVersions, ...issues };
+}
+
+/** Each specifier's canonical-form issue under a v2 record, else undefined. */
+function canonicalIssuesOf(
+  specs: readonly DependencySpecifier[],
+  record: RecordedDependencyVersions | undefined,
+): (string | null)[] | undefined {
+  const issueOf = record?.canonicalIssue;
+  return issueOf
+    ? specs.map((spec) => issueOf(specifierText(spec)))
+    : undefined;
+}
+
+/** A v2 archive's specifier that breaks the canonical shipped form. */
+function canonicalAudit(
+  name: string,
+  spec: DependencySpecifier,
+  registry: DependencyRegistry,
+  issue: string,
+): SpecifierAudit {
+  return notAuditedAudit(
+    spec,
+    issue,
+    summaryBase(name, spec, registry),
+    "canonical",
+    null,
+  );
 }
 
 /**
@@ -576,18 +639,18 @@ export function evaluateNpmPackage(
   lock?: LockedDependencyVersions,
   thresholds: TrustThresholds = DEFAULT_TRUST_THRESHOLDS,
 ): SpecifierAudit[] {
-  if (npm.kind === "invalid-name") {
-    return specs.map((spec) =>
-      notAuditedAudit(
+  return specs.map((spec, index): SpecifierAudit => {
+    const issue = plan.canonicalIssues?.[index] ?? null;
+    if (issue !== null) return canonicalAudit(name, spec, "npm", issue);
+    if (npm.kind === "invalid-name") {
+      return notAuditedAudit(
         spec,
         "invalid npm package name",
         summaryBase(name, spec, "npm"),
         "name",
         null,
-      )
-    );
-  }
-  return specs.map((spec, index): SpecifierAudit => {
+      );
+    }
     const shipped = plan.shipped[index];
     const version = shipped?.version ?? null;
     const answer = version === null ? null : osv.get(version) ?? null;
@@ -690,6 +753,10 @@ export function evaluateJsrPackage(
   record?: RecordedDependencyVersions,
 ): SpecifierAudit[] {
   return specs.map((spec): SpecifierAudit => {
+    // checked here to name the issue; resolveShippedVersion repeats the
+    // check for any other caller that hands it a v2 record
+    const issue = record?.canonicalIssue?.(specifierText(spec)) ?? null;
+    if (issue !== null) return canonicalAudit(name, spec, "jsr", issue);
     const base = summaryBase(name, spec, "jsr");
     const missing = (
       message: string,
@@ -714,6 +781,8 @@ export function evaluateJsrPackage(
         spec.version,
         lock,
         null,
+        undefined,
+        record,
       );
       const audit = notAuditedAudit(
         spec,
@@ -911,20 +980,88 @@ export function pushResult(
 export const UNREADABLE_MODULE_REASON =
   "Its imports cannot be read: the module does not parse, so its dependencies were not audited.";
 
+const UNAUDITED_KIND_TEXT: Readonly<Record<UnauditedDependencyKind, string>> = {
+  url: "a URL import",
+  git: "a git dependency",
+  "package-json": "a local package.json dependency",
+};
+
+/**
+ * Code from outside npm and JSR that the bundles hold, one finding per
+ * origin (swamp-club#4018). No registry audit covers it, so it is not
+ * audited and costs both points. On the registry the origin comes from a
+ * record the author wrote, so it is made safe for one line before it is
+ * named.
+ */
+function unauditedCodeFindings(
+  unaudited: readonly UnauditedDependency[],
+): { origin: string; issue: DependencyTrustIssue; reason: string }[] {
+  const seen = new Set<string>();
+  const out: { origin: string; issue: DependencyTrustIssue; reason: string }[] =
+    [];
+  for (const u of unaudited) {
+    const origin = sanitiseDeprecationNotice(u.origin);
+    if (seen.has(origin)) continue;
+    seen.add(origin);
+    const kind = UNAUDITED_KIND_TEXT[u.kind];
+    out.push({
+      origin,
+      issue: {
+        dependency: origin,
+        message:
+          `not audited: ${origin} is ${kind}, from outside npm and JSR, so no registry audit covers it`,
+        cause: "not-audited",
+        remediation: NOT_AUDITED_FIX.origin,
+        notAuditedFix: "origin",
+      },
+      reason:
+        `${kind}, from outside npm and JSR: no registry audit covers it. ${NOT_AUDITED_FIX.origin}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * The push audit with the code from outside npm and JSR that the bundles
+ * hold added as not-audited warnings, so `swamp extension quality` and push
+ * charge it as the registry does (swamp-club#4018).
+ */
+export function withUnauditedCode(
+  result: DependencyTrustResult,
+  unaudited: readonly UnauditedDependency[],
+): DependencyTrustResult {
+  const findings = unauditedCodeFindings(unaudited);
+  if (findings.length === 0) return result;
+  return {
+    ...result,
+    warnings: [...result.warnings, ...findings.map((f) => f.issue)],
+  };
+}
+
 /**
  * The audit as the registry's scorecard stores it. `unreadable` lists the
  * archive paths of code modules `writtenSpecifiers` could not read;
  * each is not audited, under its path, so it costs the factor's points as
- * an unaudited dependency does.
+ * an unaudited dependency does. `unaudited` is a v2 record's code from
+ * outside npm and JSR, each not audited under its origin (swamp-club#4018).
  */
 export function scorecardResult(
   audits: readonly { spec: DependencySpecifier; audit: SpecifierAudit }[],
   unreadable: readonly string[] = [],
+  unaudited: readonly UnauditedDependency[] = [],
 ): ScorecardDependencyTrust {
   const blockers: ScorecardDependencyFinding[] = [];
   const warnings: ScorecardDependencyFinding[] = [];
-  const notAudited: { packageName: string; reason: string }[] = unreadable
-    .map((path) => ({ packageName: path, reason: UNREADABLE_MODULE_REASON }));
+  const notAudited: { packageName: string; reason: string }[] = [
+    ...unreadable.map((path) => ({
+      packageName: path,
+      reason: UNREADABLE_MODULE_REASON,
+    })),
+    ...unauditedCodeFindings(unaudited).map((f) => ({
+      packageName: f.origin,
+      reason: f.reason,
+    })),
+  ];
   const audited: ScorecardDependencyAudited[] = [];
   for (const { spec, audit } of audits) {
     audited.push({

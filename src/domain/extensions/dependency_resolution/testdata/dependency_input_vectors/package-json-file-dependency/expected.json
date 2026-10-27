@@ -49,7 +49,9 @@
   "audited": [],
   "trust": {
     "errors": [],
-    "warnings": []
+    "warnings": [
+      "file:./local [not-audited]: not audited: file:./local is a local package.json dependency, from outside npm and JSR, so no registry audit covers it"
+    ]
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",

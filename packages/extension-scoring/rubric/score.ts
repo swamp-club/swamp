@@ -41,7 +41,11 @@ import {
  * a score bumps it so stored scores say which rules made them. v5: one
  * shared scorer for the CLI and the registry (swamp-club#3781). v6: a
  * non-exact dependency spec costs the loose point only when no valid lock
- * fixed its version (swamp-club#3970).
+ * fixed its version (swamp-club#3970); a v2 archive is audited exact-only,
+ * and code from outside npm and JSR is not audited (swamp-club#4018).
+ * #3970 and #4018 share v6 by decision on #4018: the dependency rules of
+ * that release are one version, and the registry rescores under it once
+ * both are in (#3973, #3980).
  */
 export const RUBRIC_VERSION = 6;
 
@@ -410,6 +414,8 @@ const NOT_AUDITED_WHY: Readonly<
 > = {
   outage: "an OSV, npm or JSR lookup failed",
   specifier: "no published version matches the specifier",
+  canonical: "the archive breaks the canonical shipped form",
+  origin: "the code comes from outside npm and JSR",
   name: "the package name is invalid",
   unexpected: "the audit failed unexpectedly",
 };

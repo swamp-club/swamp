@@ -1,6 +1,6 @@
 # Swamp Club scorecard rubric — complete reference
 
-Rubric v5: 12 factors, 16 points. The rubric lives in the
+Rubric v6: 12 factors, 16 points. The rubric lives in the
 `@swamp-club/extension-scoring` package, which `swamp extension quality`,
 `swamp extension push` and the Swamp Club registry all score with, so the CLI
 and the registry apply the same rules.
@@ -38,9 +38,7 @@ the repository.
 | F     | < 40% |
 
 The verified-by-swamp badge (first-party `@swamp` or admin-curated) is not a
-factor and never moves the percentage. A version scored under an older rubric
-keeps that rubric's rows: v2 has no `dependency-trust` or `secret-safe-docs` (13
-points), v3 no `secret-safe-docs` (15).
+factor and never moves the percentage.
 
 ## Statuses
 
@@ -90,14 +88,20 @@ Always earned on an analysed version.
 ### `dependency-trust` (2 pts) — "Dependencies pass trust audit"
 
 Every `npm:` and `jsr:` import in every non-test code module of the archive is
-audited at the version that ships (an exact pin, else what `deno.lock` records,
-else the registry's resolution; the registry reads push's
-`dependency-audit.json` record first). Imports are read as tokens: a
-commented-out import or a specifier-shaped string is not a dependency. At most
-50 dependencies are looked up; the rest are not audited.
+audited at the version that ships. Push writes every such import exact, at the
+version its bundle holds, and lists each in `dependency-audit.json`; the
+registry audits only an exact import that record lists, never resolving a range
+or reading a lock. An archive pushed before that form keeps the earlier order:
+an exact pin, the record, the lock, then the registry's resolution. Imports are
+read from the module's syntax tree: a commented-out import or a specifier-shaped
+string is not a dependency. At most 50 dependencies are looked up; the rest are
+not audited.
 
-- **2 points**: no blocker, nothing unaudited, every specifier exact.
-- **1 point (`partial`)**: only loose specifiers (unpinned, range or dist-tag).
+- **2 points**: no blocker and nothing unaudited; every version was written
+  exact or fixed by a valid lock (`deno.lock`, or a `package-lock.json` that
+  node_modules matches).
+- **1 point (`partial`)**: only loose specifiers: a range, dist-tag or unpinned
+  import that no valid lock fixed (`loose-specifier`), however many.
 - **0 points**: any blocker or unaudited dependency.
 
 Blockers: a HIGH, CRITICAL or UNKNOWN OSV vulnerability (a grade OSV does not
@@ -107,9 +111,19 @@ an unscoped `jsr:name` (`jsr-missing`); a yanked JSR version (`jsr-yanked`).
 Push blocks on the first and fourth kinds and only warns on the deprecated and
 yanked versions (`--yes` waives them), but the score counts all of them.
 
-Not audited (`cause: "not-audited"`, `notAuditedFix` says why): a lookup outage,
-a malformed OSV answer, a version npm does not list, a specifier no published
-version matches, an invalid npm name, or more than 50 dependencies.
+Not audited (`cause: "not-audited"`, `notAuditedFix` says why):
+
+| `notAuditedFix` | Why                                                                                                                                             | Fix                                         |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `outage`        | an OSV, npm or JSR lookup failed, or OSV answered malformed                                                                                     | re-run                                      |
+| `specifier`     | npm does not list the version, or no published version matches                                                                                  | change the specifier                        |
+| `name`          | an invalid npm package name                                                                                                                     | correct the name                            |
+| `origin`        | code from outside npm and JSR: a URL import, a git dependency, or a local (`file:`, `link:`, path) package.json dependency; named by its origin | replace it with an `npm:` or `jsr:` package |
+| `canonical`     | registry only: an archive whose source breaks the exact form push writes (hand-edited)                                                          | push again with `swamp extension push`      |
+| `other`         | more than 50 dependencies                                                                                                                       | —                                           |
+
+A module that does not parse is not audited either, under its path. Code from
+outside npm and JSR still bundles and publishes; it only costs the points.
 
 Warnings that cost nothing: MEDIUM vulnerabilities, a license that is not an
 SPDX expression of allowlisted licenses (MIT, Apache-2.0, BSD-2-Clause,
@@ -202,20 +216,20 @@ behaviors:
   - my-behavior.ts
 ```
 
-| Factor              | Points | Why                                      |
-| ------------------- | ------ | ---------------------------------------- |
-| has-readme          | 2/2    | README.md in additionalFiles             |
-| readme-example      | 1/1    | Usage code block                         |
-| rich-readme         | 1/1    | 1.2k characters, 3 code blocks           |
-| symbols-docs        | 1/1    | All exports documented                   |
-| fast-check          | 1/1    | Deprecated; always earned                |
-| dependency-trust    | 2/2    | Exact pins, nothing blocked or unaudited |
-| secret-safe-docs    | 1/1    | No unaccepted findings                   |
-| description         | 1/1    | Non-empty                                |
-| platforms           | 2/2    | Universal                                |
-| has-license         | 1/1    | `license: MIT`                           |
-| license-file        | 1/1    | LICENSE in additionalFiles               |
-| repository-verified | 2/2    | Public github.com repository             |
+| Factor              | Points | Why                                            |
+| ------------------- | ------ | ---------------------------------------------- |
+| has-readme          | 2/2    | README.md in additionalFiles                   |
+| readme-example      | 1/1    | Usage code block                               |
+| rich-readme         | 1/1    | 1.2k characters, 3 code blocks                 |
+| symbols-docs        | 1/1    | All exports documented                         |
+| fast-check          | 1/1    | Deprecated; always earned                      |
+| dependency-trust    | 2/2    | Pinned or locked, nothing blocked or unaudited |
+| secret-safe-docs    | 1/1    | No unaccepted findings                         |
+| description         | 1/1    | Non-empty                                      |
+| platforms           | 2/2    | Universal                                      |
+| has-license         | 1/1    | `license: MIT`                                 |
+| license-file        | 1/1    | LICENSE in additionalFiles                     |
+| repository-verified | 2/2    | Public github.com repository                   |
 
 Registry: 16/16 = 100% (A). Before publish, `swamp extension quality` shows
 14/16 = 87% (B) with 2 points pending server verification, and 100% (A) if the

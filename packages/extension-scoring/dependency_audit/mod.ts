@@ -47,7 +47,10 @@ export {
   type UnauditedDependency,
   type UnauditedDependencyKind,
 } from "./audit_record.ts";
-export { canonicalShippedSpecifierIssue } from "./canonical.ts";
+export {
+  canonicalRecordedVersions,
+  canonicalShippedSpecifierIssue,
+} from "./canonical.ts";
 export {
   DEFAULT_TRUST_THRESHOLDS,
   type DependencyAuditSummary,
@@ -83,6 +86,7 @@ export {
   type TrustThresholds,
   unpublishedSpecifiers,
   UNREADABLE_MODULE_REASON,
+  withUnauditedCode,
 } from "./evaluate.ts";
 export { MAX_LOCKFILE_BYTES, parseDenoLockfile } from "./lockfile.ts";
 export {

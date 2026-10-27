@@ -25,6 +25,7 @@ import {
   licenseAllowed,
   type Lookup,
   MAX_AUDITED_DEPENDENCIES,
+  notAuditedFixes,
   type NpmLookup,
   overLimitAudits,
   planNpmPackage,
@@ -32,7 +33,9 @@ import {
   scorecardResult,
   type SpecifierAudit,
   UNREADABLE_MODULE_REASON,
+  withUnauditedCode,
 } from "./evaluate.ts";
+import { canonicalRecordedVersions } from "./canonical.ts";
 import { monthsSince, parseNpmPackument } from "./npm.ts";
 import type { OsvVulnerability } from "./osv.ts";
 import type { DependencySpecifier } from "./specifiers.ts";
@@ -385,4 +388,75 @@ Deno.test("scorecardResult: a module that does not parse is not audited and cost
   assertEquals(scorecard.passed, false);
   assertEquals(scorecard.earnedPoints, 0);
   assertEquals(scorecardResult([]).earnedPoints, 2);
+});
+
+Deno.test("evaluateJsrPackage: under a v2 record a listed exact version still ships when JSR is down", () => {
+  const s = spec("@std/assert", "1.0.19", "jsr");
+  const record = canonicalRecordedVersions({
+    recordVersion: 2,
+    bundles: {},
+    dependencies: [{
+      registry: "jsr",
+      name: "@std/assert",
+      spec: "1.0.19",
+      version: "1.0.19",
+      from: "exact",
+      locked: false,
+      writtenAs: ["jsr:@std/assert@1.0.19"],
+    }],
+    unaudited: [],
+  });
+  const [audit] = evaluateJsrPackage(
+    "@std/assert",
+    [s],
+    { kind: "unavailable", reason: "HTTP 503" },
+    undefined,
+    record,
+  );
+  assertEquals(audit.shipped?.version, "1.0.19");
+  assertEquals(audit.summary.notAuditedFix, "outage");
+});
+
+Deno.test("withUnauditedCode: adds one not-audited warning per origin and leaves errors, audits and passed as they were", () => {
+  const base = views(
+    spec("ms", "2.1.3"),
+    auditNpm(
+      spec("ms", "2.1.3"),
+      packument({
+        "dist-tags": { latest: "2.1.3" },
+        versions: {
+          "2.1.3": { license: "MIT", maintainers: [{ name: "m" }] },
+        },
+      }),
+    ),
+  ).push;
+  const result = withUnauditedCode(base, [
+    { kind: "url", origin: "https://example.com/x.ts", modules: {} },
+    { kind: "package-json", origin: "file:../x", modules: {} },
+  ]);
+  assertEquals(result.errors, base.errors);
+  assertEquals(result.audited, base.audited);
+  assertEquals(result.passed, true);
+  assertEquals(
+    result.warnings.slice(base.warnings.length).map((w) => [
+      w.dependency,
+      w.notAuditedFix,
+    ]),
+    [["https://example.com/x.ts", "origin"], ["file:../x", "origin"]],
+  );
+  assertEquals(notAuditedFixes(result), ["origin"]);
+  assertEquals(withUnauditedCode(base, []), base);
+});
+
+Deno.test("scorecardResult: unaudited code follows the unreadable modules and costs both points", () => {
+  const card = scorecardResult([], ["extensions/models/bad.ts"], [{
+    kind: "git",
+    origin: "github:o/r#abc",
+    modules: {},
+  }]);
+  assertEquals(card.notAudited.map((n) => n.packageName), [
+    "extensions/models/bad.ts",
+    "github:o/r#abc",
+  ]);
+  assertEquals([card.passed, card.earnedPoints], [false, 0]);
 });

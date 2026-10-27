@@ -2498,20 +2498,31 @@ published version matches <spec>)`), and a warning with the same cause joins
 or the lockfile resolves it, OSV is still queried, so a HIGH or CRITICAL
 vulnerability still blocks; otherwise a range, dist-tag or missing version
 cannot be resolved without npm and is not queried. A failed weekly-downloads
-lookup alone leaves the dependency audited. Unaudited dependencies join the push
-warnings gate (an interactive push prompts; `--yes` waives them), never block on
-their own, and never change the exit code. `DependencyTrustResult.passed` keeps
-meaning "no blockers".
+lookup alone leaves the dependency audited.
+
+Code the bundles hold from outside npm and JSR (a URL import, a git dependency,
+a local package.json dependency; the graph's `unaudited` list, which the v2
+record also carries) is not audited either (swamp-club#4018).
+`withUnauditedCode` adds one warning per origin, with `dependency` set to the
+origin made safe for one line; push's prepare applies it to every run, so
+`extension quality` and push charge it as the registry does, through
+`scorecardResult`'s `unaudited` parameter. It still ships. Unaudited
+dependencies join the push warnings gate (an interactive push prompts; `--yes`
+waives them), never block on their own, and never change the exit code.
+`DependencyTrustResult.passed` keeps meaning "no blockers".
 
 The summary and the warning both carry `notAuditedFix`, the fix their
 remediation gives: `outage` (a failed lookup; re-run), `specifier` (no published
-version matches), `name` (an invalid package name), `unexpected` (the audit
-threw) or `other`. Only an `outage` clears on a re-run, so `extension quality`'s
-dependency-trust row and the quality and push not-audited headers say to re-run
-only when every unaudited dependency's fix is `outage`. When `deno doc` fails
-and its output names nothing (one unpublished npm version fails all of deno's
-npm resolution, and deno names whichever import it was resolving), quality's
-`docAnalysisError` names the `specifier` dependencies instead.
+version matches), `name` (an invalid package name), `origin` (code from outside
+npm and JSR; replace it with an `npm:` or `jsr:` package), `canonical` (registry
+only: a v2 archive whose source breaks the canonical form; push again),
+`unexpected` (the audit threw) or `other`. Only an `outage` clears on a re-run,
+so `extension quality`'s dependency-trust row and the quality and push
+not-audited headers say to re-run only when every unaudited dependency's fix is
+`outage`. When `deno doc` fails and its output names nothing (one unpublished
+npm version fails all of deno's npm resolution, and deno names whichever import
+it was resolving), quality's `docAnalysisError` names the `specifier`
+dependencies instead.
 
 ### jsr Dependencies
 
@@ -2535,6 +2546,18 @@ accepts them); nothing here becomes a push error. `dependencyTrustBlockerCount`
 counts the errors, deprecated and yanked warnings; `looseSpecifierCount` counts
 the distinct dependencies with a loose specifier. The shared vectors in
 `vectors/dependency_audit.json` pin the rule for both scorers.
+
+The registry scores a v2 archive (`recordVersion: 2`) as written
+(swamp-club#4018): `canonicalRecordedVersions` turns the record into the
+version source, under which `resolveShippedVersion` takes only an exact
+specifier the record lists, reading no lock and resolving no range. Any other
+`npm:` or `jsr:` specifier (a range, an unlisted version) is not audited with
+`canonicalShippedSpecifierIssue`'s message; OSV, deprecation and yank checks
+still run on a listed version. The loose point comes from the record: an entry
+whose `from` is `registry`, or `installed` without `locked`, costs it under the
+non-exact spelling its `writtenAs` keeps. A v1 archive, or one whose record
+does not parse, keeps the earlier order (exact, record, lock, registry). The
+`canonicalScoring` vectors pin this path.
 
 ## Registry
 

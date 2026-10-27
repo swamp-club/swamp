@@ -244,9 +244,10 @@ would raise it to.
 Key factors: README in `additionalFiles:`, an SPDX `license:` and a LICENSE file
 (optional; one point each), JSDoc coverage ≥80%, a non-blank manifest
 `description:`, `repository:` URL on an allowlisted host, dependency trust
-(exact pins, nothing deprecated, vulnerable or unaudited), and
-`secret-safe-docs`: README, manifest description and describe strings keep
-secrets in a vault (`${{ vault.get(<vault>, <key>) }}`).
+(exact pins or a lock, nothing deprecated, vulnerable or unaudited, no URL, git
+or local package.json code), and `secret-safe-docs`: README, manifest
+description and describe strings keep secrets in a vault
+(`${{ vault.get(<vault>, <key>) }}`).
 
 Run `swamp extension quality manifest.yaml --json` for a local self-check; add
 `--isolated` to run `deno doc` without the local cache and credentials, as the

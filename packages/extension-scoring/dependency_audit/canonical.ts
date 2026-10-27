@@ -25,6 +25,12 @@
  */
 
 import { type DependencyAuditRecordV2, isPlainSemver } from "./audit_record.ts";
+import {
+  exactVersion,
+  type RecordedDependencyVersions,
+  type ShippedVersion,
+} from "./resolution.ts";
+import { parseSpecifier } from "./specifiers.ts";
 
 // `npm:@scope/name@version[/subpath]`, `npm:name@version[/subpath]`
 const NPM_RE = /^npm:(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]*))?/;
@@ -63,4 +69,48 @@ export function canonicalShippedSpecifierIssue(
     return `${specifier} is not in the canonical form: dependency-audit.json lists no ${registry}:${name}@${version}`;
   }
   return null;
+}
+
+/**
+ * How the registry reads a v2 record (swamp-club#4018): an import resolves
+ * only when it is exact and the record lists that version, taking the
+ * entry's `from` and `locked`. An entry that some import reached through a
+ * non-exact spelling with no valid lock (`from` is `registry`, or
+ * `installed` without a verified lock) keeps that spelling as `looseAs`, so
+ * it costs the loose point.
+ */
+export function canonicalRecordedVersions(
+  record: DependencyAuditRecordV2,
+): RecordedDependencyVersions {
+  const entries = new Map<string, ShippedVersion>();
+  for (const e of record.dependencies) {
+    const loose = e.from === "registry" ||
+      (e.from === "installed" && !e.locked);
+    const looseAs = loose
+      ? e.writtenAs.find((w) => !isExactWriting(w)) ?? e.writtenAs[0]
+      : undefined;
+    entries.set(JSON.stringify([e.registry, e.name, e.version]), {
+      version: e.version,
+      from: e.from,
+      ...(e.locked || e.from === "lockfile" ? { locked: true as const } : {}),
+      ...(looseAs !== undefined ? { looseAs } : {}),
+    });
+  }
+  return {
+    recordedFor: (registry, name, specVersion) =>
+      specVersion === null
+        ? undefined
+        : entries.get(JSON.stringify([registry, name, specVersion])),
+    canonicalIssue: (specifier) =>
+      canonicalShippedSpecifierIssue(specifier, record),
+  };
+}
+
+/**
+ * Whether a spelling the author wrote names one exact version; a subpath
+ * after the version does not count against it.
+ */
+function isExactWriting(written: string): boolean {
+  const version = parseSpecifier(written)?.version ?? null;
+  return version !== null && exactVersion(version) !== null;
 }
