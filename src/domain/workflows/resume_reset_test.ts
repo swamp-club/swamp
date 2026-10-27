@@ -580,11 +580,25 @@ Deno.test("planFailedRunResume: refuses a --job without the --from step, or not 
   );
   assertStringIncludes(
     refusalOf(() => planFailedRunResume(wf, run, { step: "s", job: "c" })),
-    `Job "c" not found in workflow "resume-wf". Available jobs: a, b`,
+    `Job "c" not found in workflow "resume-wf". Available jobs: "a", "b".`,
   );
   assertStringIncludes(
     refusalOf(() => planFailedRunResume(wf, run, { step: "nope", job: "a" })),
     `Step "nope" not found in workflow`,
+  );
+  const three = workflow([
+    { name: "a", steps: [plain("s")] },
+    { name: "b", steps: [plain("t")] },
+    { name: "c", steps: [plain("t")] },
+  ]);
+  assertEquals(
+    refusalOf(() =>
+      planFailedRunResume(three, failedRun(three, ["s"]), {
+        step: "t",
+        job: "a",
+      })
+    ),
+    `Step "t" is not in job "a". It is in jobs "b", "c".`,
   );
 });
 

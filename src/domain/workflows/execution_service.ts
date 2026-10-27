@@ -128,6 +128,7 @@ import {
 } from "./resume_reset.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
+  FROM_JOB_WITHOUT_FROM,
   nextActionForStatus,
   RunNotSuspendedError,
 } from "./suspended_run_resolver.ts";
@@ -4600,6 +4601,9 @@ export class WorkflowExecutionService {
 
     // Every check runs before the first mutation, so a refusal persists
     // nothing and invokes no method.
+    if (options?.fromJob !== undefined && !fromStep) {
+      throw new UserError(FROM_JOB_WITHOUT_FROM);
+    }
     let reset: ResumeReset | undefined;
     if (fromStep) {
       if (existingRun.status !== "failed") {

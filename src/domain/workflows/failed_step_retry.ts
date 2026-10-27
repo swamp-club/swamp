@@ -51,37 +51,39 @@ export function entryTemplateOf(step: FailedStepRef): string {
 }
 
 /**
- * Whether a job of the run other than `jobName` has a step named `template`
- * too. Step names are unique only within a job, so a `--from` that re-enters
- * such a step needs `--job`.
+ * The `--job` that, with `--from <template>`, re-enters the step `template`
+ * of the stored job `jobName`, as `--from` resolves it against the current
+ * workflow: undefined when the step name is in at most one workflow job, or
+ * when the stored job cannot be told apart. A job named with an expression
+ * is stored evaluated, so a stored job matches a workflow job by name, or
+ * else the one expression-named job that has the step.
  */
-export function stepNameInOtherJob(
-  run: WorkflowRun,
+export function fromJobFor(
+  workflow: Workflow,
   jobName: string,
   template: string,
-): boolean {
-  return run.jobs.some((job) =>
-    job.jobName !== jobName &&
-    job.steps.some((s) =>
-      s.stepName === template || s.forEachTemplate === template
-    )
-  );
+): string | undefined {
+  const holders = workflow.jobs.filter((j) => j.getStep(template));
+  if (holders.length < 2) return undefined;
+  const literal = holders.find((j) => j.name === jobName);
+  if (literal) return literal.name;
+  const expressionNamed = holders.filter((j) => j.name.includes("${{"));
+  return expressionNamed.length === 1 ? expressionNamed[0].name : undefined;
 }
 
 /**
- * The `--from` arguments that re-enter the step `template` of job `jobName`,
- * shell-quoted, with `--job` when the step name needs it (see
- * {@link stepNameInOtherJob}).
+ * The `--from` arguments that re-enter the step `template` of the stored job
+ * `jobName`, shell-quoted, with `--job` when the step name needs it (see
+ * {@link fromJobFor}).
  */
 function fromArguments(
-  run: WorkflowRun,
+  workflow: Workflow,
   jobName: string,
   template: string,
 ): string {
   const from = `--from ${quoteShellWord(template)}`;
-  return stepNameInOtherJob(run, jobName, template)
-    ? `${from} --job ${quoteShellWord(jobName)}`
-    : from;
+  const job = fromJobFor(workflow, jobName, template);
+  return job !== undefined ? `${from} --job ${quoteShellWord(job)}` : from;
 }
 
 /**
@@ -116,7 +118,7 @@ export function selectRetryTemplates(
     throw new UserError(
       `Step "${rejected.stepName}" in job "${rejected.jobName}" was rejected; ` +
         `retry won't re-open it. Add ${
-          fromArguments(run, rejected.jobName, entryTemplateOf(rejected))
+          fromArguments(workflow, rejected.jobName, entryTemplateOf(rejected))
         } to ask again. ${history}`,
     );
   }
@@ -137,7 +139,7 @@ export function selectRetryTemplates(
       const hint = step.status === "pending"
         ? ` Add ${
           fromArguments(
-            run,
+            workflow,
             job.jobName,
             step.forEachTemplate ?? step.stepName,
           )

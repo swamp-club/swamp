@@ -12672,6 +12672,13 @@ Deno.test("resume: --from refuses a step name in two jobs and re-runs only the j
     );
     assertEquals(runRepo.saves, saves);
 
+    await assertRejects(
+      () => drainResume(service, workflow.name, failed.id, { fromJob: "b" }),
+      UserError,
+      "--job requires --from",
+    );
+    assertEquals(runRepo.saves, saves);
+
     const resumed = await drainResume(service, workflow.name, failed.id, {
       fromStep: "s",
       fromJob: "b",

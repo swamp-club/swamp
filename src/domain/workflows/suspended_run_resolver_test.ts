@@ -446,6 +446,20 @@ Deno.test("resolveResumableRun: --from refuses a step name used in two jobs unle
   }
 });
 
+Deno.test("resolveResumableRun: refuses --job without --from rather than retrying every job", async () => {
+  const { wf, run } = sharedNameFailedRun();
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () =>
+      resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id, {
+        fromJob: "one",
+      }),
+    UserError,
+    "--job requires --from",
+  );
+});
+
 Deno.test("resolveResumableRun: --run without --from accepts a failed run for retry", async () => {
   const wf = createWorkflow("test-wf");
   const run = createFailedRun(wf);

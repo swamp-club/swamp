@@ -27,7 +27,7 @@ import { createWorkflowRunId } from "./workflow_id.ts";
 import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
-import { entryTemplateOf, stepNameInOtherJob } from "./failed_step_retry.ts";
+import { entryTemplateOf, fromJobFor } from "./failed_step_retry.ts";
 import { assertNestedWaitsSettled } from "./nested_run_link.ts";
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import {
@@ -118,7 +118,7 @@ export async function resolveSuspendedRun(
             run.status,
             workflow.name,
             run.id,
-            rejectedGateOf(run),
+            rejectedGateOf(workflow, run),
           ),
       );
     }
@@ -136,7 +136,7 @@ export async function resolveSuspendedRun(
   if (suspendedRuns.length === 0) {
     throw new UserError(
       noRunsInStateMessage(
-        workflow.name,
+        workflow,
         "suspended",
         allRuns,
         lookup.ownerIsDead,
@@ -160,6 +160,13 @@ export async function resolveSuspendedRun(
 }
 
 export type ResumableRunInfo = SuspendedRunInfo;
+
+/**
+ * The refusal of a `--job` without `--from`: it names the job of the `--from`
+ * step, so alone it would be ignored and a retry would re-run every job.
+ */
+export const FROM_JOB_WITHOUT_FROM =
+  "--job requires --from: it names the job of the --from step.";
 
 export interface ResolveResumableRunOptions extends ResolveSuspendedRunOptions {
   /** The --from step; when set, only a failed run is resumable. */
@@ -204,6 +211,10 @@ export async function resolveResumableRun(
   runId?: string,
   options: ResolveResumableRunOptions = {},
 ): Promise<ResumableRunInfo> {
+  // The CLI refuses --job without --from too; serve's payload does not.
+  if (options.fromJob !== undefined && !options.fromStep) {
+    throw new UserError(FROM_JOB_WITHOUT_FROM);
+  }
   if (options.suspendedOnly || (!options.fromStep && !runId)) {
     const resolved = await resolveSuspendedRun(
       workflowRepo,
@@ -285,7 +296,7 @@ export async function resolveResumableRun(
 
   if (failedRuns.length === 0) {
     throw new UserError(
-      noRunsInStateMessage(workflow.name, "failed", allRuns),
+      noRunsInStateMessage(workflow, "failed", allRuns),
     );
   }
   if (failedRuns.length > 1) {
@@ -317,11 +328,12 @@ function deadOwnerNextAction(workflowName: string, runId: string): string {
 }
 
 function noRunsInStateMessage(
-  workflowName: string,
+  workflow: Workflow,
   expectedStatus: string,
   allRuns: readonly WorkflowRun[],
   ownerIsDead?: (run: WorkflowRun) => boolean,
 ): string {
+  const workflowName = workflow.name;
   const base = `No ${expectedStatus} runs found for workflow "${workflowName}"`;
   if (allRuns.length === 0) {
     return `${base}. No runs exist — run the workflow first with 'swamp workflow run ${workflowName}'.`;
@@ -337,7 +349,7 @@ function noRunsInStateMessage(
     latest.id,
     {
       nestedWait: latest.findNestedWaits().length > 0,
-      ...rejectedGateOf(latest),
+      ...rejectedGateOf(workflow, latest),
     },
   );
   // A failed run's hint already names the run id, so it is not repeated
@@ -349,16 +361,18 @@ function noRunsInStateMessage(
 /**
  * The step to re-ask when `run` failed on a rejected approval gate — the
  * same step `swamp workflow resume` names when it refuses to retry the run —
- * and its job when another job has a step of that name too.
+ * and its `--job` when the step name needs one (see {@link fromJobFor}).
  */
 function rejectedGateOf(
+  workflow: Workflow,
   run: WorkflowRun,
 ): { rejectedStep?: string; rejectedJob?: string } {
   const rejected = run.failedSteps().find((s) => s.approvalRejected);
   if (!rejected) return {};
   const rejectedStep = entryTemplateOf(rejected);
-  return stepNameInOtherJob(run, rejected.jobName, rejectedStep)
-    ? { rejectedStep, rejectedJob: rejected.jobName }
+  const rejectedJob = fromJobFor(workflow, rejected.jobName, rejectedStep);
+  return rejectedJob !== undefined
+    ? { rejectedStep, rejectedJob }
     : { rejectedStep };
 }
 

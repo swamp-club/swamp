@@ -115,6 +115,11 @@ function jobList(names: readonly string[]): string {
   return rest > 0 ? `${listed} and ${rest} more` : listed;
 }
 
+/** "job" or "jobs" before {@link jobList} of `names`. */
+function jobsNoun(names: readonly string[]): string {
+  return names.length === 1 ? "job" : "jobs";
+}
+
 function stepNotFound(workflow: Workflow, step: string): UserError {
   const allStepNames = workflow.jobs
     .flatMap((j) => j.steps.map((s) => s.name));
@@ -137,14 +142,14 @@ function resolveFrom(workflow: Workflow, from: ResumeFrom): StepRunRef {
     if (!job) {
       throw new UserError(
         `Job "${from.job}" not found in workflow "${workflow.name}". ` +
-          `Available jobs: ${workflow.jobs.map((j) => j.name).join(", ")}`,
+          `Available jobs: ${jobList(workflow.jobs.map((j) => j.name))}.`,
       );
     }
     if (!job.getStep(from.step)) {
       if (jobsWithStep.length === 0) throw stepNotFound(workflow, from.step);
       throw new UserError(
         `Step "${from.step}" is not in job "${from.job}". ` +
-          `It is in job ${jobList(jobsWithStep)}.`,
+          `It is in ${jobsNoun(jobsWithStep)} ${jobList(jobsWithStep)}.`,
       );
     }
     return { jobName: job.name, stepName: from.step };

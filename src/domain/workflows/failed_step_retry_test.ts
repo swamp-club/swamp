@@ -505,6 +505,43 @@ Deno.test("selectRetryTemplates: adds --job to a --from hint only when the step 
   );
 });
 
+Deno.test("selectRetryTemplates: a --job hint names an expression-named job as the workflow writes it", () => {
+  const workflow = Workflow.create({
+    name: "dup-expr-wf",
+    jobs: [
+      Job.create({
+        name: "deploy-${{ inputs.env }}",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      }),
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      }),
+    ],
+  });
+  const data = WorkflowRun.create(workflow).toData();
+  data.status = "failed";
+  data.jobs[0].jobName = "deploy-prod";
+  data.jobs[0].status = "failed";
+  data.jobs[0].steps = [{
+    stepName: "gate",
+    status: "failed",
+    error: "Approval rejected",
+    approvalDecision: { approved: false, decidedAt: new Date().toISOString() },
+  }];
+  data.jobs[1].status = "succeeded";
+  data.jobs[1].steps = [{ stepName: "gate", status: "succeeded" }];
+  const run = WorkflowRun.fromData(data);
+  assertStringIncludes(
+    refusal(workflow, run).message,
+    "Add --from gate --job 'deploy-${{ inputs.env }}' to ask again.",
+  );
+});
+
 Deno.test("selectRetryTemplates: refuses a step name stored twice in one job", () => {
   const workflow = Workflow.create({
     name: "dup-wf",

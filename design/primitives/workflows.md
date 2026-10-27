@@ -2241,15 +2241,21 @@ Step "restart" is in more than one job: "host-a", "host-b". Add --job <job> to c
 ```
 
 `--job <job>` names the job of the `--from` step as written in the workflow
-YAML (an expression-named job by its unevaluated name); it requires `--from`.
-Serve's `workflow.resume` takes it as `fromJob`. A step name used in one job
-needs no `--job`. The `--from` hints a retry refusal or `nextActionForStatus`
-prints add `--job` when the step name is in more than one job of the run.
+YAML (an expression-named job by its unevaluated name). Serve's
+`workflow.resume` takes it as `fromJob`. It requires `--from`: alone it would
+be ignored and a retry would re-run every job, so the CLI, `resolveResumableRun`
+and `resume()` all refuse it. A step name used in one job needs no `--job`. The
+`--from` hints a retry refusal or `nextActionForStatus` prints add `--job` when
+the step name is in more than one job of the current workflow, naming the job
+as the workflow writes it (`fromJobFor` in
+`src/domain/workflows/failed_step_retry.ts`).
 
 A job named with an expression is stored evaluated, so the reset cannot match
 it by name: a stored job named like a literal workflow job belongs to that job,
 and any other stored job is matched by step name against the expression-named
 jobs in the reset set (`candidateJobs` in `src/domain/workflows/resume_reset.ts`).
+This is the one case where a reset still reaches across jobs: two
+expression-named jobs that share a step name reset each other's record of it.
 
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without
