@@ -4177,3 +4177,20 @@ Deno.test("save: on v3, the version is not synced by the repository", async () =
     );
   });
 });
+
+Deno.test({
+  name:
+    "save: a dangling symlink above the data-name directory fails instead of retrying forever",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withDurableRepo(async ({ repo, dir }) => {
+      const modelDir = dirname(repo.getDataNameDir(testType, "m1", "state"));
+      await Deno.mkdir(dirname(modelDir), { recursive: true });
+      await Deno.symlink(join(dir, "gone"), modelDir, { type: "dir" });
+      await assertRejects(
+        () => repo.save(testType, "m1", makeJsonData("state"), bytes("{}")),
+        Deno.errors.NotFound,
+      );
+    });
+  },
+});

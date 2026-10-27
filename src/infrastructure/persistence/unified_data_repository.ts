@@ -3400,6 +3400,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   private async makeDataNameDir(dataNameDir: string): Promise<void> {
     const created: string[] = [];
     const pending = [dataNameDir];
+    // Parents already made or found present. A child that still reports
+    // NotFound under one (a dangling symlink, or a file on Windows) would
+    // otherwise retry forever; it throws, as a recursive mkdir does.
+    const attempted = new Set<string>();
     while (pending.length > 0) {
       const dir = pending[pending.length - 1];
       try {
@@ -3412,9 +3416,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           continue;
         }
         const parent = dirname(dir);
-        if (!(error instanceof Deno.errors.NotFound) || parent === dir) {
+        if (
+          !(error instanceof Deno.errors.NotFound) || parent === dir ||
+          attempted.has(parent)
+        ) {
           throw error;
         }
+        attempted.add(parent);
         pending.push(parent);
       }
     }

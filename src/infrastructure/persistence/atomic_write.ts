@@ -67,7 +67,10 @@ export interface AtomicWriteOptions {
 export async function atomicWriteTextFile(
   path: string,
   content: string,
-  options?: Deno.WriteFileOptions & AtomicWriteOptions,
+  options?:
+    | (Deno.WriteFileOptions & { readonly sync?: undefined })
+    // A synced write replaces the file whole: only `mode` applies.
+    | ({ readonly mode?: number } & Required<AtomicWriteOptions>),
 ): Promise<void> {
   const { sync, ...writeOptions } = options ?? {};
   if (sync !== undefined) {
