@@ -161,18 +161,27 @@ async function modelArchive(
   ]);
 }
 
-function capture(
+/** Each call `run` makes to `console[stream]`, its arguments joined. */
+async function captureCalls(
+  stream: "error" | "log",
+  run: () => void | Promise<void>,
+): Promise<string[]> {
+  const calls: string[] = [];
+  const original = console[stream];
+  console[stream] = (...args: unknown[]) => calls.push(args.join(" "));
+  try {
+    await run();
+  } finally {
+    console[stream] = original;
+  }
+  return calls;
+}
+
+async function capture(
   stream: "error" | "log",
   run: () => void | Promise<void>,
 ): Promise<string> {
-  const lines: string[] = [];
-  const original = console[stream];
-  console[stream] = (...args: unknown[]) => lines.push(args.join(" "));
-  return Promise.resolve(run()).then(
-    () => lines.join("\n"),
-  ).finally(() => {
-    console[stream] = original;
-  });
+  return (await captureCalls(stream, run)).join("\n");
 }
 
 /** Every path under `dir`. */
@@ -389,19 +398,14 @@ Deno.test("extension pull: eval in a dependency's code pulls, with one warning n
     }),
   });
   let thrown: unknown;
-  const stdout = await capture("log", async () => {
+  // JSON mode prints each document with one console.log call.
+  const documents = await captureCalls("log", async () => {
     thrown = await pull(name, registry.url, repo.repoDir, "json");
   });
   assertEquals(thrown, undefined);
-  const warnings = stdout.split("\n{").map((chunk, i) =>
-    i === 0 ? chunk : `{${chunk}`
-  ).map((chunk) => {
-    try {
-      return JSON.parse(chunk);
-    } catch {
-      return undefined;
-    }
-  }).find((doc) => doc?.warnings)?.warnings;
+  const warnings = documents.map((doc) => JSON.parse(doc)).find((doc) =>
+    doc.warnings
+  )?.warnings;
   assertEquals(warnings, [{
     file: "npm:dep/1.0.0/index.js",
     message: "Dependency code uses eval() or new Function(), in " +

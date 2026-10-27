@@ -37,8 +37,8 @@ export interface BundleScan {
 /**
  * Scans every bundle of an extracted extension archive (swamp-club#3383),
  * in name order. Each bundle is named by its path in the archive, such as
- * `bundles/foo.js`, with control characters escaped. `listFiles` lists a directory's files recursively and
- * answers an empty list for a missing one.
+ * `bundles/foo.js`, with control characters escaped. `listFiles` lists a
+ * directory's files recursively and answers an empty list for a missing one.
  */
 export async function scanExtractedBundles(
   extractDir: string,

@@ -44,10 +44,12 @@ interface ModuleMark {
 }
 
 // A module comment's text after `//`: one space, then a module path. esbuild
-// writes the path relative to the working directory or the output file (a
-// bare `compose.ts` included), or a specifier such as `deno:https://...`.
+// writes the path as it is, spaces included, relative to the working directory
+// or the output file (a bare `compose.ts` included), or a specifier such as
+// `deno:https://...`. A path that went unmatched would hand its code to the
+// module above it.
 const MODULE_COMMENT =
-  /^ ((?:https?|npm|jsr|deno|node|file):\S+|\S*\.(?:[cm]?[jt]sx?|json))$/;
+  /^ ((?:https?|npm|jsr|deno|node|file):\S+|\S.*\.(?:[cm]?[jt]sx?|json))$/;
 
 const DEPENDENCY_PATH = new RegExp(
   [
@@ -61,7 +63,7 @@ const DEPENDENCY_PATH = new RegExp(
   "i",
 );
 
-/** The path with each backslash read as a separator, as a Windows build writes it. */
+/** The path with each backslash read as a separator (a Windows build). */
 function slashed(path: string): string {
   return path.replaceAll("\\", "/");
 }

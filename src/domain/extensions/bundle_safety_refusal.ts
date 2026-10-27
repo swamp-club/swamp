@@ -27,8 +27,13 @@ import type { SafetyIssue } from "./extension_safety_analyzer.ts";
 export class BundleSafetyRefusal extends Error {
   /** The errors, each naming the bundle and the module. */
   readonly errors: readonly SafetyIssue[];
+  /** Refused bundles that could not be deleted from disk. */
+  readonly leftBehind: readonly string[];
 
-  constructor(errors: readonly SafetyIssue[]) {
+  constructor(
+    errors: readonly SafetyIssue[],
+    leftBehind: readonly string[] = [],
+  ) {
     super(
       `Bundle has safety errors:\n${
         errors.map((e) => `  ${e.file}: ${e.message}`).join("\n")
@@ -36,5 +41,14 @@ export class BundleSafetyRefusal extends Error {
     );
     this.name = "BundleSafetyRefusal";
     this.errors = errors;
+    this.leftBehind = leftBehind;
+  }
+
+  /** One refusal carrying the errors and left-behind bundles of all. */
+  static merge(refusals: readonly BundleSafetyRefusal[]): BundleSafetyRefusal {
+    return new BundleSafetyRefusal(
+      refusals.flatMap((r) => r.errors),
+      refusals.flatMap((r) => r.leftBehind),
+    );
   }
 }

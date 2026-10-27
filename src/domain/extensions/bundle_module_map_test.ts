@@ -63,6 +63,21 @@ Deno.test("BundleModuleMap.moduleAt: attributes each line to the comment above i
   }
 });
 
+Deno.test("BundleModuleMap.moduleAt: a module path with spaces starts a module, so the dependency above does not claim its code", () => {
+  const source = [
+    "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+    "const a = 1;",
+    "// .swamp/pulled-extensions/@x/y/files/sub dir/evil helper.js",
+    "const b = 2;", // 4
+  ].join("\n");
+  for (const map of [parsedMap(source), BundleModuleMap.fromText(source)]) {
+    assertEquals(map.moduleAt(4), {
+      path: ".swamp/pulled-extensions/@x/y/files/sub dir/evil helper.js",
+      origin: "author",
+    });
+  }
+});
+
 Deno.test("BundleModuleMap.moduleAt: a bundle without module comments is unattributed throughout", () => {
   const map = parsedMap("const x = 1;\nconst y = 2;\n");
   assertEquals(map.moduleCount, 0);

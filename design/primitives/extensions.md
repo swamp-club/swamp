@@ -1236,10 +1236,14 @@ as `files/`. So pull also scans bundles (swamp-club#3383), at two points:
   after it is built and before it is probed or imported. The probe host runs a
   bundle's top-level code with full permissions, so a scan after it would be
   too late. A refusal here rolls the install back, as a type collision does;
-  any other phase-8 fault commits the half-installed state. The rebuilt bundle
-  is deleted, because a bundle dir the archive had nothing for is not staged.
-  As with a collision, the catalog's recorded source modules for the refused
-  sources stay until the next bundle rewrites them.
+  any other phase-8 fault commits the half-installed state. A source that fails
+  for another reason does not stop the rest: every source is still rebuilt and
+  scanned, and a refusal anywhere in the set (the extension or a dependency)
+  decides ahead of any other failure. The rebuilt bundle is deleted, because a
+  bundle dir the archive had nothing for is not staged; if it cannot be, the
+  refusal names the file to delete. As with a collision, the catalog's recorded
+  source modules for the refused sources stay until the next bundle rewrites
+  them.
 
 Only the `dynamic-code` rule runs on a bundle (`analyzeBundleSafety`). It is
 the one hard-error rule that reads content. The file rules (type, size, count)
@@ -1247,8 +1251,9 @@ are for sources and would refuse every `.js` file or any bundle over 1 MB, and
 links are refused for the whole archive already. The source scan is unchanged.
 
 A finding is attributed to the module whose path comment (`// <path>`, which
-esbuild writes above each module) is the closest one above it
-(`BundleModuleMap`). When the bundle parses, those comments come from the
+esbuild writes above each module, verbatim, spaces included) is the closest one
+above it (`BundleModuleMap`). A file name cannot hold `/`, so a newline in one
+cannot forge a module comment. When the bundle parses, those comments come from the
 parser's comment list, so comment-like text in a string cannot start a module.
 A module whose path is in a Deno or npm cache, under `node_modules`, or at a
 remote specifier is a dependency. Its findings are pull warnings, one per
@@ -1266,6 +1271,14 @@ dependency's path above their own code and turn its findings into warnings.
 That gap is accepted until the bundle hash push records for swamp-club#3972,
 and later signing, tie the bundle to its source. The rebuilt-bundle scan does
 not have the gap.
+
+Two gaps remain outside this scan (swamp-club#3996): an archive bundle can
+import a file the scan does not read (a sibling under `bundles/`, or a file
+under `files/`) at run time, and a source whose rebuild failed during pull is
+rebuilt by a later warm load without a scan. Closing the first needs a new rule
+(refusing relative imports in a bundle), which waits on the safety-analyzer
+review; the second needs the warm-load rebuild paths to pass the same
+`checkBundle` hook.
 
 Measured on 2026-10-26 against the latest stable version of every published
 extension (7,330 bundles): none would be refused, and 58 extensions have

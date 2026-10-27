@@ -1010,3 +1010,109 @@ async function* walkFiles(dir: string): AsyncGenerator<string> {
     else yield path;
   }
 }
+
+Deno.test(
+  "InstallExtensionService.execute: a source that fails to bundle does not stop a later source from being scanned and refused",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const extName = `@test/bundle-after-fail-${id}`;
+        // Sorted ahead of model.ts: a.ts fails to bundle (its import does
+        // not exist) and has no bundle on disk to fall back to.
+        await stageModel(
+          repoDir,
+          extName,
+          "a.ts",
+          `import "./missing-${id}.ts";\n` +
+            MINIMAL_MODEL_CODE(`@test/bundle-after-fail-a-${id}`),
+        );
+        const { marker, extractedFiles } = await stageModelWithUnscannedHelper(
+          repoDir,
+          extName,
+          `@test/bundle-after-fail-${id}`,
+          "files/helper.js",
+        );
+        const calls = { commit: 0, rollback: 0 };
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(
+            () =>
+              Promise.resolve(
+                makeStubInstallResult(extName, "1.0.0", [
+                  `.swamp/pulled-extensions/${extName}/models/a.ts`,
+                  ...extractedFiles,
+                ]),
+              ),
+            { calls },
+          ),
+        });
+        const thrown = await assertRejects(
+          () =>
+            service.execute(
+              { name: extName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          UserError,
+          "Extension bundle has safety errors. Install aborted.",
+        );
+        assertStringIncludes(thrown.message, "files/helper.js contains eval()");
+        assertEquals(calls, { commit: 0, rollback: 1 });
+        assertFalse((globalThis as Record<string, unknown>)[marker] === true);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: a dependency's refused bundle is not hidden behind the top-level extension's failure",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const topName = `@test/bundle-top-${id}`;
+        const depName = `@test/bundle-dep-${id}`;
+        await stageModel(
+          repoDir,
+          topName,
+          "model.ts",
+          `import "./missing-${id}.ts";\n` +
+            MINIMAL_MODEL_CODE(`@test/bundle-top-${id}`),
+        );
+        const dep = await stageModelWithUnscannedHelper(
+          repoDir,
+          depName,
+          `@test/bundle-dep-${id}`,
+          "files/helper.js",
+        );
+        const top = makeStubInstallResult(topName, "1.0.0", [
+          `.swamp/pulled-extensions/${topName}/models/model.ts`,
+        ]);
+        top.dependencyResults = [
+          makeStubInstallResult(depName, "1.0.0", dep.extractedFiles),
+        ];
+        const calls = { commit: 0, rollback: 0 };
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(
+            () => Promise.resolve(top),
+            { calls },
+          ),
+        });
+        const thrown = await assertRejects(
+          () =>
+            service.execute(
+              { name: topName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          UserError,
+          "Extension bundle has safety errors. Install aborted.",
+        );
+        assertStringIncludes(thrown.message, "files/helper.js contains eval()");
+        assertEquals(calls, { commit: 0, rollback: 1 });
+      },
+    );
+  },
+);
