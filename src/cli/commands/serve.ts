@@ -156,6 +156,7 @@ import {
   shouldInvalidateDashboardSession,
 } from "../../serve/token_auth.ts";
 import {
+  addUnknownUsernames,
   usernamesFromServerTokens,
   type UsernamesResolved,
 } from "../../serve/known_usernames.ts";
@@ -3855,6 +3856,10 @@ export const serveCommand = new Command()
     // collective or group is named like a configured one.
     const rememberUsernames: UsernamesResolved = (usernamesBySub) =>
       Object.assign(resolvedUserNames, usernamesBySub);
+    // A token only names a user serve does not know yet; see
+    // addUnknownUsernames.
+    const rememberTokenUsernames: UsernamesResolved = (usernamesBySub) =>
+      addUnknownUsernames(resolvedUserNames, usernamesBySub);
     // Outside OAuth mode a user principal is the username itself (token
     // auth) or there is none, so a username: subject cannot be resolved.
     let endStartupGrantLookups = (): void => {};
@@ -4255,7 +4260,7 @@ export const serveCommand = new Command()
         ));
       } catch (error) {
         logger.warn(
-          "Could not read server tokens for user names; callers they name are shown by id until they log in: {error}",
+          "Could not read server tokens to learn user names; users admitted through a collective or group are shown by id until their next login: {error}",
           { error: error instanceof Error ? error.message : String(error) },
         );
       }
@@ -6278,7 +6283,7 @@ export const serveCommand = new Command()
       auditEmitter: connectionCtx.auditEmitter,
       instanceId,
       resolvedUserNames: connectionCtx.resolvedUserNames,
-      onUsernamesResolved: rememberUsernames,
+      onUsernamesResolved: rememberTokenUsernames,
     };
 
     // Dashboard static file serving
@@ -6502,7 +6507,7 @@ export const serveCommand = new Command()
               sourceIp: remoteAddr,
               ingress: `websocket:${transport}`,
               resolvedUserNames: connectionCtx.resolvedUserNames,
-              onUsernamesResolved: rememberUsernames,
+              onUsernamesResolved: rememberTokenUsernames,
             };
             const result = extracted
               ? await authenticateServerToken(
@@ -6635,7 +6640,7 @@ export const serveCommand = new Command()
                   sourceIp,
                   ingress: "http-datastore",
                   resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberUsernames,
+                  onUsernamesResolved: rememberTokenUsernames,
                 }),
             },
           );
@@ -6676,7 +6681,7 @@ export const serveCommand = new Command()
                       sourceIp,
                       ingress: "http-signal",
                       resolvedUserNames: connectionCtx.resolvedUserNames,
-                      onUsernamesResolved: rememberUsernames,
+                      onUsernamesResolved: rememberTokenUsernames,
                     },
                   ),
               },
@@ -6722,7 +6727,7 @@ export const serveCommand = new Command()
                   sourceIp: cancelRemoteAddr,
                   ingress: "http-cancel",
                   resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberUsernames,
+                  onUsernamesResolved: rememberTokenUsernames,
                 },
               );
               if (!authResult.ok) {
@@ -7145,7 +7150,7 @@ export const serveCommand = new Command()
                   sourceIp: dashboardRemoteAddr,
                   ingress: "dashboard-session",
                   resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberUsernames,
+                  onUsernamesResolved: rememberTokenUsernames,
                 },
               );
               if (!result.ok) {
@@ -7173,7 +7178,7 @@ export const serveCommand = new Command()
                   sourceIp: dashboardRemoteAddr,
                   ingress: "dashboard-session",
                   resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberUsernames,
+                  onUsernamesResolved: rememberTokenUsernames,
                 },
               );
               if (!result.ok) {

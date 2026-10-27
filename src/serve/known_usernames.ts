@@ -86,9 +86,25 @@ export function displayPrincipal(
 ): string {
   if (
     principal.kind === "user" && usernamesBySub &&
-    Object.hasOwn(usernamesBySub, principal.id)
+    Object.hasOwn(usernamesBySub, principal.id) &&
+    usernamesBySub[principal.id]
   ) {
     return `user:${usernamesBySub[principal.id]}`;
   }
   return principalToString(principal);
+}
+
+/**
+ * Adds the names for users `usernamesBySub` does not name yet. A token records
+ * the name its user had at login, so a token cannot replace a name a later
+ * login or the provider gave, and two tokens of a renamed user cannot make the
+ * name alternate.
+ */
+export function addUnknownUsernames(
+  usernamesBySub: Record<string, string>,
+  learned: Readonly<Record<string, string>>,
+): void {
+  for (const [sub, username] of Object.entries(learned)) {
+    if (!Object.hasOwn(usernamesBySub, sub)) usernamesBySub[sub] = username;
+  }
 }

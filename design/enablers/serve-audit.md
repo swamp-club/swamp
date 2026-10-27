@@ -222,9 +222,12 @@ an operator can tell who acted without looking up the sub:
   serve knows for the sub (swamp-club#4013). Serve learns names from the
   configuration (`admins`, `allowed-users`, `username:` grant subjects), from
   each OAuth login, from each token whose login recorded `oauthIdentity`
-  (read again at startup), and from the collective refresh, which reads
-  userinfo for the token's own sub. A manually minted token for a user who has
-  logged in is named that way, though it never gets their email.
+  (read again at startup, newest login first), and from the collective
+  refresh, which reads userinfo for the token's own sub. Logins and the refresh
+  replace a name; a token only names a user serve has no name for yet, so an
+  older token cannot bring back a name from before a rename. A manually minted
+  token for a user who has logged in is named that way, though it never gets
+  their email.
 - `initiatedBy` and access-denied messages name a user the same way:
   `user:<username>` when serve knows the name, `user:<sub>` otherwise.
   `principalId` keeps the sub.

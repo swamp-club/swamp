@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
 import {
+  addUnknownUsernames,
   displayPrincipal,
   usernameFromLogin,
   usernamesFromServerTokens,
@@ -122,4 +123,28 @@ Deno.test("displayPrincipal: never names another kind of principal or reads inhe
     displayPrincipal({ kind: "user", id: "constructor" }, {}),
     "user:constructor",
   );
+});
+
+Deno.test("displayPrincipal: an empty user name is not a name", () => {
+  assertEquals(
+    displayPrincipal({ kind: "user", id: "sub-1" }, { "sub-1": "" }),
+    "user:sub-1",
+  );
+});
+
+Deno.test("addUnknownUsernames: names only users without a name", () => {
+  const names: Record<string, string> = { "sub-1": "new-name" };
+  addUnknownUsernames(names, { "sub-1": "old-name", "sub-2": "bob" });
+  assertEquals(names, { "sub-1": "new-name", "sub-2": "bob" });
+});
+
+Deno.test("addUnknownUsernames: two tokens of a renamed user never make the name alternate", () => {
+  const names: Record<string, string> = {};
+  addUnknownUsernames(names, { "sub-1": "old-name" });
+  // A login gives the new name, which replaces it.
+  Object.assign(names, { "sub-1": "new-name" });
+  for (let i = 0; i < 3; i++) {
+    addUnknownUsernames(names, { "sub-1": "old-name" });
+    assertEquals(names["sub-1"], "new-name");
+  }
 });
