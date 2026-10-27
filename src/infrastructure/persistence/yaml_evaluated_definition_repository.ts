@@ -37,6 +37,7 @@ import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_w
 import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -629,8 +630,14 @@ export class YamlEvaluatedDefinitionRepository {
    * @param id - The definition ID
    */
   async delete(type: ModelType, id: DefinitionId): Promise<void> {
+    // Lookup, file removal and change staging are measured apart into the
+    // running diagnostic phase, if any.
+    const tally = currentDiagnosticTally();
     // Populate cache so we discover name-based files on a cold instance
-    const definition = await this.findById(type, id);
+    const definition = await tally.measure(
+      "lookup",
+      () => this.findById(type, id),
+    );
 
     const pathsToTry = new Set([this.getLegacyPath(type, id)]);
     const cachedPath = this.idToActualPath.get(id);
@@ -641,39 +648,45 @@ export class YamlEvaluatedDefinitionRepository {
 
     const resolvedPath = this.idToActualPath.get(id) ??
       this.getLegacyPath(type, id);
-    return await withChangeSignalled(this.markDirty, {
-      kind: "remove",
-      path: resolvedPath,
-    }, {
-      typed: true,
-    }, async () => {
-      const removed: string[] = [];
-      for (const path of pathsToTry) {
-        try {
-          await Deno.remove(path);
-          removed.push(path);
+    return await tally.measure(
+      "change_stage",
+      () =>
+        withChangeSignalled(this.markDirty, {
+          kind: "remove",
+          path: resolvedPath,
+        }, {
+          typed: true,
+        }, async () => {
+          const removed: string[] = [];
+          await tally.measure("file_remove", async () => {
+            for (const path of pathsToTry) {
+              try {
+                await Deno.remove(path);
+                removed.push(path);
 
-          // Clean up empty parent directories
-          const definitionsDir = swampPath(
-            this.repoDir,
-            SWAMP_SUBDIRS.definitionsEvaluated,
-          );
-          await cleanupEmptyParentDirs(path, definitionsDir);
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            throw error;
-          }
-        }
-      }
+                // Clean up empty parent directories
+                const definitionsDir = swampPath(
+                  this.repoDir,
+                  SWAMP_SUBDIRS.definitionsEvaluated,
+                );
+                await cleanupEmptyParentDirs(path, definitionsDir);
+              } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) {
+                  throw error;
+                }
+              }
+            }
+          });
 
-      this.idToActualPath.delete(id);
-      await stageTyped(this.markDirty, () => {
-        const changes = new ModelChanges(type, id);
-        return removed.map((path) =>
-          changes.removeEvaluatedDefinition(this.keyOf(path))
-        );
-      });
-    });
+          this.idToActualPath.delete(id);
+          await stageTyped(this.markDirty, () => {
+            const changes = new ModelChanges(type, id);
+            return removed.map((path) =>
+              changes.removeEvaluatedDefinition(this.keyOf(path))
+            );
+          });
+        }),
+    );
   }
 
   /**

@@ -48,6 +48,7 @@ import {
   fakeUnreadableLookup,
 } from "./unreadable_records_test_helpers.ts";
 import {
+  observeDiagnosticPhase,
   withDiagnosticArea,
   withDiagnosticAttributes,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
@@ -3719,6 +3720,62 @@ Deno.test("YamlDefinitionRepository.findByName: outside a diagnostic area it exp
     await withObservedSpans(async (spans) => {
       await repo.findByName(testType, "quiet");
       assertEquals(spans.length, 0);
+    });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete: measures lookup, removal, event and staging into the running phase", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, new EventBus());
+    const definition = createTestDefinition("measured-delete");
+    await repo.save(testType, definition);
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", () =>
+        observeDiagnosticPhase(
+          "definition_removal",
+          {},
+          () => repo.delete(testType, definition.id, definition.name),
+        ));
+      const removal = findSpan(spans, "swamp.diagnostic.definition_removal");
+      for (
+        const work of ["lookup", "file_remove", "event_publish", "change_stage"]
+      ) {
+        assertEquals(
+          typeof removal.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+    });
+    assertEquals(await repo.findById(testType, definition.id), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal: counts its walk and its reads, then the hint that spares the next one", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(testType, createTestDefinition("global-other"));
+    await repo.save(testType, createTestDefinition("global-target"));
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", async () => {
+        for (let i = 0; i < 2; i++) {
+          await observeDiagnosticPhase(
+            "definition_resolve",
+            {},
+            () => repo.findByNameGlobal("global-target"),
+          );
+        }
+      });
+      const [walk, hinted] = diagnosticPhases(spans, "definition_resolve");
+      assertEquals(walk.attributes["swamp.diagnostic.primary_walks"], 1);
+      assert(
+        (walk.attributes["swamp.diagnostic.files_read"] as number) >= 1,
+      );
+      assertEquals(hinted.attributes["swamp.diagnostic.name_hint_hits"], 1);
+      assertEquals(
+        hinted.attributes["swamp.diagnostic.primary_walks"],
+        undefined,
+      );
     });
   });
 });

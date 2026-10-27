@@ -641,14 +641,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     // This method has no name-derived fast path at all — without a hint every
     // call re-walks and re-parses every definition in the repository until it
-    // hits a match.
+    // hits a match. The running diagnostic phase, if any, counts which step
+    // answered; the walks count their reads (files_read, read_work_ms).
+    const tally = currentDiagnosticTally();
     const hint = this.globalNameToActualPath.get(name);
     if (hint?.primary) {
       const hinted = await this.readHintedWithType(hint, name);
-      if (hinted) return hinted;
+      if (hinted) {
+        tally.add("name_hint_hits");
+        return hinted;
+      }
       this.globalNameToActualPath.delete(name);
     }
 
+    tally.add("primary_walks");
     const result = await this.searchDefinitionByName(
       this.baseDir,
       [],
@@ -661,9 +667,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       // cannot shadow a primary definition added since the hint was recorded.
       if (hint && !hint.primary) {
         const hinted = await this.readHintedWithType(hint, name);
-        if (hinted) return hinted;
+        if (hinted) {
+          tally.add("name_hint_hits");
+          return hinted;
+        }
         this.globalNameToActualPath.delete(name);
       }
+      tally.add("secondary_walks");
       const secondary = await this.searchDefinitionByName(
         this.secondaryBaseDir,
         [],
@@ -757,8 +767,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             if (entry.isSymlink) {
               await assertSafePath(fullPath, this.repoDir);
             }
-            const content = await Deno.readTextFile(fullPath);
-            const data = parseYaml(content) as DefinitionData | null;
+            const data = await readDefinitionData(fullPath);
             if (!data) continue;
             const definition = Definition.fromData(data);
 
@@ -1237,9 +1246,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     id: DefinitionId,
     name?: string,
   ): Promise<void> {
+    // Lookups, file removal, the deleted event and change staging are
+    // measured apart into the running diagnostic phase, if any.
+    const tally = currentDiagnosticTally();
     // Populate cache so we discover name-based and secondary files on a cold
     // instance
-    const definition = await this.findById(type, id);
+    const definition = await tally.measure(
+      "lookup",
+      () => this.findById(type, id),
+    );
     let definitionName = name ?? definition?.name;
 
     // Try removing all possible file paths; declaresOther below skips any
@@ -1260,10 +1275,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
     // The definition may also (or only) live in the auto-definitions dir.
     if (this.secondaryBaseDir) {
-      const located = await this.locateByIdInDir(
-        this.secondaryBaseDir,
-        type,
-        id,
+      const secondaryBaseDir = this.secondaryBaseDir;
+      const located = await tally.measure(
+        "lookup",
+        () => this.locateByIdInDir(secondaryBaseDir, type, id),
       );
       if (located) {
         pathsToTry.add(located.path);
@@ -1275,75 +1290,83 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // A file here that declares another definition is kept, so the change is
     // a write of this path rather than its removal.
     const kept = await this.declaresOther(resolvedPath, id, name);
-    return await withChangeSignalled(
-      this.markDirtyHook,
-      {
-        kind: kept ? "write" : "remove",
-        path: resolvedPath,
-      },
-      { typed: true },
-      async () => {
-        const priors = typedStagingActive(this.markDirtyHook)
-          ? await readPriors([...pathsToTry])
-          : new Map<string, PriorFile>();
+    return await tally.measure("change_stage", () =>
+      withChangeSignalled(
+        this.markDirtyHook,
+        {
+          kind: kept ? "write" : "remove",
+          path: resolvedPath,
+        },
+        { typed: true },
+        async () => {
+          const priors = typedStagingActive(this.markDirtyHook)
+            ? await readPriors([...pathsToTry])
+            : new Map<string, PriorFile>();
 
-        let deleted = false;
-        const removed: string[] = [];
-        for (const path of pathsToTry) {
-          // The id-named path is also where a definition named with this UUID
-          // lives, and a copied file can share the id; never remove another
-          // definition's file.
-          if (await this.declaresOther(path, id, name)) continue;
-          try {
-            const otherCandidate = path !== resolvedPath &&
-              await this.exists(path);
-            await withChangeSignalled(
-              this.markDirtyHook,
-              otherCandidate ? [{ kind: "remove", path }] : [],
-              { typed: true },
-              () => Deno.remove(path),
-            );
-            deleted = true;
-            removed.push(path);
+          let deleted = false;
+          const removed: string[] = [];
+          for (const path of pathsToTry) {
+            // The id-named path is also where a definition named with this UUID
+            // lives, and a copied file can share the id; never remove another
+            // definition's file.
+            if (await this.declaresOther(path, id, name)) continue;
+            try {
+              const otherCandidate = path !== resolvedPath &&
+                await this.exists(path);
+              await withChangeSignalled(
+                this.markDirtyHook,
+                otherCandidate ? [{ kind: "remove", path }] : [],
+                { typed: true },
+                () => tally.measure("file_remove", () => Deno.remove(path)),
+              );
+              deleted = true;
+              removed.push(path);
 
-            // Clean up empty parent directories
-            await cleanupEmptyParentDirs(path, this.ownerBaseDir(path));
-          } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) {
-              throw error;
+              // Clean up empty parent directories
+              await tally.measure(
+                "file_remove",
+                () => cleanupEmptyParentDirs(path, this.ownerBaseDir(path)),
+              );
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) {
+                throw error;
+              }
             }
           }
-        }
 
-        if (deleted) {
-          this.idToActualPath.delete(id);
+          if (deleted) {
+            this.idToActualPath.delete(id);
 
-          if (this.eventBus && definitionName) {
-            const event = createDefinitionDeleted(
-              type.normalized,
-              id,
-              definitionName,
-            );
-            await this.eventBus.publish(event);
+            if (this.eventBus && definitionName) {
+              const event = createDefinitionDeleted(
+                type.normalized,
+                id,
+                definitionName,
+              );
+              const eventBus = this.eventBus;
+              await tally.measure(
+                "event_publish",
+                () => eventBus.publish(event),
+              );
+            }
+          } else {
+            logger.debug`No definition file found to delete for ${id}`;
           }
-        } else {
-          logger.debug`No definition file found to delete for ${id}`;
-        }
-        const batches = typedStagingActive(this.markDirtyHook)
-          ? definitionDeleteBatches({
-            kind: "model",
-            id,
-            name: definitionName,
-            removed,
-            priors,
-            tierOf: (path) => this.stagingTierOf(path),
-          })
-          : [[]];
-        for (const batch of batches) {
-          await stageTyped(this.markDirtyHook, () => batch);
-        }
-      },
-    );
+          const batches = typedStagingActive(this.markDirtyHook)
+            ? definitionDeleteBatches({
+              kind: "model",
+              id,
+              name: definitionName,
+              removed,
+              priors,
+              tierOf: (path) => this.stagingTierOf(path),
+            })
+            : [[]];
+          for (const batch of batches) {
+            await stageTyped(this.markDirtyHook, () => batch);
+          }
+        },
+      ));
   }
 
   /**

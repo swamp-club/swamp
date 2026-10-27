@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import {
   currentDiagnosticTally,
   observeDiagnosticPhase,
+  utf8ByteLength,
 } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
@@ -356,6 +357,8 @@ export class YamlOutputRepository implements OutputRepository {
   private async readAll(type: ModelType): Promise<ModelOutput[]> {
     const typeDir = this.getTypeDir(type);
     const outputs: ModelOutput[] = [];
+    // Every record of the type is read, whatever the caller then keeps.
+    const tally = currentDiagnosticTally();
 
     try {
       // Iterate over method directories
@@ -381,8 +384,18 @@ export class YamlOutputRepository implements OutputRepository {
             // file means "skip it" — never "abandon the rest of the
             // current method directory."
             try {
-              const content = await Deno.readTextFile(path);
-              const data = parseYaml(content) as ModelOutputData | null;
+              const content = await tally.measure(
+                "read",
+                () => Deno.readTextFile(path),
+              );
+              tally.add("files_read");
+              if (tally.recording) {
+                tally.add("bytes_read", utf8ByteLength(content));
+              }
+              const data = tally.measureSync(
+                "parse",
+                () => parseYaml(content),
+              ) as ModelOutputData | null;
               if (!data) continue;
               if (data.logFile) {
                 data.logFile = toAbsolutePath(this.repoDir, data.logFile);
@@ -584,35 +597,36 @@ export class YamlOutputRepository implements OutputRepository {
     // NotFound from Deno.remove (race: target deleted concurrently) is
     // absorbed and returns successfully (delete is idempotent).
     const dir = this.getMethodDir(type, method);
+    // The search reads the method's records until one matches: counted
+    // apart from the removal it leads to.
+    const tally = currentDiagnosticTally();
     try {
-      let matchPath: string | null = null;
-      let matchData: ModelOutputData | null = null;
-      for await (const entry of Deno.readDir(dir)) {
-        if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
-        const path = join(dir, entry.name);
+      const match = await tally.measure("search", async () => {
+        for await (const entry of Deno.readDir(dir)) {
+          if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+          const path = join(dir, entry.name);
 
-        try {
-          const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as ModelOutputData | null;
-          if (!data) continue;
-          if (data.id === id) {
-            matchPath = path;
-            matchData = data;
-            break;
+          try {
+            const content = await Deno.readTextFile(path);
+            tally.add("search_files_read");
+            const data = parseYaml(content) as ModelOutputData | null;
+            if (!data) continue;
+            if (data.id === id) return { path, data };
+          } catch (error) {
+            if (error instanceof Deno.errors.NotFound) continue;
+            throw error;
           }
-        } catch (error) {
-          if (error instanceof Deno.errors.NotFound) continue;
-          throw error;
         }
-      }
+        return null;
+      });
 
-      if (matchPath) {
+      if (match) {
         await this.removeOutputFiles(
-          matchPath,
+          match.path,
           0,
-          this.ownedLogPath(matchPath, matchData),
+          this.ownedLogPath(match.path, match.data),
           false,
-          matchData,
+          match.data,
         );
       }
     } catch (error) {

@@ -17,12 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { collect } from "../testing.ts";
 import {
+  diagnosticPhases,
   findSpan,
+  isChildOf,
+  type ReadableSpan,
   withCapturedSpans,
+  withObservedSpans,
 } from "../../infrastructure/tracing/span_test_helpers.ts";
+import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   createModelDeleteDeps,
@@ -485,5 +490,186 @@ Deno.test("modelDelete: records no target or principal on the span when neither 
     assertEquals(span.attributes["model.id_or_name"], "missing-model");
     assertEquals(span.attributes["model.name"], undefined);
     assertEquals(span.attributes["auth.principal.id"], undefined);
+  });
+});
+
+// ── Diagnostic phases (swamp-club#4003) ─────────────────────────────
+
+/** Runs a delete the way worker prune does: in the worker_delete area. */
+function deleteInArea(
+  deps: ModelDeleteDeps,
+  force = true,
+): Promise<ModelDeleteEvent[]> {
+  return withDiagnosticArea("worker_delete", () =>
+    collect<ModelDeleteEvent>(
+      modelDelete(createLibSwampContext(), deps, {
+        modelIdOrName: "my-model",
+        force,
+      }),
+    ));
+}
+
+function phase(spans: readonly ReadableSpan[], name: string): ReadableSpan {
+  return findSpan(spans, `swamp.diagnostic.${name}`);
+}
+
+function attr(span: ReadableSpan, key: string): unknown {
+  return span.attributes[`swamp.diagnostic.${key}`];
+}
+
+const REFERENCING_WORKFLOW = [{
+  name: "deploy",
+  jobs: [{
+    steps: [{
+      task: {
+        isModelMethod: () => true,
+        data: { type: "model_method", modelIdOrName: "my-model" },
+      },
+    }],
+  }],
+}] as unknown as import("../../domain/workflows/workflow.ts").Workflow[];
+
+Deno.test("modelDelete: in an area, each stage is a phase under model_delete with its counts", async () => {
+  await withObservedSpans(async (spans) => {
+    const expiredData = mockData("old");
+    await deleteInArea(makeDeps({
+      findAllWorkflows: () =>
+        Promise.resolve(
+          [{
+            name: "other",
+            jobs: [],
+          }] as unknown as import("../../domain/workflows/workflow.ts").Workflow[],
+        ),
+      findDataArtifacts: () =>
+        Promise.resolve([expiredData, mockData("a"), mockData("b")]),
+      isExpired: (data) => Promise.resolve(data === expiredData),
+      findOutputs: () =>
+        Promise.resolve([
+          { id: "o1", methodName: "run" },
+          { id: "o2", methodName: "run" },
+        ]),
+    }));
+
+    const del = findSpan(spans, "swamp.model.delete");
+    const model = phase(spans, "model_delete");
+    assert(isChildOf(model, del));
+    // The model's identity stays on the span queries select.
+    assertEquals(del.attributes["model.name"], "my-model");
+    assertEquals(model.attributes["model.name"], undefined);
+    assertEquals(attr(model, "definition_type"), "aws/s3-bucket");
+    assertEquals(model.attributes["swamp.outcome"], "ok");
+
+    const stages = [
+      "definition_resolve",
+      "workflow_reference_check",
+      "data_discovery",
+      "expiry_check",
+      "output_discovery",
+      "output_removal",
+      "data_removal",
+      "evaluated_removal",
+      "definition_removal",
+    ];
+    for (const stage of stages) {
+      const span = phase(spans, stage);
+      assert(isChildOf(span, model), stage);
+      assertEquals(span.attributes["swamp.outcome"], "ok", stage);
+      assertEquals(attr(span, "area"), "worker_delete", stage);
+    }
+    assertEquals(attr(phase(spans, "definition_resolve"), "hit"), true);
+    const refs = phase(spans, "workflow_reference_check");
+    assertEquals(attr(refs, "workflows"), 1);
+    assertEquals(attr(refs, "referencing"), 0);
+    assertEquals(typeof attr(refs, "reference_match_work_ms"), "number");
+    assertEquals(attr(phase(spans, "data_discovery"), "artifacts"), 3);
+    const expiry = phase(spans, "expiry_check");
+    assertEquals(attr(expiry, "checker"), true);
+    assertEquals(attr(expiry, "checked"), 3);
+    assertEquals(attr(expiry, "expired"), 1);
+    assertEquals(attr(expiry, "live"), 2);
+    assertEquals(attr(phase(spans, "output_discovery"), "outputs"), 2);
+    const outputs = phase(spans, "output_removal");
+    assertEquals(attr(outputs, "attempted"), 2);
+    assertEquals(attr(outputs, "deleted"), 2);
+    const data = phase(spans, "data_removal");
+    assertEquals(attr(data, "expired_deleted"), 1);
+    assertEquals(attr(data, "live_deleted"), 2);
+  });
+});
+
+Deno.test("modelDelete: a refused delete ends model_delete as an error with its reason", async () => {
+  await withObservedSpans(async (spans) => {
+    await deleteInArea(makeDeps({
+      lookupDefinition: () => Promise.resolve(null),
+    }));
+    await deleteInArea(makeDeps({
+      findAllWorkflows: () => Promise.resolve(REFERENCING_WORKFLOW),
+    }));
+    await deleteInArea(
+      makeDeps({ findDataArtifacts: () => Promise.resolve([mockData("d")]) }),
+      false,
+    );
+
+    const models = diagnosticPhases(spans, "model_delete");
+    assertEquals(models.map((s) => s.attributes["swamp.outcome"]), [
+      "error",
+      "error",
+      "error",
+    ]);
+    assertEquals(models.map((s) => attr(s, "refusal")), [
+      "not_found",
+      "workflow_referenced",
+      "live_data",
+    ]);
+    assertEquals(
+      attr(diagnosticPhases(spans, "definition_resolve")[0], "hit"),
+      false,
+    );
+    assertEquals(
+      diagnosticPhases(spans, "workflow_reference_check").map((s) =>
+        attr(s, "referencing")
+      ),
+      [1, 0],
+    );
+    assertEquals(attr(phase(spans, "expiry_check"), "checker"), false);
+    assertEquals(attr(phase(spans, "expiry_check"), "live"), 1);
+    // A refusal stops before any removal.
+    assertEquals(diagnosticPhases(spans, "output_removal").length, 0);
+  });
+});
+
+Deno.test("modelDelete: a removal that throws ends its phase and model_delete as errors", async () => {
+  await withObservedSpans(async (spans) => {
+    await assertRejects(() =>
+      deleteInArea(makeDeps({
+        findOutputs: () => Promise.resolve([{ id: "o1", methodName: "run" }]),
+        deleteOutput: () => Promise.reject(new Error("disk full")),
+      }))
+    );
+    const outputs = phase(spans, "output_removal");
+    assertEquals(outputs.attributes["swamp.outcome"], "error");
+    assertEquals(attr(outputs, "attempted"), 1);
+    assertEquals(attr(outputs, "deleted"), undefined);
+    assertEquals(
+      phase(spans, "model_delete").attributes["swamp.outcome"],
+      "error",
+    );
+    assertEquals(diagnosticPhases(spans, "data_removal").length, 0);
+  });
+});
+
+Deno.test("modelDelete: outside an area no phases are exported", async () => {
+  await withObservedSpans(async (spans) => {
+    await collect(
+      modelDelete(createLibSwampContext(), makeDeps(), {
+        modelIdOrName: "my-model",
+        force: false,
+      }),
+    );
+    findSpan(spans, "swamp.model.delete");
+    assertEquals(
+      spans.filter((s) => s.name.startsWith("swamp.diagnostic.")).length,
+      0,
+    );
   });
 });
