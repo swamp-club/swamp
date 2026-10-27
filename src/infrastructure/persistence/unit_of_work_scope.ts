@@ -463,12 +463,15 @@ const warnedCallSites = new Set<string>();
  */
 const SOURCE_ROOT = new URL("../../../", import.meta.url).href;
 const PERSISTENCE_DIR = "src/infrastructure/persistence/";
+// Diagnostic phases wrap a repository's work without being its caller.
+const DIAGNOSTICS_DIR = "src/domain/diagnostics/";
 const FRAME = /^\s*at (?:async )?(?:(.+?) \()?(\S+?):(\d+):\d+\)?$/;
 
 /**
  * Finds the caller of a route-2 write in a stack trace: the first frame from
  * the repository's source (`root` is its URL prefix) outside
- * `src/infrastructure/persistence/`. Runtime frames are skipped. With no
+ * `src/infrastructure/persistence/` and the diagnostic phase wrappers in
+ * `src/domain/diagnostics/`. Runtime frames are skipped. With no
  * such frame it falls back to the first `file:` frame outside the
  * repository's source, named by its full URL, so a caller loaded from
  * elsewhere still gets its own warning.
@@ -502,7 +505,8 @@ export function unscopedCallerFrom(
     });
   }
   const index = frames.findIndex((frame) =>
-    !frame.file.startsWith(PERSISTENCE_DIR)
+    !frame.file.startsWith(PERSISTENCE_DIR) &&
+    !frame.file.startsWith(DIAGNOSTICS_DIR)
   );
   if (index === -1) return foreign;
   const frame = frames[index];

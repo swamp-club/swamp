@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
+import {
+  currentDiagnosticTally,
+  observeDiagnosticPhase,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
 import {
@@ -110,6 +114,15 @@ function parseOutputFileName(
     ? undefined
     : { definitionId: match[1], stamp: match[2] };
 }
+
+/** Counts the `candidate_scan` phase always exports, zero included. */
+const CANDIDATE_SCAN_COUNTS = [
+  "considered",
+  "eligible",
+  "delete_attempted",
+  "deleted",
+  "failed",
+] as const;
 
 /**
  * YAML-based implementation of OutputRepository.
@@ -704,59 +717,110 @@ export class YamlOutputRepository implements OutputRepository {
     const deletedYamls = new Set<string>();
     const countedLogs = new Set<string>();
 
-    const yamlFiles = await this.collectFiles(this.baseDir, ".yaml");
-    for (const yamlPath of yamlFiles) {
-      try {
-        const cutoffMs = cutoffFor(yamlPath.slice(this.baseDir.length + 1));
+    // Every batch lists every output file; the strategy is recorded so a
+    // scan-heavy batch can be told from a deletion-heavy one. Phases are
+    // exported only inside output retention
+    // (design/enablers/serve-phase-telemetry.md).
+    const yamlFiles = await observeDiagnosticPhase("candidate_enumeration", {
+      "swamp.diagnostic.scan_strategy": "full_listing",
+    }, async (phase) => {
+      const files = await this.collectFiles(this.baseDir, ".yaml");
+      phase.tally.add("files", files.length);
+      return files;
+    });
+    // One phase for the loop: counts and summed work, never a span per file.
+    await observeDiagnosticPhase("candidate_scan", {
+      "swamp.diagnostic.dry_run": dryRun,
+      ...(limit !== undefined ? { "swamp.diagnostic.limit": limit } : {}),
+    }, async (phase) => {
+      const { tally } = phase;
+      // The core counts export as zero on an empty batch, not as absent.
+      for (const key of CANDIDATE_SCAN_COUNTS) tally.add(key, 0);
+      for (const yamlPath of yamlFiles) {
+        tally.add("considered");
+        try {
+          const cutoffMs = cutoffFor(yamlPath.slice(this.baseDir.length + 1));
 
-        const stat = await Deno.stat(yamlPath);
-        const mtimeMs = stat.mtime?.getTime();
-        if (mtimeMs !== undefined && mtimeMs >= cutoffMs) continue;
+          const stat = await tally.measure("stat", () => Deno.stat(yamlPath));
+          const mtimeMs = stat.mtime?.getTime();
+          if (mtimeMs !== undefined && mtimeMs >= cutoffMs) {
+            tally.add("skipped_recent_mtime");
+            continue;
+          }
 
-        const content = await Deno.readTextFile(yamlPath);
-        const data = parseYaml(content) as ModelOutputData | null;
-        if (data) {
-          if (!TERMINAL_STATUSES.has(data.status)) continue;
-          const startedAt = data.startedAt
-            ? new Date(data.startedAt).getTime()
-            : undefined;
-          if (
-            startedAt === undefined || Number.isNaN(startedAt) ||
-            startedAt >= cutoffMs
-          ) continue;
+          const content = await tally.measure(
+            "read",
+            () => Deno.readTextFile(yamlPath),
+          );
+          const data = tally.measureSync(
+            "parse",
+            () => parseYaml(content),
+          ) as ModelOutputData | null;
+          if (data) {
+            // A run that has not finished keeps its output whatever its age.
+            if (!TERMINAL_STATUSES.has(data.status)) {
+              tally.add("protected_not_terminal");
+              continue;
+            }
+            const startedAt = data.startedAt
+              ? new Date(data.startedAt).getTime()
+              : undefined;
+            if (
+              startedAt === undefined || Number.isNaN(startedAt) ||
+              startedAt >= cutoffMs
+            ) {
+              tally.add("skipped_not_expired");
+              continue;
+            }
+          }
+
+          if (limit !== undefined && deleted >= limit) {
+            more = true;
+            break;
+          }
+          tally.add("eligible");
+
+          const logPath = this.ownedLogPath(yamlPath, data);
+          tally.add("delete_attempted");
+          const bytes = await this.removeOutputFiles(
+            yamlPath,
+            stat.size ?? 0,
+            logPath,
+            dryRun,
+            data,
+          );
+          bytesReclaimed += bytes;
+          tally.add("bytes_reclaimed", bytes);
+          deletedYamls.add(yamlPath);
+          if (logPath) countedLogs.add(logPath);
+          deleted++;
+          tally.add("deleted");
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            tally.add("skipped_not_found");
+            continue;
+          }
+          tally.add("failed");
+          throw error;
         }
-
-        if (limit !== undefined && deleted >= limit) {
-          more = true;
-          break;
-        }
-
-        const logPath = this.ownedLogPath(yamlPath, data);
-        bytesReclaimed += await this.removeOutputFiles(
-          yamlPath,
-          stat.size ?? 0,
-          logPath,
-          dryRun,
-          data,
-        );
-        deletedYamls.add(yamlPath);
-        if (logPath) countedLogs.add(logPath);
-        deleted++;
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) continue;
-        throw error;
       }
-    }
+      phase.attributes({ "swamp.diagnostic.stopped_at_limit": more });
+    });
 
     // A batch that stopped at its limit skips the orphaned-log sweep: it
     // scans every repo-local log, the logs of the outputs this batch deleted
     // went with them, and the final batch (no `more`) runs it.
     if (!more) {
-      bytesReclaimed += await this.sweepOrphanLogs(
-        cutoffFor,
-        deletedYamls,
-        countedLogs,
-        dryRun,
+      bytesReclaimed += await observeDiagnosticPhase(
+        "orphan_log_sweep",
+        { "swamp.diagnostic.dry_run": dryRun },
+        () =>
+          this.sweepOrphanLogs(
+            cutoffFor,
+            deletedYamls,
+            countedLogs,
+            dryRun,
+          ),
       );
     }
 
@@ -776,11 +840,14 @@ export class YamlOutputRepository implements OutputRepository {
     dryRun: boolean,
     record: ModelOutputData | null,
   ): Promise<number> {
+    // Measures into the retention phase that called this, if any: removal,
+    // empty-directory cleanup and the tombstone are told apart.
+    const tally = currentDiagnosticTally();
     let bytes = yamlBytes;
     let logExists = false;
     if (logPath) {
       try {
-        const logStat = await Deno.stat(logPath);
+        const logStat = await tally.measure("remove", () => Deno.stat(logPath));
         bytes += logStat.size ?? 0;
         logExists = true;
       } catch {
@@ -793,26 +860,34 @@ export class YamlOutputRepository implements OutputRepository {
     if (logPath && logExists && this.inBaseDir(logPath)) {
       removals.push({ kind: "remove", path: logPath });
     }
-    await this.staged(removals, async () => {
-      try {
-        await Deno.remove(yamlPath);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      }
-      if (logPath && logExists) {
+    await tally.measure("remove", () =>
+      this.staged(removals, async () => {
         try {
-          await Deno.remove(logPath);
+          await Deno.remove(yamlPath);
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) throw error;
         }
-        await cleanupEmptyParentDirs(logPath, this.rootFor(logPath));
-      }
-    });
-    await cleanupEmptyParentDirs(yamlPath, this.baseDir);
-    await stageTyped(
-      this.markDirty,
-      () => this.recordTombstone(yamlPath, record),
+        if (logPath && logExists) {
+          try {
+            await Deno.remove(logPath);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+          await tally.measure(
+            "dir_cleanup",
+            () => cleanupEmptyParentDirs(logPath, this.rootFor(logPath)),
+          );
+        }
+      }));
+    await tally.measure(
+      "dir_cleanup",
+      () => cleanupEmptyParentDirs(yamlPath, this.baseDir),
     );
+    await tally.measure("tombstone", () =>
+      stageTyped(
+        this.markDirty,
+        () => this.recordTombstone(yamlPath, record),
+      ));
     return bytes;
   }
 
@@ -856,24 +931,33 @@ export class YamlOutputRepository implements OutputRepository {
     countedLogs: Set<string>,
     dryRun: boolean,
   ): Promise<number> {
+    const tally = currentDiagnosticTally();
     const floorMs = Date.now() - ORPHAN_LOG_MIN_AGE_MS;
     const candidatesByDir = new Map<
       string,
       { path: string; size: number }[]
     >();
 
-    const logFiles = await this.collectFiles(this.localOutputsDir, ".log");
+    const logFiles = await tally.measure(
+      "list",
+      () => this.collectFiles(this.localOutputsDir, ".log"),
+    );
+    tally.add("logs_listed", logFiles.length);
     for (const logPath of logFiles) {
       if (countedLogs.has(logPath)) continue;
       try {
-        const stat = await Deno.stat(logPath);
+        const stat = await tally.measure("stat", () => Deno.stat(logPath));
         const mtimeMs = stat.mtime?.getTime();
         if (mtimeMs === undefined) continue;
         const cutoffMs = Math.min(
           cutoffFor(logPath.slice(this.localOutputsDir.length + 1)),
           floorMs,
         );
-        if (mtimeMs >= cutoffMs) continue;
+        if (mtimeMs >= cutoffMs) {
+          tally.add("logs_skipped_recent");
+          continue;
+        }
+        tally.add("candidates");
         const dir = dirname(logPath);
         const candidates = candidatesByDir.get(dir) ?? [];
         candidates.push({ path: logPath, size: stat.size ?? 0 });
@@ -886,23 +970,35 @@ export class YamlOutputRepository implements OutputRepository {
 
     let bytes = 0;
     for (const [dir, candidates] of candidatesByDir) {
-      const referenced = await this.referencedLogs(dir, deletedYamls);
-      if (!referenced) continue;
+      tally.add("dirs_checked");
+      const referenced = await tally.measure(
+        "reference_read",
+        () => this.referencedLogs(dir, deletedYamls),
+      );
+      if (!referenced) {
+        tally.add("dirs_unreadable");
+        continue;
+      }
       for (const candidate of candidates) {
         if (referenced.has(candidate.path)) continue;
         bytes += candidate.size;
-        if (dryRun) continue;
-        const removal: StagedChange[] = this.inBaseDir(candidate.path)
-          ? [{ kind: "remove", path: candidate.path }]
-          : [];
-        await this.staged(removal, async () => {
-          try {
-            await Deno.remove(candidate.path);
-          } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) throw error;
-          }
-        });
-        await cleanupEmptyParentDirs(candidate.path, this.localOutputsDir);
+        if (!dryRun) {
+          const removal: StagedChange[] = this.inBaseDir(candidate.path)
+            ? [{ kind: "remove", path: candidate.path }]
+            : [];
+          await tally.measure("remove", async () => {
+            await this.staged(removal, async () => {
+              try {
+                await Deno.remove(candidate.path);
+              } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) throw error;
+              }
+            });
+            await cleanupEmptyParentDirs(candidate.path, this.localOutputsDir);
+          });
+        }
+        tally.add("removed");
+        tally.add("bytes_reclaimed", candidate.size);
       }
     }
     return bytes;

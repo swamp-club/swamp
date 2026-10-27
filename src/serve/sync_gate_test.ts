@@ -34,6 +34,7 @@ import {
 } from "./sync_gate.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { withDiagnosticArea } from "../domain/diagnostics/diagnostic_phase.ts";
 import { SpanStatusCode, withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   findSpan,
@@ -106,6 +107,25 @@ Deno.test("withSharedSyncGate: records shared mode on the gate wait span", async
     await withSharedSyncGate(createSyncGate(), () => Promise.resolve());
     const wait = findSpan(spans, "swamp.serve.sync_gate.wait");
     assertEquals(wait.attributes["sync_gate.mode"], "shared");
+  });
+});
+
+Deno.test("withSyncGate: inside a diagnostic area the wait span is tagged gate_wait, and untagged outside", async () => {
+  await withCapturedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await withSyncGate(gate, () => Promise.resolve());
+    await withDiagnosticArea(
+      "output_retention",
+      () => withSyncGate(gate, () => Promise.resolve()),
+    );
+    const waits = spans.filter((s) => s.name === "swamp.serve.sync_gate.wait");
+    assertEquals(waits.length, 2);
+    assertEquals(waits[0].attributes["swamp.diagnostic.phase"], undefined);
+    assertEquals(
+      waits[1].attributes["swamp.diagnostic.area"],
+      "output_retention",
+    );
+    assertEquals(waits[1].attributes["swamp.diagnostic.phase"], "gate_wait");
   });
 });
 

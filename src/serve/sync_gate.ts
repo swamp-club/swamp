@@ -79,6 +79,7 @@ import { type RunSyncLane, RunSyncLanes } from "./run_sync_lanes.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../infrastructure/tracing/mod.ts";
+import { diagnosticSpanAttributes } from "../domain/diagnostics/diagnostic_phase.ts";
 
 const logger = getSwampLogger(["serve", "sync-gate"]);
 
@@ -335,8 +336,13 @@ async function runGated<T>(
   Deno.unrefTimer(timer);
   // Covers only the wait, not fn, so a slow gated unit shows how much of its
   // time went to queueing behind a pull or another mutation (swamp-club#2417).
+  // Inside a diagnostic area the wait is also its `gate_wait` phase
+  // (design/enablers/serve-phase-telemetry.md).
   const waitSpan = getTracer().startSpan("swamp.serve.sync_gate.wait", {
-    attributes: { "sync_gate.mode": mode },
+    attributes: {
+      "sync_gate.mode": mode,
+      ...diagnosticSpanAttributes("gate_wait"),
+    },
   });
   try {
     if (mode === "exclusive") await gate.acquire(controller.signal);
