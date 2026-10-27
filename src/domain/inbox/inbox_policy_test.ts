@@ -26,12 +26,14 @@ import {
   noticeToShow,
   recordNoticeShown,
   shouldPoll,
+  UNSUPPORTED_RETRY_SECONDS,
 } from "./inbox_policy.ts";
 import { type InboxSnapshot, InboxState } from "./inbox_state.ts";
 
 const T0 = Date.UTC(2026, 9, 27, 12, 0, 0);
 const SECOND = 1000;
 const HOUR = 60 * 60 * SECOND;
+const MINUTE = 60 * SECOND;
 const ID_A = "01JBQ0000000000000000000AA";
 const ID_B = "01JBQ0000000000000000000BB";
 
@@ -103,7 +105,7 @@ Deno.test("shouldPoll: due when the last poll is in the future (clock went back)
 Deno.test("shouldPoll: a stopped key never polls", () => {
   const state = applyPollOutcome(
     InboxState.empty(),
-    { kind: "unsupported" },
+    { kind: "rejected" },
     T0,
   );
   assertEquals(shouldPoll(state, T0 + 365 * 24 * HOUR), false);
@@ -198,12 +200,65 @@ Deno.test("applyPollOutcome: a later outcome clears an earlier backoff", () => {
   assertEquals(state.schedule.nextPollAt, null);
 });
 
-Deno.test("applyPollOutcome: unsupported, unavailable and rejected stop the key with why and when", () => {
-  for (const kind of ["unsupported", "unavailable", "rejected"] as const) {
+Deno.test("applyPollOutcome: unavailable and rejected stop the key with why and when", () => {
+  for (const kind of ["unavailable", "rejected"] as const) {
     const state = applyPollOutcome(polledAt(T0), { kind }, T0 + HOUR);
     assertEquals(state.schedule.stop, { reason: kind, at: T0 + HOUR });
     assertEquals(state.snapshot, polledAt(T0).snapshot);
   }
+});
+
+Deno.test("applyPollOutcome: unsupported asks again in 24 hours and never stops the key", () => {
+  assertEquals(UNSUPPORTED_RETRY_SECONDS, 24 * 60 * 60);
+  const before = polledAt(T0);
+  const state = applyPollOutcome(before, { kind: "unsupported" }, T0 + HOUR);
+  assertEquals(state.schedule, {
+    lastPolledAt: T0 + HOUR,
+    nextPollAt: T0 + 25 * HOUR,
+    stop: null,
+  });
+  assertEquals(state.snapshot, before.snapshot);
+});
+
+Deno.test("shouldPoll: after unsupported, not due at 23 h 59 m and due at 24 h", () => {
+  for (
+    const start of [
+      InboxState.empty(),
+      polledAt(T0 - HOUR, snapshot({ pollAfterSeconds: 900 })),
+    ]
+  ) {
+    const state = applyPollOutcome(start, { kind: "unsupported" }, T0);
+    assertEquals(shouldPoll(state, T0 + 24 * HOUR - MINUTE), false);
+    assertEquals(shouldPoll(state, T0 + 24 * HOUR), true);
+  }
+});
+
+Deno.test("shouldPoll: after unsupported, a longer pollAfterSeconds still wins", () => {
+  const state = applyPollOutcome(
+    polledAt(T0 - HOUR, snapshot({ pollAfterSeconds: 48 * 60 * 60 })),
+    { kind: "unsupported" },
+    T0,
+  );
+  assertEquals(shouldPoll(state, T0 + 24 * HOUR), false);
+  assertEquals(shouldPoll(state, T0 + 48 * HOUR), true);
+});
+
+Deno.test("applyPollOutcome: an ok after unsupported resumes the 900-second floor", () => {
+  const retrying = applyPollOutcome(
+    InboxState.empty(),
+    { kind: "unsupported" },
+    T0,
+  );
+  const resumed = applyPollOutcome(
+    retrying,
+    { kind: "ok", snapshot: snapshot() },
+    T0 + 24 * HOUR,
+  );
+  assertEquals(resumed.schedule.nextPollAt, null);
+  assertEquals(resumed.schedule.stop, null);
+  const t = T0 + 24 * HOUR;
+  assertEquals(shouldPoll(resumed, t + 900 * SECOND - 1), false);
+  assertEquals(shouldPoll(resumed, t + 900 * SECOND), true);
 });
 
 Deno.test("applyPollOutcome: a stop is never cleared or replaced", () => {
