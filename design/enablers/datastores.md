@@ -7607,7 +7607,12 @@ datastore extensions, close it.
   contamination (the last via the optional `repairNamespaceContamination?()` on
   `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). On v3 it
   adds the `v3_content` check, and `--repair` restores a lost format marker
-  (swamp-club#3617; "v3 opt-in" and "Format Marker"). The
+  (swamp-club#3617; "v3 opt-in" and "Format Marker"). With `--json` the v2
+  repair prints one document keyed by stage (`unmigrated`, `catalog`,
+  `duplicateLatest`, `contamination`), each the stage's result object or null
+  when it did not run; the stage renderers record into a
+  `DatastoreRepairJsonReport` that the command prints once, also when a stage
+  throws (swamp-club#4011). The
   completeness check walks the data dir every command reads
   (`resolvePath("data")`: the external path or the cache), not the repo's own
   `.swamp/data`, which holds only the catalog when the datastore lives

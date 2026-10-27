@@ -29,6 +29,7 @@ import { Data } from "../../domain/data/data.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
+import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import {
   catalogCompletenessDataDir,
   compareCatalogToDisk,
@@ -576,4 +577,132 @@ Deno.test("doctor datastores --repair: a v3 datastore whose marker was lost is r
       );
     });
   }
+});
+
+// --- swamp-club#4011: --repair --json prints one document ---
+
+/** A format 2 repo on a filesystem datastore, namespaced when given one. */
+async function withV2Repo(
+  namespace: string | undefined,
+  fn: (repoDir: string, datastorePath: string) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-doctor-repair-" });
+  try {
+    const datastorePath = join(repoDir, "ds");
+    await Deno.mkdir(datastorePath);
+    await new RepoMarkerRepository().write(RepoPath.create(repoDir), {
+      swampVersion: "0.0.0",
+      initializedAt: new Date().toISOString(),
+      repoId: crypto.randomUUID(),
+      datastore: {
+        type: "filesystem",
+        path: datastorePath,
+        ...(namespace !== undefined ? { namespace } : {}),
+      },
+    });
+    await withMockedEnv(
+      { SWAMP_DATASTORE: undefined },
+      () => fn(repoDir, datastorePath),
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+function repair(repoDir: string, ...args: string[]): Promise<string> {
+  return captureLogs(() =>
+    new Command()
+      .globalOption("--json", "JSON output")
+      .command("datastores", doctorDatastoresCommand)
+      .parse(["datastores", "--repo-dir", repoDir, "--repair", ...args])
+  );
+}
+
+Deno.test("doctor datastores --repair --json: prints every stage's result as one JSON document, before and after -y (swamp-club#4011)", async () => {
+  await initializeLogging({});
+  await withV2Repo(undefined, async (repoDir) => {
+    const expected = {
+      unmigrated: null,
+      catalog: { status: "catalog_not_needed" },
+      duplicateLatest: { status: "duplicate_latest_not_needed" },
+      contamination: null,
+    };
+    assertEquals(JSON.parse(await repair(repoDir, "--json")), expected);
+    assertEquals(JSON.parse(await repair(repoDir, "-y", "--json")), expected);
+  });
+});
+
+Deno.test("doctor datastores --repair --json: a namespaced datastore's unmigrated stage lands in the same document (swamp-club#4011)", async () => {
+  await initializeLogging({});
+  await withV2Repo("team", async (repoDir) => {
+    assertEquals(JSON.parse(await repair(repoDir, "-y", "--json")), {
+      unmigrated: { status: "unmigrated_not_needed" },
+      catalog: { status: "catalog_not_needed" },
+      duplicateLatest: { status: "duplicate_latest_not_needed" },
+      contamination: null,
+    });
+  });
+});
+
+Deno.test("doctor datastores --repair: log mode prints each stage's line and no JSON (swamp-club#4011)", async () => {
+  await initializeLogging({});
+  await withV2Repo("team", async (repoDir) => {
+    const out = await repair(repoDir, "-y");
+    assertStringIncludes(out, "No root-level unmigrated data found.");
+    assertStringIncludes(out, "Catalog index matches data on disk.");
+    assertStringIncludes(out, "No duplicate is_latest flags found.");
+    assertEquals(out.includes("{"), false);
+  });
+});
+
+Deno.test("doctor datastores --repair --json: a stage that fails still leaves the finished stages as one document (swamp-club#4011)", async () => {
+  await initializeLogging({});
+  await withV2Repo("team", async (repoDir, datastorePath) => {
+    const resolver = new DefaultDatastorePathResolver(repoDir, {
+      type: "filesystem",
+      path: datastorePath,
+      namespace: "team",
+    });
+    // A directory where SQLite expects the catalog's rollback journal makes
+    // the catalog stage throw after the unmigrated stage has reported.
+    const journal = `${catalogDbPath(repoDir, resolver)}-journal`;
+    await Deno.mkdir(join(journal, "held"), { recursive: true });
+
+    // Capture what the command printed before it threw.
+    const originalLog = console.log;
+    const lines: string[] = [];
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(" "));
+    };
+    let thrown: unknown;
+    try {
+      await new Command()
+        .globalOption("--json", "JSON output")
+        .command("datastores", doctorDatastoresCommand)
+        .parse([
+          "datastores",
+          "--repo-dir",
+          repoDir,
+          "--repair",
+          "-y",
+          "--json",
+        ]);
+    } catch (error) {
+      thrown = error;
+    } finally {
+      console.log = originalLog;
+    }
+    assertEquals(thrown instanceof Error, true);
+    const out = lines.join("\n");
+    assertEquals(JSON.parse(out), {
+      unmigrated: { status: "unmigrated_not_needed" },
+      catalog: null,
+      duplicateLatest: null,
+      contamination: null,
+    });
+  });
 });
