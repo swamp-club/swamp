@@ -32,7 +32,13 @@ import {
 } from "../../infrastructure/http/inbox_schemas.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
-import { inboxList, type InboxListDeps, type InboxListEvent } from "./list.ts";
+import {
+  inboxBrowse,
+  type InboxBrowseEvent,
+  inboxList,
+  type InboxListDeps,
+  type InboxListEvent,
+} from "./list.ts";
 
 const fixture = JSON.parse(
   await Deno.readTextFile(
@@ -257,4 +263,71 @@ Deno.test("inboxList: refused input makes no call and loads no credentials", asy
     assertEquals(loaded, false);
     assertEquals(calls.length, 0);
   }
+});
+
+Deno.test("inboxBrowse: loads read and unread messages whole, whatever all says", async () => {
+  for (const all of [undefined, false, true]) {
+    const { deps, calls } = makeDeps();
+
+    const events = await collect<InboxBrowseEvent>(
+      inboxBrowse(createLibSwampContext(), deps, { all, limit: 5 }),
+    );
+
+    assertEquals(calls[0].options, { status: "all", limit: 5 });
+    const last = events.at(-1);
+    assert(last?.kind === "completed");
+    assertEquals(last.view.messages[0], {
+      id: "01JBX5Q8ZK0000000000000104",
+      kind: "announcement",
+      title: "swamp 1.42 is out",
+      body:
+        "## What's new\n\n- `swamp inbox` shows messages from Swamp Club.\n- Faster `swamp data query`.\n",
+      createdAt: "2026-10-26T09:00:00.000Z",
+      readAt: null,
+      link: "https://swamp-club.com/blog/swamp-1-42",
+      action: { label: "Update now", command: "swamp update" },
+    });
+    assertEquals(last.view.messages.length, page.messages.length);
+    assertEquals(last.view.nextCursor, page.nextCursor);
+  }
+});
+
+Deno.test("inboxBrowse: leaves out a missing link and action", async () => {
+  const { deps } = makeDeps();
+
+  const events = await collect<InboxBrowseEvent>(
+    inboxBrowse(createLibSwampContext(), deps),
+  );
+
+  const last = events.at(-1);
+  assert(last?.kind === "completed");
+  const points = last.view.messages[2];
+  assertEquals("link" in points, false);
+  assertEquals("action" in points, false);
+});
+
+Deno.test("inboxBrowse: refuses the input inboxList refuses, with no call", async () => {
+  const { deps, calls } = makeDeps();
+
+  const events = await collect<InboxBrowseEvent>(
+    inboxBrowse(createLibSwampContext(), deps, { limit: 0 }),
+  );
+
+  assertEquals(events.length, 1);
+  assert(events[0].kind === "error");
+  assertEquals(events[0].error.code, "validation_failed");
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("inboxBrowse: not signed in is notAuthenticated", async () => {
+  const { deps, calls } = makeDeps({ credentials: null });
+
+  const events = await collect<InboxBrowseEvent>(
+    inboxBrowse(createLibSwampContext(), deps),
+  );
+
+  const last = events.at(-1);
+  assert(last?.kind === "error");
+  assertEquals(last.error.code, "not_authenticated");
+  assertEquals(calls.length, 0);
 });

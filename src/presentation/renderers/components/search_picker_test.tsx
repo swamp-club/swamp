@@ -22,7 +22,9 @@ import React, { useState } from "react";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { render } from "ink-testing-library";
 import { Box, Text, useInput } from "ink";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { ActionDef } from "./help_bar.tsx";
+import { SearchPicker } from "./search_picker.tsx";
 
 const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
 
@@ -126,5 +128,97 @@ Deno.test({
     assertEquals(chars, ["r"]);
     const frame = lastFrame() ?? "";
     assertStringIncludes(frame, "query:r");
+  },
+});
+
+function renderPicker(
+  initialIndex: number | undefined,
+  onSelect: (item: string) => void,
+) {
+  return render(
+    <SearchPicker<string>
+      items={["alpha", "bravo", "charlie"]}
+      initialQuery=""
+      selector={(item) => item}
+      renderResultLine={(item) => <Text>{item}</Text>}
+      renderPreview={(item) => <Text>{item}</Text>}
+      renderScrollback={(item) => item}
+      itemLabel="items"
+      initialIndex={initialIndex}
+      onSelect={(item) => onSelect(item)}
+      onCancel={() => {}}
+    />,
+  );
+}
+
+/** Presses Enter once the picker has drawn, and returns what it selected. */
+async function enter(
+  picker: ReturnType<typeof renderPicker>,
+  selected: string[],
+): Promise<string> {
+  await waitFor(
+    () => (picker.lastFrame() ?? "").includes("charlie"),
+    "the picker to draw its rows",
+  );
+  picker.stdin.write("\r");
+  await waitFor(() => selected.length > 0, "a selection");
+  return selected[0];
+}
+
+Deno.test({
+  name: "SearchPicker: initialIndex highlights that row first",
+  ...inkTestOptions,
+  fn: async () => {
+    const selected: string[] = [];
+    const picker = renderPicker(2, (item) => selected.push(item));
+
+    assertEquals(await enter(picker, selected), "charlie");
+  },
+});
+
+Deno.test({
+  name: "SearchPicker: without initialIndex the first row is highlighted",
+  ...inkTestOptions,
+  fn: async () => {
+    const selected: string[] = [];
+    const picker = renderPicker(undefined, (item) => selected.push(item));
+
+    assertEquals(await enter(picker, selected), "alpha");
+  },
+});
+
+Deno.test({
+  name: "SearchPicker: an initialIndex past the end highlights the last row",
+  ...inkTestOptions,
+  fn: async () => {
+    const selected: string[] = [];
+    const picker = renderPicker(9, (item) => selected.push(item));
+
+    assertEquals(await enter(picker, selected), "charlie");
+  },
+});
+
+Deno.test({
+  name:
+    "SearchPicker: typing a query moves the highlight back to the first match",
+  ...inkTestOptions,
+  fn: async () => {
+    const selected: string[] = [];
+    const picker = renderPicker(2, (item) => selected.push(item));
+
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("charlie"),
+      "the picker to draw its rows",
+    );
+    // "a" matches all three; the highlight must leave charlie for alpha.
+    picker.stdin.write("a");
+    await waitFor(
+      () => (picker.lastFrame() ?? "").includes("a\u258F"),
+      "the query to show",
+    );
+    picker.stdin.write("\r");
+    await waitFor(() => selected.length > 0, "a selection");
+
+    assertEquals(selected[0], "alpha");
   },
 });

@@ -73,6 +73,8 @@ export interface SearchPickerProps<T, D = T> {
   emptyHint?: (query: string) => React.ReactElement | undefined;
   /** Domain-specific action keys. */
   actions?: ActionDef[];
+  /** The row highlighted at first, before any query is typed. Defaults to 0. */
+  initialIndex?: number;
   /** Called when the user selects an item. Receives the scrollback text. */
   onSelect: (item: T, scrollback: string, action?: string) => void;
   /** Called when the user cancels. */
@@ -103,6 +105,7 @@ export function SearchPicker<T, D = T>(
     commandName,
     emptyHint,
     actions,
+    initialIndex,
     onSelect,
     onCancel,
   } = props;
@@ -129,7 +132,7 @@ export function SearchPicker<T, D = T>(
     setSelectedIndex,
     visibleItems: visibleResults,
     scrollMetrics,
-  } = useScrollableList(results, layout.resultsHeight, [query]);
+  } = useScrollableList(results, layout.resultsHeight, [query], initialIndex);
 
   // Currently highlighted item
   const highlightedItem = results.length > 0 && selectedIndex < results.length
@@ -421,6 +424,7 @@ export async function renderInteractivePicker<T, D = T>(
     commandName?: string;
     emptyHint?: (query: string) => React.ReactElement | undefined;
     actions?: ActionDef[];
+    initialIndex?: number;
   },
 ): Promise<PickerResult<T> | undefined> {
   let pendingScrollback: string | undefined;
@@ -449,6 +453,7 @@ export async function renderInteractivePicker<T, D = T>(
         commandName={options?.commandName}
         emptyHint={options?.emptyHint}
         actions={options?.actions}
+        initialIndex={options?.initialIndex}
         onSelect={(item, scrollback, action) => {
           // Only print scrollback for default select (Enter), not action keys
           if (!action) {
