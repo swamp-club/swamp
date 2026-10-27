@@ -1492,7 +1492,11 @@ Cold-start indexing defers to rows written by the import-based reconcile. When
 keeps that row instead of re-reading the type from source text. That keeps
 exports the static extractor cannot read, such as
 `export const extension = withOptions(definition)`, from warning on every
-catalog rebuild.
+catalog rebuild. The cold load before it reuses the same rows' bundles: a local
+source whose indexed row names its bundle at the current fingerprint, with its
+module graph recorded, is imported from that bundle rather than bundled again.
+So a repository's first command bundles each local extension once, in
+reconcile, and a stale-lock warning prints once (swamp-club#3869).
 
 The static extractor only reads a declaration that sits in code. An
 `export const model = { type: ... }` inside a string, template literal or
@@ -2349,8 +2353,15 @@ lock push then bundles against. A stale lock does not fail `fmt`: the read is
 lenient, so each entry point the lock refused is formatted and linted alone,
 and `fmt` warns with the same `deno install --entrypoint` command (and lists
 it under `staleLockfiles` in `--json`). `deno fmt` and `deno lint` themselves
-never touch the lock. Local loading and `serve` reload keep Deno's default
-lock handling.
+never touch the lock. The extension loader, which every command runs at
+startup, reads the lock read-only too (swamp-club#3869), so an extension in the
+repository's loaded `extensions/` directory keeps its lock wherever fmt, quality
+and push read it: its bundle and module graph read run `--frozen` against the
+lock the project has and `--no-lock` when it has none. A stale lock does not
+stop the extension loading: the loader warns with the same `deno install
+--entrypoint` command and bundles with `--no-lock`, leaving the lock unchanged.
+`serve` reload and self-contained bundles pass no project config, so they run
+`--no-lock`.
 
 The audit summary carries the source text (`specifier`; for a mapped import,
 the specifier the map resolves it to), the bare import as written
@@ -3649,7 +3660,9 @@ in `extensions/models/` that imports `../lib/msg.ts`, or side-effect imports
 loader bundles a source (`bundleWithCache`), it reads the entry point's module
 graph with `deno info`, the same source of truth push uses, under the same
 project config as the bundle. It records the graph's local modules, its missing
-modules and the deno config in the catalog's `source_modules` table.
+modules, the deno config and the lockfile that config names (recorded before it
+exists, so a lock created, updated or pulled later rebuilds the bundle against
+it, swamp-club#3869) in the catalog's `source_modules` table.
 `computeSourceFingerprint` hashes that list, so the warm scan never spawns a
 process. A recorded list stays valid until the source changes: a relative import
 can only reach a new module if a recorded module's content changes or a recorded

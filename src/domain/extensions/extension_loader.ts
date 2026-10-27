@@ -26,8 +26,13 @@ import {
   isExpectedBundleFailure,
   rewriteZodImports,
   sanitizeDataUrlError,
+  StaleLockfileError,
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
+import {
+  configuredLockPath,
+  frozenLockPath,
+} from "./dependency_resolution/extension_project.ts";
 import { computeChecksum } from "../models/checksum.ts";
 import { declaresExport } from "./export_declaration.ts";
 import {
@@ -376,7 +381,9 @@ export class ExtensionLoader {
           modules = [
             ...graph.modules.map((m) => m.path),
             ...graph.missing.map((m) => m.path),
-            ...(denoConfigPath ? [denoConfigPath] : []),
+            ...(denoConfigPath
+              ? [denoConfigPath, ...await this.lockPathFor(denoConfigPath)]
+              : []),
           ];
           if (modules.length > MAX_SOURCE_MODULES) {
             this.logger
@@ -407,6 +414,19 @@ export class ExtensionLoader {
         .debug`Could not record the modules of ${absolutePath}, forgetting the recorded ones: ${error}`;
       catalog.deleteSourceModules(absolutePath);
     }
+  }
+
+  /**
+   * The lockfile the bundle of a source under `denoConfigPath` reads, as a
+   * module its fingerprint covers, so a lock that is created, updated or
+   * pulled rebuilds the bundle against it. Recorded before it exists: a
+   * missing module hashes to a placeholder until it appears.
+   */
+  private async lockPathFor(denoConfigPath: string): Promise<string[]> {
+    const project = { denoConfigPath };
+    const lockPath = await configuredLockPath(project) ??
+      await frozenLockPath(project);
+    return lockPath ? [lockPath] : [];
   }
 
   /**
@@ -625,7 +645,7 @@ export class ExtensionLoader {
             file,
             denoPath,
             baseDir,
-            { trustPulledCache: true },
+            { trustPulledCache: true, reuseFreshIndexed: true },
           );
           this.logTrustedPulledBundle(bundled, file);
           result.loaded.push(file);
@@ -674,7 +694,7 @@ export class ExtensionLoader {
           file,
           denoPath,
           baseDir,
-          { trustPulledCache: true },
+          { trustPulledCache: true, reuseFreshIndexed: true },
         );
         this.logTrustedPulledBundle(bundled, file);
         const module = await this.importBundle(bundled.js, file, baseDir);
@@ -1669,6 +1689,43 @@ export class ExtensionLoader {
     );
   }
 
+  /**
+   * Bundles `absolutePath` without writing its project's lockfile, as push,
+   * quality and fmt read it (swamp-club#3869): `--frozen` against the lock
+   * the project has, `--no-lock` when it has none. A stale lock does not
+   * stop the extension loading: it warns and bundles with `--no-lock`,
+   * leaving the lock for the author to update.
+   */
+  private async bundleLocal(
+    absolutePath: string,
+    denoPath: string,
+    denoConfigPath: string | undefined,
+    noConfig = false,
+  ): Promise<string> {
+    const env = this.denoRuntime.getDenoEnv();
+    const lockPath = denoConfigPath
+      ? await frozenLockPath({ denoConfigPath })
+      : undefined;
+    try {
+      return await bundleExtension(absolutePath, denoPath, {
+        denoConfigPath,
+        env,
+        readOnlyLock: lockPath ? { lockPath } : {},
+        noConfig,
+      });
+    } catch (error) {
+      if (!(error instanceof StaleLockfileError)) throw error;
+      this.logger
+        .warn`${error.lockPath} is out of date with ${error.projectFile}, so ${absolutePath} is loaded without it and the lock is left unchanged. Run \`deno install --entrypoint ${absolutePath}\` in ${error.projectDir} to update it`;
+      return await bundleExtension(absolutePath, denoPath, {
+        denoConfigPath,
+        env,
+        readOnlyLock: {},
+        noConfig,
+      });
+    }
+  }
+
   private async recoverMissingBundle(
     paths: { bundlePath: string; sourcePath: string },
   ): Promise<string> {
@@ -1682,11 +1739,12 @@ export class ExtensionLoader {
         this.repoDir,
       );
     }
-    const js = await bundleExtension(paths.sourcePath, denoPath, {
+    const js = await this.bundleLocal(
+      paths.sourcePath,
+      denoPath,
       denoConfigPath,
-      env: this.denoRuntime.getDenoEnv(),
-      noConfig: pulled,
-    });
+      pulled,
+    );
     await Deno.mkdir(dirname(paths.bundlePath), { recursive: true });
     await Deno.writeTextFile(paths.bundlePath, js);
     this.logger
@@ -2508,6 +2566,38 @@ export class ExtensionLoader {
     );
   }
 
+  /**
+   * True when the catalog row for `absolutePath` indexes the bundle at
+   * `bundlePath` at the source's current fingerprint, by the tests the warm
+   * scan applies. Startup reconcile writes such a row before the first full
+   * load of a kind, so that load reuses its bundle instead of building the
+   * same one again.
+   */
+  private async isFreshIndexedBundle(
+    absolutePath: string,
+    boundaryDir: string,
+    bundlePath: string,
+  ): Promise<boolean> {
+    const catalog = this.repository?.getCatalogStore();
+    if (!catalog) return false;
+    const row = catalog.findBySourcePath(absolutePath);
+    if (
+      !row || !isIndexedRow(row) || !row.source_fingerprint ||
+      !this.adapter.catalogKinds.includes(row.kind) ||
+      row.bundle_path !== bundlePath ||
+      catalog.findSourceModules(absolutePath) === undefined ||
+      catalog.isSourceGraphPending(absolutePath)
+    ) {
+      return false;
+    }
+    const fingerprint = await computeSourceFingerprint(
+      absolutePath,
+      boundaryDir,
+      catalog,
+    ).catch(() => undefined);
+    return fingerprint === row.source_fingerprint;
+  }
+
   private async bundleWithCache(
     absolutePath: string,
     relativePath: string,
@@ -2517,6 +2607,11 @@ export class ExtensionLoader {
       trustPulledCache?: boolean;
       /** This bundle is the one retry of a graph-pending source. */
       graphRetry?: boolean;
+      /**
+       * Reuse a local source's bundle that its catalog row already
+       * indexes at the source's current fingerprint.
+       */
+      reuseFreshIndexed?: boolean;
     },
   ): Promise<BundleResult> {
     if (this.repoDir) {
@@ -2545,6 +2640,16 @@ export class ExtensionLoader {
           cacheReason: "trusted-pulled",
         };
       }
+      if (
+        bundleExists && !isPulled && options?.reuseFreshIndexed &&
+        await this.isFreshIndexedBundle(absolutePath, boundaryDir, bundlePath)
+      ) {
+        return {
+          js: await Deno.readTextFile(bundlePath),
+          fromCache: true,
+          cacheReason: "fresh-indexed",
+        };
+      }
 
       let denoConfigPath: string | undefined;
       let js: string;
@@ -2559,12 +2664,13 @@ export class ExtensionLoader {
               .debug`Using discovered deno config for ${relativePath}: ${denoConfigPath}`;
           }
         }
-        js = await bundleExtension(absolutePath, denoPath, {
+        // Pulled source never reads a Deno config (swamp-club#3970).
+        js = await this.bundleLocal(
+          absolutePath,
+          denoPath,
           denoConfigPath,
-          env: this.denoRuntime.getDenoEnv(),
-          // Pulled source never reads a Deno config (swamp-club#3970).
-          noConfig: isPulled,
-        });
+          isPulled,
+        );
         const bundleBoundary = this.resolveBundlePath();
         await assertSafePath(bundlePath, bundleBoundary);
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
@@ -2631,10 +2737,7 @@ export class ExtensionLoader {
           .debug`Using discovered deno config for ${absolutePath}: ${denoConfigPath}`;
       }
     }
-    const js = await bundleExtension(absolutePath, denoPath, {
-      denoConfigPath,
-      env: this.denoRuntime.getDenoEnv(),
-    });
+    const js = await this.bundleLocal(absolutePath, denoPath, denoConfigPath);
     return { js, fromCache: false };
   }
 
