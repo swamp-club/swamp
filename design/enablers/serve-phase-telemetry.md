@@ -12,10 +12,10 @@ OpenTelemetry spans on the existing pipeline. They observe only: no phase
 changes what the work does, and a phase that cannot be exported is dropped
 without failing the work.
 
-Worker enrollment preparation is instrumented (lab #3986). Four more areas use
-the same contract as they are added: run-detail output resolution (#4002),
-worker deletion and prune (#4003), output retention (#4004) and access-data
-polling (#4005).
+Worker enrollment preparation (lab #3986) and run-detail output resolution
+(#4002) are instrumented. Three more areas use the same contract as they are
+added: worker deletion and prune (#4003), output retention (#4004) and
+access-data polling (#4005).
 
 Phases are observations of the
 [remote telemetry contract](./remote-execution-telemetry.md)
@@ -172,21 +172,21 @@ carries the request's cancellation, so every phase records `cancel_observed`.
 disjoint shares of its duration. Per resource it authorizes, then reads, then
 parses:
 
-| Attribute                                                      | Meaning                                                                                                                                          |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `result`                                                       | `completed`, or `partial` when the walk failed or was cancelled; the counters then hold what it reached                                          |
-| `authorize_allowed`, `authorize_denied`, `authorize_errors`    | Read decisions on each resource. A cancel during a decision is the walk's outcome, not an error                                                  |
-| `authorize_work_ms`                                            | The decisions, without the owner lookups inside them                                                                                             |
-| `owner_lookups`, `owner_lookups_reused`                        | Owner lookups (model by id, or workflow), and those the request's memo answered without a new lookup or scan. Distinct owners are the difference |
-| `owner_lookup_work_ms`                                         | Finding owners. Includes the `owner_index` phase when it ran in this request, and time spent waiting on another request's listing                |
-| `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms`    | Definition files read for owner lookups, when the definition repository counts them (lab #3986). Excluded from `owner_lookup_work_ms`            |
-| `resources_attempted`                                          | Reads attempted after an allow; equals `step_outputs.resources_read`. Not unique resources and not successful reads                              |
-| `reads_succeeded`, `reads_missing`, `reads_failed`             | Content reads that returned content, found none, or threw                                                                                        |
-| `content_bytes`, `content_read_work_ms`                        | Bytes of content read, and the time reading it                                                                                                   |
-| `json_parse_work_ms`, `parse_failed`, `parse_not_object`       | Decoding and parsing content; content that did not parse, or parsed to something other than an object                                            |
-| `child_run_lookups`, `child_runs_unique`, `child_runs_missing` | Child-run lookups for workflow steps, the distinct runs among them, and lookups that found no run. Lookups are not cached                        |
-| `child_run_lookup_work_ms`                                     | Reading child run records. Their resources are counted with the rest                                                                             |
-| `assemble_work_ms`                                             | Merging each step's attributes into outputs and grouping sources                                                                                 |
+| Attribute                                                                   | Meaning                                                                                                                                          |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `result`                                                                    | `completed`, or `partial` when the walk failed or was cancelled; the counters then hold what it reached                                          |
+| `authorize_allowed`, `authorize_denied`, `authorize_errors`                 | Read decisions on each resource. A cancel during a decision is the walk's outcome, not an error                                                  |
+| `authorize_work_ms`                                                         | The decisions, without the owner lookups inside them                                                                                             |
+| `owner_lookups`, `owner_lookups_reused`                                     | Owner lookups (model by id, or workflow), and those the request's memo answered without a new lookup or scan. Distinct owners are the difference |
+| `owner_lookup_work_ms`                                                      | Finding owners. Includes the `owner_index` phase when it ran in this request, and time spent waiting on another request's listing                |
+| `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms`, `broken_files` | Definition files the per-id owner lookups read, as the definition repository counts them. Excluded from `owner_lookup_work_ms`                   |
+| `resources_attempted`                                                       | Reads attempted after an allow; equals `step_outputs.resources_read`. Not unique resources and not successful reads                              |
+| `reads_succeeded`, `reads_missing`, `reads_failed`                          | Content reads that returned content, found none, or threw                                                                                        |
+| `content_bytes`, `content_read_work_ms`                                     | Bytes of content read, and the time reading it                                                                                                   |
+| `json_parse_work_ms`, `parse_failed`, `parse_not_object`                    | Decoding and parsing content; content that did not parse, or parsed to something other than an object                                            |
+| `child_run_lookups`, `child_runs_unique`, `child_runs_missing`              | Child-run lookups for workflow steps, the distinct runs among them, and lookups that found no run. Lookups are not cached                        |
+| `child_run_lookup_work_ms`                                                  | Reading child run records. Their resources are counted with the rest                                                                             |
+| `assemble_work_ms`                                                          | Merging each step's attributes into outputs and grouping sources                                                                                 |
 
 Counters are exported as `0` when nothing was counted. Without a read policy
 (the CLI, or serve with authorization off) the `authorize_*` and `owner_*`
@@ -202,14 +202,17 @@ joined, so `files_parsed - files_joined` summed over requests is the number of
 files parsed. The joiner's validate span links to the validate span of the
 request that started the listing. The validate span also gains
 `definition_index.dirs_joined` and `definition_index.files_joined`, with its
-other attributes unchanged. Definition files the index reads are counted in
-`owner_index`'s tally when the definition repository counts them; the work is
-cumulative across up to 32 parallel reads.
+other attributes unchanged. Definition files the index check reads are counted
+in `owner_index`'s tally (`files_read`, `bytes_read`, `broken_files`,
+`read_work_ms`, `parse_work_ms`); the work is cumulative across up to 32
+parallel reads.
 
 Supported branches: serve with its definition index (every `swamp serve`), the
 full scan a `CanonicalResources` without an index falls back to (no
-`owner_index`), and the CLI (no read policy). The datastore engine does not
-change the phases.
+`owner_index`; the definition repository's shared `definition_scan` and
+`definition_lookup` phases appear under `output_walk` where that branch runs
+them), and the CLI (no read policy). The datastore engine does not change the
+phases.
 
 ## Queries
 

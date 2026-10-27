@@ -588,6 +588,16 @@ Deno.test("step_outputs phases: a request exports catalog_open, output_walk and 
       definitionFiles(3),
     );
     assertEquals(int(index, "swamp.diagnostic.files_joined"), 0);
+    // The check's definition reads count in its own phase, the per-id owner
+    // reads (writer and secrets) in the walk, apart from output content.
+    assertEquals(int(index, "swamp.diagnostic.files_read"), definitionFiles(3));
+    ms(index, "swamp.diagnostic.read_work_ms");
+    ms(index, "swamp.diagnostic.parse_work_ms");
+    assertEquals(int(walk, "swamp.diagnostic.files_read"), 2);
+    assert(
+      int(walk, "swamp.diagnostic.bytes_read")! !==
+        int(walk, "swamp.diagnostic.content_bytes"),
+    );
     assertEquals(
       int(index, "swamp.diagnostic.definitions"),
       definitionFiles(3),

@@ -330,13 +330,14 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       running && !running.read.signal.aborted &&
       (running.ticket > checkedAt || this.#trusted(running.stamp, stamp))
     ) {
-      const owner = running.owner;
-      if (
-        owner && counts.joinedFrom.size < MAX_JOIN_LINKS
-      ) counts.joinedFrom.set(owner.context.spanId, owner);
       const files = await running.read.get(signal);
       counts.dirsJoined++;
       counts.filesJoined += files;
+      // Linked only once joined, so links and dirs_joined agree.
+      const owner = running.owner;
+      if (owner && counts.joinedFrom.size < MAX_JOIN_LINKS) {
+        counts.joinedFrom.set(owner.context.spanId, owner);
+      }
       return files;
     }
     const ticket = ++this.#ticket;
