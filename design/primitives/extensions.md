@@ -958,8 +958,10 @@ syntax from the file: TypeScript, JavaScript (without the TypeScript plugin,
 which refuses some valid JavaScript) or JSX, reading CommonJS (`.cjs`, `.cts`)
 as a script and other modules as modules. Push and quality refuse a code
 file that does not parse, naming it (the `source-syntax` gate), and a bundle
-push built that does not parse fails as a swamp bug; the registry reads such a
-module as having no imports, and the loader reads it the same way, so the
+push built that does not parse fails as a swamp bug. The registry's audit
+counts such a module as not audited (`writtenSpecifiers` returns null, and
+`scorecardResult` takes the module's path), so it costs the dependency-trust
+points; the loader reads it as having no imports, so the
 bundler reports its syntax error. The input vectors
 (`dependency_resolution/testdata/dependency_input_vectors/`, run by
 `integration/dependency_input_vectors_test.ts`) pin, per input form, what push

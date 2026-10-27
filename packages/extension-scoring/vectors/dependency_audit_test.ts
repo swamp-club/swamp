@@ -328,19 +328,21 @@ const written = vectors.written as {
   name: string;
   path: string;
   source: string;
-  expect: { registry: DependencyRegistry; name: string; version: string }[];
+  expect:
+    | { registry: DependencyRegistry; name: string; version: string }[]
+    | null;
 }[];
 
 for (const w of written) {
   Deno.test(`dependency audit vectors: reads ${w.name}`, () => {
     assertEquals(
-      writtenSpecifiers(w.source, w.path).map((
+      writtenSpecifiers(w.source, w.path)?.map((
         { registry, name, version },
       ) => ({
         registry,
         name,
         version,
-      })),
+      })) ?? null,
       w.expect,
     );
   });

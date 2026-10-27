@@ -22,7 +22,7 @@
  * the same way by push and by the registry's scorecard.
  */
 
-import { importedSpecifiers } from "../source/imports.ts";
+import { importedSpecifiersAt } from "../source/imports.ts";
 
 /** A package registry the audit checks. */
 export type DependencyRegistry = "npm" | "jsr";
@@ -124,16 +124,19 @@ export function specifierKey(
  * position: static, side-effect and dynamic imports and re-exports, read
  * from the module's syntax tree (`sourceFile` picks TypeScript or
  * JavaScript), so a commented-out import or a specifier-shaped string is
- * never audited. A module that does not parse writes none. Each appears
- * once, in source order.
+ * never audited. Each appears once, in source order. Null for a module that
+ * does not parse: its imports are unknown, not absent, so the registry
+ * counts it as not audited (the `unreadable` paths `scorecardResult` takes).
  */
 export function writtenSpecifiers(
   source: string,
   sourceFile: string,
-): DependencySpecifier[] {
+): DependencySpecifier[] | null {
+  const sites = importedSpecifiersAt(source, { path: sourceFile });
+  if (sites === null) return null;
   const seen = new Set<string>();
   const results: DependencySpecifier[] = [];
-  for (const raw of importedSpecifiers(source, { path: sourceFile })) {
+  for (const { specifier: raw } of sites) {
     const parsed = parseSpecifier(raw);
     if (!parsed) continue;
     const key = specifierKey(parsed);

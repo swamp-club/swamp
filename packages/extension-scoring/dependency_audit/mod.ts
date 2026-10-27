@@ -71,6 +71,7 @@ export {
   type SpecifierAudit,
   type TrustThresholds,
   unpublishedSpecifiers,
+  UNREADABLE_MODULE_REASON,
 } from "./evaluate.ts";
 export { MAX_LOCKFILE_BYTES, parseDenoLockfile } from "./lockfile.ts";
 export {

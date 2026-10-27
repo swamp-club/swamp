@@ -37,7 +37,9 @@ export function extractSpecifiersFromSource(
   sourceFile: string,
   resolver?: BareImportResolver,
 ): DependencySpecifier[] {
-  const results = writtenSpecifiers(source, sourceFile);
+  // Push refuses a module that does not parse before it audits (the
+  // source-syntax gate), so one reaching here has none to report.
+  const results = writtenSpecifiers(source, sourceFile) ?? [];
   const seen = new Set(results.map(specifierKey));
 
   if (!resolver) return results;
