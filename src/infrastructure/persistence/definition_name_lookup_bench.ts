@@ -36,15 +36,16 @@ import {
   type DefinitionFileSource,
   DefinitionIdIndex,
 } from "./definition_id_index.ts";
-import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
+import { createRepositoryContext } from "./repository_factory.ts";
 
 const STORED = 15_000;
 const CONCURRENT = 36;
 const TYPE = "test/runner";
 
 const repoDir = await Deno.makeTempDir({ prefix: "swamp_name_lookup_bench_" });
-const autoDir = join(repoDir, ".swamp", "auto-definitions");
-const runnerDir = join(autoDir, "test", "runner");
+const ctx = createRepositoryContext({ repoDir, enableIndexing: false });
+const repo = ctx.definitionRepo;
+const runnerDir = join(ctx.autoDefinitionsDir, "test", "runner");
 await ensureDir(runnerDir);
 await ensureDir(join(repoDir, "models"));
 for (let i = 0; i < STORED; i++) {
@@ -57,12 +58,6 @@ for (let i = 0; i < STORED; i++) {
 // they have on a server.
 await new Promise((resolve) => setTimeout(resolve, 2_500));
 
-const repo = new YamlDefinitionRepository(
-  repoDir,
-  undefined,
-  undefined,
-  autoDir,
-);
 const reads = new Map<string, { files: number; iterations: number }>();
 
 /** An index over `repo` that counts its reads under `label`. */
