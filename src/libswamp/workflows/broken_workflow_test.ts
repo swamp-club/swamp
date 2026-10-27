@@ -21,7 +21,9 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   findBrokenWorkflow,
+  findMisnamedWorkflow,
   listBrokenWorkflows,
+  workflowNotLoadedMessage,
   workflowsDirFor,
 } from "./broken_workflow.ts";
 
@@ -165,4 +167,95 @@ Deno.test("listBrokenWorkflows: reports a schema failure as one readable line", 
         "jobs[0].weight: Invalid input: expected number, received string",
     );
   });
+});
+
+// A well-formed file whose name the loader skips explains a not-found
+// lookup (swamp-club#3839).
+
+Deno.test("findMisnamedWorkflow: matches a misnamed file by raw name and by raw id", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(join(dir, "plain.yaml"), VALID_WORKFLOW);
+
+    const byName = await findMisnamedWorkflow(dir, "valid-workflow");
+    assertEquals(byName?.file, join(dir, "plain.yaml"));
+    assertEquals(byName?.name, "valid-workflow");
+
+    const byId = await findMisnamedWorkflow(
+      dir,
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+    assertEquals(byId?.id, "550e8400-e29b-41d4-a716-446655440000");
+
+    assertEquals(await findMisnamedWorkflow(dir, "other-workflow"), null);
+  });
+});
+
+Deno.test("findMisnamedWorkflow: names the file by base name only", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(join(dir, "plain.yml"), VALID_WORKFLOW);
+
+    const misnamed = await findMisnamedWorkflow(dir, "valid-workflow");
+    assertEquals(
+      misnamed?.message,
+      "Not loaded: swamp only reads files named workflow-<name>.yaml in " +
+        "the workflows directory. Rename plain.yml to workflow-<name>.yaml, " +
+        "or remove it if it is a stale copy of a workflow that already loads.",
+    );
+    assertEquals(misnamed?.message.includes(dir), false);
+  });
+});
+
+Deno.test("findMisnamedWorkflow: a matching file that is not a workflow is told to move", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(join(dir, "notes.yaml"), "name: notes\n");
+
+    const misnamed = await findMisnamedWorkflow(dir, "notes");
+    assertStringIncludes(
+      misnamed?.message ?? "",
+      "notes.yaml is not a workflow; move it out of that directory",
+    );
+  });
+});
+
+Deno.test("findMisnamedWorkflow: ignores workflow-*.yaml files and unparseable YAML", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "workflow-74ae52ba-5f3f-4937-a4fd-c1de950572e7.yaml"),
+      BROKEN_UNKNOWN_KEY_WORKFLOW,
+    );
+    await Deno.writeTextFile(join(dir, "bad.yaml"), "id: [unclosed");
+
+    assertEquals(await findMisnamedWorkflow(dir, "broken-unknown-key"), null);
+    assertEquals(await findMisnamedWorkflow(dir, "[unclosed"), null);
+  });
+});
+
+Deno.test("findMisnamedWorkflow: picks the first match by file name", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(join(dir, "b.yaml"), VALID_WORKFLOW);
+    await Deno.writeTextFile(join(dir, "a.yaml"), VALID_WORKFLOW);
+
+    const misnamed = await findMisnamedWorkflow(dir, "valid-workflow");
+    assertEquals(misnamed?.file, join(dir, "a.yaml"));
+  });
+});
+
+Deno.test("findMisnamedWorkflow: returns null for a missing directory", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(
+      await findMisnamedWorkflow(join(dir, "does-not-exist"), "plain"),
+      null,
+    );
+  });
+});
+
+Deno.test("workflowNotLoadedMessage: names the file and directory as given", () => {
+  assertEquals(
+    workflowNotLoadedMessage("/r/workflows/x.yaml", "/r/workflows", {
+      jobs: [],
+    }),
+    "Not loaded: swamp only reads files named workflow-<name>.yaml in " +
+      "/r/workflows. Rename /r/workflows/x.yaml to workflow-<name>.yaml, " +
+      "or remove it if it is a stale copy of a workflow that already loads.",
+  );
 });

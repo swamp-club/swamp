@@ -312,6 +312,112 @@ jobs:
   }
 });
 
+const MISNAMED_WORKFLOW = `
+id: 550e8400-e29b-41d4-a716-446655440000
+name: plain
+jobs:
+  - name: main
+    steps:
+      - name: step1
+        task:
+          type: model_method
+          modelIdOrName: my-model
+          methodName: run
+`;
+
+Deno.test("workflowRun names a misnamed file that declares the workflow (swamp-club#3839)", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await Deno.mkdir(join(repoDir, "workflows"));
+    await Deno.writeTextFile(
+      join(repoDir, "workflows", "plain.yaml"),
+      MISNAMED_WORKFLOW,
+    );
+
+    const deps = { ...createTestDeps(null, []), repoDir };
+    const ctx = createLibSwampContext();
+    const events = await collect(workflowRun(ctx, deps, {
+      workflowIdOrName: "plain",
+    }));
+
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error");
+    if (last.kind === "error") {
+      assertEquals(last.error.code, "workflow_not_found");
+      assertStringIncludes(
+        last.error.message,
+        "Workflow not found: plain.\nNot loaded: swamp only reads files " +
+          "named workflow-<name>.yaml in the workflows directory. " +
+          "Rename plain.yaml to workflow-<name>.yaml",
+      );
+      assertEquals(last.error.message.includes(repoDir), false);
+    }
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("workflowRun reports a broken workflow file before a misnamed one", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await Deno.mkdir(join(repoDir, "workflows"));
+    await Deno.writeTextFile(
+      join(repoDir, "workflows", "plain.yaml"),
+      MISNAMED_WORKFLOW,
+    );
+    await Deno.writeTextFile(
+      join(repoDir, "workflows", "workflow-plain.yaml"),
+      MISNAMED_WORKFLOW.replace(
+        "  - name: main\n",
+        "  - name: main\n    environmnet: prod\n",
+      ),
+    );
+
+    const deps = { ...createTestDeps(null, []), repoDir };
+    const ctx = createLibSwampContext();
+    const events = await collect(workflowRun(ctx, deps, {
+      workflowIdOrName: "plain",
+    }));
+
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error");
+    if (last.kind === "error") {
+      assertEquals(last.error.code, "workflow_load_failed");
+      assertStringIncludes(last.error.message, "Unknown key 'environmnet'");
+    }
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("workflowRun by id ignores a misnamed file whose name does not match the expected name", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await Deno.mkdir(join(repoDir, "workflows"));
+    await Deno.writeTextFile(
+      join(repoDir, "workflows", "plain.yaml"),
+      MISNAMED_WORKFLOW,
+    );
+
+    const deps = { ...createTestDeps(null, []), repoDir };
+    const ctx = createLibSwampContext();
+    const events = await collect(workflowRun(ctx, deps, {
+      workflowIdOrName: "550e8400-e29b-41d4-a716-446655440000",
+      byId: true,
+      expectedName: "other",
+    }));
+
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error");
+    if (last.kind === "error") {
+      assertEquals(last.error.code, "workflow_not_found");
+      assertEquals(last.error.message.includes("Not loaded"), false);
+    }
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("workflowRun forwards job and step events", async () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
