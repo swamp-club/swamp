@@ -481,6 +481,17 @@ export const extensionPushCommand = new Command()
       // files so the module graph is read under it too.
       const manifestDir = dirname(absoluteManifestPath);
       const { denoConfigPath, packageJsonDir } = resolved;
+      // The workspace root lock, --no-config and an ignored member lock
+      // (swamp-club#3971).
+      const projectInputs = {
+        ...(resolved.workspaceRootConfigPath
+          ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
+          : {}),
+        ...(resolved.noConfig ? { noConfig: true } : {}),
+        ...(resolved.ignoredMemberLock
+          ? { ignoredMemberLock: resolved.ignoredMemberLock }
+          : {}),
+      };
 
       // 3. Create libswamp context and deps
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
@@ -536,7 +547,13 @@ export const extensionPushCommand = new Command()
         denoConfigPath,
         packageJsonPath: undefined,
         // The lock the bundle runs --frozen against (swamp-club#3662).
-        ...(await readOnlyLockFor({ denoConfigPath, packageJsonDir })),
+        ...(await readOnlyLockFor({
+          denoConfigPath,
+          packageJsonDir,
+          ...(resolved.workspaceRootConfigPath
+            ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
+            : {}),
+        })),
         bareImports: resolved.bareImports,
         graphDependencies: resolved.graphDependencies,
         symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
@@ -591,6 +608,7 @@ export const extensionPushCommand = new Command()
           releaseNotes: options.releaseNotes,
           denoConfigPath,
           packageJsonDir,
+          ...projectInputs,
           bareImports: resolved.bareImports,
           graphDependencies: resolved.graphDependencies,
           contentHash: cacheHash,
@@ -751,6 +769,7 @@ export const extensionPushCommand = new Command()
                   releaseNotes: options.releaseNotes,
                   denoConfigPath,
                   packageJsonDir,
+                  ...projectInputs,
                   bareImports: resolved.bareImports,
                   graphDependencies: resolved.graphDependencies,
                   contentHash: bumpedHash,

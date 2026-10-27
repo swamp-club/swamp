@@ -25,7 +25,7 @@
  */
 
 import { getLogger } from "@logtape/logtape";
-import { dirname, join, resolve, SEPARATOR } from "@std/path";
+import { dirname, globToRegExp, join, resolve, SEPARATOR } from "@std/path";
 import { DENO_CONFIG_FILE_NAMES, readDenoConfig } from "../deno_config.ts";
 import { scanImportSites } from "./import_sites.ts";
 import { isBareSpecifier } from "./specifier.ts";
@@ -40,6 +40,32 @@ const logger = getLogger(["swamp", "extensions", "project"]);
 export interface ExtensionProject {
   denoConfigPath?: string;
   packageJsonDir?: string;
+  /**
+   * The workspace root whose `workspace` lists the directory of
+   * `denoConfigPath`, inside swamp's boundary. Deno reads the root's lock
+   * for every member, so push does too (swamp-club#3971).
+   */
+  workspaceRootConfigPath?: string;
+  /**
+   * Run Deno with `--no-config`: set by push, quality and fmt when the
+   * extension has no Deno config inside the boundary, so no config Deno
+   * would discover above it applies (swamp-club#3971).
+   */
+  noConfig?: boolean;
+  /**
+   * The configs Deno would use from above swamp's boundary: with no Deno
+   * config inside it, the first deno.json or deno.jsonc above it, and with
+   * no package.json project either, the first package.json; with a Deno
+   * config, a workspace root above the boundary that lists it. Push refuses
+   * the ones that would shape the bundle (swamp-club#3971).
+   */
+  ancestorConfigs?: AncestorConfig[];
+}
+
+/** A config above swamp's boundary that Deno would use. */
+export interface AncestorConfig {
+  path: string;
+  kind: "deno-config" | "package-json" | "workspace-root";
 }
 
 /** How a project resolves its bare imports. */
@@ -217,20 +243,130 @@ export async function detectExtensionProject(
   });
   if (denoConfigPath) {
     logger.debug`Found Deno config at ${denoConfigPath}`;
-    return { denoConfigPath };
+    const root = await findWorkspaceRoot(denoConfigPath);
+    if (!root) return { denoConfigPath };
+    if (isSameOrUnder(dirname(root), boundary)) {
+      logger.debug`Config ${denoConfigPath} is a member of workspace ${root}`;
+      return { denoConfigPath, workspaceRootConfigPath: root };
+    }
+    return {
+      denoConfigPath,
+      ancestorConfigs: [{ path: root, kind: "workspace-root" }],
+    };
   }
+  const project = await packageJsonProject(input, boundary);
+  const ancestorConfigs = findAncestorConfigs(boundary, !project);
+  return {
+    ...(project ? { packageJsonDir: project } : {}),
+    noConfig: true,
+    ...(ancestorConfigs.length > 0 ? { ancestorConfigs } : {}),
+  };
+}
+
+async function packageJsonProject(
+  input: DetectExtensionProjectInput,
+  boundary: string,
+): Promise<string | undefined> {
   const candidateDir = findPackageJsonDir(input.manifestDir, boundary);
-  if (!candidateDir) return {};
+  if (!candidateDir) return undefined;
   for (const entryPoint of input.entryPoints) {
     if (input.skip?.has(entryPoint)) continue;
     if (hasBareImport(await Deno.readTextFile(entryPoint), entryPoint)) {
       logger.debug`Found package.json project at ${candidateDir}`;
-      return { packageJsonDir: candidateDir };
+      return candidateDir;
     }
   }
   logger
     .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
-  return {};
+  return undefined;
+}
+
+/**
+ * The configs Deno would discover above `boundary`: the nearest deno.json
+ * or deno.jsonc, and with `withPackageJson` the nearest package.json, each
+ * walking up from the boundary's parent to the filesystem root.
+ */
+export function findAncestorConfigs(
+  boundary: string,
+  withPackageJson: boolean,
+): AncestorConfig[] {
+  const parent = dirname(resolve(boundary));
+  if (parent === resolve(boundary)) return [];
+  const found: AncestorConfig[] = [];
+  const denoConfig = findDenoConfig(parent, { inclusive: true });
+  if (denoConfig) found.push({ path: denoConfig, kind: "deno-config" });
+  if (withPackageJson) {
+    const packageJson = findUpward(parent, ["package.json"], {
+      inclusive: true,
+    });
+    if (packageJson) found.push({ path: packageJson, kind: "package-json" });
+  }
+  return found;
+}
+
+/**
+ * The members a workspace root's `workspace` field lists, as written: an
+ * array of paths, or an object with a `members` array.
+ */
+function workspaceMembers(config: Record<string, unknown>): string[] {
+  const field = config.workspace;
+  const members = Array.isArray(field)
+    ? field
+    : field && typeof field === "object"
+    ? (field as Record<string, unknown>).members
+    : undefined;
+  return Array.isArray(members)
+    ? members.filter((m): m is string => typeof m === "string")
+    : [];
+}
+
+/**
+ * Whether a workspace member pattern names `memberDir`, as Deno matches it:
+ * a path from the root, with or without `./` and a trailing `/`, or a glob.
+ */
+export function workspaceListsMember(
+  rootDir: string,
+  pattern: string,
+  memberDir: string,
+): boolean {
+  const target = resolve(memberDir);
+  const listed = resolve(rootDir, pattern.replace(/[\\/]+$/, ""));
+  if (!/[*?[{]/.test(pattern)) return listed === target;
+  return globToRegExp(listed, { globstar: true }).test(target);
+}
+
+/**
+ * The workspace root a Deno config is a member of: the nearest deno.json or
+ * deno.jsonc above the config's directory that has a `workspace` field,
+ * when it lists that directory. Deno stops at that config too: one that
+ * does not list the member is ignored with a warning, and no workspace
+ * further up applies. Undefined when there is none, or it does not list
+ * the member.
+ */
+export async function findWorkspaceRoot(
+  denoConfigPath: string,
+): Promise<string | undefined> {
+  const memberDir = dirname(resolve(denoConfigPath));
+  let current = dirname(memberDir);
+  while (true) {
+    const candidate = findDenoConfig(current, {
+      dir: current,
+      inclusive: true,
+    });
+    if (candidate) {
+      const config = await readDenoConfig(candidate);
+      if (config && config.workspace !== undefined) {
+        return workspaceMembers(config).some((m) =>
+            workspaceListsMember(current, m, memberDir)
+          )
+          ? candidate
+          : undefined;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 /**
@@ -238,35 +374,70 @@ export async function detectExtensionProject(
  * `denoProjectArgs` in src/domain/models/bundle.ts: with a deno.json or
  * deno.jsonc (read as JSONC, as Deno reads it), its `lock` setting or else
  * the deno.lock beside it; in package.json mode, the deno.lock in that
- * directory; otherwise none, since the bundler runs with `--no-lock`. The
+ * directory; otherwise none, since the bundler runs with `--no-lock`. A
+ * workspace member's lock is its workspace root's, as Deno reads it. The
  * dependency audit reads this lock.
  */
 export async function configuredLockPath(
   project: ExtensionProject,
 ): Promise<string | undefined> {
-  if (project.denoConfigPath) {
-    const configDir = dirname(project.denoConfigPath);
-    const config = await readDenoConfig(project.denoConfigPath);
+  const lockConfigPath = project.workspaceRootConfigPath ??
+    project.denoConfigPath;
+  if (lockConfigPath) {
+    const config = await readDenoConfig(lockConfigPath);
     if (!config) {
       // A config that cannot be read or parsed fails the bundle too; assume
       // no lock rather than one that may not apply.
       logger
-        .debug`Config ${project.denoConfigPath} could not be parsed; no lockfile read`;
+        .debug`Config ${lockConfigPath} could not be parsed; no lockfile read`;
       return undefined;
     }
-    const lock = config.lock;
-    if (lock === false) return undefined;
-    if (typeof lock === "string") return resolve(configDir, lock);
-    if (
-      lock && typeof lock === "object" &&
-      typeof (lock as Record<string, unknown>).path === "string"
-    ) {
-      return resolve(configDir, (lock as Record<string, string>).path);
-    }
-    return join(configDir, "deno.lock");
+    const setting = configLockSetting(lockConfigPath, config);
+    if (setting === null) return undefined;
+    return setting ?? join(dirname(lockConfigPath), "deno.lock");
   }
   if (project.packageJsonDir) return join(project.packageJsonDir, "deno.lock");
   return undefined;
+}
+
+/**
+ * The lock a config's `lock` setting names: null for `lock: false`, a path
+ * resolved from the config's directory, or undefined when it sets none.
+ */
+function configLockSetting(
+  configPath: string,
+  config: Record<string, unknown>,
+): string | null | undefined {
+  const lock = config.lock;
+  if (lock === false) return null;
+  if (typeof lock === "string") return resolve(dirname(configPath), lock);
+  if (
+    lock && typeof lock === "object" &&
+    typeof (lock as Record<string, unknown>).path === "string"
+  ) {
+    return resolve(dirname(configPath), (lock as Record<string, string>).path);
+  }
+  return undefined;
+}
+
+/**
+ * A workspace member's own lock, which Deno ignores in favour of the
+ * root's: the lock its `lock` setting names, else a deno.lock beside it on
+ * disk. Undefined outside a workspace, or when the member has none.
+ */
+export async function ignoredMemberLockPath(
+  project: ExtensionProject,
+): Promise<string | undefined> {
+  if (!project.denoConfigPath || !project.workspaceRootConfigPath) {
+    return undefined;
+  }
+  const config = await readDenoConfig(project.denoConfigPath);
+  const setting = config
+    ? configLockSetting(project.denoConfigPath, config)
+    : undefined;
+  const beside = join(dirname(project.denoConfigPath), "deno.lock");
+  const own = setting ?? (await isFile(beside) ? beside : undefined);
+  return own && own !== await configuredLockPath(project) ? own : undefined;
 }
 
 /**
@@ -281,11 +452,12 @@ export async function frozenLockPath(
   project: ExtensionProject,
 ): Promise<string | undefined> {
   let path = await configuredLockPath(project);
+  const lockConfigPath = project.workspaceRootConfigPath ??
+    project.denoConfigPath;
   if (
-    !path && project.denoConfigPath &&
-    !(await readDenoConfig(project.denoConfigPath))
+    !path && lockConfigPath && !(await readDenoConfig(lockConfigPath))
   ) {
-    path = join(dirname(project.denoConfigPath), "deno.lock");
+    path = join(dirname(lockConfigPath), "deno.lock");
   }
   return path && await isFile(path) ? path : undefined;
 }

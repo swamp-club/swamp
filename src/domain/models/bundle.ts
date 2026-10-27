@@ -372,8 +372,10 @@ export function rewriteZodImports(js: string, origin?: string): string {
  *
  * With `noConfig` and no project, `--no-config` stops Deno discovering a
  * deno.json from the working directory, so a config in the consumer's repo
- * never applies its import map to pulled source (swamp-club#3970). A
- * project's own config wins over `noConfig`.
+ * never applies its import map to pulled source (swamp-club#3970). In a
+ * package.json project it does the same for a deno.json above the project,
+ * which push never uses (swamp-club#3971). A project's own Deno config wins
+ * over `noConfig`.
  */
 export function denoProjectArgs(
   options?: {
@@ -383,21 +385,20 @@ export function denoProjectArgs(
     noConfig?: boolean;
   },
 ): string[] {
+  const noConfig = options?.noConfig ? ["--no-config"] : [];
   const project = options?.denoConfigPath
     ? ["--config", options.denoConfigPath]
     : options?.packageJsonDir
-    ? ["--node-modules-dir=auto"]
+    ? [...noConfig, "--node-modules-dir=auto"]
     : undefined;
   if (!project) {
-    return [
-      ...(options?.noConfig ? ["--no-config"] : []),
-      "--no-lock",
-      "--node-modules-dir=none",
-    ];
+    return [...noConfig, "--no-lock", "--node-modules-dir=none"];
   }
   if (!options?.readOnlyLock) return project;
   return [
-    ...(options.denoConfigPath ? project : ["--node-modules-dir=manual"]),
+    ...(options.denoConfigPath
+      ? project
+      : [...noConfig, "--node-modules-dir=manual"]),
     options.readOnlyLock.lockPath ? "--frozen" : "--no-lock",
   ];
 }
@@ -484,12 +485,18 @@ export function staleLockfileInstallCommand(lock: StaleLockfile): string {
 export function staleLockfileError(
   lockPath: string,
   entryPoint: string,
-  project: { denoConfigPath?: string; packageJsonDir?: string },
+  project: {
+    denoConfigPath?: string;
+    packageJsonDir?: string;
+    workspaceRootConfigPath?: string;
+  },
   output: string,
 ): StaleLockfileError {
-  const projectFile = project.denoConfigPath ?? "package.json";
-  const projectDir = project.denoConfigPath
-    ? dirname(project.denoConfigPath)
+  // A workspace member's lock is the root's, brought up to date there.
+  const configPath = project.workspaceRootConfigPath ?? project.denoConfigPath;
+  const projectFile = configPath ?? "package.json";
+  const projectDir = configPath
+    ? dirname(configPath)
     : project.packageJsonDir ?? dirname(lockPath);
   const plain = stripAnsiCode(output);
   const changesAt = plain.indexOf("changes:");
@@ -543,12 +550,19 @@ export interface BundleOptions {
 
   /**
    * Read no Deno config the working directory would supply (`--no-config`)
-   * when there is no project (neither `denoConfigPath` nor
-   * `packageJsonDir`). Set for rebuilds of pulled extension source, so a
-   * deno.json in the consumer's repo never resolves its imports
-   * (swamp-club#3970). Ignored with a project.
+   * when there is no Deno project config (`denoConfigPath`). Set for
+   * rebuilds of pulled extension source, so a deno.json in the consumer's
+   * repo never resolves its imports (swamp-club#3970), and by push without
+   * a Deno config inside the repository (swamp-club#3971). Ignored with
+   * `denoConfigPath`.
    */
   noConfig?: boolean;
+
+  /**
+   * The workspace root `denoConfigPath` is a member of, whose lock the
+   * bundle reads; named by a stale-lock error (swamp-club#3971).
+   */
+  workspaceRootConfigPath?: string;
 
   /**
    * Environment variables for the subprocess. When provided, the bundler

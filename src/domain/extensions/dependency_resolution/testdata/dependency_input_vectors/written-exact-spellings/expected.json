@@ -4,6 +4,7 @@
     "packageDir": null,
     "lock": null,
     "flags": [
+      "--no-config",
       "--no-lock",
       "--node-modules-dir=none"
     ]

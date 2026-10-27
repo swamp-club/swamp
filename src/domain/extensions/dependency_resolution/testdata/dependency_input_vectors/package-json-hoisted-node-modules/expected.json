@@ -1,0 +1,111 @@
+{
+  "project": {
+    "config": null,
+    "packageDir": "repo/ext",
+    "lock": null,
+    "flags": [
+      "--no-config",
+      "--node-modules-dir=manual",
+      "--no-lock"
+    ]
+  },
+  "bareImports": [
+    {
+      "importer": "repo/ext/extensions/models/m.ts",
+      "specifier": "vecpkg",
+      "target": "npm:vecpkg@1.0.0",
+      "installedVersion": "1.0.0"
+    },
+    {
+      "importer": "repo/ext/extensions/models/m.ts",
+      "specifier": "otherpkg",
+      "target": "npm:otherpkg@1.0.0",
+      "installedVersion": "1.0.0"
+    }
+  ],
+  "fmt": {
+    "config": null
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import value from \"npm:vecpkg@1.0.0\";\nimport other from \"npm:otherpkg@1.0.0\";\n\nexport const model = [value, other];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 2,
+    "bundleFormat": 1,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
+    "dependencies": [
+      {
+        "registry": "npm",
+        "name": "otherpkg",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "installed",
+        "locked": false,
+        "writtenAs": [
+          "otherpkg"
+        ]
+      },
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "installed",
+        "locked": false,
+        "writtenAs": [
+          "vecpkg"
+        ]
+      }
+    ],
+    "unaudited": []
+  },
+  "audited": [
+    {
+      "registry": "npm",
+      "name": "otherpkg",
+      "version": "1.0.0",
+      "sourceFile": "repo/ext/extensions/models/m.ts",
+      "importedAs": "otherpkg",
+      "installedVersion": "1.0.0"
+    },
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "^1.0.0",
+      "sourceFile": "repo/ext/extensions/models/m.ts",
+      "importedAs": "vecpkg",
+      "installedVersion": "1.0.0"
+    }
+  ],
+  "trust": {
+    "errors": [],
+    "warnings": [
+      "vecpkg [loose-specifier]: no lock: ^1.0.0 resolved to 1.0.0 today; commit a lock or pin exact versions (costs 1 point) (imported as \"vecpkg\" through package.json)",
+      "otherpkg [not-audited]: not audited: npm registry lookup failed (HTTP 404) (imported as \"otherpkg\" through package.json)"
+    ]
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "repo/ext/extensions/models/m.ts": {
+      "config": null,
+      "expectedBundleFailure": true,
+      "zod4": [],
+      "bundle": "deno bundle failed for <root>/repo/ext/extensions/models/m.ts: ⚠️  deno bundle is experimental and subject to changes\nerror: Import \"vecpkg\" not a dependency\n    at file://<root>/repo/ext/extensions/models/m.ts:1:18\nerror: Import \"otherpkg\" not a dependency\n    at file://<root>/repo/ext/extensions/models/m.ts:2:18\nerror: bundling failed"
+    }
+  }
+}

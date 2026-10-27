@@ -1,0 +1,3 @@
+{
+  "resolveError": "Push found <root>/node_modules/vecpkg in a node_modules above <root>/repo. Deno resolves it there, but it is outside the repository, so the bundle would ship code no file in the repository declares. Declare the package in <root>/repo/package.json and install it, or write the specifier in full."
+}

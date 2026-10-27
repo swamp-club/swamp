@@ -2781,10 +2781,7 @@ Deno.test("extensionPushPrepare: the dependency audit gets the project the bundl
         },
       },
     );
-    assertEquals(projects, [{
-      denoConfigPath: paths["deno.json"],
-      packageJsonDir: undefined,
-    }]);
+    assertEquals(projects, [{ denoConfigPath: paths["deno.json"] }]);
   });
 });
 

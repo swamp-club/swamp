@@ -226,3 +226,51 @@ Deno.test("mergeSourceGraphs: unions bare imports, one per importer and specifie
     { importer: "/r/b.ts", specifier: "ms" },
   ]);
 });
+
+Deno.test("mergeSourceGraphs: unions node_modules package dirs and JSR dist-tag imports (swamp-club#3971)", () => {
+  const tag = {
+    importer: "/r/a.ts",
+    specifier: "jsr:@s/x@latest",
+    tag: "latest",
+  };
+  const a: SourceModuleGraph = {
+    ...graphOf(["/r/a.ts"], []),
+    nodeModulesPackageDirs: ["/w/node_modules/ms"],
+    jsrDistTags: [tag],
+  };
+  const b: SourceModuleGraph = {
+    ...graphOf(["/r/a.ts"], []),
+    nodeModulesPackageDirs: ["/r/node_modules/a", "/w/node_modules/ms"],
+    jsrDistTags: [tag],
+  };
+  const merged = mergeSourceGraphs([a, b]);
+  assertEquals(merged.nodeModulesPackageDirs, [
+    "/r/node_modules/a",
+    "/w/node_modules/ms",
+  ]);
+  assertEquals(merged.jsrDistTags, [tag]);
+  const plain = mergeSourceGraphs([graphOf(["/r/a.ts"], [])]);
+  assertEquals(plain.nodeModulesPackageDirs, undefined);
+  assertEquals(plain.jsrDistTags, undefined);
+});
+
+Deno.test("withoutSymlinkedModules: drops the JSR dist-tag imports of a module only a symlink reaches (swamp-club#3971)", () => {
+  const graph: SourceModuleGraph = {
+    ...graphOf(["/r/root.ts", "/r/link.ts", "/r/ok.ts"], [
+      edge("/r/root.ts", "/r/link.ts", 0),
+      edge("/r/root.ts", "/r/ok.ts", 1),
+    ]),
+    jsrDistTags: [
+      { importer: "/r/link.ts", specifier: "jsr:@s/x@latest", tag: "latest" },
+      { importer: "/r/ok.ts", specifier: "jsr:@s/y@next", tag: "next" },
+    ],
+  };
+  const free = withoutSymlinkedModules(
+    graph,
+    "/r/root.ts",
+    new Set(["/r/link.ts"]),
+  );
+  assertEquals(free.graph.jsrDistTags, [
+    { importer: "/r/ok.ts", specifier: "jsr:@s/y@next", tag: "next" },
+  ]);
+});

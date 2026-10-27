@@ -130,7 +130,11 @@ function errorText(error: unknown): string {
 function prepareDeps(
   registry: DriverRegistry,
   env: Record<string, string>,
-  lockProject: { denoConfigPath?: string; packageJsonDir?: string },
+  lockProject: {
+    denoConfigPath?: string;
+    packageJsonDir?: string;
+    workspaceRootConfigPath?: string;
+  },
   audited: DependencySpecifier[],
 ): ExtensionPushPrepareDeps {
   return {
@@ -207,7 +211,14 @@ export async function runVector(
   // The project config and lock, as the push, quality and fmt commands
   // read them.
   const { denoConfigPath } = resolved;
-  const project = { denoConfigPath, packageJsonDir: resolved.packageJsonDir };
+  const project = {
+    denoConfigPath,
+    packageJsonDir: resolved.packageJsonDir,
+    ...(resolved.workspaceRootConfigPath
+      ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
+      : {}),
+    ...(resolved.noConfig ? { noConfig: true } : {}),
+  };
   const readOnlyLock = await readOnlyLockFor(project);
   outcome.project = {
     config: rel(root, denoConfigPath),
@@ -266,6 +277,13 @@ export async function runVector(
         symlinkedPaths: resolved.symlinkedPaths,
         denoConfigPath,
         packageJsonDir: resolved.packageJsonDir,
+        ...(resolved.workspaceRootConfigPath
+          ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
+          : {}),
+        ...(resolved.noConfig ? { noConfig: true } : {}),
+        ...(resolved.ignoredMemberLock
+          ? { ignoredMemberLock: resolved.ignoredMemberLock }
+          : {}),
         dryRun: true,
         registryChecks: "skip",
         // As quality runs it: a failed gate is collected, not thrown, so

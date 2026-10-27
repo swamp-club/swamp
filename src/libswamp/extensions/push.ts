@@ -314,6 +314,18 @@ export interface ExtensionPushPrepareInput {
   denoConfigPath?: string;
   packageJsonDir?: string;
   /**
+   * The workspace root `denoConfigPath` is a member of, whose lock push
+   * bundles against and the audit reads (swamp-club#3971).
+   */
+  workspaceRootConfigPath?: string;
+  /**
+   * Bundle with `--no-config`: no Deno config inside the repository, so
+   * none above it applies (swamp-club#3971).
+   */
+  noConfig?: boolean;
+  /** A workspace member's own lock, which Deno ignores (swamp-club#3971). */
+  ignoredMemberLock?: string;
+  /**
    * What Deno resolved each bare import a local module writes to, from the
    * module graph read under `denoConfigPath` (swamp-club#3612). Push
    * rewrites, audits and reports bare imports from these alone.
@@ -547,6 +559,8 @@ export interface ExtensionPushPrepareDeps {
     options?: {
       denoConfigPath?: string;
       packageJsonDir?: string;
+      workspaceRootConfigPath?: string;
+      noConfig?: boolean;
       readOnlyLock?: ReadOnlyLock;
       env?: Record<string, string>;
       bareImports?: readonly ResolvedBareImport[];
@@ -1420,10 +1434,10 @@ export async function extensionPushPrepare(
   );
   if (specifiers.length > 0) {
     ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
-    dependencyTrustResult = await deps.checkDependencyTrust(specifiers, {
-      denoConfigPath: input.denoConfigPath,
-      packageJsonDir: input.packageJsonDir,
-    });
+    dependencyTrustResult = await deps.checkDependencyTrust(
+      specifiers,
+      pushProject(input) ?? {},
+    );
     if (dependencyTrustResult.errors.length > 0) {
       failGate(
         "dependency-trust",
@@ -2255,6 +2269,21 @@ export async function runQualityFindings(
       message:
         `${file} is a Deno config, lock or package file, so push leaves it out of the archive: the archive's source ships every dependency pinned instead.`,
       remediation: remediationFor("archive-project-file"),
+    });
+  }
+  if (input.ignoredMemberLock) {
+    reviewRulesResult.warnings.push({
+      ruleId: "workspace-member-lock",
+      dimension: "Packaging",
+      severity: "medium",
+      file: input.ignoredMemberLock,
+      message:
+        `${input.ignoredMemberLock} is a workspace member's own lock, which Deno ignores: push bundles against the lock of the workspace root${
+          input.workspaceRootConfigPath
+            ? ` ${input.workspaceRootConfigPath}`
+            : ""
+        } instead.`,
+      remediation: remediationFor("workspace-member-lock"),
     });
   }
   const packageLockWarning = input.graphDependencies?.packageLock?.warning;
@@ -3243,11 +3272,10 @@ async function bundleAndArchive(
 ): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
   // Under a Deno config the bundler reuses the graph's bare-import
   // resolutions to decide zod externalization rather than reading it again.
-  const project = input.denoConfigPath
-    ? { denoConfigPath: input.denoConfigPath, bareImports: input.bareImports }
-    : input.packageJsonDir
-    ? { packageJsonDir: input.packageJsonDir }
-    : undefined;
+  const base = pushProject(input);
+  const project = base && input.denoConfigPath
+    ? { ...base, bareImports: input.bareImports }
+    : base;
   // Push never writes the author's lockfile: a stale lock fails the bundle
   // rather than being rewritten, so the lock the audit read is what ships.
   const bundleOptions = project
@@ -3838,13 +3866,34 @@ function withoutProjectFiles(
 async function projectLockInUse(
   input: ExtensionPushPrepareInput,
 ): Promise<boolean> {
-  const project = input.denoConfigPath
-    ? { denoConfigPath: input.denoConfigPath }
-    : input.packageJsonDir
-    ? { packageJsonDir: input.packageJsonDir }
-    : undefined;
+  const project = pushProject(input);
   return project !== undefined &&
     (await readOnlyLockFor(project)).lockPath !== undefined;
+}
+
+/**
+ * The project push bundles `input` under: its Deno config (with the
+ * workspace root whose lock a member reads), its package.json project, or
+ * neither; `noConfig` rides with the last two, so no config Deno would
+ * discover above the repository applies (swamp-club#3971). Undefined when
+ * there is no project and nothing to pass.
+ */
+function pushProject(
+  input: ExtensionPushPrepareInput,
+): ExtensionProject | undefined {
+  if (input.denoConfigPath) {
+    return {
+      denoConfigPath: input.denoConfigPath,
+      ...(input.workspaceRootConfigPath
+        ? { workspaceRootConfigPath: input.workspaceRootConfigPath }
+        : {}),
+    };
+  }
+  const noConfig = input.noConfig ? { noConfig: true } : {};
+  if (input.packageJsonDir) {
+    return { packageJsonDir: input.packageJsonDir, ...noConfig };
+  }
+  return input.noConfig ? { noConfig: true } : undefined;
 }
 
 /**

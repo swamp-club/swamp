@@ -1,0 +1,26 @@
+description: "A workspace root above the repository that lists the repository's deno.json as a member."
+repo: repo
+files:
+  "deno.json": |
+    {
+      "workspace": [
+        "./repo"
+      ]
+    }
+  "repo/deno.json": |
+    {
+      "imports": {
+        "vecpkg": "npm:vecpkg@1.0.0"
+      }
+    }
+  "repo/extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "repo/manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

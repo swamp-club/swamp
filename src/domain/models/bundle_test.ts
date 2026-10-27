@@ -1337,14 +1337,11 @@ Deno.test("denoProjectArgs: noConfig without a project reads no Deno config", ()
   ]);
 });
 
-Deno.test("denoProjectArgs: noConfig is ignored with a project", () => {
+Deno.test("denoProjectArgs: noConfig is ignored with a Deno config", () => {
   assertEquals(
     denoProjectArgs({ denoConfigPath: "/p/deno.json", noConfig: true }),
     ["--config", "/p/deno.json"],
   );
-  assertEquals(denoProjectArgs({ packageJsonDir: "/p", noConfig: true }), [
-    "--node-modules-dir=auto",
-  ]);
   assertEquals(
     denoProjectArgs({
       denoConfigPath: "/p/deno.json",
@@ -1353,6 +1350,39 @@ Deno.test("denoProjectArgs: noConfig is ignored with a project", () => {
     }),
     ["--config", "/p/deno.json", "--no-lock"],
   );
+});
+
+Deno.test("denoProjectArgs: noConfig in a package.json project reads no Deno config above it (swamp-club#3971)", () => {
+  assertEquals(denoProjectArgs({ packageJsonDir: "/p", noConfig: true }), [
+    "--no-config",
+    "--node-modules-dir=auto",
+  ]);
+  assertEquals(
+    denoProjectArgs({ packageJsonDir: "/p", noConfig: true, readOnlyLock: {} }),
+    ["--no-config", "--node-modules-dir=manual", "--no-lock"],
+  );
+  assertEquals(
+    denoProjectArgs({
+      packageJsonDir: "/p",
+      noConfig: true,
+      readOnlyLock: { lockPath: "/p/deno.lock" },
+    }),
+    ["--no-config", "--node-modules-dir=manual", "--frozen"],
+  );
+});
+
+Deno.test("staleLockfileError: a workspace member's lock is brought up to date at the root (swamp-club#3971)", () => {
+  const error = staleLockfileError(
+    "/w/deno.lock",
+    "/w/ext/m.ts",
+    {
+      denoConfigPath: "/w/ext/deno.json",
+      workspaceRootConfigPath: "/w/deno.json",
+    },
+    "error: The lockfile is out of date.",
+  );
+  assertEquals(error.projectFile, "/w/deno.json");
+  assertEquals(error.projectDir, "/w");
 });
 
 Deno.test("bundleExtension: noConfig bundles with --no-config, self-contained or not", async () => {

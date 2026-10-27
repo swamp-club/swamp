@@ -22,7 +22,9 @@ import {
   isAbsolute,
   join,
   relative,
+  resolve,
   SEPARATOR,
+  SEPARATOR_PATTERN,
   toFileUrl,
 } from "@std/path";
 import type { UnauditedDependency } from "@swamp-club/extension-scoring/dependency-audit";
@@ -57,7 +59,9 @@ import {
   nonRegistryDependencies,
   urlImportClosures,
 } from "../../domain/extensions/dependency_resolution/unaudited_code.ts";
+import { jsrDistTag } from "../../domain/extensions/dependency_resolution/specifier.ts";
 import type {
+  DistTaggedJsrImport,
   InstalledPackage,
   LocalEdge,
   LocalModule,
@@ -309,6 +313,55 @@ function fileModulePaths(json: unknown): string[] {
   );
 }
 
+/**
+ * The package directory, at the first node_modules on its path from the
+ * entry point's directory, of every installed module the graph reads: a
+ * repository under a directory named node_modules is not taken for one.
+ */
+function nodeModulesPackageDirsOf(json: unknown): string[] {
+  const rootDir = denoInfoRootDir(json);
+  if (rootDir === undefined) return [];
+  const dirs = new Set<string>();
+  for (const path of fileModulePaths(json)) {
+    const parts = relative(rootDir, path).split(SEPARATOR_PATTERN);
+    const at = parts.indexOf("node_modules");
+    if (at < 0) continue;
+    const length = parts[at + 1]?.startsWith("@") ? 2 : 1;
+    if (parts.length <= at + length) continue;
+    dirs.add(resolve(rootDir, ...parts.slice(0, at + 1 + length)));
+  }
+  return [...dirs].sort();
+}
+
+/**
+ * The `jsr:` imports naming a dist-tag: written in a local module, or what
+ * the project's import map resolves a bare import to.
+ */
+function jsrDistTagsOf(
+  json: unknown,
+  bareImports: readonly ResolvedBareImport[],
+): DistTaggedJsrImport[] {
+  const rootDir = denoInfoRootDir(json);
+  const raw = (json as { modules?: DenoInfoModule[] })?.modules;
+  const found = new Map<string, DistTaggedJsrImport>();
+  const add = (importer: string, specifier: string) => {
+    const tag = jsrDistTag(specifier);
+    if (tag) {
+      found.set(`${importer}\0${specifier}`, { importer, specifier, tag });
+    }
+  };
+  for (const m of Array.isArray(raw) ? raw : []) {
+    if (!isLocalModuleSpecifier(m.specifier, rootDir)) continue;
+    for (const dep of m.dependencies ?? []) {
+      if (dep.specifier) add(fromFileUrl(m.specifier), dep.specifier);
+    }
+  }
+  for (const b of bareImports) {
+    if (b.target) add(b.importer, b.target);
+  }
+  return [...found.values()];
+}
+
 /** A path from `dir`, with forward slashes. */
 function relativeForward(dir: string, path: string): string {
   return relative(dir, path).split(SEPARATOR).join("/");
@@ -514,6 +567,11 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         : undefined,
     );
     if (unaudited.length > 0) graph.unaudited = unaudited;
+    // What push refuses before bundling (swamp-club#3971).
+    const packageDirs = nodeModulesPackageDirsOf(json);
+    if (packageDirs.length > 0) graph.nodeModulesPackageDirs = packageDirs;
+    const distTags = jsrDistTagsOf(json, graph.bareImports ?? []);
+    if (distTags.length > 0) graph.jsrDistTags = distTags;
     return graph;
   }
 

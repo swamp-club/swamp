@@ -1,0 +1,28 @@
+description: "A package.json project whose bare import resolves from a node_modules above the repository."
+repo: repo
+files:
+  "repo/extensions/models/m.ts": |
+    import value from "vecpkg";
+    import other from "otherpkg";
+
+    export const model = [value, other];
+  "repo/manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "repo/package.json": |
+    {
+      "dependencies": {
+        "otherpkg": "1.0.0"
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"
+  - dir: repo/node_modules/otherpkg
+    name: otherpkg
+    version: "1.0.0"

@@ -975,9 +975,16 @@ a config from the working directory, not from the module it reads.
 | Scenario                                  | `deno bundle` flags                                      | Quality check flags    | Notes                                                                                                            |
 | ----------------------------------------- | -------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Deno config found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | The config governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
-| **`package.json` found, bare specifiers** | `--node-modules-dir=manual`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
-| **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
-| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default                                                                                                          |
+| **`package.json` found, bare specifiers** | `--no-config --node-modules-dir=manual`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
+| **`package.json` found, `npm:` imports**  | `--no-config --no-lock --node-modules-dir=none`          | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
+| **No config found**                       | `--no-config --no-lock --node-modules-dir=none`          | `--no-config`          | Default                                                                                                          |
+
+A Deno config that is a workspace member bundles under `--config <member>`
+against the workspace root's lock (see
+[Inputs from above the repository](#inputs-from-above-the-repository)). Every
+other row passes `--no-config` (swamp-club#3971): the project, when there is
+one, lives inside the repository, so no config Deno would discover above it
+applies.
 
 Every lint of extension code (push, `extension quality`, `extension fmt`)
 passes `--rules-exclude=no-import-prefix`: with a project config Deno's
@@ -1008,6 +1015,56 @@ matching package for 'npm:@octokit/rest@22.0.1' in the node_modules directory."
 `jsr:` and `https:` specifiers behave the same in all four rows. They need no
 `deno.json` or `package.json`, so project-config detection does not affect them.
 Deno's module cache fetches them on first use and reuses them offline.
+
+#### Inputs from above the repository
+
+Swamp's config walk stops at the repository (`projectConfigBoundary`), but
+Deno's does not, so push decides what from above it may apply
+(swamp-club#3971). `detectExtensionProject` returns, beside the project, the
+workspace root, `noConfig` and the `ancestorConfigs` Deno would use; push,
+quality and the bundle carry them on the `ExtensionProject` value, and the
+extension loader, which never calls it, is unchanged.
+
+- **Workspace root lock.** A Deno config is a workspace member when a
+  `deno.json` or `deno.jsonc` above it lists its directory in `workspace` (a
+  path with or without `./` and a trailing `/`, or a glob; an array or
+  `{ members }`). Deno reads only the root's lock for every member, so
+  `configuredLockPath` and `frozenLockPath` read the root's `lock` setting or
+  the `deno.lock` beside the root, push bundles `--frozen` against it, the
+  audit reads it, and a stale lock names the root config. A member's own
+  `lock` setting or `deno.lock` is ignored, as Deno ignores it, with a
+  `workspace-member-lock` warning naming it.
+- **Ancestor configs are refused, not used.** With no Deno config inside the
+  boundary, push passes `--no-config`, and `findAncestorConfigs` names the
+  nearest `deno.json`/`deno.jsonc` above the boundary and, with no package.json
+  project either, the nearest `package.json`. Push refuses one that would
+  resolve a bare import the project inside the repository leaves unresolved:
+  a config whose `imports` map it, or a package.json that declares its
+  package (`ancestor_config.ts`). The `UserError` names the file and the
+  imports, and the fix: a `deno.json` (or `package.json`) inside the
+  repository, or the specifier written in full. With only written
+  specifiers, an ancestor config is ignored silently. A workspace root above
+  the boundary that lists the repository's config is always refused, since
+  Deno applies it even under `--config`; the fix is to move it inside the
+  repository.
+- **Ancestor node_modules.** `--no-config` does not stop Node resolution: in
+  package.json mode a bare import missing from the project's `node_modules/`
+  resolves from one further up. The graph read records every installed
+  package directory it reads (`nodeModulesPackageDirs`, at the first
+  `node_modules` on the path from the entry point), and push refuses one
+  above the boundary, naming it and the package.json to declare it in. One
+  inside the repository is accepted, a monorepo's install hoisted to the
+  repository root included. A `file:` or `link:` dependency's real path is
+  not under a `node_modules/`, so it stays unaudited code, as above.
+- **JSR dist-tags.** JSR has no dist-tags, and Deno cannot load
+  `jsr:@std/assert@latest`. Push reads every written `jsr:` import and
+  import-map target from the graph (`jsrDistTag` in `specifier.ts`) and
+  refuses one naming a tag before bundling, with the fix: drop the tag (an
+  unpinned `jsr:` import ships pinned exact) or pin a version.
+- **deno.json beside package.json.** A Deno config wins, and the graph read
+  that names the bundle's versions also reads `node_modules/` when Deno does,
+  so a bare import that resolves to an installed copy ships, bundles and is
+  audited at that copy's version: one read, no side-by-side answer.
 
 #### Zod externalization
 
@@ -2372,14 +2429,18 @@ they outlive the runtime:
    range package.json declares, so a range there raises the loose-specifier
    finding as an import-map range does; the shipped version is the installed
    one, which the bundle inlines whatever `deno.lock` records, so the lock is
-   not read for it.
+   not read for it. Each installed copy under one declared range (a nested
+   `node_modules/` holding a second version) is audited and recorded
+   separately, and a written `npm:` import of the same package does not hide
+   one (swamp-club#3793).
 3. Otherwise, the lockfile the bundler honours: the version it records for
    this import's own specifier (Deno may write `^2.0.0` as `npm:ms@2`, so
    equivalent ranges match), else the highest version it records for the
    package that satisfies the specifier. A higher transitive copy never
    overrides the import's own entry. The lockfile is the one the bundler
    uses: with a `deno.json` or `deno.jsonc`, its `lock` setting (read as
-   JSONC, swamp-club#3612) or the `deno.lock` beside it; in package.json
+   JSONC, swamp-club#3612) or the `deno.lock` beside it, and for a workspace
+   member the workspace root's (swamp-club#3971); in package.json
    mode, the `deno.lock` there; otherwise none, since the bundler runs with
    `--no-lock`. A config that cannot be parsed reads no lock. The lockfile sits behind the `LockedDependencyVersions` port; the
    Deno adapter (`src/infrastructure/runtime/deno_lockfile_reader.ts`) reads
@@ -2390,7 +2451,8 @@ they outlive the runtime:
    does: a range to the highest published release that satisfies it, a
    dist-tag through `dist-tags`, no version to `latest`. JSR takes the
    highest version that is neither yanked nor a prerelease, falling back to
-   a yanked match as Deno does, and `latest` for no version.
+   a yanked match as Deno does, and `latest` for no version. A JSR dist-tag
+   never reaches it from push, which refuses one before bundling.
 
 Push and quality treat the author's lockfile as read-only
 (swamp-club#3613). The module graph read (`deno info`) and the bundle run

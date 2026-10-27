@@ -1,0 +1,30 @@
+description: "A package.json project in a monorepo whose dependency is hoisted to the repository root's node_modules."
+repo: repo
+manifest: ext/manifest.yaml
+files:
+  "repo/ext/extensions/models/m.ts": |
+    import value from "vecpkg";
+    import other from "otherpkg";
+
+    export const model = [value, other];
+  "repo/ext/manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "repo/ext/package.json": |
+    {
+      "dependencies": {
+        "otherpkg": "1.0.0",
+        "vecpkg": "^1.0.0"
+      }
+    }
+installed:
+  - dir: repo/node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"
+  - dir: repo/ext/node_modules/otherpkg
+    name: otherpkg
+    version: "1.0.0"

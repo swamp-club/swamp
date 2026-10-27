@@ -1,0 +1,82 @@
+{
+  "project": {
+    "config": "ext/deno.json",
+    "packageDir": null,
+    "lock": "deno.lock",
+    "flags": [
+      "--config",
+      "<root>/ext/deno.json",
+      "--frozen"
+    ]
+  },
+  "bareImports": [
+    {
+      "importer": "ext/extensions/models/m.ts",
+      "specifier": "vecpkg",
+      "target": "npm:vecpkg@^1"
+    }
+  ],
+  "fmt": {
+    "config": "ext/deno.json"
+  },
+  "archive": [
+    "bundles/m.js",
+    "dependency-audit.json",
+    "manifest.yaml",
+    "models/m.ts"
+  ],
+  "shipped": {
+    "models/m.ts": "import value from \"npm:vecpkg@1.0.0\";\n\nexport const model = [value];\n"
+  },
+  "bundles": {
+    "bundles/m.js": "ok"
+  },
+  "record": {
+    "recordVersion": 2,
+    "bundleFormat": 1,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
+    "dependencies": [
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "lockfile",
+        "locked": true,
+        "writtenAs": [
+          "vecpkg"
+        ]
+      }
+    ],
+    "unaudited": []
+  },
+  "audited": [
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "^1",
+      "sourceFile": "ext/extensions/models/m.ts",
+      "importedAs": "vecpkg"
+    }
+  ],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [
+    "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "workspace-member-lock: <root>/ext/deno.lock is a workspace member's own lock, which Deno ignores: push bundles against the lock of the workspace root <root>/deno.json instead.",
+    "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
+  ],
+  "gateFailures": [],
+  "loader": {
+    "ext/extensions/models/m.ts": {
+      "config": "ext/deno.json",
+      "expectedBundleFailure": false,
+      "zod4": [],
+      "bundle": "ok"
+    }
+  }
+}

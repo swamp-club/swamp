@@ -4,6 +4,7 @@
     "packageDir": ".",
     "lock": "deno.lock",
     "flags": [
+      "--no-config",
       "--node-modules-dir=manual",
       "--frozen"
     ]

@@ -171,6 +171,15 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Remove the file from additionalFiles, include or the kind directory. The archive's source ships every npm: and jsr: import pinned to the exact version its bundle holds, so consumers need no deno.json, lock or package.json.",
   },
+  // Not acceptable: Deno never reads the member's lock (swamp-club#3971).
+  {
+    id: "workspace-member-lock",
+    severity: "warning",
+    scope: "extension",
+    acceptable: false,
+    remediation:
+      "Delete the member's lock and its lock setting. Deno reads only the workspace root's lock for every member, and push bundles against that one.",
+  },
   // Not acceptable: the lock rule is mechanical (swamp-club#3970).
   {
     id: "package-lock-mismatch",
