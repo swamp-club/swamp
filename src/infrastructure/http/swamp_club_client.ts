@@ -33,8 +33,41 @@ import {
 } from "./rate_limit.ts";
 import type { GenesisPass } from "../../domain/quest/genesis_pass.ts";
 import type { IdentityCheckOutcome } from "../../domain/auth/auth_gate_policy.ts";
+import { sanitizeFieldText } from "../../domain/vaults/vault_config_fields.ts";
+import {
+  INBOX_REQUIRES_USER,
+  type InboxListOptions,
+  type InboxMessage,
+  type InboxMessagePage,
+  type InboxSummaryResult,
+  parseInboxErrorCode,
+  parseInboxMessage,
+  parseInboxMessagePage,
+  parseInboxReadIds,
+  parseInboxSummary,
+} from "./inbox_schemas.ts";
 
 export type { ClientIdentity };
+
+const NO_INBOX_MESSAGE = "This Swamp Club server has no inbox.";
+const INBOX_REQUIRES_USER_MESSAGE =
+  "The inbox needs a personal API key; collective keys have no inbox.";
+/** The most ids `POST /api/inbox/read` accepts in one request. */
+const MARK_READ_BATCH_SIZE = 100;
+
+/**
+ * The parsed JSON body, or undefined when it is not JSON. A body that could
+ * not be read (an abort, a timeout, a dropped connection) still throws: it
+ * says nothing about the body's shape.
+ */
+async function readJson(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
 
 /** A classified `/api/whoami` answer, with the response when there was one. */
 export interface IdentityCheckResult {
@@ -1211,6 +1244,266 @@ export class SwampClubClient {
         ? `${this.serverUrl} answered HTTP ${res.status}: ${body}`
         : `${this.serverUrl} answered HTTP ${res.status}.`,
     );
+  }
+
+  /**
+   * Ask `/api/inbox/summary` how many messages are unread. Never throws: the
+   * background poll is best effort, so every failure is a result case. It
+   * bypasses the shared fetch helper because a `Retry-After` sleep would hold
+   * teardown; the caller's signal is the only timeout.
+   */
+  async inboxSummary(
+    apiKey: string,
+    etag: string | null,
+    signal: AbortSignal,
+  ): Promise<InboxSummaryResult> {
+    let headers: Headers;
+    try {
+      headers = mergeIdentityHeaders(this.identity, {
+        "x-api-key": apiKey,
+        ...(etag !== null ? { "If-None-Match": etag } : {}),
+      });
+    } catch {
+      // A key or a cached etag holding a character no header may carry.
+      return { kind: "failed", reason: "invalid request header" };
+    }
+    const doFetch = this.options.fetch ?? globalThis.fetch;
+    let res: Response;
+    try {
+      res = await doFetch(`${this.serverUrl}/api/inbox/summary`, {
+        method: "GET",
+        headers,
+        signal,
+      });
+    } catch (error) {
+      const reason = signal.aborted ||
+          (error instanceof DOMException &&
+            (error.name === "TimeoutError" || error.name === "AbortError"))
+        ? "timeout"
+        : "connection failed";
+      return { kind: "failed", reason };
+    }
+
+    const status = res.status;
+    // The signal also bounds reading the body; a body cut off by it is a
+    // slow link, not a malformed answer.
+    const failed = (reason: string): InboxSummaryResult => ({
+      kind: "failed",
+      reason: signal.aborted ? "timeout" : reason,
+    });
+    try {
+      if (status === 304) {
+        await res.body?.cancel();
+        return { kind: "not_modified" };
+      }
+      if (status === 401) {
+        await res.body?.cancel();
+        return { kind: "rejected" };
+      }
+      if (status === 403) {
+        // Only swamp-club's own body means a collective key; a gateway's
+        // 403 says nothing about the inbox.
+        return parseInboxErrorCode(await readJson(res)) === INBOX_REQUIRES_USER
+          ? { kind: "unavailable" }
+          : failed(`HTTP ${status}`);
+      }
+      if (status === 404) {
+        await res.body?.cancel();
+        return { kind: "unsupported" };
+      }
+      if (status === 429) {
+        const retryAfterSeconds = parseRetryAfter(
+          res.headers.get("retry-after"),
+        );
+        await res.body?.cancel();
+        return retryAfterSeconds !== undefined
+          ? { kind: "backoff", retryAfterSeconds }
+          : { kind: "backoff" };
+      }
+      if (!res.ok) {
+        await res.body?.cancel();
+        return failed(`HTTP ${status}`);
+      }
+      const summary = parseInboxSummary(await readJson(res));
+      if (!summary) return failed("malformed response");
+      return { kind: "ok", summary, etag: res.headers.get("etag") };
+    } catch {
+      return failed("connection failed");
+    }
+  }
+
+  /** List inbox messages, newest first. Throws UserError on failure. */
+  async listInboxMessages(
+    apiKey: string,
+    options: InboxListOptions = {},
+    signal?: AbortSignal,
+  ): Promise<InboxMessagePage> {
+    const params = new URLSearchParams();
+    if (options.status !== undefined) params.set("status", options.status);
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    if (options.before !== undefined) params.set("before", options.before);
+    const query = params.size > 0 ? `?${params}` : "";
+    const res = await this.fetch(
+      `/api/inbox/messages${query}`,
+      { method: "GET", headers: { "x-api-key": apiKey } },
+      signal,
+    );
+    if (!res.ok) {
+      throw await this.inboxError(
+        res,
+        "list your inbox",
+        NO_INBOX_MESSAGE,
+        signal,
+      );
+    }
+    const page = parseInboxMessagePage(await this.readInboxJson(res, signal));
+    if (!page) {
+      throw new UserError("Swamp Club returned a malformed inbox page.");
+    }
+    return page;
+  }
+
+  /** Fetch one inbox message. Throws UserError on failure. */
+  async getInboxMessage(
+    apiKey: string,
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<InboxMessage> {
+    const res = await this.fetch(
+      `/api/inbox/messages/${encodeURIComponent(id)}`,
+      { method: "GET", headers: { "x-api-key": apiKey } },
+      signal,
+    );
+    if (!res.ok) {
+      throw await this.inboxError(
+        res,
+        `fetch message ${id}`,
+        `Message ${id} not found.`,
+        signal,
+      );
+    }
+    const message = parseInboxMessage(await this.readInboxJson(res, signal));
+    if (!message) {
+      throw new UserError(
+        `Swamp Club returned a malformed answer for message ${id}.`,
+      );
+    }
+    return message;
+  }
+
+  /**
+   * Mark inbox messages read, in batches the endpoint accepts. Returns the
+   * requested ids swamp-club confirmed, in request order; ids that are unknown
+   * or not the caller's are left out. A throw may follow batches that were
+   * already applied; marking read is idempotent, so retrying the whole call
+   * is safe.
+   */
+  async markInboxRead(
+    apiKey: string,
+    ids: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    // ULIDs are case-insensitive and the schema reports them upper case,
+    // so ids are deduplicated and matched without regard to case.
+    const byKey = new Map<string, string>();
+    for (const id of ids) {
+      if (!byKey.has(id.toUpperCase())) byKey.set(id.toUpperCase(), id);
+    }
+    const unique = [...byKey.values()];
+    const confirmed = new Set<string>();
+    for (let i = 0; i < unique.length; i += MARK_READ_BATCH_SIZE) {
+      const batch = unique.slice(i, i + MARK_READ_BATCH_SIZE);
+      const res = await this.fetch(
+        "/api/inbox/read",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+          },
+          body: JSON.stringify({ ids: batch }),
+        },
+        signal,
+      );
+      if (!res.ok) {
+        throw await this.inboxError(
+          res,
+          "mark messages read",
+          NO_INBOX_MESSAGE,
+          signal,
+        );
+      }
+      const read = parseInboxReadIds(await this.readInboxJson(res, signal));
+      if (!read) {
+        throw new UserError(
+          "Swamp Club returned a malformed answer to marking messages read.",
+        );
+      }
+      for (const id of read) confirmed.add(id.toUpperCase());
+    }
+    return unique.filter((id) => confirmed.has(id.toUpperCase()));
+  }
+
+  /**
+   * The UserError for a failed inbox request. It lifts the server's `error`
+   * field and never echoes a raw body, which may be a proxy's page.
+   */
+  private async inboxError(
+    res: Response,
+    action: string,
+    notFoundMessage: string,
+    signal?: AbortSignal,
+  ): Promise<UserError> {
+    // 401 and 404 need no body, so a stalled one cannot blur them.
+    if (res.status === 401) {
+      await res.body?.cancel();
+      return new UserError(
+        'Swamp Club rejected your API key. Run "swamp auth login".',
+      );
+    }
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return new UserError(notFoundMessage);
+    }
+    const code = parseInboxErrorCode(await this.readInboxJson(res, signal));
+    if (res.status === 403 && code === INBOX_REQUIRES_USER) {
+      return new UserError(INBOX_REQUIRES_USER_MESSAGE);
+    }
+    const detail = code !== undefined ? sanitizeFieldText(code, 200) : "";
+    return new UserError(
+      detail
+        ? `Failed to ${action} (HTTP ${res.status}): ${detail}`
+        : `Failed to ${action} (HTTP ${res.status}).`,
+    );
+  }
+
+  /**
+   * The parsed JSON body of an inbox answer, or undefined when it is not
+   * JSON. A body cut off by the caller's signal rethrows the abort, as the
+   * fetch helper does; a timeout or a dropped connection is a UserError that
+   * says so, never a malformed answer.
+   */
+  private async readInboxJson(
+    res: Response,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    try {
+      return await readJson(res);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new UserError(
+          `Reading the answer from ${this.serverUrl} timed out.`,
+          "timeout",
+        );
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Could not read the answer from ${this.serverUrl}: ${message}`,
+      );
+    }
   }
 
   private async fetch(
