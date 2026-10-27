@@ -236,6 +236,7 @@ function v2Record(
 ) {
   return canonicalRecordedVersions({
     recordVersion: 2,
+    bundleFormat: 1,
     bundles: {},
     dependencies: dependencies.map((d) => ({
       registry: "npm" as const,
