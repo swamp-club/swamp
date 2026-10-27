@@ -39,11 +39,20 @@ function workflowOf(...names: string[]): Workflow {
 
 /** A run whose jobs are stored under `stored`, in order. */
 function runOf(workflow: Workflow, ...stored: string[]): WorkflowRun {
+  return runWithInputs(workflow, {}, ...stored);
+}
+
+function runWithInputs(
+  workflow: Workflow,
+  inputs: Record<string, unknown>,
+  ...stored: string[]
+): WorkflowRun {
   return WorkflowRun.fromData({
     id: crypto.randomUUID(),
     workflowId: workflow.id,
     workflowName: workflow.name,
     status: "failed",
+    inputs,
     jobs: stored.map((jobName) => ({
       jobName,
       status: "failed" as const,
@@ -101,4 +110,50 @@ Deno.test("workflowJobOf: a stored job belongs to its literal job, else to its p
   assertEquals(workflowJobOf(wf, run.jobs[1], pairs)?.name, B);
   assertEquals(workflowJobOf(wf, run.jobs[2], pairs)?.name, "literal");
   assertEquals(workflowJobOf(wf, run.jobs[0], undefined), undefined);
+});
+
+Deno.test("pairExpressionJobs: a name that only reads inputs pairs by the run's stored inputs, wherever the job now stands", () => {
+  const inputs = { a: "west", b: "east" };
+  const run = runWithInputs(
+    workflowOf(A, B, "literal"),
+    inputs,
+    "site-west",
+    "site-east",
+    "literal",
+  );
+  // The two expression-named jobs swapped since the run.
+  const swapped = workflowOf(B, A, "literal");
+  assertEquals(
+    pairExpressionJobs(swapped, run),
+    new Map([[B, "site-east"], [A, "site-west"]]),
+  );
+  // And a job added, which position alone could not survive.
+  const added = workflowOf("first", B, A, "literal");
+  assertEquals(
+    pairExpressionJobs(added, run),
+    new Map([[B, "site-east"], [A, "site-west"]]),
+  );
+});
+
+Deno.test("pairExpressionJobs: a name that reads more than inputs pairs by position", () => {
+  const env = "site-${{ env.REGION }}";
+  const wf = workflowOf(env, "literal");
+  const run = runWithInputs(wf, { a: "west" }, "site-north", "literal");
+  assertEquals(pairExpressionJobs(wf, run), new Map([[env, "site-north"]]));
+});
+
+Deno.test("pairExpressionJobs: undefined when two jobs would share one stored job", () => {
+  const same = "site-${{ inputs.a }}";
+  const other = "site-${{ inputs.b }}";
+  const wf = workflowOf(same, other);
+  const run = runWithInputs(wf, { a: "x", b: "x" }, "site-x", "site-x");
+  assertEquals(pairExpressionJobs(wf, run), undefined);
+});
+
+Deno.test("pairExpressionJobs: a name with many expressions is checked in one pass", () => {
+  const template = Array.from({ length: 40 }, (_, i) => `p${i}-\${{ env.X }}`)
+    .join("");
+  const wf = workflowOf(template);
+  const stored = "a".repeat(5_000);
+  assertEquals(pairExpressionJobs(wf, runOf(wf, stored)), undefined);
 });

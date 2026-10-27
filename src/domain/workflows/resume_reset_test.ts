@@ -733,6 +733,24 @@ Deno.test("planFailedRunResume: refuses a reset into an expression-named job onc
   );
 });
 
+Deno.test("planFailedRunResume: --job finds an expression-named job by the run's inputs after the jobs swapped", () => {
+  const { run } = siteRun();
+  const withInputs = WorkflowRun.fromData({
+    ...run.toData(),
+    inputs: { a: "west", b: "east" },
+  });
+  const swapped = workflow([
+    { name: "site-${{ inputs.b }}", steps: [plain("restart")] },
+    { name: "site-${{ inputs.a }}", steps: [plain("restart")] },
+    { name: "literal", steps: [plain("restart")] },
+  ]);
+  const plan = planFailedRunResume(swapped, withInputs, {
+    step: "restart",
+    job: "site-${{ inputs.b }}",
+  });
+  assertEquals(sortRefs(plan.steps), ["site-east/restart"]);
+});
+
 Deno.test("planFailedRunResume: a --from step moved into a job the run does not have names that job", () => {
   const before = workflow([
     { name: "host-a", steps: [plain("restart"), plain("check")] },

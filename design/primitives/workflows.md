@@ -2257,13 +2257,15 @@ as the workflow writes it (`fromJobFor` in
 `src/domain/workflows/failed_step_retry.ts`).
 
 A job named with an expression is stored evaluated (`site-${{ inputs.region }}`
-becomes `site-west`), so the reset cannot match it by name. Evaluation keeps
-every job and their order, so the run stores job `i` of the workflow as its job
-`i`. While the workflow's jobs still line up with the run's (the same number,
-every literal job at its stored position, and each stored name fitting the
-literal text around the expressions), each expression-named job is paired with
-the stored job at its position (`pairExpressionJobs` in
-`src/domain/workflows/job_pairing.ts`). Reset, retry and the `--job` hints use
+becomes `site-west`), so the reset cannot match it by name. A name whose
+expressions only read scalar inputs is evaluated against the inputs the run
+stored, and paired with the stored job of that name wherever the job now
+stands. Any other is paired by position: evaluation keeps every job and their
+order, so the run stores job `i` of the workflow as its job `i`, which holds
+while the workflow's jobs still line up with the run's (the same number, every
+literal job at its stored position, and each stored name fitting the literal
+text around the expressions). Two jobs that would share one stored job are not
+paired (`pairExpressionJobs` in `src/domain/workflows/job_pairing.ts`). Reset, retry and the `--job` hints use
 that pairing, so `--job 'site-${{ inputs.b }}'` resets only the job it
 evaluated to, and a retry re-runs a failed step of an expression-named job. A
 reset that reaches an expression-named job once the jobs no longer line up is
