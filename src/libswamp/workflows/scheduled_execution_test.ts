@@ -2025,6 +2025,56 @@ Deno.test("ScheduledExecutionService: a replayed fire of a paused workflow is sk
   assertEquals(skipped.fireTime, undefined);
 });
 
+Deno.test("ScheduledExecutionService: fires queued before a pause are skipped when dequeued", async () => {
+  const wf = createTestWorkflow("queued-paused-wf", "* * * * * *");
+  const pauses = createPauseRepo();
+  const executor = createPerRunExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    schedulePauses: pauses.repo,
+  });
+  await service.start((e) => events.push(e));
+  try {
+    // The blocker holds the single slot while ordinary fires queue up.
+    replay(service, "blocker-wf");
+    await waitFor(() => executor.runs.length === 1, "blocker run");
+    await waitFor(
+      () => service.queueStatus(wf.id).queued >= 2,
+      "two ordinary fires queued",
+    );
+    await pauses.repo.save(pauseOf(wf, { reason: "maintenance" }));
+    const queuedFires = events.flatMap((e) =>
+      e.kind === "schedule_fired" && e.workflowId === wf.id ? [e.fireTime] : []
+    );
+    const pausedSkips = () =>
+      events.flatMap((e) =>
+        e.kind === "schedule_skipped" && e.paused !== undefined
+          ? [e.fireTime]
+          : []
+      );
+    executor.runs[0].release();
+    await waitFor(
+      () =>
+        executor.runs.length > 1 ||
+        queuedFires.every((fireTime) => pausedSkips().includes(fireTime)),
+      "every queued fire skipped, or a paused run started",
+    );
+  } finally {
+    await service.stop();
+  }
+
+  assertEquals(executor.runs.map((run) => run.workflow), ["blocker-wf"]);
+  for (const skip of events) {
+    if (skip.kind !== "schedule_skipped") continue;
+    assertEquals(skip.reason, "paused (maintenance)");
+    assertEquals(typeof skip.fireTime, "string");
+    assertEquals(skip.replayed, undefined);
+  }
+});
+
 Deno.test("ScheduledExecutionService: a pause follows the workflow id, not its name", async () => {
   const wf = createTestWorkflow("renamed-wf", "* * * * * *");
   // Paused under an earlier name: the id still matches.

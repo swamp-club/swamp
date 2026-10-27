@@ -1091,8 +1091,10 @@ control characters), who paused it, when, and an optional `until`: a duration
 or an ISO-8601 time with `Z` or an offset (a zone-less time would be read in
 whichever process parses it, the server's with `--server`), up to year 9999.
 
-Before each fire, and before a replayed cron run starts, the service reads the
-workflow's pause; while it is in force the fire is skipped with a
+Before each fire, and again before any queued cron run starts (a fire that
+waited for a slot or one replayed after a restart), the service reads the
+workflow's pause, so a fire queued before the pause does not run; while it is
+in force the fire is skipped with a
 `schedule_skipped` event carrying `paused`, logged as
 `Skipped scheduled workflow "<name>": paused ("<reason>")`. Manual and webhook
 runs never read it. `until` is enforced at the fire: a lapsed pause is ignored
