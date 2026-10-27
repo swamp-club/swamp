@@ -24,7 +24,13 @@ import {
   type SafetyIssue,
 } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import { BUNDLE_FORMAT_VERSION } from "../../domain/models/bundle.ts";
 import { EXTENSION_BUNDLE_KINDS } from "../../infrastructure/persistence/paths.ts";
+import {
+  MAX_DEPENDENCY_AUDIT_RECORD_BYTES,
+  parseDependencyAuditRecord,
+  parseDependencyAuditRecordV2,
+} from "@swamp-club/extension-scoring/dependency-audit";
 
 /** What scanning an extension's bundles found. */
 export interface BundleScan {
@@ -32,6 +38,11 @@ export interface BundleScan {
   errors: SafetyIssue[];
   /** Findings in dependency code, reported only. */
   dependencyIssues: BundleDependencyIssue[];
+  /**
+   * Each scanned bundle's forward-slash archive path, unescaped, to the
+   * `sha256:<hex>` of its bytes, as push records it.
+   */
+  hashes: Map<string, string>;
 }
 
 /**
@@ -44,17 +55,28 @@ export async function scanExtractedBundles(
   extractDir: string,
   listFiles: (dir: string) => Promise<string[]>,
 ): Promise<BundleScan> {
-  const scan: BundleScan = { errors: [], dependencyIssues: [] };
+  const scan: BundleScan = {
+    errors: [],
+    dependencyIssues: [],
+    hashes: new Map(),
+  };
   for (const { bundleKind } of EXTENSION_BUNDLE_KINDS) {
     // Every file, whatever its name: on a case-insensitive filesystem the
     // loader opens `thing.JS` (and on Windows `thing.js.`) as `thing.js`.
     for (const file of await listFiles(join(extractDir, bundleKind))) {
+      const archivePath = relative(extractDir, file).split(SEPARATOR).join(
+        "/",
+      );
       // An archive path: printed, so escaped like every archive path pull
       // prints.
-      const name = escapeControlCharacters(
-        relative(extractDir, file).split(SEPARATOR).join("/"),
+      const name = escapeControlCharacters(archivePath);
+      // One read: the bytes hashed are the bytes scanned (swamp-club#3972).
+      const bytes = await Deno.readFile(file);
+      scan.hashes.set(archivePath, await sha256Of(bytes));
+      const result = analyzeBundleSafety(
+        new TextDecoder().decode(bytes),
+        name,
       );
-      const result = analyzeBundleSafety(await Deno.readTextFile(file), name);
       // Loops, not spreads: a bundle decides how many findings it has.
       for (const error of result.errors) scan.errors.push(error);
       for (const issue of result.dependencyIssues) {
@@ -94,4 +116,87 @@ export function bundleDependencyWarnings(
       bundles.length === 1 ? bundles[0] : `${bundles.length} bundles`
     }. Findings in dependency code are reported, not refused.`,
   }));
+}
+
+async function sha256Of(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return `sha256:${
+    Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")
+  }`;
+}
+
+/** What an archive's dependency audit record says about its bundles. */
+export interface BundleRecordCheck {
+  /**
+   * Run the archive's bundles rather than rebuilding them from source:
+   * there is no v2 record (an archive pushed before it), or the record's
+   * bundle format is the one this swamp runs.
+   */
+  keepArchiveBundles: boolean;
+  /** Why the archive is refused, one line per bundle; empty when it is not. */
+  refusals: string[];
+}
+
+/**
+ * Checks the scanned bundles against the archive's dependency audit record
+ * (swamp-club#3972). `recordText` is the record, or undefined when the
+ * archive has none. A v1 record carries no hashes, so its bundles are kept
+ * as `extension install` keeps them. A v2 record must list every bundle,
+ * with the hash of the bytes scanned, and every bundle it lists must be
+ * there: the record and the bundles were written by one push, so a bundle
+ * changed apart from its record is refused. That is consistency within the
+ * archive, not who published it. The record's keys are only compared with
+ * the scanned paths, never opened.
+ */
+export function checkBundleRecord(
+  hashes: ReadonlyMap<string, string>,
+  recordText: string | undefined,
+): BundleRecordCheck {
+  if (recordText === undefined) {
+    return { keepArchiveBundles: true, refusals: [] };
+  }
+  const unreadable = {
+    keepArchiveBundles: false,
+    refusals: [
+      "dependency-audit.json: not a dependency audit record this swamp can read",
+    ],
+  };
+  if (
+    new TextEncoder().encode(recordText).length >
+      MAX_DEPENDENCY_AUDIT_RECORD_BYTES
+  ) {
+    return unreadable;
+  }
+  const record = parseDependencyAuditRecordV2(recordText);
+  if (!record) {
+    return parseDependencyAuditRecord(recordText)
+      ? { keepArchiveBundles: true, refusals: [] }
+      : unreadable;
+  }
+  const refusals: string[] = [];
+  const listed = new Map(Object.entries(record.bundles));
+  for (const [path, hash] of [...hashes].sort(([a], [b]) => a < b ? -1 : 1)) {
+    const recorded = listed.get(path);
+    const name = escapeControlCharacters(path);
+    if (recorded === undefined) {
+      refusals.push(`${name}: not listed in dependency-audit.json`);
+    } else if (recorded !== hash) {
+      refusals.push(
+        `${name}: does not match the SHA-256 dependency-audit.json records for it`,
+      );
+    }
+  }
+  for (const path of [...listed.keys()].sort()) {
+    if (!hashes.has(path)) {
+      refusals.push(
+        `${
+          escapeControlCharacters(path)
+        }: listed in dependency-audit.json but not in the archive`,
+      );
+    }
+  }
+  return {
+    keepArchiveBundles: record.bundleFormat === BUNDLE_FORMAT_VERSION,
+    refusals,
+  };
 }

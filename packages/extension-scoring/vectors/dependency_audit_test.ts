@@ -369,6 +369,7 @@ interface RecordV2Vector {
 for (const v of vectors.recordV2 as RecordV2Vector[]) {
   Deno.test(`dependency audit vectors: records v2 ${v.name} and reads it back`, () => {
     const record = buildDependencyAuditRecordV2({
+      bundleFormat: 1,
       imports: v.imports,
       bundles: v.bundles ?? {},
       unaudited: v.unaudited ?? [],

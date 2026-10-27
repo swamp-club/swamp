@@ -21,8 +21,12 @@ import { assertEquals } from "@std/assert";
 import {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
+  buildDependencyAuditRecordV2,
+  DEFAULT_BUNDLE_FORMAT,
   DEPENDENCY_AUDIT_RECORD_FILENAME,
+  parseDependencyAuditRecordV2,
   serializeDependencyAuditRecord,
+  serializeDependencyAuditRecordV2,
   type ShippedDependency,
 } from "./audit_record.ts";
 import type { DependencySpecifier } from "./specifiers.ts";
@@ -200,4 +204,48 @@ Deno.test("serializeDependencyAuditRecord: writes stable two-space JSON with a t
     text,
     '{\n  "recordVersion": 1,\n  "dependencies": [\n    {\n      "registry": "npm",\n      "name": "ms",\n      "spec": null,\n      "version": "2.1.3",\n      "from": "registry"\n    }\n  ]\n}\n',
   );
+});
+
+function v2Body(extra: Record<string, unknown>): string {
+  return JSON.stringify({
+    recordVersion: 2,
+    bundles: { "bundles/m.js": "sha256:00" },
+    dependencies: [],
+    unaudited: [],
+    ...extra,
+  });
+}
+
+Deno.test("serializeDependencyAuditRecordV2: writes bundleFormat after recordVersion (swamp-club#3972)", () => {
+  const text = serializeDependencyAuditRecordV2(
+    buildDependencyAuditRecordV2({
+      imports: [],
+      bundleFormat: 3,
+      bundles: {},
+      unaudited: [],
+    }),
+  );
+  assertEquals(
+    text,
+    '{\n  "recordVersion": 2,\n  "bundleFormat": 3,\n  "bundles": {},\n  "dependencies": [],\n  "unaudited": []\n}\n',
+  );
+  assertEquals(parseDependencyAuditRecordV2(text)?.bundleFormat, 3);
+});
+
+Deno.test("parseDependencyAuditRecordV2: a record without bundleFormat reads as the default format", () => {
+  assertEquals(DEFAULT_BUNDLE_FORMAT, 1);
+  assertEquals(
+    parseDependencyAuditRecordV2(v2Body({}))?.bundleFormat,
+    DEFAULT_BUNDLE_FORMAT,
+  );
+});
+
+Deno.test("parseDependencyAuditRecordV2: a bundleFormat that is not a positive integer is no record", () => {
+  for (const bundleFormat of [0, -1, 1.5, "1", null, true, Number.MAX_VALUE]) {
+    assertEquals(
+      parseDependencyAuditRecordV2(v2Body({ bundleFormat })),
+      null,
+      `bundleFormat ${JSON.stringify(bundleFormat)}`,
+    );
+  }
 });

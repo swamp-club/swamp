@@ -20,6 +20,7 @@
   "bundles": {},
   "record": {
     "recordVersion": 2,
+    "bundleFormat": 1,
     "bundles": {},
     "dependencies": [],
     "unaudited": []

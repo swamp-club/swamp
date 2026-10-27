@@ -28,6 +28,7 @@ import { walk } from "@std/fs";
 import { join, relative } from "@std/path";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { collect } from "../testing.ts";
+import { BUNDLE_FORMAT_VERSION } from "../../domain/models/bundle.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { Logger } from "@logtape/logtape";
 import {
@@ -4184,6 +4185,8 @@ Deno.test("extensionPushPrepare: the archive records each version it ships, with
     );
     const record = JSON.parse(texts["dependency-audit.json"]);
     assertEquals(record.recordVersion, 2);
+    // swamp-club#3972: the consumer keeps bundles of a format it runs.
+    assertEquals(record.bundleFormat, BUNDLE_FORMAT_VERSION);
     assertEquals(record.dependencies, [
       {
         registry: "npm",

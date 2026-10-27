@@ -249,12 +249,16 @@ export function parseDependencyAuditRecord(
  * `version`; `writtenAs` keeps what the author wrote, and `from` and
  * `locked` say how that version was chosen. `bundles` holds a SHA-256 of
  * each bundle file, so a consumer or the registry can tell the bundle is
- * the one published with this source. `unaudited` lists code from outside
- * npm and JSR that the bundles hold:
+ * the one published with this source, and `bundleFormat` names what those
+ * bundles expect from the swamp that runs them (swamp-club#3972). A record
+ * written before `bundleFormat` existed reads as format
+ * {@link DEFAULT_BUNDLE_FORMAT}. `unaudited` lists code from outside npm and
+ * JSR that the bundles hold:
  *
  * ```json
  * {
  *   "recordVersion": 2,
+ *   "bundleFormat": 1,
  *   "bundles": { "bundles/m.js": "sha256:…" },
  *   "dependencies": [
  *     { "registry": "npm", "name": "ms", "spec": "2.1.3", "version": "2.1.3",
@@ -270,6 +274,12 @@ export function parseDependencyAuditRecord(
  * A reader that knows only v1 reads a v2 record as no record.
  */
 export const DEPENDENCY_AUDIT_RECORD_VERSION_2 = 2;
+
+/**
+ * The bundle format a v2 record without `bundleFormat` was written for:
+ * every such record was pushed before the field existed, under format 1.
+ */
+export const DEFAULT_BUNDLE_FORMAT = 1;
 
 /** One shipped package version in a v2 record. */
 export interface DependencyAuditRecordV2Entry {
@@ -303,6 +313,8 @@ export interface UnauditedDependency {
 
 export interface DependencyAuditRecordV2 {
   recordVersion: typeof DEPENDENCY_AUDIT_RECORD_VERSION_2;
+  /** What the bundles expect from the swamp that runs them; a positive integer. */
+  bundleFormat: number;
   /** Each bundle file's archive path to its `sha256:<hex>`. */
   bundles: Record<string, string>;
   dependencies: DependencyAuditRecordV2Entry[];
@@ -344,6 +356,7 @@ export function isPlainSemver(version: string): boolean {
  */
 export function buildDependencyAuditRecordV2(input: {
   imports: readonly ShippedImport[];
+  bundleFormat: number;
   bundles: Readonly<Record<string, string>>;
   unaudited: readonly UnauditedDependency[];
 }): DependencyAuditRecordV2 {
@@ -402,6 +415,7 @@ export function buildDependencyAuditRecordV2(input: {
     );
   return {
     recordVersion: DEPENDENCY_AUDIT_RECORD_VERSION_2,
+    bundleFormat: input.bundleFormat,
     bundles: sortedRecord(Object.entries(input.bundles)),
     dependencies,
     unaudited,
@@ -415,6 +429,7 @@ export function serializeDependencyAuditRecordV2(
   return JSON.stringify(
     {
       recordVersion: record.recordVersion,
+      bundleFormat: record.bundleFormat,
       bundles: sortedRecord(Object.entries(record.bundles)),
       dependencies: record.dependencies.map((e) => ({
         registry: e.registry,
@@ -455,7 +470,9 @@ function stringRecord(value: unknown): Record<string, string> | null {
  * is not a v2 record reads as null, and an entry off format is left out:
  * a dependency entry must name npm or jsr, a plain semver version and the
  * same spec; an unaudited entry a known kind, an origin and its modules.
- * The first entry for a version wins.
+ * The first entry for a version wins. A missing `bundleFormat` reads as
+ * {@link DEFAULT_BUNDLE_FORMAT}; one that is not a positive integer makes
+ * the body no record, since no format can be told from it.
  */
 export function parseDependencyAuditRecordV2(
   text: string,
@@ -471,6 +488,13 @@ export function parseDependencyAuditRecordV2(
     return null;
   }
   if (body.recordVersion !== DEPENDENCY_AUDIT_RECORD_VERSION_2) return null;
+  const bundleFormat = body.bundleFormat === undefined
+    ? DEFAULT_BUNDLE_FORMAT
+    : body.bundleFormat;
+  if (
+    typeof bundleFormat !== "number" || !Number.isSafeInteger(bundleFormat) ||
+    bundleFormat < 1
+  ) return null;
   const bundles = stringRecord(body.bundles);
   if (
     !bundles || !Array.isArray(body.dependencies) ||
@@ -523,6 +547,7 @@ export function parseDependencyAuditRecordV2(
 
   return {
     recordVersion: DEPENDENCY_AUDIT_RECORD_VERSION_2,
+    bundleFormat,
     bundles,
     dependencies,
     unaudited,

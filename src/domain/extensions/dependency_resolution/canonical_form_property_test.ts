@@ -67,6 +67,7 @@ Deno.test("canonicalSpecifier: every pin it ships keeps the canonical form the r
         const parsed = parseSpecifier(canonical.specifier);
         assert(parsed?.version);
         const record = buildDependencyAuditRecordV2({
+          bundleFormat: 1,
           imports: [{
             registry: parsed.registry,
             name: parsed.name,

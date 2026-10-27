@@ -32,7 +32,10 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  bundleNamespace,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
@@ -1112,6 +1115,150 @@ Deno.test(
         );
         assertStringIncludes(thrown.message, "files/helper.js contains eval()");
         assertEquals(calls, { commit: 0, rollback: 1 });
+      },
+    );
+  },
+);
+
+/**
+ * Stages the bundle the archive shipped for `<extName>/models/model.ts`
+ * where pull's applyInstall puts it, and returns its path.
+ */
+async function stageArchiveBundle(
+  repoDir: string,
+  extName: string,
+  js: string,
+): Promise<string> {
+  const modelsDir = join(
+    swampPath(repoDir, "pulled-extensions"),
+    extName,
+    "models",
+  );
+  const bundleDir = swampPath(
+    repoDir,
+    "bundles",
+    bundleNamespace(modelsDir, repoDir),
+  );
+  await ensureDir(bundleDir);
+  const path = join(bundleDir, "model.js");
+  await Deno.writeTextFile(path, js);
+  return path;
+}
+
+/** MINIMAL_MODEL_CODE as push bundles it: zod comes from the host. */
+const ARCHIVE_BUNDLE = (typeId: string, description: string) =>
+  MINIMAL_MODEL_CODE(typeId)
+    .replace(
+      'import { z } from "npm:zod@4";',
+      "const { z } = globalThis.__swamp_zod;",
+    )
+    .replace('description: "noop",', `description: "${description}",`);
+
+Deno.test(
+  "InstallExtensionService.execute: keeps an archive bundle pull checked, so source code no bundle holds never runs (swamp-club#3972)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const extName = `@test/bundle-keep-${id}`;
+        const typeId = `@test/bundle-keep-${id}`;
+        const { marker, extractedFiles } = await stageModelWithUnscannedHelper(
+          repoDir,
+          extName,
+          typeId,
+          "files/helper.js",
+        );
+        const archiveBundle = ARCHIVE_BUNDLE(typeId, "archive");
+        const bundlePath = await stageArchiveBundle(
+          repoDir,
+          extName,
+          archiveBundle,
+        );
+        const calls = { commit: 0, rollback: 0 };
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(
+            () =>
+              Promise.resolve({
+                ...makeStubInstallResult(extName, "1.0.0", extractedFiles),
+                keepArchiveBundles: true,
+              }),
+            { calls },
+          ),
+        });
+
+        await service.execute(
+          { name: extName, version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        assertEquals(calls, { commit: 1, rollback: 0 });
+        assertEquals(await Deno.readTextFile(bundlePath), archiveBundle);
+        assertFalse(
+          (globalThis as Record<string, unknown>)[marker] === true,
+          "only the archive bundle runs",
+        );
+        assertEquals(repository.loadByName(extName).length, 1);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: an archive bundle that fails to load is rebuilt from source and scanned (swamp-club#3972)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const extName = `@test/bundle-retry-${id}`;
+        const { marker, extractedFiles } = await stageModelWithUnscannedHelper(
+          repoDir,
+          extName,
+          `@test/bundle-retry-${id}`,
+          "files/helper.js",
+        );
+        const bundlePath = await stageArchiveBundle(
+          repoDir,
+          extName,
+          'throw new Error("this swamp cannot load the archive bundle");\n',
+        );
+        const calls = { commit: 0, rollback: 0 };
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(
+            () =>
+              Promise.resolve({
+                ...makeStubInstallResult(extName, "1.0.0", extractedFiles),
+                keepArchiveBundles: true,
+              }),
+            { calls },
+          ),
+        });
+
+        const thrown = await assertRejects(
+          () =>
+            service.execute(
+              { name: extName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          UserError,
+          "Extension bundle has safety errors. Install aborted.",
+        );
+        assertStringIncludes(
+          thrown.message,
+          "bundle rebuilt from models/model.ts line",
+        );
+        assertEquals(calls, { commit: 0, rollback: 1 });
+        assertFalse(
+          (globalThis as Record<string, unknown>)[marker] === true,
+          "the refused rebuild must never be imported",
+        );
+        assertFalse(
+          await Deno.stat(bundlePath).then(() => true, () => false),
+          "the refused rebuild is removed",
+        );
       },
     );
   },

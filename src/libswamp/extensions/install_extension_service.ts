@@ -326,14 +326,19 @@ export class InstallExtensionService {
       const loader = this.makeLoaderForKind(kindDir, repoDir);
       for (const absolutePath of tsFiles) {
         const relativePath = relative(dir, absolutePath);
-        let out: Awaited<ReturnType<typeof loader.bundleAndIndexOne>>;
-        try {
-          out = await loader.bundleAndIndexOne({
+        const index = (trustPulledCache: boolean) =>
+          loader.bundleAndIndexOne({
             absolutePath,
             relativePath,
             baseDir: dir,
-            // The bundle built here runs, not the archive's: scan it before
-            // it is imported (swamp-club#3383).
+            // The archive's bundle, which pull scanned and checked against
+            // its record, runs as `extension install` runs it; the loader
+            // rebuilds a source the archive has no bundle for
+            // (swamp-club#3972).
+            trustPulledCache,
+            // A bundle built here runs, not the archive's: scan it before
+            // it is imported (swamp-club#3383). The archive's own bundle
+            // is not passed here.
             checkBundle: async (js, bundlePath) => {
               const name = `bundle rebuilt from ${
                 relative(extRoot, absolutePath).split(SEPARATOR).join("/")
@@ -361,6 +366,17 @@ export class InstallExtensionService {
               }
             },
           });
+        const keep = result.keepArchiveBundles === true;
+        let out: Awaited<ReturnType<typeof loader.bundleAndIndexOne>>;
+        try {
+          try {
+            out = await index(keep);
+          } catch (error) {
+            // An archive bundle this swamp cannot load is rebuilt from the
+            // pinned source, and scanned, once.
+            if (!keep || error instanceof BundleSafetyRefusal) throw error;
+            out = await index(false);
+          }
         } catch (error) {
           if (error instanceof BundleSafetyRefusal) throw error;
           failure ??= { error };
@@ -418,6 +434,7 @@ export class InstallExtensionService {
       absolutePath: string;
       relativePath: string;
       baseDir: string;
+      trustPulledCache?: boolean;
       checkBundle?: (js: string, bundlePath: string) => void | Promise<void>;
     }) => Promise<
       | {

@@ -680,6 +680,7 @@ import {
 } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import {
+  BUNDLE_FORMAT_VERSION,
   bundleExtension,
   type ReadOnlyLock,
 } from "../../domain/models/bundle.ts";
@@ -3641,7 +3642,10 @@ async function createArchive(
     // swamp-club#3970: each shipped package version, the code from outside
     // npm and JSR, and a SHA-256 of each bundle file. Always written, so an
     // empty record tells "nothing to audit" from an archive that predates it.
+    // The bundle format lets a consumer tell it can run these bundles
+    // (swamp-club#3972).
     const record = buildDependencyAuditRecordV2({
+      bundleFormat: BUNDLE_FORMAT_VERSION,
       imports: [
         ...shippedImports,
         ...unauditedImportsOf(

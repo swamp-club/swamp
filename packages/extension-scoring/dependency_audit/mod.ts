@@ -29,6 +29,7 @@ export {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
   buildDependencyAuditRecordV2,
+  DEFAULT_BUNDLE_FORMAT,
   DEPENDENCY_AUDIT_RECORD_FILENAME,
   DEPENDENCY_AUDIT_RECORD_VERSION,
   DEPENDENCY_AUDIT_RECORD_VERSION_2,

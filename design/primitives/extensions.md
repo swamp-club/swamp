@@ -839,7 +839,7 @@ extension.tar.gz
 └── extension/
     ├── manifest.yaml
     ├── quality.yaml          # Declared acceptances and the generated declaration, when present
-    ├── dependency-audit.json # Each shipped npm/jsr version, unaudited code, bundle hashes (v2)
+    ├── dependency-audit.json # Each shipped npm/jsr version, unaudited code, bundle hashes and format (v2)
     ├── models/              # Source TypeScript behavior files
     │   └── ssh/
     │       ├── connection.ts
@@ -1231,6 +1231,52 @@ at a directory where its parent keeps shared sources, nor the parent installed
 over such a nested entry. Either install fails and names the extension to remove
 first.
 
+### Consumers run the publisher's bundle
+
+Every consumer path runs the bundle the archive ships, as `extension install`
+always has (swamp-club#3972): `extension pull`, `extension update`, auto-resolve
+on first use, and serve's `extension.pull` and `extension.update`. They all go
+through phase 8, which indexes the staged archive bundle through the loader's
+trusted-pulled path (`trustPulledCache`) instead of rebuilding it. So pull and
+install of one version leave the same bundle bytes, and on every kept path the
+dependency tree is the one the publisher bundled `--frozen` against their lock.
+
+The v2 dependency audit record (`dependency-audit.json`) is what pull checks the
+bundles against, in `prepareInstall`, right after it scans them and on the same
+bytes:
+
+- **`bundles`** maps each bundle file's archive path to a SHA-256 push took of
+  it. A bundle that is not listed, a listed bundle that is not in the archive,
+  or a hash that does not match refuses the pull before anything is written. The
+  keys are only compared with the paths the scan found, never opened. The record
+  and the bundles come from one push, so this shows neither was changed apart
+  from the other; it does not show who published them. The bundle scan below is
+  the check on the bundle's content, and signing (swamp-club#1592) the later
+  check on its publisher.
+- **`bundleFormat`** names what the bundles expect from the swamp that runs
+  them: `BUNDLE_FORMAT_VERSION` in `bundle.ts`, an ES module that takes zod 4
+  from `globalThis.__swamp_zod` and holds no zod 3 import. A record written
+  before the field existed reads as format 1. It is unrelated to
+  `BUNDLE_LAYOUT_VERSION`, which names where a repo keeps bundles on disk.
+
+An archive with no v2 record (pushed before swamp-club#3970) keeps its bundles
+unchecked, as install does; the scan still covers them. A record that is present
+but neither v1 nor v2 refuses the pull.
+
+Phase 8 rebuilds a source from the pinned shipped source, with `--no-config` and
+through the `checkBundle` scan, only when:
+
+- the record's `bundleFormat` is not this swamp's, in which case every source of
+  that extension is rebuilt;
+- the archive has no bundle for the source;
+- the kept bundle fails to load or index, in which case that source is rebuilt
+  once.
+
+Workers still build their own self-contained bundle, with zod inlined, from the
+registered source (`createBundleSourceFactory`), since no host provides zod
+there. Its top-level versions are the pinned ones; transitive versions resolve
+fresh.
+
 ### Pull scans the bundles that run
 
 The bundle is what runs, and it can hold code the source copy lacks: an archive
@@ -1241,10 +1287,11 @@ as `files/`. So pull also scans bundles (swamp-club#3383), at two points:
 - **The archive's bundles**, in `prepareInstall`, after the source scan and
   before anything is written: every file in a bundle dir, whatever its name,
   since a case-insensitive filesystem opens `thing.JS` as `thing.js`. This is
-  what `extension install` runs, what phase 8 falls back to when its rebuild
-  fails, and what every pull will run once consumers keep the publisher's bundle
-  (swamp-club#3972).
-- **Each bundle phase 8 rebuilds**, through the loader's `checkBundle` hook,
+  what every consumer path runs (see above). Phase 8 indexes it without
+  scanning it again.
+- **Each bundle phase 8 rebuilds** (a bundle format this swamp does not run, a
+  source with no archive bundle, or a kept bundle that failed to load), through
+  the loader's `checkBundle` hook,
   after it is built and before it is probed or imported. The probe host runs a
   bundle's top-level code with full permissions, so a scan after it would be too
   late. A refusal here rolls the install back, as a type collision does; any
@@ -1288,8 +1335,8 @@ are cut to 200 characters.
 
 An archive bundle's comments are the publisher's text. A publisher can put a
 dependency's path above their own code and turn its findings into warnings. That
-gap is accepted until the bundle hash push records for swamp-club#3972, and
-later signing, tie the bundle to its source. The rebuilt-bundle scan does not
+gap is accepted until signing ties the bundle to its publisher; the bundle hash
+in the record cannot, since the publisher writes both. The rebuilt-bundle scan does not
 have the gap: its comments are written by this machine's esbuild, and a rebuilt
 bundle that does not parse counts as the extension's own throughout, since
 without a parse a module comment cannot be told from text in a string. Code in a
@@ -1298,11 +1345,15 @@ scan: findings in dependency code are reported, not refused.
 
 Two gaps remain outside this scan (swamp-club#3996): an archive bundle can
 import a file the scan does not read (a sibling under `bundles/`, or a file
-under `files/`) at run time, and a source whose rebuild failed during pull is
-rebuilt by a later warm load without a scan. Closing the first needs a new rule
-(refusing relative imports in a bundle), which waits on the safety-analyzer
-review; the second needs the warm-load rebuild paths to pass the same
-`checkBundle` hook.
+under `files/`) at run time, and a pulled source with no bundle on disk, or
+whose source changed, is rebuilt by a later warm load (`recoverMissingBundle`,
+`rebundleAndUpdateCatalog`) or by serve's hot reload (`reloadPulledExtensions`)
+without a scan. A layout-version change evicts kept archive bundles, so the next
+load rebuilds them that way too. Since pull keeps the archive's bundle, a failed
+pull-time rebuild now leaves a source without a bundle only on the fallback
+paths. Closing the first gap needs a new rule (refusing relative imports in a
+bundle), which waits on the safety-analyzer review; the second needs those
+rebuild paths to pass the same `checkBundle` hook.
 
 Measured on 2026-10-26 against the latest stable version of every published
 extension (7,330 bundles): none would be refused, and 58 extensions have
@@ -3239,6 +3290,10 @@ I-Repo-1 invariant (no two non-tombstoned Sources share
 `(kind, typeNormalized)`) is therefore checked at install, not at the next
 steady-state loader pass. A type collision between extensions shows up as a
 clean `DuplicateTypeUserError` before the user sees "successfully pulled".
+
+For a pulled extension, `bundleAndIndexOne` takes the archive's staged bundle
+rather than rebuilding it, unless pull found its bundle format is not this
+swamp's (see "Consumers run the publisher's bundle").
 
 `bundleAndIndexOne` is a strict per-loader contract: it bundles, extracts types
 and returns metadata, but **does not write to the catalog**. Only the lifecycle
