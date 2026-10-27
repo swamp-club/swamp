@@ -155,8 +155,10 @@ or step, when:
 - a failed step was renamed, removed, or moved to another job (start a new run;
   `--from` refuses a renamed or moved step too);
 - a failed step did not run because the workflow or a `forEach` collection
-  changed (its `failureKind` is `workflow_changed`; start a new run);
-- a step name appears in more than one job.
+  changed (its `failureKind` is `workflow_changed`; start a new run).
+
+Step names need be unique only within a job: retry re-runs a failed step in its
+own job and never a same-named step of another job.
 
 Retry can repeat external effects: a method may have changed something and then
 failed. Successful dependents of a failed step, such as cleanup, run again, and
@@ -173,7 +175,9 @@ completed steps prevent re-execution of irreversible actions. Steps without
 guards always execute on resume. Only works on failed runs — use the
 gate-approval path for suspended runs. If multiple failed runs exist, add
 `--run <run-id>` to disambiguate. Use `--from` instead of a retry to choose the
-re-entry step yourself.
+re-entry step yourself. When the step name is used in more than one job,
+`--from` refuses until `--job <job>` names the job (as written in the YAML):
+`swamp workflow resume <workflow> --run <id> --from restart --job host-b`.
 
 A `--from` or retry resume is refused, with the run left unchanged, when the
 workflow changed shape since the run: a step was renamed, moved to another job,

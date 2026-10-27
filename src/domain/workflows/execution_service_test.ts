@@ -8033,8 +8033,11 @@ Deno.test("computeStepsToReset: matches expression-containing template via forEa
     { name: "deploy-qa", forEachTemplate: tmpl },
   ]);
 
-  const result = computeStepsToReset(workflow, run, tmpl);
-  assertEquals(result, new Set(["deploy-dev", "deploy-qa"]));
+  const result = computeStepsToReset(workflow, run, { step: tmpl });
+  assertEquals(result, [
+    { jobName: "deploy", stepName: "deploy-dev" },
+    { jobName: "deploy", stepName: "deploy-qa" },
+  ]);
 });
 
 Deno.test("computeStepsToReset: matches plain template via prefix (non-regression)", () => {
@@ -8045,8 +8048,11 @@ Deno.test("computeStepsToReset: matches plain template via prefix (non-regressio
     { name: "deploy-qa", forEachTemplate: tmpl },
   ]);
 
-  const result = computeStepsToReset(workflow, run, tmpl);
-  assertEquals(result, new Set(["deploy-dev", "deploy-qa"]));
+  const result = computeStepsToReset(workflow, run, { step: tmpl });
+  assertEquals(result, [
+    { jobName: "deploy", stepName: "deploy-dev" },
+    { jobName: "deploy", stepName: "deploy-qa" },
+  ]);
 });
 
 Deno.test("computeStepsToReset: falls back to prefix when forEachTemplate absent (backward compat)", () => {
@@ -8057,8 +8063,11 @@ Deno.test("computeStepsToReset: falls back to prefix when forEachTemplate absent
     { name: "deploy-qa" },
   ]);
 
-  const result = computeStepsToReset(workflow, run, tmpl);
-  assertEquals(result, new Set(["deploy-dev", "deploy-qa"]));
+  const result = computeStepsToReset(workflow, run, { step: tmpl });
+  assertEquals(result, [
+    { jobName: "deploy", stepName: "deploy-dev" },
+    { jobName: "deploy", stepName: "deploy-qa" },
+  ]);
 });
 
 Deno.test("computeStepsToReset: throws when --from resolves to zero steps", () => {
@@ -8078,7 +8087,7 @@ Deno.test("computeStepsToReset: throws when --from resolves to zero steps", () =
   });
 
   assertThrows(
-    () => computeStepsToReset(workflow, run, tmpl),
+    () => computeStepsToReset(workflow, run, { step: tmpl }),
     Error,
     "matched zero persisted steps",
   );
@@ -8091,7 +8100,7 @@ Deno.test("computeStepsToReset: throws for unknown step name", () => {
   ]);
 
   assertThrows(
-    () => computeStepsToReset(workflow, run, "nonexistent"),
+    () => computeStepsToReset(workflow, run, { step: "nonexistent" }),
     Error,
     'Step "nonexistent" not found',
   );
@@ -10635,13 +10644,14 @@ Deno.test("steps namespace: steps.* in task.inputs and a workflow target resolve
 /** Counts calls per `job/step` and fails the steps named in `failing`. */
 class CountingStepExecutor implements StepExecutor {
   readonly calls = new Map<string, number>();
+  /** Step names, or `job/step` keys, whose execution fails. */
   readonly failing = new Set<string>();
 
   execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const key = `${ctx.jobName}/${ctx.stepName}`;
     const attempt = (this.calls.get(key) ?? 0) + 1;
     this.calls.set(key, attempt);
-    if (this.failing.has(ctx.stepName)) {
+    if (this.failing.has(ctx.stepName) || this.failing.has(key)) {
       return Promise.reject(new Error(`${ctx.stepName} failed`));
     }
     return Promise.resolve({ step: ctx.stepName, attempt });
@@ -12589,18 +12599,86 @@ Deno.test("resume: --from refuses a renamed job instead of resetting the whole r
   });
 });
 
-Deno.test("resume: --from refuses a step name removed from one job but kept in another", async () => {
+Deno.test("resume: --from re-runs only the kept step when a shared step name is removed from one job", async () => {
   await withTempDir(async (tempDir) => {
     const before = shapedWorkflow([
       { name: "a", steps: [modelStep("x"), modelStep("y")] },
       { name: "b", steps: [modelStep("x")] },
     ]);
-    await assertResumeRefused(tempDir, before, ["x"], [
+    const { workflowRepo, executor, service } = await setupRetry(
+      tempDir,
+      before,
+    );
+    executor.failing.add("x");
+    const failed = await service.execute(before.name);
+    assertEquals(failed.status, "failed");
+    await workflowRepo.save(shapedWorkflow([
       { name: "a", steps: [modelStep("y")] },
       { name: "b", steps: [modelStep("x")] },
-    ], {
+    ], before.id));
+    executor.failing.clear();
+
+    const resumed = await drainResume(service, before.name, failed.id, {
       fromStep: "x",
-    }, `Step "x" is in job "a" in the run, job "b" in the workflow.`);
+    });
+    assertEquals(executor.count("b/x"), 2);
+    assertEquals(executor.count("a/x"), 1);
+    assertEquals(executor.count("a/y"), 1);
+    // a's stored x stays failed: the workflow no longer has it to re-run.
+    assertEquals(resumed?.getJob("a")?.getStep("x")?.status, "failed");
+    assertEquals(resumed?.getJob("b")?.getStep("x")?.status, "succeeded");
+    assertEquals(resumed?.status, "failed");
+  });
+});
+
+/** swamp-club#3815: jobs a and b each have a step "s"; b depends on a. */
+function sharedStepNameWorkflow(): Workflow {
+  return shapedWorkflow([
+    { name: "a", steps: [modelStep("s")] },
+    { name: "b", steps: [modelStep("s")], dependsOn: ["a"] },
+  ]);
+}
+
+Deno.test("resume: retry re-runs only the failed job's step when a step name is in two jobs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = sharedStepNameWorkflow();
+    const { executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("b/s");
+    const failed = await service.execute(workflow.name);
+    assertEquals(failed.status, "failed");
+    executor.failing.clear();
+
+    const resumed = await drainResume(service, workflow.name, failed.id);
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("a/s"), 1);
+    assertEquals(executor.count("b/s"), 2);
+  });
+});
+
+Deno.test("resume: --from refuses a step name in two jobs and re-runs only the job --job names", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = sharedStepNameWorkflow();
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+    executor.failing.add("b/s");
+    const failed = await service.execute(workflow.name);
+    assertEquals(failed.status, "failed");
+    executor.failing.clear();
+    const saves = runRepo.saves;
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, failed.id, { fromStep: "s" }),
+      UserError,
+      `Step "s" is in more than one job: "a", "b". Add --job <job> to choose one.`,
+    );
+    assertEquals(runRepo.saves, saves);
+
+    const resumed = await drainResume(service, workflow.name, failed.id, {
+      fromStep: "s",
+      fromJob: "b",
+    });
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.count("a/s"), 1);
+    assertEquals(executor.count("b/s"), 2);
   });
 });
 

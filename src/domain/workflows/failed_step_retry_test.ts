@@ -100,7 +100,9 @@ function refusal(workflow: Workflow, run: WorkflowRun): UserError {
 Deno.test("selectRetryTemplates: returns the failed step of an eligible run", () => {
   const workflow = createWorkflow();
   const run = createFailedRun(workflow);
-  assertEquals(selectRetryTemplates(workflow, run), ["compile"]);
+  assertEquals(selectRetryTemplates(workflow, run), [
+    { jobName: "build", stepName: "compile" },
+  ]);
 });
 
 Deno.test("selectRetryTemplates: returns every failed step across jobs in stored order", () => {
@@ -109,7 +111,10 @@ Deno.test("selectRetryTemplates: returns every failed step across jobs in stored
   const notify = run.getJob("notify")!;
   notify.getStep("announce")!.fail("smtp down");
   notify.fail();
-  assertEquals(selectRetryTemplates(workflow, run), ["compile", "announce"]);
+  assertEquals(selectRetryTemplates(workflow, run), [
+    { jobName: "build", stepName: "compile" },
+    { jobName: "notify", stepName: "announce" },
+  ]);
 });
 
 Deno.test("selectRetryTemplates: ignores recorded allowed failures", () => {
@@ -118,7 +123,9 @@ Deno.test("selectRetryTemplates: ignores recorded allowed failures", () => {
   const lint = run.getJob("build")!.getStep("lint")!;
   lint.fail("style");
   lint.markAllowedFailure();
-  assertEquals(selectRetryTemplates(workflow, run), ["compile"]);
+  assertEquals(selectRetryTemplates(workflow, run), [
+    { jobName: "build", stepName: "compile" },
+  ]);
 });
 
 Deno.test("selectRetryTemplates: maps forEach iterations to one entry template", () => {
@@ -145,7 +152,9 @@ Deno.test("selectRetryTemplates: maps forEach iterations to one entry template",
   job.getStep("read-c")!.fail("c");
   job.fail();
   run.complete();
-  assertEquals(selectRetryTemplates(workflow, run), ["read"]);
+  assertEquals(selectRetryTemplates(workflow, run), [
+    { jobName: "main", stepName: "read" },
+  ]);
 });
 
 Deno.test("selectRetryTemplates: refuses a rejected approval and suggests --from", () => {
@@ -398,26 +407,105 @@ Deno.test("selectRetryTemplates: refuses an older forEach record without forEach
   assertStringIncludes(error.message, `Step "read-a" in job "main"`);
 });
 
-Deno.test("selectRetryTemplates: refuses repeated step names across jobs", () => {
-  const workflow = Workflow.create({
+/** Jobs one and two each have a step "check"; two also has "other". */
+function sharedNameWorkflow(): Workflow {
+  return Workflow.create({
     name: "dup-wf",
     jobs: [
       Job.create({ name: "one", steps: [step("check")] }),
       Job.create({ name: "two", steps: [step("check"), step("other")] }),
     ],
   });
+}
+
+Deno.test("selectRetryTemplates: returns the failed step's job when a step name is used in two jobs", () => {
+  const workflow = sharedNameWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.getJob("one")!.getStep("check")!.succeed();
+  run.getJob("one")!.succeed();
+  run.getJob("two")!.getStep("check")!.fail("x");
+  run.getJob("two")!.getStep("other")!.succeed();
+  run.getJob("two")!.fail();
+  run.complete();
+  assertEquals(selectRetryTemplates(workflow, run), [
+    { jobName: "two", stepName: "check" },
+  ]);
+});
+
+Deno.test("selectRetryTemplates: returns one entry per job when same-named steps fail in two jobs", () => {
+  const workflow = sharedNameWorkflow();
   const run = WorkflowRun.create(workflow);
   run.getJob("one")!.getStep("check")!.fail("x");
   run.getJob("one")!.fail();
-  run.getJob("two")!.getStep("check")!.succeed();
+  run.getJob("two")!.getStep("check")!.fail("y");
   run.getJob("two")!.getStep("other")!.succeed();
-  run.getJob("two")!.succeed();
+  run.getJob("two")!.fail();
   run.complete();
-  const error = refusal(workflow, run);
-  assertStringIncludes(error.message, `Step name "check"`);
+  assertEquals(selectRetryTemplates(workflow, run), [
+    { jobName: "one", stepName: "check" },
+    { jobName: "two", stepName: "check" },
+  ]);
 });
 
-Deno.test("selectRetryTemplates: refuses repeated stored step names", () => {
+Deno.test("selectRetryTemplates: adds --job to a --from hint only when the step name is in two jobs", () => {
+  const workflow = sharedNameWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.getJob("one")!.getStep("check")!.succeed();
+  run.getJob("one")!.succeed();
+  run.getJob("two")!.getStep("other")!.fail("x");
+  run.getJob("two")!.fail();
+  run.complete();
+  assertStringIncludes(
+    refusal(workflow, run).message,
+    `Step "check" in job "two" is pending; retry needs every step finished. Add --from check --job two to run it.`,
+  );
+
+  const plain = WorkflowRun.create(workflow);
+  plain.getJob("one")!.getStep("check")!.succeed();
+  plain.getJob("one")!.succeed();
+  plain.getJob("two")!.getStep("check")!.fail("x");
+  plain.getJob("two")!.fail();
+  plain.complete();
+  assertStringIncludes(
+    refusal(workflow, plain).message,
+    "Add --from other to run it.",
+  );
+
+  const gated = Workflow.create({
+    name: "dup-gate-wf",
+    jobs: [
+      Job.create({
+        name: "one",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      }),
+      Job.create({
+        name: "two",
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      }),
+    ],
+  });
+  const gatedRun = WorkflowRun.create(gated);
+  gatedRun.getJob("one")!.getStep("gate")!.succeed();
+  gatedRun.getJob("one")!.succeed();
+  const gate = gatedRun.getJob("two")!.getStep("gate")!;
+  gate.recordApprovalDecision({
+    approved: false,
+    decidedAt: new Date().toISOString(),
+  });
+  gate.fail("Approval rejected");
+  gatedRun.getJob("two")!.fail();
+  gatedRun.complete();
+  assertStringIncludes(
+    refusal(gated, gatedRun).message,
+    "Add --from gate --job two to ask again.",
+  );
+});
+
+Deno.test("selectRetryTemplates: refuses a step name stored twice in one job", () => {
   const workflow = Workflow.create({
     name: "dup-wf",
     jobs: [
@@ -432,11 +520,14 @@ Deno.test("selectRetryTemplates: refuses repeated stored step names", () => {
   data.jobs[1].status = "succeeded";
   data.jobs[1].steps = [
     { stepName: "b", status: "succeeded" },
-    { stepName: "a", status: "succeeded" },
+    { stepName: "b", status: "succeeded" },
   ];
   const run = WorkflowRun.fromData(data);
   const error = refusal(workflow, run);
-  assertStringIncludes(error.message, `Step name "a" is stored more than once`);
+  assertStringIncludes(
+    error.message,
+    `Step name "b" is stored more than once in job "two"`,
+  );
 });
 
 Deno.test("selectRetryTemplates: refusals stay within the serve limit for long names", () => {
@@ -471,9 +562,8 @@ Deno.test("selectRetryTemplates: refusals stay within the serve limit for long n
 Deno.test("selectRetryTemplates: refuses a step stranded by a workflow change", () => {
   const workflow = createWorkflow();
   const run = createFailedRun(workflow);
-  run.resetForResumeFrom(new Set(["compile"]), [
-    { jobName: "build", stepName: "compile" },
-  ]);
+  const compile = { jobName: "build", stepName: "compile" };
+  run.resetForResumeFrom([compile], [compile]);
   run.resumeFromFailed({ pid: Deno.pid });
   const build = run.getJob("build")!;
   build.failStrandedResetSteps();
@@ -495,9 +585,8 @@ Deno.test("selectRetryTemplates: a stranded-step refusal stays within the serve 
   });
   const run = WorkflowRun.create(workflow);
   run.start();
-  run.resetForResumeFrom(new Set([long("step")]), [
-    { jobName: long("job"), stepName: long("step") },
-  ]);
+  const ref = { jobName: long("job"), stepName: long("step") };
+  run.resetForResumeFrom([ref], [ref]);
   const job = run.getJob(long("job"))!;
   job.failStrandedResetSteps();
   job.fail();

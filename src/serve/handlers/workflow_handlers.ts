@@ -2374,6 +2374,7 @@ export async function handleWorkflowResume(
             payload.runId,
             {
               fromStep: payload.from,
+              fromJob: payload.fromJob,
               byId: workflow.byId,
               expectedName: workflow.expectedName,
               signalWaits: ctx.repoContext.signalWaits,
@@ -2425,6 +2426,7 @@ export async function handleWorkflowResume(
                     signal: controller.signal,
                     inputs: resumeInputs,
                     fromStep: payload.from,
+                    fromJob: payload.fromJob,
                     instanceId: ctx.instanceId,
                   }),
               )
@@ -2524,6 +2526,7 @@ export async function handleWorkflowResume(
     expectedName: workflow.expectedName,
     runId: payload.runId,
     from: payload.from,
+    fromJob: payload.fromJob,
     inputs: payload.inputs,
     traceparent: payload.traceparent,
     tracestate: payload.tracestate,

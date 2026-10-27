@@ -29,7 +29,12 @@
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
 import type { Workflow } from "./workflow.ts";
-import type { FailedStepRef, WorkflowRun } from "./workflow_run.ts";
+import {
+  type FailedStepRef,
+  stepRunKey,
+  type StepRunRef,
+  type WorkflowRun,
+} from "./workflow_run.ts";
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   "succeeded",
@@ -46,9 +51,43 @@ export function entryTemplateOf(step: FailedStepRef): string {
 }
 
 /**
- * Returns the distinct entry templates of the run's failed steps, in stored
- * order, or throws a UserError naming the job or step that makes the run
- * ineligible for retry. Mutates nothing.
+ * Whether a job of the run other than `jobName` has a step named `template`
+ * too. Step names are unique only within a job, so a `--from` that re-enters
+ * such a step needs `--job`.
+ */
+export function stepNameInOtherJob(
+  run: WorkflowRun,
+  jobName: string,
+  template: string,
+): boolean {
+  return run.jobs.some((job) =>
+    job.jobName !== jobName &&
+    job.steps.some((s) =>
+      s.stepName === template || s.forEachTemplate === template
+    )
+  );
+}
+
+/**
+ * The `--from` arguments that re-enter the step `template` of job `jobName`,
+ * shell-quoted, with `--job` when the step name needs it (see
+ * {@link stepNameInOtherJob}).
+ */
+function fromArguments(
+  run: WorkflowRun,
+  jobName: string,
+  template: string,
+): string {
+  const from = `--from ${quoteShellWord(template)}`;
+  return stepNameInOtherJob(run, jobName, template)
+    ? `${from} --job ${quoteShellWord(jobName)}`
+    : from;
+}
+
+/**
+ * Returns the distinct entry templates of the run's failed steps, each with
+ * its job, in stored order, or throws a UserError naming the job or step that
+ * makes the run ineligible for retry. Mutates nothing.
  *
  * A run is eligible when:
  * - no failed step is a rejected approval (retry never re-opens a gate);
@@ -57,7 +96,10 @@ export function entryTemplateOf(step: FailedStepRef): string {
  * - every job and step is succeeded, failed, or skipped;
  * - at least one failed step exists, and every failed job contains one;
  * - each entry template is a step of the same job in the current workflow;
- * - step names are unique across the workflow and across the stored run.
+ * - no stored job holds two records of the same name.
+ *
+ * Step names need be unique only within a job: a retry resets each entry
+ * template in its own job.
  *
  * Refusals stay short and path-free: serve truncates client errors at 512
  * characters and hides any message that contains a filesystem path.
@@ -65,7 +107,7 @@ export function entryTemplateOf(step: FailedStepRef): string {
 export function selectRetryTemplates(
   workflow: Workflow,
   run: WorkflowRun,
-): string[] {
+): StepRunRef[] {
   const history = `See 'swamp workflow history logs ${run.id}'.`;
   const failed = run.failedSteps();
 
@@ -73,8 +115,8 @@ export function selectRetryTemplates(
   if (rejected) {
     throw new UserError(
       `Step "${rejected.stepName}" in job "${rejected.jobName}" was rejected; ` +
-        `retry won't re-open it. Add --from ${
-          quoteShellWord(entryTemplateOf(rejected))
+        `retry won't re-open it. Add ${
+          fromArguments(run, rejected.jobName, entryTemplateOf(rejected))
         } to ask again. ${history}`,
     );
   }
@@ -93,8 +135,12 @@ export function selectRetryTemplates(
     for (const step of job.steps) {
       if (TERMINAL_STATUSES.has(step.status)) continue;
       const hint = step.status === "pending"
-        ? ` Add --from ${
-          quoteShellWord(step.forEachTemplate ?? step.stepName)
+        ? ` Add ${
+          fromArguments(
+            run,
+            job.jobName,
+            step.forEachTemplate ?? step.stepName,
+          )
         } to run it.`
         : "";
       throw new UserError(
@@ -135,26 +181,22 @@ export function selectRetryTemplates(
     }
   }
 
-  const workflowDuplicate = firstDuplicate(
-    workflow.jobs.flatMap((j) => j.steps.map((s) => s.name)),
-  );
-  if (workflowDuplicate !== undefined) {
-    throw new UserError(
-      `Step name "${workflowDuplicate}" is used in more than one place in the workflow; ` +
-        `retry needs unique step names. ${history}`,
-    );
-  }
-  const storedDuplicate = firstDuplicate(
-    run.jobs.flatMap((j) => j.steps.map((s) => s.stepName)),
-  );
-  if (storedDuplicate !== undefined) {
-    throw new UserError(
-      `Step name "${storedDuplicate}" is stored more than once in the run; ` +
-        `retry needs unique step names. ${history}`,
-    );
+  for (const job of run.jobs) {
+    const storedDuplicate = firstDuplicate(job.steps.map((s) => s.stepName));
+    if (storedDuplicate !== undefined) {
+      throw new UserError(
+        `Step name "${storedDuplicate}" is stored more than once in job "${job.jobName}"; ` +
+          `retry needs unique step names in a job. ${history}`,
+      );
+    }
   }
 
-  return [...new Set(failed.map(entryTemplateOf))];
+  const entries = new Map<string, StepRunRef>();
+  for (const step of failed) {
+    const entry = { jobName: step.jobName, stepName: entryTemplateOf(step) };
+    entries.set(stepRunKey(entry), entry);
+  }
+  return [...entries.values()];
 }
 
 function firstDuplicate(names: readonly string[]): string | undefined {

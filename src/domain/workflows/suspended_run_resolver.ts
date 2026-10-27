@@ -27,7 +27,7 @@ import { createWorkflowRunId } from "./workflow_id.ts";
 import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
-import { entryTemplateOf } from "./failed_step_retry.ts";
+import { entryTemplateOf, stepNameInOtherJob } from "./failed_step_retry.ts";
 import { assertNestedWaitsSettled } from "./nested_run_link.ts";
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import {
@@ -114,9 +114,12 @@ export async function resolveSuspendedRun(
     if (run.status !== "suspended") {
       throw new RunNotSuspendedError(
         `Run ${runId} is not suspended (status: ${run.status}).` +
-          nextActionForStatus(run.status, workflow.name, run.id, {
-            rejectedStep: rejectedGateOf(run),
-          }),
+          nextActionForStatus(
+            run.status,
+            workflow.name,
+            run.id,
+            rejectedGateOf(run),
+          ),
       );
     }
     return {
@@ -161,6 +164,8 @@ export type ResumableRunInfo = SuspendedRunInfo;
 export interface ResolveResumableRunOptions extends ResolveSuspendedRunOptions {
   /** The --from step; when set, only a failed run is resumable. */
   fromStep?: string;
+  /** The --job naming the job of the --from step. */
+  fromJob?: string;
   /**
    * Accept only a suspended run, as auto-resume after an approval needs.
    * Takes precedence over `fromStep`.
@@ -249,7 +254,10 @@ export async function resolveResumableRun(
           `--from requires a failed run, but run ${runId} has status "${run.status}"`,
         );
       }
-      planFailedRunResume(workflow, run, options.fromStep);
+      planFailedRunResume(workflow, run, {
+        step: options.fromStep,
+        job: options.fromJob,
+      });
     } else if (run.status === "failed") {
       planFailedRunResume(workflow, run);
     } else if (run.status === "suspended") {
@@ -288,7 +296,13 @@ export async function resolveResumableRun(
     );
   }
 
-  planFailedRunResume(workflow, failedRuns[0], options.fromStep);
+  planFailedRunResume(
+    workflow,
+    failedRuns[0],
+    options.fromStep !== undefined
+      ? { step: options.fromStep, job: options.fromJob }
+      : undefined,
+  );
   return {
     workflowName: workflow.name,
     workflowId: workflow.id,
@@ -323,7 +337,7 @@ function noRunsInStateMessage(
     latest.id,
     {
       nestedWait: latest.findNestedWaits().length > 0,
-      rejectedStep: rejectedGateOf(latest),
+      ...rejectedGateOf(latest),
     },
   );
   // A failed run's hint already names the run id, so it is not repeated
@@ -334,23 +348,35 @@ function noRunsInStateMessage(
 
 /**
  * The step to re-ask when `run` failed on a rejected approval gate — the
- * same step `swamp workflow resume` names when it refuses to retry the run.
+ * same step `swamp workflow resume` names when it refuses to retry the run —
+ * and its job when another job has a step of that name too.
  */
-function rejectedGateOf(run: WorkflowRun): string | undefined {
+function rejectedGateOf(
+  run: WorkflowRun,
+): { rejectedStep?: string; rejectedJob?: string } {
   const rejected = run.failedSteps().find((s) => s.approvalRejected);
-  return rejected ? entryTemplateOf(rejected) : undefined;
+  if (!rejected) return {};
+  const rejectedStep = entryTemplateOf(rejected);
+  return stepNameInOtherJob(run, rejected.jobName, rejectedStep)
+    ? { rejectedStep, rejectedJob: rejected.jobName }
+    : { rejectedStep };
 }
 
 /**
  * A sentence, with a leading space, naming the command to run next for a
  * run in `status`. A failed run with a `rejectedStep` is retried from that
- * gate, since a plain retry never re-opens it.
+ * gate, since a plain retry never re-opens it; `rejectedJob` names the gate's
+ * job when its step name is used in more than one job.
  */
 export function nextActionForStatus(
   status: string,
   workflowName: string,
   runId: string,
-  options: { nestedWait?: boolean; rejectedStep?: string } = {},
+  options: {
+    nestedWait?: boolean;
+    rejectedStep?: string;
+    rejectedJob?: string;
+  } = {},
 ): string {
   if (status === "suspended" && options.nestedWait) {
     // It has no gate of its own to approve (swamp-club#2736).
@@ -364,9 +390,12 @@ export function nextActionForStatus(
     case "failed":
       // A full command, since approve, reject and auto-resume show this too.
       if (options.rejectedStep !== undefined) {
+        const job = options.rejectedJob !== undefined
+          ? ` --job ${quoteShellWord(options.rejectedJob)}`
+          : "";
         return ` Ask again with 'swamp workflow resume ${workflowName} --run ${runId} --from ${
           quoteShellWord(options.rejectedStep)
-        }'.`;
+        }${job}'.`;
       }
       return ` Retry it with 'swamp workflow resume ${workflowName} --run ${runId}'.`;
     case "suspended":

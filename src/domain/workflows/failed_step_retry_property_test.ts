@@ -26,7 +26,7 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 import { Workflow } from "./workflow.ts";
-import { WorkflowRun } from "./workflow_run.ts";
+import { stepRunKey, type StepRunRef, WorkflowRun } from "./workflow_run.ts";
 
 const MAX_JOBS = 4;
 const MAX_STEPS = 3;
@@ -54,9 +54,11 @@ const arbStatus: fc.Arbitrary<TerminalStatus> = fc.constantFrom(
   "skipped",
 );
 
+// Step names are unique only within a job: with sharedNames every job names
+// its steps step0, step1, ..., so the same name is reused across jobs.
 const arbJobs: fc.Arbitrary<GeneratedJob[]> = fc
-  .integer({ min: 1, max: MAX_JOBS })
-  .chain((jobCount) =>
+  .tuple(fc.integer({ min: 1, max: MAX_JOBS }), fc.boolean())
+  .chain(([jobCount, sharedNames]) =>
     fc.tuple(
       ...Array.from({ length: jobCount }, (_, i) =>
         fc.record({
@@ -77,7 +79,7 @@ const arbJobs: fc.Arbitrary<GeneratedJob[]> = fc
           name: `job${i}`,
           dependsOn: earlierEdges(i, jobEdges),
           steps: steps.map((s, k) => ({
-            name: `job${i}-step${k}`,
+            name: sharedNames ? `step${k}` : `job${i}-step${k}`,
             dependsOn: earlierEdges(k, s.edges),
             status: s.status,
           })),
@@ -133,9 +135,14 @@ function buildFailedRun(workflow: Workflow, jobs: GeneratedJob[]): WorkflowRun {
   return run;
 }
 
+function keyOf(jobName: string, stepName: string): string {
+  return stepRunKey({ jobName, stepName });
+}
+
 /**
- * Oracle: the failed steps and everything downstream of them, following
- * step dependencies within a job and job dependencies across jobs.
+ * Oracle: the failed steps and everything downstream of them, each keyed by
+ * its job, following step dependencies within a job and job dependencies
+ * across jobs.
  */
 function expectedResetSet(jobs: GeneratedJob[]): Set<string> {
   const downstream = new Map<string, Set<string>>();
@@ -145,17 +152,23 @@ function expectedResetSet(jobs: GeneratedJob[]): Set<string> {
   };
   for (const job of jobs) {
     for (const step of job.steps) {
-      for (const d of step.dependsOn) edge(job.steps[d].name, step.name);
+      for (const d of step.dependsOn) {
+        edge(keyOf(job.name, job.steps[d].name), keyOf(job.name, step.name));
+      }
     }
     for (const d of job.dependsOn) {
       for (const upstream of jobs[d].steps) {
-        for (const step of job.steps) edge(upstream.name, step.name);
+        for (const step of job.steps) {
+          edge(keyOf(jobs[d].name, upstream.name), keyOf(job.name, step.name));
+        }
       }
     }
   }
   const result = new Set<string>();
   const queue = jobs.flatMap((j) =>
-    j.steps.filter((s) => s.status === "failed").map((s) => s.name)
+    j.steps.filter((s) => s.status === "failed").map((s) =>
+      keyOf(j.name, s.name)
+    )
   );
   while (queue.length > 0) {
     const name = queue.shift()!;
@@ -166,14 +179,20 @@ function expectedResetSet(jobs: GeneratedJob[]): Set<string> {
   return result;
 }
 
-function resetSetFor(workflow: Workflow, run: WorkflowRun): Set<string> {
-  const union = new Set<string>();
-  for (const template of selectRetryTemplates(workflow, run)) {
-    for (const name of computeStepsToReset(workflow, run, template)) {
-      union.add(name);
+/** The union of the records each retry entry resets, once each. */
+function resetRefsFor(workflow: Workflow, run: WorkflowRun): StepRunRef[] {
+  const union = new Map<string, StepRunRef>();
+  for (const entry of selectRetryTemplates(workflow, run)) {
+    const from = { step: entry.stepName, job: entry.jobName };
+    for (const ref of computeStepsToReset(workflow, run, from)) {
+      union.set(stepRunKey(ref), ref);
     }
   }
-  return union;
+  return [...union.values()];
+}
+
+function resetSetFor(workflow: Workflow, run: WorkflowRun): Set<string> {
+  return new Set(resetRefsFor(workflow, run).map(stepRunKey));
 }
 
 Deno.test("selectRetryTemplates: the reset set is exactly the failed steps and their dependents", () => {
@@ -187,7 +206,7 @@ Deno.test("selectRetryTemplates: the reset set is exactly the failed steps and t
         [...expectedResetSet(jobs)].sort(),
       );
       for (const failed of run.failedSteps()) {
-        assert(actual.has(failed.stepName), `${failed.stepName} not reset`);
+        assert(actual.has(stepRunKey(failed)), `${failed.stepName} not reset`);
       }
     }),
   );
@@ -198,17 +217,18 @@ Deno.test("selectRetryTemplates: a reset leaves steps outside the set and their 
     fc.property(arbJobs, (jobs) => {
       const workflow = buildWorkflow(jobs);
       const run = buildFailedRun(workflow, jobs);
-      const resetSet = resetSetFor(workflow, run);
+      const resetRefs = resetRefsFor(workflow, run);
+      const resetSet = new Set(resetRefs.map(stepRunKey));
       const before = run.toData();
 
-      run.resetForResumeFrom(resetSet);
+      run.resetForResumeFrom(resetRefs);
       const after = run.toData();
 
       for (const [j, jobBefore] of before.jobs.entries()) {
         const jobAfter = after.jobs[j];
-        const containsReset = jobBefore.steps.some((s) =>
-          resetSet.has(s.stepName)
-        );
+        const reset = (stepName: string) =>
+          resetSet.has(keyOf(jobBefore.jobName, stepName));
+        const containsReset = jobBefore.steps.some((s) => reset(s.stepName));
         if (containsReset) {
           assertEquals(jobAfter.status, "pending");
         } else {
@@ -216,7 +236,7 @@ Deno.test("selectRetryTemplates: a reset leaves steps outside the set and their 
         }
         for (const [k, stepBefore] of jobBefore.steps.entries()) {
           const stepAfter = jobAfter.steps[k];
-          if (resetSet.has(stepBefore.stepName)) {
+          if (reset(stepBefore.stepName)) {
             assertEquals(stepAfter.status, "pending");
             assertEquals(stepAfter.output, undefined);
             assertEquals(stepAfter.error, undefined);

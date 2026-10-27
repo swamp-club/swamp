@@ -2074,11 +2074,11 @@ behaves the same way.
   `allowedFailure` is not true. The recorded value already reflects
   `allowFailure` and the assertion severity threshold in force when the run
   failed.
-- **Entry template:** the workflow step a failed step came from. This is its
-  `forEachTemplate`, or else its step name.
+- **Entry template:** the workflow step a failed step came from, in the failed
+  step's job. This is its `forEachTemplate`, or else its step name.
 - **Reset set:** the entry templates and their transitive dependents, as stored
-  step names. It is the union of `computeStepsToReset()` over each entry
-  template.
+  step records, each named by its job. It is the union of
+  `computeStepsToReset()` over each entry template.
 
 **Run selection:** a bare `resume`, with no `--run` and no `--from`, still
 matches only a suspended run. Failed runs are never superseded, so this keeps
@@ -2108,8 +2108,12 @@ the job or step and points to `swamp workflow history logs <id>`
    step too (the [structure check](#resume-from-failed-step---from)). `--from`
    does still work from a remaining step after a removal. It also works from
    the template for an older `forEach` record without `forEachTemplate`.
-6. Step names are unique across the workflow and across the stored run. The
-   reset helper and the `steps.*` expression context key steps by name alone.
+6. No stored job holds two records of the same name. Step names need be unique
+   only within a job (swamp-club#3815): the reset set names each record by its
+   job, so a retry re-runs a failed step without touching a same-named step of
+   another job. The `steps.*` expression context still keys steps by name
+   alone, so a step that reads `steps.<name>` for a name used in more than one
+   job sees the record written last, in a retry as in a run.
 7. Step and job names hold any printable character, with space as the only
    whitespace: the schema refuses control characters, tab and newline
    (`nodeName` in `src/domain/workflows/node_name.ts`, swamp-club#3027).
@@ -2228,6 +2232,25 @@ the workflow YAML, not forEach-expanded iteration names. All iterations of a
 forEach step are reset and re-evaluated: completed ones with truthy guards are
 skipped, failed or unstarted ones run.
 
+Step names are unique only within a job, so the reset identifies every step by
+its job and name, and never reaches a same-named step of another job. When the
+`--from` name is used in more than one job, resume refuses before any change:
+
+```
+Step "restart" is in more than one job: "host-a", "host-b". Add --job <job> to choose one.
+```
+
+`--job <job>` names the job of the `--from` step as written in the workflow
+YAML (an expression-named job by its unevaluated name); it requires `--from`.
+Serve's `workflow.resume` takes it as `fromJob`. A step name used in one job
+needs no `--job`. The `--from` hints a retry refusal or `nextActionForStatus`
+prints add `--job` when the step name is in more than one job of the run.
+
+A job named with an expression is stored evaluated, so the reset cannot match
+it by name: a stored job named like a literal workflow job belongs to that job,
+and any other stored job is matched by step name against the expression-named
+jobs in the reset set (`candidateJobs` in `src/domain/workflows/resume_reset.ts`).
+
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without
 `--from`, a failed run named with `--run` is retried (see
@@ -2263,6 +2286,12 @@ resume (`--from` or retry) refuses with `Start a new run.` when:
   abort settled without starting. Resume reopens that work but walks only the
   workflow's jobs, so the job would stay `pending` and the run could never
   finish.
+
+Since the reset selects records by job, a `--from` step moved into another job
+since the run has no record in the job it now belongs to. When another stored
+job holds its records and the workflow no longer has the step there, resume
+refuses it as moved (`Step "test" is in job "build" in the run, job "release"
+in the workflow.`) rather than resetting nothing in the job it left.
 
 The check leaves alone records selected only by the legacy `forEach` prefix
 match, which can over-select (for example `deploy-canary-x` when `deploy` is
@@ -2320,10 +2349,10 @@ step added to a finished job, which resume never walks; a `forEach` step moved
 into a job that has started; and job and step names written with an
 expression. So a step added with an expression in its name, or to a job named
 with one, still crashes mid-run with `Step run not found`, as it does for a
-failed run. Unlike the failed-run check, it lets through a step removed from
-one job but kept in another. A failed-run resume selected that record for
-reset, so leaving it `pending` would falsely report success. Nothing resets a
-suspended run's record, which is the removed shape that already works.
+failed run. Like the failed-run check, it lets through a step removed from one
+job but kept in another: a failed-run resume resets each record in its own job,
+so it never selects the removed one, and nothing resets a suspended run's
+record.
 
 **Stranded steps:** a record the reset selected by name or `forEachTemplate` is
 a **tracked reset step**. `resetForResumeFrom()` marks it `resetByResume` on the

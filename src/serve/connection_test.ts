@@ -4183,6 +4183,15 @@ Deno.test("validateServerRequest: workflow.resume keeps from", () => {
   assertEquals(validateServerRequest(input), input);
 });
 
+Deno.test("validateServerRequest: workflow.resume keeps fromJob", () => {
+  const input = {
+    type: "workflow.resume" as const,
+    id: "req-resume-from-job",
+    payload: { workflowIdOrName: "deploy", from: "restart", fromJob: "host-b" },
+  };
+  assertEquals(validateServerRequest(input), input);
+});
+
 Deno.test("validateServerRequest: workflow.run keeps noSupersede", () => {
   const input = {
     type: "workflow.run" as const,

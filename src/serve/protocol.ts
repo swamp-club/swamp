@@ -539,6 +539,8 @@ export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
   from?: string;
+  /** The job of the `from` step, when its name is used in more than one job. */
+  fromJob?: string;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;

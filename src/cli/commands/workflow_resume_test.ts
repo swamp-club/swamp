@@ -123,6 +123,14 @@ Deno.test("workflowResumeCommand has --from option", async () => {
   );
 });
 
+Deno.test("workflowResumeCommand has a --job option that needs --from", async () => {
+  const { workflowResumeCommand } = await import("./workflow_resume.ts");
+  const options = workflowResumeCommand.getOptions();
+  const jobOpt = options.find((o) => o.name === "job");
+  assertEquals(jobOpt !== undefined, true);
+  assertEquals(jobOpt!.depends, ["from"]);
+});
+
 Deno.test("workflowResumeCommand: help describes retrying a failed run by id", async () => {
   const { workflowResumeCommand } = await import("./workflow_resume.ts");
   // swamp-uat matches the start of this description.

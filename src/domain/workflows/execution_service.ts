@@ -4540,6 +4540,7 @@ export class WorkflowExecutionService {
     options?: {
       inputs?: Record<string, unknown>;
       fromStep?: string;
+      fromJob?: string;
       suspendedOnly?: boolean;
       instanceId?: string;
       continuation?: ContinuationMode;
@@ -4606,7 +4607,10 @@ export class WorkflowExecutionService {
           `--from requires a failed run, but run ${runId} has status "${existingRun.status}"`,
         );
       }
-      reset = planFailedRunResume(workflow, existingRun, fromStep);
+      reset = planFailedRunResume(workflow, existingRun, {
+        step: fromStep,
+        job: options?.fromJob,
+      });
     } else if (
       existingRun.status === "failed" && !options?.suspendedOnly
     ) {
@@ -4718,7 +4722,7 @@ export class WorkflowExecutionService {
 
       // Work the run's abort left unfinished runs now, as it would have had the
       // abort left it pending. Reopened per record before a failed run's reset
-      // set, which resets by name in every job.
+      // set is applied.
       existingRun.reopenAbortedWork();
       // This process now drives the run. Recorded before the save below, so
       // cancel sees the live process from the start.
@@ -4828,6 +4832,11 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       /** Re-enter the DAG at this step (template name from the workflow YAML). */
       fromStep?: string;
+      /**
+       * The job of `fromStep`, as named in the workflow YAML. Needed when the
+       * step name is used in more than one job.
+       */
+      fromJob?: string;
       /**
        * Accept only a suspended run. Auto-resume after an approval sets it so
        * an approval can never start a retry of a failed run.

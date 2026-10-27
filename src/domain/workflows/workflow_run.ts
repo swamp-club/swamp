@@ -1333,6 +1333,14 @@ export interface StepRunRef {
 }
 
 /**
+ * A string that identifies a step of a job. Job and step names cannot hold a
+ * control character, so the NUL separator keeps distinct pairs distinct.
+ */
+export function stepRunKey(ref: StepRunRef): string {
+  return `${ref.jobName}\0${ref.stepName}`;
+}
+
+/**
  * A step waiting for a signal, as returned by
  * {@link WorkflowRun.findSignalWaits}.
  */
@@ -2179,10 +2187,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   /**
    * Resets steps for a failed-run resume (--from or retry). `stepsToReset`
-   * is the set of persisted step names (including forEach-expanded names)
-   * that should be reset to pending — the entry step plus all its transitive
-   * downstream dependents. The caller (see `planFailedRunResume`) computes
-   * this set using the workflow definition and the step dependency graph.
+   * lists the persisted step records (including forEach-expanded names), each
+   * by its job, that should be reset to pending — the entry step plus all its
+   * transitive downstream dependents. A record of the same name in another
+   * job is left alone: step names are unique only within a job. The caller
+   * (see `planFailedRunResume`) computes this list using the workflow
+   * definition and the step dependency graph.
    *
    * Each `tracked` record is marked as reset by this resume, after any
    * marker an earlier resume left is cleared. A job that finishes with a
@@ -2190,14 +2200,19 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * {@link JobRun.failStrandedResetSteps}).
    */
   resetForResumeFrom(
-    stepsToReset: ReadonlySet<string>,
+    stepsToReset: readonly StepRunRef[],
     tracked: readonly StepRunRef[] = [],
   ): void {
+    const keys = new Set(stepsToReset.map(stepRunKey));
     for (const job of this._jobs) {
       let jobNeedsReset = false;
       for (const step of job.steps) {
         step.clearResetMarker();
-        if (stepsToReset.has(step.stepName)) {
+        if (
+          keys.has(
+            stepRunKey({ jobName: job.jobName, stepName: step.stepName }),
+          )
+        ) {
           step.resetToPending();
           jobNeedsReset = true;
         }

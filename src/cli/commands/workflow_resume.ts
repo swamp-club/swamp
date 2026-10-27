@@ -125,6 +125,10 @@ export const workflowResumeCommand = withRemoteOptions(
       "Resume a failed run from a specific step",
       "swamp workflow resume plate-assay --from read-plate",
     )
+    .example(
+      "Resume from a step whose name is used in more than one job",
+      "swamp workflow resume rollout --from restart --job host-b",
+    )
     .arguments("<workflow_id_or_name:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -137,6 +141,11 @@ export const workflowResumeCommand = withRemoteOptions(
     .option(
       "--from <step:string>",
       "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
+    )
+    .option(
+      "--job <job:string>",
+      "Select the job of the --from step, as named in the workflow, when its step name is used in more than one job",
+      { depends: ["from"] },
     )
     .option(
       "--input <value:string>",
@@ -243,6 +252,7 @@ export const workflowResumeCommand = withRemoteOptions(
               workflowIdOrName,
               runId: options.run as string | undefined,
               from: options.from as string | undefined,
+              fromJob: options.job as string | undefined,
               inputs: Object.keys(resumeInputs).length > 0
                 ? resumeInputs
                 : undefined,
@@ -319,6 +329,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const runRepo = repoContext.workflowRunRepo;
 
     const fromStep = options.from as string | undefined;
+    const fromJob = options.job as string | undefined;
     const signalWaits = signalWaitsOf(unlocked.repoContext);
     const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     const liveness = localOwnerLiveness();
@@ -329,6 +340,7 @@ export const workflowResumeCommand = withRemoteOptions(
       options.run,
       {
         fromStep,
+        fromJob,
         ownerIsDead: (candidate) =>
           runHasDeadOwner(candidate, tracker, liveness),
         signalWaits,
@@ -515,6 +527,7 @@ export const workflowResumeCommand = withRemoteOptions(
               swampSha: GIT_SHA,
               inputs: resumeInputs,
               fromStep,
+              fromJob,
             })
           ) {
             yield mapWorkflowExecutionEvent(event, runRepo);

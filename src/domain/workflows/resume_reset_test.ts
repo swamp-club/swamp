@@ -106,7 +106,11 @@ function failedRun(wf: Workflow, failed: string[]): WorkflowRun {
 function refusal(wf: Workflow, run: WorkflowRun, fromStep?: string): string {
   const before = JSON.stringify(run.toData());
   try {
-    planFailedRunResume(wf, run, fromStep);
+    planFailedRunResume(
+      wf,
+      run,
+      fromStep === undefined ? undefined : { step: fromStep },
+    );
   } catch (error) {
     assert(error instanceof UserError, `expected UserError, got ${error}`);
     assertEquals(JSON.stringify(run.toData()), before, "run was mutated");
@@ -123,6 +127,11 @@ function refusal(wf: Workflow, run: WorkflowRun, fromStep?: string): string {
     return error.message;
   }
   throw new Error("expected planFailedRunResume to refuse");
+}
+
+/** The step names of a reset set, across jobs. */
+function stepNames(refs: readonly StepRunRef[]): Set<string> {
+  return new Set(refs.map((r) => r.stepName));
 }
 
 function sortRefs(refs: readonly StepRunRef[]): string[] {
@@ -151,8 +160,8 @@ function movedRun(): WorkflowRun {
 
 Deno.test("planFailedRunResume: resets the step and its dependents of an unchanged workflow", () => {
   const wf = movedBefore();
-  const plan = planFailedRunResume(wf, movedRun(), "test");
-  assertEquals(plan.steps, new Set(["test", "publish"]));
+  const plan = planFailedRunResume(wf, movedRun(), { step: "test" });
+  assertEquals(stepNames(plan.steps), new Set(["test", "publish"]));
   assertEquals(sortRefs(plan.tracked), ["build/test", "release/publish"]);
 });
 
@@ -279,7 +288,7 @@ Deno.test("planFailedRunResume: allows a step added to a job it does not re-ente
     { name: "docs", steps: [plain("render"), plain("spell")] },
   ]);
   assertEquals(
-    planFailedRunResume(added, run, "compile").steps,
+    stepNames(planFailedRunResume(added, run, { step: "compile" }).steps),
     new Set(["compile"]),
   );
 });
@@ -318,8 +327,8 @@ Deno.test("planFailedRunResume: allows removing a step upstream of the --from st
   const removed = workflow([
     { name: "main", steps: [plain("b"), plain("c", ["b"])] },
   ]);
-  const plan = planFailedRunResume(removed, run, "b");
-  assertEquals(plan.steps, new Set(["b", "c"]));
+  const plan = planFailedRunResume(removed, run, { step: "b" });
+  assertEquals(stepNames(plan.steps), new Set(["b", "c"]));
   assertEquals(sortRefs(plan.tracked), ["main/b", "main/c"]);
 });
 
@@ -331,7 +340,10 @@ Deno.test("planFailedRunResume: allows removing a step downstream of the --from 
   const removed = workflow([
     { name: "main", steps: [plain("a"), plain("b", ["a"])] },
   ]);
-  assertEquals(planFailedRunResume(removed, run, "b").steps, new Set(["b"]));
+  assertEquals(
+    stepNames(planFailedRunResume(removed, run, { step: "b" }).steps),
+    new Set(["b"]),
+  );
 });
 
 Deno.test("planFailedRunResume: tracks the iterations of a reset forEach template", () => {
@@ -344,7 +356,7 @@ Deno.test("planFailedRunResume: tracks the iterations of a reset forEach templat
   job.fail();
   run.complete();
   const plan = planFailedRunResume(wf, run);
-  assertEquals(plan.steps, new Set(["push-dev", "push-qa"]));
+  assertEquals(stepNames(plan.steps), new Set(["push-dev", "push-qa"]));
   assertEquals(sortRefs(plan.tracked), ["deploy/push-dev", "deploy/push-qa"]);
 });
 
@@ -364,8 +376,8 @@ Deno.test("planFailedRunResume: resets legacy forEach records by prefix without 
       ],
     }],
   });
-  const plan = planFailedRunResume(wf, run, "push");
-  assertEquals(plan.steps, new Set(["push-dev", "push-qa"]));
+  const plan = planFailedRunResume(wf, run, { step: "push" });
+  assertEquals(stepNames(plan.steps), new Set(["push-dev", "push-qa"]));
   assertEquals(plan.tracked, []);
 });
 
@@ -390,11 +402,11 @@ Deno.test("planFailedRunResume: allows evaluated records of an expression-named 
       ],
     }],
   });
-  const plan = planFailedRunResume(wf, run, "prep");
-  assertEquals(plan.steps, new Set(["prep"]));
+  const plan = planFailedRunResume(wf, run, { step: "prep" });
+  assertEquals(stepNames(plan.steps), new Set(["prep"]));
 });
 
-Deno.test("planFailedRunResume: ignores a prefix over-selection across jobs", () => {
+Deno.test("planFailedRunResume: matches the legacy forEach prefix only within the record's own job", () => {
   const wf = workflow([
     { name: "a", steps: [each("build")] },
     { name: "b", steps: [each("build-docs")] },
@@ -408,7 +420,7 @@ Deno.test("planFailedRunResume: ignores a prefix over-selection across jobs", ()
   run.getJob("b")!.succeed();
   run.complete();
   const plan = planFailedRunResume(wf, run);
-  assertEquals(plan.steps, new Set(["build-x", "build-docs-y"]));
+  assertEquals(sortRefs(plan.steps), ["a/build-x"]);
   assertEquals(sortRefs(plan.tracked), ["a/build-x"]);
 });
 
@@ -442,7 +454,7 @@ Deno.test("planFailedRunResume: allows removing a plain step named with a forEac
   run.complete();
   const removed = workflow([{ name: "j", steps: [each("deploy")] }]);
   const plan = planFailedRunResume(removed, run);
-  assertEquals(plan.steps, new Set(["deploy-a", "deploy-notify"]));
+  assertEquals(stepNames(plan.steps), new Set(["deploy-a", "deploy-notify"]));
   assertEquals(sortRefs(plan.tracked), ["j/deploy-a"]);
 });
 
@@ -473,7 +485,7 @@ Deno.test("planFailedRunResume: refuses a plain step moved away from a forEach s
   );
 });
 
-Deno.test("planFailedRunResume: accepts an iteration whose name equals a reset step in another job", () => {
+Deno.test("planFailedRunResume: leaves an iteration whose name equals the reset step of another job", () => {
   const wf = workflow([
     { name: "x", steps: [each("deploy")] },
     { name: "y", steps: [plain("deploy-notify")] },
@@ -485,11 +497,12 @@ Deno.test("planFailedRunResume: accepts an iteration whose name equals a reset s
   run.getJob("y")!.getStep("deploy-notify")!.fail("y");
   run.getJob("y")!.fail();
   run.complete();
-  const plan = planFailedRunResume(wf, run, "deploy-notify");
-  assertEquals(sortRefs(plan.tracked), ["x/deploy-notify", "y/deploy-notify"]);
+  const plan = planFailedRunResume(wf, run, { step: "deploy-notify" });
+  assertEquals(sortRefs(plan.steps), ["y/deploy-notify"]);
+  assertEquals(sortRefs(plan.tracked), ["y/deploy-notify"]);
 });
 
-Deno.test("planFailedRunResume: refuses a duplicate step name removed from one job but kept in another", () => {
+Deno.test("planFailedRunResume: resets only the kept step when a shared step name is removed from one job", () => {
   const before = workflow([
     { name: "a", steps: [plain("x"), plain("y")] },
     { name: "b", steps: [plain("x")] },
@@ -499,10 +512,141 @@ Deno.test("planFailedRunResume: refuses a duplicate step name removed from one j
     { name: "a", steps: [plain("y")] },
     { name: "b", steps: [plain("x")] },
   ]);
-  assertStringIncludes(
-    refusal(removed, run, "x"),
-    `Step "x" is in job "a" in the run, job "b" in the workflow.`,
+  // a's stored x is a terminal record of a step the workflow no longer has:
+  // it is left alone, and job a stays failed.
+  const plan = planFailedRunResume(removed, run, { step: "x" });
+  assertEquals(sortRefs(plan.steps), ["b/x"]);
+  assertEquals(sortRefs(plan.tracked), ["b/x"]);
+});
+
+/**
+ * The workflow of swamp-club#3815: jobs a and b each have a step "s", b
+ * depends on a, and b also has "t" after its "s". b's s failed.
+ */
+function sharedNameRun(): { wf: Workflow; run: WorkflowRun } {
+  const wf = workflow([
+    { name: "a", steps: [plain("s")] },
+    { name: "b", steps: [plain("s"), plain("t", ["s"])], dependsOn: ["a"] },
+  ]);
+  const run = WorkflowRun.create(wf);
+  run.start();
+  run.getJob("a")!.getStep("s")!.succeed();
+  run.getJob("a")!.succeed();
+  run.getJob("b")!.getStep("s")!.fail("exit 1");
+  run.getJob("b")!.getStep("t")!.skip({ kind: "dependency" });
+  run.getJob("b")!.fail();
+  run.complete();
+  return { wf, run };
+}
+
+Deno.test("planFailedRunResume: a retry resets only the failed job's step when a step name is in two jobs", () => {
+  const { wf, run } = sharedNameRun();
+  const plan = planFailedRunResume(wf, run);
+  assertEquals(sortRefs(plan.steps), ["b/s", "b/t"]);
+  assertEquals(sortRefs(plan.tracked), ["b/s", "b/t"]);
+});
+
+Deno.test("planFailedRunResume: refuses a --from step name used in more than one job", () => {
+  const { wf, run } = sharedNameRun();
+  const before = JSON.stringify(run.toData());
+  const error = refusalOf(() => planFailedRunResume(wf, run, { step: "s" }));
+  assertEquals(
+    error,
+    `Step "s" is in more than one job: "a", "b". Add --job <job> to choose one.`,
   );
+  assertEquals(JSON.stringify(run.toData()), before, "run was mutated");
+});
+
+Deno.test("planFailedRunResume: --from with --job resets that job's step and its dependents only", () => {
+  const { wf, run } = sharedNameRun();
+  const inB = planFailedRunResume(wf, run, { step: "s", job: "b" });
+  assertEquals(sortRefs(inB.steps), ["b/s", "b/t"]);
+  // a's s is upstream of every step of b, by the job dependency.
+  const inA = planFailedRunResume(wf, run, { step: "s", job: "a" });
+  assertEquals(sortRefs(inA.steps), ["a/s", "b/s", "b/t"]);
+});
+
+Deno.test("planFailedRunResume: --job also selects a step whose name is in one job", () => {
+  const { wf, run } = sharedNameRun();
+  const plan = planFailedRunResume(wf, run, { step: "t", job: "b" });
+  assertEquals(sortRefs(plan.steps), ["b/t"]);
+});
+
+Deno.test("planFailedRunResume: refuses a --job without the --from step, or not in the workflow", () => {
+  const { wf, run } = sharedNameRun();
+  assertEquals(
+    refusalOf(() => planFailedRunResume(wf, run, { step: "t", job: "a" })),
+    `Step "t" is not in job "a". It is in job "b".`,
+  );
+  assertStringIncludes(
+    refusalOf(() => planFailedRunResume(wf, run, { step: "s", job: "c" })),
+    `Job "c" not found in workflow "resume-wf". Available jobs: a, b`,
+  );
+  assertStringIncludes(
+    refusalOf(() => planFailedRunResume(wf, run, { step: "nope", job: "a" })),
+    `Step "nope" not found in workflow`,
+  );
+});
+
+Deno.test("planFailedRunResume: an ambiguous --from refusal stays within the serve limit for many jobs", () => {
+  // Names serve refusals must fit: 16 characters each.
+  const long = (i: number) => `job-${String(i).padStart(12, "a")}`;
+  const step = "step-aaaaaaaaaaa";
+  const wf = workflow(
+    Array.from({ length: 40 }, (_, i) => ({
+      name: long(i),
+      steps: [plain(step)],
+    })),
+  );
+  const run = failedRun(wf, [step]);
+  const error = refusalOf(() => planFailedRunResume(wf, run, { step }));
+  assert(
+    error.length <= MAX_CLIENT_ERROR_LENGTH,
+    `message is ${error.length} characters: ${error}`,
+  );
+  assertStringIncludes(error, "and 37 more");
+  assertStringIncludes(error, "Add --job <job> to choose one.");
+});
+
+Deno.test("planFailedRunResume: --job selects an expression-named job by its name in the workflow", () => {
+  // The run stores "deploy-prod"; the workflow names the job with an
+  // expression, which cannot be compared before evaluation, so its step
+  // names match in every stored job not named after a literal job.
+  const wf = workflow([
+    {
+      name: "deploy-${{ inputs.env }}",
+      steps: [plain("s"), plain("t", ["s"])],
+    },
+    { name: "main", steps: [plain("s")] },
+  ]);
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: "failed",
+    jobs: [
+      {
+        jobName: "deploy-prod",
+        status: "failed",
+        steps: [
+          { stepName: "s", status: "failed" },
+          { stepName: "t", status: "skipped" },
+        ],
+      },
+      {
+        jobName: "main",
+        status: "succeeded",
+        steps: [{ stepName: "s", status: "succeeded" }],
+      },
+    ],
+  });
+  const plan = planFailedRunResume(wf, run, {
+    step: "s",
+    job: "deploy-${{ inputs.env }}",
+  });
+  assertEquals(sortRefs(plan.steps), ["deploy-prod/s", "deploy-prod/t"]);
+  const inMain = planFailedRunResume(wf, run, { step: "s", job: "main" });
+  assertEquals(sortRefs(inMain.steps), ["main/s"]);
 });
 
 Deno.test("planFailedRunResume: a retry classifies records once across several entry templates", () => {
@@ -527,7 +671,7 @@ Deno.test("planFailedRunResume: a retry classifies records once across several e
 Deno.test("planFailedRunResume: keeps the unknown --from step and zero-match refusals", () => {
   const wf = movedBefore();
   const run = movedRun();
-  let error = refusalOf(() => planFailedRunResume(wf, run, "nope"));
+  let error = refusalOf(() => planFailedRunResume(wf, run, { step: "nope" }));
   assertStringIncludes(error, `Step "nope" not found in workflow`);
   const neverReached = WorkflowRun.fromData({
     ...run.toData(),
@@ -536,7 +680,9 @@ Deno.test("planFailedRunResume: keeps the unknown --from step and zero-match ref
       { jobName: "release", status: "skipped", steps: [] },
     ],
   });
-  error = refusalOf(() => planFailedRunResume(wf, neverReached, "test"));
+  error = refusalOf(() =>
+    planFailedRunResume(wf, neverReached, { step: "test" })
+  );
   assertStringIncludes(error, `--from "test" matched zero persisted steps`);
 });
 
@@ -625,8 +771,14 @@ Deno.test("planFailedRunResume: leaves job and step names written with an expres
       },
     ],
   });
-  assertEquals(planFailedRunResume(wf, run, "b").steps, new Set(["b"]));
-  assertEquals(planFailedRunResume(wf, run, "c").steps, new Set(["c"]));
+  assertEquals(
+    stepNames(planFailedRunResume(wf, run, { step: "b" }).steps),
+    new Set(["b"]),
+  );
+  assertEquals(
+    stepNames(planFailedRunResume(wf, run, { step: "c" }).steps),
+    new Set(["c"]),
+  );
 });
 
 Deno.test("planFailedRunResume: says when a reset forEach step became a plain step", () => {
@@ -1376,9 +1528,9 @@ Deno.test("planFailedRunResume: tracks the work the abort settled beside the --f
   const wf = workflow([
     { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
   ]);
-  const plan = planFailedRunResume(wf, settledFailedRun(wf), "a");
+  const plan = planFailedRunResume(wf, settledFailedRun(wf), { step: "a" });
   // b is reopened per record (WorkflowRun.reopenAbortedWork), not by name.
-  assertEquals(plan.steps, new Set(["a", "c"]));
+  assertEquals(stepNames(plan.steps), new Set(["a", "c"]));
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/b", "main/c"]);
 });
 
@@ -1389,8 +1541,10 @@ Deno.test("planFailedRunResume: does not track settled work whose step was remov
   const removed = workflow([
     { name: "main", steps: [plain("a"), plain("c", ["a"])] },
   ]);
-  const plan = planFailedRunResume(removed, settledFailedRun(before), "a");
-  assertEquals(plan.steps, new Set(["a", "c"]));
+  const plan = planFailedRunResume(removed, settledFailedRun(before), {
+    step: "a",
+  });
+  assertEquals(stepNames(plan.steps), new Set(["a", "c"]));
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/c"]);
 });
 
@@ -1426,8 +1580,8 @@ Deno.test("planFailedRunResume: refuses a removed job holding settled work, whic
 
 Deno.test("planFailedRunResume: tracks the settled work of a kept job the cleanup skipped", () => {
   const wf = settledTeardownBefore();
-  const plan = planFailedRunResume(wf, settledTeardownRun(wf), "a");
-  assertEquals(plan.steps, new Set(["a", "c"]));
+  const plan = planFailedRunResume(wf, settledTeardownRun(wf), { step: "a" });
+  assertEquals(stepNames(plan.steps), new Set(["a", "c"]));
   assertEquals(sortRefs(plan.tracked), [
     "main/a",
     "main/b",
@@ -1446,8 +1600,8 @@ Deno.test("planFailedRunResume: allows removing a finished job that holds no set
   const removed = workflow([
     { name: "main", steps: [plain("a"), plain("b"), plain("c", ["a"])] },
   ]);
-  const plan = planFailedRunResume(removed, run, "a");
-  assertEquals(plan.steps, new Set(["a", "c"]));
+  const plan = planFailedRunResume(removed, run, { step: "a" });
+  assertEquals(stepNames(plan.steps), new Set(["a", "c"]));
 });
 
 Deno.test("planFailedRunResume: leaves a same-named step another job finished out of the reset set", () => {
@@ -1470,9 +1624,9 @@ Deno.test("planFailedRunResume: leaves a same-named step another job finished ou
   main.fail();
   run.complete();
 
-  const plan = planFailedRunResume(wf, run, "a");
+  const plan = planFailedRunResume(wf, run, { step: "a" });
 
-  assertEquals(plan.steps, new Set(["a", "c"]));
+  assertEquals(stepNames(plan.steps), new Set(["a", "c"]));
   assertEquals(sortRefs(plan.tracked), ["main/a", "main/b", "main/c"]);
 });
 

@@ -32,6 +32,7 @@ import {
   CANCELLED_STEP_ERROR,
   JobRun,
   StepRun,
+  stepRunKey,
   type StepRunRef,
   WorkflowRun,
 } from "./workflow_run.ts";
@@ -95,7 +96,7 @@ const arbRef: fc.Arbitrary<StepRunRef> = fc.record({
 });
 
 const arbResume = fc.record({
-  reset: fc.subarray(STEPS, { minLength: 1 }),
+  reset: fc.array(arbRef, { minLength: 1, maxLength: 6 }),
   tracked: fc.array(arbRef, { maxLength: 6 }),
 });
 
@@ -117,9 +118,11 @@ Deno.test("WorkflowRun: a reset marker only marks tracked reset records and neve
       (resumes) => {
         const run = createFailedRun();
         for (const { resume, transitions } of resumes) {
-          const reset = new Set(resume.reset);
-          const tracked = resume.tracked.filter((r) => reset.has(r.stepName));
-          run.resetForResumeFrom(reset, tracked);
+          const reset = new Set(resume.reset.map(stepRunKey));
+          const tracked = resume.tracked.filter((r) =>
+            reset.has(stepRunKey(r))
+          );
+          run.resetForResumeFrom(resume.reset, tracked);
 
           for (const job of run.jobs) {
             for (const step of job.steps) {
@@ -155,14 +158,43 @@ Deno.test("WorkflowRun: a reset marker only marks tracked reset records and neve
   );
 });
 
+Deno.test("WorkflowRun: a reset changes only the named records and their jobs, never a same-named record of another job", () => {
+  fc.assert(
+    fc.property(fc.array(arbRef, { minLength: 1, maxLength: 6 }), (refs) => {
+      const run = createFailedRun();
+      const before = run.toData();
+      run.resetForResumeFrom(refs);
+      const after = run.toData();
+      const reset = new Set(refs.map(stepRunKey));
+      for (const [j, jobBefore] of before.jobs.entries()) {
+        const jobAfter = after.jobs[j];
+        const named = (stepName: string) =>
+          reset.has(stepRunKey({ jobName: jobBefore.jobName, stepName }));
+        if (jobBefore.steps.some((s) => named(s.stepName))) {
+          assertEquals(jobAfter.status, "pending");
+        } else {
+          assertEquals(jobAfter, jobBefore);
+        }
+        for (const [k, stepBefore] of jobBefore.steps.entries()) {
+          if (named(stepBefore.stepName)) {
+            assertEquals(jobAfter.steps[k].status, "pending");
+          } else {
+            assertEquals(jobAfter.steps[k], stepBefore);
+          }
+        }
+      }
+    }),
+  );
+});
+
 Deno.test("WorkflowRun: resetting a stranded step clears its failure kind", () => {
   fc.assert(
     fc.property(arbRef, (ref) => {
       const run = createFailedRun();
-      run.resetForResumeFrom(new Set([ref.stepName]), [ref]);
+      run.resetForResumeFrom([ref], [ref]);
       const job = run.getJob(ref.jobName)!;
       assertEquals(job.failStrandedResetSteps().length, 1);
-      run.resetForResumeFrom(new Set([ref.stepName]));
+      run.resetForResumeFrom([ref]);
       const step = job.getStep(ref.stepName)!;
       assertEquals(step.failureKind, undefined);
       assertEquals(step.status, "pending");

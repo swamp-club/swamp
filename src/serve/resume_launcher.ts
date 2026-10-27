@@ -129,6 +129,8 @@ export interface DetachedResumeRequest {
   expectedName?: string;
   /** Resume from a failed step instead of a decided approval gate. */
   from?: string;
+  /** The job of the `from` step, when its name is used in more than one job. */
+  fromJob?: string;
   /**
    * Accept only a suspended run. Auto-resume sets it so an approval can
    * never start a retry of a failed run, even if the run fails between the
@@ -218,6 +220,7 @@ export async function startDetachedResume(
       request.runId,
       {
         fromStep: request.from,
+        fromJob: request.fromJob,
         suspendedOnly: request.suspendedOnly,
         byId: request.byId,
         expectedName: request.expectedName,
@@ -380,6 +383,7 @@ export async function startDetachedResume(
                       signal: runController.signal,
                       inputs: request.inputs ?? {},
                       fromStep: request.from,
+                      fromJob: request.fromJob,
                       suspendedOnly: request.suspendedOnly,
                       instanceId: ctx.instanceId,
                       continuation: request.continuation,
