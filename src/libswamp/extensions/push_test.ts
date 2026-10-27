@@ -3445,7 +3445,7 @@ Deno.test("extensionPushPrepare: a module deno info cannot load because it does 
     assertEquals(result.gateFailures.map((f) => f.gate), ["source-syntax"]);
     assertStringIncludes(
       result.gateFailures[0].message,
-      "Cannot read the imports of models/broken.ts",
+      `Cannot read the imports of ${join("models", "broken.ts")}`,
     );
   });
 });
