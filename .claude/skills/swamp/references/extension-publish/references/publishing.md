@@ -613,13 +613,13 @@ warns with the same `deno install --entrypoint` command (`staleLockfiles` in
 
 Findings with a `cause` in `warnings.dependencyTrust`:
 
-| Cause                | Means                                                                           | Severity |
-| -------------------- | ------------------------------------------------------------------------------- | -------- |
-| `not-audited`        | an OSV, npm or JSR lookup failed, or no published version matches the specifier | warning  |
-| `deprecated-version` | the shipped npm version is deprecated while the package's latest is not         | warning  |
-| `loose-specifier`    | unpinned, range or dist-tag; names the version this push resolves               | warning  |
-| `jsr-yanked`         | the shipped JSR version is yanked                                               | warning  |
-| `jsr-missing`        | the JSR package or version does not exist (or the name is invalid)              | error    |
+| Cause                | Means                                                                                                                                                                                                | Severity |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `not-audited`        | an OSV, npm or JSR lookup failed, no published version matches the specifier, or the code comes from outside npm and JSR (a URL import, a git or local package.json dependency, named by its origin) | warning  |
+| `deprecated-version` | the shipped npm version is deprecated while the package's latest is not                                                                                                                              | warning  |
+| `loose-specifier`    | unpinned, range or dist-tag; names the version this push resolves                                                                                                                                    | warning  |
+| `jsr-yanked`         | the shipped JSR version is yanked                                                                                                                                                                    | warning  |
+| `jsr-missing`        | the JSR package or version does not exist (or the name is invalid)                                                                                                                                   | error    |
 
 A deprecated package (the shipped version and latest both deprecated) stays an
 error. A `deprecated-version` warning also loses the `dependency-trust` quality
@@ -631,7 +631,9 @@ is gated like safety and review warnings: an interactive push prompts, `--yes`
 waives them, and the summaries list them under
 `acceptedWarnings.dependencyTrust`. A log-mode push without a terminal and
 without `--yes` fails at the prompt. Re-run an unaudited push when OSV, npm and
-JSR are reachable.
+JSR are reachable. Code from outside npm and JSR (`notAuditedFix: "origin"`)
+still ships; replace it with an `npm:` or `jsr:` package to earn the factor
+back.
 
 The version-drift check is **not** run during `swamp extension fmt` — it
 requires registry access that the fmt command does not use.

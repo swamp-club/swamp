@@ -25,7 +25,7 @@ import {
 } from "./specifiers.ts";
 
 const names = (source: string) =>
-  writtenSpecifiers(source, "models/a.ts").map((s) =>
+  (writtenSpecifiers(source, "models/a.ts") ?? []).map((s) =>
     `${s.registry}:${s.name}@${s.version ?? ""}`
   );
 
@@ -95,4 +95,14 @@ Deno.test("isAuditedCodeFile: code modules count, tests do not", () => {
   ) {
     assertEquals(isAuditedCodeFile(path), false, path);
   }
+});
+
+Deno.test("writtenSpecifiers: null for a module that does not parse", () => {
+  assertEquals(
+    writtenSpecifiers(
+      'import a from "npm:left-pad@1.0.0";\nexport const broken = ;\n',
+      "models/a.ts",
+    ),
+    null,
+  );
 });

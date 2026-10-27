@@ -25,13 +25,27 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
-    "dependencies": []
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
+    "dependencies": [],
+    "unaudited": [
+      {
+        "kind": "url",
+        "origin": "{{ORIGIN}}/url/mod.ts",
+        "modules": {
+          "{{ORIGIN}}/url/mod.ts": "sha256 of the module"
+        }
+      }
+    ]
   },
   "audited": [],
   "trust": {
     "errors": [],
-    "warnings": []
+    "warnings": [
+      "{{ORIGIN}}/url/mod.ts [not-audited]: not audited: {{ORIGIN}}/url/mod.ts is a URL import, from outside npm and JSR, so no registry audit covers it"
+    ]
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",

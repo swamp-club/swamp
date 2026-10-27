@@ -56,6 +56,8 @@ export interface Harness {
   dir: string;
   type: ModelType;
   executions: Record<string, unknown>[];
+  /** The global arguments each execution saw, when all of them resolved. */
+  globals: Record<string, unknown>[];
 }
 
 export async function withRepo(
@@ -65,6 +67,7 @@ export async function withRepo(
   const repo = createRepositoryContext({ repoDir: dir });
   const type = ModelType.create(`test/provenance-${crypto.randomUUID()}`);
   const executions: Record<string, unknown>[] = [];
+  const globals: Record<string, unknown>[] = [];
   modelRegistry.register({
     type,
     version: "2026.10.12.1",
@@ -76,15 +79,24 @@ export async function withRepo(
           value: z.string().optional(),
           authored: z.string().optional(),
         }),
-        execute: (args) => {
+        execute: (args, context) => {
           executions.push(args as Record<string, unknown>);
+          try {
+            globals.push({ ...context.globalArgs });
+          } catch {
+            // Reading an unresolved global argument throws; those runs are
+            // asserted through `executions` alone.
+          }
           return Promise.resolve({ dataHandles: [] });
         },
       },
     },
   });
   try {
-    await withMockedEnv(ENV, () => fn({ repo, dir, type, executions }));
+    await withMockedEnv(
+      ENV,
+      () => fn({ repo, dir, type, executions, globals }),
+    );
   } finally {
     repo.catalogStore.close();
     if (Deno.build.os === "windows") {

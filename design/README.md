@@ -90,6 +90,7 @@ Write in plain English:
 | [doctor-vaults](./enablers/doctor-vaults.md)               | vaults                              | To fold into vaults.md operations section                            |
 | [access-control](./enablers/access-control.md)             | serve                               | Principals, grants, subjects, evaluation model, can-i                |
 | [serve-audit](./enablers/serve-audit.md)                   | serve                               | Chain-hashed audit events, write-ahead log, `audit.query`            |
+| [serve-phase-telemetry](./enablers/serve-phase-telemetry.md) | serve                             | Exported phases of costly serve paths, with APL queries              |
 
 ### Surfaces
 

@@ -645,6 +645,34 @@ Deno.test("createRunVaultScope: a refusal is audited once in the secrets categor
   assertStringIncludes(event.detail ?? "", "run=run-1");
 });
 
+Deno.test("createRunVaultScope: a refusal names a user whose name is known", async () => {
+  const { events, emitter } = recorder();
+  const scope = createRunVaultScope({
+    authMode: "token",
+    policySnapshotLoader: { decisionService: service([grant()]) },
+    auditEmitter: emitter,
+    resolvedUserNames: { bot: "bob" },
+  }, {
+    source: "session",
+    principal: { kind: "user", id: "bot" },
+    idpGroups: [],
+    collectives: [],
+  });
+  assert(scope);
+  await assertRejects(
+    () =>
+      runWithVaultAccess(
+        scope.access,
+        () => scope.access.check("erp", "read", "k"),
+      ),
+    VaultAccessDeniedError,
+  );
+  const [event] = events;
+  assertEquals(event.principalId, "bot");
+  assertEquals(event.initiatedBy, "user:bob");
+  assertEquals(event.principalUsername, "bob");
+});
+
 Deno.test("resumeRunVaultScope: a resume is held to the recorded principal and memberships", async () => {
   const scope = resumeRunVaultScope({
     authMode: "token",

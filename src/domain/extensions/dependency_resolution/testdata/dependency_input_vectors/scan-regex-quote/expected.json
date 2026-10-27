@@ -26,23 +26,46 @@
     "models/m.ts"
   ],
   "shipped": {
-    "models/m.ts": "export const quoted = /'/.test(\"x\"); import value from \"vecpkg\";\n\nexport const model = [quoted, value];\n"
+    "models/m.ts": "export const quoted = /'/.test(\"x\"); import value from \"npm:vecpkg@1.0.0\";\n\nexport const model = [quoted, value];\n"
   },
   "bundles": {
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
-    "dependencies": []
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
+    "dependencies": [
+      {
+        "registry": "npm",
+        "name": "vecpkg",
+        "spec": "1.0.0",
+        "version": "1.0.0",
+        "from": "exact",
+        "locked": false,
+        "writtenAs": [
+          "vecpkg"
+        ]
+      }
+    ],
+    "unaudited": []
   },
-  "audited": [],
+  "audited": [
+    {
+      "registry": "npm",
+      "name": "vecpkg",
+      "version": "1.0.0",
+      "sourceFile": "extensions/models/m.ts",
+      "importedAs": "vecpkg"
+    }
+  ],
   "trust": {
     "errors": [],
     "warnings": []
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
-    "bare-specifiers: Extension has bare imports that ship as written, which the registry's scorer cannot resolve, so it would score the documentation factors 0: \"vecpkg\". Push rewrites a bare import only when the project's Deno config (deno.json or deno.jsonc imports, an importMap file, a scope covering the module, or a workspace root's imports) resolves it to an npm:, jsr:, node: or URL specifier, or, with no Deno config, when package.json declares it as an npm registry dependency installed in node_modules; add such an entry or dependency for each, or write the specifier in its place.",
     "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
   ],
   "gateFailures": [

@@ -194,6 +194,48 @@ function extractExpressionsRecursive(
 }
 
 /**
+ * `data` with each expression occurrence replaced by the text `rewrite`
+ * returns for it, or kept when it returns undefined. Each occurrence is
+ * described as {@link extractExpressions} describes it, so a caller can pick
+ * occurrences found there by path and position. Only the strings, arrays and
+ * objects on the way to a rewritten occurrence are copied; every other value,
+ * a `Date` or a `Uint8Array` included, is returned as it is.
+ */
+export function rewriteExpressions(
+  data: unknown,
+  rewrite: (location: ExpressionLocation) => string | undefined,
+  path = "",
+): unknown {
+  if (typeof data === "string") {
+    const embedded = matchSingleExpression(data) === null;
+    return replaceExpressionSpans(data, (span) =>
+      rewrite({
+        path,
+        raw: span.raw,
+        celExpression: span.inner,
+        start: span.start,
+        end: span.end,
+        ...(embedded ? { embedded: true } : {}),
+      }) ?? span.raw);
+  }
+  if (Array.isArray(data)) {
+    const items = data.map((item, i) =>
+      rewriteExpressions(item, rewrite, path ? `${path}[${i}]` : `[${i}]`)
+    );
+    return items.some((item, i) => item !== data[i]) ? items : data;
+  }
+  if (data !== null && typeof data === "object") {
+    const entries = Object.entries(data);
+    const values = entries.map(([key, value]) =>
+      rewriteExpressions(value, rewrite, keyPath(path, key))
+    );
+    if (values.every((value, i) => value === entries[i][1])) return data;
+    return Object.fromEntries(entries.map(([key], i) => [key, values[i]]));
+  }
+  return data;
+}
+
+/**
  * Rewrites an evaluated result as it is spliced at `path`: `whole` receives a
  * whole-field result; `embedded` receives rendered text and the original value
  * so policies can distinguish containers from strings. Only spliced results

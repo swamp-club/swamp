@@ -121,7 +121,11 @@ export type ExecutionOperation =
   | "transition.wait"
   | "webhook.receipt"
   | "webhook.queue"
-  | "webhook.run";
+  | "webhook.run"
+  // Phases of src/domain/diagnostics/diagnostic_phase.ts, which builds them
+  // only from its closed DiagnosticPhase vocabulary. Typed as any suffix so
+  // this module does not depend on diagnostics, which depends on it.
+  | `diagnostic.${string}`;
 
 export type ObservationAttributes = Readonly<
   Record<string, string | number | boolean>
@@ -135,6 +139,8 @@ export type ObservationOutcome =
 
 export interface ExecutionObservation {
   readonly carrier: TraceCarrier | undefined;
+  /** Whether this observation is exported (tracing on and sampled). */
+  readonly recording?: boolean;
   run<T>(fn: () => T): T;
   attributes(values: ObservationAttributes): void;
   end(outcome: ObservationOutcome): void;

@@ -69,8 +69,16 @@ import {
   type MaxEnrollments,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import { observeExecutionWork } from "../domain/remote/observability.ts";
+import {
+  type ObservationAttributes,
+  observeExecutionWork,
+} from "../domain/remote/observability.ts";
 import { runDetached } from "../infrastructure/tracing/tracer.ts";
+import {
+  observeDiagnosticPhase,
+  type PhaseTally,
+  withDiagnosticArea,
+} from "../domain/diagnostics/diagnostic_phase.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import { TransitionTail } from "./transition_tail.ts";
 
@@ -421,11 +429,38 @@ export class WorkerGateway {
             // Authentication is server-owned; only an accepted peer may link
             // its context into the enrollment trace.
             ctx.responseTrace = observation.carrier;
-            const result = await this.#handleEnroll(
-              state,
-              params,
-              ctx.signal,
-            );
+            // Records when and how this process saw the call cancelled: an
+            // rpc.cancel frame from the worker, or the socket closing. The
+            // worker's own submit is its rpc.submit span; a submit alone
+            // does not show that it arrived. Enrollment does not act on it.
+            // Starts false, so a query can tell an uncancelled request from
+            // one exported by a build without this field. Telemetry never
+            // fails the enrollment, nor throws from the abort listener.
+            const started = performance.now();
+            const setRequestAttributes = (values: ObservationAttributes) => {
+              try {
+                observation.attributes(values);
+              } catch {
+                // Dropped: see above.
+              }
+            };
+            setRequestAttributes({ "swamp.rpc.cancel_observed": false });
+            const onCancel = () =>
+              setRequestAttributes({
+                "swamp.rpc.cancel_observed": true,
+                "swamp.rpc.cancel_observed_ms": performance.now() - started,
+                "swamp.rpc.cancel_cause": state.channel.closed
+                  ? "channel_closed"
+                  : "cancel_frame",
+              });
+            if (ctx.signal.aborted) onCancel();
+            else ctx.signal.addEventListener("abort", onCancel, { once: true });
+            let result: EnrollResult;
+            try {
+              result = await this.#handleEnroll(state, params, ctx.signal);
+            } finally {
+              ctx.signal.removeEventListener("abort", onCancel);
+            }
             return await observeExecutionWork(
               "enrollment.accepted",
               {},
@@ -758,6 +793,12 @@ export class WorkerGateway {
       });
     }
 
+    // Preparation runs as the enrollment diagnostic area; the rest of the
+    // transition arms timers and starts work that must not carry it.
+    const preparing = <T>(fn: () => Promise<T>) =>
+      withDiagnosticArea("enrollment", fn, signal);
+    const runPreparing = (input: Parameters<ModelMethodRunner>[0]) =>
+      preparing(() => this.#runModelMethod(input));
     return await this.#recordTransition<EnrollResult>("enroll", async () => {
       // The worker gave up on this attempt while it waited for its turn (its
       // enroll call timed out). Nothing is recorded yet, so skip it rather
@@ -772,9 +813,11 @@ export class WorkerGateway {
       // appends a binding on first enrollment or re-auths a known machine.
       // Must happen before the already-connected check because the worker
       // name depends on maxEnrollments (fleet vs single-machine).
-      const definitionId = await this.#requireTokenDefinition(name);
+      const definitionId = await preparing(() =>
+        this.#requireTokenDefinition(name)
+      );
       try {
-        await this.#runModelMethod({
+        await runPreparing({
           typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
           definitionName: name,
           methodName: "redeem",
@@ -791,10 +834,11 @@ export class WorkerGateway {
 
       // One read of the record redeem just validated supplies the mint the
       // worker is bound to, its lifetime, and fleet naming.
-      const record = await this.#readEnrolledRecord(name);
+      const record = await preparing(() => this.#readEnrolledRecord(name));
       const tokenCreatedAt = record.createdAt;
-      const maxEnrollments =
-        await this.#readTokenMaxEnrollments(name, record) ?? 1;
+      const maxEnrollments = await preparing(() =>
+        this.#readTokenMaxEnrollments(name, record)
+      ) ?? 1;
       const workerName = maxEnrollments === 1
         ? name
         : `${name}-${await fleetMemberSuffix(params.machineId)}`;
@@ -860,7 +904,7 @@ export class WorkerGateway {
       if (reconnecting) {
         existing.channel = state.channel;
         existing.capacity = capacity;
-        await this.#runModelMethod({
+        await runPreparing({
           typeArg: WORKER_MODEL_TYPE.normalized,
           definitionName: workerDefinitionName(workerName),
           methodName: "set_status",
@@ -877,7 +921,7 @@ export class WorkerGateway {
             : { status: "idle" },
         });
       } else {
-        await this.#runModelMethod({
+        await runPreparing({
           typeArg: WORKER_MODEL_TYPE.normalized,
           definitionName: workerDefinitionName(workerName),
           methodName: "enroll",
@@ -1397,21 +1441,43 @@ export class WorkerGateway {
    * are deleted, renamed, do not parse, or that the datastore could not
    * materialise are skipped. Other read failures propagate.
    */
-  async #scanTokenRecords(): Promise<Map<string, EnrollmentToken>> {
+  #scanTokenRecords(): Promise<Map<string, EnrollmentToken>> {
+    return observeDiagnosticPhase(
+      "token_record_scan",
+      {},
+      (phase) => this.#readTokenRecords(phase.tally),
+    );
+  }
+
+  async #readTokenRecords(
+    tally: PhaseTally,
+  ): Promise<Map<string, EnrollmentToken>> {
     const records = new Map<string, EnrollmentToken>();
-    const dataItems = await this.#options.repoContext.unifiedDataRepo
-      .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
+    const dataItems = await tally.measure(
+      "list",
+      () =>
+        this.#options.repoContext.unifiedDataRepo
+          .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE),
+    );
+    tally.add("records_listed", dataItems.length);
     for (const { data, modelType, modelId } of dataItems) {
       if (data.isRenamed || data.isDeleted) continue;
       if (data.name !== TOKEN_DATA_NAME) continue;
       let content: Uint8Array | null;
       try {
-        content = await this.#options.repoContext.unifiedDataRepo
-          .getContent(modelType, modelId, data.name);
+        content = await tally.measure(
+          "read",
+          () =>
+            this.#options.repoContext.unifiedDataRepo
+              .getContent(modelType, modelId, data.name),
+        );
+        tally.add("content_reads");
+        if (content) tally.add("bytes_read", content.length);
       } catch (error) {
         // One record the datastore could not materialise is left out
         // rather than failing every enrollment (swamp-club#3617).
         if (!isUnreadableContentError(error)) throw error;
+        tally.add("unreadable");
         logger.warn(
           "Skipping unreadable enrollment token record {modelId}: {error}",
           { modelId, error: (error as Error).message },
@@ -1440,16 +1506,22 @@ export class WorkerGateway {
         records.set(parsed.data.name, parsed.data);
       }
     }
+    tally.add("tokens", records.size);
     return records;
   }
 
   async #defaultRunModelMethod(
     input: Parameters<ModelMethodRunner>[0],
   ): Promise<void> {
-    const deps = await createWorkerModelRunDeps(
-      this.#options.repoDir,
-      this.#options.repoContext,
-      { definitionType: ModelType.create(input.typeArg) },
+    const deps = await observeDiagnosticPhase(
+      "registry_load",
+      {},
+      () =>
+        createWorkerModelRunDeps(
+          this.#options.repoDir,
+          this.#options.repoContext,
+          { definitionType: ModelType.create(input.typeArg) },
+        ),
     );
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),

@@ -56,7 +56,10 @@ import type { DependencySpecifier } from "./specifiers.ts";
 /** The record's file name at the archive root. */
 export const DEPENDENCY_AUDIT_RECORD_FILENAME = "dependency-audit.json";
 
-/** The record format this swamp writes. */
+/**
+ * The v1 record format, which pushes before swamp-club#3970 wrote; a push
+ * now writes {@link DEPENDENCY_AUDIT_RECORD_VERSION_2}.
+ */
 export const DEPENDENCY_AUDIT_RECORD_VERSION = 1;
 
 export interface DependencyAuditRecordEntry {
@@ -236,5 +239,292 @@ export function parseDependencyAuditRecord(
   return {
     recordedFor: (registry, name, specVersion) =>
       entries.get(keyOf(registry, name, specVersion)),
+  };
+}
+
+/**
+ * The v2 record (swamp-club#3970), which a push of the canonical shipped
+ * form writes. Every `npm:` and `jsr:` import in the archive's source is
+ * exact, so each entry is one shipped package version with `spec` equal to
+ * `version`; `writtenAs` keeps what the author wrote, and `from` and
+ * `locked` say how that version was chosen. `bundles` holds a SHA-256 of
+ * each bundle file, so a consumer or the registry can tell the bundle is
+ * the one published with this source. `unaudited` lists code from outside
+ * npm and JSR that the bundles hold:
+ *
+ * ```json
+ * {
+ *   "recordVersion": 2,
+ *   "bundles": { "bundles/m.js": "sha256:…" },
+ *   "dependencies": [
+ *     { "registry": "npm", "name": "ms", "spec": "2.1.3", "version": "2.1.3",
+ *       "from": "lockfile", "locked": true, "writtenAs": ["npm:ms@^2"] }
+ *   ],
+ *   "unaudited": [
+ *     { "kind": "url", "origin": "https://example.com/x.ts",
+ *       "modules": { "https://example.com/x.ts": "sha256:…" } }
+ *   ]
+ * }
+ * ```
+ *
+ * A reader that knows only v1 reads a v2 record as no record.
+ */
+export const DEPENDENCY_AUDIT_RECORD_VERSION_2 = 2;
+
+/** One shipped package version in a v2 record. */
+export interface DependencyAuditRecordV2Entry {
+  registry: DependencyRegistry;
+  name: string;
+  /** What the shipped source writes after `@`; always equal to `version`. */
+  spec: string;
+  version: string;
+  /** The weakest source across the imports that ship this version. */
+  from: ShippedVersionSource;
+  /** Every import that ships this version was fixed by a valid lock. */
+  locked: boolean;
+  /** The specifiers the author wrote for it, sorted: `npm:ms@^2`, or a bare `ms`. */
+  writtenAs: string[];
+}
+
+/** Where code from outside npm and JSR came from. */
+export type UnauditedDependencyKind = "url" | "git" | "package-json";
+
+/** Code the bundles hold that no registry audit covers. */
+export interface UnauditedDependency {
+  kind: UnauditedDependencyKind;
+  /** The URL, or the package.json spec as written (`file:../x`, a git URL). */
+  origin: string;
+  /**
+   * A SHA-256 of each module the bundle holds, keyed by its URL or its
+   * node_modules-relative path; never a local absolute path.
+   */
+  modules: Record<string, string>;
+}
+
+export interface DependencyAuditRecordV2 {
+  recordVersion: typeof DEPENDENCY_AUDIT_RECORD_VERSION_2;
+  /** Each bundle file's archive path to its `sha256:<hex>`. */
+  bundles: Record<string, string>;
+  dependencies: DependencyAuditRecordV2Entry[];
+  unaudited: UnauditedDependency[];
+}
+
+/** One import push audited, with the version the bundle holds. */
+export interface ShippedImport {
+  registry: DependencyRegistry;
+  name: string;
+  /** The specifier as the author wrote it, or the bare name an import map resolved. */
+  writtenAs: string;
+  shipped: ShippedVersion;
+}
+
+const SOURCE_STRENGTH: Record<ShippedVersionSource, number> = {
+  exact: 0,
+  lockfile: 1,
+  installed: 2,
+  registry: 3,
+};
+
+function sortedRecord(entries: Iterable<[string, string]>) {
+  return Object.fromEntries(
+    [...entries].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
+  );
+}
+
+/** Whether `version` is a plain semver, as the canonical form writes it. */
+export function isPlainSemver(version: string): boolean {
+  const parsed = tryParse(version);
+  return parsed !== undefined && format(parsed) === version;
+}
+
+/**
+ * The v2 record for what push ships: one entry per shipped package version,
+ * imports that are not plain semver left out, and a fixed order so the
+ * archive is the same on every push.
+ */
+export function buildDependencyAuditRecordV2(input: {
+  imports: readonly ShippedImport[];
+  bundles: Readonly<Record<string, string>>;
+  unaudited: readonly UnauditedDependency[];
+}): DependencyAuditRecordV2 {
+  const entries = new Map<string, DependencyAuditRecordV2Entry>();
+  for (const { registry, name, writtenAs, shipped } of input.imports) {
+    const version = shipped.version;
+    if (name.length === 0 || !isPlainSemver(version)) continue;
+    const key = keyOf(registry, name, version);
+    const locked = shipped.locked === true || shipped.from === "lockfile";
+    const entry = entries.get(key);
+    if (!entry) {
+      entries.set(key, {
+        registry,
+        name,
+        spec: version,
+        version,
+        from: shipped.from,
+        locked,
+        writtenAs: [writtenAs],
+      });
+      continue;
+    }
+    if (SOURCE_STRENGTH[shipped.from] > SOURCE_STRENGTH[entry.from]) {
+      entry.from = shipped.from;
+    }
+    entry.locked &&= locked;
+    if (!entry.writtenAs.includes(writtenAs)) entry.writtenAs.push(writtenAs);
+  }
+  const dependencies = [...entries.values()]
+    .map((e) => ({ ...e, writtenAs: [...e.writtenAs].sort() }))
+    .sort((a, b) =>
+      a.registry !== b.registry
+        ? (a.registry < b.registry ? -1 : 1)
+        : a.name !== b.name
+        ? (a.name < b.name ? -1 : 1)
+        : a.version < b.version
+        ? -1
+        : a.version > b.version
+        ? 1
+        : 0
+    );
+  const unaudited = input.unaudited
+    .map((u) => ({
+      kind: u.kind,
+      origin: u.origin,
+      modules: sortedRecord(Object.entries(u.modules)),
+    }))
+    .sort((a, b) =>
+      a.kind !== b.kind
+        ? (a.kind < b.kind ? -1 : 1)
+        : a.origin < b.origin
+        ? -1
+        : a.origin > b.origin
+        ? 1
+        : 0
+    );
+  return {
+    recordVersion: DEPENDENCY_AUDIT_RECORD_VERSION_2,
+    bundles: sortedRecord(Object.entries(input.bundles)),
+    dependencies,
+    unaudited,
+  };
+}
+
+/** The v2 record as the archive stores it. */
+export function serializeDependencyAuditRecordV2(
+  record: DependencyAuditRecordV2,
+): string {
+  return JSON.stringify(
+    {
+      recordVersion: record.recordVersion,
+      bundles: sortedRecord(Object.entries(record.bundles)),
+      dependencies: record.dependencies.map((e) => ({
+        registry: e.registry,
+        name: e.name,
+        spec: e.spec,
+        version: e.version,
+        from: e.from,
+        locked: e.locked,
+        writtenAs: e.writtenAs,
+      })),
+      unaudited: record.unaudited.map((u) => ({
+        kind: u.kind,
+        origin: u.origin,
+        modules: sortedRecord(Object.entries(u.modules)),
+      })),
+    },
+    null,
+    2,
+  ) + "\n";
+}
+
+const UNAUDITED_KINDS: ReadonlySet<string> = new Set<UnauditedDependencyKind>(
+  ["url", "git", "package-json"],
+);
+
+function stringRecord(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v !== "string") return null;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Reads a v2 record from an archive. The author writes it, so a body that
+ * is not a v2 record reads as null, and an entry off format is left out:
+ * a dependency entry must name npm or jsr, a plain semver version and the
+ * same spec; an unaudited entry a known kind, an origin and its modules.
+ * The first entry for a version wins.
+ */
+export function parseDependencyAuditRecordV2(
+  text: string,
+): DependencyAuditRecordV2 | null {
+  let body: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (body.recordVersion !== DEPENDENCY_AUDIT_RECORD_VERSION_2) return null;
+  const bundles = stringRecord(body.bundles);
+  if (
+    !bundles || !Array.isArray(body.dependencies) ||
+    !Array.isArray(body.unaudited)
+  ) return null;
+
+  const dependencies: DependencyAuditRecordV2Entry[] = [];
+  const seen = new Set<string>();
+  for (const raw of body.dependencies) {
+    if (!raw || typeof raw !== "object") continue;
+    const { registry, name, spec, version, from, locked, writtenAs } =
+      raw as Record<string, unknown>;
+    if (
+      (registry !== "npm" && registry !== "jsr") ||
+      typeof name !== "string" || name.length === 0 ||
+      typeof version !== "string" || !isPlainSemver(version) ||
+      spec !== version || typeof from !== "string" || !SOURCES.has(from) ||
+      typeof locked !== "boolean" || !Array.isArray(writtenAs) ||
+      !writtenAs.every((w) => typeof w === "string")
+    ) continue;
+    const key = keyOf(registry, name, version);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    dependencies.push({
+      registry,
+      name,
+      spec: version,
+      version,
+      from: from as ShippedVersionSource,
+      locked,
+      writtenAs: writtenAs as string[],
+    });
+  }
+
+  const unaudited: UnauditedDependency[] = [];
+  for (const raw of body.unaudited) {
+    if (!raw || typeof raw !== "object") continue;
+    const { kind, origin, modules } = raw as Record<string, unknown>;
+    const parsedModules = stringRecord(modules);
+    if (
+      typeof kind !== "string" || !UNAUDITED_KINDS.has(kind) ||
+      typeof origin !== "string" || !parsedModules
+    ) continue;
+    unaudited.push({
+      kind: kind as UnauditedDependencyKind,
+      origin,
+      modules: parsedModules,
+    });
+  }
+
+  return {
+    recordVersion: DEPENDENCY_AUDIT_RECORD_VERSION_2,
+    bundles,
+    dependencies,
+    unaudited,
   };
 }

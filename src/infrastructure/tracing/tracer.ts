@@ -21,6 +21,7 @@ import {
   type Attributes,
   type Context,
   context,
+  type Link,
   ROOT_CONTEXT,
   type Span,
   SpanKind,
@@ -37,7 +38,7 @@ const TRACER_NAME = "swamp";
  * `@opentelemetry/api` dependency.
  */
 export { SpanStatusCode };
-export type { Span };
+export type { Link, Span };
 
 /**
  * Returns the swamp tracer from the global tracer provider.
@@ -201,6 +202,25 @@ export function setActiveSpanAttributes(attributes: Attributes): void {
 }
 
 /**
+ * A link to the active span, for a span that waits on work this one started
+ * (a shared read another request joined), or undefined when none is
+ * recording.
+ */
+export function activeSpanLink(): Link | undefined {
+  const span = trace.getActiveSpan();
+  return span?.isRecording() ? { context: span.spanContext() } : undefined;
+}
+
+/**
+ * Returns a setter for the span active now, for values known only later when
+ * another span (such as a diagnostic phase) has become the active one.
+ */
+export function activeSpanAttributeSetter(): (attributes: Attributes) => void {
+  const span = trace.getActiveSpan();
+  return (attributes) => span?.setAttributes(attributes);
+}
+
+/**
  * Marks the active span ERROR with `message`, and does nothing when no span
  * is active.
  *
@@ -237,8 +257,10 @@ export function withRootSpan<T>(
 /**
  * Runs one cycle of a `swamp serve` background poller as the root of its own
  * trace: a `swamp.serve.poll` span whose `swamp.serve.poller` attribute names
- * the poller. Everything the cycle does — sync-gate waits, datastore pulls,
- * datastore extension calls — nests under it.
+ * the poller. Every span the cycle starts nests under it. A poller's gated
+ * pull has no span of its own, except the access-data poller's, whose gate
+ * wait and pull are diagnostic phases
+ * (design/enablers/serve-phase-telemetry.md).
  */
 export function withPollCycleSpan<T>(
   poller: string,

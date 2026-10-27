@@ -1320,6 +1320,62 @@ Deno.test("denoProjectArgs: without readOnlyLock the flags are unchanged", () =>
   assertEquals(denoProjectArgs(), ["--no-lock", "--node-modules-dir=none"]);
 });
 
+Deno.test("denoProjectArgs: noConfig without a project reads no Deno config", () => {
+  assertEquals(denoProjectArgs({ noConfig: true }), [
+    "--no-config",
+    "--no-lock",
+    "--node-modules-dir=none",
+  ]);
+  assertEquals(denoProjectArgs({ noConfig: true, readOnlyLock: {} }), [
+    "--no-config",
+    "--no-lock",
+    "--node-modules-dir=none",
+  ]);
+  assertEquals(denoProjectArgs({ noConfig: false }), [
+    "--no-lock",
+    "--node-modules-dir=none",
+  ]);
+});
+
+Deno.test("denoProjectArgs: noConfig is ignored with a project", () => {
+  assertEquals(
+    denoProjectArgs({ denoConfigPath: "/p/deno.json", noConfig: true }),
+    ["--config", "/p/deno.json"],
+  );
+  assertEquals(denoProjectArgs({ packageJsonDir: "/p", noConfig: true }), [
+    "--node-modules-dir=auto",
+  ]);
+  assertEquals(
+    denoProjectArgs({
+      denoConfigPath: "/p/deno.json",
+      readOnlyLock: {},
+      noConfig: true,
+    }),
+    ["--config", "/p/deno.json", "--no-lock"],
+  );
+});
+
+Deno.test("bundleExtension: noConfig bundles with --no-config, self-contained or not", async () => {
+  await withTempFile("export const x = 1;\n", async (path) => {
+    for (const selfContained of [false, true]) {
+      const { calls } = await withMockedCommand(
+        [{ stdout: "", stderr: "error: Module not found", code: 1 }],
+        async () => {
+          await assertRejects(() =>
+            bundleExtension(path, DENO_PATH, {
+              noConfig: true,
+              selfContained,
+              env: { DENO_DIR: `/cache-${crypto.randomUUID()}` },
+            })
+          );
+        },
+      );
+      assertEquals(calls.length, 1);
+      assertEquals(calls[0].args.slice(0, 2), ["bundle", "--no-config"]);
+    }
+  });
+});
+
 Deno.test("denoProjectArgs: readOnlyLock freezes an existing lock, disables a missing one and reads node_modules as installed", () => {
   const lockPath = "/p/deno.lock";
   assertEquals(

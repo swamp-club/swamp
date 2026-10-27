@@ -277,9 +277,9 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
     }
   }
   assertEquals(counts, {
-    refusal: 77,
+    refusal: 81,
     "named-delivery": 6,
-    "argument-walk": 3,
+    "argument-walk": 4,
     container: 16,
     "type-name": 1,
   });
@@ -288,11 +288,11 @@ Deno.test("every secret-capable position of a cel-js built-in and of a swamp reg
   assertEquals(functionRefusalSignatures(builtins).length, 56);
   assertEquals(
     functionRefusalSignatures([...SWAMP_FUNCTION_SIGNATURES]).length,
-    44,
+    50,
   );
   assertEquals(
     functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES).length,
-    38,
+    44,
   );
   assertEquals(
     functionRefusalSignatures(QUERY_VIEW_FUNCTION_SIGNATURES).length,
@@ -317,7 +317,7 @@ Deno.test("production half: with typed secrets on, the internal environment defi
     ...functionRefusalSignatures(INTERNAL_FUNCTION_SIGNATURES),
     ...functionRefusalSignatures(TYPED_VAULT_FUNCTION_SIGNATURES),
   ].sort();
-  assertEquals(expected.length, 97);
+  assertEquals(expected.length, 103);
   const secretBearing = definedFunctions(
     createInternalCelEnvironment(),
   ).filter((signature) => {

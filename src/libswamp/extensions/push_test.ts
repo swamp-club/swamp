@@ -2380,6 +2380,12 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names only the bare
         [paths["models/a.ts"]],
         paths["deno.json"],
       ),
+      graphDependencies: {
+        packageVersions: {
+          "jsr:@std/path": { specifier: "jsr:@std/path@1.1.6" },
+        },
+        unaudited: [],
+      },
     });
     const bare = result.reviewRulesResult.warnings.filter((w) =>
       w.ruleId === "bare-specifiers"
@@ -2494,6 +2500,15 @@ Deno.test("extensionPushPrepare: the archive's source carries each bare import's
       ...input,
       denoConfigPath: paths["deno.json"],
       bareImports: await topLevelBareImports(models, paths["deno.json"]),
+      // What the module graph says each target resolved to (swamp-club#3970).
+      graphDependencies: {
+        packageVersions: {
+          "npm:ms@^2": { specifier: "npm:ms@2.1.3" },
+          "jsr:@std/path@^1/posix": { specifier: "jsr:@std/path@1.1.6" },
+          "npm:lodash@4/fp": { specifier: "npm:lodash@4.17.21" },
+        },
+        unaudited: [],
+      },
       dataFilesByKind: { models: [paths["models/data.json"]] },
       sourcePlan: {
         entries: [
@@ -2510,9 +2525,9 @@ Deno.test("extensionPushPrepare: the archive's source carries each bare import's
     assertEquals(
       texts["models/a.ts"],
       [
-        'import ms from "npm:ms@^2";',
-        'import { posix } from "jsr:@std/path@^1/posix";',
-        "import fp from 'npm:lodash@4/fp';",
+        'import ms from "npm:ms@2.1.3";',
+        'import { posix } from "jsr:@std/path@1.1.6/posix";',
+        "import fp from 'npm:lodash@4.17.21/fp';",
         'import u from "unmapped";',
         'import { b } from "./b.ts";',
         'const t = `import ms from "ms"`;',
@@ -2522,7 +2537,7 @@ Deno.test("extensionPushPrepare: the archive's source carries each bare import's
     );
     assertEquals(
       texts["models/b.ts"],
-      'export { default as b } from "npm:ms@^2";\n',
+      'export { default as b } from "npm:ms@2.1.3";\n',
     );
     assertEquals(texts["models/data.json"], '{ "import": "ms" }\n');
     for (const name of ["deno.json", "deno.lock"]) {
@@ -2757,6 +2772,12 @@ Deno.test("extensionPushPrepare: the dependency audit gets the project the bundl
       {
         ...acceptanceInput(dir, [paths["models/a.ts"]]),
         denoConfigPath: paths["deno.json"],
+        graphDependencies: {
+          packageVersions: {
+            "npm:left-pad@^1.0.0": { specifier: "npm:left-pad@1.3.0" },
+          },
+          unaudited: [],
+        },
       },
     );
     assertEquals(projects, [{
@@ -2875,6 +2896,7 @@ Deno.test("extensionPushPrepare: a bare import the deno.json maps is audited and
       registry: "jsr",
       sourceFile: paths["models/a.ts"],
       importedAs: "missing-assert",
+      bundled: { version: "0.0.999", from: "exact" },
     }]]);
   });
 });
@@ -3235,6 +3257,48 @@ Deno.test("extensionPushPrepare: an unaudited dependency fails no gate and reach
   });
 });
 
+Deno.test("extensionPushPrepare: code from outside npm and JSR is not audited, with no npm or jsr import too (swamp-club#4018)", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const deps = makePrepareDeps({
+      extractDependencySpecifiers: () => Promise.resolve([]),
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, {
+      ...input,
+      localGates: undefined,
+      graphDependencies: {
+        packageVersions: {},
+        unaudited: [
+          {
+            kind: "url",
+            origin: "https://example.com/x.ts",
+            modules: { "https://example.com/x.ts": "sha256:00" },
+          },
+          {
+            kind: "package-json",
+            origin: "file:../shared",
+            modules: { "node_modules/shared/index.js": "sha256:00" },
+          },
+        ],
+      },
+    });
+
+    assertEquals(result.gateFailures, []);
+    assertEquals(result.dependencyTrustResult.passed, true);
+    assertEquals(
+      result.dependencyTrustResult.warnings.map((w) => [
+        w.dependency,
+        w.cause,
+        w.notAuditedFix,
+      ]),
+      [
+        ["https://example.com/x.ts", "not-audited", "origin"],
+        ["file:../shared", "not-audited", "origin"],
+      ],
+    );
+  });
+});
+
 Deno.test("extensionPushPrepare: collect mode leaves files rejected by safety and the allowlist out of the archive", async () => {
   await withCollectFixture({
     "README.md": "# hi\n",
@@ -3394,6 +3458,75 @@ Deno.test("extensionPushPrepare: collect mode with no failed gate reports none",
   await withCollectFixture({ "README.md": "# hi\n" }, async (_dir, input) => {
     const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
     assertEquals(result.gateFailures, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: collect mode names a code file that does not parse and leaves it out", async () => {
+  await withCollectFixture({
+    "README.md": "# hi\n",
+    "worker.ts": 'import a from "npm:a@1.0.0";\nexport const broken = ;\n',
+  }, async (_dir, input) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
+    assertEquals(result.gateFailures.map((f) => f.gate), ["source-syntax"]);
+    assertStringIncludes(
+      result.gateFailures[0].message,
+      "Cannot read the imports of worker.ts: it does not parse (Unexpected token (2:22)).",
+    );
+    const files = (await archiveEntries(result.archiveBytes))
+      .filter((e) => e.startsWith("extension/files/") && !e.endsWith("/"));
+    assertEquals(files, ["extension/files/README.md"]);
+  });
+});
+
+Deno.test("extensionPushPrepare: a code file that does not parse fails the push by name", async () => {
+  await withCollectFixture({
+    "worker.ts": "export const broken = ;\n",
+  }, async (_dir, input) => {
+    const error = await assertRejects(() =>
+      extensionPushPrepare(ctx, makePrepareDeps(), {
+        ...input,
+        localGates: "enforce",
+      })
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Cannot read the imports of worker.ts: it does not parse",
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a module deno info cannot load because it does not parse is named by the gate", async () => {
+  await withCollectFixture({}, async (dir, input) => {
+    const broken = join(dir, "models", "broken.ts");
+    await Deno.writeTextFile(broken, "export const broken = ;\n");
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...input,
+      missingModules: [{
+        path: broken,
+        reason: "SyntaxError: Expression expected",
+      }],
+    });
+    assertEquals(result.gateFailures.map((f) => f.gate), ["source-syntax"]);
+    assertStringIncludes(
+      result.gateFailures[0].message,
+      `Cannot read the imports of ${join("models", "broken.ts")}`,
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a bundle the import scan cannot read fails as a swamp bug", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const deps = makePrepareDeps({
+      bundleEntryPoint: () => Promise.resolve("export const broken = ;\n"),
+    });
+    const error = await assertRejects(() =>
+      extensionPushPrepare(ctx, deps, input)
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "swamp built a bundle for echo that its import scan cannot read",
+    );
+    assertStringIncludes((error as Error).message, "This is a swamp bug");
   });
 });
 
@@ -4032,7 +4165,7 @@ Deno.test("extensionPushPrepare: a file with a symlink on its path is refused by
   });
 });
 
-Deno.test("extensionPushPrepare: the archive records the version the audit checked for each dependency (swamp-club#3662)", async () => {
+Deno.test("extensionPushPrepare: the archive records each version it ships, with how it was chosen (swamp-club#3970)", async () => {
   await withAcceptanceFixture({
     "models/a.ts":
       'import ms from "npm:ms@^2.0.0";\nimport p from "pkg";\nexport const a = [ms, p];\n',
@@ -4051,51 +4184,87 @@ Deno.test("extensionPushPrepare: the archive records the version the audit check
       importedAs: "pkg",
       installedVersion: "1.4.0",
     };
+    const audited: DependencySpecifier[] = [];
     const result = await extensionPushPrepare(
       ctx,
       makePrepareDeps({
         extractDependencySpecifiers: () =>
           Promise.resolve([written, installed]),
-        checkDependencyTrust: () =>
-          Promise.resolve({
+        checkDependencyTrust: (specifiers) => {
+          audited.push(...specifiers);
+          return Promise.resolve({
             errors: [],
             warnings: [],
             audited: [],
             passed: true,
-            shipped: [
-              {
-                specifier: written,
-                shipped: { version: "2.1.0", from: "lockfile" },
-              },
-              {
-                specifier: installed,
-                shipped: { version: "1.4.0", from: "installed" },
-              },
-            ],
-          }),
+          });
+        },
       }),
-      acceptanceInput(dir, [paths["models/a.ts"]]),
+      {
+        ...acceptanceInput(dir, [paths["models/a.ts"]]),
+        graphDependencies: {
+          packageVersions: {
+            "npm:ms@^2.0.0": { specifier: "npm:ms@2.1.0" },
+          },
+          unaudited: [{
+            kind: "url",
+            origin: "https://example.com/x.ts",
+            modules: { "https://example.com/x.ts": "sha256:00" },
+          }],
+        },
+      },
     );
+    // The audit reads the version the bundle holds, not one it resolves.
+    assertEquals(audited.map((s) => s.bundled), [
+      { version: "2.1.0", from: "registry" },
+      { version: "1.4.0", from: "installed" },
+    ]);
     const texts = await archiveTexts(result.archiveBytes);
-    assertEquals(JSON.parse(texts["dependency-audit.json"]), {
-      recordVersion: 1,
-      dependencies: [
-        {
-          registry: "npm",
-          name: "ms",
-          spec: "^2.0.0",
-          version: "2.1.0",
-          from: "lockfile",
-        },
-        {
-          registry: "npm",
-          name: "pkg",
-          spec: "1.4.0",
-          version: "1.4.0",
-          from: "installed",
-        },
-      ],
-    });
+    assertEquals(
+      texts["models/a.ts"],
+      'import ms from "npm:ms@2.1.0";\nimport p from "pkg";\nexport const a = [ms, p];\n',
+    );
+    const record = JSON.parse(texts["dependency-audit.json"]);
+    assertEquals(record.recordVersion, 2);
+    assertEquals(record.dependencies, [
+      {
+        registry: "npm",
+        name: "ms",
+        spec: "2.1.0",
+        version: "2.1.0",
+        from: "registry",
+        locked: false,
+        writtenAs: ["npm:ms@^2.0.0"],
+      },
+      {
+        registry: "npm",
+        name: "pkg",
+        spec: "1.4.0",
+        version: "1.4.0",
+        from: "installed",
+        locked: false,
+        writtenAs: ["pkg"],
+      },
+    ]);
+    assertEquals(record.unaudited, [{
+      kind: "url",
+      origin: "https://example.com/x.ts",
+      modules: { "https://example.com/x.ts": "sha256:00" },
+    }]);
+    // One SHA-256 per bundle file, of the bytes the archive holds.
+    assertEquals(Object.keys(record.bundles), ["bundles/a.js"]);
+    const digest = new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(texts["bundles/a.js"]),
+      ),
+    );
+    assertEquals(
+      record.bundles["bundles/a.js"],
+      `sha256:${
+        Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")
+      }`,
+    );
   });
 });
 
@@ -4109,9 +4278,10 @@ Deno.test("extensionPushPrepare: an extension with no dependencies still records
       acceptanceInput(dir, [paths["models/a.ts"]]),
     );
     const texts = await archiveTexts(result.archiveBytes);
-    assertEquals(
-      texts["dependency-audit.json"],
-      '{\n  "recordVersion": 1,\n  "dependencies": []\n}\n',
-    );
+    const record = JSON.parse(texts["dependency-audit.json"]);
+    assertEquals(record.recordVersion, 2);
+    assertEquals(record.dependencies, []);
+    assertEquals(record.unaudited, []);
+    assertEquals(Object.keys(record.bundles), ["bundles/a.js"]);
   });
 });

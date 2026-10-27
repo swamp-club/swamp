@@ -1659,9 +1659,13 @@ for (const bundleName of ["thing.JS", "thing.js.", "thing.mjs", "notes.txt"]) {
               ),
             UserError,
           );
+          // Windows drops a trailing dot from the name it writes.
+          const written = Deno.build.os === "windows"
+            ? bundleName.replace(/\.+$/, "")
+            : bundleName;
           assertStringIncludes(
             error.message,
-            `bundles/${bundleName} line 2: Module extensions/models/thing.ts`,
+            `bundles/${written} line 2: Module extensions/models/thing.ts`,
           );
         });
       });

@@ -31,7 +31,12 @@
  * access or a warm DENO_DIR, as the other bundle tests do.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertStringIncludes,
+} from "@std/assert";
 import { dirname, join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
@@ -211,6 +216,7 @@ async function pushArchive(
     {
       manifest: resolved.manifest,
       bareImports: resolved.bareImports,
+      graphDependencies: resolved.graphDependencies,
       repoDir: author,
       manifestDir,
       modelsDir: resolved.modelsDir,
@@ -328,8 +334,16 @@ Deno.test("extension push: ships each bare import as its import-map target, and 
     const files = await archiveFiles(archive);
     const rel = files.get("models/rel.ts") ?? "";
     assertStringIncludes(rel, 'import ms from "npm:ms@2.1.3";');
-    assertStringIncludes(rel, 'import { basename } from "jsr:@std/path@^1";');
-    assertStringIncludes(rel, 'import { join } from "jsr:@std/path@^1/posix";');
+    // Each range ships pinned to the version the bundle holds
+    // (swamp-club#3970).
+    assertMatch(
+      rel,
+      /import \{ basename \} from "jsr:@std\/path@\d+\.\d+\.\d+";/,
+    );
+    assertMatch(
+      rel,
+      /import \{ join \} from "jsr:@std\/path@\d+\.\d+\.\d+\/posix";/,
+    );
     assertStringIncludes(rel, 'import { two } from "../lib/two.ts";');
     assertStringIncludes(
       files.get("models/_lib/schema.ts") ?? "",
@@ -653,24 +667,25 @@ Deno.test("extension push: the archive records the locked version of a written a
     const locked = (spec: string) => lock?.resolvedFor("npm", "ms", spec);
     assert(locked("^2.1.0") !== undefined);
     const files = await archiveFiles(archive);
-    assertEquals(JSON.parse(files.get("dependency-audit.json") ?? ""), {
-      recordVersion: 1,
-      dependencies: [
-        {
-          registry: "npm",
-          name: "ms",
-          spec: "^2.1.0",
-          version: locked("^2.1.0"),
-          from: "lockfile",
-        },
-        {
-          registry: "npm",
-          name: "ms",
-          spec: "~2.1.0",
-          version: locked("~2.1.0") ?? locked("^2.1.0"),
-          from: "lockfile",
-        },
-      ],
-    });
+    // Both ranges ship pinned to the locked version, one entry for it
+    // (swamp-club#3970).
+    const version = locked("^2.1.0");
+    assertEquals(locked("~2.1.0") ?? version, version);
+    const record = JSON.parse(files.get("dependency-audit.json") ?? "");
+    assertEquals(record.recordVersion, 2);
+    assertEquals(record.dependencies, [{
+      registry: "npm",
+      name: "ms",
+      spec: version,
+      version,
+      from: "lockfile",
+      locked: true,
+      writtenAs: ["ms", "npm:ms@~2.1.0"],
+    }]);
+    assertEquals(
+      files.get("models/took.ts"),
+      `import ms from "npm:ms@${version}";\nimport ms2 from "npm:ms@${version}";\n` +
+        "export const took = [ms(2000), ms2(1000)];\n",
+    );
   });
 });

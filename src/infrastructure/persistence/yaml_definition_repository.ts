@@ -67,6 +67,11 @@ import {
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
 import {
+  currentDiagnosticTally,
+  startDiagnosticPhase,
+  utf8ByteLength,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
   unreadableRecordsUnder,
   warnUnreadableLeftOut,
 } from "./unreadable_records.ts";
@@ -295,6 +300,23 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   async findAll(type: ModelType): Promise<Definition[]> {
+    const scan = startDiagnosticPhase("definition_scan", {
+      "swamp.diagnostic.scan_root": "primary",
+      "swamp.diagnostic.scan_strategy": "full_listing",
+      "swamp.diagnostic.definition_type": type.normalized,
+    });
+    try {
+      const definitions = await scan.run(() => this.scanTypeDir(type));
+      scan.tally.add("definitions", definitions.length);
+      scan.end();
+      return definitions;
+    } catch (error) {
+      scan.fail(error);
+      throw error;
+    }
+  }
+
+  private async scanTypeDir(type: ModelType): Promise<Definition[]> {
     const dir = this.getTypeDir(type);
     const definitions: Definition[] = [];
 
@@ -304,12 +326,12 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
         ) {
           const path = join(dir, entry.name);
+          currentDiagnosticTally().add("files_examined");
           try {
             if (entry.isSymlink) {
               await assertSafePath(path, this.repoDir);
             }
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as DefinitionData | null;
+            const data = await readDefinitionData(path);
             if (!data) continue;
             const definition = Definition.fromData(data);
             this.idToActualPath.set(
@@ -328,6 +350,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
                 [path, ...errorPaths(error)],
               );
             }
+            currentDiagnosticTally().add("broken_files");
             const msg = error instanceof Error ? error.message : String(error);
             logger.warn`Skipping broken definition file ${path}: ${msg}`;
           }
@@ -344,18 +367,49 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   async findByName(type: ModelType, name: string): Promise<Definition | null> {
+    const lookup = startDiagnosticPhase("definition_lookup", {
+      "swamp.diagnostic.definition_type": type.normalized,
+    });
+    const probe: { method: LookupMethod } = { method: "none" };
+    try {
+      const found = await lookup.run(() =>
+        this.lookupByName(type, name, probe)
+      );
+      lookup.attributes({
+        "swamp.diagnostic.lookup_method": probe.method,
+        "swamp.diagnostic.hit": found !== null,
+        "swamp.diagnostic.source": found === null
+          ? "none"
+          : probe.method.startsWith("secondary")
+          ? "auto"
+          : "primary",
+      });
+      lookup.end();
+      return found;
+    } catch (error) {
+      lookup.attributes({ "swamp.diagnostic.lookup_method": probe.method });
+      lookup.fail(error);
+      throw error;
+    }
+  }
+
+  private async lookupByName(
+    type: ModelType,
+    name: string,
+    probe: { method: LookupMethod },
+  ): Promise<Definition | null> {
     // Fast path: try name-based filename directly
     if (isFilenameSafeDefinitionName(name)) {
       const namePath = this.getNamePath(type, name);
       try {
-        const content = await Deno.readTextFile(namePath);
-        const data = parseYaml(content) as DefinitionData | null;
+        const data = await readDefinitionData(namePath);
         if (data) {
           const definition = Definition.fromData(data);
           if (definition.name !== name) {
             // File content doesn't match filename — fall through to slow path
           } else {
             this.idToActualPath.set(definition.id as DefinitionId, namePath);
+            probe.method = "name_file";
             return definition;
           }
         }
@@ -374,7 +428,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const hint = this.nameToActualPath.get(hintKey);
     if (hint?.primary) {
       const hinted = await this.readDefinitionIfNamed(hint.path, name);
-      if (hinted) return hinted;
+      if (hinted) {
+        probe.method = "primary_hint";
+        return hinted;
+      }
       this.nameToActualPath.delete(hintKey);
     }
 
@@ -387,6 +444,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (foundPath) {
         this.nameToActualPath.set(hintKey, { path: foundPath, primary: true });
       }
+      probe.method = "primary_scan";
       return found;
     }
     if (this.secondaryBaseDir) {
@@ -396,6 +454,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         const hinted = await this.readDefinitionIfNamed(hint.path, name);
         if (hinted) {
           this.idToActualPath.set(hinted.id as DefinitionId, hint.path);
+          probe.method = "secondary_hint";
           return hinted;
         }
         this.nameToActualPath.delete(hintKey);
@@ -411,15 +470,17 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             path: namePath,
             primary: false,
           });
+          probe.method = "secondary_name_file";
           return named;
         }
       }
       // Only a file at another path is left: the name index answers without
       // reading every file of the type each time (swamp-club#3984).
-      const secondaryMatch = await this.autoDefinitionNameIndex(
+      const secondaryMatch = await this.findInNameIndex(
         type,
         this.secondaryBaseDir,
-      ).find(name);
+        name,
+      );
       if (secondaryMatch) {
         this.idToActualPath.set(
           secondaryMatch.definition.id as DefinitionId,
@@ -429,6 +490,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           path: secondaryMatch.path,
           primary: false,
         });
+        probe.method = "secondary_index";
         return secondaryMatch.definition;
       }
       if (isFilenameSafeDefinitionName(name)) {
@@ -438,6 +500,33 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
     return null;
+  }
+
+  /**
+   * The name index's answer for `name`, as a `definition_scan` phase: the
+   * index's own `swamp.definition.name_index.validate` span nests under it
+   * when this lookup ran the check.
+   */
+  private async findInNameIndex(
+    type: ModelType,
+    secondaryBaseDir: string,
+    name: string,
+  ): Promise<{ definition: Definition; path: string } | null> {
+    const scan = startDiagnosticPhase("definition_scan", {
+      "swamp.diagnostic.scan_root": "auto",
+      "swamp.diagnostic.scan_strategy": "name_index",
+      "swamp.diagnostic.definition_type": type.normalized,
+    });
+    try {
+      const found = await scan.run(() =>
+        this.autoDefinitionNameIndex(type, secondaryBaseDir).find(name)
+      );
+      scan.end();
+      return found;
+    } catch (error) {
+      scan.fail(error);
+      throw error;
+    }
   }
 
   private autoDefinitionNameIndex(
@@ -538,8 +627,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if ((await Deno.lstat(path)).isSymlink) {
         await assertSafePath(path, this.repoDir);
       }
-      const content = await Deno.readTextFile(path);
-      const data = parseYaml(content) as DefinitionData | null;
+      const data = await readDefinitionData(path);
       if (!data) return null;
       const definition = Definition.fromData(data);
       return definition.name === name ? definition : null;
@@ -553,14 +641,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     // This method has no name-derived fast path at all — without a hint every
     // call re-walks and re-parses every definition in the repository until it
-    // hits a match.
+    // hits a match. The running diagnostic phase, if any, counts which step
+    // answered; the walks count their reads (files_read, read_work_ms).
+    const tally = currentDiagnosticTally();
     const hint = this.globalNameToActualPath.get(name);
     if (hint?.primary) {
       const hinted = await this.readHintedWithType(hint, name);
-      if (hinted) return hinted;
+      if (hinted) {
+        tally.add("name_hint_hits");
+        return hinted;
+      }
       this.globalNameToActualPath.delete(name);
     }
 
+    tally.add("primary_walks");
     const result = await this.searchDefinitionByName(
       this.baseDir,
       [],
@@ -573,9 +667,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       // cannot shadow a primary definition added since the hint was recorded.
       if (hint && !hint.primary) {
         const hinted = await this.readHintedWithType(hint, name);
-        if (hinted) return hinted;
+        if (hinted) {
+          tally.add("name_hint_hits");
+          return hinted;
+        }
         this.globalNameToActualPath.delete(name);
       }
+      tally.add("secondary_walks");
       const secondary = await this.searchDefinitionByName(
         this.secondaryBaseDir,
         [],
@@ -669,8 +767,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
             if (entry.isSymlink) {
               await assertSafePath(fullPath, this.repoDir);
             }
-            const content = await Deno.readTextFile(fullPath);
-            const data = parseYaml(content) as DefinitionData | null;
+            const data = await readDefinitionData(fullPath);
             if (!data) continue;
             const definition = Definition.fromData(data);
 
@@ -876,8 +973,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (isSymlink) {
         await assertSafePath(fullPath, this.repoDir);
       }
-      const content = await Deno.readTextFile(fullPath);
-      const data = parseYaml(content) as DefinitionData | null;
+      const data = await readDefinitionData(fullPath);
       if (!data) return null;
       const definition = Definition.fromData(data);
 
@@ -901,6 +997,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
           [fullPath, ...errorPaths(error)],
         );
       }
+      currentDiagnosticTally().add("broken_files");
       const msg = error instanceof Error ? error.message : String(error);
       logger.warn`Skipping broken definition file ${fullPath}: ${msg}`;
       return null;
@@ -1149,9 +1246,15 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     id: DefinitionId,
     name?: string,
   ): Promise<void> {
+    // Lookups, file removal, the deleted event and change staging are
+    // measured apart into the running diagnostic phase, if any.
+    const tally = currentDiagnosticTally();
     // Populate cache so we discover name-based and secondary files on a cold
     // instance
-    const definition = await this.findById(type, id);
+    const definition = await tally.measure(
+      "lookup",
+      () => this.findById(type, id),
+    );
     let definitionName = name ?? definition?.name;
 
     // Try removing all possible file paths; declaresOther below skips any
@@ -1172,10 +1275,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
     // The definition may also (or only) live in the auto-definitions dir.
     if (this.secondaryBaseDir) {
-      const located = await this.locateByIdInDir(
-        this.secondaryBaseDir,
-        type,
-        id,
+      const secondaryBaseDir = this.secondaryBaseDir;
+      const located = await tally.measure(
+        "lookup",
+        () => this.locateByIdInDir(secondaryBaseDir, type, id),
       );
       if (located) {
         pathsToTry.add(located.path);
@@ -1187,75 +1290,83 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // A file here that declares another definition is kept, so the change is
     // a write of this path rather than its removal.
     const kept = await this.declaresOther(resolvedPath, id, name);
-    return await withChangeSignalled(
-      this.markDirtyHook,
-      {
-        kind: kept ? "write" : "remove",
-        path: resolvedPath,
-      },
-      { typed: true },
-      async () => {
-        const priors = typedStagingActive(this.markDirtyHook)
-          ? await readPriors([...pathsToTry])
-          : new Map<string, PriorFile>();
+    return await tally.measure("change_stage", () =>
+      withChangeSignalled(
+        this.markDirtyHook,
+        {
+          kind: kept ? "write" : "remove",
+          path: resolvedPath,
+        },
+        { typed: true },
+        async () => {
+          const priors = typedStagingActive(this.markDirtyHook)
+            ? await readPriors([...pathsToTry])
+            : new Map<string, PriorFile>();
 
-        let deleted = false;
-        const removed: string[] = [];
-        for (const path of pathsToTry) {
-          // The id-named path is also where a definition named with this UUID
-          // lives, and a copied file can share the id; never remove another
-          // definition's file.
-          if (await this.declaresOther(path, id, name)) continue;
-          try {
-            const otherCandidate = path !== resolvedPath &&
-              await this.exists(path);
-            await withChangeSignalled(
-              this.markDirtyHook,
-              otherCandidate ? [{ kind: "remove", path }] : [],
-              { typed: true },
-              () => Deno.remove(path),
-            );
-            deleted = true;
-            removed.push(path);
+          let deleted = false;
+          const removed: string[] = [];
+          for (const path of pathsToTry) {
+            // The id-named path is also where a definition named with this UUID
+            // lives, and a copied file can share the id; never remove another
+            // definition's file.
+            if (await this.declaresOther(path, id, name)) continue;
+            try {
+              const otherCandidate = path !== resolvedPath &&
+                await this.exists(path);
+              await withChangeSignalled(
+                this.markDirtyHook,
+                otherCandidate ? [{ kind: "remove", path }] : [],
+                { typed: true },
+                () => tally.measure("file_remove", () => Deno.remove(path)),
+              );
+              deleted = true;
+              removed.push(path);
 
-            // Clean up empty parent directories
-            await cleanupEmptyParentDirs(path, this.ownerBaseDir(path));
-          } catch (error) {
-            if (!(error instanceof Deno.errors.NotFound)) {
-              throw error;
+              // Clean up empty parent directories
+              await tally.measure(
+                "file_remove",
+                () => cleanupEmptyParentDirs(path, this.ownerBaseDir(path)),
+              );
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) {
+                throw error;
+              }
             }
           }
-        }
 
-        if (deleted) {
-          this.idToActualPath.delete(id);
+          if (deleted) {
+            this.idToActualPath.delete(id);
 
-          if (this.eventBus && definitionName) {
-            const event = createDefinitionDeleted(
-              type.normalized,
-              id,
-              definitionName,
-            );
-            await this.eventBus.publish(event);
+            if (this.eventBus && definitionName) {
+              const event = createDefinitionDeleted(
+                type.normalized,
+                id,
+                definitionName,
+              );
+              const eventBus = this.eventBus;
+              await tally.measure(
+                "event_publish",
+                () => eventBus.publish(event),
+              );
+            }
+          } else {
+            logger.debug`No definition file found to delete for ${id}`;
           }
-        } else {
-          logger.debug`No definition file found to delete for ${id}`;
-        }
-        const batches = typedStagingActive(this.markDirtyHook)
-          ? definitionDeleteBatches({
-            kind: "model",
-            id,
-            name: definitionName,
-            removed,
-            priors,
-            tierOf: (path) => this.stagingTierOf(path),
-          })
-          : [[]];
-        for (const batch of batches) {
-          await stageTyped(this.markDirtyHook, () => batch);
-        }
-      },
-    );
+          const batches = typedStagingActive(this.markDirtyHook)
+            ? definitionDeleteBatches({
+              kind: "model",
+              id,
+              name: definitionName,
+              removed,
+              priors,
+              tierOf: (path) => this.stagingTierOf(path),
+            })
+            : [[]];
+          for (const batch of batches) {
+            await stageTyped(this.markDirtyHook, () => batch);
+          }
+        },
+      ));
   }
 
   /**
@@ -1546,6 +1657,34 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       dir === join(this.secondaryBaseDir, type.toDirectoryPath());
   }
 }
+
+/**
+ * Reads and parses one definition file, counting it into the running
+ * diagnostic phase: `files_read` and `bytes_read` for a file read, and its
+ * read and parse time as `read_work_ms` and `parse_work_ms`.
+ */
+async function readDefinitionData(
+  path: string,
+): Promise<DefinitionData | null> {
+  const tally = currentDiagnosticTally();
+  const content = await tally.measure("read", () => Deno.readTextFile(path));
+  tally.add("files_read");
+  if (tally.recording) tally.add("bytes_read", utf8ByteLength(content));
+  return tally.measureSync(
+    "parse",
+    () => parseYaml(content),
+  ) as DefinitionData | null;
+}
+
+/** Which step of {@link YamlDefinitionRepository.findByName} answered. */
+type LookupMethod =
+  | "name_file"
+  | "primary_hint"
+  | "primary_scan"
+  | "secondary_hint"
+  | "secondary_name_file"
+  | "secondary_index"
+  | "none";
 
 /**
  * Key for the per-type name hint map.

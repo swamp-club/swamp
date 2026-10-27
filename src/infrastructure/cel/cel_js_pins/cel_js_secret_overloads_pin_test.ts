@@ -163,14 +163,14 @@ Deno.test(
     assertEquals(functionRefusalSignatures(builtins).length, 56);
     assertEquals(
       functionRefusalSignatures(SWAMP_FUNCTION_SIGNATURES).length,
-      44,
+      50,
     );
     assertEquals(operatorRefusalSignatures().length, 293);
     assertEquals(operatorRefusalSignatures(namespaceTypes).length, 388);
 
     const { registration } = internalEnvironment();
     assertEquals(registration.operators.length, 388);
-    assertEquals(registration.functions.length, 100);
+    assertEquals(registration.functions.length, 106);
   },
 );
 
@@ -427,6 +427,10 @@ Deno.test(
       [
         "data.version(s, 'b', [1], 1)",
         "CelDataNamespace.version(Secret, string, list<dyn>, int): dyn",
+      ],
+      [
+        "data.version(s, 'b', [1], 1.0)",
+        "CelDataNamespace.version(Secret, string, list<dyn>, double): dyn",
       ],
       ["data.query(s)", "CelDataNamespace.query(Secret): dyn"],
       [

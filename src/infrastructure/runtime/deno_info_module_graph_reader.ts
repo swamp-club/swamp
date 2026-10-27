@@ -17,26 +17,48 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { fromFileUrl, join, toFileUrl } from "@std/path";
+import {
+  fromFileUrl,
+  isAbsolute,
+  join,
+  relative,
+  SEPARATOR,
+  toFileUrl,
+} from "@std/path";
+import type { UnauditedDependency } from "@swamp-club/extension-scoring/dependency-audit";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   denoProjectArgs,
   isStaleLockfile,
+  type ReadOnlyLock,
   staleLockfileError,
 } from "../../domain/models/bundle.ts";
 import { readOnlyLockFor } from "./deno_lockfile_reader.ts";
+import { sha256Hex } from "../persistence/config_staging.ts";
 import { runDenoInfo } from "../../domain/extensions/dependency_resolution/deno_info.ts";
 import {
   bareImportsFromDenoInfo,
   denoInfoRootDir,
   hasUnresolvedBareImports,
+  installedPackageDir,
   installedPackageImports,
   isLocalModuleSpecifier,
   type ResolvedBareImport,
   withPackageSpecifiers,
 } from "../../domain/extensions/bare_import_resolution.ts";
+import {
+  installedPackageVersion,
+  type PackageVersion,
+  type PackageVersions,
+  packageVersionsFromDenoInfo,
+} from "../../domain/extensions/dependency_resolution/package_versions.ts";
+import {
+  nonRegistryDependencies,
+  urlImportClosures,
+} from "../../domain/extensions/dependency_resolution/unaudited_code.ts";
 import type {
+  InstalledPackage,
   LocalEdge,
   LocalModule,
   MissingLocalModule,
@@ -226,6 +248,145 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
+ * The installed version of each `npm:` import a local module writes, and of
+ * each import-map target, that Deno read from node_modules rather than the
+ * registry: the bundle holds that copy, so push pins it (swamp-club#3970).
+ */
+async function installedPackageVersionsOf(
+  json: unknown,
+  bareImports: readonly ResolvedBareImport[],
+): Promise<PackageVersions> {
+  const rootDir = denoInfoRootDir(json);
+  const raw = (json as { modules?: DenoInfoModule[] })?.modules;
+  const versions: Record<string, PackageVersion> = {};
+  const installedAt = async (
+    specifier: string,
+    target: string | undefined,
+  ): Promise<void> => {
+    if (specifier in versions || !target?.startsWith("file:")) return;
+    const pkg = installedPackageDir(fromFileUrl(target));
+    if (!pkg) return;
+    const version = (await readJson(join(pkg.dir, "package.json")) as {
+      version?: unknown;
+    } | undefined)?.version;
+    if (typeof version !== "string") return;
+    const resolved = installedPackageVersion(specifier, pkg.name, version);
+    if (resolved) versions[specifier] = resolved;
+  };
+  for (const m of Array.isArray(raw) ? raw : []) {
+    if (!isLocalModuleSpecifier(m.specifier, rootDir)) continue;
+    const importer = fromFileUrl(m.specifier);
+    for (const dep of m.dependencies ?? []) {
+      const target = dep.code?.specifier ?? dep.type?.specifier;
+      if (dep.specifier?.startsWith("npm:")) {
+        await installedAt(dep.specifier, target);
+      }
+      const mapped = bareImports.find((b) =>
+        dep.specifier === b.specifier && importer === b.importer
+      )?.target;
+      if (mapped?.startsWith("npm:")) await installedAt(mapped, target);
+    }
+  }
+  return versions;
+}
+
+/** `sha256:<hex>` of a file's bytes; undefined when it cannot be read. */
+async function fileSha256(path: string): Promise<string | undefined> {
+  try {
+    return `sha256:${await sha256Hex(await Deno.readFile(path))}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `file:` modules of a `deno info` graph, as paths. */
+function fileModulePaths(json: unknown): string[] {
+  const raw = (json as { modules?: DenoInfoModule[] })?.modules;
+  return (Array.isArray(raw) ? raw : []).flatMap((m) =>
+    typeof m.specifier === "string" && m.specifier.startsWith("file:")
+      ? [fromFileUrl(m.specifier)]
+      : []
+  );
+}
+
+/** A path from `dir`, with forward slashes. */
+function relativeForward(dir: string, path: string): string {
+  return relative(dir, path).split(SEPARATOR).join("/");
+}
+
+/**
+ * Every package the graph takes from a node_modules below `packageDir`,
+ * transitive ones included, with the version its package.json names.
+ */
+async function installedPackagesOf(
+  json: unknown,
+  packageDir: string,
+): Promise<InstalledPackage[]> {
+  const dirs = new Set<string>();
+  for (const path of fileModulePaths(json)) {
+    const rel = relative(packageDir, path);
+    if (rel.startsWith("..") || isAbsolute(rel)) continue;
+    const pkg = installedPackageDir(path);
+    if (pkg) dirs.add(pkg.dir);
+  }
+  const packages: InstalledPackage[] = [];
+  for (const dir of [...dirs].sort()) {
+    const version = (await readJson(join(dir, "package.json")) as {
+      version?: unknown;
+    } | undefined)?.version;
+    if (typeof version === "string") {
+      packages.push({ path: relativeForward(packageDir, dir), version });
+    }
+  }
+  return packages;
+}
+
+/**
+ * Code the graph holds from outside npm and JSR: each URL a local module
+ * imports with the modules fetched through it, and in a package.json
+ * project each dependency installed from a path, a workspace or git with
+ * the modules the graph reads from it. Every module carries a SHA-256 of
+ * the copy Deno read; a module keys by its URL or its path from the
+ * package.json directory, never by a local absolute path.
+ */
+async function unauditedCodeOf(
+  json: unknown,
+  packageProject: { dir: string; packageJson: unknown } | undefined,
+): Promise<UnauditedDependency[]> {
+  const rootDir = denoInfoRootDir(json);
+  const unaudited: UnauditedDependency[] = [];
+  for (
+    const closure of urlImportClosures(
+      json,
+      (specifier) => isLocalModuleSpecifier(specifier, rootDir),
+    )
+  ) {
+    const modules: Record<string, string> = {};
+    for (const m of closure.modules) {
+      const sha = m.local ? await fileSha256(m.local) : undefined;
+      if (sha) modules[m.url] = sha;
+    }
+    unaudited.push({ kind: "url", origin: closure.origin, modules });
+  }
+  if (packageProject) {
+    const paths = fileModulePaths(json);
+    for (const dep of nonRegistryDependencies(packageProject.packageJson)) {
+      const prefix = join(packageProject.dir, "node_modules", dep.name) +
+        SEPARATOR;
+      const modules: Record<string, string> = {};
+      for (const path of paths.filter((p) => p.startsWith(prefix)).sort()) {
+        const sha = await fileSha256(path);
+        if (sha) modules[relativeForward(packageProject.dir, path)] = sha;
+      }
+      if (Object.keys(modules).length > 0) {
+        unaudited.push({ kind: dep.kind, origin: dep.spec, modules });
+      }
+    }
+  }
+  return unaudited;
+}
+
+/**
  * Reads an entry point's module graph with `deno info --json`, run with the
  * same project flags, working directory and environment as `deno bundle`, so
  * the graph is the one the bundle is built from.
@@ -234,11 +395,17 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
   /**
    * @param options.readOnlyLock - Never write the project's lockfile, as push
    *   and quality bundle: `--frozen` when it has one, `--no-lock` when not.
+   * @param options.readPastStaleLock - With `readOnlyLock`, read the graph
+   *   again with `--no-lock` when the lock is stale, instead of failing, as
+   *   the extension loader does (swamp-club#3869).
    */
   constructor(
     private readonly denoPath: string,
     private readonly env?: Record<string, string>,
-    private readonly options?: { readOnlyLock?: boolean },
+    private readonly options?: {
+      readOnlyLock?: boolean;
+      readPastStaleLock?: boolean;
+    },
   ) {}
 
   async read(
@@ -248,6 +415,14 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     const readOnlyLock = this.options?.readOnlyLock
       ? await readOnlyLockFor(project)
       : undefined;
+    return await this.readGraph(entryPoint, project, readOnlyLock);
+  }
+
+  private async readGraph(
+    entryPoint: string,
+    project: ModuleGraphProject,
+    readOnlyLock: ReadOnlyLock | undefined,
+  ): Promise<SourceModuleGraph> {
     const result = await runDenoInfo(
       this.denoPath,
       toFileUrl(entryPoint).href,
@@ -261,6 +436,9 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
     if (!result.success) {
       const stderr = result.stderr;
       if (readOnlyLock?.lockPath && isStaleLockfile(stderr)) {
+        if (this.options?.readPastStaleLock) {
+          return await this.readGraph(entryPoint, project, {});
+        }
         throw staleLockfileError(
           readOnlyLock.lockPath,
           entryPoint,
@@ -296,17 +474,23 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         [entryPoint],
       );
     }
+    let packageJson: unknown;
     if (!project.denoConfigPath && project.packageJsonDir) {
       // Read as installed (--node-modules-dir=manual), a bare import names a
       // file in node_modules; name the package installed there instead
       // (swamp-club#3630).
+      packageJson = await readProjectPackageJson(project.packageJsonDir);
       const installed = await installedPackageImports(
         graph.bareImports ?? [],
-        await readProjectPackageJson(project.packageJsonDir),
+        packageJson,
         (dir) => readJson(join(dir, "package.json")),
       );
       graph.bareImports = installed.resolutions;
       if (installed.stale.length > 0) graph.staleInstalls = installed.stale;
+      graph.installedPackages = await installedPackagesOf(
+        json,
+        project.packageJsonDir,
+      );
     }
     if (
       project.denoConfigPath &&
@@ -317,6 +501,19 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         await this.readPackageSpecifiers(entryPoint, project),
       );
     }
+    // The exact versions push pins in the archive's source, and the code
+    // from outside npm and JSR it lists as unaudited (swamp-club#3970).
+    graph.packageVersions = {
+      ...await installedPackageVersionsOf(json, graph.bareImports ?? []),
+      ...packageVersionsFromDenoInfo(json),
+    };
+    const unaudited = await unauditedCodeOf(
+      json,
+      project.packageJsonDir && !project.denoConfigPath
+        ? { dir: project.packageJsonDir, packageJson }
+        : undefined,
+    );
+    if (unaudited.length > 0) graph.unaudited = unaudited;
     return graph;
   }
 
@@ -358,4 +555,8 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
 export const createDenoInfoModuleGraphReader: ModuleGraphReaderFactory = (
   denoPath,
   env,
-) => new DenoInfoModuleGraphReader(denoPath, env);
+) =>
+  new DenoInfoModuleGraphReader(denoPath, env, {
+    readOnlyLock: true,
+    readPastStaleLock: true,
+  });

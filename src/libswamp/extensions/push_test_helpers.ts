@@ -46,7 +46,7 @@ export async function topLevelBareImports(
   const found: ResolvedBareImport[] = [];
   for (const importer of files) {
     const source = await Deno.readTextFile(importer);
-    for (const { specifier } of scanImportSites(source)) {
+    for (const { specifier } of scanImportSites(source, importer) ?? []) {
       if (!isBareSpecifier(specifier)) continue;
       const target = resolveBareImport(specifier, imports);
       found.push(
@@ -126,6 +126,7 @@ export function buildPrepareInput(
     manifest,
     repoDir,
     bareImports: [],
+    graphDependencies: { packageVersions: {}, unaudited: [] },
     manifestDir: repoDir,
     modelsDir: join(repoDir, "models"),
     allModelFiles: [],

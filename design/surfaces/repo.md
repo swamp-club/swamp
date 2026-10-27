@@ -302,7 +302,7 @@ garbageCollection:
 - **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
   collectors run in order (runs, snapshots, outputs, data, audit), in
   batches of 100. Data batches share one scan per pass, resuming where the
-  last stopped, so a name retention keeps is read once per pass. Each batch is traced (`swamp.retention.batch`).
+  last stopped, so a name retention keeps is read once per pass. Each batch is traced (`swamp.retention.batch`); an outputs batch also exports its listing, scan, orphan-log sweep, commit and gate wait as phases ([serve phase telemetry](../enablers/serve-phase-telemetry.md)).
   - `swamp serve` runs `RetentionGcService` five minutes after start and then
     hourly. It reads `.swamp.yaml` each tick, takes the sync gate per batch
     (never for the whole pass), backs off while every run slot is taken,

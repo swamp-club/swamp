@@ -423,6 +423,37 @@ Deno.test("unscopedCallerFrom: names the first source frame outside the persiste
   });
 });
 
+Deno.test("unscopedCallerFrom: skips the diagnostic phase wrappers around a repository's work", () => {
+  const stack = stackOf([
+    [
+      "signalChange",
+      `${ROOT}src/infrastructure/persistence/unit_of_work_scope.ts`,
+      179,
+    ],
+    [
+      "YamlOutputRepository.removeOutputFiles",
+      `${ROOT}src/infrastructure/persistence/yaml_output_repository.ts`,
+      847,
+    ],
+    [
+      "PhaseTally.measure",
+      `${ROOT}src/domain/diagnostics/diagnostic_phase.ts`,
+      154,
+    ],
+    [
+      "observeDiagnosticPhase",
+      `${ROOT}src/domain/diagnostics/diagnostic_phase.ts`,
+      454,
+    ],
+    ["runRetentionPass", `${ROOT}src/libswamp/retention/pass.ts`, 190],
+  ]);
+  assertEquals(unscopedCallerFrom(stack, ROOT), {
+    file: "src/libswamp/retention/pass.ts",
+    line: 190,
+    fn: "runRetentionPass",
+  });
+});
+
 Deno.test("unscopedCallerFrom: an anonymous frame takes the nearest named frame below it in the same file", () => {
   const stack = stackOf([
     [

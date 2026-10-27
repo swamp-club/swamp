@@ -31,13 +31,27 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
-    "dependencies": []
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
+    "dependencies": [],
+    "unaudited": [
+      {
+        "kind": "package-json",
+        "origin": "file:./local",
+        "modules": {
+          "node_modules/local/index.js": "sha256 of the module"
+        }
+      }
+    ]
   },
   "audited": [],
   "trust": {
     "errors": [],
-    "warnings": []
+    "warnings": [
+      "file:./local [not-audited]: not audited: file:./local is a local package.json dependency, from outside npm and JSR, so no registry audit covers it"
+    ]
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",

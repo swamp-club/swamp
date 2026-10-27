@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { currentDiagnosticTally } from "../domain/diagnostics/diagnostic_phase.ts";
 import { minOf } from "../domain/array_extrema.ts";
 import type { EventBus } from "../domain/events/event_bus.ts";
 import type { ModelUpdated } from "../domain/events/types.ts";
@@ -114,6 +115,11 @@ export class FilesystemAccessDataChangeSource {
     );
   }
 
+  /** Whether `detect()` has a baseline to compare against. */
+  get hasBaseline(): boolean {
+    return this.#baseline !== null;
+  }
+
   /** Takes the baseline the first `detect()` compares against. */
   async prime(): Promise<void> {
     this.#baseline = await this.#fingerprint();
@@ -126,7 +132,18 @@ export class FilesystemAccessDataChangeSource {
    * caller reloads rather than trusting a snapshot it cannot vouch for.
    */
   async detect(): Promise<number> {
+    // Counted into the poller's change_detection phase, when one records.
+    const tally = currentDiagnosticTally();
     const current = await this.#fingerprint();
+    if (tally.recording) {
+      // A directory that could not be listed is keyed by itself, not a record.
+      const dirs = new Set(this.#dirs);
+      for (const [key, record] of current) {
+        if (!dirs.has(key)) tally.add("records");
+        tally.add("entries", record.entries.size);
+        tally.add("unreadable_entries", unreadableEntries(record.entries).size);
+      }
+    }
     // Own versions are only ever matched against the versions added since
     // the last call. One named by an event that arrived after its version
     // was already counted can match nothing later, so it is dropped.
@@ -143,8 +160,11 @@ export class FilesystemAccessDataChangeSource {
       if (sameEntries(before?.entries, after?.entries)) continue;
       if (!isOwnChange(before, after, ownVersions.get(modelIdOf(key)))) {
         changed++;
+      } else {
+        tally.add("own_changes_excluded");
       }
     }
+    tally.add("changed", changed);
     return changed;
   }
 

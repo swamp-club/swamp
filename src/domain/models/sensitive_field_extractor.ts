@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
 import { freeRoots, isBlankConstant } from "../expressions/cel_grammar.ts";
+import { indexPath, keyPath } from "../expressions/provenance_map.ts";
 import {
   isExpressionsOnly,
   scanExpressions,
@@ -251,6 +252,34 @@ export function isLiteralSecret(value: unknown): boolean {
     );
   }
   return true;
+}
+
+/**
+ * Where the global-argument fields marked `{ sensitive: true }` in `schema`
+ * hold a value in `args`, each as the path expression extraction writes for
+ * it (see `extractExpressions`), walked as
+ * {@link findLiteralSensitiveGlobalArgs} walks them.
+ */
+export function sensitiveGlobalArgPaths(
+  schema: z.ZodTypeAny | undefined,
+  args: Record<string, unknown> | undefined,
+): string[] {
+  if (!schema || !args) return [];
+  return findValuesWithMetadata(schema, args, isSensitive).map(({ keys }) =>
+    keys.reduce<string>(
+      (path, key) =>
+        typeof key === "number" ? indexPath(path, key) : keyPath(path, key),
+      "",
+    )
+  );
+}
+
+/**
+ * One line of a refusal to store expression text in a sensitive field. The
+ * text is the sensitive value, so the line never repeats it.
+ */
+export function withheldSensitiveTextLine(path: string): string {
+  return `  ${path}: (value withheld) (is in a sensitive field, which would store it in cleartext)`;
 }
 
 /**

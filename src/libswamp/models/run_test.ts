@@ -21,6 +21,7 @@ import { SecretRefusedError } from "../../domain/expressions/errors.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -48,6 +49,13 @@ import {
   runProgressSnapshots,
 } from "../../domain/remote/run_progress.ts";
 import { collect } from "../testing.ts";
+import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
@@ -2960,4 +2968,164 @@ Deno.test("methodExecutionFailed: preserves secret refusal codes through redacti
       code,
     );
   }
+});
+
+/** Direct-type deps for `type`, auto-creating its definition. */
+function directTypeDeps(type: ModelType): ModelMethodRunDeps {
+  const modelDef: ModelDefinition = {
+    type,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  return {
+    ...createTestDeps(null, undefined),
+    getModelDef: (asked) => {
+      const key = typeof asked === "string"
+        ? ModelType.create(asked).normalized
+        : asked.normalized;
+      return key === type.normalized ? modelDef : undefined;
+    },
+    createAndSaveDefinition: async (_type, _def) => {},
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+}
+
+Deno.test("modelMethodRun: in the enrollment area preparation is a prepare phase that ends before setup", async () => {
+  const type = ModelType.create("@myorg/phased-model");
+  await withObservedSpans(async (spans) => {
+    const events = await withDiagnosticArea("enrollment", () =>
+      collect(
+        modelMethodRun(createLibSwampContext(), directTypeDeps(type), {
+          modelIdOrName: "phased",
+          methodName: "run",
+          inputs: {},
+          lastEvaluated: false,
+          typeArg: type.normalized,
+          definitionName: "phased",
+        }),
+      ));
+    assertEquals(events.some((e) => e.kind === "error"), false);
+    const run = findSpan(spans, "swamp.model.method.run");
+    const prepare = findSpan(spans, "swamp.diagnostic.prepare");
+    const setup = findSpan(spans, "swamp.model.method.setup");
+    assert(isChildOf(prepare, run));
+    assertEquals(prepare.attributes["swamp.outcome"], "ok");
+    // Setup is prepare's sibling, not its child, and prepare finished first.
+    assert(isChildOf(setup, run));
+    assert(spans.indexOf(prepare) < spans.indexOf(setup));
+    for (const resolution of diagnosticPhases(spans, "type_resolution")) {
+      assert(isChildOf(resolution, prepare));
+    }
+    assert(diagnosticPhases(spans, "type_resolution").length > 0);
+    assertEquals(
+      typeof prepare.attributes["swamp.phase.uncovered_ms"],
+      "number",
+    );
+  });
+});
+
+Deno.test("modelMethodRun: a run that stops before setup ends prepare as an error", async () => {
+  await withObservedSpans(async (spans) => {
+    const events = await withDiagnosticArea("enrollment", () =>
+      collect(
+        modelMethodRun(
+          createLibSwampContext(),
+          directTypeDeps(ModelType.create("@myorg/known")),
+          {
+            modelIdOrName: "unknown",
+            methodName: "run",
+            inputs: {},
+            lastEvaluated: false,
+            typeArg: "@myorg/unknown",
+            definitionName: "unknown",
+          },
+        ),
+      ));
+    assert(events.some((e) => e.kind === "error"));
+    const prepare = findSpan(spans, "swamp.diagnostic.prepare");
+    assertEquals(prepare.attributes["swamp.outcome"], "error");
+    assertEquals(
+      spans.some((s) => s.name === "swamp.model.method.setup"),
+      false,
+    );
+  });
+});
+
+Deno.test("modelMethodRun: a consumer that stops on a preparation error still ends prepare as an error", async () => {
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea("enrollment", async () => {
+      // As the worker gateway consumes a run: it throws on the error event,
+      // which closes the generator.
+      await assertRejects(async () => {
+        for await (
+          const event of modelMethodRun(
+            createLibSwampContext(),
+            directTypeDeps(ModelType.create("@myorg/known")),
+            {
+              modelIdOrName: "unknown",
+              methodName: "run",
+              inputs: {},
+              lastEvaluated: false,
+              typeArg: "@myorg/unknown",
+              definitionName: "unknown",
+            },
+          )
+        ) {
+          if (event.kind === "error") throw new Error("run failed");
+        }
+      });
+    });
+    const prepare = findSpan(spans, "swamp.diagnostic.prepare");
+    assertEquals(prepare.attributes["swamp.outcome"], "error");
+  });
+});
+
+Deno.test("modelMethodRun: a consumer that stops before setup ends prepare as cancelled", async () => {
+  const type = ModelType.create("@myorg/stopped-model");
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea("enrollment", async () => {
+      for await (
+        const _ of modelMethodRun(
+          createLibSwampContext(),
+          directTypeDeps(type),
+          {
+            modelIdOrName: "stopped",
+            methodName: "run",
+            inputs: {},
+            lastEvaluated: false,
+            typeArg: type.normalized,
+            definitionName: "stopped",
+          },
+        )
+      ) break;
+    });
+    const prepare = findSpan(spans, "swamp.diagnostic.prepare");
+    assertEquals(prepare.attributes["swamp.outcome"], "cancelled");
+  });
+});
+
+Deno.test("modelMethodRun: outside a diagnostic area it exports no phases", async () => {
+  const type = ModelType.create("@myorg/quiet-model");
+  await withObservedSpans(async (spans) => {
+    await collect(
+      modelMethodRun(createLibSwampContext(), directTypeDeps(type), {
+        modelIdOrName: "quiet",
+        methodName: "run",
+        inputs: {},
+        lastEvaluated: false,
+        typeArg: type.normalized,
+        definitionName: "quiet",
+      }),
+    );
+    assertEquals(
+      spans.filter((s) => s.name.startsWith("swamp.diagnostic.")).length,
+      0,
+    );
+  });
 });

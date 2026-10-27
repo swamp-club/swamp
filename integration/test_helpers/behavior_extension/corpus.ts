@@ -149,9 +149,11 @@ function prepareDeps(): ExtensionPushPrepareDeps {
       Promise.resolve({ errors: [], warnings: [], passed: true }),
     // A bundle that keeps the entry point's text, so the export name the
     // author wrote travels into the archive as it would through deno bundle.
+    // Like deno bundle it erases the types, so push can parse it as
+    // JavaScript: the fixtures' type-only imports and export annotations.
     indexArchive: emptyArchiveIndex,
     bundleEntryPoint: async (entryPoint) =>
-      `// bundle\n${await Deno.readTextFile(entryPoint)}`,
+      `// bundle\n${eraseFixtureTypes(await Deno.readTextFile(entryPoint))}`,
     ensureDenoPath: () => Promise.resolve("/unused/deno"),
     getDenoEnv: () => ({}),
     findPublishedVersion: () => Promise.resolve(null),
@@ -190,6 +192,8 @@ export interface ArchiveSnapshot {
   files: string[];
   manifest: string;
   sha256: Record<string, string>;
+  /** The dependency audit record, each bundle hash replaced by its path. */
+  auditRecord: unknown;
 }
 
 /** Extracts `archive` in-process and snapshots it. */
@@ -215,12 +219,19 @@ export async function snapshotArchive(
         await Deno.readFile(join(dir, ...f.split("/"))),
       );
     }
+    const record = JSON.parse(
+      await Deno.readTextFile(join(dir, "extension", "dependency-audit.json")),
+    );
     return {
       files,
       manifest: await Deno.readTextFile(
         join(dir, "extension", "manifest.yaml"),
       ),
       sha256,
+      auditRecord: {
+        ...record,
+        bundles: Object.keys(record.bundles ?? {}),
+      },
     };
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -271,4 +282,12 @@ export async function snapshotFixture(
   } finally {
     await Deno.remove(root, { recursive: true }).catch(() => {});
   }
+}
+
+function eraseFixtureTypes(source: string): string {
+  return source
+    .split("\n")
+    .filter((line) => !line.startsWith("import type "))
+    .join("\n")
+    .replace(/^(export const \w+): [\w.<>]+ =/gm, "$1 =");
 }

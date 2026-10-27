@@ -214,7 +214,7 @@ Deno.test("bareImportRewrites: a rewritten module has no bare import the map res
         source,
         bareImportRewrites(source, importMapResolver(BARE_IMPORTS), "/m.ts"),
       );
-      for (const { specifier } of scanImportSites(out)) {
+      for (const { specifier } of scanImportSites(out, "/m.ts") ?? []) {
         assert(
           !Object.keys(BARE_IMPORTS).some((k) =>
             specifier === k || specifier.startsWith(`${k}/`) ||

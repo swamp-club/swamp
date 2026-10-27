@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertRejects,
@@ -46,6 +47,18 @@ import {
   captureUnreadableWarnings,
   fakeUnreadableLookup,
 } from "./unreadable_records_test_helpers.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+  withDiagnosticAttributes,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  type ReadableSpan,
+  withObservedSpans,
+} from "../tracing/span_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -3469,5 +3482,300 @@ Deno.test("YamlDefinitionRepository: definitionRoots and readDefinitionFile read
       await repo.readDefinitionFile(broken, ["test", "typed-by-path"], false),
       null,
     );
+  });
+});
+
+/** The one `definition_lookup` phase `lookup` exports in the enrollment area. */
+async function observeLookup<T>(
+  lookup: () => Promise<T>,
+  check: (
+    spans: readonly ReadableSpan[],
+    result: T,
+  ) => void,
+): Promise<void> {
+  await withObservedSpans(async (spans) => {
+    const result = await withDiagnosticArea("enrollment", lookup);
+    assertEquals(diagnosticPhases(spans, "definition_lookup").length, 1);
+    check(spans, result);
+  });
+}
+
+function lookupAttributes(
+  spans: readonly ReadableSpan[],
+) {
+  const lookup = findSpan(spans, "swamp.diagnostic.definition_lookup");
+  return {
+    method: lookup.attributes["swamp.diagnostic.lookup_method"],
+    hit: lookup.attributes["swamp.diagnostic.hit"],
+    source: lookup.attributes["swamp.diagnostic.source"],
+  };
+}
+
+Deno.test("YamlDefinitionRepository.findByName: a name-derived hit is one definition_lookup phase with no scan", async () => {
+  await withTempDir(async (dir) => {
+    await new YamlDefinitionRepository(dir).save(
+      testType,
+      createTestDefinition("named"),
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await observeLookup(() => repo.findByName(testType, "named"), (spans) => {
+      assertEquals(lookupAttributes(spans), {
+        method: "name_file",
+        hit: true,
+        source: "primary",
+      });
+      const lookup = findSpan(spans, "swamp.diagnostic.definition_lookup");
+      assertEquals(lookup.attributes["swamp.diagnostic.area"], "enrollment");
+      assertEquals(
+        lookup.attributes["swamp.diagnostic.definition_type"],
+        testType.normalized,
+      );
+      assertEquals(lookup.attributes["swamp.diagnostic.files_read"], 1);
+      assertEquals(diagnosticPhases(spans, "definition_scan").length, 0);
+    });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName: a primary scan is a definition_scan child with its counts", async () => {
+  await withTempDir(async (dir) => {
+    const target = createTestDefinition("scanned");
+    await writeLegacyNamedFile(join(dir, "models"), target);
+    await writeLegacyNamedFile(
+      join(dir, "models"),
+      createTestDefinition("noise"),
+    );
+    await Deno.writeTextFile(
+      join(dir, "models", testType.toDirectoryPath(), "broken.yaml"),
+      "id: [unclosed",
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await observeLookup(
+      () =>
+        withDiagnosticAttributes(
+          { "swamp.diagnostic.lookup_attempt": "initial" },
+          () => repo.findByName(testType, "scanned"),
+        ),
+      (spans, found) => {
+        assertEquals(found?.id, target.id);
+        assertEquals(lookupAttributes(spans), {
+          method: "primary_scan",
+          hit: true,
+          source: "primary",
+        });
+        const lookup = findSpan(spans, "swamp.diagnostic.definition_lookup");
+        const scan = findSpan(spans, "swamp.diagnostic.definition_scan");
+        assert(isChildOf(scan, lookup));
+        // Inherited from the caller's label, by the nested scan too.
+        assertEquals(
+          scan.attributes["swamp.diagnostic.lookup_attempt"],
+          "initial",
+        );
+        assertEquals(scan.attributes["swamp.diagnostic.scan_root"], "primary");
+        assertEquals(
+          scan.attributes["swamp.diagnostic.scan_strategy"],
+          "full_listing",
+        );
+        assertEquals(scan.attributes["swamp.diagnostic.files_examined"], 3);
+        assertEquals(scan.attributes["swamp.diagnostic.files_read"], 3);
+        assertEquals(scan.attributes["swamp.diagnostic.broken_files"], 1);
+        assertEquals(scan.attributes["swamp.diagnostic.definitions"], 2);
+        assert((scan.attributes["swamp.diagnostic.bytes_read"] as number) > 0);
+        assertEquals(
+          typeof scan.attributes["swamp.diagnostic.read_work_ms"],
+          "number",
+        );
+        assertEquals(
+          typeof scan.attributes["swamp.diagnostic.parse_work_ms"],
+          "number",
+        );
+      },
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName: a repeated scan hit is answered by the primary hint", async () => {
+  await withTempDir(async (dir) => {
+    await writeLegacyNamedFile(
+      join(dir, "models"),
+      createTestDefinition("hinted"),
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.findByName(testType, "hinted");
+    await observeLookup(() => repo.findByName(testType, "hinted"), (spans) => {
+      assertEquals(lookupAttributes(spans), {
+        method: "primary_hint",
+        hit: true,
+        source: "primary",
+      });
+      assertEquals(diagnosticPhases(spans, "definition_scan").length, 0);
+    });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName: a miss scans both roots and reports no method", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    await observeLookup(() => repo.findByName(testType, "absent"), (spans) => {
+      assertEquals(lookupAttributes(spans), {
+        method: "none",
+        hit: false,
+        source: "none",
+      });
+      assertEquals(
+        findSpan(spans, "swamp.diagnostic.definition_lookup")
+          .attributes["swamp.outcome"],
+        "ok",
+      );
+      assertEquals(
+        diagnosticPhases(spans, "definition_scan").map((s) => [
+          s.attributes["swamp.diagnostic.scan_root"],
+          s.attributes["swamp.diagnostic.scan_strategy"],
+        ]),
+        [["primary", "full_listing"], ["auto", "name_index"]],
+      );
+    });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName: an auto-definition at its name-derived path reports secondary_name_file", async () => {
+  await withTempDir(async (dir) => {
+    const auto = join(dir, ".swamp", "auto-definitions");
+    const definition = createTestDefinition("auto-named");
+    const typeDir = join(auto, testType.toDirectoryPath());
+    await ensureDir(typeDir);
+    const data = definition.toData();
+    data.type = testType.normalized;
+    await Deno.writeTextFile(
+      join(typeDir, "auto-named.yaml"),
+      toCleanYaml(data),
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await observeLookup(
+      () => repo.findByName(testType, "auto-named"),
+      (spans) => {
+        assertEquals(lookupAttributes(spans), {
+          method: "secondary_name_file",
+          hit: true,
+          source: "auto",
+        });
+        // The primary root is scanned first; the index is not consulted.
+        assertEquals(
+          diagnosticPhases(spans, "definition_scan").map((s) =>
+            s.attributes["swamp.diagnostic.scan_root"]
+          ),
+          ["primary"],
+        );
+      },
+    );
+    // Answered from the hint the first lookup recorded.
+    await observeLookup(
+      () => repo.findByName(testType, "auto-named"),
+      (spans) => assertEquals(lookupAttributes(spans).method, "secondary_hint"),
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName: an auto-definition at another path reports secondary_index", async () => {
+  await withTempDir(async (dir) => {
+    const target = createTestDefinition("auto-created");
+    await writeLegacyNamedFile(join(dir, ".swamp", "auto-definitions"), target);
+    const repo = new YamlDefinitionRepository(dir);
+    await observeLookup(
+      () => repo.findByName(testType, "auto-created"),
+      (spans, found) => {
+        assertEquals(found?.id, target.id);
+        assertEquals(lookupAttributes(spans), {
+          method: "secondary_index",
+          hit: true,
+          source: "auto",
+        });
+        const scan = diagnosticPhases(spans, "definition_scan").find((s) =>
+          s.attributes["swamp.diagnostic.scan_root"] === "auto"
+        )!;
+        assertEquals(
+          scan.attributes["swamp.diagnostic.scan_strategy"],
+          "name_index",
+        );
+        assertEquals(scan.attributes["swamp.diagnostic.index_checks_run"], 1);
+        assertEquals(scan.attributes["swamp.diagnostic.index_entries"], 1);
+        assert((scan.attributes["swamp.diagnostic.files_read"] as number) >= 1);
+        assert(
+          isChildOf(
+            findSpan(spans, "swamp.definition.name_index.validate"),
+            scan,
+          ),
+        );
+      },
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByName: outside a diagnostic area it exports nothing", async () => {
+  await withTempDir(async (dir) => {
+    await writeLegacyNamedFile(
+      join(dir, "models"),
+      createTestDefinition("quiet"),
+    );
+    const repo = new YamlDefinitionRepository(dir);
+    await withObservedSpans(async (spans) => {
+      await repo.findByName(testType, "quiet");
+      assertEquals(spans.length, 0);
+    });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.delete: measures lookup, removal, event and staging into the running phase", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, new EventBus());
+    const definition = createTestDefinition("measured-delete");
+    await repo.save(testType, definition);
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", () =>
+        observeDiagnosticPhase(
+          "definition_removal",
+          {},
+          () => repo.delete(testType, definition.id, definition.name),
+        ));
+      const removal = findSpan(spans, "swamp.diagnostic.definition_removal");
+      for (
+        const work of ["lookup", "file_remove", "event_publish", "change_stage"]
+      ) {
+        assertEquals(
+          typeof removal.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+    });
+    assertEquals(await repo.findById(testType, definition.id), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal: counts its walk and its reads, then the hint that spares the next one", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    await repo.save(testType, createTestDefinition("global-other"));
+    await repo.save(testType, createTestDefinition("global-target"));
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", async () => {
+        for (let i = 0; i < 2; i++) {
+          await observeDiagnosticPhase(
+            "definition_resolve",
+            {},
+            () => repo.findByNameGlobal("global-target"),
+          );
+        }
+      });
+      const [walk, hinted] = diagnosticPhases(spans, "definition_resolve");
+      assertEquals(walk.attributes["swamp.diagnostic.primary_walks"], 1);
+      assert(
+        (walk.attributes["swamp.diagnostic.files_read"] as number) >= 1,
+      );
+      assertEquals(hinted.attributes["swamp.diagnostic.name_hint_hits"], 1);
+      assertEquals(
+        hinted.attributes["swamp.diagnostic.primary_walks"],
+        undefined,
+      );
+    });
   });
 });

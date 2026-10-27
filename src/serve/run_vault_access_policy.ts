@@ -64,6 +64,7 @@ import type { AuthMode } from "../domain/access/serve_auth_config.ts";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
+import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import { isReservedVaultName } from "../domain/vaults/vault_name.ts";
 import { conditionReferencesField } from "../domain/access/policy_snapshot_loader.ts";
 import { resourceSelectorMatches } from "../domain/access/resource_selector.ts";
@@ -86,6 +87,7 @@ import {
   vaultKindResource,
 } from "./handlers/shared.ts";
 import { readServerTokenRecord } from "./token_auth.ts";
+import { displayPrincipal } from "./known_usernames.ts";
 
 const logger = getSwampLogger(["serve", "run-vault-access"]);
 
@@ -478,6 +480,8 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
 export interface RunVaultScopeContext extends RunVaultPolicyDeps {
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
+  /** Known user names by id, so a denial names its user. */
+  readonly resolvedUserNames?: Readonly<Record<string, string>>;
 }
 
 /** The run-time policy's view of a serve connection context. */
@@ -489,6 +493,7 @@ export function runVaultScopeContext(
     | "repoContext"
     | "auditEmitter"
     | "instanceId"
+    | "resolvedUserNames"
   >,
 ): RunVaultScopeContext {
   return {
@@ -497,6 +502,7 @@ export function runVaultScopeContext(
     readTokenRecord: (name) => readServerTokenRecord(ctx.repoContext, name),
     auditEmitter: ctx.auditEmitter,
     instanceId: ctx.instanceId,
+    resolvedUserNames: ctx.resolvedUserNames,
   };
 }
 
@@ -633,7 +639,10 @@ export function resumeRunVaultScope(
  * decision. Audit must never break a run, so a failure is logged and dropped.
  */
 export function emitRunVaultDenial(
-  ctx: Pick<RunVaultScopeContext, "auditEmitter" | "instanceId">,
+  ctx: Pick<
+    RunVaultScopeContext,
+    "auditEmitter" | "instanceId" | "resolvedUserNames"
+  >,
   inputs: RunPrincipalInputs,
   principalLabel: string,
   denial: VaultAccessDenial,
@@ -657,7 +666,14 @@ export function emitRunVaultDenial(
       resourceName: denial.vaultName,
       principalKind: principal?.kind ?? "unknown",
       principalId: principal?.id ?? principalLabel,
-      initiatedBy: principalLabel,
+      initiatedBy: principal
+        ? displayPrincipal(principal, ctx.resolvedUserNames)
+        : principalLabel,
+      actor: resolveActorIdentity(
+        principal ?? null,
+        ctx.resolvedUserNames,
+        undefined,
+      ),
       // As emitSystemAuditEvent and trigger denials: loopback, random id.
       sourceIp: "127.0.0.1",
       requestId: runId ?? crypto.randomUUID(),

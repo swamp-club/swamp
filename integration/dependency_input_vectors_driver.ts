@@ -235,6 +235,7 @@ export async function runVector(
       {
         manifest: resolved.manifest,
         bareImports: resolved.bareImports,
+        graphDependencies: resolved.graphDependencies,
         repoDir,
         manifestDir,
         modelsDir: resolved.modelsDir,
@@ -288,7 +289,12 @@ export async function runVector(
     outcome.shipped = shipped;
     outcome.bundles = bundles;
     const record = files.get("dependency-audit.json");
-    outcome.record = record === undefined ? null : JSON.parse(record);
+    outcome.record = record === undefined
+      ? null
+      : await withCheckedBundleHashes(
+        JSON.parse(registry.generalize(record)),
+        files,
+      );
     outcome.audited = audited
       .map((s) => ({
         registry: s.registry,
@@ -300,12 +306,17 @@ export async function runVector(
       }))
       .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
     const trust = prepared.dependencyTrustResult;
+    // a URL import's origin carries the mock registry's port
     outcome.trust = {
       errors: trust.errors.map((e) =>
-        `${e.dependency}${e.cause ? ` [${e.cause}]` : ""}: ${e.message}`
+        registry.generalize(
+          `${e.dependency}${e.cause ? ` [${e.cause}]` : ""}: ${e.message}`,
+        )
       ),
       warnings: trust.warnings.map((w) =>
-        `${w.dependency}${w.cause ? ` [${w.cause}]` : ""}: ${w.message}`
+        registry.generalize(
+          `${w.dependency}${w.cause ? ` [${w.cause}]` : ""}: ${w.message}`,
+        )
       ),
     };
     outcome.reviewWarnings = prepared.reviewRulesResult.warnings.map((w) =>
@@ -361,4 +372,46 @@ if (import.meta.main) {
   };
   const outcome = await runVector(root, repoDir, manifestPath, registry);
   await Deno.writeTextFile(outPath, JSON.stringify(outcome, null, 2) + "\n");
+}
+
+/**
+ * The record with each bundle hash checked against the archive's bundle
+ * and replaced by whether it matched: the bundle's bytes name machine paths,
+ * so the hash itself differs from one machine to the next.
+ */
+async function withCheckedBundleHashes(
+  record: {
+    bundles?: Record<string, string>;
+    unaudited?: { modules: Record<string, string> }[];
+  },
+  files: ReadonlyMap<string, string>,
+): Promise<unknown> {
+  // A fetched module's text names the local registry's port, so only the
+  // shape of its hash is stable.
+  const unaudited = record.unaudited?.map((u) => ({
+    ...u,
+    modules: Object.fromEntries(
+      Object.entries(u.modules).map(([module, hash]) => [
+        module,
+        /^sha256:[0-9a-f]{64}$/.test(hash) ? "sha256 of the module" : hash,
+      ]),
+    ),
+  }));
+  if (unaudited) record = { ...record, unaudited };
+  if (!record.bundles) return record;
+  const bundles: Record<string, string> = {};
+  for (const [path, hash] of Object.entries(record.bundles)) {
+    const text = files.get(path);
+    const digest = text === undefined ? undefined : new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
+    );
+    const actual = digest &&
+      `sha256:${
+        Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")
+      }`;
+    bundles[path] = actual === hash
+      ? "sha256 of the bundle"
+      : `mismatch: ${hash}`;
+  }
+  return { ...record, bundles };
 }

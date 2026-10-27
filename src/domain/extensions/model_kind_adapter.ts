@@ -792,7 +792,11 @@ function createBundleSourceFactory(
       return bundleExtension(
         context.absolutePath,
         denoPath,
-        { selfContained: true, env: context.denoRuntime.getDenoEnv() },
+        {
+          selfContained: true,
+          noConfig: context.pulled === true,
+          env: context.denoRuntime.getDenoEnv(),
+        },
       );
     })().catch((error) => {
       bundlePromise = undefined;

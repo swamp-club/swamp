@@ -30,6 +30,11 @@ import {
   type SpanExporter,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import type { DiagnosticPhase } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  installExecutionObserver,
+  uninstallExecutionObserver,
+} from "./execution_observer.ts";
 
 export { SpanKind };
 export type { ReadableSpan };
@@ -78,6 +83,31 @@ export async function withCapturedSpans(
     trace.disable();
     context.disable();
   }
+}
+
+/**
+ * Like {@link withCapturedSpans}, with the execution observer installed so
+ * observations and diagnostic phases are exported as spans.
+ */
+export async function withObservedSpans(
+  fn: (spans: readonly ReadableSpan[]) => Promise<void>,
+): Promise<void> {
+  await withCapturedSpans(async (spans) => {
+    installExecutionObserver();
+    try {
+      await fn(spans);
+    } finally {
+      uninstallExecutionObserver();
+    }
+  });
+}
+
+/** Finished `swamp.diagnostic.<phase>` spans, in the order they ended. */
+export function diagnosticPhases(
+  spans: readonly ReadableSpan[],
+  phase: DiagnosticPhase,
+): ReadableSpan[] {
+  return spans.filter((s) => s.name === `swamp.diagnostic.${phase}`);
 }
 
 /** Returns the one finished span named `name`, failing if there is not exactly one. */

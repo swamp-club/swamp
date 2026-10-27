@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { parse, type ParserPlugin } from "@babel/parser";
-import { BABEL_PLUGINS, LineIndex } from "./extension_source_ast.ts";
+import {
+  parseExtensionModule,
+  type SourceSpan,
+} from "@swamp-club/extension-scoring/source";
+import { LineIndex } from "./extension_source_ast.ts";
 import { extname, isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
@@ -409,45 +412,19 @@ function directiveSitesOf(
   return { sites: sourceSites(content, parsed.comments), parsed: true };
 }
 
-/** A token or comment's offsets, as Babel reports them. */
-interface SourceSpan {
-  type?: string;
-  start?: number | null;
-  end?: number | null;
-}
-
 /**
- * Parses source as a module with the plugins its extension needs, or
- * returns null when it does not parse. JavaScript is parsed without the
- * TypeScript plugin, which refuses some valid JavaScript.
+ * Parses source as a module with the syntax its extension needs (the
+ * shared extension source parse), or returns null when it does not parse.
  */
 function parseSource(
   content: string,
   file: string,
   tokens: boolean,
 ): { tokens: SourceSpan[]; comments: SourceSpan[] } | null {
-  const ext = extname(file).toLowerCase();
-  const base = ext === ".js" || ext === ".jsx"
-    ? BABEL_PLUGINS.filter((p) => p !== "typescript")
-    : BABEL_PLUGINS;
-  const plugins: ParserPlugin[] = ext.endsWith("x") ? [...base, "jsx"] : base;
-  try {
-    const parsed = parse(content, {
-      sourceType: "module",
-      plugins,
-      allowReturnOutsideFunction: true,
-      allowAwaitOutsideFunction: true,
-      allowImportExportEverywhere: true,
-      allowUndeclaredExports: true,
-      allowNewTargetOutsideFunction: true,
-      allowSuperOutsideMethod: true,
-      errorRecovery: false,
-      tokens,
-    });
-    return { tokens: parsed.tokens ?? [], comments: parsed.comments ?? [] };
-  } catch {
-    return null;
-  }
+  const parsed = parseExtensionModule(content, { path: file, tokens });
+  return parsed.ok
+    ? { tokens: parsed.tokens, comments: parsed.comments }
+    : null;
 }
 
 /**

@@ -98,12 +98,40 @@ applied; marking read is idempotent, so retrying the whole call is safe.
 
 - **The poll.** Slow commands ask `/api/inbox/summary` in the background, with
   the `ETag` from the last answer, and no sooner than `pollAfterSeconds` after
-  it. A `backoff` waits out `Retry-After`; `unsupported`, `unavailable` and
-  `rejected` stop the poll for that key.
+  it. The gap is at least 900 seconds and at most 7 days, whatever the server
+  sends, so a misbehaving server cannot silence the inbox for good. Every poll
+  counts, a failed one included. A `backoff` waits out `Retry-After`.
+  `unsupported` asks again 24 hours later, since a server can add the inbox in
+  a later upgrade. `unavailable` and `rejected` stop the poll for that key, and
+  the cache records why and when.
 - **The cache.** The last summary and its `ETag` are cached locally, so a `304`
-  costs nothing and the notice needs no network call.
-- **The notice.** After a command finishes, the CLI prints a one-line notice
-  when there are unread messages newer than the last one it announced. A notice
-  retires after 24 hours, whether or not the user reads the message.
+  costs nothing and the notice needs no network call. Each API key has its own
+  file, `inbox/<fingerprint>.json` in the swamp config directory, so a personal
+  key and a collective key never share or overwrite state; the file holds the
+  key's fingerprint, never the key. At most 8 keys are kept and the least
+  recently saved is dropped. A file that is missing, corrupt or out of bounds
+  reads as a key never polled. Changes to the file format are additive only,
+  and each added field must be safe to lose, since an older swamp drops fields
+  it does not know when it saves. A breaking change moves to a new directory,
+  so two installed versions never share a file.
+- **The notice.** After a command finishes, the CLI prints a notice when there
+  are unread messages newer than the last one it announced. It goes to stderr,
+  in log mode only, after the command's output:
+
+  ```
+  ℹ A new message from Swamp Club is waiting for you.
+    To read it:  swamp inbox read
+  ```
+
+  With more than one unread message, the first line reads
+  `ℹ 3 new messages from Swamp Club are waiting for you.` The second line never
+  changes; its `To …:` label matches `To approve:` and `To signal:` in the
+  workflow renderer. The text is fixed: no message title or other server text
+  appears in it, so an agent's context holds nothing Swamp Club wrote until the
+  user asks to read the inbox. The notice never appears in `--json` mode, so an
+  agent running commands with `--json` never sees it, and JSON output never
+  carries it. The `swamp` skill quotes the second line, so the two must change
+  together. A notice retires after 24 hours, whether or not the user reads the
+  message.
 - **The commands.** `swamp inbox` lists messages and `swamp inbox read` shows
   one and marks it read.

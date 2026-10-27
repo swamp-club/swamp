@@ -44,6 +44,11 @@ import type {
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PathTraversalError } from "./safe_path.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import { findSpan, withObservedSpans } from "../tracing/span_test_helpers.ts";
 
 const testType = ModelType.create("test/model");
 
@@ -3647,4 +3652,62 @@ Deno.test("findByTaggedName: returns a name whose latest version is a deletion m
       [["new", false]],
     );
   });
+});
+
+Deno.test("delete: measures file removal, catalog upkeep and staging into the running phase", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      () => Promise.resolve(),
+    );
+    const data = makeData("measured");
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v1"));
+    await repo.save(testType, "m1", data, new TextEncoder().encode("v2"));
+    const versioned = makeData("measured-version");
+    await repo.save(testType, "m1", versioned, new TextEncoder().encode("v1"));
+    await repo.save(testType, "m1", versioned, new TextEncoder().encode("v2"));
+
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea(
+        "worker_delete",
+        () =>
+          observeDiagnosticPhase("data_removal", {}, async () => {
+            await repo.delete(testType, "m1", "measured");
+            await repo.delete(testType, "m1", "measured-version", 2);
+            // Already gone: not counted again.
+            await repo.delete(testType, "m1", "measured-version", 2);
+          }),
+      );
+      const removal = findSpan(spans, "swamp.diagnostic.data_removal");
+      // Two versions of the whole name, then one named version.
+      assertEquals(removal.attributes["swamp.diagnostic.versions_removed"], 3);
+      for (
+        const work of [
+          "version_list",
+          "file_remove",
+          "catalog_update",
+          "latest_update",
+          "change_stage",
+        ]
+      ) {
+        assertEquals(
+          typeof removal.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+    });
+    assertEquals(await repo.findByName(testType, "m1", "measured"), null);
+    catalogStore.close();
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
 });

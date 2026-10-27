@@ -491,3 +491,43 @@ Deno.test("CollectiveRefreshService: applies userinfo when the subject matches t
   assertEquals(deps.updatedConnections.get("user:u1"), ["admins"]);
   assertEquals(deps.revokedTokens, []);
 });
+
+function usernameDeps(principalId: string, sub: string) {
+  const cycles = countCycles(() =>
+    Promise.resolve([
+      {
+        name: "tok-1",
+        principalId,
+        vaultName: "_token-secrets",
+        collectives: ["team-a"],
+        groups: [],
+      },
+    ])
+  );
+  const learned: Record<string, string>[] = [];
+  const deps = makeMockDeps({
+    listActiveTokens: cycles.listActiveTokens,
+    getUserInfo: () =>
+      Promise.resolve({
+        sub,
+        email: "u1@example.com",
+        username: "user-one",
+        collectives: ["team-a"],
+        groups: [],
+      }),
+    onUsernamesResolved: (names) => learned.push({ ...names }),
+  });
+  return { cycles, deps, learned };
+}
+
+Deno.test("CollectiveRefreshService: passes on the user name the provider gives for a token's user", async () => {
+  const { cycles, deps, learned } = usernameDeps("user:u1", "u1");
+  await runOneCycle(deps, cycles);
+  assertEquals(learned[0], { u1: "user-one" });
+});
+
+Deno.test("CollectiveRefreshService: never passes on a user name for userinfo of a different subject", async () => {
+  const { cycles, deps, learned } = usernameDeps("user:u1", "u2");
+  await runOneCycle(deps, cycles);
+  assertEquals(learned, []);
+});

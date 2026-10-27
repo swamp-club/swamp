@@ -40,6 +40,12 @@ import {
   MAX_LOCK_SKIPPING,
 } from "../../domain/datastore/distributed_lock.ts";
 import { initializeLogging } from "../logging/logger.ts";
+import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  withObservedSpans,
+} from "../tracing/span_test_helpers.ts";
 
 const capturedLogRecords: LogRecord[] = [];
 
@@ -1200,5 +1206,85 @@ Deno.test("createLockFileExclusive: Access Denied off Windows is thrown at once"
       Deno.errors.PermissionDenied,
     );
     assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("FileLock.withLock: in a diagnostic area the wait and the hold are separate phases", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { diagnosticKind: "auto_definition" });
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea(
+        "enrollment",
+        () => lock.withLock(() => Promise.resolve()),
+      );
+      const wait = findSpan(spans, "swamp.diagnostic.lock_wait");
+      const held = findSpan(spans, "swamp.diagnostic.lock_held");
+      assertEquals(wait.attributes["swamp.diagnostic.acquired"], true);
+      assertEquals(wait.attributes["swamp.diagnostic.retries"], 0);
+      assertEquals(wait.attributes["swamp.outcome"], "ok");
+      assertEquals(
+        wait.attributes["swamp.diagnostic.lock_kind"],
+        "auto_definition",
+      );
+      assertEquals(
+        held.attributes["swamp.diagnostic.lock_kind"],
+        "auto_definition",
+      );
+      assertEquals(held.attributes["swamp.outcome"], "ok");
+    });
+  });
+});
+
+Deno.test("FileLock.withLock: work that fails under the lock ends lock_held with its outcome and still releases", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir);
+    await withObservedSpans(async (spans) => {
+      await assertRejects(() =>
+        withDiagnosticArea(
+          "enrollment",
+          () => lock.withLock(() => Promise.reject(new Error("boom"))),
+        )
+      );
+      const held = findSpan(spans, "swamp.diagnostic.lock_held");
+      assertEquals(held.attributes["swamp.outcome"], "error");
+    });
+    assertEquals(lock.heldNonce, undefined);
+  });
+});
+
+Deno.test("FileLock.acquire: running out of wait ends lock_wait as a timeout with its retries", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    const waiter = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 10,
+      maxWaitMs: 50,
+    });
+    await holder.acquire();
+    try {
+      await withObservedSpans(async (spans) => {
+        await assertRejects(
+          () => withDiagnosticArea("enrollment", () => waiter.acquire()),
+          LockTimeoutError,
+        );
+        const wait = findSpan(spans, "swamp.diagnostic.lock_wait");
+        assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
+        assertEquals(wait.attributes["swamp.diagnostic.lock_kind"], "file");
+        assertEquals(wait.attributes["swamp.outcome"], "timeout");
+        assert((wait.attributes["swamp.diagnostic.retries"] as number) >= 1);
+      });
+    } finally {
+      await holder.release();
+    }
+  });
+});
+
+Deno.test("FileLock.withLock: outside a diagnostic area it exports nothing", async () => {
+  await withTempDir(async (dir) => {
+    await withObservedSpans(async (spans) => {
+      await new FileLock(dir).withLock(() => Promise.resolve());
+      assertEquals(diagnosticPhases(spans, "lock_wait").length, 0);
+      assertEquals(diagnosticPhases(spans, "lock_held").length, 0);
+    });
   });
 });

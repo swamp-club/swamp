@@ -24,6 +24,7 @@ import {
 } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { withSpan } from "../tracing/mod.ts";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import { RUN_INDEX_RACY_WINDOW_MS } from "./run_index_cache.ts";
 import { isIoError } from "./io_errors.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
@@ -208,8 +209,14 @@ export class AutoDefinitionNameIndex {
     return null;
   }
 
+  // A lookup that joins a queued check counts `index_checks_joined` in its
+  // diagnostic phase; the check runs, and is counted, in the phase of the
+  // lookup that queued it.
   #validate(): Promise<void> {
-    if (this.#waiting) return this.#waiting;
+    if (this.#waiting) {
+      currentDiagnosticTally().add("index_checks_joined");
+      return this.#waiting;
+    }
     const run: Promise<void> = this.#tail.then(() => {
       if (this.#waiting === run) this.#waiting = undefined;
       return this.#check();
@@ -239,11 +246,16 @@ export class AutoDefinitionNameIndex {
           }
           await this.#recheckIrregular(read, counts);
         }
+        const entries = this.#regular.size + this.#irregular.size;
         span.setAttributes({
-          "name_index.entries": this.#regular.size + this.#irregular.size,
+          "name_index.entries": entries,
           "name_index.relisted": counts.relisted,
           "name_index.files_parsed": counts.filesParsed,
         });
+        const tally = currentDiagnosticTally();
+        tally.add("index_checks_run");
+        tally.add("index_entries", entries);
+        if (counts.relisted) tally.add("index_relists");
       },
     );
   }

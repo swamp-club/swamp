@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
+import { literalOccurrence } from "../../domain/expressions/cel_grammar.ts";
 import {
   AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS,
   autoDefinitionLockKey,
@@ -32,6 +34,16 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { RunSensitiveValues } from "../../domain/secrets/mod.ts";
 import { deferredExpressionReference } from "../../domain/expressions/deferred_expression.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 function createTestModelDef(
   globalArgs?: z.ZodTypeAny,
@@ -457,6 +469,245 @@ Deno.test("resolveOrCreateDefinition: refuses to persist global-arg expression t
   );
   assertEquals(vouched.ok, true);
   assertEquals(saved, 1);
+});
+
+Deno.test("resolveOrCreateDefinition: stores unvouched foreign global-arg text wrapped in literal()", async () => {
+  // Another templating system's text from data is stored as a literal() call
+  // that evaluates to the same text, so no later load evaluates what it
+  // holds (swamp-club#3389).
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const saved: Definition[] = [];
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: (_type: ModelType, definition: Definition) => {
+      saved.push(definition);
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/model/${id}.yaml`,
+  };
+  // The quoted swamp reference inside the last occurrence's string is part
+  // of that one occurrence. The others would evaluate if stored bare.
+  const occurrences = [
+    "${{ github.sha }}",
+    "${{ true || github.sha }}",
+    "${{ toJSON(matrix) }}",
+    "${{ needs.build-env.outputs.url }}",
+    "${{ needs.build-2.result }}",
+    "${{ needs.e2e-tests.result }}",
+    "${{ matrix.os-2022 }}",
+    '${{ github.title == \'${{ vault.get("v", "k") }}\' }}',
+  ];
+  const region = occurrences.join(" on ");
+  const stored = occurrences.map(literalOccurrence).join(" on ");
+  const data = {
+    inputs: ProvenanceMap.authored().withWholeData("region"),
+    globalArgs: ProvenanceMap.authored(),
+  };
+  const run = (existing: Definition | null) =>
+    resolveOrCreateDefinition(
+      {
+        ...deps,
+        lookupDefinition: () =>
+          Promise.resolve(
+            existing && { definition: existing, type: resolvedType },
+          ),
+      },
+      "test/model",
+      "foreign",
+      "run",
+      { region, id: "abc" },
+      resolvedType,
+      modelDef,
+      undefined,
+      undefined,
+      new Set(),
+      undefined,
+      data,
+    );
+
+  const created = await run(null);
+  assertEquals(created.ok, true);
+  assertEquals(saved.length, 1);
+  assertEquals(saved[0].globalArguments, { region: stored });
+  // This run itself receives the text as it is.
+  if (created.ok) {
+    assertEquals(created.definition.globalArguments, { region });
+  }
+
+  const existingDef = Definition.create({
+    name: "foreign",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "plain" },
+  });
+  const updated = await run(existingDef);
+  assertEquals(updated.ok, true);
+  assertEquals(saved.length, 2);
+  assertEquals(existingDef.globalArguments, { region: stored });
+  if (updated.ok) {
+    assertEquals(updated.definition.globalArguments, { region });
+  }
+
+  // Compared in the form it is stored in, so the same text is no change.
+  const again = await run(existingDef);
+  assertEquals(again.ok, true);
+  assertEquals(saved.length, 2);
+  if (again.ok) assertEquals(again.globalArgsUpdated, false);
+});
+
+// Foreign text may be stored, but never in a sensitive field:
+// any constant inside it would be written in cleartext. A record key outside
+// plain identifier characters names the field differently in schema walks
+// and in expression paths, and must still be found.
+const SENSITIVE_TEXT = "${{ github.x == 'ghp_TOKEN' }}";
+for (
+  const [name, field, value] of [
+    ["field", "apiKey", SENSITIVE_TEXT],
+    ["record key", "headers", { "x api:key": SENSITIVE_TEXT }],
+  ] as const
+) {
+  Deno.test(`resolveOrCreateDefinition: refuses unvouched foreign text in a sensitive global arg (${name})`, async () => {
+    const modelDef = createTestModelDef(
+      z.object({
+        region: z.string().optional(),
+        apiKey: z.string().meta({ sensitive: true }).optional(),
+        headers: z.record(z.string(), z.string().meta({ sensitive: true }))
+          .optional(),
+      }),
+      { run: z.object({ id: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    let saved = 0;
+    const deps = {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved++;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type: ModelType, id: string) =>
+        `/tmp/models/test/model/${id}.yaml`,
+    };
+    const data = {
+      inputs: ProvenanceMap.authored().withWholeData(field),
+      globalArgs: ProvenanceMap.authored(),
+    };
+    const run = (
+      lookupDefinition: () => Promise<
+        { definition: Definition; type: ModelType } | null
+      >,
+    ) =>
+      resolveOrCreateDefinition(
+        { ...deps, lookupDefinition },
+        "test/model",
+        "keyed",
+        "run",
+        { [field]: value, id: "abc" },
+        resolvedType,
+        modelDef,
+        undefined,
+        undefined,
+        new Set(),
+        undefined,
+        data,
+      );
+
+    const created = await run(deps.lookupDefinition);
+    assertEquals(created.ok, false);
+    if (!created.ok) {
+      assertStringIncludes(created.error.message, field);
+      assertStringIncludes(created.error.message, "sensitive");
+      // The refusal never repeats the sensitive value.
+      assertEquals(created.error.message.includes("ghp_TOKEN"), false);
+    }
+
+    const existingDef = Definition.create({
+      name: "keyed",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { region: "plain" },
+    });
+    const updated = await run(() =>
+      Promise.resolve({ definition: existingDef, type: resolvedType })
+    );
+    assertEquals(updated.ok, false);
+    assertEquals(saved, 0);
+    assertEquals(existingDef.globalArguments, { region: "plain" });
+  });
+}
+
+Deno.test("resolveOrCreateDefinition: refuses global-arg data text swamp would own", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  let saved = 0;
+  const deps = {
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: () => modelDef,
+    saveDefinition: () => {
+      saved++;
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type: ModelType, id: string) =>
+      `/tmp/models/test/model/${id}.yaml`,
+  };
+  const data = {
+    inputs: ProvenanceMap.authored().withWholeData("region"),
+    globalArgs: ProvenanceMap.authored(),
+  };
+
+  for (
+    const refused of [
+      "${{ inputs.version }}",
+      "${{ env.HOME }}",
+      '${{ github.sha || vault.get("v", "k") }}',
+      "${{ steps.build-data.outputs.x }}",
+      "${{ 1 + 1 }}",
+      "${{ a | b }}",
+      // A run reads the hyphen as subtraction.
+      "${{ needs.build-vault.outputs.url }}",
+      "${{ jobs.build-vault.result }}",
+      "${{ matrix.node-18x }}",
+      "${{ needs.deploy-1a.result }}",
+    ]
+  ) {
+    // The stored text is refused by position even when the author wrote the
+    // same text elsewhere.
+    for (const authored of [new Set<string>(), new Set([refused])]) {
+      const result = await resolveOrCreateDefinition(
+        deps,
+        "test/model",
+        "refused",
+        "run",
+        { region: `${refused} beside \${{ github.sha }}`, id: "abc" },
+        resolvedType,
+        modelDef,
+        undefined,
+        undefined,
+        authored,
+        undefined,
+        data,
+      );
+      assertEquals(result.ok, false, refused);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, `region: ${refused} (`);
+        // The occurrence that can be stored is not reported.
+        assertEquals(
+          result.error.message.includes("region: ${{ github.sha }}"),
+          false,
+        );
+      }
+    }
+  }
+  assertEquals(saved, 0);
 });
 
 Deno.test("resolveOrCreateDefinition: does not save when globalArgs match", async () => {
@@ -1408,6 +1659,51 @@ Deno.test("resolveOrCreateDefinition: with lockDir race loser applies its own gl
   });
 });
 
+Deno.test("resolveOrCreateDefinition: with lockDir race loser stores data text in the winner's definition wrapped in literal()", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(
+      z.object({ message: z.string() }),
+      { record: z.object({ label: z.string() }) },
+    );
+    const resolvedType = ModelType.create("test/model");
+    const winnerDef = Definition.create({
+      name: "shared",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { message: "a" },
+    });
+    const saved: Definition[] = [];
+    const message = "sha ${{ github.sha }}";
+
+    const result = await resolveOrCreateDefinition(
+      raceLoserDeps(winnerDef, resolvedType, modelDef, saved),
+      "test/model",
+      "shared",
+      "record",
+      { label: "b" },
+      resolvedType,
+      modelDef,
+      { message },
+      lockDir,
+      new Set(),
+      undefined,
+      {
+        inputs: ProvenanceMap.authored(),
+        globalArgs: ProvenanceMap.authored().withWholeData("message"),
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.definition.globalArguments, { message });
+    }
+    assertEquals(saved.length, 1);
+    assertEquals(saved[0].globalArguments, {
+      message: `sha ${literalOccurrence("${{ github.sha }}")}`,
+    });
+  });
+});
+
 Deno.test("resolveOrCreateDefinition: with lockDir race loser with matching globalArgs does not save", async () => {
   await withTempDir(async (lockDir) => {
     const modelDef = createTestModelDef(
@@ -1701,4 +1997,162 @@ Deno.test("resolveOrCreateDefinition: a schema that throws while parsing a sensi
     );
     assertEquals(invalid.error.message.includes("HUNTER2-LONG"), false);
   }
+});
+
+Deno.test("resolveOrCreateDefinition: a creation exports its lookups, lock and save as enrollment phases", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(undefined, { run: z.object({}) });
+    const resolvedType = ModelType.create("test/model");
+    await withObservedSpans(async (spans) => {
+      const result = await withDiagnosticArea(
+        "enrollment",
+        () =>
+          resolveOrCreateDefinition(
+            {
+              // A lookup phase of its own, so the label the caller set shows.
+              lookupDefinition: () =>
+                observeDiagnosticPhase(
+                  "definition_lookup",
+                  {},
+                  () => Promise.resolve(null),
+                ),
+              getModelDef: () => modelDef,
+              saveDefinition: () => Promise.resolve(),
+              getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+            },
+            "test/model",
+            "phased-model",
+            "run",
+            {},
+            resolvedType,
+            modelDef,
+            undefined,
+            lockDir,
+          ),
+      );
+      assertEquals(result.ok, true);
+
+      const wait = findSpan(spans, "swamp.diagnostic.lock_wait");
+      const held = findSpan(spans, "swamp.diagnostic.lock_held");
+      const save = findSpan(spans, "swamp.diagnostic.definition_save");
+      assertEquals(
+        wait.attributes["swamp.diagnostic.lock_kind"],
+        "auto_definition",
+      );
+      assertEquals(
+        held.attributes["swamp.diagnostic.lock_kind"],
+        "auto_definition",
+      );
+      assert(isChildOf(save, held));
+      assertEquals(
+        save.attributes["swamp.diagnostic.definition_outcome"],
+        "created",
+      );
+
+      const [initial, recheck] = diagnosticPhases(spans, "definition_lookup");
+      assertEquals(
+        initial.attributes["swamp.diagnostic.lookup_attempt"],
+        "initial",
+      );
+      assertEquals(
+        recheck.attributes["swamp.diagnostic.lookup_attempt"],
+        "recheck",
+      );
+      assert(isChildOf(recheck, held));
+    });
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: adopting a stored definition is a definition_adopt phase", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(undefined, { run: z.object({}) });
+    const resolvedType = ModelType.create("test/model");
+    const existing = Definition.create({
+      name: "stored-model",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+    });
+    await withObservedSpans(async (spans) => {
+      const result = await withDiagnosticArea(
+        "enrollment",
+        () =>
+          resolveOrCreateDefinition(
+            {
+              lookupDefinition: () =>
+                Promise.resolve({ definition: existing, type: resolvedType }),
+              getModelDef: () => modelDef,
+              saveDefinition: () => Promise.resolve(),
+              getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+            },
+            "test/model",
+            "stored-model",
+            "run",
+            {},
+            resolvedType,
+            modelDef,
+            undefined,
+            lockDir,
+          ),
+      );
+      assertEquals(result.ok, true);
+      const adopt = findSpan(spans, "swamp.diagnostic.definition_adopt");
+      assertEquals(
+        adopt.attributes["swamp.diagnostic.definition_outcome"],
+        "reused",
+      );
+      // The fast path takes no lock and saves nothing.
+      assertEquals(diagnosticPhases(spans, "lock_wait").length, 0);
+      assertEquals(diagnosticPhases(spans, "definition_save").length, 0);
+    });
+  });
+});
+
+Deno.test("resolveOrCreateDefinition: a race loser adopts the winner's definition under the lock", async () => {
+  await withTempDir(async (lockDir) => {
+    const modelDef = createTestModelDef(undefined, { run: z.object({}) });
+    const resolvedType = ModelType.create("test/model");
+    const winner = Definition.create({
+      name: "raced-model",
+      type: "test/model",
+      typeVersion: "2026.01.01.1",
+    });
+    let lookups = 0;
+    await withObservedSpans(async (spans) => {
+      const result = await withDiagnosticArea(
+        "enrollment",
+        () =>
+          resolveOrCreateDefinition(
+            {
+              // Missing at first; the winner has saved it by the re-check.
+              lookupDefinition: () =>
+                Promise.resolve(
+                  lookups++ === 0
+                    ? null
+                    : { definition: winner, type: resolvedType },
+                ),
+              getModelDef: () => modelDef,
+              saveDefinition: () => Promise.resolve(),
+              getDefinitionPath: (_type, id) => `/tmp/${id}.yaml`,
+            },
+            "test/model",
+            "raced-model",
+            "run",
+            {},
+            resolvedType,
+            modelDef,
+            undefined,
+            lockDir,
+          ),
+      );
+      assertEquals(result.ok, true);
+      const held = findSpan(spans, "swamp.diagnostic.lock_held");
+      const adopt = findSpan(spans, "swamp.diagnostic.definition_adopt");
+      assert(isChildOf(adopt, held));
+      assertEquals(
+        adopt.attributes["swamp.diagnostic.definition_outcome"],
+        "reused",
+      );
+      assertEquals(diagnosticPhases(spans, "definition_save").length, 0);
+    });
+  });
 });

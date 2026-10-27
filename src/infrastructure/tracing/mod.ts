@@ -28,8 +28,11 @@ export {
   shutdownLogs,
 } from "./otel_logs_init.ts";
 export {
+  activeSpanAttributeSetter,
+  activeSpanLink,
   bindGeneratorToSpan,
   getTracer,
+  type Link,
   markActiveSpanError,
   runDetached,
   setActiveSpanAttributes,

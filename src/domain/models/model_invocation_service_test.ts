@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import "../../domain/models/models.ts";
 import type {
@@ -48,6 +52,7 @@ import {
   runWithVaultAccess,
 } from "../vaults/run_vault_access.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
+import { literalOccurrence } from "../expressions/cel_grammar.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { z } from "zod";
@@ -884,6 +889,32 @@ defineModel({
   },
 });
 
+// A type whose global arguments include a value that is not plain data.
+const DATED_TYPE = ModelType.create(`test/dated-target-${crypto.randomUUID()}`);
+
+defineModel({
+  type: DATED_TYPE,
+  version: "2026.10.27.1",
+  globalArguments: z.object({
+    when: z.date(),
+    label: z.string().optional(),
+  }),
+  methods: {
+    show: {
+      description: "records what it received",
+      arguments: z.object({}),
+      execute: (args, context) => {
+        resolveCalls.push({
+          globalArgs: { ...context.globalArgs },
+          args: { ...(args as Record<string, unknown>) },
+          selfName: context.definition.name,
+        });
+        return Promise.resolve({ dataHandles: [] });
+      },
+    },
+  },
+});
+
 async function withResolvingSvc(
   fn: (env: {
     svc: ModelInvocationService;
@@ -1039,6 +1070,11 @@ Deno.test("ModelInvocationService: refuses global arguments holding expression t
         // Root-free text evaluates too, and would trip the execution guard.
         "${{ 1 }}",
         "x-${{ not valid cel !!! }}",
+        // The read guard takes the hyphen for subtraction.
+        "${{ needs.build-vault.outputs.url }}",
+        "${{ jobs.build-vault.result }}",
+        "${{ matrix.node-18x }}",
+        "${{ needs.deploy-1a.result }}",
       ]
     ) {
       resolveCalls.length = 0;
@@ -1071,6 +1107,144 @@ Deno.test("ModelInvocationService: refuses global arguments holding expression t
       assertEquals(await definitionRepo.findByNameGlobal(name), null, url);
       assertEquals(resolveCalls.length, 0, url);
     }
+  });
+});
+
+Deno.test("ModelInvocationService: auto-creation stores another system's text wrapped in literal(), and every later run receives the text", async () => {
+  await withResolvingSvc(async ({ svc, definitionRepo }) => {
+    for (
+      const url of [
+        "${{ github.sha }}",
+        // Evaluates without reading the other system's root, if stored bare.
+        "${{ true || github.sha }}",
+        "pre ${{ false ? github.sha : 'x' }} post",
+        // Functions swamp does not register, and ones it does.
+        "${{ toJSON(matrix) }}",
+        "${{ startsWith(github.ref, 'refs/tags') }}",
+        "${{ matrix.os || size('ab') == 2 }}",
+        // A hyphenated name on a foreign root reads no swamp namespace.
+        "${{ needs.build-env.outputs.url }}",
+        "${{ needs.build-2.result }}",
+        "${{ needs.e2e-tests.result }}",
+        "${{ matrix.os-2022 }}",
+        `\${{ github.${"a".repeat(5000)} }}`,
+        "${{ github.title == 'it\\'s \"q\" }} \\n' }}",
+      ]
+    ) {
+      const label = url.slice(0, 60);
+      resolveCalls.length = 0;
+      const name = `auto-${crypto.randomUUID()}`;
+      const byType = await svc.invoke(
+        {
+          modelType: RESOLVE_TYPE.normalized,
+          name,
+          method: "show",
+          arguments: { url },
+        },
+        makeStubContext(),
+      );
+      assertEquals(byType.ok, true, byType.ok ? label : errorOf(byType));
+      assertEquals(resolveCalls[0].globalArgs.url, url, label);
+
+      const stored = await definitionRepo.findByNameGlobal(name);
+      const storedUrl = stored?.definition.globalArguments.url as string;
+      assertStringIncludes(storedUrl, "literal(", label);
+      assertNotEquals(storedUrl, url, label);
+
+      // A later run reads the stored text back as authored source.
+      resolveCalls.length = 0;
+      const byDefinition = await svc.invoke(
+        { definition: name, method: "show" },
+        makeStubContext(),
+      );
+      assertEquals(
+        byDefinition.ok,
+        true,
+        byDefinition.ok ? label : errorOf(byDefinition),
+      );
+      assertEquals(resolveCalls[0].globalArgs.url, url, label);
+    }
+  });
+});
+
+Deno.test("ModelInvocationService: auto-creation saves a global argument that is not plain data as it is", async () => {
+  await withResolvingSvc(async ({ svc, definitionRepo }) => {
+    const when = new Date("2026-10-27T12:00:00.000Z");
+    for (
+      const [label, stored] of [
+        [undefined, undefined],
+        ["${{ github.sha }}", literalOccurrence("${{ github.sha }}")],
+      ] as const
+    ) {
+      resolveCalls.length = 0;
+      const name = `auto-${crypto.randomUUID()}`;
+      const result = await svc.invoke(
+        {
+          modelType: DATED_TYPE.normalized,
+          name,
+          method: "show",
+          arguments: label === undefined ? { when } : { when, label },
+        },
+        makeStubContext(),
+      );
+      assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+      const saved = await definitionRepo.findByNameGlobal(name);
+      const globals = saved?.definition.globalArguments ?? {};
+      // The YAML store reads a date back as its timestamp text; flattened,
+      // it would have been saved as an empty object.
+      assertEquals(
+        new Date(globals.when as string | Date).getTime(),
+        when.getTime(),
+        String(label),
+      );
+      assertEquals(globals.label, stored);
+      assertEquals(
+        (resolveCalls[0].globalArgs.when as Date).getTime(),
+        when.getTime(),
+      );
+    }
+  });
+});
+
+Deno.test("ModelInvocationService: auto-creation refuses expression text in a sensitive global argument without repeating it", async () => {
+  await withResolvingSvc(async ({ svc, save, definitionRepo }) => {
+    const token = "${{ secrets.DEPLOY_TOKEN == 'ghp_TOKEN' }}";
+    const name = `auto-${crypto.randomUUID()}`;
+    resolveCalls.length = 0;
+    const byType = await svc.invoke(
+      {
+        modelType: RESOLVE_TYPE.normalized,
+        name,
+        method: "show",
+        arguments: { url: "https://plain.invalid", token },
+      },
+      makeStubContext(),
+    );
+    assertEquals(byType.ok, false);
+    assertStringIncludes(errorOf(byType), "token: (value withheld)");
+    assertStringIncludes(errorOf(byType), "sensitive field");
+    assertEquals(errorOf(byType).includes("ghp_TOKEN"), false);
+    assertEquals(errorOf(byType).includes("DEPLOY_TOKEN"), false);
+    assertEquals(await definitionRepo.findByNameGlobal(name), null);
+    assertEquals(resolveCalls.length, 0);
+
+    // Applied to one invocation of an existing definition, nothing is saved,
+    // so the text reaches the method as the value it is.
+    await save(Definition.create({
+      name: "target-sensitive",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid" },
+    }));
+    const byDefinition = await svc.invoke(
+      { definition: "target-sensitive", method: "show", arguments: { token } },
+      makeStubContext(),
+    );
+    assertEquals(
+      byDefinition.ok,
+      true,
+      byDefinition.ok ? "" : errorOf(byDefinition),
+    );
+    assertEquals(resolveCalls[0].globalArgs.token, token);
   });
 });
 

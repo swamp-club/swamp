@@ -12,7 +12,27 @@
   "fmt": {
     "config": null
   },
-  "pushError": "validation_failed: Bundle compilation failed. Fix the errors above and try again.",
+  "archive": [
+    "dependency-audit.json",
+    "manifest.yaml"
+  ],
+  "shipped": {},
+  "bundles": {},
+  "record": {
+    "recordVersion": 2,
+    "bundles": {},
+    "dependencies": [],
+    "unaudited": []
+  },
+  "audited": [],
+  "trust": {
+    "errors": [],
+    "warnings": []
+  },
+  "reviewWarnings": [],
+  "gateFailures": [
+    "source-syntax: Cannot read the imports of extensions/models/m.ts: it does not parse (Unexpected token (3:22)). Fix the syntax error and try again."
+  ],
   "loader": {
     "extensions/models/m.ts": {
       "config": null,

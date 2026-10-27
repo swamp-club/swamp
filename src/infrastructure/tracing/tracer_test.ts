@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { type Span, SpanKind, trace } from "@opentelemetry/api";
 import {
+  activeSpanAttributeSetter,
   bindGeneratorToSpan,
   getTracer,
   markActiveSpanError,
@@ -294,6 +295,34 @@ Deno.test("setActiveSpanAttributes: sets attributes on the span of a withGenerat
 
 Deno.test("setActiveSpanAttributes: does nothing when no span is active", () => {
   setActiveSpanAttributes({ "model.name": "none" });
+});
+
+Deno.test("activeSpanAttributeSetter: sets attributes on the span active when it was taken", async () => {
+  await withCapturedSpans(async (spans) => {
+    async function* inner() {
+      const setOuter = activeSpanAttributeSetter();
+      await withSpan("test.child", {}, () => {
+        setOuter({ "model.name": "late" });
+        return Promise.resolve();
+      });
+      yield { kind: "done" };
+    }
+    for await (const _ of withGeneratorSpan("test.outer", {}, inner())) {
+      // drain
+    }
+    assertEquals(
+      findSpan(spans, "test.outer").attributes["model.name"],
+      "late",
+    );
+    assertEquals(
+      findSpan(spans, "test.child").attributes["model.name"],
+      undefined,
+    );
+  });
+});
+
+Deno.test("activeSpanAttributeSetter: does nothing when no span was active", () => {
+  activeSpanAttributeSetter()({ "model.name": "none" });
 });
 
 // ── withServerSpan tests ────────────────────────────────────────────

@@ -1,5 +1,5 @@
 {
-  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Shipped in @swamp-club/extension-scoring as vectors/dependency_audit.json; swamp and the registry both test against the package's copy. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier (`expect`) and the registry's scorecard stores (`scorecard`), given npm's packument (`npm`; absent means npm answers 404, `npmStatus` an error status), JSR's meta.json (`jsr`) and OSV's answer (`osv`; absent means no vulnerabilities). The packument's `time.modified` is the moment the test runs, and weekly downloads are 50,000. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier`, 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency. `installed`, on a resolution or record vector, is the version a package.json project holds in node_modules (swamp-club#3630). `record`: the dependency-audit.json entry push writes for one import (swamp-club#3662); `source` says how the source wrote it (`written` as npm:/jsr:, `import-map` as a bare import the Deno config resolves, `package-json` as a bare import resolved to the installed package), `spec` is the version the audit reads (for `package-json`, the range package.json declares, or the installed version when it declares none), and `expect` is the entry, or null when none is written. The entry's `spec` is what the shipped source writes after `@`: package.json-mode imports ship pinned to the installed version. `recordEntries`: whether the registry uses a record entry as the version that ships (`use`) or ignores it and resolves the dependency itself (`ignore`): it uses one only when the registry is npm or jsr, the version is a plain semver (no `v` or `=`), the spec admits it (an exact spec names it, a range contains it, a dist-tag or no spec admits any version), and `published` lists it.",
+  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Shipped in @swamp-club/extension-scoring as vectors/dependency_audit.json; swamp and the registry both test against the package's copy. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier (`expect`) and the registry's scorecard stores (`scorecard`), given npm's packument (`npm`; absent means npm answers 404, `npmStatus` an error status), JSR's meta.json (`jsr`) and OSV's answer (`osv`; absent means no vulnerabilities). The packument's `time.modified` is the moment the test runs, and weekly downloads are 50,000. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier` (an unpinned, range or dist-tag specifier that no valid lock fixed; a locked one costs nothing, swamp-club#3970), 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency. `installed`, on a resolution or record vector, is the version a package.json project holds in node_modules (swamp-club#3630). `record`: the dependency-audit.json entry push writes for one import (swamp-club#3662); `source` says how the source wrote it (`written` as npm:/jsr:, `import-map` as a bare import the Deno config resolves, `package-json` as a bare import resolved to the installed package), `spec` is the version the audit reads (for `package-json`, the range package.json declares, or the installed version when it declares none), and `expect` is the entry, or null when none is written. The entry's `spec` is what the shipped source writes after `@`: package.json-mode imports ship pinned to the installed version. `recordEntries`: whether the registry uses a record entry as the version that ships (`use`) or ignores it and resolves the dependency itself (`ignore`): it uses one only when the registry is npm or jsr, the version is a plain semver (no `v` or `=`), the spec admits it (an exact spec names it, a range contains it, a dist-tag or no spec admits any version), and `published` lists it. `written`: the npm: and jsr: dependencies a code module writes (swamp-club#3983), read from its syntax tree: `path` picks TypeScript, JavaScript or JSX, and `expect` lists each dependency once, in source order. `expect` is null for a module that does not parse: its imports are unknown, and the scorecard counts the module as not audited (`scorecardResult`'s `unreadable`). `recordV2`: the v2 record push writes from the canonical shipped form (swamp-club#3970), given each import push audited (`imports`: the package, how the author wrote it, and the version the bundle holds with its source and whether a valid lock fixed it), the bundle hashes and the unaudited code; `expect` is the record's `dependencies`, and its `bundles` and `unaudited` when given. One entry per shipped package version, `spec` equal to `version`, the weakest `from` across its imports, `locked` only when every import was locked. `canonical`: whether a specifier as an archive's source writes it keeps the canonical form against the record's entries (`record`, null for no record): `accept`, or a `not-audited` finding with its message. Every `npm:` and `jsr:` import names one plain semver version the record lists; zod is the one exception, and anything else (relative, `node:`) is outside the rule. `canonicalScoring`: how the registry scores a v2 archive (swamp-club#4018), given a code module's `source` at `path`, and its v2 `record`, with npm's packuments and JSR's meta.json from `canonicalRegistry`; OSV lists no vulnerabilities, and `locked`, when given, is a lock the v2 path never reads. Only an exact specifier the record lists is audited, with no live range resolution; anything else is not audited under the canonical-form message. OSV, deprecation and yank checks still run on the listed version. An entry whose `from` is `registry`, or `installed` without `locked`, costs the loose point under the non-exact spelling its `writtenAs` keeps. Each `unaudited` entry is not audited under its origin, made safe for one line. `expect` is the scorecard's `blockers`, `warnings` and `notAudited`, in order, and its earned points. `unauditedCode`: the warnings `swamp extension quality` and push add for code from outside npm and JSR (`withUnauditedCode`), one per origin, and the dependency-trust points that leaves.",
   "resolution": [
     {
       "name": "exact pin",
@@ -527,7 +527,7 @@
       "expect": [
         {
           "severity": "warning",
-          "message": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version this push resolves",
+          "message": "no lock: ^1.0.0 resolved to 1.2.0 today; commit a lock or pin exact versions (costs 1 point)",
           "cause": "loose-specifier",
           "pointsLost": 1
         }
@@ -536,7 +536,7 @@
         "findings": [
           {
             "list": "warnings",
-            "message": "npm:pkg@^1.0.0 is a range; audited 1.2.0, the version the registry resolved",
+            "message": "npm:pkg@^1.0.0 is a range and no lock fixed it; audited 1.2.0, the version the registry resolved",
             "cause": "loose-specifier"
           }
         ],
@@ -566,7 +566,7 @@
       "expect": [
         {
           "severity": "warning",
-          "message": "npm:pkg is unpinned; audited 1.2.0, the version this push resolves",
+          "message": "no lock: an unpinned import resolved to 1.2.0 today; commit a lock or pin exact versions (costs 1 point)",
           "cause": "loose-specifier",
           "pointsLost": 1
         }
@@ -575,7 +575,7 @@
         "findings": [
           {
             "list": "warnings",
-            "message": "npm:pkg is unpinned; audited 1.2.0, the version the registry resolved",
+            "message": "npm:pkg is unpinned and no lock fixed it; audited 1.2.0, the version the registry resolved",
             "cause": "loose-specifier"
           }
         ],
@@ -605,7 +605,7 @@
       "expect": [
         {
           "severity": "warning",
-          "message": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version this push resolves",
+          "message": "no lock: latest resolved to 1.2.0 today; commit a lock or pin exact versions (costs 1 point)",
           "cause": "loose-specifier",
           "pointsLost": 1
         }
@@ -614,7 +614,7 @@
         "findings": [
           {
             "list": "warnings",
-            "message": "npm:pkg@latest is a dist-tag; audited 1.2.0, the version the registry resolved",
+            "message": "npm:pkg@latest is a dist-tag and no lock fixed it; audited 1.2.0, the version the registry resolved",
             "cause": "loose-specifier"
           }
         ],
@@ -652,23 +652,10 @@
           }
         }
       },
-      "expect": [
-        {
-          "severity": "warning",
-          "message": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version this push resolves (from deno.lock)",
-          "cause": "loose-specifier",
-          "pointsLost": 1
-        }
-      ],
+      "expect": [],
       "scorecard": {
-        "findings": [
-          {
-            "list": "warnings",
-            "message": "npm:pkg@^1.0.0 is a range; audited 1.0.0, the version the registry resolved (from deno.lock)",
-            "cause": "loose-specifier"
-          }
-        ],
-        "earnedPoints": 1
+        "findings": [],
+        "earnedPoints": 2
       }
     },
     {
@@ -898,7 +885,7 @@
       "expect": [
         {
           "severity": "warning",
-          "message": "jsr:@std/assert@1 is a range; audited 1.0.2, the version this push resolves",
+          "message": "no lock: 1 resolved to 1.0.2 today; commit a lock or pin exact versions (costs 1 point)",
           "cause": "loose-specifier",
           "pointsLost": 1
         }
@@ -907,12 +894,35 @@
         "findings": [
           {
             "list": "warnings",
-            "message": "jsr:@std/assert@1 is a range; audited 1.0.2, the version the registry resolved",
+            "message": "jsr:@std/assert@1 is a range and no lock fixed it; audited 1.0.2, the version the registry resolved",
             "cause": "loose-specifier"
           }
         ],
         "earnedPoints": 1
       }
+    },
+    {
+      "name": "jsr range from the lock",
+      "registry": "jsr",
+      "package": "@std/assert",
+      "spec": "1",
+      "jsr": {
+        "status": 200,
+        "body": {
+          "latest": "1.0.2",
+          "versions": {
+            "1.0.2": {}
+          }
+        }
+      },
+      "expect": [],
+      "scorecard": {
+        "findings": [],
+        "earnedPoints": 2
+      },
+      "locked": [
+        "1.0.2"
+      ]
     },
     {
       "name": "unscoped jsr name",
@@ -1832,6 +1842,1268 @@
         "2.1.3"
       ],
       "expect": "ignore"
+    }
+  ],
+  "written": [
+    {
+      "name": "every import form",
+      "path": "extensions/models/m.ts",
+      "source": "import a from \"npm:a@1.0.0\";\nimport \"npm:side@2.0.0\";\nexport { b } from \"jsr:@s/b@1.0.0\";\nexport * from \"npm:star@1.0.0\";\nconst c = await import(\"npm:c@1.0.0\");\ntype D = typeof import(\"npm:d@1.0.0\");\nexport const all = [a, c];\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "a",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "side",
+          "version": "2.0.0"
+        },
+        {
+          "registry": "jsr",
+          "name": "@s/b",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "star",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "c",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "d",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "text that is not an import",
+      "path": "extensions/models/m.ts",
+      "source": "// import x from \"npm:comment@1.0.0\";\n/* import y from \"npm:block@1.0.0\"; */\nexport const s = \"import z from 'npm:string@1.0.0'\";\nexport const t = `import w from \"npm:template@1.0.0\"`;\nexport const r = /import v from \"npm:regex@1.0.0\"/;\nexport const dyn = (n: string) => import(`npm:${n}`);\n",
+      "expect": []
+    },
+    {
+      "name": "a quote in a regex literal before an import on the same line",
+      "path": "extensions/models/m.ts",
+      "source": "export const quoted = /\"/.test(\"x\"); import ms from \"npm:ms@2.1.3\";\n\nexport const model = [quoted, ms];\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        }
+      ]
+    },
+    {
+      "name": "a backtick in a regex literal in bundled JavaScript",
+      "path": "extension/bundles/m.js",
+      "source": "var TOKEN = /^[!#$%&*+.^_`|~0-9A-Za-z-]+$/;\nimport { parse } from \"jsr:@std/csv@1.0.6\";\nimport https from \"node:https\";\nvar message = `bad token`;\nexport { https, message, parse, TOKEN };\n",
+      "expect": [
+        {
+          "registry": "jsr",
+          "name": "@std/csv",
+          "version": "1.0.6"
+        }
+      ]
+    },
+    {
+      "name": "JavaScript the TypeScript plugin misreads",
+      "path": "extension/bundles/m.js",
+      "source": "var a = 1, b = 2;\nvar pick = a ? (b) : c => c;\nimport x from \"npm:x@1.0.0\";\nexport { pick, x };\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "x",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "a module that does not parse",
+      "path": "extensions/models/m.ts",
+      "source": "import value from \"npm:vecpkg@1.0.0\";\n\nexport const broken = ;\n",
+      "expect": null
+    },
+    {
+      "name": "each dependency once",
+      "path": "extensions/models/m.ts",
+      "source": "import a from \"npm:a@1.0.0\";\nexport { a };\nexport const again = () => import(\"npm:a@1.0.0\");\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "a",
+          "version": "1.0.0"
+        }
+      ]
+    }
+  ],
+  "recordV2": [
+    {
+      "name": "a written exact pin",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@2.1.3",
+          "shipped": {
+            "version": "2.1.3",
+            "from": "exact"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@2.1.3"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a written range the lock fixed",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@^2",
+          "shipped": {
+            "version": "2.1.0",
+            "from": "lockfile"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.0",
+            "version": "2.1.0",
+            "from": "lockfile",
+            "locked": true,
+            "writtenAs": [
+              "npm:ms@^2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a lockless range",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@^2",
+          "shipped": {
+            "version": "2.1.3",
+            "from": "registry"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "registry",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@^2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an import-map name and a written range for one version",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "ms",
+          "shipped": {
+            "version": "2.1.0",
+            "from": "lockfile",
+            "locked": true
+          }
+        },
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@~2.1.0",
+          "shipped": {
+            "version": "2.1.0",
+            "from": "lockfile",
+            "locked": true
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.0",
+            "version": "2.1.0",
+            "from": "lockfile",
+            "locked": true,
+            "writtenAs": [
+              "ms",
+              "npm:ms@~2.1.0"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an exact pin and a lockless range for one version: the weaker source wins",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@2.1.3",
+          "shipped": {
+            "version": "2.1.3",
+            "from": "exact"
+          }
+        },
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@^2",
+          "shipped": {
+            "version": "2.1.3",
+            "from": "registry"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "registry",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@2.1.3",
+              "npm:ms@^2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "two installed copies under one range",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "ms",
+          "shipped": {
+            "version": "2.0.0",
+            "from": "installed"
+          }
+        },
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "ms",
+          "shipped": {
+            "version": "2.1.3",
+            "from": "installed"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.0.0",
+            "version": "2.0.0",
+            "from": "installed",
+            "locked": false,
+            "writtenAs": [
+              "ms"
+            ]
+          },
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "installed",
+            "locked": false,
+            "writtenAs": [
+              "ms"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "an installed copy a matching package-lock.json fixed",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "ms",
+          "shipped": {
+            "version": "2.1.3",
+            "from": "installed",
+            "locked": true
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "installed",
+            "locked": true,
+            "writtenAs": [
+              "ms"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a jsr range",
+      "imports": [
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "writtenAs": "jsr:@std/assert@^1",
+          "shipped": {
+            "version": "1.0.19",
+            "from": "registry"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@std/assert",
+            "spec": "1.0.19",
+            "version": "1.0.19",
+            "from": "registry",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@std/assert@^1"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "a version that is not plain semver is left out",
+      "imports": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "writtenAs": "npm:ms@latest",
+          "shipped": {
+            "version": "latest",
+            "from": "registry"
+          }
+        }
+      ],
+      "expect": {
+        "dependencies": []
+      }
+    },
+    {
+      "name": "bundle hashes and unaudited code, sorted",
+      "imports": [],
+      "bundles": {
+        "bundles/z.js": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bundles/a.js": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "unaudited": [
+        {
+          "kind": "url",
+          "origin": "https://example.com/x.ts",
+          "modules": {
+            "https://example.com/y.ts": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "https://example.com/x.ts": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        {
+          "kind": "package-json",
+          "origin": "file:../vendor/v",
+          "modules": {
+            "node_modules/v/index.js": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      ],
+      "expect": {
+        "bundles": {
+          "bundles/a.js": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bundles/z.js": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "dependencies": [],
+        "unaudited": [
+          {
+            "kind": "package-json",
+            "origin": "file:../vendor/v",
+            "modules": {
+              "node_modules/v/index.js": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          {
+            "kind": "url",
+            "origin": "https://example.com/x.ts",
+            "modules": {
+              "https://example.com/x.ts": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "https://example.com/y.ts": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "canonical": [
+    {
+      "name": "an exact npm pin the record lists",
+      "shipped": "npm:ms@2.1.3",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": "accept"
+    },
+    {
+      "name": "an exact npm pin with a subpath",
+      "shipped": "npm:ms@2.1.3/sub/path.js",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": "accept"
+    },
+    {
+      "name": "an exact jsr pin with a subpath",
+      "shipped": "jsr:@std/assert@1.0.19/equals",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": "accept"
+    },
+    {
+      "name": "host-provided zod",
+      "shipped": "npm:zod@4",
+      "record": [],
+      "expect": "accept"
+    },
+    {
+      "name": "a relative import",
+      "shipped": "./lib/x.ts",
+      "record": [],
+      "expect": "accept"
+    },
+    {
+      "name": "a node builtin",
+      "shipped": "node:fs",
+      "record": [],
+      "expect": "accept"
+    },
+    {
+      "name": "an npm range",
+      "shipped": "npm:ms@^2",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms@^2 is not in the canonical form: it must name one exact version, such as npm:ms@1.2.3"
+      }
+    },
+    {
+      "name": "an unpinned npm import",
+      "shipped": "npm:ms",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms is not in the canonical form: it must name one exact version, such as npm:ms@1.2.3"
+      }
+    },
+    {
+      "name": "an npm dist-tag",
+      "shipped": "npm:ms@latest",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms@latest is not in the canonical form: it must name one exact version, such as npm:ms@1.2.3"
+      }
+    },
+    {
+      "name": "an exact pin spelled with =",
+      "shipped": "npm:ms@=2.1.3",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms@=2.1.3 is not in the canonical form: it must name one exact version, such as npm:ms@1.2.3"
+      }
+    },
+    {
+      "name": "an exact pin spelled with v",
+      "shipped": "npm:ms@v2.1.3",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms@v2.1.3 is not in the canonical form: it must name one exact version, such as npm:ms@1.2.3"
+      }
+    },
+    {
+      "name": "a jsr range",
+      "shipped": "jsr:@std/assert@^1",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "jsr:@std/assert@^1 is not in the canonical form: it must name one exact version, such as jsr:@std/assert@1.2.3"
+      }
+    },
+    {
+      "name": "an exact pin the record does not list",
+      "shipped": "npm:ms@2.1.0",
+      "record": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        },
+        {
+          "registry": "jsr",
+          "name": "@std/assert",
+          "version": "1.0.19"
+        }
+      ],
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms@2.1.0 is not in the canonical form: dependency-audit.json lists no npm:ms@2.1.0"
+      }
+    },
+    {
+      "name": "an exact pin with no record",
+      "shipped": "npm:ms@2.1.3",
+      "record": null,
+      "expect": {
+        "cause": "not-audited",
+        "message": "npm:ms@2.1.3 is not in the canonical form: dependency-audit.json lists no npm:ms@2.1.3"
+      }
+    }
+  ],
+  "canonicalRegistry": {
+    "npm": {
+      "ms": {
+        "dist-tags": {
+          "latest": "2.1.3"
+        },
+        "versions": {
+          "2.1.2": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ],
+            "deprecated": "Use 2.1.3"
+          },
+          "2.1.3": {
+            "license": "MIT",
+            "maintainers": [
+              {
+                "name": "a"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "jsr": {
+      "@std/assert": {
+        "latest": "1.0.19",
+        "versions": {
+          "1.0.18": {
+            "yanked": true
+          },
+          "1.0.19": {}
+        }
+      }
+    }
+  },
+  "canonicalScoring": [
+    {
+      "name": "an exact npm import the record lists",
+      "source": "import x from \"npm:ms@2.1.3\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@2.1.3"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [],
+        "earnedPoints": 2
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a range hand-edited into the source is not audited, though a lock would fix it",
+      "source": "import x from \"npm:ms@^2.1.0\";\n",
+      "locked": [
+        "2.1.3"
+      ],
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@2.1.3"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "ms",
+            "reason": "npm:ms@^2.1.0 is not in the canonical form: it must name one exact version, such as npm:ms@1.2.3"
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "an exact import the record does not list",
+      "source": "import x from \"npm:ms@2.1.3\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "ms",
+            "reason": "npm:ms@2.1.3 is not in the canonical form: dependency-audit.json lists no npm:ms@2.1.3"
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "an exact import whose version the record does not match",
+      "source": "import x from \"npm:ms@2.1.3\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.2",
+            "version": "2.1.2",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@2.1.2"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "ms",
+            "reason": "npm:ms@2.1.3 is not in the canonical form: dependency-audit.json lists no npm:ms@2.1.3"
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a range the author wrote, which a lock fixed at push",
+      "source": "import x from \"npm:ms@2.1.3\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "lockfile",
+            "locked": true,
+            "writtenAs": [
+              "npm:ms@^2"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [],
+        "earnedPoints": 2
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a range the author wrote, which no lock fixed",
+      "source": "import x from \"npm:ms@2.1.3\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.3",
+            "version": "2.1.3",
+            "from": "registry",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@^2"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [
+          {
+            "packageName": "ms",
+            "reason": "npm:ms@^2 is not an exact version and no lock fixed it; audited 2.1.3, the version push recorded",
+            "cause": "loose-specifier"
+          }
+        ],
+        "notAudited": [],
+        "earnedPoints": 1
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a deprecated exact version still costs both points",
+      "source": "import x from \"npm:ms@2.1.2\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "npm",
+            "name": "ms",
+            "spec": "2.1.2",
+            "version": "2.1.2",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "npm:ms@2.1.2"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [
+          {
+            "packageName": "ms",
+            "reason": "version 2.1.2 is deprecated: Use 2.1.3",
+            "cause": "deprecated-version"
+          }
+        ],
+        "warnings": [],
+        "notAudited": [],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "an exact jsr import the record lists",
+      "source": "import x from \"jsr:@std/assert@1.0.19\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@std/assert",
+            "spec": "1.0.19",
+            "version": "1.0.19",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@std/assert@1.0.19"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [],
+        "earnedPoints": 2
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a jsr range",
+      "source": "import x from \"jsr:@std/assert@^1.0.0\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@std/assert",
+            "spec": "1.0.19",
+            "version": "1.0.19",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@std/assert@1.0.19"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "@std/assert",
+            "reason": "jsr:@std/assert@^1.0.0 is not in the canonical form: it must name one exact version, such as jsr:@std/assert@1.2.3"
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a yanked exact jsr version still costs both points",
+      "source": "import x from \"jsr:@std/assert@1.0.18\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@std/assert",
+            "spec": "1.0.18",
+            "version": "1.0.18",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@std/assert@1.0.18"
+            ]
+          }
+        ],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [
+          {
+            "packageName": "@std/assert",
+            "reason": "version 1.0.18 was withdrawn (yanked) by its author on JSR. Newest version that isn't yanked: 1.0.19.",
+            "cause": "jsr-yanked"
+          }
+        ],
+        "warnings": [],
+        "notAudited": [],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "zod, which the host provides, outside the rule",
+      "source": "import { z } from \"npm:zod@^4\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [],
+        "unaudited": []
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [],
+        "earnedPoints": 2
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a URL import the record lists as unaudited",
+      "source": "import x from \"https://example.com/x.ts\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [],
+        "unaudited": [
+          {
+            "kind": "url",
+            "origin": "https://example.com/x.ts",
+            "modules": {
+              "https://example.com/x.ts": "sha256:00"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "https://example.com/x.ts",
+            "reason": "a URL import, from outside npm and JSR: no registry audit covers it. Replace it with an npm: or jsr: package."
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a git dependency the record lists as unaudited",
+      "source": "import x from \"shared\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [],
+        "unaudited": [
+          {
+            "kind": "git",
+            "origin": "git+https://github.com/o/r.git#4f1c2a9",
+            "modules": {
+              "node_modules/x/index.js": "sha256:00"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "git+https://github.com/o/r.git#4f1c2a9",
+            "reason": "a git dependency, from outside npm and JSR: no registry audit covers it. Replace it with an npm: or jsr: package."
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "a file: package.json dependency the record lists as unaudited",
+      "source": "import x from \"shared\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [],
+        "unaudited": [
+          {
+            "kind": "package-json",
+            "origin": "file:../shared",
+            "modules": {
+              "node_modules/x/index.js": "sha256:00"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "file:../shared",
+            "reason": "a local package.json dependency, from outside npm and JSR: no registry audit covers it. Replace it with an npm: or jsr: package."
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    },
+    {
+      "name": "an unaudited origin with control characters is named on one line",
+      "source": "import x from \"https://example.com/x.ts\";\n",
+      "record": {
+        "recordVersion": 2,
+        "bundles": {},
+        "dependencies": [],
+        "unaudited": [
+          {
+            "kind": "url",
+            "origin": "https://example.com/\u001b[31mx.ts\n",
+            "modules": {
+              "https://example.com/\u001b[31mx.ts\n": "sha256:00"
+            }
+          }
+        ]
+      },
+      "expect": {
+        "blockers": [],
+        "warnings": [],
+        "notAudited": [
+          {
+            "packageName": "https://example.com/ [31mx.ts",
+            "reason": "a URL import, from outside npm and JSR: no registry audit covers it. Replace it with an npm: or jsr: package."
+          }
+        ],
+        "earnedPoints": 0
+      },
+      "path": "model.ts"
+    }
+  ],
+  "unauditedCode": [
+    {
+      "name": "no code from outside npm and JSR",
+      "unaudited": [],
+      "expect": [],
+      "earnedPoints": 2
+    },
+    {
+      "name": "a URL import",
+      "unaudited": [
+        {
+          "kind": "url",
+          "origin": "https://example.com/x.ts",
+          "modules": {
+            "https://example.com/x.ts": "sha256:00"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "dependency": "https://example.com/x.ts",
+          "message": "not audited: https://example.com/x.ts is a URL import, from outside npm and JSR, so no registry audit covers it",
+          "cause": "not-audited",
+          "remediation": "Replace it with an npm: or jsr: package.",
+          "notAuditedFix": "origin"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "a git dependency",
+      "unaudited": [
+        {
+          "kind": "git",
+          "origin": "git+https://github.com/o/r.git#4f1c2a9",
+          "modules": {
+            "node_modules/x/index.js": "sha256:00"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "dependency": "git+https://github.com/o/r.git#4f1c2a9",
+          "message": "not audited: git+https://github.com/o/r.git#4f1c2a9 is a git dependency, from outside npm and JSR, so no registry audit covers it",
+          "cause": "not-audited",
+          "remediation": "Replace it with an npm: or jsr: package.",
+          "notAuditedFix": "origin"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "a file: package.json dependency",
+      "unaudited": [
+        {
+          "kind": "package-json",
+          "origin": "file:../shared",
+          "modules": {
+            "node_modules/x/index.js": "sha256:00"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "dependency": "file:../shared",
+          "message": "not audited: file:../shared is a local package.json dependency, from outside npm and JSR, so no registry audit covers it",
+          "cause": "not-audited",
+          "remediation": "Replace it with an npm: or jsr: package.",
+          "notAuditedFix": "origin"
+        }
+      ],
+      "earnedPoints": 0
+    },
+    {
+      "name": "one origin listed twice is one finding",
+      "unaudited": [
+        {
+          "kind": "url",
+          "origin": "https://example.com/x.ts",
+          "modules": {
+            "https://example.com/x.ts": "sha256:00"
+          }
+        },
+        {
+          "kind": "url",
+          "origin": "https://example.com/x.ts",
+          "modules": {
+            "https://example.com/x.ts": "sha256:00"
+          }
+        }
+      ],
+      "expect": [
+        {
+          "dependency": "https://example.com/x.ts",
+          "message": "not audited: https://example.com/x.ts is a URL import, from outside npm and JSR, so no registry audit covers it",
+          "cause": "not-audited",
+          "remediation": "Replace it with an npm: or jsr: package.",
+          "notAuditedFix": "origin"
+        }
+      ],
+      "earnedPoints": 0
     }
   ]
 }

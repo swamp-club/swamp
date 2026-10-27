@@ -31,6 +31,11 @@ import { z } from "zod";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import { findSpan, withObservedSpans } from "../tracing/span_test_helpers.ts";
+import {
   Definition,
   type DefinitionId,
 } from "../../domain/definitions/definition.ts";
@@ -751,5 +756,34 @@ Deno.test("YamlEvaluatedDefinitionRepository: save of an unregistered type has n
     assertEquals(read?.definition.globalArguments, { apiKey: "any-value" });
     // A cache written with no masked positions reads back with none.
     assertEquals(read?.maskedPaths, []);
+  });
+});
+
+Deno.test("YamlEvaluatedDefinitionRepository.delete: measures lookup, removal and staging into the running phase", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlEvaluatedDefinitionRepository(dir);
+    const definition = Definition.create({
+      type: testType.normalized,
+      typeVersion: "1",
+      name: "measured-eval-delete",
+    });
+    await repo.save(testType, definition, undefined);
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", () =>
+        observeDiagnosticPhase(
+          "evaluated_removal",
+          {},
+          () => repo.delete(testType, definition.id),
+        ));
+      const removal = findSpan(spans, "swamp.diagnostic.evaluated_removal");
+      for (const work of ["lookup", "file_remove", "change_stage"]) {
+        assertEquals(
+          typeof removal.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+    });
+    assertEquals(await repo.findById(testType, definition.id), null);
   });
 });

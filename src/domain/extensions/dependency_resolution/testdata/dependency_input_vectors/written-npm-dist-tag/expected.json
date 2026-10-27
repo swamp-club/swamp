@@ -19,22 +19,30 @@
     "models/m.ts"
   ],
   "shipped": {
-    "models/m.ts": "import value from \"npm:vecpkg@latest\";\n\nexport const model = [value];\n"
+    "models/m.ts": "import value from \"npm:vecpkg@1.1.0\";\n\nexport const model = [value];\n"
   },
   "bundles": {
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "npm",
         "name": "vecpkg",
-        "spec": "latest",
+        "spec": "1.1.0",
         "version": "1.1.0",
-        "from": "registry"
+        "from": "registry",
+        "locked": false,
+        "writtenAs": [
+          "npm:vecpkg@latest"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {
@@ -47,7 +55,7 @@
   "trust": {
     "errors": [],
     "warnings": [
-      "vecpkg [loose-specifier]: npm:vecpkg@latest is a dist-tag; audited 1.1.0, the version this push resolves"
+      "vecpkg [loose-specifier]: no lock: latest resolved to 1.1.0 today; commit a lock or pin exact versions (costs 1 point)"
     ]
   },
   "reviewWarnings": [

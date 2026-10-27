@@ -33,6 +33,7 @@ import {
   isTaskTargetPath,
   isTriggerInputsPath,
   replaceExpressions,
+  rewriteExpressions,
   stripExpressionFields,
 } from "./expression_parser.ts";
 
@@ -850,4 +851,52 @@ Deno.test("extractExpressions: records the same whole-field versus embedded cont
       expressions.map(() => embedded ? "embedded" : "whole"),
     );
   }
+});
+
+Deno.test("rewriteExpressions: rewrites the occurrences extractExpressions reports, by path and position", () => {
+  const data = {
+    a: "x ${{ one }} y ${{ one }}",
+    "b.c": ["${{ two }}", 3, null],
+    d: { e: "plain" },
+  };
+  const seen = extractExpressions(data);
+  const picked = new Set([`${seen[1].path}@${seen[1].start}`, seen[2].path]);
+  const rewritten = rewriteExpressions(
+    data,
+    (e) =>
+      picked.has(`${e.path}@${e.start}`) || picked.has(e.path)
+        ? `<${e.celExpression}>`
+        : undefined,
+  );
+  assertEquals(rewritten, {
+    a: "x ${{ one }} y <one>",
+    "b.c": ["<two>", 3, null],
+    d: { e: "plain" },
+  });
+  // The input is left as it was.
+  assertEquals(data.a, "x ${{ one }} y ${{ one }}");
+});
+
+Deno.test("rewriteExpressions: returns every value it does not change as it is", () => {
+  const when = new Date(0);
+  const bytes = new Uint8Array([1, 2]);
+  const untouched = { a: ["x"], b: when };
+  const data = {
+    when,
+    bytes,
+    untouched,
+    text: "${{ one }}",
+    other: "${{ two }}",
+  };
+  const rewritten = rewriteExpressions(
+    data,
+    (e) => e.celExpression === "one" ? "<one>" : undefined,
+  ) as typeof data;
+  assertEquals(rewritten.text, "<one>");
+  assertStrictEquals(rewritten.when, when);
+  assertStrictEquals(rewritten.bytes, bytes);
+  assertStrictEquals(rewritten.untouched, untouched);
+  // Nothing to rewrite: the value itself comes back.
+  assertStrictEquals(rewriteExpressions(untouched, () => "<x>"), untouched);
+  assertStrictEquals(rewriteExpressions(data, () => undefined), data);
 });

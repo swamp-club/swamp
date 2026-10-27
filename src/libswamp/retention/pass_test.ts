@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  type ReadableSpan,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 import {
   type RetentionCollector,
   type RetentionPassDeps,
@@ -332,4 +339,161 @@ Deno.test("runRetentionPass: a pass past its budget stops at a batch boundary an
     second.kinds.map((k) => [k.kind, k.deleted, k.complete]),
     [["workflowRuns", 4, true], ["outputs", 5, true]],
   );
+});
+
+/** The finished spans named `name`. */
+function named(spans: readonly ReadableSpan[], name: string): ReadableSpan[] {
+  return spans.filter((s) => s.name === name);
+}
+
+Deno.test("runRetentionPass: an outputs batch exports retention_batch and batch_commit under swamp.retention.batch; other kinds none", async () => {
+  await withObservedSpans(async (spans) => {
+    await runRetentionPass(
+      deps([
+        countingCollector("workflowRuns", 1, []),
+        countingCollector("outputs", 3, []),
+      ]),
+      {
+        policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+        batchSize: 2,
+      },
+    );
+    const batches = named(spans, "swamp.retention.batch");
+    assertEquals(batches.length, 3);
+    const runsBatch = batches[0];
+    assertEquals(runsBatch.attributes["retention.kind"], "workflowRuns");
+    assertEquals(runsBatch.attributes["retention.deleted"], 1);
+    const phases = diagnosticPhases(spans, "retention_batch");
+    assertEquals(phases.length, 2);
+    assertEquals(
+      phases.some((p) => isChildOf(p, runsBatch)),
+      false,
+      "only outputs batches carry phases",
+    );
+    for (const [i, phase] of phases.entries()) {
+      const parent = batches[i + 1];
+      assertEquals(parent.attributes["retention.kind"], "outputs");
+      assert(isChildOf(phase, parent));
+      assertEquals(
+        phase.attributes["swamp.diagnostic.area"],
+        "output_retention",
+      );
+      assertEquals(phase.attributes["swamp.diagnostic.batch_size"], 2);
+      assertEquals(phase.attributes["swamp.outcome"], "ok");
+      const commit = diagnosticPhases(spans, "batch_commit")[i];
+      assert(isChildOf(commit, phase));
+      assertEquals(commit.attributes["swamp.diagnostic.disposition"], "commit");
+    }
+    assertEquals(phases[0].attributes["swamp.diagnostic.deleted"], 2);
+    assertEquals(phases[0].attributes["swamp.diagnostic.bytes_reclaimed"], 20);
+    assertEquals(phases[0].attributes["swamp.diagnostic.more"], true);
+    assertEquals(phases[1].attributes["swamp.diagnostic.more"], false);
+    // retention.deleted keeps its meaning: what that batch removed.
+    assertEquals(batches[1].attributes["retention.deleted"], 2);
+    assertEquals(batches[1].attributes["retention.bytes_reclaimed"], 20);
+    assertEquals(batches[1].attributes["retention.more"], true);
+    assertEquals(batches[2].attributes["retention.deleted"], 1);
+  });
+});
+
+Deno.test("runRetentionPass: a failed outputs batch ends retention_batch with its error, and the abandoned unit's commit stays ok", async () => {
+  await withObservedSpans(async (spans) => {
+    const failing: RetentionCollector = {
+      kind: "outputs",
+      collectBatch: () => Promise.reject(new Error("disk")),
+    };
+    const result = await runRetentionPass(deps([failing]), {
+      policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+    });
+    assertEquals(result.complete, false);
+    const phase = findSpan(spans, "swamp.diagnostic.retention_batch");
+    assertEquals(phase.attributes["swamp.outcome"], "error");
+    const commit = findSpan(spans, "swamp.diagnostic.batch_commit");
+    assertEquals(commit.attributes["swamp.diagnostic.disposition"], "abandon");
+    assertEquals(commit.attributes["swamp.outcome"], "ok");
+  });
+});
+
+Deno.test("runRetentionPass: a commit that fails after the collector ends batch_commit with the error", async () => {
+  await withObservedSpans(async (spans) => {
+    const failingCommit: RetentionPassDeps = {
+      ...deps([countingCollector("outputs", 1, [])]),
+      runBatch: async (fn) => {
+        await fn();
+        throw new Error("push failed");
+      },
+    };
+    await runRetentionPass(failingCommit, {
+      policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+    });
+    const commit = findSpan(spans, "swamp.diagnostic.batch_commit");
+    assertEquals(commit.attributes["swamp.diagnostic.disposition"], "commit");
+    assertEquals(commit.attributes["swamp.outcome"], "error");
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.retention_batch").attributes[
+        "swamp.outcome"
+      ],
+      "error",
+    );
+  });
+});
+
+Deno.test("runRetentionPass: a pass stopped before its outputs batch exports no partial phase", async () => {
+  await withObservedSpans(async (spans) => {
+    await runRetentionPass(deps([countingCollector("outputs", 1, [])]), {
+      policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+      isStopping: () => true,
+    });
+    assertEquals(diagnosticPhases(spans, "retention_batch").length, 0);
+  });
+});
+
+Deno.test("runRetentionPass: with tracing off an outputs batch runs unchanged", async () => {
+  const result = await runRetentionPass(
+    deps([countingCollector("outputs", 3, [])]),
+    { policy: RetentionPolicy.fromConfig({ retention: "1d" }), batchSize: 2 },
+  );
+  assertEquals(result.kinds[0].deleted, 3);
+  assertEquals(result.complete, true);
+});
+
+Deno.test("runRetentionPass: a runBatch that retries after a failed collect ends each batch_commit with its own disposition, before the retry starts", async () => {
+  await withObservedSpans(async (spans) => {
+    let calls = 0;
+    let commitsEndedBeforeRetry: number | undefined;
+    const flaky: RetentionCollector = {
+      kind: "outputs",
+      collectBatch: () => {
+        calls++;
+        if (calls === 1) return Promise.reject(new Error("transient"));
+        commitsEndedBeforeRetry =
+          diagnosticPhases(spans, "batch_commit").length;
+        return Promise.resolve({ deleted: 1, bytesReclaimed: 10, more: false });
+      },
+    };
+    const retrying: RetentionPassDeps = {
+      ...deps([flaky]),
+      runBatch: async (fn) => {
+        try {
+          return await fn();
+        } catch {
+          return await fn();
+        }
+      },
+    };
+    const result = await runRetentionPass(retrying, {
+      policy: RetentionPolicy.fromConfig({ retention: "1d" }),
+    });
+    assertEquals(result.kinds[0].deleted, 1);
+    const commits = diagnosticPhases(spans, "batch_commit");
+    assertEquals(
+      commits.map((c) => c.attributes["swamp.diagnostic.disposition"]),
+      ["abandon", "commit"],
+    );
+    assertEquals(
+      commits.map((c) => c.attributes["swamp.outcome"]),
+      ["ok", "ok"],
+    );
+    assertEquals(commitsEndedBeforeRetry, 1);
+  });
 });

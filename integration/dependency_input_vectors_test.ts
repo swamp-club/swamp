@@ -40,6 +40,7 @@ import { parse as parseYaml } from "@std/yaml";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
+import { bundleExtension } from "../src/domain/models/bundle.ts";
 import {
   startVectorRegistry,
   type VectorRegistry,
@@ -165,6 +166,26 @@ async function runDriver(
   return JSON.parse(await Deno.readTextFile(outPath));
 }
 
+/**
+ * Installs esbuild in the shared cache from the real npm registry. The
+ * driver points npm at the vector registry, which does not serve esbuild,
+ * so `deno bundle` on a cache without it fails every vector (swamp-club#4000).
+ */
+async function warmEsbuild(): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-input-vector-warm-" });
+  try {
+    const entry = join(dir, "warm.ts");
+    await Deno.writeTextFile(entry, "export const warm = 1;\n");
+    await bundleExtension(entry, Deno.execPath(), {
+      env: { DENO_DIR: SHARED_SWAMP_DENO_CACHE },
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+}
+
 /** Removes what Deno cached from this run's registry in the shared cache. */
 async function forgetRegistry(registry: VectorRegistry): Promise<void> {
   const port = new URL(registry.origin).port;
@@ -186,6 +207,7 @@ for await (const entry of Deno.readDir(VECTORS_DIR)) {
 vectorNames.sort();
 
 Deno.test("dependency input vectors", async (t) => {
+  await warmEsbuild();
   const registry = await startVectorRegistry();
   try {
     for (const name of vectorNames) {

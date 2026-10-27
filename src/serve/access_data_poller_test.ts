@@ -36,7 +36,11 @@ import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_chang
 import { EventBus } from "../domain/events/event_bus.ts";
 import { createModelUpdated } from "../domain/events/types.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
-import { createSyncGate, withSyncGate } from "./sync_gate.ts";
+import {
+  createSyncGate,
+  POLLER_ESCALATE_AFTER_SKIPS,
+  withSyncGate,
+} from "./sync_gate.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -45,10 +49,14 @@ import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_load
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   assertPollCycleRoots,
+  diagnosticPhases,
   findSpan,
   isChildOf,
+  type ReadableSpan,
   withCapturedSpans,
+  withObservedSpans,
 } from "../infrastructure/tracing/span_test_helpers.ts";
+import type { DiagnosticPhase } from "../domain/diagnostics/diagnostic_phase.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 interface MockSyncService extends DatastoreSyncService {
@@ -870,4 +878,393 @@ Deno.test("AccessDataPoller: repeated cycle failures escalate to error, and reco
   const recovered = logs.filter((l) => l.message.includes("recovered after"));
   assertEquals(recovered.length, 1);
   assertEquals(recovered[0].level, "info");
+});
+
+// Diagnostic phases of the access-data poll (swamp-club#4005).
+
+/** The finished poll_cycle phases, in the order they ended. */
+function cycles(spans: readonly ReadableSpan[]): ReadableSpan[] {
+  return diagnosticPhases(spans, "poll_cycle");
+}
+
+function childPhases(
+  spans: readonly ReadableSpan[],
+  phase: DiagnosticPhase,
+  parent: ReadableSpan,
+): ReadableSpan[] {
+  return diagnosticPhases(spans, phase).filter((s) => isChildOf(s, parent));
+}
+
+function cycleWhere(
+  spans: readonly ReadableSpan[],
+  attribute: string,
+  value: string,
+): ReadableSpan {
+  const cycle = cycles(spans).find((s) =>
+    s.attributes[`swamp.diagnostic.${attribute}`] === value
+  );
+  assert(cycle, `a poll cycle with ${attribute} ${value}`);
+  return cycle;
+}
+
+/** Every phase under `cycle`, the cycle included, carries `mode`. */
+function assertSourceMode(
+  spans: readonly ReadableSpan[],
+  cycle: ReadableSpan,
+  mode: string,
+): void {
+  const children = spans.filter((s) => isChildOf(s, cycle));
+  for (const span of [cycle, ...children]) {
+    assertEquals(
+      span.attributes["swamp.diagnostic.source_mode"],
+      mode,
+      span.name,
+    );
+  }
+}
+
+Deno.test("AccessDataPoller: a change-source cycle exports detection, invalidation and an applied reload, and never a pull", async () => {
+  await withTempDir(async (dir) => {
+    await withObservedSpans(async (spans) => {
+      const changeSource = new FilesystemAccessDataChangeSource({
+        dirs: [dir],
+        eventBus: new EventBus(),
+      });
+      await changeSource.prime();
+      const loader = createMockPolicySnapshotLoader();
+      const { catalogInvalidate } = createCallbackTrackers();
+      const poller = new AccessDataPoller({
+        changeSource,
+        policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+        catalogInvalidate,
+        pollIntervalMs: 10,
+      });
+      poller.start();
+      try {
+        await waitFor(() => cycles(spans).length >= 1, "an unchanged cycle");
+        await writeGrantVersion(dir, "g1", 1);
+        await waitFor(() => loader.loadCalls >= 1, "reload after change");
+      } finally {
+        await poller.stop();
+      }
+
+      const applied = cycleWhere(spans, "reload_reason", "changed");
+      assertEquals(applied.attributes["swamp.diagnostic.result"], "applied");
+      assertEquals(applied.attributes["swamp.diagnostic.changed"], 1);
+      assertEquals(applied.attributes["swamp.outcome"], "ok");
+      assertEquals(
+        applied.attributes["swamp.diagnostic.cancel_observed"],
+        false,
+      );
+      const poll = spans.find((s) =>
+        s.name === "swamp.serve.poll" && isChildOf(applied, s)
+      );
+      assert(poll, "poll_cycle is a child of its swamp.serve.poll");
+      assertEquals(poll.attributes["swamp.serve.poller"], "access_data");
+      const [detection] = childPhases(spans, "change_detection", applied);
+      assertEquals(detection.attributes["swamp.diagnostic.changed"], 1);
+      assertEquals(
+        detection.attributes["swamp.diagnostic.baseline_missing"],
+        false,
+      );
+      assertEquals(childPhases(spans, "catalog_invalidate", applied).length, 1);
+      assertSourceMode(spans, applied, "local_change_source");
+
+      const unchanged = cycleWhere(spans, "reload_reason", "none");
+      assertEquals(
+        unchanged.attributes["swamp.diagnostic.result"],
+        "no_change",
+      );
+      assertEquals(unchanged.attributes["swamp.diagnostic.changed"], 0);
+      assertEquals(
+        unchanged.attributes["swamp.diagnostic.unreadable_records"],
+        0,
+      );
+      assertEquals(
+        childPhases(spans, "change_detection", unchanged).length,
+        1,
+      );
+      assertEquals(
+        childPhases(spans, "catalog_invalidate", unchanged).length,
+        0,
+      );
+
+      assertEquals(diagnosticPhases(spans, "gate_wait").length, 0);
+      assertEquals(diagnosticPhases(spans, "remote_pull").length, 0);
+    });
+  });
+});
+
+Deno.test("AccessDataPoller: an unprimed change source records the missing baseline", async () => {
+  await withTempDir(async (dir) => {
+    await withObservedSpans(async (spans) => {
+      const changeSource = new FilesystemAccessDataChangeSource({
+        dirs: [dir],
+        eventBus: new EventBus(),
+      });
+      const loader = createMockPolicySnapshotLoader();
+      const poller = new AccessDataPoller({
+        changeSource,
+        policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+        catalogInvalidate: () => {},
+        pollIntervalMs: 10,
+      });
+      poller.start();
+      try {
+        await waitFor(() => loader.loadCalls >= 1, "the first cycle reloads");
+      } finally {
+        await poller.stop();
+      }
+      const [first] = diagnosticPhases(spans, "change_detection");
+      assertEquals(
+        first.attributes["swamp.diagnostic.baseline_missing"],
+        true,
+      );
+    });
+  });
+});
+
+Deno.test("AccessDataPoller: a sync-pull cycle exports the gate wait and the pull, and never change detection", async () => {
+  await withObservedSpans(async (spans) => {
+    const sync = createMockSyncService({ pullResult: 2 });
+    const loader = createMockPolicySnapshotLoader();
+    const { catalogInvalidate } = createCallbackTrackers();
+    const poller = new AccessDataPoller({
+      syncService: sync,
+      syncGate: createSyncGate(),
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate,
+      pollIntervalMs: 10,
+    });
+    poller.start();
+    try {
+      await waitFor(() => loader.loadCalls >= 1, "reload after pull");
+      sync.pullResult = undefined;
+      await waitFor(
+        () =>
+          cycles(spans).some((s) =>
+            s.attributes["swamp.diagnostic.result"] === "no_change"
+          ),
+        "a pull that reports no count",
+      );
+    } finally {
+      await poller.stop();
+    }
+
+    const applied = cycleWhere(spans, "reload_reason", "changed");
+    assertEquals(applied.attributes["swamp.diagnostic.result"], "applied");
+    const [wait] = childPhases(spans, "gate_wait", applied);
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], true);
+    assertEquals(
+      wait.attributes["swamp.diagnostic.gate_mode"],
+      "opportunistic",
+    );
+    const [pull] = childPhases(spans, "remote_pull", applied);
+    assertEquals(pull.attributes["swamp.diagnostic.changed"], 2);
+    assertEquals(childPhases(spans, "catalog_invalidate", applied).length, 1);
+    assertSourceMode(spans, applied, "sync_pull");
+
+    const voidPull = cycles(spans).find((s) =>
+      s.attributes["swamp.diagnostic.result"] === "no_change"
+    )!;
+    assertEquals(voidPull.attributes["swamp.diagnostic.changed"], 0);
+    const [noCount] = childPhases(spans, "remote_pull", voidPull);
+    assertEquals(noCount.attributes["swamp.diagnostic.count_reported"], false);
+
+    assertEquals(diagnosticPhases(spans, "change_detection").length, 0);
+  });
+});
+
+Deno.test("AccessDataPoller: a busy gate skips the cycle, and stop() during a queued wait cancels it", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    await gate.acquireShared();
+    const sync = createMockSyncService({ pullResult: 1 });
+    const loader = createMockPolicySnapshotLoader();
+    const poller = new AccessDataPoller({
+      syncService: sync,
+      syncGate: gate,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate: () => {},
+      pollIntervalMs: 10,
+    });
+    poller.start();
+    try {
+      // After the skips, the poller queues for the gate.
+      await waitFor(() => gate.waiters === 1, "poller queued for the gate");
+    } finally {
+      await poller.stop();
+      gate.releaseShared();
+    }
+    assertEquals(sync.pullCalls.length, 0);
+
+    // A cycle the interval queued before stop() cleared it also ends
+    // cancelled, so the count after the queued one is not pinned.
+    const all = cycles(spans);
+    assert(all.length >= POLLER_ESCALATE_AFTER_SKIPS + 1);
+    for (const skipped of all.slice(0, POLLER_ESCALATE_AFTER_SKIPS)) {
+      assertEquals(skipped.attributes["swamp.diagnostic.result"], "skipped");
+      assertEquals(skipped.attributes["swamp.outcome"], "ok");
+      assertEquals(skipped.attributes["swamp.diagnostic.changed"], undefined);
+      assertEquals(
+        skipped.attributes["swamp.diagnostic.reload_reason"],
+        "none",
+      );
+      const [wait] = childPhases(spans, "gate_wait", skipped);
+      assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
+      assertEquals(wait.attributes["swamp.outcome"], "ok");
+    }
+    const cancelled = all[POLLER_ESCALATE_AFTER_SKIPS];
+    for (const late of all.slice(POLLER_ESCALATE_AFTER_SKIPS + 1)) {
+      assertEquals(late.attributes["swamp.outcome"], "cancelled");
+    }
+    assertEquals(cancelled.attributes["swamp.diagnostic.result"], "skipped");
+    assertEquals(cancelled.attributes["swamp.outcome"], "cancelled");
+    assertEquals(
+      cancelled.attributes["swamp.diagnostic.cancel_observed"],
+      true,
+    );
+    const [queued] = childPhases(spans, "gate_wait", cancelled);
+    assertEquals(queued.attributes["swamp.diagnostic.gate_mode"], "queued");
+    assertEquals(
+      queued.attributes["swamp.diagnostic.consecutive_skips"],
+      POLLER_ESCALATE_AFTER_SKIPS,
+    );
+    assertEquals(queued.attributes["swamp.outcome"], "cancelled");
+    assertEquals(diagnosticPhases(spans, "remote_pull").length, 0);
+  });
+});
+
+Deno.test("AccessDataPoller: a failed reload ends its cycle in error, and the next cycle retries it as pending", async () => {
+  await withObservedSpans(async (spans) => {
+    const sync = createMockSyncService({ pullResult: 1 });
+    let attempts = 0;
+    const loader = {
+      loadCalls: 0,
+      unreadable: [],
+      load(): Promise<void> {
+        attempts++;
+        if (attempts === 1) {
+          sync.pullResult = 0;
+          return Promise.reject(new Error("transient"));
+        }
+        loader.loadCalls++;
+        return Promise.resolve();
+      },
+    };
+    const poller = new AccessDataPoller({
+      syncService: sync,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate: () => {},
+      pollIntervalMs: 10,
+    });
+    await capturingPollerLogs(async () => {
+      poller.start();
+      try {
+        await waitFor(() => loader.loadCalls >= 1, "reload after retry");
+      } finally {
+        await poller.stop();
+      }
+    });
+
+    const [failed, retried] = cycles(spans);
+    assertEquals(failed.attributes["swamp.outcome"], "error");
+    assertEquals(
+      failed.attributes["swamp.diagnostic.reload_reason"],
+      "changed",
+    );
+    assertEquals(
+      failed.attributes["swamp.diagnostic.consecutive_failures"],
+      1,
+    );
+    assertEquals(failed.attributes["swamp.diagnostic.result"], undefined);
+    assertEquals(
+      retried.attributes["swamp.diagnostic.reload_reason"],
+      "pending_retry",
+    );
+    assertEquals(retried.attributes["swamp.diagnostic.changed"], 0);
+    assertEquals(retried.attributes["swamp.diagnostic.result"], "applied");
+    assertEquals(retried.attributes["swamp.outcome"], "ok");
+    // No gate: the pull is exported, a wait is not.
+    assertEquals(diagnosticPhases(spans, "gate_wait").length, 0);
+    assertEquals(childPhases(spans, "remote_pull", failed).length, 1);
+  });
+});
+
+Deno.test("AccessDataPoller: a snapshot missing unreadable records is retried with that reason and count", async () => {
+  await withObservedSpans(async (spans) => {
+    const sync = createMockSyncService({ pullResult: 0 });
+    const loader = createMockPolicySnapshotLoader();
+    loader.unreadable = [{ cause: "unreadable" }, { cause: "corrupt" }];
+    const poller = new AccessDataPoller({
+      syncService: sync,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate: () => {},
+      pollIntervalMs: 10,
+    });
+    poller.start();
+    try {
+      await waitFor(() => loader.loadCalls >= 1, "a retry");
+    } finally {
+      await poller.stop();
+    }
+    const retry = cycleWhere(spans, "reload_reason", "unreadable_retry");
+    assertEquals(retry.attributes["swamp.diagnostic.unreadable_records"], 1);
+    assertEquals(retry.attributes["swamp.diagnostic.result"], "applied");
+    assertEquals(childPhases(spans, "catalog_invalidate", retry).length, 0);
+  });
+});
+
+Deno.test("AccessDataPoller: a cycle whose pull was skipped but whose pending reload applied ends ok, even once stopped", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    const sync = createMockSyncService({ pullResult: 1 });
+    let attempts = 0;
+    let stopping: Promise<void> | undefined;
+    const loader = {
+      loadCalls: 0,
+      unreadable: [],
+      async load(): Promise<void> {
+        attempts++;
+        if (attempts === 1) {
+          // The pull released the gate; holding it skips the next pull.
+          await gate.acquireShared();
+          throw new Error("transient");
+        }
+        // Stopped while the retry runs: the reload still applies.
+        stopping = poller.stop();
+        loader.loadCalls++;
+      },
+    };
+    const poller = new AccessDataPoller({
+      syncService: sync,
+      syncGate: gate,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate: () => {},
+      pollIntervalMs: 10,
+    });
+    await capturingPollerLogs(async () => {
+      poller.start();
+      try {
+        await waitFor(() => loader.loadCalls >= 1, "the pending reload");
+      } finally {
+        await stopping;
+        await poller.stop();
+        gate.releaseShared();
+      }
+    });
+    const retried = cycles(spans).find((s) =>
+      s.attributes["swamp.diagnostic.reload_reason"] === "pending_retry"
+    );
+    assert(retried, "a pending retry");
+    assertEquals(retried.attributes["swamp.diagnostic.result"], "applied");
+    assertEquals(retried.attributes["swamp.diagnostic.changed"], undefined);
+    assertEquals(retried.attributes["swamp.outcome"], "ok");
+    assertEquals(
+      retried.attributes["swamp.diagnostic.cancel_observed"],
+      true,
+    );
+    const [wait] = childPhases(spans, "gate_wait", retried);
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
+  });
 });

@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { parse, type ParserPlugin } from "@babel/parser";
+import {
+  parseExtensionModule,
+  type SyntaxNode,
+} from "@swamp-club/extension-scoring/source";
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
@@ -25,7 +28,7 @@ import { parseRange, rangeIntersects, tryParseRange } from "@std/semver";
 import * as zodModule from "zod";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { readConfigImports } from "../extensions/dependency_resolution/import_map.ts";
-import { importStatementSpecifiers } from "../extensions/dependency_resolution/import_sites.ts";
+import { scanImportSites } from "../extensions/dependency_resolution/import_sites.ts";
 import {
   findLoaderDenoConfig,
   hasBareImport,
@@ -116,16 +119,6 @@ export function sanitizeDataUrlError(error: unknown): string {
   );
 }
 
-// Syntax esbuild can leave in a bundle that Babel does not parse by default.
-const BUNDLE_PARSER_PLUGINS: ParserPlugin[] = [
-  "importAttributes",
-  "explicitResourceManagement",
-  "decorators",
-  "decoratorAutoAccessors",
-  "sourcePhaseImports",
-  "deferredImportEvaluation",
-];
-
 /** One import declaration in a bundle: its text span and its specifier. */
 interface ImportDeclarationSpan {
   start: number;
@@ -151,21 +144,11 @@ function findImportDeclarations(
   js: string,
   origin?: string,
 ): ImportDeclarationSpan[] {
-  let body;
-  try {
-    body = parse(js, {
-      sourceType: "module",
-      plugins: BUNDLE_PARSER_PLUGINS,
-      allowReturnOutsideFunction: true,
-      allowAwaitOutsideFunction: true,
-      allowUndeclaredExports: true,
-      allowNewTargetOutsideFunction: true,
-      allowSuperOutsideMethod: true,
-      errorRecovery: true,
-    }).program.body;
-  } catch (error) {
-    // Syntax errors, and stack overflow on extreme nesting.
-    const reason = error instanceof Error ? error.message : String(error);
+  // Read as bundle output: esbuild's syntax, recovering where Babel can.
+  // Syntax errors, and stack overflow on extreme nesting, do not parse.
+  const parsed = parseExtensionModule(js, { bundle: true });
+  if (!parsed.ok) {
+    const reason = parsed.reason;
     throw markErrorPaths(
       new UserError(
         `Cannot load the extension${origin ? ` at ${origin}` : ""}: its ` +
@@ -183,16 +166,15 @@ function findImportDeclarations(
   }
 
   const spans: ImportDeclarationSpan[] = [];
+  const body = parsed.program.body as SyntaxNode[];
   for (const node of body) {
     if (node.type !== "ImportDeclaration") continue;
     if (typeof node.start !== "number" || typeof node.end !== "number") {
       continue;
     }
-    spans.push({
-      start: node.start,
-      end: node.end,
-      specifier: node.source.value,
-    });
+    const specifier = (node.source as SyntaxNode | undefined)?.value;
+    if (typeof specifier !== "string") continue;
+    spans.push({ start: node.start, end: node.end, specifier });
   }
   return spans;
 }
@@ -375,12 +357,18 @@ export function rewriteZodImports(js: string, origin?: string): string {
  * A package.json project's node_modules is read as installed
  * (`--node-modules-dir=manual`) rather than managed by Deno, which would add
  * its own `node_modules/.deno/` tree to it (swamp-club#3630).
+ *
+ * With `noConfig` and no project, `--no-config` stops Deno discovering a
+ * deno.json from the working directory, so a config in the consumer's repo
+ * never applies its import map to pulled source (swamp-club#3970). A
+ * project's own config wins over `noConfig`.
  */
 export function denoProjectArgs(
   options?: {
     denoConfigPath?: string;
     packageJsonDir?: string;
     readOnlyLock?: ReadOnlyLock;
+    noConfig?: boolean;
   },
 ): string[] {
   const project = options?.denoConfigPath
@@ -388,7 +376,13 @@ export function denoProjectArgs(
     : options?.packageJsonDir
     ? ["--node-modules-dir=auto"]
     : undefined;
-  if (!project) return ["--no-lock", "--node-modules-dir=none"];
+  if (!project) {
+    return [
+      ...(options?.noConfig ? ["--no-config"] : []),
+      "--no-lock",
+      "--node-modules-dir=none",
+    ];
+  }
   if (!options?.readOnlyLock) return project;
   return [
     ...(options.denoConfigPath ? project : ["--node-modules-dir=manual"]),
@@ -530,10 +524,19 @@ export interface BundleOptions {
   /**
    * Leave the project's lockfile untouched: bundle with `--frozen` when it
    * has one, so a stale lock fails with {@link staleLockfileError}, and with
-   * `--no-lock` when it has none. Push and quality set this; local loading
-   * does not.
+   * `--no-lock` when it has none. Push, quality and the extension loader
+   * set this (swamp-club#3869).
    */
   readOnlyLock?: ReadOnlyLock;
+
+  /**
+   * Read no Deno config the working directory would supply (`--no-config`)
+   * when there is no project (neither `denoConfigPath` nor
+   * `packageJsonDir`). Set for rebuilds of pulled extension source, so a
+   * deno.json in the consumer's repo never resolves its imports
+   * (swamp-club#3970). Ignored with a project.
+   */
+  noConfig?: boolean;
 
   /**
    * Environment variables for the subprocess. When provided, the bundler
@@ -581,7 +584,7 @@ export function isExpectedBundleFailure(
 
   // No config found — check if source actually needs one.
   try {
-    return hasBareImport(Deno.readTextFileSync(absolutePath));
+    return hasBareImport(Deno.readTextFileSync(absolutePath), absolutePath);
   } catch {
     return false; // Can't read source — treat as unexpected
   }
@@ -592,10 +595,10 @@ const MAX_ZOD_SCAN_MODULES = 2000;
 
 /**
  * The `npm:zod` specifiers admitting only zod 4 that `entry` and the
- * modules it reaches through relative imports write, read as text with
- * comments and template literals blanked. Exact spellings, so `deno bundle
+ * modules it reaches through relative imports write, read with the import
+ * scan (see {@link scanImportSites}). Exact spellings, so `deno bundle
  * --external` matches each of them; no deno call. A module that cannot be
- * read is skipped: the bundler reports it. Reading stops after
+ * read or does not parse is skipped: the bundler reports it. Reading stops after
  * {@link MAX_ZOD_SCAN_MODULES} modules; a zod import past that is inlined.
  */
 export async function zod4SpecifiersReachedFrom(
@@ -612,7 +615,7 @@ export async function zod4SpecifiersReachedFrom(
     } catch {
       continue;
     }
-    for (const spec of importStatementSpecifiers(source)) {
+    for (const { specifier: spec } of scanImportSites(source, path) ?? []) {
       if (spec.startsWith("npm:zod") && isZod4Specifier(spec)) {
         found.add(spec);
       } else if (spec.startsWith("./") || spec.startsWith("../")) {

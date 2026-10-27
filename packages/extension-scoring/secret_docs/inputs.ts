@@ -82,7 +82,7 @@ function resolveRelative(importer: string, specifier: string): string | null {
  */
 export function markdownImports(path: string, source: string): string[] {
   const out: string[] = [];
-  for (const specifier of importedSpecifiers(source)) {
+  for (const specifier of importedSpecifiers(source, { path })) {
     if (!specifier.startsWith("./") && !specifier.startsWith("../")) continue;
     if (!specifier.toLowerCase().endsWith(".md")) continue;
     const resolved = resolveRelative(path, specifier);

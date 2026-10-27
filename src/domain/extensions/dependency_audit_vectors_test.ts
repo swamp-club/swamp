@@ -45,6 +45,10 @@ import vectorsJson from "@swamp-club/extension-scoring/vectors/dependency-audit.
 import {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
+  buildDependencyAuditRecordV2,
+  canonicalShippedSpecifierIssue,
+  type UnauditedDependency,
+  withUnauditedCode,
 } from "@swamp-club/extension-scoring/dependency-audit";
 
 // The vectors @swamp-club/extension-scoring ships: the package's own tests
@@ -296,5 +300,56 @@ for (const sc of vectors.scoring) {
       (f.severity === "error" ? result.errors : result.warnings).push(issue);
     }
     assertEquals(factorOf(result).earnedPoints, sc.earnedPoints);
+  });
+}
+
+for (
+  const v of (vectorsJson as unknown as {
+    canonical: {
+      name: string;
+      shipped: string;
+      record:
+        | { registry: DependencyRegistry; name: string; version: string }[]
+        | null;
+      expect: "accept" | { cause: string; message: string };
+    }[];
+  }).canonical
+) {
+  Deno.test(`dependency audit vectors: push ships ${v.name} only in the canonical form`, () => {
+    const record = v.record === null ? null : buildDependencyAuditRecordV2({
+      imports: v.record.map((e) => ({
+        registry: e.registry,
+        name: e.name,
+        writtenAs: `${e.registry}:${e.name}@${e.version}`,
+        shipped: { version: e.version, from: "exact" },
+      })),
+      bundles: {},
+      unaudited: [],
+    });
+    const issue = canonicalShippedSpecifierIssue(v.shipped, record);
+    assertEquals(
+      issue === null ? "accept" : { cause: "not-audited", message: issue },
+      v.expect,
+    );
+  });
+}
+
+for (
+  const v of (vectorsJson as unknown as {
+    unauditedCode: {
+      name: string;
+      unaudited: UnauditedDependency[];
+      expect: unknown[];
+      earnedPoints: number;
+    }[];
+  }).unauditedCode
+) {
+  Deno.test(`dependency audit vectors: quality and push charge ${v.name}`, () => {
+    const result = withUnauditedCode(
+      { errors: [], warnings: [], audited: [], passed: true },
+      v.unaudited,
+    );
+    assertEquals(result.warnings, v.expect);
+    assertEquals(factorOf(result).earnedPoints, v.earnedPoints);
   });
 }

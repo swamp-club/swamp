@@ -375,7 +375,13 @@ globalArguments:
   oldResult: ${{ data.version('my-model', 'output', 1).attributes.value }}
   # Get version 3
   result: ${{ data.version('my-model', 'output', 3).attributes.value }}
+  # Get the version before the latest
+  previous: ${{ data.version('my-model', 'output', data.latest('my-model', 'output').version - 1).attributes.value }}
 ```
+
+A record's `version` field, and each element of `data.listVersions()`, is a CEL
+`double`, so `version` takes an `int` or a whole-number `double`. A fractional
+version is an evaluation error.
 
 ### data.listVersions(modelName, dataName)
 
@@ -755,14 +761,19 @@ Any other root fails as any expression does. `${{ nonexistent.variable }}`
 fails the run with `Unknown variable: nonexistent` (swamp-club#3400): a root
 swamp has never heard of is far more likely a typo or a mistake than another
 system's text. An author who does mean such text for another system writes it
-with `literal()` in a step's `inputs`. A direct step's `globalArgs` has no
-such escape until swamp-club#3389 lands, because `literal()` output is
-refused there; the text goes in a step input instead.
+with `literal()`, in a step's `inputs` or a direct step's `globalArgs`. In
+`globalArgs` the produced text is saved in the step's auto-definition, inside
+a `literal()` call of its own, and must be another system's text (see
+[Position and Value Provenance](#position-and-value-provenance)).
 
-Those systems name things with hyphens and have no subtraction, so a hyphen
-in a member chain on a known foreign root, written with no spaces, is read as
-part of the name. `${{ matrix.node-version }}` passes through, although CEL
-parses it as `matrix.node - version`.
+Those systems name things with hyphens and have no subtraction, so the check
+for unlisted roots reads a hyphen in a member chain on a known foreign root,
+written with no spaces, as part of the name. `${{ matrix.node-version }}`
+passes through, although CEL parses it as `matrix.node - version`. The run
+still evaluates the text as CEL parses it, so a hyphen that leaves a swamp
+namespace or a word starting with a digit on one side still fails:
+`${{ needs.build-env.outputs.url }}` reads `env`, and
+`${{ matrix.node-18x }}` does not parse. Write such text with `literal()`.
 
 Any other error still fails: in
 `${{ has(inputs.cache) ? data.latest("m", "d") : github.sha }}`, a datastore
@@ -1002,6 +1013,17 @@ authored text, so the method sees an
 neither. Method arguments are not re-checked after evaluation, so such text
 belongs in a method argument, as `command/shell` takes its `run` script, where
 `literal()` passes it through unchanged.
+
+A workflow step that runs a model type directly has the same limitation, at an
+earlier point. Its `globalArgs` are saved in an auto-definition, and a saved
+definition is read back as authored source, so the step saves `literal()`
+output only as another system's text, wrapped in a `literal()` call of its
+own, and refuses swamp's (see
+[Position and Value Provenance](#position-and-value-provenance)).
+`${{ literal('${{ github.sha }}') }}` reaches the method as `${{ github.sha }}`
+on that run and every later one.
+`${{ literal('${{ inputs.version }}') }}` fails the step with
+`Refusing to persist definition` (swamp-club#3401).
 
 Validation treats every swamp root as bound. The runtime binds `run`, `steps`,
 `workflow` and `webhook` only inside a workflow. One definition can run both
@@ -1333,11 +1355,79 @@ Authored namespaces are an allow-list:
 
 Every other namespace is data: `data.*`, behavior resources and files, step
 outputs, forEach items, `run.tags`, `workers`, execution errors, and file
-contents. Every stored definition, from any swamp version, is authored. That is
-sound because direct execution refuses to persist a global argument whose
-expression occurrence lies in a data range, whatever the authored set says.
-Vault references that swamp writes for sensitive values (`writtenReferences`)
-are authored at their new positions.
+contents. So is expression text a `literal()` call produces: `spliceOrigin`
+marks it data where it lands, even when the workflow also writes the same
+expression as one, so the raw-text rule never vouches for it. Every stored
+definition, from any swamp version, is authored. That is
+sound because direct execution never persists a global argument's expression
+occurrence that lies in a data range as it is, whatever the authored set says:
+it stores the occurrence inside a `literal()` call or refuses it. Vault
+references that swamp writes for sensitive values (`writtenReferences`) are
+authored at their new positions.
+
+**Data text stored as text.** Expression text from data that is about to be
+saved in a definition is stored as a `literal()` call of its own, the
+occurrence's text quoted in a single-quoted CEL string
+(`literalOccurrence`, `src/domain/expressions/cel_grammar.ts`):
+
+```yaml
+label: "pre ${{ literal('${{ github.sha }}') }} post"
+```
+
+Every later load evaluates that constant call, in time linear in its length,
+to the original text, and `spliceOrigin` marks `literal()` output data where
+it lands, so nothing inside it is evaluated again. Which roots or functions
+swamp binds, now or later, makes no difference. This is how `literal()` output
+such as GitHub Actions `${{ github.sha }}` reaches a direct step's global
+argument. Two places save global arguments: a direct step persisting its
+auto-definition (`resolveOrCreateDefinition`, which compares a stored
+definition against the wrapped form so an unchanged value is not saved again),
+and a `runModel` call by type and name that creates the definition, where
+every occurrence is the caller's. An occurrence the author wrote, a vault
+reference swamp wrote, and a fragment that is not a whole occurrence
+(`${{ env.X` alone) are stored as they are.
+
+An occurrence nothing vouches for is wrapped only when it is another
+templating system's text (`storedTextRefusal`,
+`src/domain/expressions/swamp_namespaces.ts`), judged as the run that reads
+the argument judges it. When the method reads a global argument, any
+`${{ ... }}` text left in it must be another system's, or the read fails with
+`Unresolved expression` (`containsSwampExpression`); behavior validation of
+the evaluated definition applies the same test. So the occurrence must parse,
+read no swamp binding (`readsSwampBinding`, with a hyphenated name on a known
+foreign root read as one name, so `needs.build-env.outputs.url` reads no
+`env`), and be claimed by no swamp scope as written (`isForeignExpression` on
+the raw text). A hyphenated name is accepted only when the run also reads it
+as another system's text: CEL reads `${{ needs.build-vault.outputs.url }}` as
+`needs.build - vault.outputs.url`, which reads `vault`, and
+`${{ matrix.node-18x }}` does not parse at all, so both are refused with a
+reason that names the subtraction. `needs.build-env.outputs.url` and
+`matrix.os-2022` are accepted. Anything else is refused: swamp's own text
+such as `${{ inputs.version }}` (swamp-club#3401), which, wrapped, would reach
+the method as text the read guard rejects; text that does not parse; text
+with no root at all; and text nested too deeply to analyse. Both save
+paths also refuse any expression text in a sensitive global argument, since
+any constant inside it would be written in cleartext; the refusal withholds
+the value.
+
+Before the wrapping, text such as `${{ true || github.sha }}` that `runModel`
+saved was read back bare, and the next load evaluated it to `true`. It now
+reaches every run as the text it is.
+
+A definition's foreign text vouches for nothing. A stored definition's
+expressions count as authored for the step that runs it, and the raw-text rule
+would otherwise match a hand-written `${{ parameters.x }}` against the same
+`literal()` output in that step's own inputs and evaluate it there as the
+author's expression. The step's inputs are therefore vouched for by the
+workflow source and by the definition's expressions that are not another
+system's text. Text a run stored is a `literal()` call, which matches no
+step input's produced text.
+
+A refusal names each occurrence with the reason it was refused, and repeats at
+most 120 characters of it. `swamp workflow validate` fails `literal()` output
+in a direct step's `globalArgs` that a run refuses, wherever the call sits in
+the expression. It does not know the type's sensitive fields, so it does not
+report text in one.
 
 **Ingress.** Inputs get provenance per key, after coercion:
 
@@ -1378,12 +1468,11 @@ that reference into the same argument. It cannot reach any reference the
 expression did not already read.
 
 A second residual comes from treating stored definitions as authored. Direct
-execution refuses to persist a global argument holding a whole expression from
-data, but a fragment (`${{ env.X` alone) is ordinary text and is stored, as it
-always was. Two such fragments read back from stored definitions and placed
-side by side by an author-written expression could complete one. Refusing
-fragments would refuse data that is accepted today, so this is left as it was
-before the rule existed.
+execution never stores a whole expression from data bare, but a fragment
+(`${{ env.X` alone) is ordinary text and is stored, as it always was. Two such fragments read back from stored
+definitions and placed side by side by an author-written expression could
+complete one. Refusing fragments would refuse data that is accepted today, so
+this is left as it was before the rule existed.
 
 ### Dynamic Vault Arguments
 

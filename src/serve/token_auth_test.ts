@@ -722,3 +722,82 @@ Deno.test("authenticateDashboardSession: carries the OAuth login identity like a
   assertEquals(events[0].principalEmail, "alice@example.com");
   assertEquals(events[0].principalUsername, "alice");
 });
+
+Deno.test("authenticateServerToken: passes on the user name an OAuth login recorded on the token", async () => {
+  const names: Record<string, string> = {};
+  const events: AuditEvent[] = [];
+  await authenticateServerToken(
+    "test-token.secret-value",
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    {
+      emitter: { emit: (event) => events.push(event) },
+      resolvedUserNames: names,
+      onUsernamesResolved: (learned) => Object.assign(names, learned),
+    },
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(
+          activeToken({ principalId: "user:sub-collective", oauthIdentity }),
+        ),
+    }),
+  );
+
+  assertEquals(names, { "sub-collective": "alice" });
+  assertEquals(events[0].initiatedBy, "user:alice");
+});
+
+Deno.test("authenticateServerToken: a manually minted token passes on no user name", async () => {
+  const learned: Record<string, string>[] = [];
+  const result = await authenticateServerToken(
+    "test-token.secret-value",
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    { onUsernamesResolved: (names) => learned.push({ ...names }) },
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(activeToken({ principalEmail: "typed@example.com" })),
+    }),
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(learned, []);
+});
+
+Deno.test("authenticateServerToken: the token-use event names a user whose name is known", async () => {
+  const events: AuditEvent[] = [];
+  await authenticateServerToken(
+    "test-token.secret-value",
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    {
+      emitter: { emit: (event) => events.push(event) },
+      resolvedUserNames: { "test-user": "bob" },
+    },
+    makeAuthDeps(),
+  );
+
+  assertEquals(events[0].initiatedBy, "user:bob");
+  assertEquals(events[0].principalId, "test-user");
+});
+
+Deno.test("authenticateDashboardSession: passes on the user name an OAuth login recorded on the token", async () => {
+  const token = activeToken({
+    principalId: "user:sub-collective",
+    oauthIdentity,
+  });
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(token)),
+  );
+  const names: Record<string, string> = {};
+
+  const result = await authenticateDashboardSession(
+    { tokenName: token.name, tokenCreatedAt: token.createdAt },
+    repoContext,
+    { onUsernamesResolved: (learned) => Object.assign(names, learned) },
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(names, { "sub-collective": "alice" });
+});

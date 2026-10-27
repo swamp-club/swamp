@@ -44,6 +44,16 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  type ReadableSpan,
+  withObservedSpans,
+} from "../tracing/span_test_helpers.ts";
 
 // Import the models barrel so `modelRegistry.types()` returns real entries —
 // `findAllGlobalSince` and `findAll` both walk the registry, so tests that
@@ -2002,5 +2012,355 @@ Deno.test("YamlOutputRepository.findAllGlobalSince: warns only about unreadable 
     // The whole-repository listing names the older one too, once.
     assertStringIncludes(warnings[1], paths[0]);
     assertEquals(stats.listings, 2);
+  });
+});
+
+// --- deleteByMethodLifetime phase telemetry (swamp-club#4004) ---
+
+/** Saves a `command/shell` output with the given status, aged as given. */
+async function saveRetentionFixture(
+  repo: YamlOutputRepository,
+  options: { startedAt: Date; mtime: Date; terminal: boolean },
+): Promise<string> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "execute",
+    status: "running",
+    startedAt: options.startedAt,
+    provenance: defaultProvenance,
+  });
+  if (options.terminal) output.markSucceeded();
+  await repo.save(registeredType, "execute", output);
+  const path = repo.getPath(registeredType, "execute", output);
+  await Deno.utime(path, options.mtime, options.mtime);
+  return path;
+}
+
+/** Saves `count` expired outputs. */
+async function saveExpiredOutputs(
+  repo: YamlOutputRepository,
+  count: number,
+): Promise<string[]> {
+  const old = new Date(Date.now() - 10 * DAY_MS);
+  const paths: string[] = [];
+  for (let i = 0; i < count; i++) {
+    paths.push(
+      await saveRetentionFixture(repo, {
+        startedAt: old,
+        mtime: old,
+        terminal: true,
+      }),
+    );
+  }
+  return paths;
+}
+
+/** The one finished `swamp.diagnostic.<phase>` span's attributes. */
+function phaseAttributes(
+  spans: readonly ReadableSpan[],
+  phase: string,
+): ReadableSpan["attributes"] {
+  return findSpan(spans, `swamp.diagnostic.${phase}`).attributes;
+}
+
+Deno.test(
+  "deleteByMethodLifetime: output retention phases count eligible, protected and unexpired outputs",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const repo = new YamlOutputRepository(dir);
+        const old = new Date(Date.now() - 10 * DAY_MS);
+        const recent = new Date(Date.now() - HOUR_MS);
+        await saveExpiredOutputs(repo, 3);
+        await saveRetentionFixture(repo, {
+          startedAt: old,
+          mtime: old,
+          terminal: false,
+        });
+        await saveRetentionFixture(repo, {
+          startedAt: recent,
+          mtime: recent,
+          terminal: true,
+        });
+        // Touched long ago, but started inside the window.
+        await saveRetentionFixture(repo, {
+          startedAt: recent,
+          mtime: old,
+          terminal: true,
+        });
+
+        const result = await withDiagnosticArea(
+          "output_retention",
+          () => repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS)),
+        );
+
+        assertEquals(result.deleted, 3);
+        const enumeration = phaseAttributes(spans, "candidate_enumeration");
+        assertEquals(enumeration["swamp.diagnostic.files"], 6);
+        assertEquals(
+          enumeration["swamp.diagnostic.scan_strategy"],
+          "full_listing",
+        );
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.outcome"], "ok");
+        assertEquals(scan["swamp.diagnostic.dry_run"], false);
+        assertEquals(scan["swamp.diagnostic.considered"], 6);
+        assertEquals(scan["swamp.diagnostic.eligible"], 3);
+        assertEquals(scan["swamp.diagnostic.delete_attempted"], 3);
+        assertEquals(scan["swamp.diagnostic.deleted"], 3);
+        assertEquals(scan["swamp.diagnostic.failed"], 0);
+        assertEquals(scan["swamp.diagnostic.protected_not_terminal"], 1);
+        assertEquals(scan["swamp.diagnostic.skipped_recent_mtime"], 1);
+        assertEquals(scan["swamp.diagnostic.skipped_not_expired"], 1);
+        assertEquals(scan["swamp.diagnostic.stopped_at_limit"], false);
+        assertEquals(
+          scan["swamp.diagnostic.bytes_reclaimed"],
+          result.bytesReclaimed,
+        );
+        for (
+          const work of ["stat", "read", "parse", "remove", "dir_cleanup"]
+        ) {
+          assertEquals(
+            typeof scan[`swamp.diagnostic.${work}_work_ms`],
+            "number",
+            work,
+          );
+        }
+        assertEquals(diagnosticPhases(spans, "orphan_log_sweep").length, 1);
+        // No phase carries a path.
+        for (const span of spans) {
+          for (const value of Object.values(span.attributes)) {
+            assert(!String(value).includes(dir));
+          }
+        }
+      });
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: a batch stopped at its limit reports it and skips the orphan sweep phase",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const repo = new YamlOutputRepository(dir);
+        await saveExpiredOutputs(repo, 3);
+        const result = await withDiagnosticArea(
+          "output_retention",
+          () =>
+            repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS), {
+              limit: 1,
+            }),
+        );
+        assertEquals(result.more, true);
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.limit"], 1);
+        assertEquals(scan["swamp.diagnostic.deleted"], 1);
+        // The output that stopped the batch is not counted as eligible.
+        assertEquals(scan["swamp.diagnostic.eligible"], 1);
+        assertEquals(scan["swamp.diagnostic.considered"], 2);
+        assertEquals(scan["swamp.diagnostic.stopped_at_limit"], true);
+        assertEquals(diagnosticPhases(spans, "orphan_log_sweep").length, 0);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: an empty batch exports zero counts",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const repo = new YamlOutputRepository(dir);
+        await withDiagnosticArea(
+          "output_retention",
+          () => repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS)),
+        );
+        assertEquals(
+          phaseAttributes(spans, "candidate_enumeration")[
+            "swamp.diagnostic.files"
+          ],
+          0,
+        );
+        const scan = phaseAttributes(spans, "candidate_scan");
+        for (const key of ["considered", "eligible", "deleted", "failed"]) {
+          assertEquals(scan[`swamp.diagnostic.${key}`], 0, key);
+        }
+        assertEquals(scan["swamp.diagnostic.stat_work_ms"], undefined);
+        const sweep = phaseAttributes(spans, "orphan_log_sweep");
+        assertEquals(sweep["swamp.diagnostic.logs_listed"], 0);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: a batch that fails partway keeps the deletions that landed",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const signalled = new Set<string>();
+        let armed = false;
+        const markDirty = (path?: string): Promise<void> => {
+          if (armed && path?.endsWith(".yaml")) {
+            signalled.add(path);
+            if (signalled.size === 3) {
+              return Promise.reject(new Error("datastore unavailable"));
+            }
+          }
+          return Promise.resolve();
+        };
+        const repo = new YamlOutputRepository(dir, undefined, markDirty);
+        await saveExpiredOutputs(repo, 4);
+        armed = true;
+
+        await assertRejects(
+          () =>
+            withDiagnosticArea(
+              "output_retention",
+              () => repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS)),
+            ),
+          Error,
+          "datastore unavailable",
+        );
+
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.outcome"], "error");
+        assertEquals(scan["swamp.diagnostic.delete_attempted"], 3);
+        assertEquals(scan["swamp.diagnostic.deleted"], 2);
+        assertEquals(scan["swamp.diagnostic.failed"], 1);
+        assertEquals(diagnosticPhases(spans, "orphan_log_sweep").length, 0);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: a dry run counts what it would delete and removes nothing",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const repo = new YamlOutputRepository(dir);
+        const paths = await saveExpiredOutputs(repo, 2);
+        await withDiagnosticArea(
+          "output_retention",
+          () =>
+            repo.deleteByMethodLifetime(new Date(Date.now() - DAY_MS), {
+              dryRun: true,
+            }),
+        );
+        const scan = phaseAttributes(spans, "candidate_scan");
+        assertEquals(scan["swamp.diagnostic.dry_run"], true);
+        assertEquals(scan["swamp.diagnostic.deleted"], 2);
+        assertEquals(scan["swamp.diagnostic.tombstone_work_ms"], undefined);
+        for (const path of paths) assertEquals(await pathExists(path), true);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "deleteByMethodLifetime: outside output retention it exports no phases",
+  async () => {
+    await withTempDir(async (dir) => {
+      await withObservedSpans(async (spans) => {
+        const repo = new YamlOutputRepository(dir);
+        await saveExpiredOutputs(repo, 2);
+        const result = await repo.deleteByMethodLifetime(
+          new Date(Date.now() - DAY_MS),
+        );
+        assertEquals(result.deleted, 2);
+        assertEquals(spans.length, 0);
+      });
+    });
+  },
+);
+
+Deno.test("YamlOutputRepository: discovery and delete count their reads and measure removal into the running phase", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const definitionId = createDefinitionId(crypto.randomUUID());
+    // One method each: records of one definition and method started in the
+    // same millisecond would share a file name.
+    const methods = ["create", "update", "sync"];
+    const outputs = methods.map((methodName) =>
+      ModelOutput.create({
+        definitionId,
+        methodName,
+        provenance: defaultProvenance,
+      })
+    );
+    for (const [i, output] of outputs.entries()) {
+      await repo.save(testType, methods[i], output);
+    }
+    // Another definition's record of the same type is read too.
+    await repo.save(
+      testType,
+      "create",
+      ModelOutput.create({
+        definitionId: createDefinitionId(crypto.randomUUID()),
+        methodName: "create",
+        provenance: defaultProvenance,
+      }),
+    );
+
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", async () => {
+        const found = await observeDiagnosticPhase(
+          "output_discovery",
+          {},
+          () => repo.findByDefinition(testType, definitionId),
+        );
+        assertEquals(found.length, 3);
+        await observeDiagnosticPhase(
+          "output_removal",
+          {},
+          () => repo.delete(testType, "create", outputs[0].id),
+        );
+      });
+      const discovery = findSpan(spans, "swamp.diagnostic.output_discovery");
+      assertEquals(discovery.attributes["swamp.diagnostic.files_read"], 4);
+      assert(
+        (discovery.attributes["swamp.diagnostic.bytes_read"] as number) > 0,
+      );
+      for (const work of ["read", "parse"]) {
+        assertEquals(
+          typeof discovery.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+      const removal = findSpan(spans, "swamp.diagnostic.output_removal");
+      // The create directory holds this record and the other definition's.
+      const searched = removal.attributes[
+        "swamp.diagnostic.search_files_read"
+      ] as number;
+      assert(searched >= 1 && searched <= 2);
+      for (const work of ["search", "remove", "dir_cleanup", "tombstone"]) {
+        assertEquals(
+          typeof removal.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+    });
+    assertEquals(await repo.findById(testType, "create", outputs[0].id), null);
+  });
+});
+
+Deno.test("YamlOutputRepository: reads outside a diagnostic area export nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const output = ModelOutput.create({
+      definitionId: createDefinitionId(crypto.randomUUID()),
+      methodName: "create",
+      provenance: defaultProvenance,
+    });
+    await repo.save(testType, "create", output);
+    await withObservedSpans(async (spans) => {
+      await repo.findByDefinition(testType, output.definitionId);
+      await repo.delete(testType, "create", output.id);
+      assertEquals(spans.length, 0);
+    });
   });
 });

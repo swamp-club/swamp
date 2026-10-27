@@ -631,3 +631,64 @@ Deno.test("computePackageCacheHash: the lock the bundler honours joins the hash,
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("computePackageCacheHash: a lockless range that resolves to a new version misses the cache (swamp-club#3970)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const graph = (version: string) => ({
+      packageVersions: {
+        "npm:ms@^2": { specifier: `npm:ms@${version}` },
+      },
+      unaudited: [],
+    });
+    const today = await computePackageCacheHash(
+      await makeHashInput(tmp, { graphDependencies: graph("2.1.3") }),
+    );
+    const tomorrow = await computePackageCacheHash(
+      await makeHashInput(tmp, { graphDependencies: graph("2.1.4") }),
+    );
+    assertNotEquals(today, tomorrow);
+    // With a lock the source and the lock fix the version, so neither
+    // joins the hash.
+    const lockPath = join(tmp, "deno.lock");
+    await Deno.writeTextFile(lockPath, "{}\n");
+    assertEquals(
+      await computePackageCacheHash(
+        await makeHashInput(tmp, {
+          lockPath,
+          graphDependencies: graph("2.1.3"),
+        }),
+      ),
+      await computePackageCacheHash(
+        await makeHashInput(tmp, {
+          lockPath,
+          graphDependencies: graph("2.1.4"),
+        }),
+      ),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("computePackageCacheHash: exact pins, installed copies and zod keep an extension's hash (swamp-club#3970)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const without = await computePackageCacheHash(await makeHashInput(tmp));
+    const withGraph = await computePackageCacheHash(
+      await makeHashInput(tmp, {
+        graphDependencies: {
+          packageVersions: {
+            "npm:ms@2.1.3": { specifier: "npm:ms@2.1.3" },
+            "npm:pkg@^1": { specifier: "npm:pkg@1.4.0", installed: true },
+            "npm:zod@4": { specifier: "npm:zod@4.3.6" },
+          },
+          unaudited: [],
+        },
+      }),
+    );
+    assertEquals(withGraph, without);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

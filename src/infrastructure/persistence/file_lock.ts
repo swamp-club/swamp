@@ -42,6 +42,10 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { isProcessGone } from "../runtime/process.ts";
 import { currentRunProgress } from "../../domain/remote/run_progress.ts";
+import {
+  observeDiagnosticPhase,
+  startDiagnosticPhase,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 
 // Nonces are used only to join diagnostics to a locally observed acquisition.
 // A process ID alone cannot distinguish concurrent runs in one serve process.
@@ -66,6 +70,11 @@ export interface FileLockOptions extends LockOptions {
    * clearing a holder whose pid is not running.
    */
   sameHostPidCheck?: boolean;
+  /**
+   * What the lock guards, as the bounded `swamp.diagnostic.lock_kind` of its
+   * wait and hold phases (default: `file`). Never the lock path.
+   */
+  diagnosticKind?: "auto_definition" | "file";
 }
 
 /**
@@ -222,6 +231,7 @@ export class FileLock implements DistributedLock {
   readonly maxBackoffMs: number;
   private readonly maxWaitMs: number;
   private readonly sameHostPidCheck: boolean;
+  private readonly diagnosticKind: "auto_definition" | "file";
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
@@ -242,6 +252,7 @@ export class FileLock implements DistributedLock {
     this.maxBackoffMs = options?.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     this.sameHostPidCheck = options?.sameHostPidCheck ?? false;
+    this.diagnosticKind = options?.diagnosticKind ?? "file";
   }
 
   async acquire(): Promise<void> {
@@ -249,15 +260,35 @@ export class FileLock implements DistributedLock {
       resource: this.lockPath,
     };
     const leave = currentRunProgress()?.enter("waiting_for_lock", details);
+    const wait = startDiagnosticPhase("lock_wait", {
+      "swamp.diagnostic.lock_kind": this.diagnosticKind,
+    });
+    const attempts = { retries: 0 };
     try {
-      await this.acquireObserved(details);
+      await wait.run(() => this.acquireObserved(details, attempts));
+      wait.attributes({
+        "swamp.diagnostic.acquired": true,
+        "swamp.diagnostic.retries": attempts.retries,
+      });
+      wait.end();
+    } catch (error) {
+      wait.attributes({
+        "swamp.diagnostic.acquired": false,
+        "swamp.diagnostic.retries": attempts.retries,
+      });
+      // Running out of wait is the lock's deadline, not a failure.
+      if (error instanceof LockTimeoutError) wait.end("timeout");
+      else wait.fail(error);
+      throw error;
     } finally {
       leave?.();
     }
   }
 
+  /** Waits for the lock, counting the attempts that found it held. */
   private async acquireObserved(
     details: { holderRunId?: string },
+    attempts: { retries: number },
   ): Promise<void> {
     const startTime = Date.now();
     this.releasing = false;
@@ -291,6 +322,7 @@ export class FileLock implements DistributedLock {
       }
 
       retryCount++;
+      attempts.retries = retryCount;
 
       const holder = await this.clearStaleHolder();
       if (holder === "cleared") continue; // Retry create (timeout checked at top of loop)
@@ -374,7 +406,9 @@ export class FileLock implements DistributedLock {
   async withLock<T>(fn: () => Promise<T>): Promise<T> {
     await this.acquire();
     try {
-      return await fn();
+      return await observeDiagnosticPhase("lock_held", {
+        "swamp.diagnostic.lock_kind": this.diagnosticKind,
+      }, () => fn());
     } finally {
       await this.release();
     }

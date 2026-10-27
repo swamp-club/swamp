@@ -18,6 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import {
+  type DiagnosticPhaseHandle,
+  observeDiagnosticPhase,
+  outsideDiagnosticArea,
+  startDiagnosticPhase,
+} from "../diagnostics/diagnostic_phase.ts";
 import { Environment } from "cel-js";
 import { registerArithmeticOverloads } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
@@ -276,6 +282,8 @@ export class PolicySnapshotLoader {
    * so an older build never overwrites a newer one's snapshot or state.
    */
   #builds: Promise<void> = Promise.resolve();
+  /** Builds queued or running that a new build waits behind. */
+  #buildsAhead = 0;
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
@@ -400,14 +408,30 @@ export class PolicySnapshotLoader {
     grantCount: number;
     groupCount: number;
   }> {
+    // Exported in the access_poll diagnostic area: the wait behind builds
+    // queued earlier, then the build. Elsewhere both are silent.
+    const queued = startDiagnosticPhase("snapshot_queue_wait", {
+      "swamp.diagnostic.builds_ahead": this.#buildsAhead,
+    });
+    this.#buildsAhead++;
     const build = async () => {
-      const result = await this.#buildSnapshotWithCounts();
-      this.#snapshot = result.snapshot;
-      this.#cachedDecisionService = null;
-      return result;
+      queued.end();
+      return await observeDiagnosticPhase(
+        "snapshot_build",
+        {},
+        async (phase) => {
+          const result = await this.#buildSnapshotWithCounts(phase);
+          this.#snapshot = result.snapshot;
+          this.#cachedDecisionService = null;
+          return result;
+        },
+      );
     };
     const result = this.#builds.then(build);
-    this.#builds = result.then(() => {}, () => {});
+    const settled = () => {
+      this.#buildsAhead--;
+    };
+    this.#builds = result.then(settled, settled);
     return result;
   }
 
@@ -438,21 +462,30 @@ export class PolicySnapshotLoader {
    * versions and the unreadable list are committed only when the build
    * succeeds, so a build that throws leaves them as they were.
    */
-  async #buildSnapshotWithCounts(): Promise<{
+  async #buildSnapshotWithCounts(phase: DiagnosticPhaseHandle): Promise<{
     snapshot: PolicySnapshot;
     grantCount: number;
     groupCount: number;
   }> {
+    const { tally } = phase;
     const skippedGrants: UnreadableModelRecord[] = [];
     const skippedGroups: UnreadableModelRecord[] = [];
-    const [grantDataItems, groupDataItems] = await Promise.all([
-      this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, skippedGrants),
-      this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, skippedGroups),
-    ]);
+    // One measurement: the two listings run concurrently.
+    const [grantDataItems, groupDataItems] = await tally.measure(
+      "list",
+      () =>
+        Promise.all([
+          this.#findAllIncludingOrphaned(GRANT_MODEL_TYPE, skippedGrants),
+          this.#findAllIncludingOrphaned(GROUP_MODEL_TYPE, skippedGroups),
+        ]),
+    );
     const failedGrants = failedAccessData(skippedGrants, "grant-main")
       .filter((failed) => !missingAndNeverRead(failed, this.#lastKnownGrants));
     const failedGroups = failedAccessData(skippedGroups, "group-main")
       .filter((failed) => !missingAndNeverRead(failed, this.#lastKnownGroups));
+    // Listed records whose listing entry could not be read are listed but
+    // never read, so records_listed - records_read counts them.
+    tally.add("records_listed", failedGrants.length + failedGroups.length);
 
     const lastKnownGrants = new Map<string, Grant>();
     const lastKnownGroups = new Map<string, Group>();
@@ -461,19 +494,25 @@ export class PolicySnapshotLoader {
     let grants: Grant[] = [];
     for (const { data, modelType, modelId } of grantDataItems) {
       if (data.name !== "grant-main") continue;
+      tally.add("records_listed");
       const record = recordKey(modelType, modelId);
-      const read = await this.#readRecord(
-        modelType,
-        modelId,
-        data.name,
-        this.#lastKnownGrants.has(record),
-      );
+      tally.add("records_read");
+      const read = await tally.measure("read", () =>
+        this.#readRecord(
+          modelType,
+          modelId,
+          data.name,
+          this.#lastKnownGrants.has(record),
+        ));
       if (!read) continue;
       if ("error" in read) {
         failedGrants.push({ modelType, modelId, ...read });
         continue;
       }
-      const parsed = GrantSchema.safeParse(read.attrs);
+      const parsed = tally.measureSync(
+        "parse",
+        () => GrantSchema.safeParse(read.attrs),
+      );
       if (!parsed.success) {
         failedGrants.push({
           modelType,
@@ -505,19 +544,25 @@ export class PolicySnapshotLoader {
     const suspendedGroups = new Set<string>();
     for (const { data, modelType, modelId } of groupDataItems) {
       if (data.name !== "group-main") continue;
+      tally.add("records_listed");
       const record = recordKey(modelType, modelId);
-      const read = await this.#readRecord(
-        modelType,
-        modelId,
-        data.name,
-        this.#lastKnownGroups.has(record),
-      );
+      tally.add("records_read");
+      const read = await tally.measure("read", () =>
+        this.#readRecord(
+          modelType,
+          modelId,
+          data.name,
+          this.#lastKnownGroups.has(record),
+        ));
       if (!read) continue;
       if ("error" in read) {
         failedGroups.push({ modelType, modelId, ...read });
         continue;
       }
-      const parsed = GroupSchema.safeParse(read.attrs);
+      const parsed = tally.measureSync(
+        "parse",
+        () => GroupSchema.safeParse(read.attrs),
+      );
       if (!parsed.success) {
         failedGroups.push({
           modelType,
@@ -547,6 +592,7 @@ export class PolicySnapshotLoader {
       );
     }
     grants = withoutAllowsToGroups(grants, suspendedGroups);
+    tally.add("unreadable", unreadable.length);
     if (!this.#built && unreadable.length > 0) {
       throw new UnreadableAccessRecordsError(unreadable);
     }
@@ -556,6 +602,11 @@ export class PolicySnapshotLoader {
     // It must also load the same grants and groups: a peer's change in the
     // same cycle is logged, and warned about, as usual.
     const loaded = snapshotSignature(grants, groups);
+    tally.add("grants_active", grants.length);
+    tally.add("groups", groups.length);
+    phase.attributes({
+      "swamp.diagnostic.snapshot_unchanged": loaded === this.#loadedSignature,
+    });
     const retry = unreadable.length > 0 &&
       loaded === this.#loadedSignature &&
       unreadable.length === this.#reportedUnreadable.size &&
@@ -741,10 +792,14 @@ export class PolicySnapshotLoader {
 
   #scheduleRebuild(): void {
     if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
-    this.#rebuildTimer = setTimeout(() => {
-      this.#rebuildTimer = null;
-      this.#pendingRebuild = this.#pendingRebuild.then(() => this.#rebuild());
-    }, 500);
+    // An event-driven rebuild is never part of the work that published the
+    // event, so it carries no diagnostic area.
+    this.#rebuildTimer = outsideDiagnosticArea(() =>
+      setTimeout(() => {
+        this.#rebuildTimer = null;
+        this.#pendingRebuild = this.#pendingRebuild.then(() => this.#rebuild());
+      }, 500)
+    );
   }
 
   async #rebuild(): Promise<void> {

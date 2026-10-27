@@ -50,9 +50,15 @@ import { wordedText } from "../../domain/behavior_wording.ts";
 import { getLogger } from "@logtape/logtape";
 
 import {
-  setActiveSpanAttributes,
+  activeSpanAttributeSetter,
   withGeneratorSpan,
 } from "../../infrastructure/tracing/mod.ts";
+import {
+  currentDiagnosticTally,
+  type DiagnosticPhaseHandle,
+  observeDiagnosticPhase,
+  withGeneratorDiagnosticPhase,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 /** Preview data returned before confirmation. */
 export interface ModelDeletePreview {
   id: string;
@@ -271,11 +277,17 @@ async function partitionExpired(
   dataArtifacts: Data[],
   isExpired?: (data: Data) => Promise<boolean>,
 ): Promise<{ live: Data[]; expired: Data[] }> {
-  if (!isExpired) return { live: dataArtifacts, expired: [] };
+  // Counted into the running diagnostic phase, if any (expiry_check).
+  const tally = currentDiagnosticTally();
+  if (!isExpired) {
+    tally.add("live", dataArtifacts.length);
+    return { live: dataArtifacts, expired: [] };
+  }
   const logger = getLogger(["swamp", "model", "delete"]);
   const live: Data[] = [];
   const expired: Data[] = [];
   for (const data of dataArtifacts) {
+    tally.add("checked");
     try {
       if (await isExpired(data)) {
         expired.push(data);
@@ -285,9 +297,12 @@ async function partitionExpired(
     } catch {
       logger
         .warn`Failed to check expiration for ${data.name}, treating as live`;
+      tally.add("check_failed");
       live.push(data);
     }
   }
+  tally.add("expired", expired.length);
+  tally.add("live", live.length);
   return { live, expired };
 }
 
@@ -344,120 +359,201 @@ export async function* modelDelete(
           ? { "auth.principal.id": input.principalId }
           : {}),
       },
-      (async function* () {
-        yield { kind: "deleting" };
-
-        const result = await lookupModel(deps, input);
-        if (!result) {
-          yield {
-            kind: "error",
-            error: behaviorNotFound(input.modelIdOrName),
-          };
-          return;
-        }
-        const { definition, type: modelType } = result;
-        setActiveSpanAttributes({
-          "model.name": definition.name,
-          "model.type": modelType.normalized,
-          "model.id": definition.id,
-        });
-
-        // Check workflow references
-        const allWorkflows = await deps.findAllWorkflows();
-        const referencingWorkflows = findWorkflowsReferencingModel(
-          allWorkflows,
-          definition.id,
-          definition.name,
-        );
-        if (referencingWorkflows.length > 0) {
-          yield {
-            kind: "error",
-            error: wordedSwampError(
-              "validation_failed",
-              wordedText((w) =>
-                `${w.Noun} '${definition.name}' is referenced by workflow(s): ${
-                  referencingWorkflows.join(", ")
-                }. ` +
-                `Remove the ${w.noun} from these workflows before deleting.`
-              ),
-            ),
-          };
-          return;
-        }
-
-        // Check data artifacts — expired data is auto-collected, not a blocker
-        const dataArtifacts = await deps.findDataArtifacts(
-          modelType,
-          definition.id,
-        );
-        const { live, expired } = await partitionExpired(
-          dataArtifacts,
-          deps.isExpired,
-        );
-        if (live.length > 0 && !input.force) {
-          yield {
-            kind: "error",
-            error: wordedSwampError(
-              "validation_failed",
-              wordedText((w) =>
-                `${w.Noun} '${definition.name}' has ${live.length} associated data artifact(s). ` +
-                `Delete the data first, or use --force to delete all.`
-              ),
-            ),
-          };
-          return;
-        }
-
-        const definitionPath = deps.getDefinitionPath(modelType, definition.id);
-
-        // Delete outputs
-        const outputs = await deps.findOutputs(modelType, definition.id);
-        let outputsDeleted = 0;
-        for (const output of outputs) {
-          ctx.logger.debug`Deleting output: ${output.id}`;
-          await deps.deleteOutput(modelType, output.methodName, output.id);
-          outputsDeleted++;
-        }
-
-        // Auto-collect expired data artifacts
-        let expiredDataAutoCollected = 0;
-        for (const data of expired) {
-          ctx.logger.debug`Auto-collecting expired data: ${data.name}`;
-          await deps.deleteData(modelType, definition.id, data.name);
-          expiredDataAutoCollected++;
-        }
-
-        // Delete remaining data artifacts (force mode)
-        let dataDeleted = false;
-        for (const data of live) {
-          ctx.logger.debug`Deleting data artifact: ${data.name}`;
-          await deps.deleteData(modelType, definition.id, data.name);
-          dataDeleted = true;
-        }
-
-        // Delete evaluated definition
-        ctx.logger.debug`Deleting evaluated definition: ${definition.id}`;
-        await deps.deleteEvaluatedDefinition(modelType, definition.id);
-        const evaluatedInputDeleted = true;
-
-        // Delete definition
-        ctx.logger.debug`Deleting definition: ${definition.id}`;
-        await deps.deleteDefinition(modelType, definition.id, definition.name);
-
-        yield {
-          kind: "completed",
-          data: {
-            id: definition.id,
-            name: definition.name,
-            type: modelType.normalized,
-            inputPath: definitionPath,
-            resourceDeleted: false,
-            outputsDeleted,
-            evaluatedInputDeleted,
-            dataDeleted,
-            expiredDataAutoCollected,
-          },
-        };
-      })(),
+      // Phases export only inside a diagnostic area: worker prune runs this
+      // as worker_delete; a plain model delete exports none.
+      withGeneratorDiagnosticPhase("model_delete", {}, (phase) => {
+        // Bound to swamp.model.delete before the phase becomes the active
+        // span, so the model's identity stays on the span queries select.
+        const setDeleteSpanAttributes = activeSpanAttributeSetter();
+        return deleteStages(ctx, deps, input, phase, setDeleteSpanAttributes);
+      }),
     ));
+}
+
+async function* deleteStages(
+  ctx: LibSwampContext,
+  deps: ModelDeleteDeps,
+  input: ModelDeleteInput,
+  phase: DiagnosticPhaseHandle,
+  setDeleteSpanAttributes: ReturnType<typeof activeSpanAttributeSetter>,
+): AsyncGenerator<ModelDeleteEvent> {
+  // A refusal is reported as an event, not thrown: end the phase as the
+  // failure it is, with a bounded reason.
+  const refuse = (
+    reason: "not_found" | "workflow_referenced" | "live_data",
+    error: SwampError,
+  ): ModelDeleteEvent => {
+    phase.attributes({ "swamp.diagnostic.refusal": reason });
+    phase.end("error");
+    return { kind: "error", error };
+  };
+
+  yield { kind: "deleting" };
+
+  const result = await observeDiagnosticPhase(
+    "definition_resolve",
+    {},
+    async (resolve) => {
+      const found = await lookupModel(deps, input);
+      resolve.attributes({ "swamp.diagnostic.hit": found !== null });
+      return found;
+    },
+  );
+  if (!result) {
+    yield refuse("not_found", behaviorNotFound(input.modelIdOrName));
+    return;
+  }
+  const { definition, type: modelType } = result;
+  setDeleteSpanAttributes({
+    "model.name": definition.name,
+    "model.type": modelType.normalized,
+    "model.id": definition.id,
+  });
+  phase.attributes({
+    "swamp.diagnostic.definition_type": modelType.normalized,
+  });
+
+  // Check workflow references
+  const referencingWorkflows = await observeDiagnosticPhase(
+    "workflow_reference_check",
+    {},
+    async ({ tally }) => {
+      const allWorkflows = await deps.findAllWorkflows();
+      tally.add("workflows", allWorkflows.length);
+      const referencing = tally.measureSync(
+        "reference_match",
+        () =>
+          findWorkflowsReferencingModel(
+            allWorkflows,
+            definition.id,
+            definition.name,
+          ),
+      );
+      tally.add("referencing", referencing.length);
+      return referencing;
+    },
+  );
+  if (referencingWorkflows.length > 0) {
+    yield refuse(
+      "workflow_referenced",
+      wordedSwampError(
+        "validation_failed",
+        wordedText((w) =>
+          `${w.Noun} '${definition.name}' is referenced by workflow(s): ${
+            referencingWorkflows.join(", ")
+          }. ` +
+          `Remove the ${w.noun} from these workflows before deleting.`
+        ),
+      ),
+    );
+    return;
+  }
+
+  // Check data artifacts — expired data is auto-collected, not a blocker
+  const dataArtifacts = await observeDiagnosticPhase(
+    "data_discovery",
+    {},
+    async ({ tally }) => {
+      const found = await deps.findDataArtifacts(modelType, definition.id);
+      tally.add("artifacts", found.length);
+      return found;
+    },
+  );
+  const { live, expired } = await observeDiagnosticPhase(
+    "expiry_check",
+    { "swamp.diagnostic.checker": deps.isExpired !== undefined },
+    () => partitionExpired(dataArtifacts, deps.isExpired),
+  );
+  if (live.length > 0 && !input.force) {
+    yield refuse(
+      "live_data",
+      wordedSwampError(
+        "validation_failed",
+        wordedText((w) =>
+          `${w.Noun} '${definition.name}' has ${live.length} associated data artifact(s). ` +
+          `Delete the data first, or use --force to delete all.`
+        ),
+      ),
+    );
+    return;
+  }
+
+  const definitionPath = deps.getDefinitionPath(modelType, definition.id);
+
+  // Delete outputs
+  const outputs = await observeDiagnosticPhase(
+    "output_discovery",
+    {},
+    async ({ tally }) => {
+      const found = await deps.findOutputs(modelType, definition.id);
+      tally.add("outputs", found.length);
+      return found;
+    },
+  );
+  let outputsDeleted = 0;
+  // One phase for the loop, never one per output.
+  await observeDiagnosticPhase("output_removal", {}, async ({ tally }) => {
+    for (const output of outputs) {
+      ctx.logger.debug`Deleting output: ${output.id}`;
+      tally.add("attempted");
+      await deps.deleteOutput(modelType, output.methodName, output.id);
+      outputsDeleted++;
+      tally.add("deleted");
+    }
+  });
+
+  let expiredDataAutoCollected = 0;
+  let dataDeleted = false;
+  await observeDiagnosticPhase("data_removal", {}, async ({ tally }) => {
+    // The data repository adds the versions it removes; zero when the worker
+    // has no data.
+    tally.add("versions_removed", 0);
+    // Auto-collect expired data artifacts
+    for (const data of expired) {
+      ctx.logger.debug`Auto-collecting expired data: ${data.name}`;
+      await deps.deleteData(modelType, definition.id, data.name);
+      expiredDataAutoCollected++;
+      tally.add("expired_deleted");
+    }
+
+    // Delete remaining data artifacts (force mode)
+    for (const data of live) {
+      ctx.logger.debug`Deleting data artifact: ${data.name}`;
+      await deps.deleteData(modelType, definition.id, data.name);
+      dataDeleted = true;
+      tally.add("live_deleted");
+    }
+  });
+
+  // Delete evaluated definition
+  ctx.logger.debug`Deleting evaluated definition: ${definition.id}`;
+  await observeDiagnosticPhase(
+    "evaluated_removal",
+    {},
+    () => deps.deleteEvaluatedDefinition(modelType, definition.id),
+  );
+  const evaluatedInputDeleted = true;
+
+  // Delete definition
+  ctx.logger.debug`Deleting definition: ${definition.id}`;
+  await observeDiagnosticPhase(
+    "definition_removal",
+    {},
+    () => deps.deleteDefinition(modelType, definition.id, definition.name),
+  );
+
+  yield {
+    kind: "completed",
+    data: {
+      id: definition.id,
+      name: definition.name,
+      type: modelType.normalized,
+      inputPath: definitionPath,
+      resourceDeleted: false,
+      outputsDeleted,
+      evaluatedInputDeleted,
+      dataDeleted,
+      expiredDataAutoCollected,
+    },
+  };
 }

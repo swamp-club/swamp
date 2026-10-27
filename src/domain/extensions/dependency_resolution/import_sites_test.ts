@@ -19,7 +19,19 @@
 
 import { assertEquals } from "@std/assert";
 import { hasBareImport } from "./extension_project.ts";
-import { bareFromImports, scanImportSites } from "./import_sites.ts";
+import { scanImportSites } from "./import_sites.ts";
+import { isBareSpecifier } from "./specifier.ts";
+
+/** The bare names `source` imports, unique, in source order. */
+function bareImports(source: string): string[] {
+  return [
+    ...new Set(
+      (scanImportSites(source) ?? []).map((s) => s.specifier).filter(
+        isBareSpecifier,
+      ),
+    ),
+  ];
+}
 
 Deno.test("scanImportSites: reports each import with its quoted span", () => {
   const source = "import ms from \"ms\";\nexport { x } from './x.ts';\n";
@@ -45,7 +57,7 @@ Deno.test("scanImportSites: reports each import with its quoted span", () => {
 
 Deno.test("scanImportSites: counts columns in code points after astral characters and comments", () => {
   const source = '// 🎉 note\n/* 😀 */ import a from "a"; const s = "🎉";\n';
-  const [site] = scanImportSites(source);
+  const [site] = scanImportSites(source) ?? [];
   assertEquals(site.specifier, "a");
   assertEquals(site.span, {
     start: { line: 1, character: 22 },
@@ -67,7 +79,7 @@ Deno.test("scanImportSites: reads side-effect, dynamic, type and multi-line impo
     'export * from "star";',
   ].join("\n");
   assertEquals(
-    scanImportSites(source).map((s) => [s.specifier, s.span.start.line]),
+    scanImportSites(source)?.map((s) => [s.specifier, s.span.start.line]),
     [["side", 0], ["lazy", 1], ["types", 2], ["multi", 6], ["star", 7]],
   );
 });
@@ -80,13 +92,38 @@ Deno.test("scanImportSites: ignores import text in comments, strings and templat
     'const t = `import d from "d"`;',
     'import real from "real";',
   ].join("\n");
-  assertEquals(scanImportSites(source).map((s) => s.specifier), [
+  assertEquals(scanImportSites(source)?.map((s) => s.specifier), [
     "real",
   ]);
 });
 
-Deno.test("scanImportSites: leaves out an unterminated specifier", () => {
-  assertEquals(scanImportSites('import a from "a\nconst x = 1;'), []);
+Deno.test("scanImportSites: null for a module that does not parse", () => {
+  assertEquals(scanImportSites('import a from "a\nconst x = 1;'), null);
+});
+
+Deno.test("scanImportSites: a quote in a regex literal does not hide a later import", () => {
+  const source = 'const re = /"/; import ms from "ms";\n';
+  assertEquals(scanImportSites(source)?.map((s) => s.specifier), ["ms"]);
+});
+
+Deno.test("scanImportSites: reads a .js module without the TypeScript plugin", () => {
+  const source = 'const f = a ? (b) : c => c;\nimport ms from "ms";\n';
+  assertEquals(scanImportSites(source, "m.ts"), null);
+  assertEquals(scanImportSites(source, "m.js")?.map((s) => s.specifier), [
+    "ms",
+  ]);
+});
+
+Deno.test("hasBareImport: counts side-effect and dynamic bare imports", () => {
+  assertEquals(hasBareImport('import "vecpkg";\n'), true);
+  assertEquals(
+    hasBareImport('export const model = () => import("vecpkg");\n'),
+    true,
+  );
+});
+
+Deno.test("hasBareImport: false for a module that does not parse", () => {
+  assertEquals(hasBareImport('import { z } from "zod";\nconst = ;\n'), false);
 });
 
 Deno.test("hasBareImport returns true for bare zod import", () => {
@@ -159,102 +196,102 @@ export { foo } from "../shared.ts";
 
 // --- extractBareSpecifierNames unit tests ---
 
-Deno.test("bareFromImports: returns bare specifier names", () => {
+Deno.test("bareImports: returns bare specifier names", () => {
   assertEquals(
-    bareFromImports('import { z } from "zod";'),
+    bareImports('import { z } from "zod";'),
     ["zod"],
   );
 });
 
-Deno.test("bareFromImports: returns scoped bare specifiers", () => {
+Deno.test("bareImports: returns scoped bare specifiers", () => {
   assertEquals(
-    bareFromImports(
+    bareImports(
       'import { Client } from "@aws-sdk/client-secrets-manager";',
     ),
     ["@aws-sdk/client-secrets-manager"],
   );
 });
 
-Deno.test("bareFromImports: collects multiple unique specifiers", () => {
+Deno.test("bareImports: collects multiple unique specifiers", () => {
   const source = `
 import { z } from "zod";
 import { decode } from "he";
 import { z as z2 } from "zod";
 `;
-  const result = bareFromImports(source);
+  const result = bareImports(source);
   assertEquals(result.sort(), ["he", "zod"]);
 });
 
-Deno.test("bareFromImports: ignores npm: prefixed imports", () => {
+Deno.test("bareImports: ignores npm: prefixed imports", () => {
   assertEquals(
-    bareFromImports('import { z } from "npm:zod@4";'),
+    bareImports('import { z } from "npm:zod@4";'),
     [],
   );
 });
 
-Deno.test("bareFromImports: ignores jsr: prefixed imports", () => {
+Deno.test("bareImports: ignores jsr: prefixed imports", () => {
   assertEquals(
-    bareFromImports('import { assert } from "jsr:@std/assert";'),
+    bareImports('import { assert } from "jsr:@std/assert";'),
     [],
   );
 });
 
-Deno.test("bareFromImports: ignores relative imports", () => {
+Deno.test("bareImports: ignores relative imports", () => {
   assertEquals(
-    bareFromImports('import { helper } from "./helpers.ts";'),
+    bareImports('import { helper } from "./helpers.ts";'),
     [],
   );
 });
 
-Deno.test("bareFromImports: ignores parent-relative imports", () => {
+Deno.test("bareImports: ignores parent-relative imports", () => {
   assertEquals(
-    bareFromImports('import { shared } from "../shared.ts";'),
+    bareImports('import { shared } from "../shared.ts";'),
     [],
   );
 });
 
-Deno.test("bareFromImports: ignores node: imports", () => {
+Deno.test("bareImports: ignores node: imports", () => {
   assertEquals(
-    bareFromImports('import { readFile } from "node:fs";'),
+    bareImports('import { readFile } from "node:fs";'),
     [],
   );
 });
 
-Deno.test("bareFromImports: ignores https: imports", () => {
+Deno.test("bareImports: ignores https: imports", () => {
   assertEquals(
-    bareFromImports(
+    bareImports(
       'import { delay } from "https://deno.land/std@0.224.0/async/delay.ts";',
     ),
     [],
   );
 });
 
-Deno.test("bareFromImports: ignores http: imports", () => {
+Deno.test("bareImports: ignores http: imports", () => {
   assertEquals(
-    bareFromImports('import { x } from "http://example.com/mod.ts";'),
+    bareImports('import { x } from "http://example.com/mod.ts";'),
     [],
   );
 });
 
-Deno.test("bareFromImports: returns empty for no bare specifiers", () => {
+Deno.test("bareImports: returns empty for no bare specifiers", () => {
   const source = `
 import { z } from "npm:zod@4";
 import { helper } from "./helpers.ts";
 export { foo } from "../shared.ts";
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: handles re-exports", () => {
+Deno.test("bareImports: handles re-exports", () => {
   assertEquals(
-    bareFromImports('export { z } from "zod";'),
+    bareImports('export { z } from "zod";'),
     ["zod"],
   );
 });
 
 // --- comment stripping regression tests (swamp-club#602) ---
 
-Deno.test("bareFromImports: ignores quoted phrases in single-line comments", () => {
+Deno.test("bareImports: ignores quoted phrases in single-line comments", () => {
   const source = `import { z } from "npm:zod@4";
 
 export function check() {
@@ -263,10 +300,10 @@ export function check() {
   return z.object({}).parse({});
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: ignores from patterns in block comments", () => {
+Deno.test("bareImports: ignores from patterns in block comments", () => {
   const source = `import { z } from "npm:zod@4";
 
 /*
@@ -277,27 +314,27 @@ export function check() {
   return z.object({}).parse({});
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: detects real bare imports adjacent to comments", () => {
+Deno.test("bareImports: detects real bare imports adjacent to comments", () => {
   const source = `// this comment mentions "no policy"
 import { z } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
-Deno.test("bareFromImports: preserves string literals containing //", () => {
+Deno.test("bareImports: preserves string literals containing //", () => {
   const source = `import { fetch } from "npm:undici@6";
 const url = "https://example.com/api";
 export function get() { return fetch(url); }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
 // --- string-literal false-positive regression tests (swamp-club#657) ---
 
-Deno.test("bareFromImports: ignores from-pattern in template literal", () => {
+Deno.test("bareImports: ignores from-pattern in template literal", () => {
   const source = `export function getAdvice(mode: string): string {
   if (mode === "flexible") {
     return \`You should upgrade from "flexible" to "full" for security\`;
@@ -305,27 +342,27 @@ Deno.test("bareFromImports: ignores from-pattern in template literal", () => {
   return "";
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: ignores from-pattern in single-quoted string", () => {
+Deno.test("bareImports: ignores from-pattern in single-quoted string", () => {
   const source = `export function logMessage(mode: string): void {
   const msg = 'Migrate from "flexible" to "full"';
   console.log(msg);
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: ignores template interpolation as specifier", () => {
+Deno.test("bareImports: ignores template interpolation as specifier", () => {
   const source = `export function getAdvice(mode: string): string {
   return \`You should migrate from "\${mode}" to "full"\`;
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: real-world mixed imports with string false positives", () => {
+Deno.test("bareImports: real-world mixed imports with string false positives", () => {
   const source =
     `import { CloudflareClient } from "npm:@webframp/cloudflare@1.0.0";
 import { z } from "npm:zod@4";
@@ -346,7 +383,7 @@ export function analyzeZones(client: CloudflareClient): Finding[] {
   return findings;
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
 Deno.test("hasBareImport: ignores from-pattern in string literals", () => {
@@ -357,7 +394,7 @@ Deno.test("hasBareImport: ignores from-pattern in string literals", () => {
   assertEquals(hasBareImport(source), false);
 });
 
-Deno.test("bareFromImports: multi-line import spanning 4+ lines still detected", () => {
+Deno.test("bareImports: multi-line import spanning 4+ lines still detected", () => {
   const source = `import {
   foo,
   bar,
@@ -365,7 +402,7 @@ Deno.test("bareFromImports: multi-line import spanning 4+ lines still detected",
   qux,
 } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
 Deno.test("hasBareImport: ignores quoted phrases in comments", () => {
@@ -381,7 +418,7 @@ export function check() {
 
 // --- generated-code false-positive regression tests (swamp-club#1490) ---
 
-Deno.test("bareFromImports: ignores an interpolated specifier in generated code", () => {
+Deno.test("bareImports: ignores an interpolated specifier in generated code", () => {
   // The reported shape: an eval script built as a template literal, whose
   // second import resolves to a valid npm: specifier only at runtime.
   const source = `export function buildScript(pkg: string): string {
@@ -392,20 +429,20 @@ console.log(serializer, modeling);
 \`;
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: ignores a static bare specifier in generated code", () => {
+Deno.test("bareImports: ignores a static bare specifier in generated code", () => {
   // No interpolation at all — the specifier is bare in the generated script,
   // which is the generated module's problem, not this module's.
   const source = `export function buildScript(): string {
   return \`import { z } from "zod";\`;
 }
 `;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });
 
-Deno.test("bareFromImports: detects a real bare import alongside generated code", () => {
+Deno.test("bareImports: detects a real bare import alongside generated code", () => {
   const source = `import { helper } from "my-helpers";
 
 export function buildScript(pkg: string): string {
@@ -414,20 +451,20 @@ export function buildScript(pkg: string): string {
 
 export const h = helper;
 `;
-  assertEquals(bareFromImports(source), ["my-helpers"]);
+  assertEquals(bareImports(source), ["my-helpers"]);
 });
 
-Deno.test("bareFromImports: handles a nested template inside an interpolation", () => {
+Deno.test("bareImports: handles a nested template inside an interpolation", () => {
   const source = `export function buildScript(names: string[]): string {
   return \`\${names.map((n) => \`import "\${n}";\`).join("\\n")}\`;
 }
 
 import { z } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
-Deno.test("bareFromImports: handles object-literal braces inside an interpolation", () => {
+Deno.test("bareImports: handles object-literal braces inside an interpolation", () => {
   const source = `export function buildScript(): string {
   return \`config = \${JSON.stringify({ mode: "full" })};
 import { x } from "generated";\`;
@@ -435,45 +472,45 @@ import { x } from "generated";\`;
 
 import { z } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
-Deno.test("bareFromImports: handles an unbalanced brace quoted inside an interpolation", () => {
+Deno.test("bareImports: handles an unbalanced brace quoted inside an interpolation", () => {
   const source = `export function buildScript(): string {
   return \`\${"}"} import { x } from "generated";\`;
 }
 
 import { z } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
-Deno.test("bareFromImports: handles an escaped backtick inside a template", () => {
+Deno.test("bareImports: handles an escaped backtick inside a template", () => {
   const source = `export function buildScript(): string {
   return \`echo \\\` import { x } from "generated";\`;
 }
 
 import { z } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
-Deno.test("bareFromImports: still detects imports after a backtick in a regex literal", () => {
+Deno.test("bareImports: still detects imports after a backtick in a regex literal", () => {
   // The scanner cannot recognise regex literals, so this backtick has no
   // closing partner. The span must be preserved verbatim rather than blanked,
   // or the real import below it would go unreported.
   const source = `const BACKTICK = /\`/;
 import { z } from "zod";
 `;
-  assertEquals(bareFromImports(source), ["zod"]);
+  assertEquals(bareImports(source), ["zod"]);
 });
 
-Deno.test("bareFromImports: preserves the tail after an unterminated template", () => {
+Deno.test("scanImportSites: an unterminated template does not parse", () => {
   const source = `const broken = \`unterminated
 import { z } from "zod";
 `;
-  // Degrades to the pre-fix reading rather than blanking the rest of the file.
-  assertEquals(bareFromImports(source), ["zod"]);
+  // Not read as text: push refuses the module, the loader reads no imports.
+  assertEquals(scanImportSites(source), null);
 });
 
 Deno.test("hasBareImport: ignores an interpolated specifier in generated code", () => {
@@ -484,9 +521,9 @@ Deno.test("hasBareImport: ignores an interpolated specifier in generated code", 
   assertEquals(hasBareImport(source), false);
 });
 
-Deno.test("bareFromImports: ignores an interpolated specifier outside a template", () => {
+Deno.test("bareImports: ignores an interpolated specifier outside a template", () => {
   // Valid TypeScript — double quotes do not interpolate — so isBareSpecifier
   // must reject it on its own, without help from the template stripping.
   const source = `import * as s from "\${pkg}";`;
-  assertEquals(bareFromImports(source), []);
+  assertEquals(bareImports(source), []);
 });

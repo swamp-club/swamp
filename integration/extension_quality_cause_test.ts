@@ -61,6 +61,7 @@ import {
 import { buildPrepareInput } from "../src/libswamp/extensions/push_test_helpers.ts";
 import { emptyArchiveIndex } from "../src/libswamp/extensions/extension_tree_index_test_helpers.ts";
 import { createExtensionQualityRenderer } from "../src/presentation/renderers/extension_quality.ts";
+import { SHARED_SWAMP_DENO_CACHE } from "./test_helpers.ts";
 
 await initializeLogging({});
 
@@ -489,5 +490,94 @@ Deno.test("extension quality: a deno doc failure is named on symbols-docs and ha
     assert(log.failed);
     assertEquals(log.output.includes("Add JSDoc to"), false);
     assertEquals(log.output.includes("current: 0%"), false);
+  });
+});
+
+Deno.test("extension quality: a file: package.json dependency loses the dependency-trust factor and is named, in log and JSON (swamp-club#4018)", async () => {
+  await withTempDir(async (repo) => {
+    const version = "20260101.120000.0";
+    const init = await collect(
+      repoInit(createLibSwampContext(), createRepoInitDeps(version), {
+        path: repo,
+        force: false,
+        version,
+        tools: [],
+      }),
+    );
+    assertEquals(init.some((event) => event.kind === "error"), false);
+    await write(
+      join(repo, "package.json"),
+      JSON.stringify({ dependencies: { shared: "file:./shared" } }) + "\n",
+    );
+    // node_modules as npm install leaves a file: dependency, copied in
+    const installed = join(repo, "node_modules", "shared");
+    await write(
+      join(installed, "package.json"),
+      JSON.stringify({
+        name: "shared",
+        version: "1.0.0",
+        main: "index.js",
+        type: "module",
+      }) + "\n",
+    );
+    await write(join(installed, "index.js"), "export const shared = 1;\n");
+    await write(
+      join(repo, "extensions", "models", "model.ts"),
+      'import { shared } from "shared";\nexport const model = { shared };\n',
+    );
+    const manifestPath = join(repo, "manifest.yaml");
+    await write(manifestPath, stringifyYaml(MANIFEST));
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: repo,
+      outputMode: "log",
+    });
+    const resolved = await resolveExtensionFiles({
+      repoDir: repo,
+      manifestPath,
+      repoContext,
+      logger,
+      moduleGraphReader: new DenoInfoModuleGraphReader(DENO, {
+        DENO_DIR: SHARED_SWAMP_DENO_CACHE,
+        NPM_CONFIG_REGISTRY: "http://127.0.0.1:1/",
+      }, { readOnlyLock: true }),
+    });
+    assertEquals(
+      resolved.graphDependencies.unaudited?.map((u) => [u.kind, u.origin]),
+      [["package-json", "file:./shared"]],
+    );
+    const prepareInput = buildPrepareInput(resolved.manifest, repo, {
+      allModelFiles: resolved.allModelFiles,
+      modelEntryPoints: resolved.modelEntryPoints,
+      modelsDir: resolved.modelsDir,
+      sourcePlan: resolved.sourcePlan,
+      graphDependencies: resolved.graphDependencies,
+      bareImports: resolved.bareImports,
+      packageJsonDir: resolved.packageJsonDir,
+      dryRun: true,
+      registryChecks: "skip",
+    });
+
+    const events = await runQuality(repo, prepareInput, prepareDeps());
+
+    const log = render("log", events, repo);
+    assertStringIncludes(log.output, "file:./shared");
+    assertStringIncludes(log.output, "the code comes from outside npm and JSR");
+
+    const [doc] = jsonDocs(render("json", events, repo).output);
+    const trust = doc.dependencyTrust as {
+      passed: boolean;
+      warnings: {
+        dependency: string;
+        cause?: string;
+        notAuditedFix?: string;
+      }[];
+    };
+    assertEquals(trust.passed, true);
+    assertEquals(
+      trust.warnings.map((w) => [w.dependency, w.cause, w.notAuditedFix]),
+      [["file:./shared", "not-audited", "origin"]],
+    );
+    const row = factor(doc, "dependency-trust");
+    assertEquals([row.earnedPoints, row.status], [0, "missing"]);
   });
 });

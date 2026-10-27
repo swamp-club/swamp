@@ -51,6 +51,11 @@ import {
   extractExpressions,
 } from "../expressions/expression_parser.ts";
 import type { SecretMisuseFinding } from "../models/validation_service.ts";
+import { literalCallTexts } from "../expressions/cel_grammar.ts";
+import {
+  refusedOccurrenceLine,
+  storedTextRefusal,
+} from "../expressions/swamp_namespaces.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -290,6 +295,54 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
+    // 18. literal() output a direct step could not store
+    for (const result of this.validateDirectGlobalArgLiterals(workflow)) {
+      results.push(result);
+    }
+
+    return results;
+  }
+
+  /**
+   * A step that runs a model type directly saves its `globalArgs` in a
+   * definition. A run stores another templating system's text that a
+   * `literal()` call produces as text, and refuses to save swamp's own
+   * (swamp-club#3389, swamp-club#3401). This fails the text a run refuses,
+   * wherever the `literal()` call sits in the expression. A run also refuses
+   * any expression text in a sensitive field, which needs the type's schema
+   * and is not checked here.
+   */
+  private validateDirectGlobalArgLiterals(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const taskData = step.task?.data;
+        if (
+          taskData?.type !== "model_method" || !taskData.modelType ||
+          typeof taskData.globalArgs !== "object"
+        ) continue;
+        for (const authored of extractExpressions(taskData.globalArgs)) {
+          if (!authored.celExpression.includes("literal")) continue;
+          const produced = literalCallTexts(authored.celExpression) ?? [];
+          for (const expr of produced.flatMap((t) => extractExpressions(t))) {
+            const reason = storedTextRefusal(expr.celExpression);
+            if (reason === undefined) continue;
+            results.push(WorkflowValidationResult.fail(
+              `Task expressions in job '${job.name}' step '${step.name}'`,
+              `globalArgs.${authored.path} holds literal() output that a run refuses to save in the step's definition:\n${
+                refusedOccurrenceLine(
+                  `globalArgs.${authored.path}`,
+                  expr.raw,
+                  reason,
+                )
+              }\nA global argument stores another system's expression text as text, and refuses swamp's own expressions. Pass the value as a step input for a method argument instead`,
+            ));
+          }
+        }
+      }
+    }
     return results;
   }
 
@@ -408,11 +461,7 @@ export class DefaultWorkflowValidationService
               : "are not swamp namespaces or known templating roots"
           }, so a run fails with "Unknown variable". ` +
             (misspelt ? `Did you mean '${misspelt.namespace}'? ` : "") +
-            // literal() output is refused in a direct step's globalArgs
-            // until swamp-club#3389 lands.
-            (path.startsWith("globalArgs")
-              ? `If it is another templating system's text, pass it as a step input written with literal() instead of a global argument`
-              : `If it is another templating system's text, write it with literal()`),
+            `If it is another templating system's text, write it with literal()`,
         )
       ),
       ...unresolvable.map(({ jobName, stepName, path, text }) =>

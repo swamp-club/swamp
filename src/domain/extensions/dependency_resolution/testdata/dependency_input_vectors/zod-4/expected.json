@@ -36,8 +36,13 @@
     "bundles/w.js": "zod external"
   },
   "record": {
-    "recordVersion": 1,
-    "dependencies": []
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle",
+      "bundles/w.js": "sha256 of the bundle"
+    },
+    "dependencies": [],
+    "unaudited": []
   },
   "audited": [],
   "trust": {

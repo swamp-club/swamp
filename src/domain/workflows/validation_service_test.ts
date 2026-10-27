@@ -3327,7 +3327,7 @@ Deno.test("fails an unlisted root in a branch a run would not evaluate", async (
   ]);
 });
 
-Deno.test("does not suggest literal() for an unlisted root in a direct step's globalArgs", async () => {
+Deno.test("suggests literal() for an unlisted root in a direct step's globalArgs", async () => {
   const results = await service.validate(foreignTextWorkflow(
     StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
       env: { REGION: "${{ nonexistent.region }}" },
@@ -3336,8 +3336,109 @@ Deno.test("does not suggest literal() for an unlisted root in a direct step's gl
   assertEquals(results.filter((r) => !r.passed).map((r) => r.error), [
     "globalArgs.env.REGION holds ${{ nonexistent.region }}: 'nonexistent' is not a swamp namespace or a known templating root, " +
     'so a run fails with "Unknown variable". ' +
-    "If it is another templating system's text, pass it as a step input written with literal() instead of a global argument",
+    "If it is another templating system's text, write it with literal()",
   ]);
+});
+
+Deno.test("fails literal() output a run would refuse to save in a direct step's globalArgs", async () => {
+  const cases: [string, string, string][] = [
+    ["${{ inputs.version }}", "", "reads a swamp namespace"],
+    ["${{ a | b }}", "", "does not parse as an expression"],
+    ["${{ 1 + 1 }}", "", "cannot be attributed to another templating system"],
+    // A literal() call inside a computation produces its text too.
+    ["${{ inputs.v }}", "'x' + ", "reads a swamp namespace"],
+    // A run reads the hyphen as subtraction.
+    [
+      "${{ needs.build-vault.outputs.url }}",
+      "",
+      "holds a hyphenated name CEL reads as subtraction (needs.build - vault.outputs.url), so a run would refuse it",
+    ],
+    [
+      "${{ matrix.node-18x }}",
+      "",
+      "holds a hyphenated name CEL reads as subtraction (matrix.node - 18x), so a run would refuse it",
+    ],
+    [
+      "${{ jobs.build-vault.result }}",
+      "",
+      "holds a hyphenated name CEL reads as subtraction (jobs.build - vault.result), so a run would refuse it",
+    ],
+    [
+      "${{ needs.deploy-1a.result }}",
+      "",
+      "holds a hyphenated name CEL reads as subtraction (needs.deploy - 1a.result), so a run would refuse it",
+    ],
+  ];
+  for (const [produced, around, reason] of cases) {
+    const results = await service.validate(foreignTextWorkflow(
+      StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+        env: { V: `\${{ ${around}literal("${produced}") }}` },
+      }),
+    ));
+    assertEquals(results.filter((r) => !r.passed).map((r) => r.error), [
+      "globalArgs.env.V holds literal() output that a run refuses to save in the step's definition:\n" +
+      `  globalArgs.env.V: ${produced} (${reason})\n` +
+      "A global argument stores another system's expression text as text, and refuses swamp's own expressions. " +
+      "Pass the value as a step input for a method argument instead",
+    ], produced);
+  }
+});
+
+Deno.test("passes literal() output of another system's text in a direct step's globalArgs, whatever it would evaluate to", async () => {
+  for (
+    const produced of [
+      "${{ true || github.sha }}",
+      "${{ toJSON(matrix) }}",
+      "${{ startsWith(github.ref, 'refs/tags') }}",
+      "${{ needs.build-env.outputs.url }}",
+      "${{ needs.build-2.result }}",
+      "${{ needs.e2e-tests.result }}",
+      "${{ matrix.os-2022 }}",
+      "${{ matrix.target-file }}",
+    ]
+  ) {
+    const results = await service.validate(foreignTextWorkflow(
+      StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+        env: { V: `\${{ literal("${produced}") }}` },
+      }),
+    ));
+    assertEquals(results.filter((r) => !r.passed), [], produced);
+  }
+});
+
+Deno.test("reports literal() output nested too deeply to analyse instead of crashing", async () => {
+  const deep = `\${{ ${"-".repeat(3000)}github.sha }}`;
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+      env: { V: `\${{ literal('${deep}') }}` },
+    }),
+  ));
+  assertEquals(results.filter((r) => !r.passed).length, 1);
+});
+
+Deno.test("passes literal() output of any text in a step's inputs and a stored step's arguments", async () => {
+  for (
+    const task of [
+      StepTask.directExecution("command/shell", "emit-model", "execute", {
+        run: "${{ literal('${{ inputs.version }}') }}",
+      }),
+      StepTask.model("m", "run", {
+        run: "${{ literal('${{ inputs.version }}') }}",
+      }),
+    ]
+  ) {
+    const results = await service.validate(foreignTextWorkflow(task));
+    assertEquals(results.filter((r) => !r.passed), []);
+  }
+});
+
+Deno.test("passes literal() around an unlisted root in a direct step's globalArgs", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+      env: { REGION: "${{ literal('${{ nonexistent.region }}') }}" },
+    }),
+  ));
+  assertEquals(results.filter((r) => !r.passed), []);
 });
 
 Deno.test("passes literal() around an unlisted root in step inputs", async () => {

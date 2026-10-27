@@ -153,6 +153,7 @@ for (const variant of variants) {
       const input: ExtensionPushPrepareInput = {
         manifest: resolved.manifest,
         bareImports: resolved.bareImports,
+        graphDependencies: resolved.graphDependencies,
         repoDir: root,
         manifestDir: root,
         modelsDir: resolved.modelsDir,

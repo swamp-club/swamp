@@ -53,7 +53,10 @@ something a primitive depends on, move it to `enablers/` and give it an
   Application execution metrics opt in separately with
   `OTEL_METRICS_EXPORTER=otlp`; see the
   [remote telemetry contract](enablers/remote-execution-telemetry.md) for native
-  parentage, metric resets and interpretation of incomplete exports.
+  parentage, metric resets and interpretation of incomplete exports, and
+  [serve phase telemetry](enablers/serve-phase-telemetry.md) for the phases of
+  worker enrollment, worker deletion, run-detail output resolution, output
+  retention and access-data polling.
 - **Self-update**: version check, integrity check, and OS-scheduled autoupdate
   (launchd / systemd / cron). `src/domain/update/`,
   `src/infrastructure/update/`.

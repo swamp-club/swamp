@@ -299,6 +299,134 @@ Deno.test("workflowValidate single: still not-found when no broken file matches"
   assertEquals(events[1].kind, "error");
 });
 
+// A file the loader skips for its name explains a not-found lookup
+// (swamp-club#3839).
+
+const MISNAMED = {
+  file: "/repo/workflows/plain.yaml",
+  name: "plain",
+  id: "550e8400-e29b-41d4-a716-446655440000",
+  message: "Not loaded: swamp only reads files named workflow-<name>.yaml " +
+    "in the workflows directory. Rename plain.yaml to workflow-<name>.yaml, " +
+    "or remove it if it is a stale copy of a workflow that already loads.",
+};
+
+Deno.test("workflowValidate single: not-found names a misnamed file that declares the workflow", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+    listBrokenWorkflows: () => Promise.resolve([]),
+    findMisnamedWorkflow: () => Promise.resolve(MISNAMED),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "plain",
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.code, "not_found");
+    assertEquals(
+      last.error.message,
+      `Workflow not found: plain\n${MISNAMED.message}`,
+    );
+  }
+});
+
+Deno.test("workflowValidate single: a broken file wins over a misnamed one", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+    listBrokenWorkflows: () => Promise.resolve([BROKEN]),
+    findMisnamedWorkflow: () =>
+      Promise.resolve({ ...MISNAMED, name: BROKEN.name }),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: BROKEN.name,
+    }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+});
+
+Deno.test("workflowValidate with byId ignores a misnamed file matched only by name", async () => {
+  const deps = makeDeps({
+    findWorkflowById: () => Promise.resolve(null),
+    findWorkflowByName: () => Promise.resolve(null),
+    findMisnamedWorkflow: () =>
+      Promise.resolve({ ...MISNAMED, name: MISNAMED.id, id: null }),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: MISNAMED.id,
+      byId: true,
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertEquals(last.error.message, `Workflow not found: ${MISNAMED.id}`);
+  }
+});
+
+Deno.test("createWorkflowValidateDeps: a misnamed file in the workflows dir is named without its path", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(workflowsDir, "plain.yaml"),
+      stringifyYaml(JSON.parse(JSON.stringify(
+        Workflow.create({
+          name: "plain",
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "example",
+                  task: StepTask.model("example-behavior", "run"),
+                }),
+              ],
+            }),
+          ],
+        }).toData(),
+      ))),
+    );
+    const deps = createWorkflowValidateDeps(
+      new YamlWorkflowRepository(dir),
+      undefined,
+      workflowsDir,
+    );
+
+    const events = await collect<WorkflowValidateEvent>(
+      workflowValidate(createLibSwampContext(), deps, {
+        workflowIdOrName: "plain",
+      }),
+    );
+
+    const last = events.at(-1);
+    assertEquals(last?.kind, "error");
+    if (last?.kind === "error") {
+      assertStringIncludes(
+        last.error.message,
+        "Workflow not found: plain\nNot loaded: swamp only reads files " +
+          "named workflow-<name>.yaml in the workflows directory. " +
+          "Rename plain.yaml to workflow-<name>.yaml",
+      );
+      assertEquals(last.error.message.includes(dir), false);
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
 // A file named after its workflow is read by the lookup itself, which then
 // throws its schema failure instead of returning null (swamp-club#3832).
 

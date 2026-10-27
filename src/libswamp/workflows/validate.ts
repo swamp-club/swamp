@@ -49,7 +49,12 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import { requiredArgumentNames } from "../../domain/models/required_arguments.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import { type BrokenWorkflow, listBrokenWorkflows } from "./broken_workflow.ts";
+import {
+  type BrokenWorkflow,
+  findMisnamedWorkflow,
+  listBrokenWorkflows,
+  type MisnamedWorkflow,
+} from "./broken_workflow.ts";
 import {
   findWorkflowById,
   findWorkflowByIdOrName,
@@ -137,6 +142,12 @@ export interface WorkflowValidateDeps {
    * backwards compatibility with callers that lack a workflows directory.
    */
   listBrokenWorkflows?: () => Promise<BrokenWorkflow[]>;
+  /**
+   * Finds a file the repository skips for its name that declares the given
+   * name or id, so a not-found error can say why (swamp-club#3839).
+   * Optional for the same reason as `listBrokenWorkflows`.
+   */
+  findMisnamedWorkflow?: (idOrName: string) => Promise<MisnamedWorkflow | null>;
 }
 
 /**
@@ -339,7 +350,11 @@ export function createWorkflowValidateDeps(
     findAllWorkflows: () => workflowRepo.findAll(),
     validate: (workflow) => validationService.validate(workflow),
     ...(workflowsDir
-      ? { listBrokenWorkflows: () => listBrokenWorkflows(workflowsDir) }
+      ? {
+        listBrokenWorkflows: () => listBrokenWorkflows(workflowsDir),
+        findMisnamedWorkflow: (idOrName: string) =>
+          findMisnamedWorkflow(workflowsDir, idOrName),
+      }
       : {}),
   };
 }
@@ -477,23 +492,29 @@ async function* validateSingle(
     // The file may exist but fail schema parsing, making it invisible to
     // the repository. Surface the parse error as a failed schema check
     // instead of a misleading "not found".
+    const matches = (file: { id: string | null; name: string | null }) =>
+      byId
+        ? file.id === workflowIdOrName &&
+          (expectedName === undefined || file.name === expectedName)
+        : file.id === workflowIdOrName || file.name === workflowIdOrName;
     if (deps.listBrokenWorkflows) {
-      const broken = (await deps.listBrokenWorkflows()).find(
-        (b) =>
-          byId
-            ? b.id === workflowIdOrName &&
-              (expectedName === undefined || b.name === expectedName)
-            : b.id === workflowIdOrName || b.name === workflowIdOrName,
-      );
+      const broken = (await deps.listBrokenWorkflows()).find(matches);
       if (broken) {
         yield { kind: "completed", data: toBrokenValidateData(broken) };
         return;
       }
     }
     if (schemaError) throw schemaError;
+    // A file declaring it under a name the loader skips explains the miss.
+    const misnamed = deps.findMisnamedWorkflow
+      ? await deps.findMisnamedWorkflow(workflowIdOrName)
+      : null;
+    const error = notFound("Workflow", workflowIdOrName);
     yield {
       kind: "error",
-      error: notFound("Workflow", workflowIdOrName),
+      error: misnamed && matches(misnamed)
+        ? { ...error, message: `${error.message}\n${misnamed.message}` }
+        : error,
     };
     return;
   }

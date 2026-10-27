@@ -107,8 +107,8 @@ function composeScore(
   }, docAnalysisError);
 }
 
-Deno.test("RUBRIC_VERSION is 5 (one scorer shared with the registry, swamp-club#3781)", () => {
-  assertEquals(RUBRIC_VERSION, 5);
+Deno.test("RUBRIC_VERSION is 6 (a locked range keeps the loose point, swamp-club#3970)", () => {
+  assertEquals(RUBRIC_VERSION, 6);
 });
 
 function factorsAllEarned(): LocalFactors {
@@ -505,7 +505,7 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
   // Universal platforms earns 2 + fast-check always earns 1 (deprecated).
   assertEquals(score.earnedPoints, 3);
   assertEquals(score.percentage, Math.floor((3 * 100) / 16));
-  assertEquals(score.rubricVersion, 5);
+  assertEquals(score.rubricVersion, 6);
   assertEquals(score.factors.length, 12);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
   assertEquals(byId.get("platforms")?.status, "earned");

@@ -20,8 +20,9 @@
 // @swamp-club/extension-scoring is the scoring logic swamp and the Swamp
 // Club registry share (swamp-club#3781). It is published to JSR for the
 // registry and for consumers on other runtimes, so it stays pure: it imports
-// only its own files and @std/semver, calls no runtime API, and swamp keeps
-// no second copy of what it moved there.
+// only its own files, @std/semver, @std/path and @babel/parser (the one
+// parser of extension source, swamp-club#3983), calls no runtime API, and
+// swamp keeps no second copy of what it moved there.
 
 import { assertEquals } from "@std/assert";
 import { walk } from "@std/fs/walk";
@@ -54,7 +55,14 @@ async function packageSourceFiles(): Promise<string[]> {
   return files.sort();
 }
 
-Deno.test("extension-scoring package: imports only its own files and @std/semver", async () => {
+// The packages the scorer may import, besides its own files.
+const PACKAGE_DEPENDENCIES = new Set([
+  "@std/semver",
+  "@std/path",
+  "@babel/parser",
+]);
+
+Deno.test("extension-scoring package: imports only its own files and its declared dependencies", async () => {
   const outside: string[] = [];
   for (const path of await packageSourceFiles()) {
     const source = codeLines(await Deno.readTextFile(path)).join("\n");
@@ -66,7 +74,7 @@ Deno.test("extension-scoring package: imports only its own files and @std/semver
         }
         continue;
       }
-      if (specifier === "@std/semver") continue;
+      if (PACKAGE_DEPENDENCIES.has(specifier)) continue;
       outside.push(`${repoRelative(path)} -> ${specifier}`);
     }
   }

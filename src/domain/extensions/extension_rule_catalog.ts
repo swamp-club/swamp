@@ -161,6 +161,25 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Map each bare name in the deno.json imports to an explicit npm:, jsr:, node: or URL specifier (such as npm:zod@4), or, in a package.json project, declare it as an npm registry dependency and install it in node_modules; push writes the specifier in its place in the shipped source. Or write the specifier in the source yourself, so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
   },
+  // Not acceptable: pull refuses a config, lock or package file in an
+  // archive, so push always leaves it out (swamp-club#3970).
+  {
+    id: "archive-project-file",
+    severity: "warning",
+    scope: "extension",
+    acceptable: false,
+    remediation:
+      "Remove the file from additionalFiles, include or the kind directory. The archive's source ships every npm: and jsr: import pinned to the exact version its bundle holds, so consumers need no deno.json, lock or package.json.",
+  },
+  // Not acceptable: the lock rule is mechanical (swamp-club#3970).
+  {
+    id: "package-lock-mismatch",
+    severity: "warning",
+    scope: "extension",
+    acceptable: false,
+    remediation:
+      "Run npm install so node_modules matches package-lock.json, then push again. Until it does, a range package.json declares costs the loose-specifier point unless a deno.lock fixes it.",
+  },
   // ── File-scoped (appended by push) ──────────────────────────────────
   // Not acceptable: the registry cannot list the model however the author
   // justifies it, and the fix is mechanical (swamp-club#2486).

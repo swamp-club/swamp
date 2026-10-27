@@ -24,7 +24,17 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { UserError } from "../../domain/errors.ts";
 import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
-import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+  withObservedSpans,
+} from "../tracing/span_test_helpers.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import { type RecordFingerprint, statRecord } from "./workflow_run_index.ts";
 
 const TYPE = ModelType.create("test/a");
@@ -419,5 +429,47 @@ Deno.test("AutoDefinitionNameIndex.find: a name-derived file rewritten in place 
     // A lookup of the name it declared before reads it, and sees the change.
     assertEquals(await index.find("plain"), null);
     assertEquals((await index.find("renamed"))?.path, path);
+  });
+});
+
+Deno.test("AutoDefinitionNameIndex.find: the lookup that queued a check counts it, and one that joined it says so", async () => {
+  await withTempDir(async (dir) => {
+    const { typeDir, index } = await fixture(dir);
+    await writeDefinition(typeDir, "a.yaml", "a");
+    await writeDefinition(typeDir, `${crypto.randomUUID()}.yaml`, "legacy");
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("enrollment", () => {
+        const lookup = (label: string) =>
+          observeDiagnosticPhase(
+            "definition_scan",
+            { "swamp.diagnostic.scan_root": label },
+            () => index.find("legacy"),
+          );
+        // Both ask before the queued check starts, so the second joins it.
+        return Promise.all([lookup("first"), lookup("second")]);
+      });
+      const [first, second] = ["first", "second"].map((label) =>
+        diagnosticPhases(spans, "definition_scan").find((span) =>
+          span.attributes["swamp.diagnostic.scan_root"] === label
+        )!
+      );
+      assertEquals(first.attributes["swamp.diagnostic.index_checks_run"], 1);
+      assertEquals(first.attributes["swamp.diagnostic.index_relists"], 1);
+      assertEquals(first.attributes["swamp.diagnostic.index_entries"], 2);
+      assertEquals(
+        first.attributes["swamp.diagnostic.index_checks_joined"],
+        undefined,
+      );
+      assertEquals(
+        second.attributes["swamp.diagnostic.index_checks_joined"],
+        1,
+      );
+      assertEquals(
+        second.attributes["swamp.diagnostic.index_checks_run"],
+        undefined,
+      );
+      const check = findSpan(spans, "swamp.definition.name_index.validate");
+      assertEquals(isChildOf(check, first), true);
+    });
   });
 });

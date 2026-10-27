@@ -667,7 +667,8 @@ independent parts, so a failure in one never skips the other:
 - **Workers and tokens.** It prunes worker records disconnected for longer than
   the grace period, then removes their stale bindings from enrollment tokens
   with the `prune_bindings` method. `swamp worker prune` is the CLI
-  equivalent.
+  equivalent. Both export the prune's stages as `worker_delete` phases (see
+  [serve phase telemetry](./serve-phase-telemetry.md#worker-deletion)).
 - **Step leases and pending dispatches.** It deletes every ended record — a
   lease that is `completed`, `failed` or `expired`, a dispatch that is
   `dispatched`, `timed_out`, `cancelled` or `orphaned` — whose `endedAt` is

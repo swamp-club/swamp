@@ -332,9 +332,7 @@ function isZodChain(value: AstNode | undefined): value is AstNode {
 function parsedSensitiveFields(
   source: ReviewSource,
 ): Map<number, boolean> | null {
-  const program = parseExtensionSource(source.content, {
-    jsx: [".tsx", ".jsx"].includes(extname(source.path)),
-  });
+  const program = parseExtensionSource(source.content, { path: source.path });
   if (!program) return null;
   const lineIndex = new LineIndex(source.content);
   const marked = new Map<number, boolean>();
