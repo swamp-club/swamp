@@ -358,6 +358,16 @@ function named(spans: OtlpSpan[], phase: string): OtlpSpan[] {
   return spans.filter((s) => s.name === `swamp.diagnostic.${phase}`);
 }
 
+/**
+ * `spans` ordered by the string attribute `key`. Each span is its own export
+ * request, so the collector receives them in no fixed order.
+ */
+function sortedBy(spans: OtlpSpan[], key: string): OtlpSpan[] {
+  return spans.toSorted((a, b) =>
+    (str(a, key) ?? "").localeCompare(str(b, key) ?? "")
+  );
+}
+
 function byId(spans: OtlpSpan[], id: string | undefined): OtlpSpan | undefined {
   return spans.find((s) => s.spanId === id);
 }
@@ -411,7 +421,10 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
   const run = workerRun(created);
   const prepare = named(run, "prepare");
   assertEquals(prepare.length, 1);
-  const lookups = named(run, "definition_lookup");
+  const lookups = sortedBy(
+    named(run, "definition_lookup"),
+    "swamp.diagnostic.lookup_attempt",
+  );
   assertEquals(
     lookups.map((s) => [
       str(s, "swamp.diagnostic.lookup_attempt"),
@@ -440,9 +453,12 @@ Deno.test("enrollment phases: new and existing workers export their lookups, loc
   // Each miss scanned the primary root and asked the name index; the scans
   // inherit their lookup's attempt label.
   for (const lookup of lookups) {
-    const scans = run.filter((s) =>
-      s.name === "swamp.diagnostic.definition_scan" &&
-      s.parentSpanId === lookup.spanId
+    const scans = sortedBy(
+      run.filter((s) =>
+        s.name === "swamp.diagnostic.definition_scan" &&
+        s.parentSpanId === lookup.spanId
+      ),
+      "swamp.diagnostic.scan_strategy",
     );
     assertEquals(
       scans.map((s) => [
@@ -593,7 +609,10 @@ Deno.test("enrollment phases: a worker that cancels before the server finishes i
     true,
   );
   // The wait ended after the cancel; the scan before it did not see it.
-  const [initial] = named(run, "definition_lookup");
+  const initial = named(run, "definition_lookup").find((s) =>
+    str(s, "swamp.diagnostic.lookup_attempt") === "initial"
+  );
+  assert(initial, "the initial lookup");
   assertEquals(
     attribute(initial, "swamp.diagnostic.cancel_observed")?.boolValue,
     false,
