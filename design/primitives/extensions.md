@@ -1254,14 +1254,14 @@ links are refused for the whole archive already. The source scan is unchanged.
 
 A finding is attributed to the module whose boundary is the closest one above
 it (`BundleModuleMap`). esbuild writes a path comment (`// <path>`, verbatim,
-spaces included) above each module. Every line comment at column 0 other than
-an annotation (`@__NO_SIDE_EFFECTS__`), a `#` directive or a legal comment is a
-boundary, so a module comment the pattern does not recognize (an unusual
-extension, a path broken by a newline in a file name) still ends the module
-above it, and its code counts as the extension's own. When the bundle parses,
-the comments come from the parser's comment list, so comment-like text in a
-string cannot start a module, and lines are counted by `\n` from each
-comment's offset, as the safety rules count them.
+spaces included) above each module. Every line comment at column 0 is a
+boundary, except an annotation (`@__NO_SIDE_EFFECTS__`), a `#` directive, or a
+legal comment starting with `!` or `@license`. So a module comment the pattern
+does not recognize (an unusual extension, a path broken by a newline in a file
+name) still ends the module above it, and its code counts as the extension's
+own. When the bundle parses, the comments come from the parser's comment list,
+so comment-like text in a string cannot start a module, and lines are counted
+by `\n` from each comment's offset, as the safety rules count them.
 
 A module whose path is in a Deno or npm cache, under `node_modules`, or at a
 remote specifier is a dependency. Its findings are pull warnings, one per
@@ -1278,7 +1278,11 @@ An archive bundle's comments are the publisher's text. A publisher can put a
 dependency's path above their own code and turn its findings into warnings.
 That gap is accepted until the bundle hash push records for swamp-club#3972,
 and later signing, tie the bundle to its source. The rebuilt-bundle scan does
-not have the gap.
+not have the gap: its comments are written by this machine's esbuild, and a
+rebuilt bundle that does not parse counts as the extension's own throughout,
+since without a parse a module comment cannot be told from text in a string.
+Code in a real npm or remote dependency, chosen by the author, still only
+warns in either scan: findings in dependency code are reported, not refused.
 
 Two gaps remain outside this scan (swamp-club#3996): an archive bundle can
 import a file the scan does not read (a sibling under `bundles/`, or a file

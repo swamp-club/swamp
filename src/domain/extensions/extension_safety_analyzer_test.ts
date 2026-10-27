@@ -922,8 +922,8 @@ Deno.test("analyzeBundleSafety: in a bundle without module comments every findin
   assertEquals(result.errors.length, 1);
   assertStringIncludes(
     result.errors[0].message,
-    "The bundle has no module comments, so all of its code counts as the " +
-      "extension's own; it contains eval()",
+    "The bundle has no module comments, so all of its code is treated as " +
+      "the extension's own. It contains eval()",
   );
 });
 
@@ -970,4 +970,24 @@ Deno.test("analyzeBundleSafety: a module path's control characters are escaped a
   assertEquals(result.errors[0].message.includes("\x1b"), false);
   assertStringIncludes(result.errors[1].message, `${long.slice(0, 200)}...`);
   assertEquals(result.errors[1].message.includes(long), false);
+});
+
+Deno.test("analyzeBundleSafety: a bundle built here that does not parse is the extension's own throughout", () => {
+  const result = analyzeBundleSafety(
+    [
+      "// .swamp/pulled-extensions/@x/y/models/thing.ts",
+      "const text = `",
+      "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+      "`; const broken = eval('1') +;",
+    ].join("\n"),
+    "bundle rebuilt from models/thing.ts",
+    { isExtensionModule: () => false },
+  );
+  assertEquals(result.dependencyIssues, []);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "The bundle does not parse, so all of its code is treated as the " +
+      "extension's own. It contains eval()",
+  );
 });

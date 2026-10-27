@@ -55,8 +55,9 @@ const MODULE_COMMENT =
 
 // Line comments esbuild keeps that are not module boundaries: annotations
 // (`@__NO_SIDE_EFFECTS__`), `#` directives (`# sourceMappingURL`), and legal
-// comments (`//!`, `@license`, `@preserve`).
-const ANNOTATION = /^\s*[@#!]|@(?:license|preserve)\b/i;
+// comments that start with `!`, `@license` or `@preserve`. Anchored, so other
+// text that merely mentions a license is still a boundary.
+const ANNOTATION = /^\s*[@#!]/;
 
 const DEPENDENCY_PATH = new RegExp(
   [

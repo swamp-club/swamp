@@ -355,8 +355,8 @@ Deno.test("extension pull: a bundle without module comments holding eval is refu
   );
   assertStringIncludes(
     message,
-    "The bundle has no module comments, so all of its code counts as the " +
-      "extension's own; it contains eval()",
+    "The bundle has no module comments, so all of its code is treated as " +
+      "the extension's own. It contains eval()",
   );
 });
 

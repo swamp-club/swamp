@@ -552,7 +552,8 @@ function printableModulePath(path: string): string {
  * @param options.isExtensionModule - Says a module path is the extension's
  *   own even where it reads like a dependency's. A bundle built on this
  *   machine knows where the extension is installed; a module there under a
- *   `node_modules` directory is still the extension's code.
+ *   `node_modules` directory is still the extension's code. Given only for
+ *   such a bundle, which is then attributed through parsed comments alone.
  */
 export function analyzeBundleSafety(
   source: string,
@@ -562,8 +563,13 @@ export function analyzeBundleSafety(
   const parsed = parseExtensionSourceWithComments(source);
   const findings = findDynamicCodeExecution(source, parsed?.program ?? null);
   if (findings.length === 0) return { errors: [], dependencyIssues: [] };
+  // Without a parse, module comments cannot be told from text in a string.
+  // A bundle built here may only be attributed through real comments, so an
+  // unparsed one counts as the extension's own throughout.
   const modules = parsed
     ? BundleModuleMap.fromComments(source, parsed.comments)
+    : options.isExtensionModule
+    ? BundleModuleMap.fromText("")
     : BundleModuleMap.fromText(source);
 
   // Grouped by module, in the order each module's first finding appears.
@@ -608,8 +614,11 @@ export function analyzeBundleSafety(
       ? `Module ${printableModulePath(group.path)}`
       : modules.moduleCount > 0
       ? "Code above the bundle's first module"
-      : "The bundle has no module comments, so all of its code counts as " +
-        "the extension's own; it";
+      : parsed
+      ? "The bundle has no module comments, so all of its code is treated " +
+        "as the extension's own. It"
+      : "The bundle does not parse, so all of its code is treated as the " +
+        "extension's own. It";
     errors.push(issue(
       "dynamic-code",
       bundleFile,
