@@ -857,6 +857,7 @@ Deno.test("isRepoScopedCommand: repo-less commands and repo init are not repo-sc
       "config",
       "issue",
       "subscription",
+      "inbox",
       "telemetry",
       "update",
       "start",

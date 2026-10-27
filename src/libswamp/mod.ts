@@ -88,6 +88,20 @@ export {
   type SubscriptionStartResult,
 } from "./subscription/start.ts";
 
+// Inbox operations
+export {
+  createInboxListDeps,
+  type CreateInboxListDepsOptions,
+  DEFAULT_INBOX_LIST_LIMIT,
+  inboxList,
+  type InboxListDeps,
+  type InboxListEvent,
+  type InboxListInput,
+  type InboxListItem,
+  type InboxListView,
+  MAX_INBOX_LIST_LIMIT,
+} from "./inbox/list.ts";
+
 // Workflow operations
 export {
   extractStepArtifacts,

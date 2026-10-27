@@ -77,7 +77,10 @@ export interface InboxMessagePage {
    * server that drifts from it shows up instead of losing messages silently.
    */
   readonly dropped: number;
-  /** Pass as `before` to fetch the next page; null on the last page. */
+  /**
+   * The oldest listed message's id, upper-case ULID: pass as `before` to fetch
+   * the next page. Null on the last page.
+   */
   readonly nextCursor: string | null;
 }
 
@@ -117,9 +120,12 @@ const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // Every C0 and C1 control except tab (\x09) and newline (\x0a).
 // deno-lint-ignore no-control-regex
 const BODY_CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
-// deno-lint-ignore no-control-regex
-const CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/;
 const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
+
+/** Whether the text is a message id: a ULID, in either case. */
+export function isInboxMessageId(text: string): boolean {
+  return ULID_RE.test(text);
+}
 
 /**
  * Makes a markdown body safe to print: strips ANSI escape sequences and
@@ -228,7 +234,9 @@ const summarySchema = z.object({
 
 const pageSchema = z.object({
   messages: z.array(z.unknown()),
-  nextCursor: z.string().refine((s) => !CONTROL_RE.test(s)).nullable(),
+  // A message id, so the older-page command swamp suggests holds no server
+  // text but a ULID.
+  nextCursor: ulid.nullable(),
 });
 
 const readSchema = z.object({ read: z.array(z.unknown()) });
