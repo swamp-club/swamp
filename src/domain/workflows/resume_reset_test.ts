@@ -873,6 +873,34 @@ Deno.test("planFailedRunResume: refuses to re-run a step that reads the steps ma
   );
 });
 
+Deno.test("planFailedRunResume: refuses to re-run a step that reads a forEach iteration name stored in more than one job", () => {
+  const wf = workflow(["host-a", "host-b"].map((name) => ({
+    name,
+    steps: [
+      each("fetch"),
+      reading("deploy", "${{ steps['fetch-prod'].output }}", ["fetch"]),
+    ],
+  })));
+  const run = WorkflowRun.create(wf);
+  run.start();
+  for (const job of run.jobs) {
+    job.replaceExpandedSteps("fetch", ["fetch-prod"]);
+    job.getStep("fetch-prod")!.succeed();
+    if (job.jobName === "host-a") {
+      job.getStep("deploy")!.fail("exit 1");
+      job.fail();
+    } else {
+      job.getStep("deploy")!.succeed();
+      job.succeed();
+    }
+  }
+  run.complete();
+  assertStringIncludes(
+    refusal(wf, run),
+    `Step "deploy" in job "host-a" reads steps.fetch-prod, and a step named "fetch-prod" is in more than one job`,
+  );
+});
+
 Deno.test("planFailedRunResume: re-runs a step that reads only a step name used in one job", () => {
   const wf = workflow([
     {

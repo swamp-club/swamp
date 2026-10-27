@@ -2120,7 +2120,9 @@ the job or step and points to `swamp workflow history logs <id>`
    read another job's output. A retry or `--from` therefore refuses, with
    `Start a new run.`, when a step it would re-run reads `steps.<name>` for a
    name used in more than one job, or reads the `steps` map by a computed key
-   or whole while any name is shared (`sharedStepRead` in
+   or whole while any name is shared. A name is used in a job when the
+   workflow job has the step or the stored job has a record of it, so a
+   `forEach` iteration name two jobs both stored counts (`sharedStepRead` in
    `src/domain/workflows/resume_reset.ts`).
 7. Step and job names hold any printable character, with space as the only
    whitespace: the schema refuses control characters, tab and newline

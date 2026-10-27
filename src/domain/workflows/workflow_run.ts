@@ -1333,11 +1333,12 @@ export interface StepRunRef {
 }
 
 /**
- * A string that identifies a step of a job. Job and step names cannot hold a
- * control character, so the NUL separator keeps distinct pairs distinct.
+ * A string that identifies a step of a job. JSON quotes both names, so no
+ * character either holds (an evaluated job name can hold any) makes two
+ * distinct pairs share a key.
  */
 export function stepRunKey(ref: StepRunRef): string {
-  return `${ref.jobName}\0${ref.stepName}`;
+  return JSON.stringify([ref.jobName, ref.stepName]);
 }
 
 /**
