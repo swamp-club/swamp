@@ -122,9 +122,10 @@ export function specifierKey(
 /**
  * The `npm:` and `jsr:` dependencies a module writes out in import
  * position: static, side-effect and dynamic imports and re-exports, read
- * with comments and template literals blanked and string literals read as
- * tokens, so a commented-out import or a specifier-shaped string is never
- * audited. Each appears once, in source order.
+ * from the module's syntax tree (`sourceFile` picks TypeScript or
+ * JavaScript), so a commented-out import or a specifier-shaped string is
+ * never audited. A module that does not parse writes none. Each appears
+ * once, in source order.
  */
 export function writtenSpecifiers(
   source: string,
@@ -132,7 +133,7 @@ export function writtenSpecifiers(
 ): DependencySpecifier[] {
   const seen = new Set<string>();
   const results: DependencySpecifier[] = [];
-  for (const raw of importedSpecifiers(source)) {
+  for (const raw of importedSpecifiers(source, { path: sourceFile })) {
     const parsed = parseSpecifier(raw);
     if (!parsed) continue;
     const key = specifierKey(parsed);

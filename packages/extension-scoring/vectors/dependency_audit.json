@@ -1,5 +1,5 @@
 {
-  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Shipped in @swamp-club/extension-scoring as vectors/dependency_audit.json; swamp and the registry both test against the package's copy. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier (`expect`) and the registry's scorecard stores (`scorecard`), given npm's packument (`npm`; absent means npm answers 404, `npmStatus` an error status), JSR's meta.json (`jsr`) and OSV's answer (`osv`; absent means no vulnerabilities). The packument's `time.modified` is the moment the test runs, and weekly downloads are 50,000. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier`, 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency. `installed`, on a resolution or record vector, is the version a package.json project holds in node_modules (swamp-club#3630). `record`: the dependency-audit.json entry push writes for one import (swamp-club#3662); `source` says how the source wrote it (`written` as npm:/jsr:, `import-map` as a bare import the Deno config resolves, `package-json` as a bare import resolved to the installed package), `spec` is the version the audit reads (for `package-json`, the range package.json declares, or the installed version when it declares none), and `expect` is the entry, or null when none is written. The entry's `spec` is what the shipped source writes after `@`: package.json-mode imports ship pinned to the installed version. `recordEntries`: whether the registry uses a record entry as the version that ships (`use`) or ignores it and resolves the dependency itself (`ignore`): it uses one only when the registry is npm or jsr, the version is a plain semver (no `v` or `=`), the spec admits it (an exact spec names it, a range contains it, a dist-tag or no spec admits any version), and `published` lists it.",
+  "about": "Shared vectors for the dependency audit (swamp-club#3352 push, swamp-club#3353 scorecard, swamp-club#3354 and swamp-club#3682 scoring). Shipped in @swamp-club/extension-scoring as vectors/dependency_audit.json; swamp and the registry both test against the package's copy. `resolution`: the version that ships for a specifier; `locked` lists every version a lockfile records for the package, `lockedFor` the version it records for this specifier itself. `findings`: the exact findings push reports for one specifier (`expect`) and the registry's scorecard stores (`scorecard`), given npm's packument (`npm`; absent means npm answers 404, `npmStatus` an error status), JSR's meta.json (`jsr`) and OSV's answer (`osv`; absent means no vulnerabilities). The packument's `time.modified` is the moment the test runs, and weekly downloads are 50,000. Each expected finding's `pointsLost` is what it alone costs the rubric's 2-point dependency-trust factor: 2 for every error, `not-audited`, `deprecated-version` and `jsr-yanked`, 1 for `loose-specifier`, 0 otherwise. Push only warns on the warning causes. `scoring`: the factor's earned points (0, 1 or 2) for a combination of findings: any finding costing 2 gives 0; otherwise any loose finding gives 1, however many; otherwise 2. `loose-specifier` findings count per distinct dependency. `installed`, on a resolution or record vector, is the version a package.json project holds in node_modules (swamp-club#3630). `record`: the dependency-audit.json entry push writes for one import (swamp-club#3662); `source` says how the source wrote it (`written` as npm:/jsr:, `import-map` as a bare import the Deno config resolves, `package-json` as a bare import resolved to the installed package), `spec` is the version the audit reads (for `package-json`, the range package.json declares, or the installed version when it declares none), and `expect` is the entry, or null when none is written. The entry's `spec` is what the shipped source writes after `@`: package.json-mode imports ship pinned to the installed version. `recordEntries`: whether the registry uses a record entry as the version that ships (`use`) or ignores it and resolves the dependency itself (`ignore`): it uses one only when the registry is npm or jsr, the version is a plain semver (no `v` or `=`), the spec admits it (an exact spec names it, a range contains it, a dist-tag or no spec admits any version), and `published` lists it. `written`: the npm: and jsr: dependencies a code module writes (swamp-club#3983), read from its syntax tree: `path` picks TypeScript, JavaScript or JSX, and `expect` lists each dependency once, in source order. A module that does not parse writes none.",
   "resolution": [
     {
       "name": "exact pin",
@@ -1832,6 +1832,105 @@
         "2.1.3"
       ],
       "expect": "ignore"
+    }
+  ],
+  "written": [
+    {
+      "name": "every import form",
+      "path": "extensions/models/m.ts",
+      "source": "import a from \"npm:a@1.0.0\";\nimport \"npm:side@2.0.0\";\nexport { b } from \"jsr:@s/b@1.0.0\";\nexport * from \"npm:star@1.0.0\";\nconst c = await import(\"npm:c@1.0.0\");\ntype D = typeof import(\"npm:d@1.0.0\");\nexport const all = [a, c];\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "a",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "side",
+          "version": "2.0.0"
+        },
+        {
+          "registry": "jsr",
+          "name": "@s/b",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "star",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "c",
+          "version": "1.0.0"
+        },
+        {
+          "registry": "npm",
+          "name": "d",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "text that is not an import",
+      "path": "extensions/models/m.ts",
+      "source": "// import x from \"npm:comment@1.0.0\";\n/* import y from \"npm:block@1.0.0\"; */\nexport const s = \"import z from 'npm:string@1.0.0'\";\nexport const t = `import w from \"npm:template@1.0.0\"`;\nexport const r = /import v from \"npm:regex@1.0.0\"/;\nexport const dyn = (n: string) => import(`npm:${n}`);\n",
+      "expect": []
+    },
+    {
+      "name": "a quote in a regex literal before an import on the same line",
+      "path": "extensions/models/m.ts",
+      "source": "export const quoted = /\"/.test(\"x\"); import ms from \"npm:ms@2.1.3\";\n\nexport const model = [quoted, ms];\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "ms",
+          "version": "2.1.3"
+        }
+      ]
+    },
+    {
+      "name": "a backtick in a regex literal in bundled JavaScript",
+      "path": "extension/bundles/m.js",
+      "source": "var TOKEN = /^[!#$%&*+.^_`|~0-9A-Za-z-]+$/;\nimport { parse } from \"jsr:@std/csv@1.0.6\";\nimport https from \"node:https\";\nvar message = `bad token`;\nexport { https, message, parse, TOKEN };\n",
+      "expect": [
+        {
+          "registry": "jsr",
+          "name": "@std/csv",
+          "version": "1.0.6"
+        }
+      ]
+    },
+    {
+      "name": "JavaScript the TypeScript plugin misreads",
+      "path": "extension/bundles/m.js",
+      "source": "var a = 1, b = 2;\nvar pick = a ? (b) : c => c;\nimport x from \"npm:x@1.0.0\";\nexport { pick, x };\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "x",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "name": "a module that does not parse",
+      "path": "extensions/models/m.ts",
+      "source": "import value from \"npm:vecpkg@1.0.0\";\n\nexport const broken = ;\n",
+      "expect": []
+    },
+    {
+      "name": "each dependency once",
+      "path": "extensions/models/m.ts",
+      "source": "import a from \"npm:a@1.0.0\";\nexport { a };\nexport const again = () => import(\"npm:a@1.0.0\");\n",
+      "expect": [
+        {
+          "registry": "npm",
+          "name": "a",
+          "version": "1.0.0"
+        }
+      ]
     }
   ]
 }

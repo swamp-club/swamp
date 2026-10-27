@@ -13,13 +13,15 @@ the same score on both sides.
 | `./secret-docs`      | Documentation that handles a secret in plaintext, and which files      |
 | `./dependency-audit` | The `npm:` and `jsr:` dependency trust audit and its 2/1/0 points      |
 | `./doc-failure`      | Why `deno doc` could not analyse a source, in one sentence             |
-| `./source`           | Reading import specifiers from source without parsing it               |
+| `./source`           | Parsing extension source, and the import specifiers a module writes    |
 | `./vectors/*.json`   | Shared test vectors: every consumer runs them and must get the results |
 
 The package does no I/O and uses no runtime APIs. The caller extracts the
 archive, lists and reads its files, runs `deno doc`, and fetches from npm, OSV
-and JSR; the package decides what those answers mean. Its only dependency is
-`@std/semver`.
+and JSR; the package decides what those answers mean. It parses extension source
+with `@babel/parser`, one configuration for every reader, so a module reads the
+same to the CLI and the registry; its other dependencies are `@std/semver` and
+`@std/path`.
 
 ## Use from Deno
 

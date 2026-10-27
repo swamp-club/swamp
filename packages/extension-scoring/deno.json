@@ -18,7 +18,9 @@
     "./vectors/dependency-audit.json": "./vectors/dependency_audit.json"
   },
   "imports": {
+    "@babel/parser": "npm:@babel/parser@^7.29.7",
     "@std/assert": "jsr:@std/assert@^1.0.19",
+    "@std/path": "jsr:@std/path@^1.1.4",
     "@std/semver": "jsr:@std/semver@^1.0.8",
     "fast-check": "npm:fast-check@^3.23.2"
   },

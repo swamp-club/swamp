@@ -178,7 +178,7 @@ Deno.test("detectExtensionProject: a Deno config wins over a package.json", asyn
   });
 });
 
-Deno.test("detectExtensionProject: a package.json is the project only when an entry point imports a bare name with from", async () => {
+Deno.test("detectExtensionProject: a package.json is the project only when an entry point imports a bare name", async () => {
   await withTempDir(async (dir) => {
     const entry = join(dir, "extensions", "models", "m.ts");
     await Deno.mkdir(join(dir, "extensions", "models"), { recursive: true });
@@ -196,9 +196,17 @@ Deno.test("detectExtensionProject: a package.json is the project only when an en
     assertEquals(await detect(), {});
     assertEquals(extensionProjectMode({}), "none");
 
-    // Only an import with `from` counts, as it always has
-    // (swamp-club#3983 widens this).
+    // Every import form counts: side-effect, dynamic and `from`
+    // (swamp-club#3983).
     await Deno.writeTextFile(entry, 'import "ms";\n');
+    assertEquals(await detect(), { packageJsonDir: dir });
+    await Deno.writeTextFile(entry, 'export const m = () => import("ms");\n');
+    assertEquals(await detect(), { packageJsonDir: dir });
+    // A bare name only in a comment or string is not an import.
+    await Deno.writeTextFile(
+      entry,
+      '// import ms from "ms";\nconst s = "ms";\n',
+    );
     assertEquals(await detect(), {});
     await Deno.writeTextFile(entry, 'import ms from "ms";\n');
     const project = await detect();

@@ -44,6 +44,7 @@ import {
   scorecardResult,
   type SpecifierAudit,
   specifierKind,
+  writtenSpecifiers,
 } from "../dependency_audit/mod.ts";
 
 // The registry's path through the shared evaluator: no fetching, the
@@ -319,6 +320,28 @@ for (const sc of scoring) {
           .length,
       }),
       sc.earnedPoints,
+    );
+  });
+}
+
+const written = vectors.written as {
+  name: string;
+  path: string;
+  source: string;
+  expect: { registry: DependencyRegistry; name: string; version: string }[];
+}[];
+
+for (const w of written) {
+  Deno.test(`dependency audit vectors: reads ${w.name}`, () => {
+    assertEquals(
+      writtenSpecifiers(w.source, w.path).map((
+        { registry, name, version },
+      ) => ({
+        registry,
+        name,
+        version,
+      })),
+      w.expect,
     );
   });
 }
