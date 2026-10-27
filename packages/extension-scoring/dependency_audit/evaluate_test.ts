@@ -395,6 +395,7 @@ Deno.test("evaluateJsrPackage: under a v2 record a listed exact version still sh
   const record = canonicalRecordedVersions({
     recordVersion: 2,
     bundles: {},
+    bundleFormat: 1,
     dependencies: [{
       registry: "jsr",
       name: "@std/assert",

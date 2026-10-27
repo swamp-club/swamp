@@ -216,6 +216,7 @@ export const SERVE_UPSTREAM_COMMANDS: Readonly<
   extension: { applies: true, reason: APPLIES },
   "first-rule": { applies: true, reason: NO_REPO },
   help: { applies: true, reason: NO_REPO },
+  inbox: { applies: true, reason: NO_REPO },
   invite: { applies: true, reason: NO_REPO },
   issue: { applies: true, reason: NO_REPO },
   model: { applies: true, reason: APPLIES },
