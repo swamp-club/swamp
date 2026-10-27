@@ -32,16 +32,24 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "npm",
         "name": "vecpkg",
         "spec": "1.0.0",
         "version": "1.0.0",
-        "from": "installed"
+        "from": "installed",
+        "locked": false,
+        "writtenAs": [
+          "vecpkg"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {
@@ -56,7 +64,7 @@
   "trust": {
     "errors": [],
     "warnings": [
-      "vecpkg [loose-specifier]: npm:vecpkg@^1.0.0 is a range; audited 1.0.0, the version this push resolves (installed in node_modules) (imported as \"vecpkg\" through package.json)"
+      "vecpkg [loose-specifier]: no lock: ^1.0.0 resolved to 1.0.0 today; commit a lock or pin exact versions (costs 1 point) (imported as \"vecpkg\" through package.json)"
     ]
   },
   "reviewWarnings": [

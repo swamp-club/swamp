@@ -357,12 +357,18 @@ export function rewriteZodImports(js: string, origin?: string): string {
  * A package.json project's node_modules is read as installed
  * (`--node-modules-dir=manual`) rather than managed by Deno, which would add
  * its own `node_modules/.deno/` tree to it (swamp-club#3630).
+ *
+ * With `noConfig` and no project, `--no-config` stops Deno discovering a
+ * deno.json from the working directory, so a config in the consumer's repo
+ * never applies its import map to pulled source (swamp-club#3970). A
+ * project's own config wins over `noConfig`.
  */
 export function denoProjectArgs(
   options?: {
     denoConfigPath?: string;
     packageJsonDir?: string;
     readOnlyLock?: ReadOnlyLock;
+    noConfig?: boolean;
   },
 ): string[] {
   const project = options?.denoConfigPath
@@ -370,7 +376,13 @@ export function denoProjectArgs(
     : options?.packageJsonDir
     ? ["--node-modules-dir=auto"]
     : undefined;
-  if (!project) return ["--no-lock", "--node-modules-dir=none"];
+  if (!project) {
+    return [
+      ...(options?.noConfig ? ["--no-config"] : []),
+      "--no-lock",
+      "--node-modules-dir=none",
+    ];
+  }
   if (!options?.readOnlyLock) return project;
   return [
     ...(options.denoConfigPath ? project : ["--node-modules-dir=manual"]),
@@ -516,6 +528,15 @@ export interface BundleOptions {
    * does not.
    */
   readOnlyLock?: ReadOnlyLock;
+
+  /**
+   * Read no Deno config the working directory would supply (`--no-config`)
+   * when there is no project (neither `denoConfigPath` nor
+   * `packageJsonDir`). Set for rebuilds of pulled extension source, so a
+   * deno.json in the consumer's repo never resolves its imports
+   * (swamp-club#3970). Ignored with a project.
+   */
+  noConfig?: boolean;
 
   /**
    * Environment variables for the subprocess. When provided, the bundler

@@ -39,9 +39,11 @@ import {
 /**
  * The rubric's version. Every score records it; a rule change that can move
  * a score bumps it so stored scores say which rules made them. v5: one
- * shared scorer for the CLI and the registry (swamp-club#3781).
+ * shared scorer for the CLI and the registry (swamp-club#3781). v6: a
+ * non-exact dependency spec costs the loose point only when no valid lock
+ * fixed its version (swamp-club#3970).
  */
-export const RUBRIC_VERSION = 5;
+export const RUBRIC_VERSION = 6;
 
 /**
  * Status of one scorecard row.

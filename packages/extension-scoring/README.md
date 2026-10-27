@@ -58,6 +58,24 @@ import vectors from "jsr:@swamp-club/extension-scoring/vectors/rubric.json" with
 };
 ```
 
+## Dependency audit record
+
+Push writes `dependency-audit.json` beside `manifest.yaml`. Since
+swamp-club#3970 it is `recordVersion: 2`: the archive's source names every
+`npm:` and `jsr:` import at one exact version (the canonical shipped form,
+checked by `canonicalShippedSpecifierIssue`), and the record lists each shipped
+package version with how it was chosen (`from`, `locked`, `writtenAs`), a
+SHA-256 of each bundle, and the code from outside npm and JSR the bundles hold
+(`unaudited`). `buildDependencyAuditRecordV2`,
+`serializeDependencyAuditRecordV2` and `parseDependencyAuditRecordV2` write and
+read it; `parseDependencyAuditRecord` still reads archives pushed with
+`recordVersion: 1` and reads a v2 record as no record. The `recordV2` and
+`canonical` sections of `vectors/dependency_audit.json` pin both.
+
+A non-exact specifier (range, dist-tag, unpinned) costs the dependency factor's
+loose point only when no valid lock fixed its version: pinning exact versions
+and committing a lock score the same.
+
 ## Versions
 
 Published from `packages/extension-scoring` in the swamp repository on every

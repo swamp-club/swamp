@@ -22,7 +22,6 @@
   "archive": [
     "bundles/m.js",
     "dependency-audit.json",
-    "files/deno.json",
     "manifest.yaml",
     "models/m.ts"
   ],
@@ -33,16 +32,24 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "npm",
         "name": "vecpkg",
         "spec": "1.0.0",
         "version": "1.0.0",
-        "from": "exact"
+        "from": "exact",
+        "locked": false,
+        "writtenAs": [
+          "vecpkg"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {
@@ -59,6 +66,7 @@
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
+    "archive-project-file: deno.json is a Deno config, lock or package file, so push leaves it out of the archive: the archive's source ships every dependency pinned instead.",
     "uncatalogued-model: Behavior export is not a plain export const model = { ... } object literal, so the registry catalog will not list this behavior type. The extension still installs and the behavior still runs."
   ],
   "gateFailures": [],

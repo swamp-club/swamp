@@ -192,6 +192,8 @@ export interface ArchiveSnapshot {
   files: string[];
   manifest: string;
   sha256: Record<string, string>;
+  /** The dependency audit record, each bundle hash replaced by its path. */
+  auditRecord: unknown;
 }
 
 /** Extracts `archive` in-process and snapshots it. */
@@ -217,12 +219,19 @@ export async function snapshotArchive(
         await Deno.readFile(join(dir, ...f.split("/"))),
       );
     }
+    const record = JSON.parse(
+      await Deno.readTextFile(join(dir, "extension", "dependency-audit.json")),
+    );
     return {
       files,
       manifest: await Deno.readTextFile(
         join(dir, "extension", "manifest.yaml"),
       ),
       sha256,
+      auditRecord: {
+        ...record,
+        bundles: Object.keys(record.bundles ?? {}),
+      },
     };
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});

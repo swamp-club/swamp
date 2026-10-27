@@ -69,6 +69,12 @@ export interface ShippedVersion {
   from: ShippedVersionSource;
   /** The archive's dependency audit record decided it; `from` stays push's source. */
   recorded?: true;
+  /**
+   * A valid lock fixed this version: a `deno.lock` push bundled with, or a
+   * `package-lock.json` that node_modules matches (swamp-club#3970). A
+   * version from the lockfile is always locked.
+   */
+  locked?: true;
 }
 
 /**

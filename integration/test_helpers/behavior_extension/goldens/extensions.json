@@ -103,9 +103,17 @@
       "manifest": "manifestVersion: 1\nname: '@acme/string-literal-type'\nversion: 2026.05.01.1\ndescription: Fixture string-literal-type\nmodels:\n  - ec2.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
         "extension/bundles/ec2.js": "7b76a1de30ddeccaacb60c65b30e47de953df15971cfbb83bc43ec62a3787a85",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "8463e78db01352673a3249d9de8aeaaba9eefa1932b86b2715ce6d3e597af0fd",
         "extension/manifest.yaml": "951a8fd926c1f26dd61f510b3e937ffd987cda49f7a1920b6dee0d0c9a3ee739",
         "extension/models/ec2.ts": "07740fc1a50cfaa91df3fba4f243b5f8787620f199d31d79e8809a94ff410603"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/ec2.js"
+        ],
+        "dependencies": [],
+        "unaudited": []
       }
     },
     "reviewWarnings": []
@@ -175,10 +183,30 @@
       ],
       "manifest": "manifestVersion: 1\nname: '@acme/modeltype-create'\nversion: 2026.05.01.1\ndescription: Fixture modeltype-create\nmodels:\n  - thing.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
-        "extension/bundles/thing.js": "6cb836ce24f2a839c25ab06092ea3e9ff6a67e26a2b3d0e5e610d1481069e796",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/bundles/thing.js": "5f01bc3a3823d323c9e923cf7cb71fc968b067bbc592ba863037b07ca86f0718",
+        "extension/dependency-audit.json": "6ac731509c8f51452dd32570def65406b0037887ac52ac12f201334fc632b74d",
         "extension/manifest.yaml": "d508e22003e603543309973b8521463279300a2cdf89083c248d0745206a7a3a",
-        "extension/models/thing.ts": "e11d4a8429bf9fec3259cc6da6502b81b97261dc67dbcdce29e9e5e4138cf89e"
+        "extension/models/thing.ts": "f0cca765529ba6deffecac976ae97d576e9afc8d8d11750d171e75fab791e878"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/thing.js"
+        ],
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@swamp/types",
+            "spec": "0.1.0",
+            "version": "0.1.0",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@swamp/types@0.1.0"
+            ]
+          }
+        ],
+        "unaudited": []
       }
     },
     "reviewWarnings": []
@@ -273,9 +301,17 @@
       "manifest": "manifestVersion: 1\nname: '@acme/resources-files-upgrades'\nversion: 2026.05.01.1\ndescription: Fixture resources-files-upgrades\nmodels:\n  - store.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
         "extension/bundles/store.js": "ace9830961ec660b31f90809800c09fc9a5935f27b9670dbe64817169f41c2cd",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "75fe045732526643a6eb089871a72f5cc74515aacce38ef1e941599fc2903f13",
         "extension/manifest.yaml": "94c7d0834073b5efc525722c48110ee68ae6c258400f03aa0f447a552bb767d8",
         "extension/models/store.ts": "d10e6b83ef7e511021f44434289472eca5c612b575c6943c8dbe7b0cbd24375a"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/store.js"
+        ],
+        "dependencies": [],
+        "unaudited": []
       }
     },
     "reviewWarnings": []
@@ -370,9 +406,17 @@
       "manifest": "manifestVersion: 1\nname: '@acme/quoted-keys'\nversion: 2026.05.01.1\ndescription: Fixture quoted-keys\nmodels:\n  - subs.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
         "extension/bundles/subs.js": "8fcdb141f8fc564b41081272af6874a63cee6fb910c1622a2d2fec505134de1d",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "ca91aab9f4f3eca03114ac43ff3158b4560c8754b6038d96f586fea69c9f5ea4",
         "extension/manifest.yaml": "8c8d365089ca1554e1e7f7defb5aab6d764d9cbc840d1711be14bf2f5f2e5219",
         "extension/models/subs.ts": "2dad55badc0cfbbfd632ca7d25472755069e24da5218993027cba25277c15c3d"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/subs.js"
+        ],
+        "dependencies": [],
+        "unaudited": []
       }
     },
     "reviewWarnings": []
@@ -443,9 +487,17 @@
       "manifest": "manifestVersion: 1\nname: '@acme/type-in-string-before-export'\nversion: 2026.05.01.1\ndescription: Fixture type-in-string-before-export\nmodels:\n  - prompt.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
         "extension/bundles/prompt.js": "84f18d979fbf5531c38cd14a72feee3bec2c3d10a80290cc0f7ef59ff3c267b7",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "9f5d56db9e2f8f60f42aee404d2ba86a76bb2a6676bc5963dffc45c81f294bd6",
         "extension/manifest.yaml": "416a7530f09f368f53f218c9f367e49e8a3910de6a6e88eaedf4f013339b8182",
         "extension/models/prompt.ts": "94891d89e79a26a9b2dea1da0dd663f59264cabc01eeb544d69f22d6e7ee2a24"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/prompt.js"
+        ],
+        "dependencies": [],
+        "unaudited": []
       }
     },
     "reviewWarnings": []
@@ -487,9 +539,29 @@
       "manifest": "manifestVersion: 1\nname: '@acme/annotated-export'\nversion: 2026.05.01.1\ndescription: Fixture annotated-export\nmodels:\n  - typed.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
         "extension/bundles/typed.js": "a22d82a03e22c97790b03f6387be44f86eb438eb3ba0f59997ad6cbaf9bba16d",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "2f4d34c3d2c5a13e3b47f0d51e86e4133e92c2f66d865a701a8433ffd0fd8f80",
         "extension/manifest.yaml": "df2eed3daa8bc529c37467b8bbc65970b912ec875a801ef784cdd5565ac10062",
-        "extension/models/typed.ts": "45af5af9d36be57be7eb3ed0c9a1d83ca81e2337eb223e6881162f1c4bf35734"
+        "extension/models/typed.ts": "267d37b46ea48441bb8c446f0fb57319c0fea9fec151eae9409cc49129257805"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/typed.js"
+        ],
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@swamp/types",
+            "spec": "0.1.0",
+            "version": "0.1.0",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@swamp/types@0.1.0"
+            ]
+          }
+        ],
+        "unaudited": []
       }
     },
     "reviewWarnings": [
@@ -539,9 +611,17 @@
       "manifest": "manifestVersion: 1\nname: '@acme/missing-version'\nversion: 2026.05.01.1\ndescription: Fixture missing-version\nmodels:\n  - noversion.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
         "extension/bundles/noversion.js": "473ab2b63d7f76ff1b3f79cd2f2a0a221e43600b40a5d2ea0ffe3dbe26821c80",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "b56b8c1b55ce69f85036e522ee5f8ee7da0f6e1f106c1d61dd51561ea4cdc678",
         "extension/manifest.yaml": "e8137e51bb1ac5d8f0629dbb0e65cbf4aafc2163c48190ee1e85b269def2d341",
         "extension/models/noversion.ts": "bf54e0c286072344e8520f13684a8fc1d21b6463151e9fdd60ea31a97eb6315f"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/noversion.js"
+        ],
+        "dependencies": [],
+        "unaudited": []
       }
     },
     "reviewWarnings": [
@@ -588,10 +668,30 @@
       ],
       "manifest": "manifestVersion: 1\nname: '@acme/wrapped-define'\nversion: 2026.05.01.1\ndescription: Fixture wrapped-define\nmodels:\n  - wrapped.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
-        "extension/bundles/wrapped.js": "daef2ccd846f01626fbd632c093885520500e207c3bfc2a82ccdedf56e275a5e",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/bundles/wrapped.js": "8f3e808332a1d37b9dc4a9fc434202e1fe4e0441391565ccd3466e62ba43c9ce",
+        "extension/dependency-audit.json": "d225c2853b2c0bc9cba868bcc9e5b23b39d7b92aeab572a3ffa7c0090735be65",
         "extension/manifest.yaml": "67746aa84ffaf93279ad12b252738be5c00c9ab15dd06edf0721f0879dfdedf1",
-        "extension/models/wrapped.ts": "61ff9ffcdd2784a176316518aa494c4f3c100826b4b15e09c58e4fc5b0a5a06b"
+        "extension/models/wrapped.ts": "5ae9b85b3de30d8d3c36e1477c339b76b1cb6616c2ff6009f4f9f4c6db428c88"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/wrapped.js"
+        ],
+        "dependencies": [
+          {
+            "registry": "jsr",
+            "name": "@swamp/testing",
+            "spec": "0.1.0",
+            "version": "0.1.0",
+            "from": "exact",
+            "locked": false,
+            "writtenAs": [
+              "jsr:@swamp/testing@0.1.0"
+            ]
+          }
+        ],
+        "unaudited": []
       }
     },
     "reviewWarnings": [
@@ -741,7 +841,7 @@
         "extension/bundles/aws/ec2/model.js": "d4a063ec10c76eb755263071f350af5682d28e19b6e20a046a01927346ac89af",
         "extension/bundles/multi/extend.js": "2d598fd10eb60bde167183d84c6df6adc8132eab69d8eb8f9be17a641fa77f0e",
         "extension/bundles/multi/model.js": "7d4ea5ece5321837f0e0d2803138282e310e32d6b36156396cc7e34c2e45dc7d",
-        "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
+        "extension/dependency-audit.json": "ec68d74ad6fbfd2cd9b2afd753874f903d2832c8c6ebce4c55047ee09360edc5",
         "extension/manifest.yaml": "6a6ceb6d7cefb419690bc5dae38729bb91b048276bac3147797e5876b2b40540",
         "extension/models/aws/ec2/model.ts": "e791e7a7f08510e77d9b2a4e6bb63ab01d4182952bc97d65b25ce2f9881117e0",
         "extension/models/aws/ec2/tags.ts": "6a9aa6ce6edbb48e109e97abcbd0edad3f90446975d5b4f4a8f428740f6ffc38",
@@ -750,6 +850,16 @@
         "extension/models/multi/lib/methods.ts": "0972812243eb425d9d8a8f86e9aa145aecc04e4498aa2c9f68b4599448cbafbd",
         "extension/models/multi/lib/schemas.ts": "f01c827baf5c77d43acc6dd1c854e1762f84ec4670bd73c8e520b9d08859d4de",
         "extension/models/multi/model.ts": "636327702ac5641ec74eae9318a12cf860c72727262a97b519af7d821d50d7e7"
+      },
+      "auditRecord": {
+        "recordVersion": 2,
+        "bundles": [
+          "bundles/aws/ec2/model.js",
+          "bundles/multi/extend.js",
+          "bundles/multi/model.js"
+        ],
+        "dependencies": [],
+        "unaudited": []
       }
     },
     "reviewWarnings": []

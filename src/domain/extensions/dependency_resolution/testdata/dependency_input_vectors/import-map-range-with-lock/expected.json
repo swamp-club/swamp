@@ -26,22 +26,30 @@
     "models/m.ts"
   ],
   "shipped": {
-    "models/m.ts": "import value from \"npm:vecpkg@^1\";\n\nexport const model = [value];\n"
+    "models/m.ts": "import value from \"npm:vecpkg@1.0.0\";\n\nexport const model = [value];\n"
   },
   "bundles": {
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "npm",
         "name": "vecpkg",
-        "spec": "^1",
+        "spec": "1.0.0",
         "version": "1.0.0",
-        "from": "lockfile"
+        "from": "lockfile",
+        "locked": true,
+        "writtenAs": [
+          "vecpkg"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {
@@ -54,9 +62,7 @@
   ],
   "trust": {
     "errors": [],
-    "warnings": [
-      "vecpkg [loose-specifier]: npm:vecpkg@^1 is a range; audited 1.0.0, the version this push resolves (from deno.lock) (imported as \"vecpkg\" through the project's Deno config)"
-    ]
+    "warnings": []
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",

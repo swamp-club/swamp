@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { GraphDependencies } from "../domain/extensions/dependency_resolution/package_versions.ts";
+import { readPackageLockValidity } from "../infrastructure/runtime/package_lock_reader.ts";
 import {
   basename,
   dirname,
@@ -204,6 +206,11 @@ export interface ResolvedExtensionFiles {
    * read from the module graph under the project config (swamp-club#3612).
    */
   bareImports: ResolvedBareImport[];
+  /**
+   * The exact versions, unaudited code and lock validity push ships from
+   * the module graphs (swamp-club#3970).
+   */
+  graphDependencies: GraphDependencies;
 }
 
 /**
@@ -1421,6 +1428,7 @@ export async function resolveExtensionFiles(
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
     bareImports: sources.bareImports,
+    graphDependencies: sources.graphDependencies,
   };
 }
 
@@ -1469,6 +1477,7 @@ interface ResolvedSourceModules {
   plan: SourceArchivePlan;
   /** Stale lockfiles a lenient graph read went past; empty otherwise. */
   staleLockfiles: StaleLockfile[];
+  graphDependencies: GraphDependencies;
 }
 
 /** The real path of `path`, or `path` itself when it cannot be resolved. */
@@ -1690,6 +1699,10 @@ async function resolveSourceModules(options: {
   const bareImports = (graph.bareImports ?? []).filter((b) =>
     !outside.has(b.importer)
   );
+  const graphDependencies: GraphDependencies = {
+    packageVersions: graph.packageVersions ?? {},
+    unaudited: graph.unaudited ?? [],
+  };
   if (options.lenient) {
     return {
       missing: graph.missing.filter((m) => !outside.has(m.path)),
@@ -1699,6 +1712,7 @@ async function resolveSourceModules(options: {
       dataFilesByKind,
       plan: { entries: [] },
       staleLockfiles: groupStaleLockfiles(staleLocks),
+      graphDependencies,
     };
   }
   const staleInstalls = (graph.staleInstalls ?? []).filter((s) =>
@@ -1706,6 +1720,19 @@ async function resolveSourceModules(options: {
   );
   if (staleInstalls.length > 0 && options.project.packageJsonDir) {
     throw staleInstallError(options.project.packageJsonDir, staleInstalls);
+  }
+  if (options.project.packageJsonDir && !options.project.denoConfigPath) {
+    // A package-lock.json counts as a lock only when node_modules matches
+    // it, so it describes what the bundle holds (swamp-club#3970).
+    const lock = await readPackageLockValidity(
+      options.project.packageJsonDir,
+      graph.installedPackages ?? [],
+    );
+    graphDependencies.packageLock = lock.valid
+      ? { valid: true }
+      : lock.lockPath === null
+      ? { valid: false }
+      : { valid: false, warning: lock.reason };
   }
   const plan = planSourceArchive({
     kinds: planKinds,
@@ -1721,6 +1748,7 @@ async function resolveSourceModules(options: {
     dataFilesByKind,
     plan,
     staleLockfiles: [],
+    graphDependencies,
   };
 }
 

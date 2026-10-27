@@ -100,12 +100,9 @@ Deno.test("push dependency audit: a deno.json project audits the version its den
     });
     assertEquals(result.audited[0].version, "2.0.0");
     assertEquals(result.audited[0].resolvedFrom, "lockfile");
-    assertEquals(
-      result.warnings.map((w) => w.message),
-      [
-        "npm:ms@^2.0.0 is a range; audited 2.0.0, the version this push resolves (from deno.lock)",
-      ],
-    );
+    // The lock fixed the range's version, so it costs nothing
+    // (swamp-club#3970).
+    assertEquals(result.warnings.map((w) => w.message), []);
   });
 });
 

@@ -31,8 +31,20 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
-    "dependencies": []
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
+    "dependencies": [],
+    "unaudited": [
+      {
+        "kind": "package-json",
+        "origin": "file:./local",
+        "modules": {
+          "node_modules/local/index.js": "sha256 of the module"
+        }
+      }
+    ]
   },
   "audited": [],
   "trust": {

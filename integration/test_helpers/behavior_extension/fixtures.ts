@@ -79,7 +79,7 @@ export const EXTENSION_FIXTURES: readonly ExtensionFixture[] = [
     files: {
       "thing.ts": lines(
         'import { z } from "npm:zod@4";',
-        'import { ModelType } from "jsr:@swamp/types";',
+        'import { ModelType } from "jsr:@swamp/types@0.1.0";',
         "export const model = {",
         '  type: ModelType.create("@acme/thing"),',
         '  version: "2026.03.01.1",',
@@ -188,7 +188,7 @@ export const EXTENSION_FIXTURES: readonly ExtensionFixture[] = [
     models: ["typed.ts"],
     files: {
       "typed.ts": lines(
-        'import type { ModelDefinition } from "jsr:@swamp/types";',
+        'import type { ModelDefinition } from "jsr:@swamp/types@0.1.0";',
         "export const model: ModelDefinition = {",
         '  type: "@acme/typed",',
         '  version: "2026.03.01.1",',
@@ -214,7 +214,7 @@ export const EXTENSION_FIXTURES: readonly ExtensionFixture[] = [
     models: ["wrapped.ts"],
     files: {
       "wrapped.ts": lines(
-        'import { defineModel } from "jsr:@swamp/testing";',
+        'import { defineModel } from "jsr:@swamp/testing@0.1.0";',
         "export const model = defineModel({",
         '  type: "@acme/wrapped",',
         '  version: "2026.03.01.1",',

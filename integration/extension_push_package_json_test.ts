@@ -305,6 +305,7 @@ for (
         {
           manifest: resolved.manifest,
           bareImports: resolved.bareImports,
+          graphDependencies: resolved.graphDependencies,
           repoDir: author,
           manifestDir: author,
           modelsDir: resolved.modelsDir,
@@ -358,18 +359,20 @@ for (
         audited.map((s) => [s.name, s.version, s.installedVersion]),
         [["ms", "^2.1.0", "2.1.3"]],
       );
-      // The record keys ms by the installed version the source now pins
-      // (swamp-club#3662).
-      assertEquals(JSON.parse(files.get("dependency-audit.json") ?? ""), {
-        recordVersion: 1,
-        dependencies: [{
-          registry: "npm",
-          name: "ms",
-          spec: "2.1.3",
-          version: "2.1.3",
-          from: "installed",
-        }],
-      });
+      // The record lists ms at the installed version the source now pins
+      // (swamp-club#3662, v2 since swamp-club#3970).
+      const record = JSON.parse(files.get("dependency-audit.json") ?? "");
+      assertEquals(record.recordVersion, 2);
+      assertEquals(record.dependencies, [{
+        registry: "npm",
+        name: "ms",
+        spec: "2.1.3",
+        version: "2.1.3",
+        from: "installed",
+        locked: false,
+        writtenAs: ["ms"],
+      }]);
+      assertEquals(record.unaudited, []);
     });
   });
 }
@@ -426,6 +429,7 @@ Deno.test("extension push (package.json, nested node_modules): audits and record
       {
         manifest: resolved.manifest,
         bareImports: resolved.bareImports,
+        graphDependencies: resolved.graphDependencies,
         repoDir: author,
         manifestDir: author,
         modelsDir: resolved.modelsDir,
@@ -468,24 +472,27 @@ Deno.test("extension push (package.json, nested node_modules): audits and record
       audited.map((s) => [s.name, s.version, s.installedVersion]).sort(),
       [["ms", "^2.1.0", "2.1.2"], ["ms", "^2.1.0", "2.1.3"]],
     );
-    assertEquals(JSON.parse(files.get("dependency-audit.json") ?? ""), {
-      recordVersion: 1,
-      dependencies: [
-        {
-          registry: "npm",
-          name: "ms",
-          spec: "2.1.2",
-          version: "2.1.2",
-          from: "installed",
-        },
-        {
-          registry: "npm",
-          name: "ms",
-          spec: "2.1.3",
-          version: "2.1.3",
-          from: "installed",
-        },
-      ],
-    });
+    const record = JSON.parse(files.get("dependency-audit.json") ?? "");
+    assertEquals(record.recordVersion, 2);
+    assertEquals(record.dependencies, [
+      {
+        registry: "npm",
+        name: "ms",
+        spec: "2.1.2",
+        version: "2.1.2",
+        from: "installed",
+        locked: false,
+        writtenAs: ["ms"],
+      },
+      {
+        registry: "npm",
+        name: "ms",
+        spec: "2.1.3",
+        version: "2.1.3",
+        from: "installed",
+        locked: false,
+        writtenAs: ["ms"],
+      },
+    ]);
   });
 });

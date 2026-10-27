@@ -136,6 +136,7 @@ async function prepare(
     {
       manifest: resolved.manifest,
       bareImports: resolved.bareImports,
+      graphDependencies: resolved.graphDependencies,
       repoDir: repo,
       manifestDir: dirname(manifestPath),
       modelsDir: resolved.modelsDir,

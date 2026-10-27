@@ -165,6 +165,7 @@ async function withScenario(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: root,
         manifestDir: root,
         modelsDir: root,

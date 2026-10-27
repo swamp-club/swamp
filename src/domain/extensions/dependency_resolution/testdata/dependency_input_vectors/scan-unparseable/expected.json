@@ -19,8 +19,10 @@
   "shipped": {},
   "bundles": {},
   "record": {
-    "recordVersion": 1,
-    "dependencies": []
+    "recordVersion": 2,
+    "bundles": {},
+    "dependencies": [],
+    "unaudited": []
   },
   "audited": [],
   "trust": {

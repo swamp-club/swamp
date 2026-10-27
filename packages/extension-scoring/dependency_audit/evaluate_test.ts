@@ -308,12 +308,52 @@ Deno.test("evaluateNpmPackage: a loose specifier costs one point, worded for pus
   const s = spec("loose", "^1.0.0");
   const { push, scorecard } = views(s, auditNpm(s, packument()));
   assertEquals(push.warnings.map((w) => w.message), [
-    "npm:loose@^1.0.0 is a range; audited 1.0.0, the version this push resolves",
+    "no lock: ^1.0.0 resolved to 1.0.0 today; commit a lock or pin exact versions (costs 1 point)",
   ]);
   assertEquals(scorecard.warnings.map((w) => w.reason), [
-    "npm:loose@^1.0.0 is a range; audited 1.0.0, the version the registry resolved",
+    "npm:loose@^1.0.0 is a range and no lock fixed it; audited 1.0.0, the version the registry resolved",
   ]);
   assertEquals(scorecard.earnedPoints, 1);
+});
+
+Deno.test("evaluateNpmPackage: a range a valid lock fixed costs nothing", () => {
+  const s = {
+    ...spec("loose", "^1.0.0"),
+    bundled: {
+      version: "1.0.0",
+      from: "installed" as const,
+      locked: true as const,
+    },
+  };
+  const { push, scorecard } = views(s, auditNpm(s, packument()));
+  assertEquals(push.warnings, []);
+  assertEquals(scorecard.earnedPoints, 2);
+});
+
+Deno.test("evaluateNpmPackage: the bundled version is the one audited", () => {
+  const s = {
+    ...spec("loose", "^1.0.0"),
+    bundled: { version: "1.0.0", from: "registry" as const },
+  };
+  const audit = auditNpm(
+    s,
+    packument({
+      "dist-tags": { latest: "1.5.0" },
+      versions: {
+        "1.0.0": { license: "MIT", maintainers: [{ name: "m" }] },
+        "1.5.0": { license: "MIT", maintainers: [{ name: "m" }] },
+      },
+      time: {
+        "1.0.0": "2026-09-01T00:00:00Z",
+        "1.5.0": "2026-09-02T00:00:00Z",
+      },
+    }),
+  );
+  assertEquals(audit.shipped, { version: "1.0.0", from: "registry" });
+  const { push } = views(s, audit);
+  assertEquals(push.warnings.map((w) => w.message), [
+    "no lock: ^1.0.0 resolved to 1.0.0 today; commit a lock or pin exact versions (costs 1 point)",
+  ]);
 });
 
 Deno.test("groupForAudit: dependencies past the limit, in name order, are not looked up", () => {

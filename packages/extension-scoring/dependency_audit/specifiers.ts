@@ -23,6 +23,7 @@
  */
 
 import { importedSpecifiersAt } from "../source/imports.ts";
+import type { ShippedVersion } from "./resolution.ts";
 
 /** A package registry the audit checks. */
 export type DependencyRegistry = "npm" | "jsr";
@@ -44,6 +45,12 @@ export interface DependencySpecifier {
    * the range package.json declares (swamp-club#3630).
    */
   installedVersion?: string;
+  /**
+   * The version the bundle holds, as push read it from Deno's module graph
+   * (swamp-club#3970). When set it is the version that ships, and the audit
+   * resolves nothing itself; the registry never sets it.
+   */
+  bundled?: ShippedVersion;
 }
 
 // `npm:@scope/name@version`, `npm:name@version`, `npm:name`; a subpath is dropped

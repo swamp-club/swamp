@@ -767,6 +767,7 @@ export class ExtensionLoader {
           {
             ...ctx,
             absolutePath,
+            pulled: this.isPulledBoundary(baseDir),
             extensionName: extractExtensionNameFromPath(
               absolutePath,
               this.repoDir,
@@ -1618,6 +1619,7 @@ export class ExtensionLoader {
         denoPath,
         denoRuntime: this.denoRuntime,
         repoDir: this.repoDir,
+        pulled: this.isPulledBoundary(entry.source_path),
         extensionName: extractExtensionNameFromPath(
           entry.source_path,
           this.repoDir,
@@ -1671,8 +1673,10 @@ export class ExtensionLoader {
     paths: { bundlePath: string; sourcePath: string },
   ): Promise<string> {
     const denoPath = await this.denoRuntime.ensureDeno();
+    // Pulled source reads no Deno config (swamp-club#3970).
+    const pulled = this.isPulledBoundary(paths.sourcePath);
     let denoConfigPath: string | undefined;
-    if (this.adapter.resolveDenoConfig) {
+    if (this.adapter.resolveDenoConfig && !pulled) {
       denoConfigPath = this.adapter.resolveDenoConfig(
         paths.sourcePath,
         this.repoDir,
@@ -1681,6 +1685,7 @@ export class ExtensionLoader {
     const js = await bundleExtension(paths.sourcePath, denoPath, {
       denoConfigPath,
       env: this.denoRuntime.getDenoEnv(),
+      noConfig: pulled,
     });
     await Deno.mkdir(dirname(paths.bundlePath), { recursive: true });
     await Deno.writeTextFile(paths.bundlePath, js);
@@ -2251,6 +2256,7 @@ export class ExtensionLoader {
             denoPath,
             denoRuntime: this.denoRuntime,
             repoDir: this.repoDir,
+            pulled: this.isPulledBoundary(baseDir),
             extensionName: extractExtensionNameFromPath(
               absolutePath,
               this.repoDir,
@@ -2482,6 +2488,26 @@ export class ExtensionLoader {
     );
   }
 
+  /**
+   * True when `boundaryDir` (or a source path) sits under one of the repo's
+   * pulled-extension roots, so its source is a pulled extension's.
+   */
+  private isPulledBoundary(boundaryDir: string): boolean {
+    if (!this.repoDir) return false;
+    const resolvedBoundary = resolve(boundaryDir);
+    return resolvedBoundary.startsWith(
+      join(resolve(this.repoDir), SWAMP_DATA_DIR, "pulled-extensions") +
+        SEPARATOR,
+    ) || resolvedBoundary.startsWith(
+      join(
+        resolve(this.repoDir),
+        SWAMP_DATA_DIR,
+        "config",
+        "pulled-extensions",
+      ) + SEPARATOR,
+    );
+  }
+
   private async bundleWithCache(
     absolutePath: string,
     relativePath: string,
@@ -2507,20 +2533,7 @@ export class ExtensionLoader {
         // No bundle on disk yet — first-run bootstrap.
       }
 
-      const resolvedBoundary = resolve(boundaryDir);
-      const isPulled = this.repoDir && (
-        resolvedBoundary.startsWith(
-          join(resolve(this.repoDir), SWAMP_DATA_DIR, "pulled-extensions") +
-            SEPARATOR,
-        ) || resolvedBoundary.startsWith(
-          join(
-            resolve(this.repoDir),
-            SWAMP_DATA_DIR,
-            "config",
-            "pulled-extensions",
-          ) + SEPARATOR,
-        )
-      );
+      const isPulled = this.isPulledBoundary(boundaryDir);
       if (
         bundleExists && isPulled &&
         (options?.trustPulledCache ||
@@ -2536,7 +2549,7 @@ export class ExtensionLoader {
       let denoConfigPath: string | undefined;
       let js: string;
       try {
-        if (this.adapter.resolveDenoConfig) {
+        if (this.adapter.resolveDenoConfig && !isPulled) {
           denoConfigPath = this.adapter.resolveDenoConfig(
             absolutePath,
             this.repoDir,
@@ -2549,6 +2562,8 @@ export class ExtensionLoader {
         js = await bundleExtension(absolutePath, denoPath, {
           denoConfigPath,
           env: this.denoRuntime.getDenoEnv(),
+          // Pulled source never reads a Deno config (swamp-club#3970).
+          noConfig: isPulled,
         });
         const bundleBoundary = this.resolveBundlePath();
         await assertSafePath(bundlePath, bundleBoundary);

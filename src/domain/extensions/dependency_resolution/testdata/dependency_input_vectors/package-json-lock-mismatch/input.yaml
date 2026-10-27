@@ -1,0 +1,33 @@
+description: "A package.json range with a package-lock.json node_modules does not match: treated as no lock, with a warning."
+files:
+  "extensions/models/m.ts": |
+    import value from "vecpkg";
+
+    export const model = [value];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts
+  "package.json": |
+    {
+      "dependencies": {
+        "vecpkg": "^1.0.0"
+      }
+    }
+  "package-lock.json": |
+    {
+      "name": "v",
+      "lockfileVersion": 3,
+      "requires": true,
+      "packages": {
+        "": { "dependencies": { "vecpkg": "^1.0.0" } },
+        "node_modules/vecpkg": { "version": "1.1.0" }
+      }
+    }
+installed:
+  - dir: node_modules/vecpkg
+    name: vecpkg
+    version: "1.0.0"
