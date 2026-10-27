@@ -69,7 +69,12 @@ import {
   withGeneratorTraceContext,
 } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
-import { findBrokenWorkflow, workflowsDirFor } from "./broken_workflow.ts";
+import {
+  findBrokenWorkflow,
+  findMisnamedWorkflow,
+  type MisnamedWorkflow,
+  workflowsDirFor,
+} from "./broken_workflow.ts";
 import {
   type SkippedSupersedeData,
   type SupersedeDeps,
@@ -863,20 +868,35 @@ export async function* workflowRun(
             // A file carrying the requested name/id may exist but fail
             // schema parsing, making it invisible to the repository lookup.
             // Surface the parse error instead of a misleading "not found".
-            const found = await findBrokenWorkflow(
-              workflowsDirFor(deps.repoDir),
+            const workflowsDir = workflowsDirFor(deps.repoDir);
+            const matches = (
+              file: { id: string | null; name: string | null },
+            ) =>
+              !input.byId ||
+              (file.id === input.workflowIdOrName &&
+                (input.expectedName === undefined ||
+                  file.name === input.expectedName));
+            const broken = await findBrokenWorkflow(
+              workflowsDir,
               input.workflowIdOrName,
             );
-            const broken = input.byId &&
-                (found?.id !== input.workflowIdOrName ||
-                  (input.expectedName !== undefined &&
-                    found?.name !== input.expectedName))
-              ? null
-              : found;
+            if (broken && matches(broken)) {
+              yield {
+                kind: "error",
+                error: workflowLoadFailed(input.workflowIdOrName, broken),
+              };
+              return;
+            }
+            // A file declaring it under a name the loader skips explains
+            // the miss (swamp-club#3839).
+            const misnamed = await findMisnamedWorkflow(
+              workflowsDir,
+              input.workflowIdOrName,
+            );
             yield {
               kind: "error",
-              error: broken
-                ? workflowLoadFailed(input.workflowIdOrName, broken)
+              error: misnamed && matches(misnamed)
+                ? workflowNotLoaded(input.workflowIdOrName, misnamed)
                 : workflowNotFound(input.workflowIdOrName),
             };
             return;
@@ -1096,6 +1116,20 @@ export function workflowNotFound(idOrName: string): SwampError {
     message: `Workflow not found: ${idOrName}.\n` +
       `Create it with 'swamp workflow create ${idOrName}', ` +
       `or run 'swamp doctor workflows --json' to check for broken workflow files`,
+  };
+}
+
+/**
+ * Creates a SwampError for a missing workflow that a file the loader skips
+ * for its name declares (swamp-club#3839).
+ */
+export function workflowNotLoaded(
+  idOrName: string,
+  misnamed: Pick<MisnamedWorkflow, "message">,
+): SwampError {
+  return {
+    code: "workflow_not_found",
+    message: `Workflow not found: ${idOrName}.\n${misnamed.message}`,
   };
 }
 

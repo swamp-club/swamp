@@ -28,12 +28,13 @@
  * the actual parse error inline.
  */
 
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   Workflow,
   type WorkflowInput,
 } from "../../domain/workflows/workflow.ts";
+import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts";
 import { resolveEffectiveWorkflowsDir } from "../../infrastructure/persistence/paths.ts";
 import { isPrimaryWorkflowFileName } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 
@@ -47,6 +48,24 @@ export interface BrokenWorkflow {
   id: string | null;
   /** The parse or schema error message. */
   error: string;
+}
+
+/**
+ * A YAML file in the workflows directory that the loader never reads because
+ * its name does not match `workflow-*.yaml`.
+ */
+export interface MisnamedWorkflow {
+  /** Absolute path of the file. */
+  file: string;
+  /** Raw `name` from the YAML, when readable. */
+  name: string | null;
+  /** Raw `id` from the YAML, when readable. */
+  id: string | null;
+  /**
+   * Why the file is not loaded. It names the file by its base name only, so
+   * no absolute path reaches a `swamp serve` client, which withholds those.
+   */
+  message: string;
 }
 
 /** Returns the effective workflows directory for a repo, consulting the managed config registry. */
@@ -127,4 +146,75 @@ export async function findBrokenWorkflow(
 ): Promise<BrokenWorkflow | null> {
   const broken = await listBrokenWorkflows(workflowsDir);
   return broken.find((b) => b.name === idOrName || b.id === idOrName) ?? null;
+}
+
+/**
+ * Explains why a file in a repo workflows dir is not loaded. `file` and `dir`
+ * are how the caller names the file and its directory; renaming is only
+ * advised for a file that is a workflow.
+ */
+export function workflowNotLoadedMessage(
+  file: string,
+  dir: string,
+  parsed: unknown,
+): string {
+  const rule = `swamp only reads files named workflow-<name>.yaml in ${dir}.`;
+  return isWorkflowDocument(parsed)
+    ? `Not loaded: ${rule} Rename ${file} to workflow-<name>.yaml, ` +
+      `or remove it if it is a stale copy of a workflow that already loads.`
+    : `Not loaded: ${rule} ${file} is not a workflow; move it out of ` +
+      `that directory, or rename it to workflow-<name>.yaml if it is ` +
+      `meant to be one.`;
+}
+
+/**
+ * Finds the top-level `*.yaml` / `*.yml` file in the workflows directory that
+ * the loader skips for its name (swamp-club#3839) and whose raw `name` or
+ * `id` matches the given identifier, first by file name. Files that cannot
+ * be read or parsed are skipped; a missing directory yields null.
+ */
+export async function findMisnamedWorkflow(
+  workflowsDir: string,
+  idOrName: string,
+): Promise<MisnamedWorkflow | null> {
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(workflowsDir)) {
+      if (
+        entry.isFile && /\.ya?ml$/.test(entry.name) &&
+        !isPrimaryWorkflowFileName(entry.name)
+      ) {
+        names.push(entry.name);
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  for (const fileName of names.sort((a, b) => a.localeCompare(b))) {
+    const file = join(workflowsDir, fileName);
+    let parsed: unknown;
+    try {
+      parsed = parseYaml(await Deno.readTextFile(file));
+    } catch {
+      continue;
+    }
+    const raw = parsed !== null && typeof parsed === "object"
+      ? parsed as { name?: unknown; id?: unknown }
+      : null;
+    const name = typeof raw?.name === "string" ? raw.name : null;
+    const id = typeof raw?.id === "string" ? raw.id : null;
+    if (name !== idOrName && id !== idOrName) continue;
+    return {
+      file,
+      name,
+      id,
+      message: workflowNotLoadedMessage(
+        basename(file),
+        "the workflows directory",
+        parsed,
+      ),
+    };
+  }
+  return null;
 }
