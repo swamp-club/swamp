@@ -67,7 +67,8 @@ export type CommitRefusalReason =
   | "data-version-unpaired"
   | "definition-type-mismatch"
   | "key-owned-elsewhere"
-  | "forbidden";
+  | "forbidden"
+  | "content-refused";
 
 /** A refused op: the first one, by its index in the commit. */
 export interface CommitRefusal {
@@ -140,13 +141,18 @@ export interface RequiredAccess {
 }
 
 /**
- * Puts whose content serve checks, or trusts, beyond the write itself: a
- * behavior or workflow definition (retags, renames, the expressions and
- * steps an edit adds), a vault config (a vault is found by the name its
- * content declares, not the intent's), an auto-definition, and the
- * evaluated files and run snapshots serve reads back when it runs one. A forwarded commit cannot
- * have its content checked as serve's handlers check it yet, so these need
- * admin (swamp-club#3915) until swamp-club#3922 adds that.
+ * Puts whose content serve checks beyond the write itself (swamp-club#3922):
+ * - a behavior, workflow or vault definition: retags, renames, the
+ *   expressions and steps an edit adds, and the identity and name its
+ *   content declares, which serve looks it up by;
+ * - an auto-definition, checked as direct execution writes one;
+ * - an evaluated definition or workflow, and a run snapshot, bound to the
+ *   aggregate their intent names;
+ * - a run record, whose authority fields, executable state and approvals
+ *   serve acts on when it resumes or settles the run;
+ * - a data save, whose sensitive fields name vault references serve admits
+ *   to later runs, and a data removal or rename, which may only move or
+ *   lower what the repository wrote.
  */
 const CONTENT_CHECKED_PUTS: ReadonlySet<string> = new Set([
   "definition.create",
@@ -156,7 +162,43 @@ const CONTENT_CHECKED_PUTS: ReadonlySet<string> = new Set([
   "evaluated-definition.save",
   "auto-definition.save",
   "run-snapshot.save",
+  "run.create",
+  "run.update",
+  "data.save",
+  "data.append",
+  "data.delete",
+  "data.gc",
+  "data.rename",
 ]);
+
+/** Whether serve checks `op`'s content beyond its intent. */
+export function isContentChecked(op: Op): op is PutOp {
+  return op.kind === "put" && CONTENT_CHECKED_PUTS.has(op.intent.kind);
+}
+
+/** Why a {@link ContentAuthority} refused a put. */
+export interface ContentRefusal {
+  readonly message: string;
+}
+
+/**
+ * Checks what a put's content carries beyond its intent, as serve's
+ * handlers check the same write (swamp-club#3922). Serve implements it: it
+ * parses the content and reads the record the put replaces. `commit` is
+ * every op of the put's commit, for a put judged with its counterparts (a
+ * move's tombstone, a data version's metadata).
+ */
+export interface ContentAuthority {
+  check(op: PutOp, commit: readonly Op[]): Promise<ContentRefusal | undefined>;
+}
+
+/**
+ * The content checks {@link authorizeCommit} applies: a
+ * {@link ContentAuthority}, or `"deferred"` for the pass serve makes before
+ * a commit's content has arrived, which must be followed by one with the
+ * content before the commit is appended.
+ */
+export type CommitContentCheck = ContentAuthority | "deferred";
 
 /** The resource every admin-only operation is decided on. */
 export const ADMIN_RESOURCE: AccessResource = {
@@ -231,13 +273,15 @@ export function checkCommitBindings(
 
 /**
  * Authorises a forwarded commit: its bindings, the ownership of every key,
- * and the caller's access to every op's intent.
+ * the caller's access to every op's intent and, unless `content` is
+ * `"deferred"`, what each content-checked put carries.
  */
 export async function authorizeCommit(
   partition: PartitionKey,
   ops: readonly Op[],
   resolver: AggregateResourceResolver,
   authority: CallerAuthority,
+  content: CommitContentCheck,
 ): Promise<CommitAuthorization> {
   const bindings = checkCommitBindings(partition, ops);
   if (!bindings.ok) return bindings;
@@ -273,13 +317,51 @@ export async function authorizeCommit(
         );
       }
     }
+    if (!(await vaultRenameLanded(op, resolver))) {
+      return refuse(
+        "forbidden",
+        index,
+        `Op ${index} removes a vault config whose rename has not landed`,
+      );
+    }
+  }
+  if (content === "deferred") return { ok: true };
+  for (const [index, op] of ops.entries()) {
+    if (!isContentChecked(op)) continue;
+    const refusal = await content.check(op, ops);
+    if (refusal !== undefined) {
+      return refuse("content-refused", index, refusal.message);
+    }
   }
   return { ok: true };
 }
 
 /**
+ * Whether a vault rename's removal may land: only once its rename-to has,
+ * so the key, which a vault config is named by its id, is owned by the
+ * vault's new name. A client sends the two halves as separate commits, one
+ * per partition; the rename-to's content is checked, the removal's has
+ * none. Other ops need nothing here.
+ */
+async function vaultRenameLanded(
+  op: PutOp | TombstoneOp,
+  resolver: AggregateResourceResolver,
+): Promise<boolean> {
+  const intent = op.intent;
+  if (
+    intent.kind !== "definition.rename-from" ||
+    intent.definition.kind !== "vault"
+  ) {
+    return true;
+  }
+  const ownership = await resolver.keyOwner(op.key.toString());
+  return ownership?.present === true &&
+    ownership.owner === configPartition("vault", intent.to);
+}
+
+/**
  * Every access a put or tombstone needs: {@link writeAccessOf}, for a half
- * of a definition rename the same write on the other name, and admin. A rename
+ * of a definition rename the same write on the other name. A rename
  * may write a key the other name's partition owns, and its other name is
  * the client's to choose, so a caller must be able to change both
  * definitions the rename joins.
@@ -305,12 +387,6 @@ export async function writeAccessesOf(
       ),
     );
   }
-  // Until swamp-club#3922 checks a forwarded write's content as serve's
-  // handlers check it, every forwarded write needs admin as well: a
-  // non-admin's write could reach further through a forwarded op than
-  // serve's handlers let it. The checks above still apply, so a deny on
-  // the resource refuses an admin too.
-  required.push({ action: "admin", resource: ADMIN_RESOURCE });
   return required;
 }
 
@@ -324,9 +400,6 @@ export async function writeAccessOf(
   resolver: AggregateResourceResolver,
 ): Promise<RequiredAccess> {
   const intent = op.intent;
-  if (op.kind === "put" && CONTENT_CHECKED_PUTS.has(intent.kind)) {
-    return { action: "admin", resource: ADMIN_RESOURCE };
-  }
   if ("model" in intent) {
     const type = ModelType.create(intent.model.type);
     if (
@@ -358,7 +431,21 @@ export async function writeAccessOf(
     };
   }
   if ("definition" in intent) {
-    return await definitionAccessOf(op, intent.definition, resolver);
+    // Serve's API never removes a vault config: deleting one, or moving its
+    // file, needs admin. A rename's removal is decided as the rename is.
+    if (
+      intent.definition.kind === "vault" && op.kind === "tombstone" &&
+      intent.kind !== "definition.rename-from"
+    ) {
+      return { action: "admin", resource: ADMIN_RESOURCE };
+    }
+    const write = await definitionAccessOf(op, intent.definition, resolver);
+    // A saved evaluation is decided as model.evaluate and workflow.evaluate
+    // decide saving one (swamp-club#3940): run on what it evaluates.
+    return intent.kind === "evaluated-workflow.save" &&
+        write.action === "write"
+      ? { action: "run", resource: write.resource }
+      : write;
   }
   if ("autoDefinition" in intent) {
     const type = bindKey(intent, op.kind, op.key);
@@ -412,6 +499,9 @@ async function modelWriteAccessOf(
     case "data.save":
     case "data.append":
     case "output.save":
+    // Saving an evaluation needs run on the behavior, as model.evaluate
+    // decides saving one (swamp-club#3940).
+    case "evaluated-definition.save":
       return { action: "run", resource: resourceAs("model") };
     case "data.delete":
     case "data.rename":
@@ -605,6 +695,78 @@ export async function partitionReadAccessOf(
       return [{ action: "admin", resource: ADMIN_RESOURCE }];
     case "lockfile":
       return [];
+  }
+}
+
+/**
+ * The least access any write to a partition needs, for a chunk uploaded to
+ * be named by a commit to it (swamp-club#3922): run on a behavior or a
+ * workflow, whose saves and run records need it, write on a workflow or a
+ * vault config. It gates who may spend serve's storage, not what a commit
+ * may write, which {@link authorizeCommit} decides. A behavior definition's
+ * config partition names no type, an auto-definition's neither type nor
+ * name, so they need admin, as do the lockfile and control-plane behaviors.
+ */
+export async function partitionWriteAccessOf(
+  partition: PartitionKey,
+  resolver: AggregateResourceResolver,
+): Promise<RequiredAccess> {
+  const identity = partition.identity;
+  switch (identity.kind) {
+    case "model": {
+      const model = { type: identity.type, id: identity.id };
+      const type = ModelType.create(identity.type);
+      if (isControlPlaneModelType(type.normalized)) {
+        return {
+          action: "admin",
+          resource: await controlPlaneResourceOf(model, resolver),
+        };
+      }
+      if (resolver.isRestrictedType(type)) {
+        return { action: "admin", resource: ADMIN_RESOURCE };
+      }
+      const lookup = await resolver.model(model);
+      return {
+        action: "run",
+        resource: lookup === undefined
+          ? unresolvedModelResource(type, identity.id, "model")
+          : modelAccessResource(lookup, "model"),
+      };
+    }
+    case "run": {
+      const workflow = await resolver.workflow(identity.workflowId);
+      return {
+        action: "run",
+        resource: workflow === undefined
+          ? unresolvedAccessResource("workflow", identity.workflowId)
+          : workflowAccessResource({
+            name: workflow.name,
+            tags: workflow.tags ?? {},
+          }),
+      };
+    }
+    case "config":
+      switch (identity.definitionKind) {
+        case "workflow":
+          return {
+            action: "write",
+            resource: workflowAccessResource({
+              name: identity.name,
+              tags:
+                (await resolver.definitionTags("workflow", identity.name)) ??
+                  {},
+            }),
+          };
+        case "vault":
+          return {
+            action: "write",
+            resource: vaultKindResource(identity.name),
+          };
+      }
+      return { action: "admin", resource: ADMIN_RESOURCE };
+    case "definition":
+    case "lockfile":
+      return { action: "admin", resource: ADMIN_RESOURCE };
   }
 }
 

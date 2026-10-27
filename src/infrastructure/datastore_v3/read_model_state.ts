@@ -261,6 +261,15 @@ const MIGRATIONS: readonly SqliteMigration[] = [
     { table: "load_records", column: "access", type: "TEXT" },
     { table: "unreadable_records", column: "access", type: "TEXT" },
   ]),
+  // 7 → 8 (swamp-club#3922): who wrote each live record: the principal of
+  // the forwarded commit that put it, or the empty string for a commit
+  // serve, an HA peer or a direct writer appended, none of which carries a
+  // principal. NULL is unknown: a row from before this schema, or one a
+  // compacted base loaded, whose commit is gone. Serve trusts an evaluated
+  // file it runs only when its writer is known to be the empty string.
+  addColumnsIfAbsent([
+    { table: "live_records", column: "writer", type: "TEXT" },
+  ]),
 ];
 
 export type { FileOwnership };
@@ -348,6 +357,23 @@ export interface AppliedRecord {
   readonly blob?: BlobRef;
   /** The put's file access (swamp-club#3693); undefined for a plain file. */
   readonly access?: FileAccess;
+  /**
+   * The principal of the forwarded commit that put it, or the empty string
+   * for a commit with none (swamp-club#3922). Absent is unknown, as for a
+   * row from before the column.
+   */
+  readonly writer?: string;
+}
+
+/**
+ * One live record, with who wrote it (swamp-club#3922): `writer` is the
+ * forwarded commit's principal, the empty string for a commit with none, or
+ * null when unknown.
+ */
+export interface LiveRecordWriter {
+  readonly sha256: string;
+  readonly blob?: BlobRef;
+  readonly writer: string | null;
 }
 
 /** What one applied commit changes in the state. */
@@ -396,6 +422,8 @@ export class ReadModelState {
   readonly #upsertRecord: StatementSync;
   readonly #deleteRecord: StatementSync;
   readonly #selectRecords: StatementSync;
+  readonly #selectRecord: StatementSync;
+  readonly #selectAnyRecordIn: StatementSync;
   readonly #selectBlobs: StatementSync;
   readonly #selectVersions: StatementSync;
   readonly #deleteVersions: StatementSync;
@@ -430,14 +458,20 @@ export class ReadModelState {
         "ON CONFLICT (namespace, partition) DO UPDATE SET applied_seq = excluded.applied_seq",
     );
     this.#upsertRecord = db.prepare(
-      "INSERT INTO live_records (namespace, partition, record_key, sha256, blob, access) VALUES (?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, blob = excluded.blob, access = excluded.access",
+      "INSERT INTO live_records (namespace, partition, record_key, sha256, blob, access, writer) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (namespace, partition, record_key) DO UPDATE SET sha256 = excluded.sha256, blob = excluded.blob, access = excluded.access, writer = excluded.writer",
     );
     this.#deleteRecord = db.prepare(
       "DELETE FROM live_records WHERE namespace = ? AND partition = ? AND record_key = ?",
     );
     this.#selectRecords = db.prepare(
       "SELECT record_key, sha256, blob FROM live_records WHERE namespace = ? AND partition = ? ORDER BY record_key",
+    );
+    this.#selectRecord = db.prepare(
+      "SELECT sha256, blob, writer FROM live_records WHERE namespace = ? AND partition = ? AND record_key = ?",
+    );
+    this.#selectAnyRecordIn = db.prepare(
+      "SELECT 1 FROM live_records WHERE namespace = ? AND partition >= ? AND partition < ? LIMIT 1",
     );
     this.#selectBlobs = db.prepare(
       "SELECT blob FROM live_records WHERE namespace = ? AND blob IS NOT NULL",
@@ -611,6 +645,41 @@ export class ReadModelState {
     }));
   }
 
+  /** One live record of a partition, with its writer; undefined when absent. */
+  liveRecord(
+    namespace: string,
+    partition: string,
+    key: string,
+  ): LiveRecordWriter | undefined {
+    this.#requireOpen();
+    const row = this.#selectRecord.get(namespace, partition, key) as
+      | { sha256: string; blob: string | null; writer: string | null }
+      | undefined;
+    if (row === undefined) return undefined;
+    return {
+      sha256: row.sha256,
+      writer: row.writer,
+      ...(row.blob === null
+        ? {}
+        : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+    };
+  }
+
+  /**
+   * Whether any partition whose key starts with `prefix` holds a live
+   * record: a range over the primary key, so it reads no more than one row.
+   * A whole partition key is a prefix of itself.
+   */
+  holdsRecordsUnder(namespace: string, prefix: string): boolean {
+    this.#requireOpen();
+    // U+10FFFF sorts after every character a key can hold.
+    return this.#selectAnyRecordIn.get(
+      namespace,
+      prefix,
+      `${prefix}\u{10FFFF}`,
+    ) !== undefined;
+  }
+
   /** Every chunk a live blob names in a namespace, parts expanded. */
   chunksInUse(namespace: string): Set<string> {
     this.#requireOpen();
@@ -671,6 +740,7 @@ export class ReadModelState {
                 ? null
                 : JSON.stringify(record.blob.toJSON()),
               record.access ?? null,
+              record.writer ?? null,
             );
           }
         }

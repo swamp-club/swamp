@@ -132,6 +132,7 @@ import { type Span, withSpan } from "../tracing/tracer.ts";
 import {
   type AppliedRecord,
   type FileOwnership,
+  type LiveRecordWriter,
   type LoadKey,
   ReadModelState,
   type RecordContent,
@@ -940,6 +941,70 @@ export class SqliteReadModel implements ReadModel {
     return this.#afterPage(() => this.#state.fileOwnership(namespace, key));
   }
 
+  /**
+   * One live record of a partition with who wrote it (swamp-club#3922), as
+   * of the last commit this read model applied; undefined when absent.
+   */
+  liveRecord(
+    namespace: string,
+    partition: PartitionKey,
+    key: string,
+  ): Promise<LiveRecordWriter | undefined> {
+    return this.#afterPage(() =>
+      this.#state.liveRecord(namespace, partition.toString(), key)
+    );
+  }
+
+  /**
+   * Whether a partition whose key starts with `prefix` (a whole partition
+   * key, or one ending `--`) holds a live record, as of the last commit
+   * this read model applied: whether an aggregate's id still has records,
+   * for a forwarded create claiming it (swamp-club#3922).
+   */
+  holdsRecordsUnder(namespace: string, prefix: string): Promise<boolean> {
+    return this.#afterPage(() =>
+      this.#state.holdsRecordsUnder(namespace, prefix)
+    );
+  }
+
+  /**
+   * The bytes of a partition's live record as the checkout holds them, with
+   * the record: undefined when the partition holds no such record, or when
+   * the checkout's file is absent, unprojected or holds other bytes (another
+   * partition's put of the same key, or a file not yet written). Serve
+   * checks a forwarded edit against these bytes, and the record's digest
+   * guards them until the commit lands (swamp-club#3922).
+   */
+  async recordBytes(
+    namespace: string,
+    partition: PartitionKey,
+    key: string,
+    /** The most bytes to read: a larger file is answered as unreadable. */
+    maxBytes = Number.POSITIVE_INFINITY,
+  ): Promise<
+    | { readonly record: LiveRecordWriter; readonly bytes: Uint8Array }
+    | undefined
+  > {
+    const record = await this.liveRecord(namespace, partition, key);
+    if (record === undefined || this.#unprojected(namespace, key)) {
+      return undefined;
+    }
+    const root = this.#cacheRoot(namespace);
+    if (refusedKeyReason(RecordKey.create(key), root, this.#stateDir)) {
+      return undefined;
+    }
+    const path = join(root, ...key.split("/"));
+    let bytes: Uint8Array;
+    try {
+      if ((await Deno.stat(path)).size > maxBytes) return undefined;
+      bytes = await Deno.readFile(path);
+    } catch {
+      return undefined;
+    }
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    return digest === record.sha256 ? { record, bytes } : undefined;
+  }
+
   chunksInUse(namespace: string): Promise<ReadonlySet<string>> {
     return this.#afterPage(() => {
       const chunks = this.#state.chunksInUseIfComplete(namespace);
@@ -1442,7 +1507,7 @@ export class SqliteReadModel implements ReadModel {
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
         const key = keyChange.key.toString();
-        records.set(key, appliedRecord(keyChange.put));
+        records.set(key, appliedRecord(keyChange.put, commit.principal));
         const file = await this.#materialise(
           commit,
           change.cursor,
@@ -3386,12 +3451,26 @@ const AT_RISK_TEMP = /^\.[0-9a-f-]{36}\.tmp$/;
 /** Temp files {@link copyDurably} is writing in this process. */
 const copiesInFlight = new Set<string>();
 
-function appliedRecord(put: PutOp | null): AppliedRecord | null {
+function appliedRecord(
+  put: PutOp | null,
+  principal: string | undefined,
+): AppliedRecord | null {
   if (put === null) return null;
+  // Only a commit with no principal is serve's own (or an HA peer's); an
+  // empty one is recorded as unknown, never as serve's.
+  const writer = principal === undefined
+    ? ""
+    : principal === ""
+    ? undefined
+    : principal;
   return withAccess(
     "blob" in put.content
-      ? { sha256: put.sha256, blob: put.content.blob }
-      : { sha256: put.sha256 },
+      ? {
+        sha256: put.sha256,
+        blob: put.content.blob,
+        ...(writer === undefined ? {} : { writer }),
+      }
+      : { sha256: put.sha256, ...(writer === undefined ? {} : { writer }) },
     put.access,
   );
 }

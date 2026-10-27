@@ -6123,7 +6123,7 @@ are stamped `@anonymous`.
 | Route | Purpose |
 |---|---|
 | `POST chunks/has` | `{hashes}` (at most 1,024): the ones serve holds that the caller may reference, touched so GC keeps them |
-| `PUT chunks/{sha256}` | One chunk, hashed as it streams in, recorded in the upload ledger; needs `admin` until swamp-club#3922 |
+| `PUT chunks/{sha256}?partition={p}` | One chunk for a commit to `{p}`, hashed as it streams in, recorded in the upload ledger; needs the partition's least write access (below), `admin` with no partition |
 | `GET chunks/{sha256}` | A chunk's bytes, with one `Range`; 404 to a caller who may not read it |
 | `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
 | `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
@@ -6146,14 +6146,20 @@ and every intent must belong to it.
    host's chunk traffic is not capped at 50 requests a minute.
 2. Read and check the envelope. Its ops are built by `opFromJSON` and
    `createIntent`, as stored commits are.
-3. Catch serve's read model up, then authorise every op with
-   `authorizeCommit` (`src/domain/datastore_v3/commit_authorization.ts`). Its
-   bindings are below.
+3. Catch serve's read model up, then authorise every op's access with
+   `authorizeCommit` (`src/domain/datastore_v3/commit_authorization.ts`),
+   content deferred. Its bindings are below.
 4. Ingest the carried chunks (`src/infrastructure/datastore_v3/chunk_ingest.ts`).
    Each is hashed as it is read and refused when its bytes do not match, so
    nothing is staged and nothing is committed. It is stored through a
    `ChunkBatch`, whose barrier makes it durable before the commit.
-5. Proof of possession: see below.
+5. Unless the txnId already landed, check content
+   (`ForwardedContentAuthority`, `src/serve/forwarded_content_authorization.ts`),
+   outside the forwarded lock: "Content checks" below. Then, under the lock,
+   answer a txnId that landed as its duplicate, authorise access again, check
+   that no record the content was judged against moved (`409
+   content_changed` otherwise: check again and retry), and prove possession:
+   see below.
 6. `commitForwarded` (`src/infrastructure/datastore_v3/forwarded_commit.ts`)
    appends the commit through the v3 handle's `appendForwarded`, which uses
    the same sink, partition lock, outbox prepare and settle as serve's own
@@ -6220,15 +6226,10 @@ v3 through `withAuditedV3Env`. Each scenario's commits must pass these
 bindings, so a repository write a forwarded commit would be refused for fails
 its gate.
 
-**Every forwarded write needs admin for now.** A forwarded op can carry
-more than serve's handlers would let the same caller write: content, a
-removal's or rename's bytes, files whose owner only a lookup can tell. Until
-swamp-club#3922 checks a forwarded write the way serve's handlers check it,
-every put and tombstone also needs `admin` on `access:*`
-(`writeAccessesOf`). The rules below still apply, so a deny on the resource
-refuses an admin too, and they are what #3922 relaxes the admin requirement
-against. Reads are not affected: a non-admin's catch-up, changes feed and
-chunk reads are filtered as below.
+**A forwarded write needs what serve's handlers need** (swamp-club#3922):
+the access in the table below, and for a put that carries content serve acts
+on, the checks "Content checks" lists. Until #3922 every forwarded write
+needed `admin` as well.
 
 **Intents to actions.** Each op is decided with serve's decision service, its
 admin fallback included (`isCallerAuthorized`, audited on refusal). The
@@ -6246,7 +6247,11 @@ resource is the same one serve's handlers check for the same write:
 | `run.delete`, `run-snapshot.delete` | `write` on the workflow | `read` on the workflow |
 | `definition.delete`, `evaluated-workflow.delete` | `write` on `model:`, `workflow:` or `vault:` by kind | `read` on it |
 | `definition.rename-from` | `write` on both names the rename joins | `read` on it |
-| `definition.create`, `.edit`, `.rename-to` of any definition kind; `evaluated-definition.save`, `evaluated-workflow.save`, `auto-definition.save`, `run-snapshot.save` | `admin` (below) | `read` by kind |
+| `definition.create`, `.edit`, `.rename-to` of a behavior, workflow or vault | `write` on the definition, both names for a rename, and its content checks | `read` by kind |
+| `evaluated-definition.save`, `evaluated-workflow.save` | `run` on the behavior or workflow (`admin` for an admin-only type), as saving an evaluation is decided (swamp-club#3940), and its binding | `read` by kind |
+| `auto-definition.save` | `run` on the type and the behavior, and its content checks | `admin` |
+| `run-snapshot.save` | `run` on the workflow, and its binding | `read` on the workflow |
+| `definition.delete`, or a move's tombstone, of a vault config | `admin`: serve's API never removes a vault config | `read` on it |
 | `auto-definition.delete` | `write` on the behavior | `read` on it |
 | `lockfile.write` | `admin` | any authenticated caller |
 
@@ -6259,19 +6264,68 @@ the forwarded path differs it is stricter: the lockfile needs `admin` on
 records need `run` where approve, reject and signal check their own
 actions.
 
-**Puts whose content serve checks are admin-only for now.** Serve's
-WebSocket edits check more than `write` on a definition. A retag needs `tag`,
-a rename needs `write` on the result, and the expressions and workflow steps
-an edit adds are authorised against what they reference (swamp-club#2755).
-Serve also reads back stored evaluated definitions when it runs a behavior,
-so a forged evaluated file could carry values that skip those checks. And a
-vault is found by the name its content declares
-(`YamlVaultConfigRepository.findByName`), not by the intent's, so a vault put
-authorised on one name could install a config under another.
-Forwarded commits cannot be checked that way yet, so those puts need `admin`.
-Content-level parity, after which they can need what serve's handlers need,
-is swamp-club#3922; it is needed before non-admins run methods through team
-mode.
+**Content checks** (`ForwardedContentAuthority`, swamp-club#3922). Serve
+reads a checked put's bytes only once the caller is shown to possess every
+chunk it names, so a refusal tells it nothing about content it may not read;
+refusals name the field, never its value. It parses the content as the
+repositories do, reads the record the put replaces from the read model (for
+a move, the record the commit tombstones; for a rename, the old name's), and
+applies, through the caller's audited decisions, what serve's handlers apply
+to the same write. The checks the handlers share are one implementation
+(`RequestAuthority`).
+
+- **Identity** (`content_bindings.ts`): a definition, vault, auto-definition
+  or evaluated file declares the name, id and type its intent and key name;
+  an edit keeps the stored id. A create may not take an id a definition or
+  workflow holds, or one that records (a behavior's data, a workflow's runs)
+  are still stored under, nor a name another live definition holds (of any
+  type, for a behavior), except an auto-definition promoted to its own name.
+  The id checks run again under the lock; two creates of one name share the
+  name's config partition, so its head orders them.
+- **Behavior and workflow edits**: `write` on the result, `tag` for a retag
+  or rename, and the expressions and steps the edit adds
+  (`authorizeExpressionReferences`, `authorizeWorkflowEdit`); a create is an
+  edit from nothing. No literal value for a sensitive global argument.
+- **Vaults**: a valid, single-segment name on a create or rename, write on
+  every name it touches as `vault.edit` decides it, the local_encryption key
+  source left as serve sets it, no create over secrets serve still holds
+  under the name. A local_encryption vault is renamed with `vault.edit`,
+  which moves its secrets; a forwarded rename's removal lands only after its
+  rename-to.
+- **Auto-definitions**: content of the shape direct execution writes, or
+  changing only a stored one's global arguments, needs `run` and adoption's
+  guards; any other content is an edit of the behavior. A copy carrying a
+  named definition's id needs `run` on it.
+- **Run records** (`judgeRunRecord`): a run's first record carries no
+  triggering principal (only serve records one) and allowed vaults within
+  the workflow's list; who triggered it, its parent, vaults, initiator, plan
+  and inherited expressions never change; its log file is the run's own;
+  serve's runs keep their owner. Recording or changing an approval decision,
+  or completing a gate otherwise than by a cancel's settlement or its
+  deadline, needs `approve`; a wait's outcome needs `signal`; a waiting gate's
+  prompt, timeout and start are frozen. Inputs, deferred and inherited
+  expressions it adds are authorised as run inputs, vault references it adds
+  as vault reads, and step outputs it adds must name what the step runs and
+  data the caller may read.
+- **Data**: a sensitive field's vault reference is one the caller may read,
+  or may write under the key the data writer derives for the behavior's own
+  records. A removal's put only lowers a latest marker to a stored version; a
+  rename writes exactly the shape the repository's rename writes.
+
+The content-derived decisions (`tag`, `approve`, `signal`, expression
+reads, vault reads) are made before the forwarded lock, as serve's handlers
+make theirs before they save; under the lock serve re-decides access and
+checks that no record the content was judged against moved.
+
+**Evaluations serve runs.** Serve runs `--last-evaluated` only with an
+evaluation it wrote itself (`EvaluationTrust`,
+`src/infrastructure/datastore_v3/trusted_evaluations.ts`): the read model
+records each live record's writer (schema 8), the principal of the forwarded
+commit that put it or none, and an evaluation a forwarded commit wrote, or
+whose writer is unknown (rows from before schema 8, a compacted base), is
+refused with a request to evaluate on serve. The bytes parsed are the ones
+whose writer was checked. A run log is read and appended to only under the
+repo's own run-log directories, whatever path a record holds.
 
 **Proof of possession.** A commit may name a chunk only when one of these
 holds:
@@ -6312,11 +6366,15 @@ not vouched for by that partition: a non-admin gets 404 for it, and a client
 uploads it again to name it. A read model still being built vouches for
 nothing.
 
-**Uploading a chunk needs admin for now.** An uploaded chunk serves only a
-commit that names it, and every forwarded write needs `admin` until
-swamp-club#3922, so `PUT chunks/{sha256}` decides `admin` on `access:*`
-before it reserves or reads anything (`403 forbidden` otherwise). It relaxes
-with commits.
+**Uploading a chunk needs write access to its partition.** An upload spends
+serve's storage and the caller's quota, so `PUT chunks/{sha256}` names the
+partition it is for and needs that partition's least write access
+(`partitionWriteAccessOf`): `run` on a behavior or a workflow, `write` on a
+workflow or vault config, and `admin` for a behavior definition's partition
+(it names no type), an auto-definition's, the lockfile and control-plane
+behaviors. With no partition it needs `admin`. It is decided before anything
+is reserved or read (`403 forbidden` otherwise); what a commit may name the
+chunk for is decided on the commit.
 
 The upload ledger (`src/infrastructure/datastore_v3/upload_ledger.ts`) lives
 in memory and is bounded. It caps a principal's uploaded bytes no commit
@@ -6329,8 +6387,10 @@ granted. Requests in flight together therefore cannot pass a cap, and a
 commit refused after its content arrived cannot leave unbounded content
 behind; a reservation never recorded is cancelled. The whole ledger holds at
 most 200,000 entries and reservations. At that bound a reservation makes
-room from the oldest entry a commit already references, since that commit's
-partition vouches for the chunk; with none, from the oldest upload of the
+room from the oldest entry a commit already references: a retry of that
+commit is answered before proof of possession, and a new commit naming the
+chunk carries it again unless a partition the caller may read vouches for
+it; with none, from the oldest upload of the
 principal holding the most unreferenced uploads, and when that is the caller
 (or it ties), the caller is refused with `429 upload_quota_exceeded`. So one
 principal's uploads never push out a lighter principal's. A restart forgets
@@ -6357,6 +6417,8 @@ other limits are constants, with no flags:
 | Situation | Reply |
 |---|---|
 | The partition's head moved | `409 {code: stale_seq, seq}`: catch up and retry |
+| A record the content was checked against changed | `409 {code: content_changed}`: check again and retry |
+| A put's content is refused | `403 {code: forbidden, reason: content-refused, opIndex, message}` |
 | An op's `expect` failed | `409 {code: precondition_failed, key, seq, changedBy, changedAt}`, worded like a rejected `git push` |
 | A txnId landed as another commit | `409 txn_id_reused` |
 | A named chunk is not stored | `409 {code: chunk_missing, missing}` |

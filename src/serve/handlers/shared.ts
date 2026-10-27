@@ -1274,17 +1274,31 @@ export function authorizeRetag(
   socket: WebSocket,
   requestId: string,
   principal: Principal | null,
-  retag: {
-    /** The resource before the edit, with the given tags. */
-    prior: (tags: Record<string, string>) => AccessResource;
-    /** The resource as the edit leaves it. */
-    after: AccessResource;
-    loaded: Record<string, string>;
-    stored: Record<string, string> | null;
-    afterTags: Record<string, string>;
-  },
+  retag: Retag,
   ctx: ConnectionContext,
 ): boolean {
+  return retagResources(retag).every((resource) =>
+    authorizeOrReject(socket, requestId, principal, "tag", resource, ctx)
+      .allowed
+  );
+}
+
+/** What a retag is judged on, as {@link authorizeRetag} describes it. */
+export interface Retag {
+  /** The resource before the edit, with the given tags. */
+  readonly prior: (tags: Record<string, string>) => AccessResource;
+  /** The resource as the edit leaves it. */
+  readonly after: AccessResource;
+  readonly loaded: Record<string, string>;
+  readonly stored: Record<string, string> | null;
+  readonly afterTags: Record<string, string>;
+}
+
+/**
+ * The resources {@link authorizeRetag} needs `tag` on, in the order it
+ * decides them: none when the edit changes neither tags nor name.
+ */
+export function retagResources(retag: Retag): AccessResource[] {
   const { loaded, stored, afterTags } = retag;
   const renamed = retag.prior(loaded).name !== retag.after.name;
   const changed = stored === null
@@ -1292,15 +1306,11 @@ export function authorizeRetag(
     : [loaded, stored].filter((prior) =>
       renamed || tagsChanged(prior, afterTags)
     );
-  if (changed.length === 0) return true;
+  if (changed.length === 0) return [];
   const priors = changed.filter((tags, i) =>
     changed.findIndex((other) => !tagsChanged(other, tags)) === i
   );
-  const resources = [...priors.map(retag.prior), retag.after];
-  return resources.every((resource) =>
-    authorizeOrReject(socket, requestId, principal, "tag", resource, ctx)
-      .allowed
-  );
+  return [...priors.map(retag.prior), retag.after];
 }
 
 /**
@@ -1542,6 +1552,49 @@ export function isCallerAuthorizedForAll(
     ctx,
     decideForCaller(caller, action, resource, ctx, true),
   );
+}
+
+/**
+ * The audited access decisions of one request, whoever made it: a WebSocket
+ * connection or a caller with no socket, such as a forwarded datastore
+ * commit. Checks that authorize content against its author (expressions,
+ * workflow steps) take one, so both paths share them. A refusal is audited
+ * as {@link isAuthorized} audits it; nothing is sent.
+ */
+export interface RequestAuthority {
+  /** `action` on `resource`, as {@link isAuthorized} decides it. */
+  allows(action: Action, resource: AccessResource): boolean;
+  /** `action` on every resource of `kind`, as {@link isAuthorizedForAll}. */
+  allowsAll(action: Action, kind: ResourceKind): boolean;
+}
+
+/** The {@link RequestAuthority} of a request on `socket`. */
+export function socketAuthority(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+): RequestAuthority {
+  return {
+    allows: (action, resource) =>
+      isAuthorized(socket, requestId, principal, action, resource, ctx),
+    allowsAll: (action, kind) =>
+      isAuthorizedForAll(socket, requestId, principal, action, kind, ctx),
+  };
+}
+
+/** The {@link RequestAuthority} of a request by `caller`, with no socket. */
+export function callerAuthority(
+  caller: AccessCaller,
+  requestId: string,
+  ctx: ConnectionContext,
+): RequestAuthority {
+  return {
+    allows: (action, resource) =>
+      isCallerAuthorized(caller, requestId, action, resource, ctx),
+    allowsAll: (action, kind) =>
+      isCallerAuthorizedForAll(caller, requestId, action, kind, ctx),
+  };
 }
 
 /** Whether `outcome` allows; a refusal is audited, nothing is sent. */
@@ -1985,13 +2038,13 @@ interface VaultOutcome {
 }
 
 function accessPrincipalOf(
-  socket: WebSocket,
+  caller: AccessCaller,
   principal: Principal,
 ): AccessPrincipal {
   return {
     principal,
-    collectives: connectionCollectives.get(socket) ?? [],
-    groups: connectionGroups.get(socket) ?? [],
+    collectives: [...caller.collectives],
+    groups: [...caller.groups],
   };
 }
 
@@ -2024,14 +2077,13 @@ function sameResource(a: AccessResource, b: AccessResource): boolean {
  * denies it.
  */
 function decideVaultRequest(
-  socket: WebSocket,
-  principal: Principal | null,
+  caller: AccessCaller,
   request: VaultRequest,
   ctx: ConnectionContext,
 ): VaultOutcome {
-  const existing = decideAccess(
-    socket,
-    principal,
+  const principal = caller.principal;
+  const existing = decideForCaller(
+    caller,
     request.action,
     request.existing,
     ctx,
@@ -2053,7 +2105,7 @@ function decideVaultRequest(
   const loader = ctx.policySnapshotLoader!;
   const subject = principal!;
   const service = loader.decisionService;
-  const accessPrincipal = accessPrincipalOf(socket, subject);
+  const accessPrincipal = accessPrincipalOf(caller, subject);
   let denied: VaultOutcome | null = null;
   let vaultAllow: AccessDecision | null = null;
   for (const resource of vaultDenyResources(request.vaultName, request.key)) {
@@ -2099,7 +2151,11 @@ export function authorizeVaultOrReject(
   request: VaultRequest,
   ctx: ConnectionContext,
 ): VaultAuthorizationResult {
-  const decided = decideVaultRequest(socket, principal, request, ctx);
+  const decided = decideVaultRequest(
+    accessCallerOf(socket, principal),
+    request,
+    ctx,
+  );
   const result = replyToOutcome(
     socket,
     requestId,
@@ -2112,6 +2168,28 @@ export function authorizeVaultOrReject(
   return result.allowed
     ? { ...result, admittedBy: decided.admittedBy }
     : result;
+}
+
+/**
+ * {@link authorizeVaultOrReject} for a caller with no socket: the same
+ * decision, a refusal audited the same way, and nothing sent.
+ */
+export function isCallerVaultAuthorized(
+  caller: AccessCaller,
+  requestId: string,
+  request: VaultRequest,
+  ctx: ConnectionContext,
+): boolean {
+  const decided = decideVaultRequest(caller, request, ctx);
+  return auditCallerRefusal(
+    caller,
+    requestId,
+    caller.principal,
+    request.action,
+    decided.resource,
+    ctx,
+    decided.outcome,
+  );
 }
 
 /**
@@ -2135,7 +2213,7 @@ export function admitVaultLookupOrReject(
     outcome.kind === "refused" && outcome.decision === null && principal &&
     ctx.policySnapshotLoader &&
     ctx.policySnapshotLoader.decisionService.hasAnyGrantForKind(
-      accessPrincipalOf(socket, principal),
+      accessPrincipalOf(accessCallerOf(socket, principal), principal),
       action,
       "vault",
     )
@@ -2181,7 +2259,7 @@ export function admitVaultListingOrReject(
     outcome.kind === "refused" && outcome.decision === null && principal &&
     ctx.policySnapshotLoader &&
     ctx.policySnapshotLoader.decisionService.hasAnyGrantForKind(
-      accessPrincipalOf(socket, principal),
+      accessPrincipalOf(accessCallerOf(socket, principal), principal),
       action,
       "vault",
     )
@@ -2209,7 +2287,10 @@ export function vaultListingDecider(
   const loader = ctx.policySnapshotLoader;
   if (!loader || !principal) return () => false;
   const service = loader.decisionService;
-  const accessPrincipal = accessPrincipalOf(socket, principal);
+  const accessPrincipal = accessPrincipalOf(
+    accessCallerOf(socket, principal),
+    principal,
+  );
   const decided = new Map<string, boolean>();
   return (vaultName) => {
     let kept = decided.get(vaultName);

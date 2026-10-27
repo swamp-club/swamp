@@ -133,7 +133,9 @@ const CacheMetadataSchema = z.object({
   evaluatedInputsOmitted: z.literal("sensitive").optional(),
 });
 
-function parseCache(content: string): EvaluatedWorkflowCache | null {
+export function parseEvaluatedWorkflowCache(
+  content: string,
+): EvaluatedWorkflowCache | null {
   const data = parseYaml(content) as
     | (WorkflowData & {
       authoredExpressions?: unknown;
@@ -255,7 +257,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     const legacyPath = this.getLegacyPath(id);
     try {
       const content = await Deno.readTextFile(legacyPath);
-      const cached = parseCache(content);
+      const cached = parseEvaluatedWorkflowCache(content);
       if (cached) {
         this.idToActualPath.set(id, legacyPath);
         return cached.workflow;
@@ -271,7 +273,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     if (cachedPath && cachedPath !== legacyPath) {
       try {
         const content = await Deno.readTextFile(cachedPath);
-        const cached = parseCache(content);
+        const cached = parseEvaluatedWorkflowCache(content);
         if (cached) {
           return cached.workflow;
         }
@@ -299,7 +301,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         ) {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
-          const cached = parseCache(content);
+          const cached = parseEvaluatedWorkflowCache(content);
           if (!cached) continue;
           const workflow = cached.workflow;
           this.idToActualPath.set(workflow.id as WorkflowId, path);
@@ -338,7 +340,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       const namePath = this.getNamePath(name);
       try {
         const content = await Deno.readTextFile(namePath);
-        const cached = parseCache(content);
+        const cached = parseEvaluatedWorkflowCache(content);
         if (cached) {
           if (cached.workflow.name !== name) {
             // File content doesn't match filename — fall through to slow path
@@ -365,7 +367,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
           entry.name.endsWith(".yaml")
         ) {
           const path = join(dir, entry.name);
-          const cached = parseCache(await Deno.readTextFile(path));
+          const cached = parseEvaluatedWorkflowCache(
+            await Deno.readTextFile(path),
+          );
           if (!cached) continue;
           this.idToActualPath.set(cached.workflow.id as WorkflowId, path);
           if (cached.workflow.name === name) return cached;
@@ -724,7 +728,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     const targetPath = join(dir, "evaluated-workflow.yaml");
     try {
       const content = await Deno.readTextFile(targetPath);
-      const cached = parseCache(content);
+      const cached = parseEvaluatedWorkflowCache(content);
       if (cached) {
         return cached.workflow;
       }

@@ -52,8 +52,10 @@ import {
   type AggregateResourceResolver,
   authorizeCommit,
   type CallerAuthority,
+  type CommitRefusal,
   definitionRecordReadAccessOf,
   partitionReadAccessOf,
+  partitionWriteAccessOf,
   readAccessOf,
   type RequiredAccess,
 } from "../domain/datastore_v3/commit_authorization.ts";
@@ -78,6 +80,7 @@ import {
 import {
   ChunksMissingError,
   commitForwarded,
+  landedForwardedCommit,
   PreconditionConflictError,
   StaleSeqError,
   TxnIdReusedError,
@@ -107,6 +110,7 @@ import {
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 import type { DatastoreRoute } from "./datastore_routes.ts";
+import { ForwardedContentAuthority } from "./forwarded_content_authorization.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
 
@@ -332,11 +336,32 @@ class DatastoreApi {
     if (!Number.isSafeInteger(size) || size < 0) {
       return failure(411, "length_required", "Content-Length is required");
     }
-    // An uploaded chunk serves only a commit that names it, and every
-    // forwarded write needs admin until swamp-club#3922: so does the upload,
-    // decided before anything is reserved or read.
-    if (!this.#writeAuthority().allows("admin", ADMIN_RESOURCE)) {
-      return failure(403, "forbidden", "Uploading a chunk needs admin");
+    // An upload spends serve's storage and the caller's quota, so it needs
+    // the least access a write to the partition it is for needs
+    // (swamp-club#3922), decided before anything is reserved or read. With
+    // no partition named it needs admin. What a commit may name it for is
+    // still decided on the commit.
+    const named = new URL(req.url).searchParams.get("partition");
+    let required: RequiredAccess = {
+      action: "admin",
+      resource: ADMIN_RESOURCE,
+    };
+    if (named !== null) {
+      const partition = parsePartition(named);
+      if (partition === undefined) {
+        return failure(400, "invalid_request", "Not a partition key");
+      }
+      await this.#catchUp();
+      required = await partitionWriteAccessOf(partition, this.#resolver);
+    }
+    if (!this.#writeAuthority().allows(required.action, required.resource)) {
+      return failure(
+        403,
+        "forbidden",
+        named === null
+          ? "Uploading a chunk for no partition needs admin"
+          : `Uploading a chunk for ${named} needs ${required.action} on ${required.resource.kind}:${required.resource.name}`,
+      );
     }
     const now = this.#now();
     const admission = this.#deps.ledger.reserve(
@@ -440,7 +465,8 @@ class DatastoreApi {
       );
     }
     // Key ownership is read from serve's read model: catch it up first, so
-    // it includes everything serve itself committed.
+    // it includes everything serve itself committed. Content is checked
+    // once it has arrived, below; this pass refuses early on access alone.
     let authorization;
     try {
       await this.#catchUp();
@@ -449,6 +475,7 @@ class DatastoreApi {
         ops,
         this.#resolver,
         this.#writeAuthority(),
+        "deferred",
       );
     } catch (error) {
       await reader.cancel();
@@ -456,14 +483,7 @@ class DatastoreApi {
     }
     if (!authorization.ok) {
       await reader.cancel();
-      return Response.json({
-        code: authorization.reason === "forbidden"
-          ? "forbidden"
-          : "commit_refused",
-        reason: authorization.reason,
-        opIndex: authorization.opIndex,
-        message: authorization.message,
-      }, { status: 403 });
+      return refusalResponse(authorization);
     }
     const referenced = referencedChunks(ops);
     // Every chunk named and not carried is checked under the forwarded
@@ -500,11 +520,52 @@ class DatastoreApi {
       return provided;
     }
     const carried = provided;
+    const request = {
+      partition,
+      txnId: envelope.txnId,
+      expectedSeq: envelope.expectedSeq,
+      ...(envelope.fence === undefined ? {} : { fence: envelope.fence }),
+      principal: this.#caller.principal,
+      ops,
+    };
+    // Content is checked outside the forwarded lock, which every caller's
+    // commits share: the checks read definitions and the catalog. Every
+    // record they read is guarded below. A retry of a commit that already
+    // landed is answered as it, without judging its content again.
+    let content: ForwardedContentAuthority | undefined;
+    if (await landedForwardedCommit(this.#v3, request) === undefined) {
+      await this.#catchUp();
+      const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
+      content = new ForwardedContentAuthority({
+        ctx: this.#deps.ctx,
+        v3: this.#v3,
+        partition,
+        caller: this.#caller.access,
+        requestId: this.#requestId,
+        resolver,
+        possesses: async (hash) =>
+          carried.has(hash) || (await this.#mayReference(hash, resolver)),
+        signal: req.signal,
+      });
+      const checked = await authorizeCommit(
+        partition,
+        ops,
+        resolver,
+        this.#writeAuthority(),
+        content,
+      );
+      if (!checked.ok) return refusalResponse(checked);
+    }
     // Authorised again under the datastore's forwarded-commit lock, once the
     // content is in: key ownership cannot change between the check and the
     // append, and a grant revoked during the upload applies.
     const landed = await withForwardedLock(this.#v3, async () => {
       await this.#catchUp();
+      // A retry of a commit that landed is answered before proof of
+      // possession: its chunks may since have left the upload ledger.
+      const duplicate = await landedForwardedCommit(this.#v3, request);
+      if (duplicate !== undefined) return { result: duplicate };
+      if (content === undefined) return { contentChanged: true as const };
       // Looked up afresh: a definition retagged during the upload is judged
       // as it is now.
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
@@ -513,8 +574,13 @@ class DatastoreApi {
         ops,
         resolver,
         this.#writeAuthority(),
+        "deferred",
       );
       if (!recheck.ok) return recheck;
+      // The records the content was judged against must not have moved.
+      if (!(await content.unchanged())) {
+        return { contentChanged: true as const };
+      }
       // Proof of possession under the lock too, so a read grant revoked
       // during the upload no longer vouches for a chunk.
       for (const hash of referenced) {
@@ -523,16 +589,16 @@ class DatastoreApi {
         }
         return { notProvided: hash };
       }
-      const result = await commitForwarded(this.#v3, {
-        partition,
-        txnId: envelope.txnId,
-        expectedSeq: envelope.expectedSeq,
-        ...(envelope.fence === undefined ? {} : { fence: envelope.fence }),
-        principal: this.#caller.principal,
-        ops,
-      }, req.signal);
+      const result = await commitForwarded(this.#v3, request, req.signal);
       return { result };
     });
+    if ("contentChanged" in landed) {
+      return failure(
+        409,
+        "content_changed",
+        "A record this commit was checked against changed: check the commit again and retry",
+      );
+    }
     if ("notProvided" in landed) {
       return failure(
         403,
@@ -540,14 +606,7 @@ class DatastoreApi {
         `The commit names chunk ${landed.notProvided}, which it neither carries nor may read`,
       );
     }
-    if ("ok" in landed) {
-      return Response.json({
-        code: landed.reason === "forbidden" ? "forbidden" : "commit_refused",
-        reason: landed.reason,
-        opIndex: landed.opIndex,
-        message: landed.message,
-      }, { status: 403 });
-    }
+    if ("ok" in landed) return refusalResponse(landed);
     const { result } = landed;
     this.#deps.ledger.release(this.#storageNamespace, referenced);
     // Outside the lock: the next forwarded commit catches up before it
@@ -1175,6 +1234,18 @@ function parsePartition(segment: string): PartitionKey | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The 403 a refused commit is answered with. */
+function refusalResponse(refusal: CommitRefusal): Response {
+  return Response.json({
+    code: refusal.reason === "forbidden" || refusal.reason === "content-refused"
+      ? "forbidden"
+      : "commit_refused",
+    reason: refusal.reason,
+    opIndex: refusal.opIndex,
+    message: refusal.message,
+  }, { status: 403 });
 }
 
 function namespaceOf(v3: Pick<V3Datastore, "namespace">) {

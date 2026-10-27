@@ -198,8 +198,19 @@ export async function commitForwarded(
 
 /**
  * The seq `request`'s txnId landed at, when it did, as a duplicate: refused
- * when the landed commit is another caller's or holds other ops.
+ * when the landed commit is another caller's or holds other ops. Serve asks
+ * before proof of possession, so a retry of a commit that landed is
+ * answered without naming its chunks again (swamp-club#3922).
+ *
+ * @throws TxnIdReusedError when the txnId landed as another commit
  */
+export async function landedForwardedCommit(
+  v3: ForwardedCommitTarget,
+  request: ForwardedCommitRequest,
+): Promise<ForwardedCommitResult | undefined> {
+  return await landedResult(v3, request);
+}
+
 async function landedResult(
   v3: ForwardedCommitTarget,
   request: ForwardedCommitRequest,

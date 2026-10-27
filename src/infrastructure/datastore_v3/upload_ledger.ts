@@ -345,10 +345,11 @@ export class UploadLedger {
    * uploads, provided that is not the caller. False when neither exists.
    */
   #makeRoom(principalId: string): boolean {
-    // A released entry's commit landed: the partition that references the
-    // chunk now vouches for it on a retry, for a caller who may read that
-    // partition. Every forwarded write needs admin until swamp-club#3922;
-    // revisit this when that relaxes, since a writer may not be a reader.
+    // A released entry's commit landed, so evicting it costs no retry: serve
+    // answers a retry of a landed commit before proof of possession
+    // (swamp-club#3922). A new commit naming the chunk is vouched for by a
+    // partition that references it only for a caller who may read that
+    // partition; a writer who may not carries the chunk again.
     const [oldestReleased] = this.#released;
     if (oldestReleased !== undefined) {
       this.#delete(oldestReleased, this.#entries.get(oldestReleased)!);
