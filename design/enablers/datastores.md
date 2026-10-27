@@ -6308,9 +6308,12 @@ to the same write. The checks the handlers share are one implementation
   the workflow's list; who triggered it, its parent, vaults, initiator, plan
   and inherited expressions never change; its log file is the run's own;
   serve's runs keep their owner. Recording or changing an approval decision,
-  or completing a gate otherwise than by a cancel's settlement or its
-  deadline, needs `approve`; a wait's outcome needs `signal`; a waiting gate's
-  prompt, timeout and start are frozen. Inputs, deferred and inherited
+  or completing a gate otherwise than by a cancel's settlement, its deadline
+  or its recorded decision, needs `approve`; a decision covers only its own
+  outcome (an approval succeeds the gate, a denial fails it), and a step that
+  holds one is a gate whatever the stored workflow says or it links to, is
+  never skipped as unreached, and is never dropped from the record. A wait's outcome needs `signal`; a waiting
+  gate's prompt, timeout and start are frozen. Inputs, deferred and inherited
   expressions it adds are authorised as run inputs, vault references it adds
   as vault reads, and step outputs it adds must name what the step runs and
   data the caller may read.

@@ -37,7 +37,9 @@
  *   that waited settles without `approve` only by a cancel's settlement or
  *   its deadline (taken from what the record held when the wait began), or
  *   by completing a decision an approver recorded, and its prompt, timeout
- *   and start hold while it waits; a signal wait settles
+ *   and start hold while it waits; a decided gate is never dropped and,
+ *   however it is re-opened, retyped or linked to a child run after, never
+ *   settles to an outcome its decision does not allow; a signal wait settles
  *   without `signal` only by a cancel's settlement; a waiting step never
  *   disappears; decisions never change; frozen fields never change; the log
  *   is the run's own; and every output it sets is handed to serve to check.
@@ -67,6 +69,7 @@ const CHILD_WORKFLOW = "77777777-8888-4999-8aaa-bbbbbbbbbbbb";
 const FOREIGN = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
 const T0 = "2026-10-26T00:00:00.000Z";
 const NOW = new Date("2026-10-26T00:20:00.000Z");
+const SETTLED = new Set(["succeeded", "failed", "skipped"]);
 /** Deadlines: one long passed by NOW, one far ahead. */
 const SHORT = 60;
 const LONG = 864_000;
@@ -608,6 +611,12 @@ interface WaitingGate {
 class Oracle {
   readonly gates = new Map<string, WaitingGate>();
   readonly waits = new Set<string>();
+  /**
+   * Gates by whether their decision approved, kept after the wait ends. Only an approver
+   * records a decision, so it is noted from the decision itself, never from
+   * what the stored workflow or a child-run link says the step is.
+   */
+  readonly decided = new Map<string, boolean>();
 
   /** Notes waits that `record` opens; `kinds` is the stored workflow now. */
   observe(
@@ -634,6 +643,9 @@ class Oracle {
       const gate = this.gates.get(k);
       if (gate !== undefined && step.approvalDecision !== undefined) {
         gate.approved = step.approvalDecision.approved;
+      }
+      if (step.approvalDecision !== undefined && !this.decided.has(k)) {
+        this.decided.set(k, step.approvalDecision.approved);
       }
       if (step.status === "waiting_signal") this.waits.add(k);
     }
@@ -716,6 +728,24 @@ class Oracle {
         is.status === (gate.approved ? "succeeded" : "failed");
       if (!byCancel && !byDeadline && !byDecision) {
         return `waiting gate ${k} settled to ${is.status} without approve`;
+      }
+    }
+    // A decision stands after the wait: dropping, re-opening, retyping or
+    // linking the gate never lets it settle to an outcome its decision does
+    // not allow. Failing it always is: a settled gate's start and timeout are
+    // no longer frozen, so a run can forge its deadline, but a run can always
+    // fail itself too.
+    for (const [k, approved] of this.decided) {
+      const is = next.get(k);
+      if (is === undefined) return `decided gate ${k} dropped`;
+      if (
+        !SETTLED.has(is.status) || is.status === prior.get(k)?.status ||
+        is.status === "failed"
+      ) {
+        continue;
+      }
+      if (!approved || is.status !== "succeeded") {
+        return `decided gate ${k} settled to ${is.status} against its decision`;
       }
     }
     for (const k of this.waits) {

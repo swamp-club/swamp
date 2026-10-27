@@ -319,18 +319,22 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
     }
   }
   // A waiting step stays in the record until it settles: dropping or
-  // renaming it would end the wait without judging how.
+  // renaming it would end the wait without judging how. A decided step
+  // stays too: re-added in a later record, it would read as never decided.
   const afterSteps = new Set(
     after.jobs.flatMap((job) =>
       job.steps.map((step) => stepKey(job.jobName, step.stepName))
     ),
   );
   for (const [key, step] of beforeSteps) {
+    if (afterSteps.has(key)) continue;
     if (
-      (step.status === "waiting_approval" ||
-        WAITING_SIGNAL.has(step.status)) && !afterSteps.has(key)
+      step.status === "waiting_approval" || WAITING_SIGNAL.has(step.status)
     ) {
       return refuse("it drops a step that is waiting");
+    }
+    if (step.approvalDecision !== undefined) {
+      return refuse("it drops a step that holds an approval decision");
     }
   }
   const addedOutputs: AddedStepOutput[] = [];
@@ -438,16 +442,19 @@ function judgeStep(
   // frozen above.
   const nestedWait = prior?.nestedRun !== undefined;
   // A step that waited on an approval is a gate whatever the stored workflow
-  // says it is now: an edit can retype the step while the run waits. One the
-  // stored workflow no longer names is a gate when it holds a gate's prompt
-  // or decision: its prompt is frozen while it waits, so a record cannot
-  // drop the evidence in one commit and settle the gate in the next.
+  // says it is now: an edit can retype the step while the run waits. One
+  // that holds a decision is a gate whatever it is or links to: the decision
+  // stands until approve changes it. One the stored workflow no longer names
+  // is a gate when it holds a gate's prompt: its prompt is frozen while it
+  // waits, so a record cannot drop the evidence in one commit and settle the
+  // gate in the next.
   const gate = kind === "approval" ||
     (!nestedWait && prior?.status === "waiting_approval") ||
+    prior?.approvalDecision !== undefined ||
+    step.approvalDecision !== undefined ||
     (kind === "unknown" && !nestedWait &&
       (prior?.approvalPrompt !== undefined ||
-        step.approvalPrompt !== undefined ||
-        step.approvalDecision !== undefined));
+        step.approvalPrompt !== undefined));
   // A gate leaves waiting_approval only for an outcome: moving it back to
   // pending or running re-opens it without a decision.
   if (
@@ -457,16 +464,21 @@ function judgeStep(
     actions.add("approve");
   }
   // A gate a run skips (its guard false) was never waited on: skipping it
-  // decides nothing. Skipping a gate that waits does.
+  // decides nothing. Skipping a gate that waits, or one an approver decided,
+  // does.
   const skippedUnreached = step.status === "skipped" &&
-    prior?.status !== "waiting_approval";
+    prior?.status !== "waiting_approval" &&
+    step.approvalDecision === undefined;
   if (gate && entered && !skippedUnreached) {
     const settledByCancel = step.status === "failed" &&
       step.settledByAbort === true &&
       (runStatus === "cancelled" || runStatus === "failed");
+    // A decision covers its own outcome only: a denial fails the gate, it
+    // never skips it.
     const decidedBefore = !decisionChanged &&
       step.approvalDecision !== undefined &&
-      step.approvalDecision.approved === (step.status === "succeeded");
+      step.status ===
+        (step.approvalDecision.approved ? "succeeded" : "failed");
     const timedOut = step.status === "failed" && prior !== undefined &&
       timeoutPassed(context, jobName, prior);
     if (!settledByCancel && !decidedBefore && !timedOut) {

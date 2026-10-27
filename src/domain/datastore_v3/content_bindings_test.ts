@@ -546,7 +546,7 @@ Deno.test("judgeRunRecord: a gate the stored workflow no longer names cannot be 
   );
 });
 
-Deno.test("judgeRunRecord: a gate the run skips without waiting on it needs only run; skipping a waiting gate needs approve", () => {
+Deno.test("judgeRunRecord: a gate the run skips without waiting on it needs only run; skipping a waiting or decided gate needs approve", () => {
   assertEquals(
     [
       ...judge(
@@ -565,6 +565,15 @@ Deno.test("judgeRunRecord: a gate the run skips without waiting on it needs only
       ...judge(
         run([step("gate", { status: "waiting_approval", startedAt: STARTED })]),
         run([step("gate", { status: "skipped", startedAt: STARTED })]),
+      ).actions,
+    ],
+    ["approve"],
+  );
+  assertEquals(
+    [
+      ...judge(
+        run([step("gate", { status: "pending", approvalDecision: DECIDED })]),
+        run([step("gate", { status: "skipped", approvalDecision: DECIDED })]),
       ).actions,
     ],
     ["approve"],
@@ -654,5 +663,129 @@ Deno.test("judgeRunRecord: a signal wait moved back out of waiting needs signal,
         }),
       ]),
     ).refusal !== undefined,
+  );
+});
+
+const DENIED = { ...DECIDED, approved: false };
+
+Deno.test("judgeRunRecord: a denial fails its gate; skipping or completing a denied gate, waiting or settled, needs approve", () => {
+  const denied = (status: StepRunData["status"]) =>
+    run([
+      step("gate", {
+        status,
+        startedAt: STARTED,
+        approvalPrompt: "Deploy?",
+        approvalDecision: DENIED,
+      }),
+    ]);
+  for (
+    const [from, to] of [
+      ["waiting_approval", "skipped"],
+      ["failed", "skipped"],
+      ["failed", "succeeded"],
+      // Re-opened with its decision kept, then settled.
+      ["pending", "skipped"],
+      ["running", "skipped"],
+      ["running", "succeeded"],
+    ] as const
+  ) {
+    assertEquals(
+      [...judge(denied(from), denied(to)).actions],
+      ["approve"],
+      `${from} -> ${to}`,
+    );
+  }
+  // What a run does with a denial needs only run.
+  assertEquals(
+    [...judge(denied("waiting_approval"), denied("failed")).actions],
+    [],
+  );
+  assertEquals(
+    [...judge(denied("failed"), denied("waiting_approval")).actions],
+    [],
+  );
+});
+
+Deno.test("judgeRunRecord: a decided gate retyped in the stored workflow, or linked to a child run, still needs approve to settle against its decision", () => {
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  const denied = (
+    status: StepRunData["status"],
+    fields: Partial<StepRunData> = {},
+  ) =>
+    run([
+      step("gate", {
+        status,
+        startedAt: STARTED,
+        approvalPrompt: "Deploy?",
+        approvalDecision: DENIED,
+        ...fields,
+      }),
+    ]);
+  for (const to of ["succeeded", "skipped"] as const) {
+    assertEquals(
+      [...judge(denied("failed"), denied(to), { gate: "other" }).actions],
+      ["approve"],
+      `retyped: failed -> ${to}`,
+    );
+    assertEquals(
+      [
+        ...judge(
+          denied("failed", { nestedRun }),
+          denied(to, { nestedRun }),
+          { gate: "other" },
+        ).actions,
+      ],
+      ["approve"],
+      `retyped and linked: failed -> ${to}`,
+    );
+  }
+  // The link itself decides nothing, and a denied gate still fails with run.
+  const linked = judge(denied("failed"), denied("failed", { nestedRun }), {
+    gate: "other",
+  });
+  assertEquals(linked.refusal, undefined);
+  assertEquals([...linked.actions], []);
+  assertEquals(
+    [
+      ...judge(
+        denied("waiting_approval", { nestedRun }),
+        denied("failed", { nestedRun }),
+        { gate: "other" },
+      ).actions,
+    ],
+    [],
+  );
+});
+
+Deno.test("judgeRunRecord: a decided step cannot be dropped or renamed, so a later record cannot re-add it undecided", () => {
+  const decided = run([
+    step("gate", {
+      status: "failed",
+      startedAt: STARTED,
+      approvalPrompt: "Deploy?",
+      approvalDecision: DENIED,
+    }),
+  ]);
+  assert(judge(decided, run([])).refusal !== undefined);
+  assert(
+    judge(
+      decided,
+      run([
+        step("renamed", {
+          status: "failed",
+          startedAt: STARTED,
+          approvalDecision: DENIED,
+        }),
+      ]),
+    ).refusal !== undefined,
+  );
+  // An undecided settled step may still leave the record.
+  assertEquals(
+    judge(
+      run([step("gate", { status: "failed", startedAt: STARTED })]),
+      run([]),
+    )
+      .refusal,
+    undefined,
   );
 });
