@@ -1,0 +1,3 @@
+{
+  "resolveError": "Push found the workspace root <root>/deno.json above <root>/repo. Deno would apply its imports and lock to this extension, but it is outside the repository, so push cannot use it. Move the workspace root inside the repository, or push from the workspace root's own repository."
+}

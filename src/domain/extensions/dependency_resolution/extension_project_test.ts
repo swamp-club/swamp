@@ -23,13 +23,24 @@ import { assertPathEquals } from "../../../infrastructure/persistence/path_test_
 import {
   configuredLockPath,
   detectExtensionProject,
+  type ExtensionProject,
   extensionProjectMode,
+  findAncestorConfigs,
   findDenoConfig,
   findLoaderDenoConfig,
   findPackageJsonDir,
+  findWorkspaceRoot,
   frozenLockPath,
+  ignoredMemberLockPath,
   projectConfigBoundary,
+  workspaceListsMember,
 } from "./extension_project.ts";
+
+/** A project without what Deno would find above the temp dir. */
+function withinTemp(project: ExtensionProject): ExtensionProject {
+  const { ancestorConfigs: _, ...rest } = project;
+  return rest;
+}
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.realPath(
@@ -192,29 +203,32 @@ Deno.test("detectExtensionProject: a package.json is the project only when an en
         ...(skip ? { skip } : {}),
       });
 
+    // Without a Deno config push reads none (swamp-club#3971).
+    const none = { noConfig: true };
+    const pkg = { packageJsonDir: dir, noConfig: true };
     await Deno.writeTextFile(entry, 'import ms from "npm:ms@2.1.3";\n');
-    assertEquals(await detect(), {});
-    assertEquals(extensionProjectMode({}), "none");
+    assertEquals(withinTemp(await detect()), none);
+    assertEquals(extensionProjectMode(none), "none");
 
     // Every import form counts: side-effect, dynamic and `from`
     // (swamp-club#3983).
     await Deno.writeTextFile(entry, 'import "ms";\n');
-    assertEquals(await detect(), { packageJsonDir: dir });
+    assertEquals(withinTemp(await detect()), pkg);
     await Deno.writeTextFile(entry, 'export const m = () => import("ms");\n');
-    assertEquals(await detect(), { packageJsonDir: dir });
+    assertEquals(withinTemp(await detect()), pkg);
     // A bare name only in a comment or string is not an import.
     await Deno.writeTextFile(
       entry,
       '// import ms from "ms";\nconst s = "ms";\n',
     );
-    assertEquals(await detect(), {});
+    assertEquals(withinTemp(await detect()), none);
     await Deno.writeTextFile(entry, 'import ms from "ms";\n');
     const project = await detect();
-    assertEquals(project, { packageJsonDir: dir });
+    assertEquals(withinTemp(project), pkg);
     assertEquals(extensionProjectMode(project), "package-json");
 
     // An entry point reached through a symlink is not read.
-    assertEquals(await detect(new Set([entry])), {});
+    assertEquals(withinTemp(await detect(new Set([entry]))), none);
   });
 });
 
@@ -317,6 +331,174 @@ Deno.test("frozenLockPath: the configured lock when it is on disk, or the one be
     );
     assertEquals(
       await configuredLockPath({ denoConfigPath: config }),
+      undefined,
+    );
+  });
+});
+
+Deno.test("workspaceListsMember: matches a member path as Deno does, with or without ./ and a trailing slash, or a glob", () => {
+  const root = resolve("/", "w");
+  const member = join(root, "packages", "ext");
+  for (const pattern of ["./packages/ext", "packages/ext", "./packages/ext/"]) {
+    assertEquals(workspaceListsMember(root, pattern, member), true, pattern);
+  }
+  assertEquals(workspaceListsMember(root, "./packages/*", member), true);
+  assertEquals(workspaceListsMember(root, "./packages/other", member), false);
+  assertEquals(workspaceListsMember(root, "./other/*", member), false);
+});
+
+Deno.test("findWorkspaceRoot: the config above a member whose workspace lists it (swamp-club#3971)", async () => {
+  await withTempDir(async (dir) => {
+    const ext = join(dir, "packages", "ext");
+    await Deno.mkdir(ext, { recursive: true });
+    await Deno.writeTextFile(join(ext, "deno.json"), "{}");
+    const member = join(ext, "deno.json");
+    // A config above that does not list the member is not its root.
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: ["./packages/other"] }),
+    );
+    assertEquals(await findWorkspaceRoot(member), undefined);
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: ["./packages/*"] }),
+    );
+    assertPathEquals(
+      (await findWorkspaceRoot(member))!,
+      join(dir, "deno.json"),
+    );
+    // The object form, with members.
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: { members: ["packages/ext/"] } }),
+    );
+    assertPathEquals(
+      (await findWorkspaceRoot(member))!,
+      join(dir, "deno.json"),
+    );
+  });
+});
+
+Deno.test("detectExtensionProject: a workspace member reads the root, inside the repository or refused above it (swamp-club#3971)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = join(dir, "repo");
+    const ext = join(repo, "ext");
+    const entry = join(ext, "extensions", "models", "m.ts");
+    await Deno.mkdir(join(ext, "extensions", "models"), { recursive: true });
+    await Deno.writeTextFile(entry, 'import ms from "ms";\n');
+    await Deno.writeTextFile(join(ext, "deno.json"), "{}");
+    const detect = () =>
+      detectExtensionProject({
+        manifestDir: ext,
+        extensionsRoot: join(ext, "extensions"),
+        repoDir: repo,
+        entryPoints: [entry],
+      });
+    await Deno.writeTextFile(
+      join(repo, "deno.json"),
+      JSON.stringify({ workspace: ["./ext"] }),
+    );
+    assertEquals(await detect(), {
+      denoConfigPath: join(ext, "deno.json"),
+      workspaceRootConfigPath: join(repo, "deno.json"),
+    });
+    // A root above the repository is an ancestor config.
+    await Deno.remove(join(repo, "deno.json"));
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: ["./repo/ext"] }),
+    );
+    assertEquals(await detect(), {
+      denoConfigPath: join(ext, "deno.json"),
+      ancestorConfigs: [{
+        path: join(dir, "deno.json"),
+        kind: "workspace-root",
+      }],
+    });
+  });
+});
+
+Deno.test("findAncestorConfigs: the nearest Deno config and package.json above the boundary (swamp-club#3971)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = join(dir, "a", "repo");
+    await Deno.mkdir(repo, { recursive: true });
+    // The boundary itself is not above it.
+    await Deno.writeTextFile(join(repo, "deno.json"), "{}");
+    const found = (withPackageJson: boolean) =>
+      findAncestorConfigs(repo, withPackageJson).filter((c) =>
+        c.path.startsWith(dir)
+      );
+    assertEquals(found(true), []);
+    await Deno.writeTextFile(join(dir, "deno.jsonc"), "{}");
+    await Deno.writeTextFile(join(dir, "a", "package.json"), "{}");
+    assertEquals(found(true), [
+      { path: join(dir, "deno.jsonc"), kind: "deno-config" },
+      { path: join(dir, "a", "package.json"), kind: "package-json" },
+    ]);
+    assertEquals(found(false), [
+      { path: join(dir, "deno.jsonc"), kind: "deno-config" },
+    ]);
+  });
+});
+
+Deno.test("configuredLockPath: a workspace member reads the root's lock; its own is ignored (swamp-club#3971)", async () => {
+  await withTempDir(async (dir) => {
+    const ext = join(dir, "ext");
+    await Deno.mkdir(ext);
+    await Deno.writeTextFile(join(ext, "deno.json"), "{}");
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: ["./ext"] }),
+    );
+    const project = {
+      denoConfigPath: join(ext, "deno.json"),
+      workspaceRootConfigPath: join(dir, "deno.json"),
+    };
+    assertPathEquals(
+      (await configuredLockPath(project))!,
+      join(dir, "deno.lock"),
+    );
+    assertEquals(await frozenLockPath(project), undefined);
+    await Deno.writeTextFile(join(dir, "deno.lock"), "{}");
+    assertPathEquals((await frozenLockPath(project))!, join(dir, "deno.lock"));
+    assertEquals(await ignoredMemberLockPath(project), undefined);
+
+    // The member's own deno.lock, or its lock setting, is what Deno ignores.
+    await Deno.writeTextFile(join(ext, "deno.lock"), "{}");
+    assertPathEquals(
+      (await ignoredMemberLockPath(project))!,
+      join(ext, "deno.lock"),
+    );
+    await Deno.writeTextFile(
+      join(ext, "deno.json"),
+      JSON.stringify({ lock: "./own.lock" }),
+    );
+    assertPathEquals(
+      (await ignoredMemberLockPath(project))!,
+      join(ext, "own.lock"),
+    );
+    assertPathEquals(
+      (await configuredLockPath(project))!,
+      join(dir, "deno.lock"),
+    );
+
+    // The root's lock setting applies, from the root's directory.
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: ["./ext"], lock: "./locks/ws.lock" }),
+    );
+    assertPathEquals(
+      (await configuredLockPath(project))!,
+      join(dir, "locks", "ws.lock"),
+    );
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      JSON.stringify({ workspace: ["./ext"], lock: false }),
+    );
+    assertEquals(await configuredLockPath(project), undefined);
+    // Outside a workspace there is no member lock to ignore.
+    assertEquals(
+      await ignoredMemberLockPath({ denoConfigPath: join(ext, "deno.json") }),
       undefined,
     );
   });

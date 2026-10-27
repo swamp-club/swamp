@@ -1,0 +1,13 @@
+description: "A written unpinned jsr: specifier, the fix for a dist-tag."
+files:
+  "extensions/models/m.ts": |
+    import { lib } from "jsr:@vec/lib";
+
+    export const model = [lib];
+  "manifest.yaml": |
+    manifestVersion: 1
+    name: "@vectors/v"
+    version: "2026.10.26.1"
+    description: "dependency input vector"
+    models:
+      - m.ts

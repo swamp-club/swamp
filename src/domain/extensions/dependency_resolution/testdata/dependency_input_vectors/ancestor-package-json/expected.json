@@ -1,0 +1,3 @@
+{
+  "resolveError": "Push found <root>/package.json above <root>/repo. Deno would use it to resolve \"vecpkg\", but it is outside the repository, so push ignores it (--no-config). Add a package.json inside the repository that declares the import, or write the specifier in full."
+}

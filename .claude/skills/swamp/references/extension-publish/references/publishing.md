@@ -334,11 +334,12 @@ files. Two distinct constraints make this the right form:
   resolves it to from that module under the repo's Deno config (`deno.json` or
   `deno.jsonc` imports, an `importMap` file it references, the scope covering
   the module, or a workspace root's imports), when that is an `npm:`, `jsr:`,
-  `node:` or URL specifier. In a `package.json` project, it writes
-  `npm:<name>@<installed version>` for each bare import of a registry dependency
-  installed in `node_modules/` (the version the bundle inlines). Any other bare
-  import ships as written and fails at score time: `deno doc --json` cannot find
-  the bare name and the command throws before factor scoring begins.
+  `node:` or URL specifier, pinned to the exact version the bundle holds. In a
+  `package.json` project, it writes `npm:<name>@<installed version>` for each
+  bare import of a registry dependency installed in `node_modules/` (the version
+  the bundle inlines). Any other bare import ships as written and fails at score
+  time: `deno doc --json` cannot find the bare name and the command throws
+  before factor scoring begins.
 - **Zod externalization.** Zod is the sole import that is NOT inlined into the
   published bundle. The extension must share swamp's zod instance so schema
   `instanceof` checks work across the module boundary — that is why zod in
@@ -362,9 +363,11 @@ the `npm:`/`jsr:` form.
 
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
-- Always pin versions on all non-local imports for reproducibility. An unpinned
-  specifier resolves to the registry's current "latest" at push time, so the
-  published bundle silently changes across pushes. Examples:
+- Commit a lock or pin exact versions. Push ships every `npm:` and `jsr:` import
+  pinned exact either way (see "Dependency inputs and what ships"), but without
+  a lock a range resolves to the registry's newest match at push time, so the
+  published version changes across pushes and costs the `loose-specifier` point.
+  Examples:
   - `npm:lodash-es@4.17.21` (inline), or via `deno.json` import map, or in
     `package.json` dependencies
   - `jsr:@std/assert@1.0.0` (inline) or via `deno.json` import map
@@ -580,21 +583,73 @@ Only `never-published` means a first publish; the others are transient or
 credential problems, and note that the version-bump upgrade check was skipped
 too. A real drift finding has no `cause`. None of these block the push.
 
-### The version that ships, and unaudited dependencies
+### Dependency inputs and what ships
+
+Push accepts what Deno resolves and ships one form: every `npm:` and `jsr:`
+import in the archive's source (static, side-effect, dynamic and type imports,
+re-exports and import-map targets) names the exact version its bundle holds,
+`npm:ms@2.1.3` or `jsr:@std/assert@1.0.19/equals`. The version comes from the
+same `deno info` graph the bundle is built from. zod, which the host provides,
+ships as written. An import the graph cannot resolve fails the push, so a range
+never ships.
+
+| Input                                                        | What ships                                                                       |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| exact `npm:` / `jsr:`                                        | as written                                                                       |
+| range, npm dist-tag or unpinned, with a lock                 | the locked version (push bundles `--frozen`)                                     |
+| the same, with no lock                                       | the registry's newest match today, with a `loose-specifier` warning              |
+| `deno.json` / `deno.jsonc` `imports`, `importMap`, scopes    | the exact target Deno resolves for that module                                   |
+| workspace member                                             | resolved under the member's config, against the workspace root's lock            |
+| `package.json` + `node_modules/`                             | the installed version                                                            |
+| `deno.json` + `package.json`                                 | the installed copy: one graph read, so bundle, shipped specifier and audit agree |
+| JSR dist-tag (`jsr:@std/assert@latest`)                      | refused before bundling: JSR has no dist-tags; drop the tag or pin a version     |
+| URL import, git, `package.json` `file:`/`link:`/`workspace:` | as today; the bundle inlines it and the record lists it under `unaudited`        |
+
+- **Locks.** A non-exact spec costs the `loose-specifier` point only when no
+  valid lock fixed its version; the warning reads
+  `no lock: ^2 resolved to 2.1.3 today; commit a lock or pin exact versions (costs 1 point)`.
+  A `deno.lock` always counts. A `package-lock.json` counts only when
+  `node_modules/` matches it, transitive packages included; otherwise push warns
+  `package-lock-mismatch`.
+- **Workspaces.** A workspace member's lock is the workspace root's: the root's
+  `lock` setting, else the `deno.lock` beside the root config, as Deno reads it.
+  Deno ignores a member's own `deno.lock` or `lock` setting, and push warns
+  `workspace-member-lock` naming it.
+- **Installed copies.** In a `package.json` project, each installed copy under
+  one declared range is audited and recorded separately, and a written `npm:`
+  import of the same package does not hide one.
+- **Nothing from above the repository.** With no `deno.json` or `deno.jsonc`
+  inside the repository, push, quality and the bundle run with `--no-config`, so
+  a config Deno would discover above it (one in `$HOME`, say) never applies.
+  Push refuses, naming the file and the fix, when:
+  - a `deno.json` or `deno.jsonc` above the repository would map one of the
+    extension's bare imports, or a `package.json` above it declares one (fix:
+    add a `deno.json`, or `package.json`, inside the repository, or write the
+    specifier in full);
+  - a workspace root above the repository lists the repository's config (fix:
+    move the workspace root inside the repository);
+  - a bare import resolves from a `node_modules/` above the repository (fix:
+    declare the package in the project's `package.json` and install it). A
+    `node_modules/` inside the repository, including a monorepo's hoisted
+    install at its root, is fine.
+
+  With every import written in full, a config above the repository is ignored
+  without a warning.
+- **Config files never ship.** A `deno.json`, `deno.jsonc`, `deno.lock`,
+  `package.json`, `package-lock.json`, `.npmrc` or `node_modules/` file listed
+  in `additionalFiles` or `include` is left out with an `archive-project-file`
+  warning.
+- **The record.** `dependency-audit.json` (v2) has one entry per shipped package
+  version (`spec` equals `version`; `from` is `exact`, `lockfile`, `registry` or
+  `installed`; `locked`; `writtenAs`), a SHA-256 per bundle file, and an
+  `unaudited` list giving the origin and per-module hashes of URL imports and
+  non-registry `package.json` dependencies. It holds no local absolute path.
 
 The dependency trust audit checks each `npm:` and `jsr:` import at the version
 the push ships, including a bare import the extension's Deno config resolves to
 one (its findings end `(imported as "<name>" through the project's Deno config)`
 and block the same way), or, in a `package.json` project, a bare import of an
-installed dependency (`through package.json`): an exact pin (`1.2.3`, `=1.2.3`,
-`v1.2.3`) is that version; in a `package.json` project, the version installed in
-`node_modules/`, which the bundle inlines (the loose-specifier check still reads
-the range `package.json` declares, so pin it there); otherwise the version the
-`deno.lock` records for that import (or, when the lock does not record the
-import itself, its highest locked version that satisfies the specifier), when
-the bundler honours that lock (a `deno.json` or `deno.jsonc` was found, or
-package.json mode); otherwise what the registry resolves today (a range to its
-highest published match, no version to `latest`). npm license, maintainers and
+installed dependency (`through package.json`). npm license, maintainers and
 deprecation are read from that version; OSV is asked about it. A JSR import's
 package and version must exist on jsr.io.
 
@@ -686,8 +741,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    fail the push ("would both be packed as").
 4. **Detect project config** — walks up from manifest directory to repo root
    looking for `deno.json` (takes priority) then `package.json`. If found and
-   the extension uses bare specifiers, it is used for bundling. `deno.json` is
-   also used for quality checks, by push, `extension quality` and
+   the extension uses bare specifiers, it is used for bundling. A `deno.json`
+   that is a workspace member bundles against the workspace root's lock. Nothing
+   above the repository applies (see "Dependency inputs and what ships").
+   `deno.json` is also used for quality checks, by push, `extension quality` and
    `extension fmt` alike; `package.json` projects use default lint/fmt rules.
    Push, quality and fmt read a `package.json` project's `node_modules/` as
    installed (`--node-modules-dir=manual`) and never write it; a dependency

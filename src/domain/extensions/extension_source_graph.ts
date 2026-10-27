@@ -109,6 +109,26 @@ export interface SourceModuleGraph {
    * absent outside a package.json project (swamp-club#3970).
    */
   installedPackages?: InstalledPackage[];
+  /**
+   * Every package directory in a node_modules the graph reads a module
+   * from, taken at the first `node_modules` on the module's path
+   * (`/a/node_modules/ms`); absent when there is none. Push refuses one
+   * above the repository (swamp-club#3971).
+   */
+  nodeModulesPackageDirs?: string[];
+  /**
+   * The `jsr:` imports the local modules write, or an import map maps a
+   * bare import to, that name a dist-tag (`@latest`), which JSR does not
+   * have (swamp-club#3971); absent when there are none.
+   */
+  jsrDistTags?: DistTaggedJsrImport[];
+}
+
+/** A `jsr:` import naming a dist-tag, and the module that writes it. */
+export interface DistTaggedJsrImport {
+  importer: string;
+  specifier: string;
+  tag: string;
 }
 
 /** A package installed in node_modules, and its version. */
@@ -121,6 +141,10 @@ export interface InstalledPackage {
 export interface ModuleGraphProject {
   denoConfigPath?: string;
   packageJsonDir?: string;
+  /** The workspace root whose lock a member reads (swamp-club#3971). */
+  workspaceRootConfigPath?: string;
+  /** Read no config Deno would discover (`--no-config`). */
+  noConfig?: boolean;
 }
 
 /** Port: reads the local module graph of one entry point. */
@@ -156,7 +180,15 @@ export function mergeSourceGraphs(
   const staleInstalls = new Map<string, StaleInstalledImport>();
   const unaudited = new Map<string, UnauditedDependency>();
   const installedPackages = new Map<string, InstalledPackage>();
+  const nodeModulesPackageDirs = new Set<string>();
+  const jsrDistTags = new Map<string, DistTaggedJsrImport>();
   for (const graph of graphs) {
+    for (const d of graph.nodeModulesPackageDirs ?? []) {
+      nodeModulesPackageDirs.add(d);
+    }
+    for (const j of graph.jsrDistTags ?? []) {
+      jsrDistTags.set(`${j.importer}\0${j.specifier}`, j);
+    }
     for (const p of graph.installedPackages ?? []) {
       if (!installedPackages.has(p.path)) installedPackages.set(p.path, p);
     }
@@ -201,6 +233,10 @@ export function mergeSourceGraphs(
       }
       : {}),
     ...(unaudited.size > 0 ? { unaudited: [...unaudited.values()] } : {}),
+    ...(nodeModulesPackageDirs.size > 0
+      ? { nodeModulesPackageDirs: [...nodeModulesPackageDirs].sort() }
+      : {}),
+    ...(jsrDistTags.size > 0 ? { jsrDistTags: [...jsrDistTags.values()] } : {}),
     ...(graphs.some((g) => g.installedPackages)
       ? {
         installedPackages: [...installedPackages.values()].sort((a, b) =>
@@ -289,6 +325,12 @@ export function withoutSymlinkedModules(
       ...(graph.unaudited ? { unaudited: graph.unaudited } : {}),
       ...(graph.installedPackages
         ? { installedPackages: graph.installedPackages }
+        : {}),
+      ...(graph.nodeModulesPackageDirs
+        ? { nodeModulesPackageDirs: graph.nodeModulesPackageDirs }
+        : {}),
+      ...(graph.jsrDistTags
+        ? { jsrDistTags: graph.jsrDistTags.filter((j) => keep(j.importer)) }
         : {}),
     },
     symlinked,

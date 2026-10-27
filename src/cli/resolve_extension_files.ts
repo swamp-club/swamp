@@ -69,7 +69,19 @@ import {
   type StaleLockfile,
   StaleLockfileError,
 } from "../domain/models/bundle.ts";
-import { detectExtensionProject } from "../domain/extensions/dependency_resolution/extension_project.ts";
+import {
+  detectExtensionProject,
+  type ExtensionProject,
+  ignoredMemberLockPath,
+  projectConfigBoundary,
+} from "../domain/extensions/dependency_resolution/extension_project.ts";
+import {
+  ancestorConfigRefusal,
+  ancestorConfigResolves,
+  ancestorNodeModulesRefusal,
+  nodeModulesAboveBoundary,
+} from "../domain/extensions/dependency_resolution/ancestor_config.ts";
+import type { DistTaggedJsrImport } from "../domain/extensions/extension_source_graph.ts";
 import type {
   ResolvedBareImport,
   StaleInstalledImport,
@@ -201,6 +213,18 @@ export interface ResolvedExtensionFiles {
   denoConfigPath?: string;
   /** The package.json project push bundles under, when the extension uses bare specifiers. */
   packageJsonDir?: string;
+  /**
+   * The workspace root `denoConfigPath` is a member of, whose lock push
+   * bundles against (swamp-club#3971).
+   */
+  workspaceRootConfigPath?: string;
+  /**
+   * Bundle with `--no-config`: the extension has no Deno config inside the
+   * repository, so none above it may apply (swamp-club#3971).
+   */
+  noConfig?: boolean;
+  /** A workspace member's own lock, which Deno ignores (swamp-club#3971). */
+  ignoredMemberLock?: string;
   /**
    * What Deno resolved each bare import the extension's modules write to,
    * read from the module graph under the project config (swamp-club#3612).
@@ -1324,7 +1348,7 @@ export async function resolveExtensionFiles(
   // 17. Project config: the deno.json, or the package.json project when the
   // extension uses bare specifiers, that push bundles under. The module
   // graph is read under the same config, so it is the bundle's graph.
-  const { denoConfigPath, packageJsonDir } = await detectExtensionProject({
+  const project = await detectExtensionProject({
     manifestDir,
     extensionsRoot,
     repoDir,
@@ -1337,6 +1361,14 @@ export async function resolveExtensionFiles(
     ],
     skip: symlinkedRoots,
   });
+  const { denoConfigPath, packageJsonDir, workspaceRootConfigPath, noConfig } =
+    project;
+  const graphProject = {
+    ...(denoConfigPath ? { denoConfigPath } : {}),
+    ...(packageJsonDir ? { packageJsonDir } : {}),
+    ...(workspaceRootConfigPath ? { workspaceRootConfigPath } : {}),
+    ...(noConfig ? { noConfig } : {}),
+  };
   if (packageJsonDir && !ctx.lenientSources) {
     await requireNodeModules(packageJsonDir);
   }
@@ -1350,7 +1382,7 @@ export async function resolveExtensionFiles(
     probe,
     lenient: ctx.lenientSources ?? false,
     logger,
-    project: { denoConfigPath, packageJsonDir },
+    project: graphProject,
     repoDir,
     extensionsRoot,
     kinds: [
@@ -1366,6 +1398,17 @@ export async function resolveExtensionFiles(
       { kind: "webhooks", dir: webhooksDir, roots: webhookEntryPoints },
     ],
   });
+  if (!ctx.lenientSources) {
+    await refuseInputsFromAbove({
+      project,
+      boundary: projectConfigBoundary(manifestDir, extensionsRoot, repoDir),
+      bareImports: sources.bareImports,
+      nodeModulesPackageDirs: sources.nodeModulesPackageDirs,
+      jsrDistTags: sources.jsrDistTags,
+    });
+  }
+  const ignoredMemberLock = await ignoredMemberLockPath(project);
+
   const allModelFiles = sources.codeFilesByKind.models;
   const allVaultFiles = sources.codeFilesByKind.vaults;
   const allDatastoreFiles = sources.codeFilesByKind.datastores;
@@ -1427,9 +1470,71 @@ export async function resolveExtensionFiles(
       : {}),
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
+    ...(workspaceRootConfigPath ? { workspaceRootConfigPath } : {}),
+    ...(noConfig ? { noConfig } : {}),
+    ...(ignoredMemberLock ? { ignoredMemberLock } : {}),
     bareImports: sources.bareImports,
     graphDependencies: sources.graphDependencies,
   };
+}
+
+/**
+ * Refuses what Deno would take from above swamp's boundary
+ * (swamp-club#3971): an ancestor config that would resolve one of the
+ * extension's bare imports the project inside the repository leaves
+ * unresolved, an ancestor workspace root, and a package read from a
+ * node_modules above the repository. Also refuses a JSR dist-tag, which
+ * Deno cannot resolve, with the fix rather than the bundler's error.
+ */
+async function refuseInputsFromAbove(options: {
+  project: ExtensionProject;
+  boundary: string;
+  bareImports: readonly ResolvedBareImport[];
+  nodeModulesPackageDirs: readonly string[];
+  jsrDistTags: readonly DistTaggedJsrImport[];
+}): Promise<void> {
+  const unresolved = options.bareImports
+    .filter((b) => b.target === undefined && b.installedFile === undefined)
+    .map((b) => b.specifier);
+  for (const ancestor of options.project.ancestorConfigs ?? []) {
+    const resolves = await ancestorConfigResolves(ancestor, unresolved);
+    if (ancestor.kind !== "workspace-root" && resolves.length === 0) continue;
+    throw markErrorPaths(
+      new UserError(
+        ancestorConfigRefusal(ancestor, resolves, options.boundary),
+      ),
+      [ancestor.path, options.boundary],
+    );
+  }
+  const above = nodeModulesAboveBoundary(
+    options.nodeModulesPackageDirs,
+    options.boundary,
+  );
+  if (above.length > 0) {
+    throw markErrorPaths(
+      new UserError(
+        ancestorNodeModulesRefusal(
+          above,
+          options.boundary,
+          options.project.packageJsonDir,
+        ),
+      ),
+      [...above, options.boundary],
+    );
+  }
+  if (options.jsrDistTags.length > 0) {
+    const lines = options.jsrDistTags.map((j) =>
+      `  ${j.specifier} (imported from ${j.importer})`
+    );
+    throw markErrorPaths(
+      new UserError(
+        `JSR has no dist-tags, so Deno cannot resolve:\n${lines.join("\n")}\n` +
+          `Drop the tag (an unpinned jsr: import resolves to the newest ` +
+          `version, and push ships it pinned exact), or pin a version.`,
+      ),
+      options.jsrDistTags.map((j) => j.importer),
+    );
+  }
 }
 
 /**
@@ -1478,6 +1583,10 @@ interface ResolvedSourceModules {
   /** Stale lockfiles a lenient graph read went past; empty otherwise. */
   staleLockfiles: StaleLockfile[];
   graphDependencies: GraphDependencies;
+  /** Installed package directories the graphs read (swamp-club#3971). */
+  nodeModulesPackageDirs: string[];
+  /** `jsr:` imports naming a dist-tag (swamp-club#3971). */
+  jsrDistTags: DistTaggedJsrImport[];
 }
 
 /** The real path of `path`, or `path` itself when it cannot be resolved. */
@@ -1703,6 +1812,10 @@ async function resolveSourceModules(options: {
     packageVersions: graph.packageVersions ?? {},
     unaudited: graph.unaudited ?? [],
   };
+  const nodeModulesPackageDirs = graph.nodeModulesPackageDirs ?? [];
+  const jsrDistTags = (graph.jsrDistTags ?? []).filter((j) =>
+    !outside.has(j.importer)
+  );
   if (options.lenient) {
     return {
       missing: graph.missing.filter((m) => !outside.has(m.path)),
@@ -1713,6 +1826,8 @@ async function resolveSourceModules(options: {
       plan: { entries: [] },
       staleLockfiles: groupStaleLockfiles(staleLocks),
       graphDependencies,
+      nodeModulesPackageDirs,
+      jsrDistTags,
     };
   }
   const staleInstalls = (graph.staleInstalls ?? []).filter((s) =>
@@ -1749,6 +1864,8 @@ async function resolveSourceModules(options: {
     plan,
     staleLockfiles: [],
     graphDependencies,
+    nodeModulesPackageDirs,
+    jsrDistTags,
   };
 }
 

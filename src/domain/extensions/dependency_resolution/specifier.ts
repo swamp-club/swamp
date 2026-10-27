@@ -25,6 +25,8 @@
  * the registry reads it.
  */
 
+import { tryParseRange } from "@std/semver";
+
 /**
  * Whether a specifier is bare: one only a project config (an import map, a
  * package.json) resolves. Everything but a relative path, `npm:`, `jsr:`,
@@ -47,4 +49,17 @@ export function isBareSpecifier(specifier: string): boolean {
   if (specifier.startsWith("http:")) return false;
   if (specifier.startsWith("node:")) return false;
   return true;
+}
+
+/**
+ * The dist-tag a `jsr:` specifier names in place of a version
+ * (`jsr:@std/assert@latest` names `latest`), or undefined when it names a
+ * version, a range or none. JSR has no dist-tags, so Deno cannot resolve
+ * one (swamp-club#3971).
+ */
+export function jsrDistTag(specifier: string): string | undefined {
+  const match = /^jsr:\/?@[^/@]+\/[^/@]+@([^/]+)/.exec(specifier);
+  const version = match?.[1];
+  if (!version) return undefined;
+  return tryParseRange(version) === undefined ? version : undefined;
 }

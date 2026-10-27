@@ -1,24 +1,3 @@
 {
-  "project": {
-    "config": null,
-    "packageDir": null,
-    "lock": null,
-    "flags": [
-      "--no-lock",
-      "--node-modules-dir=none"
-    ]
-  },
-  "bareImports": [],
-  "fmt": {
-    "config": null
-  },
-  "pushError": "validation_failed: Bundle compilation failed. Fix the errors above and try again.",
-  "loader": {
-    "extensions/models/m.ts": {
-      "config": null,
-      "expectedBundleFailure": false,
-      "zod4": [],
-      "bundle": "deno bundle failed for <root>/extensions/models/m.ts: ⚠️  deno bundle is experimental and subject to changes\nerror: Do not know how to load path: deno:jsr:@vec/lib@latest\n    at file://<root>/extensions/models/m.ts:1:20\nerror: bundling failed"
-    }
-  }
+  "resolveError": "JSR has no dist-tags, so Deno cannot resolve:\n  jsr:@vec/lib@latest (imported from <root>/extensions/models/m.ts)\nDrop the tag (an unpinned jsr: import resolves to the newest version, and push ships it pinned exact), or pin a version."
 }

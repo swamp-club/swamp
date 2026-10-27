@@ -194,6 +194,15 @@ export const extensionQualityCommand = new Command()
             registryChecks: "skip",
             denoConfigPath,
             packageJsonDir: resolved.packageJsonDir,
+            // The workspace root lock, --no-config and an ignored member
+            // lock, as push reads them (swamp-club#3971).
+            ...(resolved.workspaceRootConfigPath
+              ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
+              : {}),
+            ...(resolved.noConfig ? { noConfig: true } : {}),
+            ...(resolved.ignoredMemberLock
+              ? { ignoredMemberLock: resolved.ignoredMemberLock }
+              : {}),
             bareImports: resolved.bareImports,
             graphDependencies: resolved.graphDependencies,
           },
@@ -232,6 +241,9 @@ export const extensionQualityCommand = new Command()
             ...(await readOnlyLockFor({
               denoConfigPath,
               packageJsonDir: resolved.packageJsonDir,
+              ...(resolved.workspaceRootConfigPath
+                ? { workspaceRootConfigPath: resolved.workspaceRootConfigPath }
+                : {}),
             })),
             bareImports: resolved.bareImports,
             graphDependencies: resolved.graphDependencies,
