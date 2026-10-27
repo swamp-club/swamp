@@ -38,9 +38,13 @@ import {
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 
-/** The filesystem-shaped config each bound v3 bucket config locks under. */
+/**
+ * The filesystem-shaped config each bound v3 bucket config locks under, and
+ * each config of a datastore written through serve (swamp-club#3985),
+ * whose storage a checkout never touches, filesystem or bucket.
+ */
 let lockConfigs = new WeakMap<
-  CustomDatastoreConfig,
+  DatastoreConfig,
   FilesystemDatastoreConfig
 >();
 
@@ -49,7 +53,7 @@ let lockConfigs = new WeakMap<
  * under the local directory `root`. Called by the v3 binding.
  */
 export function setV3BucketLockRoot(
-  config: CustomDatastoreConfig,
+  config: CustomDatastoreConfig | DatastoreConfig,
   root: string,
 ): void {
   lockConfigs.set(config, {
@@ -75,9 +79,9 @@ export function setV3BucketLockRoot(
  *   writing context binds its config first (`v3DatastoreConfigOf`).
  */
 export function lockingConfigOf(config: DatastoreConfig): DatastoreConfig {
-  if (!isCustomDatastoreConfig(config)) return config;
   const bound = lockConfigs.get(config);
   if (bound !== undefined) return bound;
+  if (!isCustomDatastoreConfig(config)) return config;
   // An override names no format: the guard may have opened it as v3 from
   // its marker.
   if (config.format === 3 || checkedDatastoreEngine(config) === "v3") {

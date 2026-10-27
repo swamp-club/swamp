@@ -33,7 +33,16 @@ import type { ModelType } from "../src/domain/models/model_type.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
+import {
+  asTryLock,
+  DatastoreLockLeases,
+} from "../src/serve/datastore_locks.ts";
+import {
+  createModelLock,
+  createWorkflowRunLock,
+} from "../src/cli/repo_context.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import { encodeCommitBody } from "../src/infrastructure/datastore_v3/chunk_ingest.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import type {
   V3Datastore,
@@ -58,6 +67,8 @@ export interface Server {
   readonly ctx: ConnectionContext;
   readonly modelType: ModelType;
   readonly model: Definition;
+  /** The locks serve holds for callers, as serve wires them. */
+  readonly locks: DatastoreLockLeases;
   /** Answers a request in-process, as the server does. */
   readonly handle: (req: Request) => Promise<Response>;
   policyLoads: number;
@@ -90,12 +101,25 @@ export async function withServer(
     assert(location !== undefined, "the fixture repository is v3");
     const v3 = v3DatastoreFor(repo.repoDir, location);
     const base = createServeCtx(repo, grants);
+    const locks = new DatastoreLockLeases({
+      createLock: async (target) =>
+        asTryLock(
+          target.kind === "model"
+            ? await createModelLock(
+              base.datastoreConfig,
+              target.modelType,
+              target.modelId,
+            )
+            : await createWorkflowRunLock(base.datastoreConfig, target.runId),
+        ),
+    });
     const server: Server = {
       url: "",
       v3,
       ctx: base,
       modelType: repo.modelType,
       model,
+      locks,
       handle: () => Promise.reject(new Error("not started")),
       policyLoads: 0,
       close: () => Promise.resolve(),
@@ -120,6 +144,7 @@ export async function withServer(
         ctx,
         v3,
         ledger,
+        locks,
         authenticate: (token) => {
           const principalId = TOKENS[token];
           return Promise.resolve(
@@ -150,6 +175,7 @@ export async function withServer(
       await fn(server);
     } finally {
       await http.shutdown();
+      await locks.dispose();
     }
   });
 }
@@ -167,18 +193,7 @@ export function commitBody(
   envelope: Record<string, unknown>,
   chunks: readonly Uint8Array[] = [],
 ): Uint8Array {
-  const json = new TextEncoder().encode(JSON.stringify(envelope));
-  const total = 4 + json.length +
-    chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const body = new Uint8Array(total);
-  new DataView(body.buffer).setUint32(0, json.length);
-  body.set(json, 4);
-  let offset = 4 + json.length;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return body;
+  return encodeCommitBody(envelope, chunks.map((bytes) => ({ bytes })));
 }
 
 export function partitionPath(server: Server, id = server.model.id): string {

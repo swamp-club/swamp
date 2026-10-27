@@ -91,8 +91,27 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
 import { FileSystemStorage } from "../persistence/fs_datastore_storage.ts";
+import { ServeCatchUp } from "./serve_catch_up.ts";
+import {
+  createServeCommitSink,
+  type ServeUpstreamCommitStore,
+} from "./serve_commit_sink.ts";
+import {
+  CachedServeStorage,
+  ServeChunkStorage,
+} from "./serve_datastore_storage.ts";
+import {
+  ServeNeverReadError,
+  ServeUnreachableError,
+} from "./serve_upstream_errors.ts";
+import {
+  SERVE_UPSTREAM_STATE_FILE,
+  ServeUpstreamState,
+} from "./serve_upstream_state.ts";
+import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { syncDirectory } from "../persistence/sync_directory.ts";
 import { swampPath } from "../persistence/paths.ts";
+import { dropRunIndexEntries } from "../persistence/workflow_run_index.ts";
 import type {
   CommitLogEngine,
   CommitLogRootRunOptions,
@@ -583,6 +602,17 @@ export interface V3Datastore {
   /** Applies every commit this checkout has not applied yet. */
   catchUp(signal?: AbortSignal): Promise<void>;
   /**
+   * For a checkout whose upstream is serve (swamp-club#3985), and only
+   * then: brings its copy up to serve's log before a write, refusing the
+   * write when serve cannot be reached.
+   */
+  catchUpForWrite?(signal?: AbortSignal): Promise<void>;
+  /**
+   * For a checkout whose upstream is serve, and only then: the commit store
+   * outbox recovery lands entries through, which forwards them to serve.
+   */
+  readonly serveUpstreamStore?: ServeUpstreamCommitStore;
+  /**
    * For a reader of a checkout another process writes (swamp-club#3803):
    * nothing while the read model is complete; otherwise waits up to
    * `lockWaitMs` for the catch-up in progress and catches up if the read
@@ -815,8 +845,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const admits = datastoreKeyFilter(options.directories, options.exclude);
   const commitsDbPath = v3CommitsDbPath(datastorePath, repoDir);
   ensureDirSync(dirname(commitsDbPath));
+  // A checkout whose upstream is serve keeps a follower copy of serve's
+  // log (swamp-club#3985): serve leaves out the commits it may not read.
+  const serve = serveUpstreamAt(datastorePath);
   const commitStore = SqliteCommitStore.open(commitsDbPath, {
     replicated: v3ReplicatesAt(datastorePath),
+    ...(serve !== undefined ? { follower: true } : {}),
   });
   const outbox = new SqliteCommitOutbox(v3OutboxPath(commitsDbPath), {
     // Recovery judges whether this process still runs by it
@@ -824,13 +858,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     writerProcess: async () => (await localProcess()).identity,
   });
   const bucket = v3BucketBindingAt(datastorePath);
+  // Serve's client, opened once per handle and closed with it.
+  const serveClient = serve?.client();
   // A filesystem datastore's storage also sweeps its stale temp files; a
-  // provider's storage has none to sweep.
-  const fsStorage = bucket === undefined
-    ? new FileSystemStorage(datastorePath, {
+  // provider's storage has none to sweep. A serve-mode checkout's is its
+  // chunk cache, with serve behind it (swamp-club#3985).
+  const fsStorage = bucket !== undefined
+    ? undefined
+    : serveClient !== undefined
+    ? new CachedServeStorage(
+      datastorePath,
+      new ServeChunkStorage(serveClient),
+      { orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath) },
+    )
+    : new FileSystemStorage(datastorePath, {
       orderedBefore: v3ChunksOrderedBefore(datastorePath, commitsDbPath),
-    })
-    : undefined;
+    });
   const baseStorage: DatastoreStorage = bucket?.storage ?? fsStorage!;
   const storage = faultsForTesting?.wrapStorage?.(baseStorage) ?? baseStorage;
   const chunkStore = new ChunkStore(storage);
@@ -850,24 +893,80 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     // (swamp-club#3617).
     referencedChunks: (ns, hashes) =>
       referencedChunksOf(commitStore, outbox, ns, hashes),
+    ...(serve !== undefined ? { follower: true } : {}),
+    // A run record another writer changed leaves its entry in the run index
+    // of its workflow behind; the entry is dropped, and the next read
+    // repairs it (swamp-club#3985). Only the checkout's own namespace is
+    // indexed.
+    recordsChanged: (ns, keys) =>
+      ns === namespace ? dropRunIndexEntries(repoDir, keys) : Promise.resolve(),
   });
   // One sink for every engine on this handle: units serialize appends to a
   // partition per sink, so contexts that share the handle queue behind each
   // other. It refuses a commit, and its preparation, once the process's
   // writer lease is lost, and keeps each commit in the outbox until it
   // landed (swamp-club#3490).
-  const baseSink: OutboxCommitSink = createOutboxCommitSink({
-    commitStore,
-    outbox,
-    sweepBatch: () => sweepBatchAt(outbox.path),
-    ...(options.assertWriterCurrent !== undefined
-      ? { assertWriterCurrent: options.assertWriterCurrent }
-      : {}),
-  });
-  const sink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
   // Bounds every commit's content uploads for the process's lifetime; close
   // aborts what is still in flight.
   const lifetime = new AbortController();
+  const serveState = serveClient !== undefined
+    ? ServeUpstreamState.open(
+      join(dirname(commitsDbPath), SERVE_UPSTREAM_STATE_FILE),
+    )
+    : undefined;
+  const serveCatchUp = serveClient !== undefined && serveState !== undefined
+    ? new ServeCatchUp({ client: serveClient, commitStore, state: serveState })
+    : undefined;
+  const serveSink = serveClient !== undefined && serveCatchUp !== undefined
+    ? createServeCommitSink({
+      client: serveClient,
+      commitStore,
+      catchUp: serveCatchUp,
+      chunkCache: fsStorage!,
+      outbox,
+      sweepBatch: () => sweepBatchAt(outbox.path),
+      signal: () => lifetime.signal,
+    })
+    : undefined;
+  const baseSink: OutboxCommitSink = serveSink ??
+    createOutboxCommitSink({
+      commitStore,
+      outbox,
+      sweepBatch: () => sweepBatchAt(outbox.path),
+      ...(options.assertWriterCurrent !== undefined
+        ? { assertWriterCurrent: options.assertWriterCurrent }
+        : {}),
+    });
+  const sink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
+  /**
+   * Brings the follower copy up to serve's log before the read model
+   * catches up from it. A read that cannot reach serve goes on with what
+   * the copy holds and says so; a write is refused (swamp-club#3985).
+   */
+  const catchUpFromServe = async (
+    signal: AbortSignal,
+    mode: "read" | "write",
+  ): Promise<void> => {
+    if (serveCatchUp === undefined) return;
+    try {
+      await serveCatchUp.catchUp(signal);
+    } catch (error) {
+      if (mode === "read" && error instanceof ServeUnreachableError) {
+        // A copy that never read serve's feed holds nothing: an empty answer
+        // would pass for an empty datastore.
+        if (serveState !== undefined && !serveState.hasReadFeed()) {
+          throw new ServeNeverReadError(error.serveUrl, error.cause);
+        }
+        const reason = error.cause instanceof Error
+          ? error.cause.message
+          : String(error.cause);
+        logger
+          .warn`Could not reach serve at ${error.serveUrl}, so this reads the datastore as this checkout last saw it, which may be out of date: ${reason}`;
+        return;
+      }
+      throw error;
+    }
+  };
   const units = checkoutUnitsFor(stateDir);
   const tracker: UnitTracker = {
     opened: () => {
@@ -932,12 +1031,24 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     catalogStore,
     namespace,
     writer,
+    ...(serveSink !== undefined
+      ? { serveUpstreamStore: serveSink.upstream }
+      : {}),
     async catchUp(signal) {
+      await catchUpFromServe(signal ?? lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>
         readModel.catchUp(signal ?? lifetime.signal)
       );
     },
+    ...(serveCatchUp !== undefined
+      ? {
+        async catchUpForWrite(signal?: AbortSignal) {
+          await catchUpFromServe(signal ?? lifetime.signal, "write");
+        },
+      }
+      : {}),
     async catchUpUnlessComplete(lockWaitMs) {
+      await catchUpFromServe(lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>
         readModel.catchUpUnlessComplete(lifetime.signal, lockWaitMs)
       );
@@ -1180,6 +1291,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       await readModel.close();
       await commitStore.close();
       await outbox.close();
+      serveState?.close();
+      serveClient?.close();
     },
   };
 }
@@ -1527,7 +1640,7 @@ async function removeBlankMarker(
  * says format 3 (`v3`), none (`absent`), a blank file a crash left
  * (`blank`, swamp-club#3617), or anything else (`other`).
  */
-async function v3MarkerState(
+export async function v3MarkerState(
   datastorePath: string,
 ): Promise<"v3" | "absent" | "blank" | "other"> {
   const path = join(datastorePath, DATASTORE_FORMAT_MARKER_FILE);

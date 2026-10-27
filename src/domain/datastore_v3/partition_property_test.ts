@@ -41,7 +41,7 @@ import {
   NAMES,
   observe,
 } from "./v3_test_helpers.ts";
-import { modelCommit, modelPartition } from "./v3_test_helpers.ts";
+import { modelCommit, modelPartition, savePut } from "./v3_test_helpers.ts";
 
 /** How often each refusal came up, over every run of a property. */
 const refusals = new Map<string, number>();
@@ -142,6 +142,102 @@ Deno.test("Partition.append: a replayed commit never changes the partition", asy
       },
     ),
     { numRuns: 100 },
+  );
+});
+
+/** Runs `apply`, reporting a refusal as a result rather than a throw. */
+function attempt(apply: () => ModelResult): ModelResult {
+  try {
+    return apply();
+  } catch (error) {
+    if (!(error instanceof CommitRejectedError)) throw error;
+    return { kind: "rejected", reason: error.reason };
+  }
+}
+
+Deno.test("Partition.appendObserved: over gapped seqs of the commits a writer landed it ends in the writer's state, and append refuses every gap (swamp-club#3985)", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      arbCommands(20),
+      fc.array(fc.nat({ max: 5 }), { minLength: 20, maxLength: 20 }),
+      async (commands, gaps) => {
+        // `gapless` takes each commit at its next seq through append;
+        // `follower` takes the same commit, `gap` seqs further on, through
+        // appendObserved. Only seq may differ between them.
+        const gapless = Partition.empty(modelPartition());
+        const follower = Partition.empty(modelPartition());
+        for (const [index, command] of commands.entries()) {
+          const ops: Op[] = [];
+          for (const spec of command.ops) ops.push(await buildOp(spec));
+          const gap = gaps[index % gaps.length];
+          const props = { txnId: `t-${index}`, fence: command.fence };
+          const plain = modelCommit(gapless.seq + 1, ops, props);
+          const observed = modelCommit(follower.seq + 1 + gap, ops, props);
+
+          // Plain append refuses the gapped seq and changes nothing.
+          if (gap > 0) {
+            const before = observe(follower);
+            assertEquals(attempt(() => follower.append(observed)), {
+              kind: "rejected",
+              reason: "seq-gap",
+            });
+            assertEquals(observe(follower), before);
+          }
+
+          // A follower only ever sees commits the writer landed: one the
+          // writer refused never reaches it.
+          const expectedResult = attempt(() => gapless.append(plain));
+          if (expectedResult.kind === "appended") {
+            const actual = attempt(() => follower.appendObserved(observed));
+            assertEquals(actual, { kind: "appended", seq: observed.seq });
+            assertEquals(follower.seq, observed.seq);
+          }
+          assertEquals(
+            { ...observe(follower), seq: 0 },
+            { ...observe(gapless), seq: 0 },
+          );
+          assertEquals(follower.highestFence, gapless.highestFence);
+          assertEquals(follower.leaseHolder, gapless.leaseHolder);
+        }
+      },
+    ),
+    { numRuns: 200 },
+  );
+});
+
+Deno.test("Partition.appendObserved: accepts every strictly increasing seq sequence, and refuses each seq at or below its own", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.uniqueArray(fc.integer({ min: 1, max: 10_000 }), {
+        minLength: 1,
+        maxLength: 30,
+      }).map((seqs) => [...seqs].sort((a, b) => a - b)),
+      fc.nat(),
+      async (seqs, pick) => {
+        const partition = Partition.empty(modelPartition());
+        const op = await savePut("a", 1);
+        for (const seq of seqs) {
+          assertEquals(
+            partition.appendObserved(
+              modelCommit(seq, [op], { txnId: `s-${seq}` }),
+            ),
+            { kind: "appended", seq },
+          );
+          assertEquals(partition.seq, seq);
+        }
+        const stale = seqs[pick % seqs.length];
+        assertEquals(
+          attempt(() =>
+            partition.appendObserved(
+              modelCommit(stale, [op], { txnId: "fresh" }),
+            )
+          ),
+          { kind: "rejected", reason: "seq-gap" },
+        );
+        assertEquals(partition.seq, seqs[seqs.length - 1]);
+      },
+    ),
+    { numRuns: 200 },
   );
 });
 

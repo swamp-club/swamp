@@ -479,6 +479,24 @@ export interface SqliteCommitStoreOptions {
    * from that point fails SQLite's integrity check.
    */
   readonly replicated?: boolean;
+  /**
+   * Follower mode (swamp-club#3985): this `commits.db` is a copy of serve's
+   * commit log, filled from serve's changes feed. Serve leaves out the
+   * commits a caller may not read, so a partition's seqs here can have
+   * permanent holes. A follower store appends through
+   * {@link Partition.appendObserved}, taking any commit whose seq is past
+   * its partition's head and moving the head to that seq, so the head row
+   * is still the highest stored seq. Snapshots are written when a commit
+   * crosses a multiple of the snapshot interval rather than lands on one,
+   * and a truncation takes a partition back to the highest seq it keeps.
+   * Every other rule, duplicate txnIds included, is the solo store's.
+   *
+   * Off by default, which is the solo store exactly. A file a follower wrote
+   * may hold gaps a solo store refuses to rebuild, so one file is always
+   * opened in the same mode. Only serve's team-mode plumbing passes it
+   * (`integration/datastore_v3_rules_test.ts`).
+   */
+  readonly follower?: boolean;
 }
 
 /**
@@ -577,6 +595,8 @@ export class SqliteCommitStore implements CommitStore {
   readonly #groupCommit: boolean;
   readonly #boundTxnIds: boolean;
   readonly #afterAppendWrites: ((commit: Commit) => void) | undefined;
+  /** {@link SqliteCommitStoreOptions.follower}. */
+  readonly #follower: boolean;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
   #queue: Promise<unknown> = Promise.resolve();
@@ -617,8 +637,10 @@ export class SqliteCommitStore implements CommitStore {
     groupCommit: boolean,
     boundTxnIds: boolean,
     afterAppendWrites: ((commit: Commit) => void) | undefined,
+    follower: boolean,
   ) {
     this.#db = db;
+    this.#follower = follower;
     this.#cachedPartitions = cachedPartitions;
     this.#snapshotInterval = snapshotInterval;
     this.#groupCommit = groupCommit;
@@ -715,6 +737,7 @@ export class SqliteCommitStore implements CommitStore {
       options.groupCommit ?? true,
       options.boundTxnIds ?? true,
       options.afterAppendWrites,
+      options.follower === true,
     );
   }
 
@@ -1159,11 +1182,16 @@ export class SqliteCommitStore implements CommitStore {
       return "stale";
     }
 
-    const applied = partition.append(commit);
-    if (applied.kind === "appended") {
+    const before = partition.seq;
+    const applied = this.#follower
+      ? partition.appendObserved(commit)
+      : partition.append(commit);
+    if (applied.kind === "appended" && !this.#follower) {
       // After the partition's own rules, so their refusal is the one a
       // commit they refuse reports. The partition has taken the commit by
-      // now: a refusal here drops it from the cache.
+      // now: a refusal here drops it from the cache. A follower's commits
+      // are serve's, fenced by serve's lease: the local fence orders only
+      // this checkout's own processes (swamp-club#3985).
       this.#checkWriterFence(commit.fence);
     }
     if (applied.kind === "duplicate") {
@@ -1204,13 +1232,26 @@ export class SqliteCommitStore implements CommitStore {
       partition.seq,
       partition.highestFence ?? null,
     );
-    if (partition.seq % this.#snapshotInterval === 0) {
+    if (this.#snapshotDue(before, partition.seq)) {
       const body = JSON.stringify(partition.snapshot());
       this.#upsertSnapshot.run(namespace, partitionKey, partition.seq, body);
       onSnapshot({ seq: partition.seq, body });
     }
     this.#afterAppendWrites?.(commit);
     return applied;
+  }
+
+  /**
+   * Whether an append that moved a partition from seq `before` to `after`
+   * writes a snapshot: one landing on a multiple of the snapshot interval.
+   * A follower's seqs can skip that multiple (swamp-club#3985), so it
+   * writes one on the first commit at or past each multiple instead; for
+   * gapless seqs the two are the same.
+   */
+  #snapshotDue(before: number, after: number): boolean {
+    const interval = this.#snapshotInterval;
+    if (!this.#follower) return after % interval === 0;
+    return Math.floor(before / interval) < Math.floor(after / interval);
   }
 
   /** The partition, from the cache or rebuilt from the file. */
@@ -1288,7 +1329,9 @@ export class SqliteCommitStore implements CommitStore {
         const commit = await parseRow(row);
         let applied;
         try {
-          applied = partition.append(commit, { replay: true });
+          applied = this.#follower
+            ? partition.appendObserved(commit, { replay: true })
+            : partition.append(commit, { replay: true });
         } catch (error) {
           throw corrupt(row, errorMessage(error));
         }
@@ -1877,7 +1920,11 @@ export class SqliteCommitStore implements CommitStore {
       snapshot?: { seq: number; body: string };
     }[] = [];
     for (const [cacheKey, first] of touched) {
-      const keep = first.seq - 1;
+      // A follower's seqs can have holes (swamp-club#3985): it keeps the
+      // highest seq below the first removed one, stored or compacted.
+      const keep = this.#follower
+        ? this.#highestSeqBelow(first.namespace, first.partition, first.seq)
+        : first.seq - 1;
       const rebuilt = await this.#rebuild(
         first.namespace,
         first.partition,
@@ -1923,7 +1970,13 @@ export class SqliteCommitStore implements CommitStore {
           first.partition,
           at,
         );
-        snapshot = { seq: at, body: JSON.stringify(state.snapshot()) };
+        // A follower may hold no commit at `at`: its rebuild there stops at
+        // the last seq it holds, which is as good a snapshot (or none).
+        if (!this.#follower) {
+          snapshot = { seq: at, body: JSON.stringify(state.snapshot()) };
+        } else if (state.seq > 0) {
+          snapshot = { seq: state.seq, body: JSON.stringify(state.snapshot()) };
+        }
       }
       heads.push({
         cacheKey,
@@ -1999,6 +2052,19 @@ export class SqliteCommitStore implements CommitStore {
       for (const { cacheKey } of heads) this.#cache.delete(cacheKey);
     }
     return { removed: rows.length };
+  }
+
+  /**
+   * A partition's highest seq below `seq`, stored or compacted; 0 when it
+   * has none. A follower's head after a truncation (swamp-club#3985).
+   */
+  #highestSeqBelow(namespace: string, key: PartitionKey, seq: number): number {
+    const row = this.#db.prepare(
+      "SELECT MAX(seq) AS seq FROM (" +
+        "SELECT MAX(seq) AS seq FROM commits WHERE namespace = ?1 AND partition = ?2 AND seq < ?3 " +
+        "UNION ALL SELECT seq FROM compacted_partitions WHERE namespace = ?1 AND partition = ?2 AND seq < ?3)",
+    ).get(namespace, key.toString(), seq) as { seq: number | null };
+    return row.seq ?? 0;
   }
 
   /** The compaction point; 0 before any compaction. */

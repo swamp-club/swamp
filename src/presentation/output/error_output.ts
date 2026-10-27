@@ -30,6 +30,7 @@ import { messageFor } from "../../domain/behavior_wording.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
 import {
+  V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
   V3_WRITER_BUSY_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
@@ -168,6 +169,11 @@ export function buildErrorJson(
  *   `datastore_v3_catch_up_unreachable` (swamp-club#3802): the storage could
  *   not be reached while the command got ready to write, or while it
  *   brought the checkout up to date, so nothing was changed.
+ * - `75` for `datastore_v3_serve_unreachable` (swamp-club#3985): the serve a
+ *   datastore is written through could not be reached, and swamp refused
+ *   the write rather than send it to the storage. A commit sent again
+ *   carries the same txnId, so serve answers a retry of one that landed as
+ *   a duplicate.
  * - `1` for all other errors, including a missing or revoked credential.
  */
 export function exitCodeForError(error: unknown): number {
@@ -192,6 +198,9 @@ export function exitCodeForError(error: unknown): number {
   // changed (swamp-club#3802).
   if (code === V3_STORAGE_UNREACHABLE_CODE) return 75;
   if (code === CATCH_UP_UNREACHABLE_CODE) return 75;
+  // The serve the datastore is written through is unreachable: the write
+  // was refused, not sent to the storage (swamp-club#3985).
+  if (code === V3_SERVE_UNREACHABLE_CODE) return 75;
   return 1;
 }
 

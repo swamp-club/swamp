@@ -188,3 +188,83 @@ Deno.test("assertStorageConformance: catches handles that do not share their chu
     "a second handle must see",
   );
 });
+
+/** `memory()` with `list` and `delete` refusing, as serve's chunk API does. */
+function withoutListOrDelete() {
+  return broken(() => ({
+    list: (_ns, signal) => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () =>
+          Promise.reject(
+            signal.aborted ? signal.reason : new Error("list is not offered"),
+          ),
+      }),
+    }),
+    delete: (_ns, _sha, signal) =>
+      Promise.reject(
+        signal.aborted ? signal.reason : new Error("delete is not offered"),
+      ),
+  }));
+}
+
+Deno.test("assertStorageConformance: passes a storage without list or delete when they are marked unsupported", async () => {
+  const { storage } = withoutListOrDelete();
+  await assertStorageConformance(() => storage, {
+    unsupported: { list: "no list route", delete: "no delete route" },
+  });
+  await assertStorageConformance(() => storage, {
+    namespace: "bound",
+    unsupported: {
+      list: "no list route",
+      delete: "no delete route",
+      namespaces: "bound to one namespace",
+    },
+  });
+});
+
+Deno.test("assertStorageConformance: catches a storage without list or delete when nothing is marked unsupported", async () => {
+  const { storage } = withoutListOrDelete();
+  await assertRejects(
+    () => assertStorageConformance(() => storage),
+    Error,
+    "list is not offered",
+  );
+  await assertRejects(
+    () =>
+      assertStorageConformance(() => storage, {
+        unsupported: { list: "no list route" },
+      }),
+    Error,
+    "delete is not offered",
+  );
+});
+
+Deno.test("assertStorageConformance: catches a method marked unsupported that works", async () => {
+  const { storage } = memory();
+  await assertRejects(
+    () =>
+      assertStorageConformance(() => storage, {
+        unsupported: { delete: "no delete route" },
+      }),
+    Error,
+    "delete is declared unsupported",
+  );
+});
+
+Deno.test("assertStorageConformance: refuses an unsupported part with no reason", async () => {
+  const { storage } = memory();
+  await assertRejects(
+    () =>
+      assertStorageConformance(() => storage, { unsupported: { list: "" } }),
+    Error,
+    "unsupported.list must give the reason",
+  );
+  await assertRejects(
+    () =>
+      assertStorageConformance(() => storage, {
+        unsupported: { namespaces: "bound to one namespace" },
+      }),
+    Error,
+    "must name it in options.namespace",
+  );
+});

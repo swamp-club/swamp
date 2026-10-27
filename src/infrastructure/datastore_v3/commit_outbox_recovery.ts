@@ -102,6 +102,14 @@ export interface RecoverCommitOutboxOptions {
   ) => boolean;
   readonly clock?: () => Date;
   readonly signal?: AbortSignal;
+  /**
+   * How many times an entry is built again on a moved head before it is
+   * dropped, for a target whose appends go to serve (swamp-club#3985). Serve
+   * judges each commit against its own log, so an entry whose base moved is
+   * sent on the new head rather than dropped as `head-moved`. Absent for a
+   * local commit store, whose moved head drops the entry.
+   */
+  readonly forwardedAttempts?: number;
 }
 
 /** What {@link recoverCommitOutbox} did. */
@@ -337,7 +345,9 @@ async function recoverEntry(
     commit.namespace,
     commit.partition,
   );
-  if (!sameHead(entry.base, head)) {
+  if (
+    options.forwardedAttempts === undefined && !sameHead(entry.base, head)
+  ) {
     return { kind: "dropped", reason: "head-moved" };
   }
   // Its content cannot be stored again, so a commit naming a missing chunk
@@ -361,10 +371,9 @@ async function recoverEntry(
     [...new Set(blobsOf(commit).flatMap((blob) => blob.chunkHashes()))],
     signal,
   );
-  let rebuilt: Commit;
-  try {
-    rebuilt = Commit.create({
-      seq: head.seq + 1,
+  const build = (seq: number): Commit =>
+    Commit.create({
+      seq,
       partition: commit.partition,
       namespace: commit.namespace,
       txnId: commit.txnId,
@@ -379,16 +388,36 @@ async function recoverEntry(
       at: clock().toISOString(),
       ops: commit.ops,
     });
+  let rebuilt: Commit;
+  try {
+    rebuilt = build(head.seq + 1);
   } catch (error) {
     return { kind: "dropped", reason: "unreadable", detail: messageOf(error) };
   }
-  try {
-    await commitStore.append(rebuilt);
-  } catch (error) {
-    if (error instanceof CommitRejectedError) {
-      return { kind: "dropped", reason: "refused", detail: error.message };
+  for (let attempt = 1;; attempt++) {
+    try {
+      await commitStore.append(rebuilt);
+      break;
+    } catch (error) {
+      // Serve's head moved past the one the entry was rebuilt on: the
+      // target caught up, so build it again on the new head.
+      if (
+        options.forwardedAttempts !== undefined &&
+        attempt < options.forwardedAttempts &&
+        error instanceof CommitRejectedError && error.reason === "seq-gap"
+      ) {
+        const moved = await commitStore.headIdentity(
+          commit.namespace,
+          commit.partition,
+        );
+        rebuilt = build(moved.seq + 1);
+        continue;
+      }
+      if (error instanceof CommitRejectedError) {
+        return { kind: "dropped", reason: "refused", detail: error.message };
+      }
+      throw error;
     }
-    throw error;
   }
   await warnMissingChunks(chunkStore, namespace, commit, signal);
   return { kind: "landed" };

@@ -1149,3 +1149,40 @@ Deno.test("resolveDatastoreConfig: a format other than 2 or 3 is refused", async
     "must be 2 or 3",
   );
 });
+
+Deno.test("resolveDatastoreConfig: a datastore written through serve never resolves, installs or builds its extension type (swamp-club#3985)", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const type = `@nobody/missing-${crypto.randomUUID().slice(0, 8)}`;
+    const marker: RepoMarkerData = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: {
+        type,
+        format: 3,
+        namespace: "team",
+        config: { bucket: "b" },
+      },
+    };
+    const namespaces: (string | undefined)[] = [];
+    const config = await resolveDatastoreConfig(marker, undefined, "/repo", {
+      autoResolve: false,
+      serveUpstreamRoot: (namespace) => {
+        namespaces.push(namespace);
+        return "/repo/.swamp/serve-root";
+      },
+    });
+    assertEquals(namespaces, ["team"]);
+    if (!isCustomDatastoreConfig(config)) throw new Error("not custom");
+    assertEquals(config.type, type);
+    assertEquals(config.datastorePath, "/repo/.swamp/serve-root");
+    assertEquals(config.namespace, "team");
+    assertEquals(config.format, 3);
+    // Without serve the same type is unknown: the extension was never asked.
+    await assertRejects(() =>
+      resolveDatastoreConfig(marker, undefined, "/repo", {
+        autoResolve: false,
+      })
+    );
+  });
+});

@@ -124,6 +124,14 @@ export interface ResolveDatastoreOptions {
    * already-installed extensions are used. Defaults to true.
    */
   autoResolve?: boolean;
+  /**
+   * The datastore is written through serve (swamp-club#3985): an extension
+   * datastore's type is neither resolved nor installed and its provider is
+   * never built, since its storage is never read. Given the datastore's
+   * namespace, it answers the checkout's local root for the datastore,
+   * which stands for the provider's paths.
+   */
+  serveUpstreamRoot?: (namespace: string | undefined) => string;
 }
 
 function autoResolverFor(options?: ResolveDatastoreOptions) {
@@ -350,6 +358,29 @@ export async function resolveDatastoreConfig(
     const ds = marker.datastore;
     const dsType = ds.type;
     const format = readDatastoreFormatKey(dsType, ds.format);
+
+    if (options?.serveUpstreamRoot !== undefined && dsType !== "filesystem") {
+      const type = RENAMED_DATASTORE_TYPES[dsType] ?? dsType;
+      const dsFields = await resolveDatastoreFields(ds, {
+        repoDir: repoDir ?? Deno.cwd(),
+        managedConfig: await resolveManagedConfig(
+          ds.managedConfig,
+          repoDir ?? Deno.cwd(),
+        ),
+      });
+      const namespace = dsFields.namespace ?? ds.namespace;
+      return {
+        type,
+        config: ds.config ?? {},
+        datastorePath: options.serveUpstreamRoot(namespace),
+        cachePath: join(getSwampDataDir(), "repos", repoId ?? "unknown"),
+        directories: dsFields.directories ?? ds.directories,
+        exclude: dsFields.exclude ?? ds.exclude,
+        hydrationStrategy: dsFields.hydrationStrategy ?? ds.hydrationStrategy,
+        namespace,
+        ...(format === 3 ? { format: 3 as const } : {}),
+      };
+    }
 
     // Remap renamed types (e.g., "s3" → "@swamp/s3-datastore")
     const renamedTo = RENAMED_DATASTORE_TYPES[dsType];

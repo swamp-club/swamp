@@ -26,7 +26,12 @@ import {
 } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../domain/datastore_v3/litestream_replication.ts";
-import { WriterFencedError } from "../domain/datastore_v3/writer_lease.ts";
+import {
+  V3_STORAGE_UNREACHABLE_CODE,
+  V3_WRITER_BUSY_CODE,
+  V3StorageUnreachableError,
+  WriterFencedError,
+} from "../domain/datastore_v3/writer_lease.ts";
 import { modelPartition } from "../domain/datastore_v3/v3_test_helpers.ts";
 import {
   ChunksMissingError,
@@ -67,6 +72,15 @@ Deno.test("matchDatastoreRoute: each route, with its segments decoded once", () 
     kind: "changes",
     namespace: "ns",
   });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/locks"), {
+    kind: "locks",
+    namespace: "ns",
+  });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/locks/lease-1"), {
+    kind: "lease",
+    namespace: "ns",
+    leaseId: "lease-1",
+  });
 });
 
 Deno.test("matchDatastoreRoute: anything else is not a datastore route", () => {
@@ -77,6 +91,7 @@ Deno.test("matchDatastoreRoute: anything else is not a datastore route", () => {
       "/api/v1/datastore/ns/chunks",
       "/api/v1/datastore/ns/partitions/p",
       "/api/v1/datastore/ns/changes/extra",
+      "/api/v1/datastore/ns/locks/lease-1/extra",
       "/api/v1/datastore/%E0%A4%A/changes",
       "/api/v1/health",
     ]
@@ -96,6 +111,10 @@ Deno.test("resolveHttpRoute: datastore paths are named by their template, never 
   assertEquals(
     resolveHttpRoute("/api/v1/datastore/ns/changes"),
     "/api/v1/datastore/{namespace}/changes",
+  );
+  assertEquals(
+    resolveHttpRoute(`/api/v1/datastore/ns/locks/${crypto.randomUUID()}`),
+    "/api/v1/datastore/{namespace}/locks/{leaseId}",
   );
 });
 
@@ -149,6 +168,31 @@ Deno.test("datastoreErrorResponse: the writer's errors keep the codes serve's ot
     const mapped = await reply(new UserError("storage is away", code));
     assertEquals([mapped.status, mapped.body.code], [503, code]);
   }
+});
+
+Deno.test("datastoreErrorResponse: a writer cut off from its storage or refused its lease answers 503 with its code", async () => {
+  const unreachable = await reply(
+    new V3StorageUnreachableError("s3://bucket", new Error("connect refused")),
+  );
+  assertEquals([unreachable.status, unreachable.body.code], [
+    503,
+    V3_STORAGE_UNREACHABLE_CODE,
+  ]);
+  const busy = await reply(
+    new UserError("Another swamp process is writing", V3_WRITER_BUSY_CODE),
+  );
+  assertEquals([busy.status, busy.body.code], [503, V3_WRITER_BUSY_CODE]);
+  // A plain error carrying the code is not one of the writer's own errors,
+  // so its detail stays hidden.
+  const forged = Object.assign(new Error("/secret/path"), {
+    code: V3_WRITER_BUSY_CODE,
+  });
+  const hidden = await reply(forged);
+  assertEquals([hidden.status, hidden.body.code, hidden.body.message], [
+    500,
+    "internal_error",
+    "Internal error",
+  ]);
 });
 
 Deno.test("datastoreErrorResponse: compaction is 410, a bad chunk 400, and anything else hides its detail", async () => {

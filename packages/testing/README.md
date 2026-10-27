@@ -408,6 +408,27 @@ Deno.test("storage/1 conformance", async () => {
 refresh `lastModified` are skipped. `createInMemoryRemote({ storage: true })`
 provides a conforming storage, with `setChunkLastModified` as the hook.
 
+A storage that cannot offer part of `storage/1` names it in `unsupported`, with
+the reason as a non-empty string, and those checks are skipped instead:
+
+```typescript
+await assertStorageConformance(() => openBoundStorage(), {
+  namespace: "team",
+  unsupported: {
+    list: "the API has no list route",
+    delete: "the API has no delete route",
+    namespaces: "the API serves one namespace",
+  },
+});
+```
+
+An unsupported `list` or `delete` must reject. Without `delete` the suite cannot
+clean up, so the chunks it wrote stay behind. Without `namespaces` the isolation
+checks (including `_default`) are skipped and `namespace` names the one
+namespace the main checks use; with `namespace` the suite's chunk contents are
+unique to the run. `has`, `get`, `put`, concurrency and visibility are always
+checked.
+
 ### `assertReplicaTargetConformance`
 
 For a provider that implements `replicaTarget()`, which says where the coming v3

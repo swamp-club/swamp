@@ -147,6 +147,20 @@ const GUARDED_PINNED = [
   // takeV3WriterHold, which only holdV3Writer calls, so a storage failure
   // gets its code.
   "src/infrastructure/datastore_v3/v3_repo_context.ts:takeV3WriterHold (x5)",
+  // swamp-club#3985: a checkout whose upstream is serve catches its copy up
+  // from serve once the hold is taken. Its config came through
+  // resolveDatastoreForRepo, which records it as v3 through serve; its
+  // storage is never opened.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
+  // swamp-club#3985: binding a serve-mode checkout with another token than
+  // its copy was built with takes the local root's writer lease to reset the
+  // copy. The binding runs from v3LocationOf on a config
+  // resolveDatastoreForRepo already recorded as v3 through serve; only the
+  // local root is locked, never the storage. A context opened with another
+  // view than its projection's rebuilds it under the lease of the handle
+  // v3RepositoryFactoryConfig opened, after the same check.
+  "src/infrastructure/datastore_v3/serve_upstream_binding.ts:resetCopyForCaller",
+  "src/infrastructure/datastore_v3/checkout_view.ts:alignCheckoutView",
   // swamp-club#3482: making the copy current reads the handle of the
   // datastore holdV3Writer or v3RepositoryFactoryConfig passes it, after
   // the same check; serve's upkeep does the same for the config serve's

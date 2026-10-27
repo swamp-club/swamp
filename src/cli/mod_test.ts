@@ -934,3 +934,24 @@ Deno.test("assertModelsDirEnvConsistent: accepts one variable, equal values, or 
     withMockedEnv(env, () => assertModelsDirEnvConsistent());
   }
 });
+
+Deno.test("isThinClientCommand: a command that runs locally with serve as its datastore upstream is a thin client only with --server (swamp-club#3985)", () => {
+  const env = (name: string) =>
+    name === "SWAMP_SERVE_URL" ? "http://serve.example.com" : undefined;
+  assertEquals(
+    isThinClientCommand(extractCommandInfo(["model", "get", "x"]), env, true),
+    false,
+  );
+  assertEquals(
+    isThinClientCommand(
+      extractCommandInfo(["model", "get", "x", "--server", "https://s"]),
+      env,
+      true,
+    ),
+    true,
+  );
+  assertEquals(
+    isThinClientCommand(extractCommandInfo(["model", "get", "x"]), env),
+    true,
+  );
+});

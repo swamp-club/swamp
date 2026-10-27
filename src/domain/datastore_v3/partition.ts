@@ -42,7 +42,10 @@ import { type VersionRange, VersionRanges } from "./version_ranges.ts";
 export type CommitRejection =
   /** The commit is for another partition. */
   | "partition-mismatch"
-  /** The commit's seq is not the partition's seq plus one. */
+  /**
+   * The commit's seq is not the partition's seq plus one; for
+   * {@link Partition.appendObserved}, not past the partition's seq.
+   */
   | "seq-gap"
   /** The commit's fence, or a lease op's, is below the partition's highest. */
   | "stale-fence"
@@ -146,6 +149,8 @@ type RecordState = string | null;
  * {@link Partition.append} for every commit:
  *
  * - `seq` is gapless: a partition accepts only its current seq plus one.
+ *   {@link Partition.appendObserved}, for a follower's copy of another
+ *   store's log (swamp-club#3985), accepts any later seq instead.
  * - A commit whose txnId the partition holds is a no-op, not a second commit.
  * - A data version is recorded only when its name does not hold it live, so
  *   two writers can never both claim one live version, and has never held
@@ -501,6 +506,37 @@ export class Partition {
    * is checked against the whole history.
    */
   append(commit: Commit, options: { replay?: boolean } = {}): AppendResult {
+    return this.#apply(commit, options.replay === true, false);
+  }
+
+  /**
+   * Applies a commit observed in another store's log, or refuses it with a
+   * {@link CommitRejectedError} and changes nothing (swamp-club#3985).
+   *
+   * In team mode a checkout's commit log is a copy of serve's, filled from
+   * serve's changes feed, and serve leaves out the commits a caller may not
+   * read: the seqs a follower sees of a partition can have permanent holes.
+   * So this accepts any commit whose seq is past the partition's, not only
+   * the next one, and the partition's seq becomes the commit's. A duplicate
+   * txnId is still a no-op, a seq at or below the partition's under a new
+   * txnId is still refused as `seq-gap`, and the partition and fence rules
+   * still hold.
+   *
+   * A hidden commit's changes are not applied here, so a follower partition
+   * is the state of the commits it saw, not the writer's partition. The
+   * rules that read that state (an op's `expect`, `version-live` and
+   * `version-reused`) are therefore serve's to judge, which it did before
+   * the commit landed: a follower never refuses a landed commit for a
+   * record a hidden commit changed.
+   */
+  appendObserved(
+    commit: Commit,
+    options: { replay?: boolean } = {},
+  ): AppendResult {
+    return this.#apply(commit, options.replay === true, true);
+  }
+
+  #apply(commit: Commit, replay: boolean, observed: boolean): AppendResult {
     if (!commit.partition.equals(this.key)) {
       throw new CommitRejectedError(
         "partition-mismatch",
@@ -508,7 +544,14 @@ export class Partition {
       );
     }
     if (this.hasTxn(commit.txnId)) return { kind: "duplicate" };
-    if (commit.seq !== this.#seq + 1) {
+    if (observed) {
+      if (commit.seq <= this.#seq) {
+        throw new CommitRejectedError(
+          "seq-gap",
+          `Partition ${this.key} is at seq ${this.#seq}; it accepts only a later seq, not ${commit.seq}`,
+        );
+      }
+    } else if (commit.seq !== this.#seq + 1) {
       throw new CommitRejectedError(
         "seq-gap",
         `Partition ${this.key} is at seq ${this.#seq}; it accepts only ${
@@ -561,11 +604,12 @@ export class Partition {
           }
           const key = op.key.toString();
           const existing = current(key);
-          if (op.expect === "absent" && existing !== undefined) {
+          if (!observed && op.expect === "absent" && existing !== undefined) {
             throw this.#expectFailed(op.key, "absent");
           }
           if (
-            typeof op.expect === "object" && existing !== op.expect.sha256
+            !observed && typeof op.expect === "object" &&
+            existing !== op.expect.sha256
           ) {
             throw this.#expectFailed(op.key, `sha256 ${op.expect.sha256}`);
           }
@@ -574,7 +618,9 @@ export class Partition {
         }
         case "tombstone": {
           const key = op.key.toString();
-          if (op.expect === "present" && current(key) === undefined) {
+          if (
+            !observed && op.expect === "present" && current(key) === undefined
+          ) {
             throw this.#expectFailed(op.key, "present");
           }
           records.set(key, null);
@@ -598,14 +644,14 @@ export class Partition {
           const { name, version } = op.metadata;
           const entry = dataName(name);
           const consume = () => appended.delete(nameVersion(name, version));
-          if (entry.live.has(version) && !consume()) {
+          if (!observed && entry.live.has(version) && !consume()) {
             throw new CommitRejectedError(
               "version-live",
               `Data ${name} version ${version} is already live; only an append re-records it`,
             );
           }
           if (
-            !options.replay && !entry.live.has(version) &&
+            !observed && !replay && !entry.live.has(version) &&
             entry.removed.has(version) && !consume()
           ) {
             throw new CommitRejectedError(

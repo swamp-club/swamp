@@ -118,6 +118,7 @@ import {
 } from "../../domain/data/namespace.ts";
 import { assertV3CacheSubdirsContained } from "./cache_root_containment.ts";
 import { recoverCommitOutbox } from "./commit_outbox_recovery.ts";
+import { alignCheckoutView, checkoutViewOf } from "./checkout_view.ts";
 import {
   V3StorageUnreachableError,
   WriterFencedError,
@@ -139,6 +140,8 @@ import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
 import { v3ForeignContentFetcher } from "./v3_foreign_content.ts";
 import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
+import { SERVE_SEQ_GAP_ATTEMPTS } from "./serve_commit_sink.ts";
+import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -629,6 +632,30 @@ export async function holdV3Writer(
     }
     throw error;
   }
+  // A checkout whose upstream is serve holds only its local lease, which
+  // orders this machine's processes; serve orders the writers. Its copy is
+  // brought up to serve's log before it writes, and a serve it cannot reach
+  // refuses the write (swamp-club#3985).
+  if (serveUpstreamAt(config.path) !== undefined) {
+    await v3DatastoreFor(repoDir, config).catchUpForWrite?.();
+  }
+}
+
+/**
+ * Brings every handle this process opened on the v3 datastore at
+ * `datastorePath` up to serve's log, its read model included, refusing when
+ * serve cannot be reached. A serve-mode checkout calls it once it holds a
+ * lock at serve (swamp-club#3985), so the work under the lock reads every
+ * version another machine wrote before it; {@link holdV3Writer}'s catch-up
+ * ran before the lock was taken.
+ */
+export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
+  const path = resolve(datastorePath);
+  for (const handle of [...opened.values()]) {
+    if (resolve(handle.datastorePath) !== path) continue;
+    await handle.catchUpForWrite?.();
+    await handle.catchUp();
+  }
 }
 
 /** {@link holdV3Writer}, before a storage failure is given its code. */
@@ -870,7 +897,19 @@ async function recoverV3Outbox(
 ): Promise<void> {
   const store = resolve(handle.commitsDbPath);
   if (outboxRecoveredAt.get(store) === fence) return;
-  await recoverCommitOutbox(handle, { fence, writer: handle.writer });
+  // A serve-mode checkout lands its entries through serve, never only in
+  // its copy of serve's log (swamp-club#3985).
+  const upstream = handle.serveUpstreamStore;
+  await recoverCommitOutbox(
+    upstream === undefined ? handle : { ...handle, commitStore: upstream },
+    {
+      fence,
+      writer: handle.writer,
+      ...(upstream !== undefined
+        ? { forwardedAttempts: SERVE_SEQ_GAP_ATTEMPTS }
+        : {}),
+    },
+  );
   outboxRecoveredAt.set(store, fence);
 }
 
@@ -1138,6 +1177,15 @@ export async function v3RepositoryFactoryConfig(
     }
   }
   const handle = v3DatastoreFor(repoDir, config);
+  // Before the recovery and catch-up: a projection another view built (a
+  // serve copy of another token, address or namespace, or the solo log) is
+  // rebuilt from this one first (swamp-club#3985).
+  await alignCheckoutView(
+    repoDir,
+    handle,
+    checkoutViewOf(config.path, config.namespace ?? ""),
+    { holdsWriterLock: writer },
+  );
   // In the checkout another process is writing, its files are already the
   // newest: catching up would replay older commits over them. A writing
   // process catches up once: after that its own files are the newest too,

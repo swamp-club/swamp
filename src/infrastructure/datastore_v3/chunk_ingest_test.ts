@@ -37,6 +37,7 @@ import {
   ChunkTooLargeError,
   ChunkTruncatedError,
   effectiveChunkLimit,
+  encodeCommitBody,
   FramedReader,
   ingestChunk,
   parseRange,
@@ -569,4 +570,67 @@ Deno.test("chunkReadResponse: serves a view of a larger buffer correctly", async
   const response = chunkReadResponse(view, { start: 1, end: 2 }, sha(view));
   assertEquals(response.headers.get("content-range"), "bytes 1-2/3");
   assertEquals(new Uint8Array(await response.arrayBuffer()), bytesOf(2, 3));
+});
+
+/** Reads a commit body as serve's datastore API does. */
+async function readCommitBody(
+  body: Uint8Array,
+  cuts: readonly number[],
+): Promise<{ envelope: unknown; chunks: Uint8Array[] }> {
+  const reader = new FramedReader(streamOf(body, cuts), {
+    maxBytes: body.byteLength,
+  });
+  const length = await reader.readUint32BE();
+  const envelope = JSON.parse(
+    new TextDecoder().decode(await reader.readExactly(length)),
+  ) as { chunks: { sha256: string; size: number }[] };
+  const chunks: Uint8Array[] = [];
+  for (const declared of envelope.chunks) {
+    const chunk = await ingestChunk(reader, declared, {
+      maxChunkBytes: CHUNK_BYTES,
+    });
+    chunks.push(chunk.bytes);
+  }
+  await reader.assertEnd();
+  return { envelope, chunks };
+}
+
+Deno.test("encodeCommitBody: serve's framed read recovers the envelope and every chunk's bytes", async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.uint8Array({ maxLength: 64 }), { maxLength: 5 }),
+      fc.string({ maxLength: 40 }),
+      fc.array(fc.nat({ max: 600 }), { maxLength: 6 }),
+      async (chunkBytes, note, cuts) => {
+        const chunks = chunkBytes.map((bytes) => ({
+          sha256: sha(bytes),
+          bytes,
+        }));
+        const envelope = {
+          expectedSeq: 3,
+          txnId: crypto.randomUUID(),
+          ops: [{ kind: "put", note }],
+          chunks: chunks.map((c) => ({
+            sha256: c.sha256,
+            size: c.bytes.length,
+          })),
+        };
+        const body = encodeCommitBody(envelope, chunks);
+        const read = await readCommitBody(body, cuts);
+        assertEquals(read.envelope, envelope);
+        assertEquals(read.chunks, chunkBytes);
+      },
+    ),
+  );
+});
+
+Deno.test("encodeCommitBody: the length prefix is the envelope's UTF-8 byte count, big-endian", () => {
+  const body = encodeCommitBody({ note: "é" }, [{ bytes: bytesOf(9, 8) }]);
+  const json = new TextEncoder().encode(JSON.stringify({ note: "é" }));
+  assertEquals(
+    new DataView(body.buffer).getUint32(0, false),
+    json.byteLength,
+  );
+  assertEquals(body.subarray(4, 4 + json.byteLength), json);
+  assertEquals(body.subarray(4 + json.byteLength), bytesOf(9, 8));
 });

@@ -40,6 +40,8 @@ import {
   attachSignalWaits,
   cacheRelativeMarkPath,
   continuationClaimsOver,
+  createModelLock,
+  createWorkflowRunLock,
   libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
@@ -168,6 +170,7 @@ import {
 } from "../../serve/signal_http.ts";
 import { handleDatastoreRequest } from "../../serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../../serve/datastore_routes.ts";
+import { asTryLock, DatastoreLockLeases } from "../../serve/datastore_locks.ts";
 import { UploadLedger } from "../../infrastructure/datastore_v3/upload_ledger.ts";
 import {
   parsePrincipal,
@@ -3145,6 +3148,21 @@ export const serveCommand = new Command()
     // The chunks each caller uploaded through the datastore API, so a later
     // commit may name them (swamp-club#3915).
     const datastoreApiLedger = new UploadLedger();
+    // The model and workflow-run locks serve holds for the CLI's serve
+    // upstream: serve's own locks, so client work and serve's runs exclude
+    // each other (swamp-club#3985). Released at shutdown.
+    const datastoreApiLocks = new DatastoreLockLeases({
+      createLock: async (target) =>
+        asTryLock(
+          target.kind === "model"
+            ? await createModelLock(
+              datastoreConfig,
+              target.modelType,
+              target.modelId,
+            )
+            : await createWorkflowRunLock(datastoreConfig, target.runId),
+        ),
+    });
     // Its Litestream sidecar, kept while serve holds the lease; nothing
     // while the datastore does not replicate (swamp-club#3416).
     const v3Replication =
@@ -6595,6 +6613,7 @@ export const serveCommand = new Command()
                 ? v3DatastoreFor(resolvedRepoDir, v3Location)
                 : undefined,
               ledger: datastoreApiLedger,
+              locks: datastoreApiLocks,
               authenticate: (token, sourceIp) =>
                 authenticateServerToken(token, resolvedRepoDir, repoContext, {
                   emitter: connectionCtx.auditEmitter,
@@ -7368,6 +7387,9 @@ export const serveCommand = new Command()
         }));
       }
       await runIndexWarmup.finished();
+      // The locks callers of the datastore API hold, once no request can
+      // take another: released, and acquires still waiting given up.
+      await datastoreApiLocks.dispose();
       if (workerGcService) {
         await workerGcService.dispose();
       }

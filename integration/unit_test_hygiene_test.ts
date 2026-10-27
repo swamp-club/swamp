@@ -181,6 +181,10 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   // Socket adapter test: a Unix-socket server standing in for Litestream's
   // control socket is the boundary under test (swamp-club#3416).
   "src/infrastructure/datastore_v3/litestream/litestream_control_client_test.ts",
+  // HTTP adapter test: a port-0 localhost server checks the request serve's
+  // datastore API receives, and a closed port a refused connection
+  // (swamp-club#3985).
+  "src/infrastructure/datastore_v3/serve_datastore_client_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.
   "src/infrastructure/http/extension_api_client_test.ts",
   // HTTP adapter test: real localhost server is the boundary under test.
