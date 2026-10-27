@@ -901,6 +901,41 @@ Deno.test("planFailedRunResume: refuses to re-run a step that reads a forEach it
   );
 });
 
+Deno.test("planFailedRunResume: refuses a retry that reopens abort-settled work reading a shared steps.<name>", () => {
+  // Cancelled mid-run: host-b's x was running and failed; host-a's deploy,
+  // which reads steps.fetch, was queued and settled by the abort. The retry
+  // resets only host-b/x but reopens host-a/deploy.
+  const wf = workflow(["host-a", "host-b"].map((name) => ({
+    name,
+    steps: [
+      plain("fetch"),
+      reading("deploy", "${{ steps.fetch.output }}", ["fetch"]),
+      plain("x"),
+    ],
+  })));
+  const run = WorkflowRun.create(wf);
+  run.start();
+  for (const job of run.jobs) {
+    job.start();
+    job.getStep("fetch")!.succeed();
+    if (job.jobName === "host-a") {
+      job.getStep("x")!.succeed();
+      job.cancelPendingSteps(["deploy"]);
+      job.fail();
+    } else {
+      job.getStep("deploy")!.succeed();
+      job.getStep("x")!.start();
+      job.getStep("x")!.fail("cancelled");
+      job.fail();
+    }
+  }
+  run.complete();
+  assertStringIncludes(
+    refusal(wf, run),
+    `Step "deploy" in job "host-a" reads steps.fetch`,
+  );
+});
+
 Deno.test("planFailedRunResume: re-runs a step that reads only a step name used in one job", () => {
   const wf = workflow([
     {

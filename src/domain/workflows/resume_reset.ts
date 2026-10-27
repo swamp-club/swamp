@@ -276,9 +276,10 @@ function sharedNames(jobs: Iterable<readonly string[]>): Set<string> {
 }
 
 /**
- * Why the reset cannot re-run one of its steps: the step reads
- * `steps.<name>` for a step name used in more than one job, or reads the
- * `steps` map by a computed key or whole while such a name exists. A name
+ * Why the resume cannot re-run one of the steps in `rerunKeys` (the reset's
+ * template steps and those of records the run's abort settled): the step
+ * reads `steps.<name>` for a step name used in more than one job, or reads
+ * the `steps` map by a computed key or whole while such a name exists. A name
  * counts as used in a job when the workflow job has that step or the stored
  * job has a record of it (a `forEach` iteration is stored under its expanded
  * name). The `steps.*` context keys outputs by those stored names alone, and
@@ -288,7 +289,7 @@ function sharedNames(jobs: Iterable<readonly string[]>): Set<string> {
 function sharedStepRead(
   workflow: Workflow,
   run: WorkflowRun,
-  templateKeysToReset: ReadonlySet<string>,
+  rerunKeys: ReadonlySet<string>,
 ): string | undefined {
   const shared = new Set([
     ...sharedNames(workflow.jobs.map((j) => j.steps.map((s) => s.name))),
@@ -324,9 +325,7 @@ function sharedStepRead(
       const step = job?.steps[Number(at[2])];
       if (
         !step ||
-        !templateKeysToReset.has(
-          stepRunKey({ jobName: job.name, stepName: step.name }),
-        )
+        !rerunKeys.has(stepRunKey({ jobName: job.name, stepName: step.name }))
       ) continue;
       return read !== undefined
         ? `Step "${step.name}" in job "${job.name}" reads steps.${read}, and a step named "${read}" is in more than one job, so re-running it could read another job's output.`
@@ -693,8 +692,6 @@ export function planFailedRunResume(
   const keys = templatesToReset(workflow, entries);
   const unpaired = unpairedExpressionJob(workflow, pairs, keys);
   if (unpaired !== undefined) throw refuse(unpaired);
-  const shared = sharedStepRead(workflow, run, keys);
-  if (shared !== undefined) throw refuse(shared);
   // One pass over the union of the template sets selects the same records as
   // the union of computeStepsToReset per entry template, with one branch per
   // record.
@@ -731,6 +728,23 @@ export function planFailedRunResume(
       }
     }
   }
+
+  // Every step that will run again: the reset's template steps, and the
+  // workflow step of each record the abort settled, which resume reopens.
+  const rerun = new Set(keys);
+  for (const record of selected) {
+    if (record.branch !== "settled") continue;
+    const job = workflowJobOf(workflow, run.getJob(record.jobName)!, pairs);
+    const template = record.forEachTemplate !== undefined &&
+        job?.getStep(record.forEachTemplate)
+      ? record.forEachTemplate
+      : record.stepName;
+    if (job?.getStep(template)) {
+      rerun.add(stepRunKey({ jobName: job.name, stepName: template }));
+    }
+  }
+  const shared = sharedStepRead(workflow, run, rerun);
+  if (shared !== undefined) throw refuse(shared);
 
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
 

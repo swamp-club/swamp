@@ -2118,8 +2118,9 @@ the job or step and points to `swamp workflow history logs <id>`
    job sees the record written last. A run writes them as steps finish; a
    resume first fills the context in stored job order, so a re-run step could
    read another job's output. A retry or `--from` therefore refuses, with
-   `Start a new run.`, when a step it would re-run reads `steps.<name>` for a
-   name used in more than one job, or reads the `steps` map by a computed key
+   `Start a new run.`, when a step it would re-run (a reset step, or one the
+   run's abort settled, which resume reopens) reads `steps.<name>` for a name
+   used in more than one job, or reads the `steps` map by a computed key
    or whole while any name is shared. A name is used in a job when the
    workflow job has the step or the stored job has a record of it, so a
    `forEach` iteration name two jobs both stored counts (`sharedStepRead` in
