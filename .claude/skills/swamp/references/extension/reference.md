@@ -236,10 +236,12 @@ If an extension doesn't appear after creation, delete stale bundles
 
 Swamp Club scores published extensions against a 12-factor, 16-point rubric
 (v5); `swamp extension quality` and the registry score with the same package, so
-the local percentage and grade use the registry's formula. Before publish,
-`repository-verified` is provisional: its points are pending server
-verification, count as not earned yet, and the text output names the score they
-would raise it to.
+the local percentage and grade use the registry's formula. Before publish, a
+public repository makes `repository-verified` provisional: its points are
+pending server verification, count as not earned yet, and the text output (and
+`ifProvisionalEarned` in `--json`) names the score they would raise it to. A
+private extension in a collective with private source hosting earns it locally,
+as the registry does.
 
 Key factors: README in `additionalFiles:`, an SPDX `license:` and a LICENSE file
 (optional; one point each), JSDoc coverage ≥80%, a non-blank manifest

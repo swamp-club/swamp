@@ -534,12 +534,13 @@ function repositoryVerifiedRow(evidence: RepositoryEvidence): RubricFactor {
       remediation: PUBLIC_REPOSITORY_REMEDIATION,
     };
   }
+  // the registry awards an attested private source on the attestation alone, with no outside check
   if (evidence.privateSource.kind === "attested") {
     return {
       ...base,
       label: ATTESTED_LABEL,
-      earnedPoints: 0,
-      status: "provisional",
+      earnedPoints: 2,
+      status: "earned",
     };
   }
   if (

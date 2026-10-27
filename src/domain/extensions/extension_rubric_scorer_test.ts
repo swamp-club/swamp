@@ -232,23 +232,25 @@ Deno.test("predictPublishedPrivate: a first publish is private when asked or whe
   assertEquals(predictPublishedPrivate(null, "public", false), false);
 });
 
-Deno.test("composeScore: an attested private extension scores repository-verified like a public forge, whatever its URL", () => {
+Deno.test("composeScore: an attested private extension earns repository-verified, whatever its URL, as the registry scores it", () => {
   const publicForge = repositoryFactor("https://github.com/example/test");
   for (const repository of [SELF_HOSTED, undefined, "http://bad/x"]) {
     const { score, factor } = repositoryFactor(repository, {
       kind: "attested",
     });
-    assertEquals(factor.status, "provisional", String(repository));
+    assertEquals(factor.status, "earned", String(repository));
     assertEquals(factor.label, "Private repository (collective attested)");
-    assertEquals(factor.earnedPoints, 0);
+    assertEquals(factor.earnedPoints, 2);
     assertEquals(factor.remediation, undefined);
     assertEquals(score.allPassed, true);
-    assertEquals(score.percentage, publicForge.score.percentage);
+    assertEquals(score.provisionalPoints, 0);
+    assertEquals(score.ifProvisionalEarned, null);
+    assertEquals(score.maxClientEarnablePoints, score.maxEarnablePoints);
+    // what a public forge reaches once the registry verifies it
     assertEquals(
-      score.maxClientEarnablePoints,
-      publicForge.score.maxClientEarnablePoints,
+      score.percentage,
+      publicForge.score.ifProvisionalEarned?.percentage,
     );
-    assertEquals(score.provisionalPoints, publicForge.score.provisionalPoints);
   }
 });
 

@@ -150,8 +150,10 @@ export type PrivateSourceStanding =
  *               repository, and whether the extension is private with a
  *               collective that has private source hosting
  *   predicted → before publish: the manifest's repository URL and the
- *               private source standing; the factor is provisional when the
- *               registry would award it, since only the registry decides
+ *               private source standing; an attested standing earns the
+ *               factor, as the registry awards it on the attestation alone,
+ *               and a public repository URL is provisional, since only the
+ *               registry calls the host's API
  */
 export type RepositoryEvidence =
   | {

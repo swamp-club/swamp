@@ -264,8 +264,10 @@ Deno.test("composeScore: a predicted repository is provisional and counts as not
   // the registry divides by every row's points, so the divisor stays 16
   assertEquals(score.percentage, 87);
   assertEquals(percentageIfProvisionalEarned(score), 100);
+});
 
-  const attested = composeScore(
+Deno.test("composeScore: a predicted attested private source is earned, as the registry awards it on the attestation alone", () => {
+  const score = composeScore(
     inputs({
       repository: {
         kind: "predicted",
@@ -274,11 +276,14 @@ Deno.test("composeScore: a predicted repository is provisional and counts as not
       },
     }),
   );
-  const row = byId(attested).get("repository-verified")!;
+  const row = byId(score).get("repository-verified")!;
   assertEquals(
-    [row.status, row.label],
-    ["provisional", "Private repository (collective attested)"],
+    [row.status, row.label, row.earnedPoints, row.remediation],
+    ["earned", "Private repository (collective attested)", 2, undefined],
   );
+  assertEquals(score.provisionalPoints, 0);
+  assertEquals([score.earnedPoints, score.maxPoints], [16, 16]);
+  assertEquals(score.percentage, 100);
 });
 
 Deno.test("composeScore: a predicted repository the registry cannot verify says why", () => {

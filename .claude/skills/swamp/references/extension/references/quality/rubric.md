@@ -20,14 +20,15 @@ percentage. `swamp extension quality` and the registry use the same formula, so
 the local percentage and grade are the registry's for the points already
 confirmed.
 
-Before publish, `swamp extension quality` cannot confirm `repository-verified`.
-When the registry is expected to award it, its 2 points are provisional: not
-earned yet, reported in `provisionalPoints`, and still in the divisor. The text
-output names what they would raise the score to, e.g.
+Before publish, `swamp extension quality` cannot confirm a public repository.
+When the registry is expected to verify one, `repository-verified`'s 2 points
+are provisional: not earned yet, reported in `provisionalPoints`, and still in
+the divisor. The text output names what they would raise the score to, e.g.
 `14/16 points (87%, grade B, +2 pending server verification: 100% (A) if the registry verifies them, ...)`.
-In `--json`, `percentage` and `grade` count confirmed points only; add
-`provisionalPoints` to `earnedPoints` for the registry's score once it verifies
-the repository.
+In `--json`, `percentage` and `grade` count confirmed points only, and
+`ifProvisionalEarned` (right after `grade`) gives the registry's
+`{percentage, grade}` once it verifies the repository, or `null` when nothing is
+pending.
 
 | Grade | Range |
 | ----- | ----- |
@@ -179,10 +180,11 @@ The registry awards it when `repository:` is a public HTTPS repository on
 github.com, gitlab.com, codeberg.org or bitbucket.org that the host's API
 confirms, or when the extension is private and its collective has private source
 hosting ("Private repository (collective attested)"). Before publish,
-`swamp extension quality` marks it `provisional` when the URL names an owner and
-a repository on one of those hosts, or when it predicts a private publish from a
-collective with private source hosting; otherwise `missing`, with a remediation
-that says whether private source hosting could be checked.
+`swamp extension quality` marks it `earned` when it predicts a private publish
+from a collective with private source hosting, since the registry awards that on
+the attestation alone; `provisional` when the URL names an owner and a
+repository on one of those hosts; otherwise `missing`, with a remediation that
+says whether private source hosting could be checked.
 
 ## The `deno doc` run
 
