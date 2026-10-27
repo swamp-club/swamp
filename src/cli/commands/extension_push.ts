@@ -538,6 +538,7 @@ export const extensionPushCommand = new Command()
         // The lock the bundle runs --frozen against (swamp-club#3662).
         ...(await readOnlyLockFor({ denoConfigPath, packageJsonDir })),
         bareImports: resolved.bareImports,
+        graphDependencies: resolved.graphDependencies,
         symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
       };
       const cacheHash = await computePackageCacheHash(cacheHashInput);
@@ -591,6 +592,7 @@ export const extensionPushCommand = new Command()
           denoConfigPath,
           packageJsonDir,
           bareImports: resolved.bareImports,
+          graphDependencies: resolved.graphDependencies,
           contentHash: cacheHash,
           cachedArchive: cached?.archiveBytes,
           cachedArchiveIndex: cached?.metadata.archiveIndex,
@@ -750,6 +752,7 @@ export const extensionPushCommand = new Command()
                   denoConfigPath,
                   packageJsonDir,
                   bareImports: resolved.bareImports,
+                  graphDependencies: resolved.graphDependencies,
                   contentHash: bumpedHash,
                 });
               } catch (retryError) {

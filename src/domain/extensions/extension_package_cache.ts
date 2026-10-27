@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  exactVersion,
+  parseSpecifier,
+} from "@swamp-club/extension-scoring/dependency-audit";
+import type { GraphDependencies } from "./dependency_resolution/package_versions.ts";
+import {
   dirname,
   fromFileUrl,
   join,
@@ -99,6 +104,13 @@ export interface PackageCacheHashInput {
    * root can change them without changing `denoConfigPath`.
    */
   bareImports?: ResolvedBareImport[];
+  /**
+   * The exact versions, unaudited code and package-lock.json validity the
+   * module graphs gave (swamp-club#3970). The shipped source pins these
+   * versions and the record lists them, so a lockless range that resolves
+   * to a new version today must not reuse an archive pinned to yesterday's.
+   */
+  graphDependencies?: GraphDependencies;
   /**
    * Files with a symlink on their path (swamp-club#3421). Each is hashed by
    * its path alone, never read: the safety gate refuses it, and its target
@@ -282,6 +294,40 @@ export async function computePackageCacheHash(
     parts.push("installed-imports");
     for (const line of installed) parts.push(line);
   }
+  // What the source, config and lock above do not fix (swamp-club#3970):
+  // the version a lockless range resolved to today, which the shipped
+  // source pins and the record lists, so a new release misses the cache
+  // instead of reusing an archive pinned to yesterday's; the modules fetched
+  // by URL; and whether a package-lock.json counts as a lock. Only when
+  // present, so every other extension keeps its hash, which is also the
+  // content hash an adversarial-review report is keyed by.
+  const graph = input.graphDependencies;
+  const lockless = input.lockPath
+    ? []
+    : Object.entries(graph?.packageVersions ?? {})
+      .filter(([specifier, version]) => {
+        // zod is the host's and never pinned; parseSpecifier skips it.
+        const parsed = parseSpecifier(specifier);
+        return parsed !== null && !version.installed &&
+          exactVersion(parsed.version) === null;
+      })
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  if (lockless.length > 0) {
+    parts.push("lockless-versions");
+    for (const [specifier, version] of lockless) {
+      parts.push(`${specifier} ${version.specifier}`);
+    }
+  }
+  if (graph && graph.unaudited.length > 0) {
+    parts.push("unaudited");
+    for (const u of graph.unaudited) {
+      parts.push(`${u.kind} ${u.origin}`);
+      for (const [module, sha] of Object.entries(u.modules).sort()) {
+        parts.push(`${module} ${sha}`);
+      }
+    }
+  }
+  if (graph?.packageLock?.valid) parts.push("package-lock-valid");
   // Only when present, like deno-config and package-json above, so every
   // extension without a sidecar keeps its hash across this change.
   const sidecar = await computeFileContentHashIfExists(

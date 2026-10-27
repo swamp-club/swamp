@@ -32,16 +32,24 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "npm",
         "name": "vecpkg",
         "spec": "1.0.0",
         "version": "1.0.0",
-        "from": "exact"
+        "from": "exact",
+        "locked": false,
+        "writtenAs": [
+          "vecpkg"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {

@@ -82,9 +82,20 @@ Deno.test("behavior extension twins: a behavior-spelled extension sends what its
       model.archive.manifest,
       `${fixture.id}: re-emitted manifest`,
     );
-    // Non-source files (manifest, include data) are byte-identical.
+    // Non-source files (manifest, include data) are byte-identical. The
+    // dependency audit record holds each bundle's hash (swamp-club#3970),
+    // and the bundles differ by their export name, so it is compared
+    // without them.
     for (const [file, sha] of Object.entries(model.archive.sha256)) {
       if (file.endsWith(".ts") || file.endsWith(".js")) continue;
+      if (file.endsWith("dependency-audit.json")) {
+        assertEquals(
+          behavior.archive.auditRecord,
+          model.archive.auditRecord,
+          `${fixture.id}: ${file} without bundle hashes`,
+        );
+        continue;
+      }
       assertEquals(
         behavior.archive.sha256[file],
         sha,

@@ -286,7 +286,7 @@ function declaredDependency(
  * package name its path gives: the segments after the last `node_modules`
  * (one, or two for a scope). Undefined for a file not under one.
  */
-function installedPackageDir(
+export function installedPackageDir(
   file: string,
 ): { dir: string; name: string } | undefined {
   const parts = file.split(SEPARATOR_PATTERN);

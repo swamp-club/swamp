@@ -20,22 +20,30 @@
     "models/m.ts"
   ],
   "shipped": {
-    "models/m.ts": "import { lib } from \"jsr:@vec/lib@^1\";\n\nexport const model = [lib];\n"
+    "models/m.ts": "import { lib } from \"jsr:@vec/lib@1.0.0\";\n\nexport const model = [lib];\n"
   },
   "bundles": {
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "jsr",
         "name": "@vec/lib",
-        "spec": "^1",
+        "spec": "1.0.0",
         "version": "1.0.0",
-        "from": "lockfile"
+        "from": "lockfile",
+        "locked": true,
+        "writtenAs": [
+          "jsr:@vec/lib@^1"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {
@@ -47,9 +55,7 @@
   ],
   "trust": {
     "errors": [],
-    "warnings": [
-      "@vec/lib [loose-specifier]: jsr:@vec/lib@^1 is a range; audited 1.0.0, the version this push resolves (from deno.lock)"
-    ]
+    "warnings": []
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",

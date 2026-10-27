@@ -630,8 +630,11 @@ export async function reloadPulledExtensions(
           if (!denoPath) {
             denoPath = await denoRuntime.ensureDeno();
           }
+          // Pulled source never reads the consumer's Deno config
+          // (swamp-club#3970).
           const js = await bundleExtension(row.source_path, denoPath, {
             env: denoRuntime.getDenoEnv(),
+            noConfig: true,
           });
           await Deno.mkdir(dirname(row.bundle_path), { recursive: true });
           await Deno.writeTextFile(row.bundle_path, js);

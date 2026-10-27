@@ -126,6 +126,7 @@ export function buildPrepareInput(
     manifest,
     repoDir,
     bareImports: [],
+    graphDependencies: { packageVersions: {}, unaudited: [] },
     manifestDir: repoDir,
     modelsDir: join(repoDir, "models"),
     allModelFiles: [],

@@ -25,6 +25,11 @@
  * local module the bundle was built from (swamp-club#3376).
  */
 
+import type { UnauditedDependency } from "@swamp-club/extension-scoring/dependency-audit";
+import {
+  mergePackageVersions,
+  type PackageVersions,
+} from "./dependency_resolution/package_versions.ts";
 import {
   type ResolvedBareImport,
   type StaleInstalledImport,
@@ -86,6 +91,30 @@ export interface SourceModuleGraph {
    * when there are none.
    */
   staleInstalls?: StaleInstalledImport[];
+  /**
+   * The exact package each `npm:` and `jsr:` specifier resolved to, which
+   * push pins in the archive's source (swamp-club#3970); absent when the
+   * reader recorded none.
+   */
+  packageVersions?: PackageVersions;
+  /**
+   * Code from outside npm and JSR the graph fetched or installed, with a
+   * SHA-256 of each module (swamp-club#3970); absent when there is none.
+   */
+  unaudited?: UnauditedDependency[];
+  /**
+   * Every package a package.json project's node_modules supplies to the
+   * graph, transitive ones included, by its path from the package.json
+   * directory (`node_modules/ms`, forward slashes) and installed version;
+   * absent outside a package.json project (swamp-club#3970).
+   */
+  installedPackages?: InstalledPackage[];
+}
+
+/** A package installed in node_modules, and its version. */
+export interface InstalledPackage {
+  path: string;
+  version: string;
 }
 
 /** The project configuration the bundler resolves modules under. */
@@ -125,7 +154,20 @@ export function mergeSourceGraphs(
   const missing = new Map<string, MissingLocalModule>();
   const bareImports: ResolvedBareImport[] = [];
   const staleInstalls = new Map<string, StaleInstalledImport>();
+  const unaudited = new Map<string, UnauditedDependency>();
+  const installedPackages = new Map<string, InstalledPackage>();
   for (const graph of graphs) {
+    for (const p of graph.installedPackages ?? []) {
+      if (!installedPackages.has(p.path)) installedPackages.set(p.path, p);
+    }
+    for (const u of graph.unaudited ?? []) {
+      const key = `${u.kind}\0${u.origin}`;
+      const known = unaudited.get(key);
+      unaudited.set(
+        key,
+        known ? { ...u, modules: { ...u.modules, ...known.modules } } : u,
+      );
+    }
     for (const b of graph.bareImports ?? []) bareImports.push(b);
     for (const s of graph.staleInstalls ?? []) {
       const key = `${s.importer}\0${s.specifier}`;
@@ -150,6 +192,21 @@ export function mergeSourceGraphs(
     bareImports: uniqueBareImports(bareImports),
     ...(staleInstalls.size > 0
       ? { staleInstalls: [...staleInstalls.values()] }
+      : {}),
+    ...(graphs.some((g) => g.packageVersions)
+      ? {
+        packageVersions: mergePackageVersions(
+          graphs.map((g) => g.packageVersions),
+        ),
+      }
+      : {}),
+    ...(unaudited.size > 0 ? { unaudited: [...unaudited.values()] } : {}),
+    ...(graphs.some((g) => g.installedPackages)
+      ? {
+        installedPackages: [...installedPackages.values()].sort((a, b) =>
+          a.path < b.path ? -1 : a.path > b.path ? 1 : 0
+        ),
+      }
       : {}),
   };
 }
@@ -225,6 +282,13 @@ export function withoutSymlinkedModules(
         ? {
           staleInstalls: graph.staleInstalls.filter((s) => keep(s.importer)),
         }
+        : {}),
+      ...(graph.packageVersions
+        ? { packageVersions: graph.packageVersions }
+        : {}),
+      ...(graph.unaudited ? { unaudited: graph.unaudited } : {}),
+      ...(graph.installedPackages
+        ? { installedPackages: graph.installedPackages }
         : {}),
     },
     symlinked,

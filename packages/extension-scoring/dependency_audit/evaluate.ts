@@ -72,8 +72,8 @@ export type Lookup<T> =
  * - `not-audited`: a lookup failed, so the dependency is unknown.
  * - `deprecated-version`: the version that ships is deprecated while the
  *   package's latest is not.
- * - `loose-specifier`: an unpinned, range or dist-tag specifier; the finding
- *   names the version that was audited.
+ * - `loose-specifier`: an unpinned, range or dist-tag specifier that no
+ *   valid lock fixed; the finding names the version that was audited.
  * - `jsr-yanked`: the JSR version that ships is yanked.
  * - `jsr-missing`: the JSR package or version does not exist.
  */
@@ -428,48 +428,43 @@ function lockRefreshNote(
 }
 
 /**
- * An unpinned, range or dist-tag specifier's finding, naming the version
- * that was audited; null for an exact pin.
+ * The finding for an unpinned, range or dist-tag specifier that no valid
+ * lock fixed, naming the version that was audited; null for an exact pin
+ * or a locked version. Pinning exact versions or committing a lock earns
+ * the point alike (swamp-club#3970).
  */
 function looseSpecifierFinding(
   spec: DependencySpecifier,
   shipped: ShippedVersion,
-  lock: LockedDependencyVersions | undefined,
 ): Finding | null {
   const kind = specifierKind(spec.version);
   if (kind === "exact") return null;
+  if (shipped.locked || shipped.from === "lockfile") return null;
   const phrase = kind === "unpinned"
     ? "unpinned"
     : kind === "range"
     ? "a range"
     : "a dist-tag";
-  const from = shipped.from === "lockfile" && lock
-    ? ` (from ${lock.source})`
-    : shipped.from === "installed"
-    ? " (installed in node_modules)"
-    : "";
   const by = shipped.recorded
     ? "the version push recorded"
     : "the version the registry resolved";
-  const scorecardFrom = shipped.from === "lockfile"
-    ? ` (from ${lock?.source ?? "deno.lock"})`
-    : shipped.recorded && shipped.from === "installed"
+  const scorecardFrom = shipped.recorded && shipped.from === "installed"
     ? " (installed in node_modules)"
     : "";
   return warning(
     spec.name,
     {
-      message: `${
-        specifierText(spec)
-      } is ${phrase}; audited ${shipped.version}, the version this push resolves${from}`,
+      message: `no lock: ${
+        spec.version ?? "an unpinned import"
+      } resolved to ${shipped.version} today; commit a lock or pin exact versions (costs 1 point)`,
       cause: "loose-specifier",
       remediation: shipped.from === "installed"
-        ? `Pin the exact installed version (${shipped.version}) in package.json to ensure that the audited version is the one that ships.`
-        : `Pin the exact version this push resolved (${shipped.version}) to ensure that the audited version is the one that ships.`,
+        ? `Commit a deno.lock or a package-lock.json that matches node_modules, or pin the exact installed version (${shipped.version}) in package.json.`
+        : `Commit a deno.lock, or pin the exact version this push resolved (${shipped.version}).`,
     },
     `${
       specifierText(spec)
-    } is ${phrase}; audited ${shipped.version}, ${by}${scorecardFrom}`,
+    } is ${phrase} and no lock fixed it; audited ${shipped.version}, ${by}${scorecardFrom}`,
   );
 }
 
@@ -550,15 +545,16 @@ export function planNpmPackage(
     ? { versions: npm.value.publishedVersions, distTags: npm.value.distTags }
     : null;
   const shipped = specs.map((spec) =>
-    resolveShippedVersion(
-      "npm",
-      name,
-      spec.version,
-      lock,
-      published,
-      spec.installedVersion,
-      record,
-    )
+    spec.bundled ??
+      resolveShippedVersion(
+        "npm",
+        name,
+        spec.version,
+        lock,
+        published,
+        spec.installedVersion,
+        record,
+      )
   );
   const osvVersions = [
     ...new Set(shipped.flatMap((s) => s === null ? [] : [s.version])),
@@ -641,7 +637,7 @@ export function evaluateNpmPackage(
           f.issue.remediation += note;
         }
       }
-      const loose = looseSpecifierFinding(spec, shipped, lock);
+      const loose = looseSpecifierFinding(spec, shipped);
       if (loose) findings.push(loose);
     }
 
@@ -711,8 +707,8 @@ export function evaluateJsrPackage(
     }
     if (meta.kind === "missing") return missing("JSR package not found", null);
     if (meta.kind === "unavailable") {
-      // An exact or locked version ships whether or not JSR answered.
-      const known = resolveShippedVersion(
+      // An exact, bundled or locked version ships whether or not JSR answered.
+      const known = spec.bundled ?? resolveShippedVersion(
         "jsr",
         name,
         spec.version,
@@ -729,7 +725,7 @@ export function evaluateJsrPackage(
       return known ? { ...audit, shipped: known } : audit;
     }
 
-    const shipped = resolveShippedVersion(
+    const shipped = spec.bundled ?? resolveShippedVersion(
       "jsr",
       name,
       spec.version,
@@ -782,7 +778,7 @@ export function evaluateJsrPackage(
         ),
       );
     }
-    const loose = looseSpecifierFinding(spec, shipped, lock);
+    const loose = looseSpecifierFinding(spec, shipped);
     if (loose) findings.push(loose);
     return {
       findings,

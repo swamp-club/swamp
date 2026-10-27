@@ -28,15 +28,26 @@
 export {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
+  buildDependencyAuditRecordV2,
   DEPENDENCY_AUDIT_RECORD_FILENAME,
   DEPENDENCY_AUDIT_RECORD_VERSION,
+  DEPENDENCY_AUDIT_RECORD_VERSION_2,
   type DependencyAuditRecord,
   type DependencyAuditRecordEntry,
+  type DependencyAuditRecordV2,
+  type DependencyAuditRecordV2Entry,
+  isPlainSemver,
   MAX_DEPENDENCY_AUDIT_RECORD_BYTES,
   parseDependencyAuditRecord,
+  parseDependencyAuditRecordV2,
   serializeDependencyAuditRecord,
+  serializeDependencyAuditRecordV2,
   type ShippedDependency,
+  type ShippedImport,
+  type UnauditedDependency,
+  type UnauditedDependencyKind,
 } from "./audit_record.ts";
+export { canonicalShippedSpecifierIssue } from "./canonical.ts";
 export {
   DEFAULT_TRUST_THRESHOLDS,
   type DependencyAuditSummary,

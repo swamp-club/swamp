@@ -727,10 +727,10 @@ Deno.test("checkDependencyTrust: a range warns naming the version it resolves", 
   assertEquals(result.warnings, [{
     dependency: "express",
     message:
-      "npm:express@^4.18.0 is a range; audited 4.21.1, the version this push resolves",
+      "no lock: ^4.18.0 resolved to 4.21.1 today; commit a lock or pin exact versions (costs 1 point)",
     cause: "loose-specifier",
     remediation:
-      "Pin the exact version this push resolved (4.21.1) to ensure that the audited version is the one that ships.",
+      "Commit a deno.lock, or pin the exact version this push resolved (4.21.1).",
   }]);
   assertEquals(result.audited[0].specifier, "npm:express@^4.18.0");
   assertEquals(result.audited[0].resolvedFrom, "registry");
@@ -757,10 +757,10 @@ Deno.test("checkDependencyTrust: a package.json range audits the installed versi
   assertEquals(result.warnings, [{
     dependency: "express",
     message:
-      'npm:express@^4.18.0 is a range; audited 4.18.2, the version this push resolves (installed in node_modules) (imported as "express" through package.json)',
+      'no lock: ^4.18.0 resolved to 4.18.2 today; commit a lock or pin exact versions (costs 1 point) (imported as "express" through package.json)',
     cause: "loose-specifier",
     remediation:
-      "Pin the exact installed version (4.18.2) in package.json to ensure that the audited version is the one that ships.",
+      "Commit a deno.lock or a package-lock.json that matches node_modules, or pin the exact installed version (4.18.2) in package.json.",
   }]);
   assertEquals(result.audited[0].version, "4.18.2");
   assertEquals(result.audited[0].resolvedFrom, "installed");
@@ -785,9 +785,9 @@ Deno.test("checkDependencyTrust: a tilde range, unpinned and a dist-tag each war
       w.message
     ),
     [
-      "npm:express@~4.17.0 is a range; audited 4.17.0, the version this push resolves",
-      "npm:express is unpinned; audited 4.21.1, the version this push resolves",
-      "npm:express@next is a dist-tag; audited 5.0.0-beta.1, the version this push resolves",
+      "no lock: ~4.17.0 resolved to 4.17.0 today; commit a lock or pin exact versions (costs 1 point)",
+      "no lock: an unpinned import resolved to 4.21.1 today; commit a lock or pin exact versions (costs 1 point)",
+      "no lock: next resolved to 5.0.0-beta.1 today; commit a lock or pin exact versions (costs 1 point)",
     ],
   );
 });
@@ -821,7 +821,7 @@ Deno.test("checkDependencyTrust: two ranges of one package share one packument l
   assertEquals(result.audited.map((a) => a.version), ["4.21.1", "4.17.0"]);
 });
 
-Deno.test("checkDependencyTrust: the lock decides a range's version and the finding says so", async () => {
+Deno.test("checkDependencyTrust: the lock decides a range's version, and a locked range does not warn", async () => {
   const osvBodies: unknown[] = [];
   const result = await checkDependencyTrust(
     [npmSpec("express", "^4.17.0")],
@@ -835,14 +835,8 @@ Deno.test("checkDependencyTrust: the lock decides a range's version and the find
     package: { name: "express", ecosystem: "npm" },
     version: "4.18.2",
   }]);
-  assertEquals(result.warnings, [{
-    dependency: "express",
-    message:
-      "npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock)",
-    cause: "loose-specifier",
-    remediation:
-      "Pin the exact version this push resolved (4.18.2) to ensure that the audited version is the one that ships.",
-  }]);
+  // A valid lock fixed the version, so the range costs nothing (swamp-club#3970).
+  assertEquals(result.warnings, []);
   assertEquals(result.audited[0].resolvedFrom, "lockfile");
 });
 
@@ -1096,8 +1090,8 @@ Deno.test("checkDependencyTrust: a JSR range skips yanked and prerelease version
   assertEquals(
     result.warnings.map((w) => w.message),
     [
-      "jsr:@std/assert@^0.225.0 is a range; audited 0.225.1, the version this push resolves",
-      "jsr:@std/assert@1 is a range; audited 1.0.2, the version this push resolves",
+      "no lock: ^0.225.0 resolved to 0.225.1 today; commit a lock or pin exact versions (costs 1 point)",
+      "no lock: 1 resolved to 1.0.2 today; commit a lock or pin exact versions (costs 1 point)",
     ],
   );
 });
@@ -1128,10 +1122,10 @@ Deno.test("checkDependencyTrust: an unpinned JSR import resolves to latest", asy
   assertEquals(result.warnings, [{
     dependency: "@std/assert",
     message:
-      "jsr:@std/assert is unpinned; audited 1.0.2, the version this push resolves",
+      "no lock: an unpinned import resolved to 1.0.2 today; commit a lock or pin exact versions (costs 1 point)",
     cause: "loose-specifier",
     remediation:
-      "Pin the exact version this push resolved (1.0.2) to ensure that the audited version is the one that ships.",
+      "Commit a deno.lock, or pin the exact version this push resolved (1.0.2).",
   }]);
 });
 
@@ -1264,7 +1258,7 @@ Deno.test("checkDependencyTrust: an inline import's findings and summary are unc
   assertEquals("importedAs" in result.audited[0], false);
 });
 
-Deno.test("checkDependencyTrust: a mapped range resolves from the lock and its finding names the bare import", async () => {
+Deno.test("checkDependencyTrust: a mapped range resolves from the lock, and a locked range does not warn", async () => {
   const result = await checkDependencyTrust(
     [mapped(npmSpec("express", "^4.17.0"), "express")],
     routedFetcher(healthyRoutes(RANGE_NPM_BODY)),
@@ -1274,14 +1268,8 @@ Deno.test("checkDependencyTrust: a mapped range resolves from the lock and its f
   );
   assertEquals(result.audited[0].version, "4.18.2");
   assertEquals(result.audited[0].resolvedFrom, "lockfile");
-  assertEquals(result.warnings, [{
-    dependency: "express",
-    message:
-      'npm:express@^4.17.0 is a range; audited 4.18.2, the version this push resolves (from deno.lock) (imported as "express" through the project\'s Deno config)',
-    cause: "loose-specifier",
-    remediation:
-      "Pin the exact version this push resolved (4.18.2) to ensure that the audited version is the one that ships.",
-  }]);
+  // A valid lock fixed the version, so the range costs nothing (swamp-club#3970).
+  assertEquals(result.warnings, []);
 });
 
 Deno.test("checkDependencyTrust: a mapped range without a lock resolves from the registry", async () => {

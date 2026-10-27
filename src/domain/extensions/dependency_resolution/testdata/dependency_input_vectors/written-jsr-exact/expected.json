@@ -25,16 +25,24 @@
     "bundles/m.js": "ok"
   },
   "record": {
-    "recordVersion": 1,
+    "recordVersion": 2,
+    "bundles": {
+      "bundles/m.js": "sha256 of the bundle"
+    },
     "dependencies": [
       {
         "registry": "jsr",
         "name": "@vec/lib",
         "spec": "1.0.0",
         "version": "1.0.0",
-        "from": "exact"
+        "from": "exact",
+        "locked": false,
+        "writtenAs": [
+          "jsr:@vec/lib@1.0.0"
+        ]
       }
-    ]
+    ],
+    "unaudited": []
   },
   "audited": [
     {

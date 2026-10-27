@@ -195,6 +195,7 @@ export const extensionQualityCommand = new Command()
             denoConfigPath,
             packageJsonDir: resolved.packageJsonDir,
             bareImports: resolved.bareImports,
+            graphDependencies: resolved.graphDependencies,
           },
           hashInput: {
             manifest: resolved.manifest,
@@ -233,6 +234,7 @@ export const extensionQualityCommand = new Command()
               packageJsonDir: resolved.packageJsonDir,
             })),
             bareImports: resolved.bareImports,
+            graphDependencies: resolved.graphDependencies,
             symlinkedPaths: new Set(resolved.symlinkedPaths.keys()),
           },
           isolated: options.isolated === true,

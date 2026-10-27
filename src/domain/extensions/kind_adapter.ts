@@ -64,6 +64,11 @@ export interface RegistrationContext {
   denoPath: string;
   denoRuntime: DenoRuntime;
   repoDir: string | null;
+  /**
+   * The source is a pulled extension's, so its rebuilds read no Deno
+   * config (swamp-club#3970).
+   */
+  pulled?: boolean;
   extensionName?: string;
   sourceFingerprint?: string;
   /** The source as it stood at registration (swamp-club#3594). */

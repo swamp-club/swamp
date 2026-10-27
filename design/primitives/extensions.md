@@ -266,7 +266,7 @@ extracting the archive, running `deno doc`, reading files and fetching from npm,
 OSV and JSR. The package ships the vectors both sides test against
 (`vectors/*.json`) and stays pure TypeScript with no runtime APIs, which
 `integration/extension_scoring_package_rules_test.ts` enforces. A rule change
-that can move a score bumps `RUBRIC_VERSION` (v5 is the first shared rubric).
+that can move a score bumps `RUBRIC_VERSION` (v5 is the first shared rubric; v6, swamp-club#3970, frees a locked range of the loose point).
 `swamp extension quality --isolated` runs `deno doc` with an empty cache and a
 minimal environment, as the registry does.
 
@@ -839,7 +839,7 @@ extension.tar.gz
 └── extension/
     ├── manifest.yaml
     ├── quality.yaml          # Declared acceptances and the generated declaration, when present
-    ├── dependency-audit.json # The version the audit checked for each npm/jsr dependency
+    ├── dependency-audit.json # Each shipped npm/jsr version, unaudited code, bundle hashes (v2)
     ├── models/              # Source TypeScript behavior files
     │   └── ssh/
     │       ├── connection.ts
@@ -1359,8 +1359,9 @@ beside the relative rewrites above:
   JavaScript included. A `.tsx` or `.jsx` module is parsed with JSX. A module
   that does not parse is refused before any rewrite is planned. The rewrite and
   the `bare-specifiers` finding come from one plan (`planBareImports`).
-- The target is written as Deno reports it, version or range included,
-  exactly as a specifier written out in source would ship. A `key/` target
+- The target is written as Deno reports it, then pinned to the exact version
+  the bundle holds, exactly as a specifier written out in source is (see
+  "The canonical shipped form" below). A `key/` target
   written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
   the registry's parser reads at all. A zod target the host shares (4.x at the
   root or `/v4`, the same namespace) ships as `npm:zod@4`: zod is never bundled
@@ -2238,13 +2239,62 @@ from `@bixu/wheelshop`:
 - Weekly downloads below 1,000
 - Last publish more than 24 months ago
 
+### The canonical shipped form
+
+Since swamp-club#3970, every `npm:` and `jsr:` import in an archive's source
+names the exact version its bundle holds: `npm:<name>@<x.y.z>[/subpath]` or
+`jsr:@<scope>/<name>@<x.y.z>[/subpath]`, plain semver, with no `^`, `~`, `=`,
+`v`, dist-tag or missing version. zod is the one exception: the host provides
+it, so a zod import ships as written and is never audited. Authors keep
+writing ranges, dist-tags, unpinned imports, import-map names and package.json
+dependencies; push pins each import site in the archived copy, at its exact
+span, beside the relative and bare-import rewrites above
+(`dependency_resolution/canonical_form.ts`). The bundle is not touched.
+
+- The version comes from the module graph the bundle is built from: the same
+  `deno info` read, with the bundle's flags (`--frozen` against the lock, or
+  `--no-lock`), reports each `npm:` and `jsr:` specifier's exact version in
+  `redirects` and each npm dependency's `npmPackage`
+  (`dependency_resolution/package_versions.ts`). An `npm:` import or an
+  import-map target that Deno reads from `node_modules/` is pinned to the
+  installed copy's version, read from its `package.json`. So the shipped
+  specifier, the bundle and the audit read one answer.
+- Every site kind is pinned: static, side-effect, dynamic and type imports,
+  and re-exports. A site the graph gives no exact version for refuses the
+  push, naming the import, so a range can never ship. Before writing the
+  archive, push checks every `npm:`/`jsr:` import its source writes with the
+  shared `canonicalShippedSpecifierIssue`; a failure there is a bug in push.
+- No `deno.json`, `deno.jsonc`, `deno.lock`, `package.json`,
+  `package-lock.json`, `.npmrc` or anything under `node_modules/` ships, from
+  a kind directory, an include or `additionalFiles`. Push leaves each out
+  before any gate runs, drops it from the manifest's `additionalFiles`, and
+  warns with `archive-project-file` naming it. Pull refuses such files, and
+  the pinned source needs none.
+- A consumer rebuild of pulled source (the loader's rebundle and recovery of
+  a missing bundle, serve hot-reload, a worker's self-contained bundle) runs
+  `deno bundle` with `--no-config` and never looks a config up, so a
+  `deno.json` in or above the consumer's repository cannot apply its import
+  map to pulled source. Local extensions and push keep finding their own
+  config.
+- Code from outside npm and JSR still ships as it does today, inlined in the
+  bundle: URL imports (with every module fetched through them) and
+  package.json dependencies installed from a path, a workspace or git. The
+  record lists each under `unaudited` (below).
+
 ### The version that ships
 
 Each `npm:` and `jsr:` specifier is audited at the version the push ships
 (swamp-club#3352), whether the source writes it out or writes a bare import the
 project `deno.json` import map resolves to it (swamp-club#3611), or, in
 package.json mode, one that resolves to an installed dependency
-(swamp-club#3630). The extractor resolves bare imports as the bundler does: an
+(swamp-club#3630). Push hands the audit the version the bundle holds, read from the module
+graph as above (`DependencySpecifier.bundled`, swamp-club#3970): an exact pin
+as written, an installed package at its installed version, anything else at
+the graph's version, from the lock when the bundle was built against one and
+from the registry otherwise. The audit then resolves nothing itself, so the
+version audited, bundled and shipped is one answer. The chain below is how the
+registry, and an audit with no bundled version, resolves a version. The
+extractor resolves bare imports as the bundler does: an
 exact key, else the longest `key/` prefix, where a key mapped to an `npm:` or
 `jsr:` package also covers its subpaths (`"@std/path"` resolves
 `@std/path/posix`) unless the map has its own `key/` entry. It reads the map as
@@ -2320,12 +2370,22 @@ shipped version.
 | ---------------------------------------- | -------- | -------------------- |
 | Shipped and latest both deprecated       | error    | none                 |
 | Shipped version deprecated, latest not   | warning  | `deprecated-version` |
-| Unpinned, range or dist-tag specifier    | warning  | `loose-specifier`    |
+| Unpinned, range or dist-tag, no lock     | warning  | `loose-specifier`    |
 | Shipped JSR version yanked               | warning  | `jsr-yanked`         |
 | JSR package or version missing, bad name | error    | `jsr-missing`        |
 
-The first row keeps its old message, `package is deprecated`; a
-`loose-specifier` finding names the version this push resolves. The exact
+The first row keeps its old message, `package is deprecated`. A
+`loose-specifier` finding is raised only when no valid lock fixed the version
+(swamp-club#3970): pinning exact versions and committing a lock earn the point
+alike. A `deno.lock` always counts, since push bundles `--frozen` against it;
+a `package-lock.json` counts only when every package the bundle takes from
+`node_modules/` (transitive ones included) is the version the lock names
+(lockfileVersion 2 or 3), and otherwise is treated as no lock, with a
+`package-lock-mismatch` warning naming the first mismatch. The push message
+names the fix and the cost: `no lock: ^2 resolved to 2.1.3 today; commit a
+lock or pin exact versions (costs 1 point)`. The rule applies to every
+archive the registry scores, so a v1 archive whose ranges came from its lock
+gets the point back. The exact
 wording is pinned by
 `vectors/dependency_audit.json` in `@swamp-club/extension-scoring`, which
 holds the push and scorecard wording side by side. swamp-club#3354 makes
@@ -2349,52 +2409,71 @@ helps the first.
 
 Push writes `dependency-audit.json` at the archive root, beside
 `manifest.yaml` (swamp-club#3662), so the registry's scorecard
-(swamp-club#3778) audits the version that ships rather than re-resolving a
-range against the registry as it stands. The rules, writer and reader both,
-live in `@swamp-club/extension-scoring/dependency-audit`:
+(swamp-club#3778) audits the version that ships rather than re-resolving it.
+Since swamp-club#3970 it is `recordVersion: 2`, built from the canonical
+shipped form. The rules, writer and reader both, live in
+`@swamp-club/extension-scoring/dependency-audit`:
 
 ```json
 {
-  "recordVersion": 1,
+  "recordVersion": 2,
+  "bundles": { "bundles/m.js": "sha256:…" },
   "dependencies": [
-    { "registry": "npm", "name": "ms", "spec": "^2", "version": "2.1.3", "from": "lockfile" }
+    {
+      "registry": "npm", "name": "ms", "spec": "2.1.3", "version": "2.1.3",
+      "from": "lockfile", "locked": true, "writtenAs": ["ms", "npm:ms@^2"]
+    }
+  ],
+  "unaudited": [
+    {
+      "kind": "url", "origin": "https://example.com/x.ts",
+      "modules": { "https://example.com/x.ts": "sha256:…" }
+    }
   ]
 }
 ```
 
-- An entry is keyed by `(registry, name, spec)`, where `spec` is the version
-  the shipped source writes after `@` (`null` when none): the registry reads
-  that triple from the archive's source. An import written as `npm:` or
-  `jsr:` keeps its spec, a bare import resolved through the Deno config
-  ships as its target's (swamp-club#3637, #3612), and a package.json-mode
-  import ships pinned to its installed version (swamp-club#3630), so its
-  entry's spec is that version.
-- `version` is the version the audit checked, which the bundles inline, and
-  `from` where it came from (`exact`, `installed`, `lockfile`, `registry`).
-- Entries are sorted by registry, name and spec (`null` first). A
-  dependency with no resolved version is left out, as is a version npm or
-  JSR says was never published; during an outage an exact, installed or
-  locked version is still recorded, since it ships regardless. An entry is
-  written only when `auditRecordEntryUsable` accepts it: a plain semver
-  version that the spec admits (an exact spec names it, a range contains it,
-  a dist-tag or no spec admits any). The registry ignores an entry that fails
-  that check, or whose version is not published, and resolves the
-  dependency itself; the vectors' `record` and `recordEntries` sections pin
-  both sides.
-- The file is always written, with an empty list when there is nothing to
-  audit, so the registry can tell such an archive from one that predates the
-  record. It is written by the author's machine and trusted as a best
-  effort, as the bundles beside it are.
-- It is built from the prepare's own audit and cached with the archive, so a
-  cache hit reuses the record that describes its bundles. In a project
-  without a lock, that record reflects resolution when the archive was
-  built, which a later push's own audit, resolving afresh, can differ from.
+- `dependencies` holds one entry per shipped package version: `spec` always
+  equals `version`, the version every import of it ships pinned to. `from`
+  is the weakest source across those imports (`exact`, `lockfile`,
+  `installed`, `registry`), `locked` whether a valid lock fixed every one of
+  them, and `writtenAs` what the author wrote, sorted: `npm:ms@^2`, or a bare
+  `ms` an import map or package.json resolved. A non-exact entry with
+  `locked: false` is what costs the loose point. Every version the archive's
+  source names is listed, including one the audit did not read (a test
+  module the plan places).
+- `bundles` maps each bundle file's archive path to the SHA-256 of its bytes,
+  so a consumer or the registry can check a bundle is the one published with
+  this source (swamp-club#3972 checks it at pull).
+- `unaudited` lists code from outside npm and JSR: `kind` `url` (an import a
+  local module writes, with every module fetched through it), `package-json`
+  (a `file:`, `link:` or `workspace:` dependency) or `git`; `origin` the URL
+  or the package.json spec as written; `modules` a SHA-256 of each module the
+  bundle holds, keyed by URL or by path from the package.json directory.
+  No local absolute path is written.
+- Everything is sorted, so the record is the same on every push. It is
+  always written, with empty lists when there is nothing to list, so the
+  registry can tell such an archive from one that predates the record. It is
+  written by the author's machine and trusted as a best effort, as the
+  bundles beside it are.
+- The package cache hash covers the graph's exact versions, the unaudited
+  modules' hashes and whether a package-lock.json counts as a lock, so a
+  lockless range that resolves to a new version misses the cache instead of
+  reusing an archive pinned to yesterday's.
+- A reader that knows only v1 (`parseDependencyAuditRecord`) reads a v2
+  record as no record; `parseDependencyAuditRecordV2` reads v2. The registry
+  then audits a v2 archive's exact source versions until swamp-club#3973
+  reads the record. No swamp version reads the record on the consumer side.
 - `dependency-audit.json` is a reserved archive root name. A swamp older
   than the record does not reserve it, so its pull installs the file at the
   extension's install root as a shared source; it is not a resolution
-  config, so nothing refuses or reads it. Conversely, an archive pushed
-  before the record whose root held a mirrored shared module of exactly that
-  name would no longer have it installed.
+  config, so nothing refuses or reads it.
+
+Archives pushed before swamp-club#3970 carry `recordVersion: 1`: one entry
+per `(registry, name, spec)`, where `spec` is what the shipped source wrote
+after `@` (a range included), `version` the version the audit checked and
+`from` its source. The registry keeps reading those with the v1 rules and
+vectors (`record`, `recordEntries`), which are frozen.
 
 ### Not audited
 

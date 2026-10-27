@@ -147,6 +147,7 @@ async function pushArchive(author: string): Promise<Uint8Array> {
     {
       manifest: resolved.manifest,
       bareImports: resolved.bareImports,
+      graphDependencies: resolved.graphDependencies,
       repoDir: author,
       manifestDir: author,
       modelsDir: resolved.modelsDir,

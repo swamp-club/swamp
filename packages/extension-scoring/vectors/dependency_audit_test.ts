@@ -22,6 +22,8 @@ import vectors from "./dependency_audit.json" with { type: "json" };
 import {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
+  buildDependencyAuditRecordV2,
+  canonicalShippedSpecifierIssue,
   type DependencyRegistry,
   type DependencySpecifier,
   dependencyTrustEarnedPoints,
@@ -35,6 +37,7 @@ import {
   npmNameValid,
   type OsvVulnerability,
   parseDependencyAuditRecord,
+  parseDependencyAuditRecordV2,
   parseJsrMeta,
   parseNpmPackument,
   parseOsvResponse,
@@ -42,8 +45,11 @@ import {
   pushResult,
   resolveShippedVersion,
   scorecardResult,
+  serializeDependencyAuditRecordV2,
+  type ShippedImport,
   type SpecifierAudit,
   specifierKind,
+  type UnauditedDependency,
   writtenSpecifiers,
 } from "../dependency_audit/mod.ts";
 
@@ -344,6 +350,63 @@ for (const w of written) {
         version,
       })) ?? null,
       w.expect,
+    );
+  });
+}
+
+interface RecordV2Vector {
+  name: string;
+  imports: ShippedImport[];
+  bundles?: Record<string, string>;
+  unaudited?: UnauditedDependency[];
+  expect: {
+    bundles?: Record<string, string>;
+    dependencies: unknown[];
+    unaudited?: UnauditedDependency[];
+  };
+}
+
+for (const v of vectors.recordV2 as RecordV2Vector[]) {
+  Deno.test(`dependency audit vectors: records v2 ${v.name} and reads it back`, () => {
+    const record = buildDependencyAuditRecordV2({
+      imports: v.imports,
+      bundles: v.bundles ?? {},
+      unaudited: v.unaudited ?? [],
+    });
+    assertEquals(record.dependencies, v.expect.dependencies);
+    assertEquals(record.bundles, v.expect.bundles ?? {});
+    assertEquals(record.unaudited, v.expect.unaudited ?? []);
+    const text = serializeDependencyAuditRecordV2(record);
+    assertEquals(parseDependencyAuditRecordV2(text), record);
+    // a reader that knows only v1 reads it as no record
+    assertEquals(parseDependencyAuditRecord(text), null);
+  });
+}
+
+interface CanonicalVector {
+  name: string;
+  shipped: string;
+  record:
+    | { registry: DependencyRegistry; name: string; version: string }[]
+    | null;
+  expect: "accept" | { cause: "not-audited"; message: string };
+}
+
+for (const v of vectors.canonical as CanonicalVector[]) {
+  Deno.test(`dependency audit vectors: canonical form, ${v.name}`, () => {
+    const record = v.record === null ? null : {
+      dependencies: v.record.map((e) => ({
+        ...e,
+        spec: e.version,
+        from: "exact" as const,
+        locked: false,
+        writtenAs: [],
+      })),
+    };
+    const issue = canonicalShippedSpecifierIssue(v.shipped, record);
+    assertEquals(
+      issue === null ? "accept" : { cause: "not-audited", message: issue },
+      v.expect,
     );
   });
 }

@@ -320,6 +320,18 @@ export interface ExtensionPushPrepareInput {
    */
   bareImports: ResolvedBareImport[];
   /**
+   * The exact version each `npm:` and `jsr:` import resolved to, the code
+   * from outside npm and JSR, and whether a package-lock.json counts as a
+   * lock, read from the module graphs the bundles are built from
+   * (swamp-club#3970). Push pins every import it ships to these versions.
+   */
+  graphDependencies: GraphDependencies;
+  /**
+   * Config, lock and package files push left out of the archive, by their
+   * path from the manifest directory; set by push itself.
+   */
+  leftOutProjectFiles?: string[];
+  /**
    * Content hash of the resolved source tree (the package cache hash). When
    * provided, push verifies a content-hash-bound adversarial-review report.
    * Omitted by non-push callers (e.g. quality packaging).
@@ -704,11 +716,24 @@ import {
 } from "../../domain/extensions/extension_quality_sidecar.ts";
 import type { MissingLocalModule } from "../../domain/extensions/extension_source_graph.ts";
 import {
-  buildDependencyAuditRecord,
+  buildDependencyAuditRecordV2,
+  canonicalShippedSpecifierIssue,
   DEPENDENCY_AUDIT_RECORD_FILENAME,
-  type DependencyAuditRecord,
-  serializeDependencyAuditRecord,
+  exactVersion,
+  parseSpecifier,
+  serializeDependencyAuditRecordV2,
+  type ShippedImport,
+  specifierText,
 } from "@swamp-club/extension-scoring/dependency-audit";
+import {
+  canonicalImportRewrites,
+  canonicalTarget,
+} from "../../domain/extensions/dependency_resolution/canonical_form.ts";
+import type {
+  GraphDependencies,
+  PackageVersions,
+} from "../../domain/extensions/dependency_resolution/package_versions.ts";
+import { scanImportSites } from "../../domain/extensions/dependency_resolution/import_sites.ts";
 import {
   type BareImportResolver,
   bareImportResolverFrom,
@@ -721,6 +746,7 @@ import {
   planBareImports,
   type SourceArchiveKind,
   type SourceArchivePlan,
+  type SpecifierRewrite,
 } from "../../domain/extensions/source_archive_plan.ts";
 import {
   type AcceptanceDirective,
@@ -969,6 +995,9 @@ export async function extensionPushPrepare(
   deps: ExtensionPushPrepareDeps,
   input: ExtensionPushPrepareInput,
 ): Promise<ExtensionPushPrepared> {
+  // No Deno config, lock or package.json file ships: consumers and the
+  // registry read only the canonical source (swamp-club#3970).
+  input = withoutProjectFiles(input);
   let requestedVisibility: PublishVisibility | undefined;
   try {
     requestedVisibility = resolvePublishVisibility(input.manifest.visibility);
@@ -1376,9 +1405,16 @@ export async function extensionPushPrepare(
   // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
   const sourceFiles = auditedCodeFiles(gated);
-  const specifiers = await deps.extractDependencySpecifiers(
-    sourceFiles,
-    bareImportResolverFor(input),
+  // Each import is audited at the version its bundle holds, read from the
+  // module graph, so what ships, what is bundled and what is audited agree
+  // (swamp-club#3970).
+  const specifiers = withBundledVersions(
+    await deps.extractDependencySpecifiers(
+      sourceFiles,
+      bareImportResolverFor(input),
+    ),
+    input.graphDependencies,
+    await projectLockInUse(input),
   );
   if (specifiers.length > 0) {
     ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
@@ -1550,7 +1586,7 @@ export async function extensionPushPrepare(
       deps,
       denoPath || await deps.ensureDenoPath(),
       ctx,
-      buildDependencyAuditRecord(dependencyTrustResult.shipped ?? []),
+      shippedImportsOf(specifiers),
     );
     totalBundles = built.totalBundles;
     archiveBytes = built.archiveBytes;
@@ -2197,6 +2233,31 @@ export async function runQualityFindings(
       file: "(multiple files)",
       message: bareSpecifiersMessage([...bareSpecifiers].sort()),
       remediation: remediationFor("bare-specifiers"),
+    });
+  }
+
+  // Config, lock and package files push left out of the archive, and a
+  // package-lock.json that does not count as a lock (swamp-club#3970).
+  for (const file of input.leftOutProjectFiles ?? []) {
+    reviewRulesResult.warnings.push({
+      ruleId: "archive-project-file",
+      dimension: "Packaging",
+      severity: "medium",
+      file,
+      message:
+        `${file} is a Deno config, lock or package file, so push leaves it out of the archive: the archive's source ships every dependency pinned instead.`,
+      remediation: remediationFor("archive-project-file"),
+    });
+  }
+  const packageLockWarning = input.graphDependencies?.packageLock?.warning;
+  if (packageLockWarning) {
+    reviewRulesResult.warnings.push({
+      ruleId: "package-lock-mismatch",
+      dimension: "scoring",
+      severity: "medium",
+      file: "package-lock.json",
+      message: packageLockWarning,
+      remediation: remediationFor("package-lock-mismatch"),
     });
   }
 
@@ -3170,7 +3231,7 @@ async function bundleAndArchive(
   deps: ExtensionPushPrepareDeps,
   denoPath: string,
   ctx: LibSwampContext,
-  auditRecord: DependencyAuditRecord,
+  shippedImports: ShippedImport[],
 ): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
   // Under a Deno config the bundler reuses the graph's bare-import
   // resolutions to decide zod externalization rather than reading it again.
@@ -3280,7 +3341,7 @@ async function bundleAndArchive(
     datastoreBundles,
     reportBundles,
     webhookBundles,
-    auditRecord,
+    shippedImports,
     ctx,
   );
 
@@ -3358,7 +3419,7 @@ async function createArchive(
   datastoreBundles: Map<string, string>,
   reportBundles: Map<string, string>,
   webhookBundles: Map<string, string>,
-  auditRecord: DependencyAuditRecord,
+  shippedImports: ShippedImport[],
   ctx: LibSwampContext,
 ): Promise<Uint8Array> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_ext_" });
@@ -3440,15 +3501,6 @@ async function createArchive(
       await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
     }
 
-    // The version the audit checked for each dependency, which these
-    // bundles ship, so the registry audits the same one (swamp-club#3662).
-    // Always written, so an empty record tells "nothing to audit" from an
-    // archive that predates it.
-    await Deno.writeTextFile(
-      join(extDir, DEPENDENCY_AUDIT_RECORD_FILENAME),
-      serializeDependencyAuditRecord(auditRecord),
-    );
-
     // Copy every local module the entry points reach to its planned path,
     // rewriting the imports the plan names and, under a Deno config, each
     // bare import Deno resolves from that module to an npm:, jsr:, node: or
@@ -3456,7 +3508,11 @@ async function createArchive(
     // to the installed package's npm:<name>@<version> (swamp-club#3630), so
     // the archive's source resolves without the project config. Data
     // modules and files with nothing to rewrite are byte for byte.
+    // Every npm: and jsr: import, written out or reached through the import
+    // map, is then pinned to the exact version the bundle holds
+    // (swamp-club#3970).
     const resolver = bareImportResolverFor(input);
+    const versions = input.graphDependencies?.packageVersions ?? {};
     const codeModules = new Set([
       ...input.allModelFiles,
       ...input.allVaultFiles,
@@ -3464,6 +3520,9 @@ async function createArchive(
       ...input.allReportFiles,
       ...input.allWebhookFiles,
     ]);
+    // Each import site a code module writes, as written and as shipped.
+    const shippedSites: { written: string; shipped: string; file: string }[] =
+      [];
     for (const entry of input.sourcePlan.entries) {
       const parts = entry.archivePath.split("/");
       if (
@@ -3479,12 +3538,31 @@ async function createArchive(
       await Deno.mkdir(dirname(destPath), { recursive: true });
       let text: string | undefined;
       let rewrites = entry.rewrites;
-      if (resolver && codeModules.has(entry.sourcePath)) {
+      if (
+        codeModules.has(entry.sourcePath) ||
+        CODE_MODULE_RE.test(entry.sourcePath)
+      ) {
         text = await Deno.readTextFile(entry.sourcePath);
+        const bare = resolver
+          ? bareImportRewrites(text, resolver, entry.sourcePath).map((r) => ({
+            ...r,
+            to: canonicalTarget(r.to, versions, entry.sourcePath),
+          }))
+          : [];
         rewrites = mergeSpecifierRewrites(
-          entry.rewrites,
-          bareImportRewrites(text, resolver, entry.sourcePath),
+          mergeSpecifierRewrites(entry.rewrites, bare),
+          canonicalImportRewrites(text, entry.sourcePath, versions),
         );
+        const at = (span: SpecifierRewrite["span"]) =>
+          `${span.start.line}:${span.start.character}`;
+        const to = new Map(rewrites.map((r) => [at(r.span), r.to]));
+        for (const site of scanImportSites(text, entry.sourcePath) ?? []) {
+          shippedSites.push({
+            written: site.specifier,
+            shipped: to.get(at(site.span)) ?? site.specifier,
+            file: entry.archivePath,
+          });
+        }
       }
       if (rewrites.length === 0) {
         await Deno.copyFile(entry.sourcePath, destPath);
@@ -3558,6 +3636,44 @@ async function createArchive(
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
     }
+
+    // The dependency audit record (swamp-club#3662), v2 since
+    // swamp-club#3970: each shipped package version, the code from outside
+    // npm and JSR, and a SHA-256 of each bundle file. Always written, so an
+    // empty record tells "nothing to audit" from an archive that predates it.
+    const record = buildDependencyAuditRecordV2({
+      imports: [
+        ...shippedImports,
+        ...unauditedImportsOf(
+          shippedSites,
+          shippedImports,
+          versions,
+          await projectLockInUse(input),
+        ),
+      ],
+      bundles: await bundleHashes([
+        ["bundles", bundles],
+        ["vault-bundles", vaultBundles],
+        ["datastore-bundles", datastoreBundles],
+        ["report-bundles", reportBundles],
+        ["webhook-bundles", webhookBundles],
+      ]),
+      unaudited: input.graphDependencies?.unaudited ?? [],
+    });
+    // Every npm: and jsr: import the archive's source writes keeps the
+    // canonical form and names a version the record lists.
+    for (const { shipped: specifier, file } of shippedSites) {
+      const issue = canonicalShippedSpecifierIssue(specifier, record);
+      if (issue) {
+        throw validationFailed(
+          `${file}: ${issue}. This is a bug in push; report it with the import.`,
+        );
+      }
+    }
+    await Deno.writeTextFile(
+      join(extDir, DEPENDENCY_AUDIT_RECORD_FILENAME),
+      serializeDependencyAuditRecordV2(record),
+    );
 
     // Copy skill directories
     for (const { name, absolutePath } of input.skillDirs) {
@@ -3661,4 +3777,201 @@ async function createArchive(
       // Best-effort cleanup
     }
   }
+}
+
+/** File names push never ships: Deno and npm config, lock and package files. */
+const PROJECT_FILE_NAMES: ReadonlySet<string> = new Set([
+  "deno.json",
+  "deno.jsonc",
+  "deno.lock",
+  "package.json",
+  "package-lock.json",
+  ".npmrc",
+]);
+
+/** Whether `path` is a config, lock or package file, or inside node_modules. */
+export function isProjectFile(path: string): boolean {
+  const parts = path.split(/[\\/]/);
+  return PROJECT_FILE_NAMES.has(parts[parts.length - 1]) ||
+    parts.includes("node_modules");
+}
+
+/**
+ * `input` without the config, lock and package files its includes and
+ * additionalFiles carry (swamp-club#3970), each named in
+ * `leftOutProjectFiles` by its path from the manifest directory. Pull
+ * refuses them, and the archive's source ships its dependencies pinned
+ * instead. One a module imports (a JSON import of deno.json) stays, so the
+ * shared-source check refuses it by name rather than ship a source whose
+ * import is missing.
+ */
+function withoutProjectFiles(
+  input: ExtensionPushPrepareInput,
+): ExtensionPushPrepareInput {
+  const imported = new Set(input.sourcePlan.entries.map((e) => e.sourcePath));
+  const candidates = [
+    ...input.additionalFilePaths,
+    ...input.includeFilePaths,
+  ].filter((path) => !imported.has(path));
+  const left = new Set(candidates.filter(isProjectFile));
+  if (left.size === 0) return input;
+  return {
+    ...withoutFiles(input, left),
+    leftOutProjectFiles: [...left]
+      .map((path) => relative(input.manifestDir, path).replaceAll("\\", "/"))
+      .sort(),
+  };
+}
+
+/** Whether the project bundles against a lock: `--frozen` with a deno.lock. */
+async function projectLockInUse(
+  input: ExtensionPushPrepareInput,
+): Promise<boolean> {
+  const project = input.denoConfigPath
+    ? { denoConfigPath: input.denoConfigPath }
+    : input.packageJsonDir
+    ? { packageJsonDir: input.packageJsonDir }
+    : undefined;
+  return project !== undefined &&
+    (await readOnlyLockFor(project)).lockPath !== undefined;
+}
+
+/**
+ * Each specifier with the version its bundle holds (swamp-club#3970): an
+ * exact pin as written, an installed package.json dependency at its
+ * installed version, and anything else at the version the module graph
+ * resolved it to. A version is locked when the bundle was built against a
+ * deno.lock, or, for an installed package, a package-lock.json that
+ * node_modules matches. A specifier the graph has no answer for is left to
+ * the audit's own resolution; push refuses to ship it unpinned.
+ */
+export function withBundledVersions(
+  specifiers: readonly DependencySpecifier[],
+  graph: GraphDependencies | undefined,
+  denoLock: boolean,
+): DependencySpecifier[] {
+  return specifiers.map((spec) => {
+    const lockedInstall = denoLock || graph?.packageLock?.valid === true;
+    const locked = (yes: boolean) => yes ? { locked: true as const } : {};
+    if (spec.installedVersion !== undefined) {
+      return {
+        ...spec,
+        bundled: {
+          version: spec.installedVersion,
+          from: "installed",
+          ...locked(lockedInstall),
+        },
+      };
+    }
+    const exact = exactVersion(spec.version);
+    if (exact !== null) {
+      return {
+        ...spec,
+        bundled: { version: exact, from: "exact", ...locked(denoLock) },
+      };
+    }
+    const root = graph?.packageVersions[specifierText(spec)];
+    if (root === undefined) return spec;
+    const version = root.specifier.slice(root.specifier.lastIndexOf("@") + 1);
+    return {
+      ...spec,
+      bundled: root.installed
+        ? { version, from: "installed", ...locked(lockedInstall) }
+        : denoLock
+        ? { version, from: "lockfile", locked: true }
+        : { version, from: "registry" },
+    };
+  });
+}
+
+/** What each audited import ships, for the dependency audit record. */
+function shippedImportsOf(
+  specifiers: readonly DependencySpecifier[],
+): ShippedImport[] {
+  return specifiers.flatMap((spec) =>
+    spec.bundled
+      ? [{
+        registry: spec.registry,
+        name: spec.name,
+        writtenAs: spec.importedAs ?? specifierText(spec),
+        shipped: spec.bundled,
+      }]
+      : []
+  );
+}
+
+/** `sha256:<hex>` of each bundle file, keyed by its path in the archive. */
+async function bundleHashes(
+  kinds: readonly [string, ReadonlyMap<string, string>][],
+): Promise<Record<string, string>> {
+  const hashes: Record<string, string> = {};
+  for (const [dir, bundles] of kinds) {
+    for (const [entryName, js] of bundles) {
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(js),
+      );
+      hashes[`${dir}/${entryName.replaceAll("\\", "/")}.js`] = `sha256:${
+        Array.from(
+          new Uint8Array(digest),
+          (b) => b.toString(16).padStart(2, "0"),
+        )
+          .join("")
+      }`;
+    }
+  }
+  return hashes;
+}
+
+/** A code module the archive's source copy pins the imports of. */
+const CODE_MODULE_RE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
+/**
+ * Record entries for shipped `npm:` and `jsr:` imports the audit did not
+ * read (a test module the plan places, for one), so the record lists every
+ * version the archive's source names. Each takes its source from how it
+ * was written and the graph: exact as written, installed, or from the lock
+ * or the registry.
+ */
+function unauditedImportsOf(
+  sites: readonly { written: string; shipped: string }[],
+  audited: readonly ShippedImport[],
+  versions: PackageVersions,
+  denoLock: boolean,
+): ShippedImport[] {
+  const known = new Set(
+    audited.map((i) => `${i.registry}:${i.name}@${i.shipped.version}`),
+  );
+  const extra: ShippedImport[] = [];
+  for (const { written, shipped } of sites) {
+    const parsed = parseSpecifier(shipped);
+    if (!parsed || parsed.version === null) continue;
+    const key = `${parsed.registry}:${parsed.name}@${parsed.version}`;
+    if (known.has(key)) continue;
+    known.add(key);
+    const writtenSpec = parseSpecifier(written);
+    const exact = writtenSpec !== null && writtenSpec.version !== null &&
+      exactVersion(writtenSpec.version) !== null;
+    const installed = versions[written]?.installed === true;
+    extra.push({
+      registry: parsed.registry,
+      name: parsed.name,
+      writtenAs: written.replace(
+        /^((?:npm|jsr):(?:@[^/@]+\/)?[^/@]+(?:@[^/]*)?).*$/,
+        "$1",
+      ),
+      shipped: {
+        version: parsed.version,
+        from: exact
+          ? "exact"
+          : installed
+          ? "installed"
+          : denoLock
+          ? "lockfile"
+          : "registry",
+        ...(denoLock ? { locked: true as const } : {}),
+      },
+    });
+  }
+  return extra;
 }

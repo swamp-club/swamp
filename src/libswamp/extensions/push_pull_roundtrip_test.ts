@@ -162,6 +162,7 @@ Deno.test(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
         modelsDir,
@@ -273,6 +274,7 @@ Deno.test(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
         // Resolver under paths.base=manifest sets these to the manifest dir;
@@ -383,6 +385,7 @@ Deno.test(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
         modelsDir: extDir,
@@ -470,6 +473,7 @@ Deno.test(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
         modelsDir,
@@ -554,6 +558,7 @@ Deno.test(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
         modelsDir: extDir,
@@ -641,6 +646,7 @@ Deno.test(
       const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         bareImports: [],
+        graphDependencies: { packageVersions: {}, unaudited: [] },
         repoDir: src,
         manifestDir: src,
         modelsDir: extDir,
