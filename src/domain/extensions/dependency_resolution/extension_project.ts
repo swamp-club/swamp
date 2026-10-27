@@ -336,10 +336,12 @@ export function workspaceListsMember(
 }
 
 /**
- * The workspace root a Deno config is a member of: the first deno.json or
- * deno.jsonc above the config's directory whose `workspace` lists that
- * directory, walking to the filesystem root as Deno does. Undefined when no
- * config above lists it.
+ * The workspace root a Deno config is a member of: the nearest deno.json or
+ * deno.jsonc above the config's directory that has a `workspace` field,
+ * when it lists that directory. Deno stops at that config too: one that
+ * does not list the member is ignored with a warning, and no workspace
+ * further up applies. Undefined when there is none, or it does not list
+ * the member.
  */
 export async function findWorkspaceRoot(
   denoConfigPath: string,
@@ -353,13 +355,12 @@ export async function findWorkspaceRoot(
     });
     if (candidate) {
       const config = await readDenoConfig(candidate);
-      if (
-        config &&
-        workspaceMembers(config).some((m) =>
-          workspaceListsMember(current, m, memberDir)
-        )
-      ) {
-        return candidate;
+      if (config && config.workspace !== undefined) {
+        return workspaceMembers(config).some((m) =>
+            workspaceListsMember(current, m, memberDir)
+          )
+          ? candidate
+          : undefined;
       }
     }
     const parent = dirname(current);

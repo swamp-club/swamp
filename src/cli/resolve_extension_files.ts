@@ -1506,10 +1506,12 @@ async function refuseInputsFromAbove(options: {
       [ancestor.path, options.boundary],
     );
   }
-  const above = nodeModulesAboveBoundary(
-    options.nodeModulesPackageDirs,
+  // Deno names an installed package by its real path, so a repository
+  // reached through a symlink is checked by its real path too.
+  const above = nodeModulesAboveBoundary(options.nodeModulesPackageDirs, [
     options.boundary,
-  );
+    await realPathOr(options.boundary),
+  ]);
   if (above.length > 0) {
     throw markErrorPaths(
       new UserError(

@@ -376,6 +376,19 @@ Deno.test("findWorkspaceRoot: the config above a member whose workspace lists it
       (await findWorkspaceRoot(member))!,
       join(dir, "deno.json"),
     );
+    // The nearest workspace decides, as for Deno: one between that does not
+    // list the member hides the root above it.
+    await Deno.writeTextFile(
+      join(dir, "packages", "deno.json"),
+      JSON.stringify({ workspace: ["./other"] }),
+    );
+    assertEquals(await findWorkspaceRoot(member), undefined);
+    // A config between without a workspace field is not a workspace.
+    await Deno.writeTextFile(join(dir, "packages", "deno.json"), "{}");
+    assertPathEquals(
+      (await findWorkspaceRoot(member))!,
+      join(dir, "deno.json"),
+    );
   });
 });
 

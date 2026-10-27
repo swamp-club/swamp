@@ -111,22 +111,26 @@ export function ancestorConfigRefusal(
 
 function isSameOrUnder(path: string, root: string): boolean {
   if (path === root) return true;
-  const rest = path.startsWith(root) ? path.slice(root.length) : undefined;
-  return rest !== undefined && SEPARATOR_PATTERN.test(rest[0] ?? "");
+  if (!path.startsWith(root)) return false;
+  // A filesystem root (`/`, `C:\`) already ends in a separator.
+  if (SEPARATOR_PATTERN.test(root[root.length - 1] ?? "")) return true;
+  return SEPARATOR_PATTERN.test(path[root.length] ?? "");
 }
 
 /**
  * The package directories from `packageDirs` whose node_modules sits above
- * `boundary`: a node_modules inside the repository serves the extension, a
- * hoisted monorepo install included, one above it does not.
+ * the boundary: a node_modules inside the repository serves the extension, a
+ * hoisted monorepo install included, one above it does not. `boundaries`
+ * spells the one boundary more than one way, as given and as its real path,
+ * since Deno reports an installed package by its real path.
  */
 export function nodeModulesAboveBoundary(
   packageDirs: readonly string[],
-  boundary: string,
+  boundaries: readonly string[],
 ): string[] {
-  const root = resolve(boundary);
+  const roots = boundaries.map((b) => resolve(b));
   return [...new Set(packageDirs)].filter((dir) =>
-    !isSameOrUnder(resolve(dir), root)
+    !roots.some((root) => isSameOrUnder(resolve(dir), root))
   ).sort();
 }
 

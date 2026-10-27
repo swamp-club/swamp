@@ -136,8 +136,29 @@ Deno.test("nodeModulesAboveBoundary: a node_modules inside the repository serves
   const hoisted = join(repo, "node_modules", "ms");
   const own = join(repo, "ext", "node_modules", "ms");
   assertEquals(
-    nodeModulesAboveBoundary([own, hoisted, above, scopedAbove, above], repo),
+    nodeModulesAboveBoundary(
+      [own, hoisted, above, scopedAbove, above],
+      [repo],
+    ),
     [above, scopedAbove].sort(),
+  );
+});
+
+Deno.test("nodeModulesAboveBoundary: a repository reached through a symlink is checked by its real path too", () => {
+  // Deno reports installed packages by real path; the boundary is the path
+  // the repository was given as.
+  const link = resolve("/", "home", "u", "link-to-repo");
+  const real = resolve("/", "srv", "repo");
+  const installed = join(real, "node_modules", "ms");
+  assertEquals(nodeModulesAboveBoundary([installed], [link]), [installed]);
+  assertEquals(nodeModulesAboveBoundary([installed], [link, real]), []);
+});
+
+Deno.test("nodeModulesAboveBoundary: a boundary at the filesystem root holds everything", () => {
+  const root = resolve("/");
+  assertEquals(
+    nodeModulesAboveBoundary([join(root, "node_modules", "ms")], [root]),
+    [],
   );
 });
 
