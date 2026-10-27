@@ -308,5 +308,15 @@
     "query": "How do CEL expressions work for referencing behavior data?",
     "should_trigger": true,
     "note": "cross-domain — CEL expressions (behavior wording)"
+  },
+  {
+    "query": "swamp printed 'To read it:  swamp inbox read' after my workflow run, what is that?",
+    "should_trigger": true,
+    "note": "inbox — notice after a command"
+  },
+  {
+    "query": "I have a new Swamp Club message, how do I read it?",
+    "should_trigger": true,
+    "note": "inbox — reading a Swamp Club message"
   }
 ]
