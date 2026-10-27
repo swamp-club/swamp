@@ -375,7 +375,13 @@ globalArguments:
   oldResult: ${{ data.version('my-model', 'output', 1).attributes.value }}
   # Get version 3
   result: ${{ data.version('my-model', 'output', 3).attributes.value }}
+  # Get the version before the latest
+  previous: ${{ data.version('my-model', 'output', data.latest('my-model', 'output').version - 1).attributes.value }}
 ```
+
+A record's `version` field, and each element of `data.listVersions()`, is a CEL
+`double`, so `version` takes an `int` or a whole-number `double`. A fractional
+version is an evaluation error.
 
 ### data.listVersions(modelName, dataName)
 

@@ -203,6 +203,7 @@ function operatorExpressions(signature: string): string[] {
 const ARGUMENT: Readonly<Record<string, string>> = {
   string: "'abc'",
   int: "1",
+  double: "1.0",
   dyn: "{}",
   "list<dyn>": "[1]",
   "list<string>": "['a']",
@@ -259,7 +260,7 @@ Deno.test("CelEvaluator typed secrets: every operator refusal the inventory yiel
 
 Deno.test("CelEvaluator typed secrets: every function refusal the inventory yields refuses with its code, absorbed or not, with two secrets too", () => {
   const signatures = internalFunctionRefusals();
-  assertEquals(signatures.length, 97);
+  assertEquals(signatures.length, 103);
   for (const signature of signatures) {
     // The model and method names of model.method are routing arguments
     // (Section 4.5 item 2) and refuse as a destination.

@@ -1040,6 +1040,106 @@ Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for c
   assertEquals(v1Vary, "first");
 });
 
+// swamp-club#3816: a record's version reaches CEL as a double, so
+// data.version() must take a whole-number double as well as an int.
+
+/** A data context of versions 1–3 of scanner/result, and result-prod. */
+function versionedDataContext(requested: number[] = []) {
+  const record = (version: number) => ({
+    id: `d${version}`,
+    version,
+    attributes: { value: `v${version}` },
+  });
+  return {
+    data: {
+      latest: (_modelName: string, _dataName: string) => record(3),
+      listVersions: (_modelName: string, _dataName: string) => [1, 2, 3],
+      version: (_modelName: string, dataName: string, version: number) => {
+        requested.push(version);
+        if (dataName !== "result" && dataName !== "result-prod") return null;
+        return version >= 1 && version <= 3 ? record(version) : null;
+      },
+    },
+  };
+}
+
+Deno.test("CelEvaluator data.version() takes the previous version computed from data.latest().version", () => {
+  const evaluator = new CelEvaluator();
+  const requested: number[] = [];
+  const result = evaluator.evaluate(
+    'data.version("scanner", "result", data.latest("scanner", "result").version - 1).attributes.value',
+    versionedDataContext(requested),
+  );
+  assertEquals(result, "v2");
+  assertStrictEquals(requested[0], 2);
+});
+
+Deno.test("CelEvaluator data.version() takes a double version in the vary form", () => {
+  const evaluator = new CelEvaluator();
+  const result = evaluator.evaluate(
+    'data.version("scanner", "result", ["prod"], data.latest("scanner", "result").version - 2).attributes.value',
+    versionedDataContext(),
+  );
+  assertEquals(result, "v1");
+});
+
+Deno.test("CelEvaluator data.version() takes an element of data.listVersions()", () => {
+  const evaluator = new CelEvaluator();
+  const result = evaluator.evaluate(
+    'data.version("scanner", "result", data.listVersions("scanner", "result")[0]).attributes.value',
+    versionedDataContext(),
+  );
+  assertEquals(result, "v1");
+});
+
+Deno.test("CelEvaluator data.version() takes a whole-number double literal", () => {
+  const evaluator = new CelEvaluator();
+  const result = evaluator.evaluate(
+    'data.version("scanner", "result", 2.0).attributes.value',
+    versionedDataContext(),
+  );
+  assertEquals(result, "v2");
+});
+
+Deno.test("CelEvaluator data.version() refuses a fractional version", () => {
+  const evaluator = new CelEvaluator();
+  const requested: number[] = [];
+  const error = assertThrows(
+    () =>
+      evaluator.evaluate(
+        'data.version("scanner", "result", data.latest("scanner", "result").version / 2)',
+        versionedDataContext(requested),
+      ),
+    InvalidExpressionError,
+  );
+  assertStringIncludes(
+    error.message,
+    'data.version("scanner", "result", 1.5): the version must be a whole number',
+  );
+  assertEquals(requested, []);
+});
+
+Deno.test("CelEvaluator data.version() refuses a fractional version in the vary form", () => {
+  const evaluator = new CelEvaluator();
+  const error = assertThrows(
+    () =>
+      evaluator.evaluate(
+        'data.version("scanner", "result", ["prod"], 1.5)',
+        versionedDataContext(),
+      ),
+    InvalidExpressionError,
+  );
+  assertStringIncludes(error.message, "the version must be a whole number");
+});
+
+Deno.test("CelEvaluator.validate: accepts a version computed from data.latest().version", () => {
+  const evaluator = new CelEvaluator();
+  const result = evaluator.validate(
+    '"echo prev=" + string(data.version("sh", "result", data.latest("sh", "result").version - 1).version)',
+  );
+  assertEquals(result.valid, true);
+});
+
 // Regression tests for issue #814: ternary expressions must short-circuit
 // so that a missing branch input does not cause evaluation to fail.
 
