@@ -75,6 +75,12 @@ export interface ShippedVersion {
    * version from the lockfile is always locked.
    */
   locked?: true;
+  /**
+   * A v2 record's entry ships a version no valid lock fixed, though the
+   * author wrote a non-exact spelling, kept here: it costs the loose point
+   * as such a spelling does in the source (swamp-club#4018).
+   */
+  looseAs?: string;
 }
 
 /**
@@ -88,6 +94,12 @@ export interface RecordedDependencyVersions {
     name: string,
     specVersion: string | null,
   ): ShippedVersion | undefined;
+  /**
+   * Present only for a v2 record (swamp-club#4018): why `specifier`, as the
+   * archive's source writes it, breaks the canonical shipped form, or null.
+   * With it a version comes only from an exact specifier the record lists.
+   */
+  canonicalIssue?(specifier: string): string | null;
 }
 
 /** What a registry publishes for one package. */
@@ -179,6 +191,11 @@ function resolveJsrVersion(
  * registry resolves today. A stale lock that satisfies nothing falls
  * through to the registry, as Deno re-resolves it. Null when nothing
  * resolves.
+ *
+ * A v2 record replaces all of that (swamp-club#4018): its archive ships the
+ * canonical form, so only an exact specifier the record lists resolves,
+ * with no lock read and no registry resolution. Anything else is null, and
+ * the record's `canonicalIssue` says why.
  */
 export function resolveShippedVersion(
   registry: DependencyRegistry,
@@ -189,6 +206,14 @@ export function resolveShippedVersion(
   installed?: string,
   record?: RecordedDependencyVersions,
 ): ShippedVersion | null {
+  if (record?.canonicalIssue) {
+    const written = `${registry}:${name}${
+      specVersion === null ? "" : `@${specVersion}`
+    }`;
+    if (record.canonicalIssue(written) !== null) return null;
+    const entry = record.recordedFor(registry, name, specVersion);
+    return entry ? { ...entry, recorded: true } : null;
+  }
   const exact = exactVersion(specVersion);
   if (exact !== null) return { version: exact, from: "exact" };
   if (installed !== undefined) return { version: installed, from: "installed" };

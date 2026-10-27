@@ -76,6 +76,15 @@ A non-exact specifier (range, dist-tag, unpinned) costs the dependency factor's
 loose point only when no valid lock fixed its version: pinning exact versions
 and committing a lock score the same.
 
+To score a v2 archive, pass `canonicalRecordedVersions(record)` as the `record`
+argument of `planNpmPackage` and `evaluateJsrPackage`: only an exact specifier
+the record lists resolves, with no lock read and no range resolution, and
+anything else is not audited (`notAuditedFix: "canonical"`). Pass the record's
+`unaudited` list as `scorecardResult`'s third argument; push and quality add the
+same code with `withUnauditedCode`. Each entry is not audited under its origin
+(`notAuditedFix: "origin"`) and costs both points. The `canonicalScoring` and
+`unauditedCode` sections of the vectors pin both.
+
 ## Versions
 
 Published from `packages/extension-scoring` in the swamp repository on every

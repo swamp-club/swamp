@@ -23,6 +23,7 @@ import {
   auditRecordEntryUsable,
   buildDependencyAuditRecord,
   buildDependencyAuditRecordV2,
+  canonicalRecordedVersions,
   canonicalShippedSpecifierIssue,
   type DependencyRegistry,
   type DependencySpecifier,
@@ -50,6 +51,7 @@ import {
   type SpecifierAudit,
   specifierKind,
   type UnauditedDependency,
+  withUnauditedCode,
   writtenSpecifiers,
 } from "../dependency_audit/mod.ts";
 
@@ -407,6 +409,116 @@ for (const v of vectors.canonical as CanonicalVector[]) {
     assertEquals(
       issue === null ? "accept" : { cause: "not-audited", message: issue },
       v.expect,
+    );
+  });
+}
+
+interface CanonicalScoringVector {
+  name: string;
+  path: string;
+  source: string;
+  locked?: string[];
+  record: unknown;
+  expect: {
+    blockers: unknown[];
+    warnings: unknown[];
+    notAudited: unknown[];
+    earnedPoints: number;
+  };
+}
+
+const canonicalRegistry = vectors.canonicalRegistry as {
+  npm: Record<string, Record<string, unknown>>;
+  jsr: Record<string, unknown>;
+};
+
+/** The registry's path for a v2 archive: the record decides each version. */
+function scoreV2Archive(v: CanonicalScoringVector) {
+  const record = parseDependencyAuditRecordV2(JSON.stringify(v.record))!;
+  const recorded = canonicalRecordedVersions(record);
+  const lock = lockOf(v.locked);
+  const audits: { spec: DependencySpecifier; audit: SpecifierAudit }[] = [];
+  for (const written of writtenSpecifiers(v.source, v.path) ?? []) {
+    const spec: DependencySpecifier = { ...written, sourceFile: v.path };
+    if (spec.registry === "jsr") {
+      const body = canonicalRegistry.jsr[spec.name];
+      const meta: JsrLookup = body ? parseJsrMeta(body) : { kind: "missing" };
+      audits.push({
+        spec,
+        audit: evaluateJsrPackage(spec.name, [spec], meta, lock, recorded)[0],
+      });
+      continue;
+    }
+    const packument = canonicalRegistry.npm[spec.name];
+    const npm: NpmLookup = packument
+      ? {
+        kind: "found",
+        value: parseNpmPackument(
+          { ...packument, time: { modified: new Date().toISOString() } },
+          { downloads: 50_000 },
+        ),
+      }
+      : { kind: "unavailable", reason: "HTTP 404" };
+    const plan = planNpmPackage(spec.name, [spec], npm, lock, recorded);
+    const osv = new Map<string, Lookup<OsvVulnerability[]>>(
+      plan.osvVersions.map((version) => [version, {
+        kind: "found",
+        value: [],
+      }]),
+    );
+    audits.push({
+      spec,
+      audit: evaluateNpmPackage(
+        spec.name,
+        [spec],
+        npm,
+        plan,
+        osv,
+        new Date(),
+        lock,
+      )[0],
+    });
+  }
+  return scorecardResult(audits, [], record.unaudited);
+}
+
+for (const v of vectors.canonicalScoring as CanonicalScoringVector[]) {
+  Deno.test(`dependency audit vectors: scores a v2 archive, ${v.name}`, () => {
+    const result = scoreV2Archive(v);
+    assertEquals(
+      {
+        blockers: result.blockers,
+        warnings: result.warnings,
+        notAudited: result.notAudited,
+        earnedPoints: result.earnedPoints,
+      },
+      v.expect,
+    );
+  });
+}
+
+for (
+  const v of vectors.unauditedCode as {
+    name: string;
+    unaudited: UnauditedDependency[];
+    expect: unknown[];
+    earnedPoints: number;
+  }[]
+) {
+  Deno.test(`dependency audit vectors: push and quality charge ${v.name}`, () => {
+    const result = withUnauditedCode(
+      { errors: [], warnings: [], audited: [], passed: true },
+      v.unaudited,
+    );
+    assertEquals(result.warnings, v.expect);
+    assertEquals(
+      dependencyTrustEarnedPoints({
+        blockerCount: 0,
+        notAuditedCount: new Set(result.warnings.map((w) => w.dependency))
+          .size,
+        looseCount: 0,
+      }),
+      v.earnedPoints,
     );
   });
 }

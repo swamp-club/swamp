@@ -47,6 +47,8 @@ import {
   buildDependencyAuditRecord,
   buildDependencyAuditRecordV2,
   canonicalShippedSpecifierIssue,
+  type UnauditedDependency,
+  withUnauditedCode,
 } from "@swamp-club/extension-scoring/dependency-audit";
 
 // The vectors @swamp-club/extension-scoring ships: the package's own tests
@@ -329,5 +331,25 @@ for (
       issue === null ? "accept" : { cause: "not-audited", message: issue },
       v.expect,
     );
+  });
+}
+
+for (
+  const v of (vectorsJson as unknown as {
+    unauditedCode: {
+      name: string;
+      unaudited: UnauditedDependency[];
+      expect: unknown[];
+      earnedPoints: number;
+    }[];
+  }).unauditedCode
+) {
+  Deno.test(`dependency audit vectors: quality and push charge ${v.name}`, () => {
+    const result = withUnauditedCode(
+      { errors: [], warnings: [], audited: [], passed: true },
+      v.unaudited,
+    );
+    assertEquals(result.warnings, v.expect);
+    assertEquals(factorOf(result).earnedPoints, v.earnedPoints);
   });
 }

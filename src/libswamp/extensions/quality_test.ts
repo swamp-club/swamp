@@ -734,6 +734,45 @@ Deno.test("extensionQuality: a dependency that was not audited loses the depende
   });
 });
 
+Deno.test("extensionQuality: a URL import loses the dependency-trust factor, named, as on the registry (swamp-club#4018)", async () => {
+  await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
+    const manifest = makeManifest();
+    const input = makeQualityInput(repoDir, manifest, {
+      prepareInput: {
+        graphDependencies: {
+          packageVersions: {},
+          unaudited: [{
+            kind: "url",
+            origin: "https://example.com/x.ts",
+            modules: { "https://example.com/x.ts": "sha256:00" },
+          }],
+        },
+      },
+    });
+    const deps = makeQualityDeps(cacheRoot);
+
+    const data = completedData(
+      await collect(extensionQuality(ctx, deps, input)),
+    );
+    assertEquals(data.dependencyTrustResult.passed, true);
+    assertEquals(
+      data.dependencyTrustResult.warnings.map((w) => w.dependency),
+      ["https://example.com/x.ts"],
+    );
+    const trustFactor = data.score.factors.find((f) =>
+      f.id === "dependency-trust"
+    )!;
+    assertEquals([trustFactor.earnedPoints, trustFactor.status], [
+      0,
+      "missing",
+    ]);
+    assertStringIncludes(
+      trustFactor.remediation ?? "",
+      "the code comes from outside npm and JSR",
+    );
+  });
+});
+
 Deno.test("extensionQuality: a specifier no published version matches is named on the dependency-trust row, not an outage", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
     const manifest = makeManifest();

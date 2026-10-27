@@ -19,12 +19,17 @@
 
 /**
  * How a dependency the audit could not check is resolved, by why it was
- * not checked: only an `outage` clears on a re-run.
+ * not checked: only an `outage` clears on a re-run. `canonical` is a v2
+ * archive whose source breaks the canonical shipped form; `origin` is code
+ * from outside npm and JSR, which no registry audit covers
+ * (swamp-club#4018).
  */
 export type NotAuditedFix =
   | "outage"
   | "name"
   | "specifier"
+  | "canonical"
+  | "origin"
   | "unexpected"
   | "other";
 
@@ -36,6 +41,9 @@ export const NOT_AUDITED_FIX: Readonly<Record<NotAuditedFix, string>> = {
   outage: "Re-run when OSV, npm and JSR are reachable.",
   name: "Correct the package name in the import.",
   specifier: "Change the specifier to a version the registry publishes.",
+  canonical:
+    "Push again with `swamp extension push`, which writes every npm: and jsr: import exact and lists it in dependency-audit.json.",
+  origin: "Replace it with an npm: or jsr: package.",
   unexpected: "Re-run; if it fails again, report it.",
   other: "Resolve the reason above, then re-run.",
 };

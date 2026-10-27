@@ -724,6 +724,7 @@ import {
   serializeDependencyAuditRecordV2,
   type ShippedImport,
   specifierText,
+  withUnauditedCode,
 } from "@swamp-club/extension-scoring/dependency-audit";
 import {
   canonicalImportRewrites,
@@ -1439,6 +1440,12 @@ export async function extensionPushPrepare(
       passed: true,
     };
   }
+  // Code from outside npm and JSR that the bundles hold is not audited and
+  // costs the dependency-trust points, as on the registry (swamp-club#4018).
+  dependencyTrustResult = withUnauditedCode(
+    dependencyTrustResult,
+    input.graphDependencies?.unaudited ?? [],
+  );
 
   // 8. Validate skills and populate content metadata
   if (gated.skillDirs.length > 0) {

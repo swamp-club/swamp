@@ -410,6 +410,8 @@ const NOT_AUDITED_WHY: Readonly<
 > = {
   outage: "an OSV, npm or JSR lookup failed",
   specifier: "no published version matches the specifier",
+  canonical: "the archive breaks the canonical shipped form",
+  origin: "the code comes from outside npm and JSR",
   name: "the package name is invalid",
   unexpected: "the audit failed unexpectedly",
 };

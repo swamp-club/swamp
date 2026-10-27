@@ -3257,6 +3257,48 @@ Deno.test("extensionPushPrepare: an unaudited dependency fails no gate and reach
   });
 });
 
+Deno.test("extensionPushPrepare: code from outside npm and JSR is not audited, with no npm or jsr import too (swamp-club#4018)", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const deps = makePrepareDeps({
+      extractDependencySpecifiers: () => Promise.resolve([]),
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, {
+      ...input,
+      localGates: undefined,
+      graphDependencies: {
+        packageVersions: {},
+        unaudited: [
+          {
+            kind: "url",
+            origin: "https://example.com/x.ts",
+            modules: { "https://example.com/x.ts": "sha256:00" },
+          },
+          {
+            kind: "package-json",
+            origin: "file:../shared",
+            modules: { "node_modules/shared/index.js": "sha256:00" },
+          },
+        ],
+      },
+    });
+
+    assertEquals(result.gateFailures, []);
+    assertEquals(result.dependencyTrustResult.passed, true);
+    assertEquals(
+      result.dependencyTrustResult.warnings.map((w) => [
+        w.dependency,
+        w.cause,
+        w.notAuditedFix,
+      ]),
+      [
+        ["https://example.com/x.ts", "not-audited", "origin"],
+        ["file:../shared", "not-audited", "origin"],
+      ],
+    );
+  });
+});
+
 Deno.test("extensionPushPrepare: collect mode leaves files rejected by safety and the allowlist out of the archive", async () => {
   await withCollectFixture({
     "README.md": "# hi\n",

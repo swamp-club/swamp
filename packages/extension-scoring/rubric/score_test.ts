@@ -173,6 +173,39 @@ Deno.test("composeScore: dependency-trust at one of two points is partial", () =
   assertStringIncludes(row.remediation ?? "", "3 loose dependency specifier");
 });
 
+Deno.test("composeScore: unaudited code and a broken canonical form each name their cause and fix", () => {
+  for (
+    const [fix, why, remedy] of [
+      [
+        "origin",
+        "the code comes from outside npm and JSR",
+        "Replace it with an npm: or jsr: package.",
+      ],
+      [
+        "canonical",
+        "the archive breaks the canonical shipped form",
+        "Push again with `swamp extension push`",
+      ],
+    ] as const
+  ) {
+    const score = composeScore(
+      inputs({
+        dependencyTrust: {
+          earnedPoints: 0,
+          blockerCount: 0,
+          notAuditedCount: 1,
+          notAuditedFixes: [fix],
+          looseCount: 0,
+        },
+      }),
+    );
+    const row = byId(score).get("dependency-trust")!;
+    assertEquals(row.earnedPoints, 0);
+    assertStringIncludes(row.remediation ?? "", why);
+    assertStringIncludes(row.remediation ?? "", remedy);
+  }
+});
+
 Deno.test("composeScore: a description must be non-blank after trimming", () => {
   for (
     const [description, status] of [
