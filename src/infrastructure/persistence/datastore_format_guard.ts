@@ -355,6 +355,16 @@ export async function ensureSupportedDatastoreFormat(
   return engine;
 }
 
+/**
+ * Records that `config` opens as v3 through serve (swamp-club#3985): its
+ * storage is never read here, so its marker is not either. Serve refuses a
+ * datastore that is not v3 (`409 datastore_not_v3`), which stands for the
+ * marker check, and later guards of the same config answer v3 for free.
+ */
+export function recordServeUpstreamFormat(config: DatastoreConfig): void {
+  guarded.set(config, "v3");
+}
+
 /** The provider of `config`, or undefined when it cannot be resolved. */
 async function providerOf(
   config: CustomDatastoreConfig,

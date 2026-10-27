@@ -23,8 +23,9 @@
  * Built in one place, `openV3Datastore`, so every unit the handle opens
  * prepares its commits.
  *
- * Phase 5's team-mode sink, which forwards commits to serve's leader, fits
- * the same {@link CommitSink} shape; nothing of it is built here.
+ * Phase 5's team-mode sink, which forwards commits to serve's leader, is
+ * this sink over a store whose append goes to serve: `serve_commit_sink.ts`
+ * (swamp-club#3985).
  *
  * @module
  */

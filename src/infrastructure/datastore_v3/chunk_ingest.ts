@@ -24,6 +24,8 @@
  *   (`ReadableStream<Uint8Array>`), leaving the rest unread, under an
  *   overall byte cap. The commit request is framed as a 4-byte big-endian
  *   JSON length, the JSON envelope, then chunk bytes back to back.
+ * - {@link encodeCommitBody} writes that frame, for a client sending a
+ *   commit to serve (swamp-club#3985).
  * - {@link ingestChunk} reads one declared chunk, hashing as it reads, and
  *   hands the bytes on only once their SHA-256 matched the declared one, so
  *   nothing unverified is ever staged. Memory is bounded at one chunk.
@@ -296,6 +298,45 @@ export class FramedReader {
     }
     return undefined;
   }
+}
+
+/** One chunk a commit request carries, in the order its envelope lists it. */
+export interface CarriedChunk {
+  readonly bytes: Uint8Array;
+}
+
+/**
+ * The framed body of a commit request, as serve's datastore API reads it
+ * with a {@link FramedReader}: the envelope's UTF-8 JSON length as a 4-byte
+ * big-endian unsigned integer, the JSON, then each chunk's bytes back to
+ * back in `chunks` order. The envelope is serialized as given; listing each
+ * carried chunk's `{sha256, size}` in its `chunks`, in the same order, is
+ * the caller's part.
+ *
+ * @throws RangeError when the envelope's JSON is too long for its 4-byte
+ *   length
+ */
+export function encodeCommitBody(
+  envelope: object,
+  chunks: readonly CarriedChunk[] = [],
+): Uint8Array<ArrayBuffer> {
+  const json = new TextEncoder().encode(JSON.stringify(envelope));
+  if (json.byteLength > 0xffff_ffff) {
+    throw new RangeError(
+      `Commit envelope of ${json.byteLength} bytes does not fit its 4-byte length`,
+    );
+  }
+  let total = 4 + json.byteLength;
+  for (const chunk of chunks) total += chunk.bytes.byteLength;
+  const body = new Uint8Array(total);
+  new DataView(body.buffer).setUint32(0, json.byteLength, false);
+  body.set(json, 4);
+  let offset = 4 + json.byteLength;
+  for (const chunk of chunks) {
+    body.set(chunk.bytes, offset);
+    offset += chunk.bytes.byteLength;
+  }
+  return body;
 }
 
 /** A chunk an upload declares. */

@@ -1263,3 +1263,261 @@ Deno.test("SqliteCommitStore.append: a burst whose partition another connection 
     }
   });
 });
+
+// Follower mode (swamp-club#3985): a checkout's copy of serve's log, where
+// serve left out commits the caller may not read.
+
+/** The fixture model's seqs a follower saw, with holes. */
+const GAPPED = [2, 5, 9, 10, 14];
+
+Deno.test("SqliteCommitStore follower: appends gapped seqs and keeps the head at the highest one (swamp-club#3985)", async () => {
+  await withStore(async (store, path) => {
+    for (const seq of GAPPED) {
+      assertEquals(await store.append(await save(seq)), {
+        kind: "appended",
+        seq,
+      });
+      assertEquals((await store.head("", modelPartition())).seq, seq);
+    }
+    assertEquals(
+      rawRows(path, "SELECT seq FROM partition_heads"),
+      [{ seq: 14 }],
+    );
+    assertEquals(
+      rawRows(path, "SELECT MAX(seq) AS seq FROM commits"),
+      [{ seq: 14 }],
+    );
+    assertEquals(
+      (await store.readPartition("", modelPartition(), 1, 100)).map((c) =>
+        c.commit.seq
+      ),
+      GAPPED,
+    );
+    assertEquals(
+      (await store.readPartition("", modelPartition(), 6, 100)).map((c) =>
+        c.commit.seq
+      ),
+      [9, 10, 14],
+    );
+    assertEquals(await store.headIdentity("", modelPartition()), {
+      seq: 14,
+      txnId: "txn-14",
+    });
+  }, { follower: true });
+});
+
+Deno.test("SqliteCommitStore follower: a retry is still a duplicate, and a seq at or below the head is refused", async () => {
+  await withStore(async (store) => {
+    for (const seq of GAPPED) await store.append(await save(seq));
+    assertEquals(await store.append(await save(5)), {
+      kind: "duplicate",
+      seq: 5,
+    });
+    const stale = modelCommit(12, [await savePut("b", 1)], {
+      fence: 1,
+      txnId: "fresh",
+    });
+    const error = await assertRejects(
+      () => store.append(stale),
+      CommitRejectedError,
+    );
+    assertEquals(error.reason, "seq-gap");
+    assertEquals((await store.head("", modelPartition())).seq, 14);
+  }, { follower: true });
+});
+
+Deno.test("SqliteCommitStore: a solo store still refuses the gap a follower takes", async () => {
+  await withStore(async (store) => {
+    for (const seq of [2, 1, 5]) {
+      if (seq === 1) {
+        await store.append(await save(1));
+        continue;
+      }
+      const commit = await save(seq);
+      const error = await assertRejects(
+        () => store.append(commit),
+        CommitRejectedError,
+      );
+      assertEquals(error.reason, "seq-gap");
+    }
+    assertEquals((await store.head("", modelPartition())).seq, 1);
+  });
+});
+
+Deno.test("SqliteCommitStore follower: snapshots on crossing each interval, and a reopened store rebuilds and appends past the gaps", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const options = { follower: true, snapshotInterval: 3 };
+    const store = SqliteCommitStore.open(path, options);
+    try {
+      for (const seq of GAPPED) await store.append(await save(seq));
+      // 2 crosses nothing; 5 crosses 3; 9 lands on 9; 10 crosses nothing;
+      // 14 crosses 12. The one row is the latest.
+      assertEquals(
+        rawRows(path, "SELECT seq FROM partition_snapshots"),
+        [{ seq: 14 }],
+      );
+    } finally {
+      await store.close();
+    }
+
+    // The bounded txnIds came from the snapshot: earlier retries are still
+    // duplicates after a reopen, and a later gapped seq appends.
+    const reopened = SqliteCommitStore.open(path, options);
+    try {
+      assertEquals(await reopened.append(await save(9)), {
+        kind: "duplicate",
+        seq: 9,
+      });
+      assertEquals(await reopened.dataHighWater("", modelPartition(), "a"), 14);
+      assertEquals(await reopened.append(await save(20)), {
+        kind: "appended",
+        seq: 20,
+      });
+      assertEquals(
+        rawRows(path, "SELECT seq FROM partition_snapshots"),
+        [{ seq: 20 }],
+      );
+    } finally {
+      await reopened.close();
+    }
+
+    // A rebuild from a snapshot below gapped commits replays them.
+    const fresh = SqliteCommitStore.open(path, {
+      follower: true,
+      snapshotInterval: 1000,
+    });
+    try {
+      assertEquals(await fresh.append(await save(23)), {
+        kind: "appended",
+        seq: 23,
+      });
+    } finally {
+      await fresh.close();
+    }
+    // A solo store refuses to rebuild the follower's file.
+    const solo = SqliteCommitStore.open(path, { snapshotInterval: 1000 });
+    try {
+      await assertRejects(
+        async () => await solo.append(await save(24)),
+        Error,
+        "seq",
+      );
+    } finally {
+      await solo.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore follower: truncateAfter takes a partition back to the highest seq it keeps", async () => {
+  await withStore(async (store, path) => {
+    await store.append(await save(2));
+    await store.append(await save(5));
+    const mark = store.highWaterMark();
+    await store.append(await save(9));
+    await store.append(await save(10));
+    assertEquals(
+      rawRows(path, "SELECT seq FROM partition_snapshots"),
+      [{ seq: 9 }],
+    );
+    assertEquals(await store.truncateAfter(mark), { removed: 2 });
+    assertEquals((await store.head("", modelPartition())).seq, 5);
+    // The snapshot past the new head went; the one put back is at a seq
+    // the follower holds.
+    assertEquals(
+      rawRows(path, "SELECT seq FROM partition_snapshots"),
+      [{ seq: 5 }],
+    );
+    assertEquals(await store.append(await save(7)), {
+      kind: "appended",
+      seq: 7,
+    });
+    assertEquals(
+      (await store.readPartition("", modelPartition(), 1, 100)).map((c) =>
+        c.commit.seq
+      ),
+      [2, 5, 7],
+    );
+  }, { follower: true, snapshotInterval: 4 });
+});
+
+Deno.test("SqliteCommitStore follower: compaction over gapped seqs keeps rebuilding and reading", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const options = { follower: true, snapshotInterval: 1000 };
+    const store = SqliteCommitStore.open(path, options);
+    try {
+      for (const seq of GAPPED) await store.append(await save(seq));
+      await store.compactHistory(2);
+      assertEquals(
+        (await store.readPartition("", modelPartition(), 6, 100)).map((c) =>
+          c.commit.seq
+        ),
+        [9, 10, 14],
+      );
+      await assertRejects(() =>
+        store.readPartition("", modelPartition(), 5, 100)
+      );
+    } finally {
+      await store.close();
+    }
+    const reopened = SqliteCommitStore.open(path, options);
+    try {
+      assertEquals(await reopened.append(await save(5)), {
+        kind: "duplicate",
+        seq: 5,
+      });
+      assertEquals(await reopened.append(await save(17)), {
+        kind: "appended",
+        seq: 17,
+      });
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore follower: a snapshot truncateAfter puts back is at a seq the follower holds", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const options = { follower: true, snapshotInterval: 4 };
+    // Puts alone record no data versions, so the truncation retains none
+    // and puts back the snapshot below the new head.
+    const put = async (seq: number) =>
+      modelCommit(seq, [await savePut("b", seq)], { fence: 1 });
+    const store = SqliteCommitStore.open(path, options);
+    try {
+      await store.append(await put(2));
+      await store.append(await put(5));
+      await store.append(await put(6));
+      const mark = store.highWaterMark();
+      await store.append(await put(9));
+      assertEquals(
+        rawRows(path, "SELECT seq FROM partition_snapshots"),
+        [{ seq: 9 }],
+      );
+      assertEquals(await store.truncateAfter(mark), { removed: 1 });
+      assertEquals((await store.head("", modelPartition())).seq, 6);
+      // The last multiple at or below 6 is 4, which the follower never
+      // held: the snapshot is at 2, the seq it holds there.
+      const rows = rawRows(path, "SELECT seq, body FROM partition_snapshots");
+      assertEquals(rows.map((row) => row.seq), [2]);
+      assertEquals(JSON.parse(String(rows[0].body)).seq, 2);
+    } finally {
+      await store.close();
+    }
+    const reopened = SqliteCommitStore.open(path, options);
+    try {
+      assertEquals(await reopened.append(await put(5)), {
+        kind: "duplicate",
+        seq: 5,
+      });
+      assertEquals(await reopened.append(await put(7)), {
+        kind: "appended",
+        seq: 7,
+      });
+    } finally {
+      await reopened.close();
+    }
+  });
+});

@@ -1,0 +1,278 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * The commit sink of a v3 checkout whose upstream is serve
+ * (swamp-club#3985). It is the outbox sink of `outbox_commit_sink.ts` over
+ * a commit store that forwards each commit to serve's
+ * `POST partitions/{p}/commits` instead of appending it here: the outbox
+ * still makes each commit durable until it landed, and the units above it
+ * are unchanged.
+ *
+ * - **Head.** A commit is built on the higher of the copy's head and the
+ *   head serve last reported: serve may hold commits this caller cannot
+ *   read.
+ * - **Chunks.** Serve is asked which of the commit's chunks it holds. Up to
+ *   {@link MAX_CARRIED_CHUNKS} missing ones ride in the commit's frame,
+ *   from the checkout's chunk cache; any more go first as
+ *   `PUT chunks/{sha256}?partition=`, so no upload ever needs `admin`.
+ * - **Landing.** Serve's reply (`{seq}`, or a duplicate's) lands the commit;
+ *   the copy then reads the partition from serve, so it stores serve's
+ *   stamped commit, never the one built here.
+ * - **Stale seq.** Serve's head is recorded and the partition read, then the
+ *   append is refused as a seq gap: the unit builds the commit again on the
+ *   new head under the same txnId.
+ * - **Unreachable.** A commit serve never received is refused with exit 75
+ *   and its outbox entry discarded: nothing changed. One that may have
+ *   reached serve keeps its entry, so the next recovery settles or sends it.
+ *   Storage is never written instead.
+ *
+ * @module
+ */
+
+import type { Commit } from "../../domain/datastore_v3/commit.ts";
+import type { CommitOutbox } from "../../domain/datastore_v3/commit_outbox.ts";
+import type { CommitStoreAppendResult } from "../../domain/datastore_v3/commit_store.ts";
+import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
+import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import {
+  createOutboxCommitSink,
+  type OutboxCommitSink,
+} from "./outbox_commit_sink.ts";
+import type { ServeCatchUp } from "./serve_catch_up.ts";
+import { storageNamespaceOf } from "./serve_datastore_storage.ts";
+import type {
+  CommitChunk,
+  ServeDatastoreClient,
+} from "./serve_datastore_client.ts";
+import {
+  ServeChunksMissingError,
+  ServeStaleSeqError,
+  ServeUnreachableError,
+} from "./serve_upstream_errors.ts";
+import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
+
+/** The most chunks one commit request carries; serve's own limit. */
+export const MAX_CARRIED_CHUNKS = 1024;
+
+/**
+ * How many times one flush builds a commit again on a moved head: other
+ * writers through serve can move a busy partition more than once.
+ */
+export const SERVE_SEQ_GAP_ATTEMPTS = 8;
+
+/** What {@link createServeCommitSink} composes. */
+export interface ServeCommitSinkOptions {
+  readonly client: Pick<
+    ServeDatastoreClient,
+    "hasChunks" | "putChunk" | "postCommit" | "baseUrl"
+  >;
+  /** The checkout's follower copy of serve's log. */
+  readonly commitStore: Pick<
+    SqliteCommitStore,
+    "head" | "headIdentity" | "dataHighWater" | "landedSeq"
+  >;
+  readonly catchUp: Pick<
+    ServeCatchUp,
+    "catchUpPartition" | "headOf" | "recordServeHead"
+  >;
+  /** The checkout's chunk cache, which every put of a unit lands in. */
+  readonly chunkCache: Pick<DatastoreStorage, "get">;
+  readonly outbox: CommitOutbox;
+  readonly sweepBatch?: () => Promise<void>;
+  /** Bounds every request; aborted when the handle closes. */
+  readonly signal: () => AbortSignal;
+  readonly clock?: () => Date;
+}
+
+/**
+ * The commit store the serve sink's outbox sink composes: the copy's reads,
+ * with appends forwarded to serve. Outbox recovery lands its entries
+ * through it too, so a recovered commit reaches serve, never only the copy.
+ */
+export type ServeUpstreamCommitStore = Pick<
+  SqliteCommitStore,
+  "append" | "head" | "headIdentity" | "dataHighWater" | "landedSeq"
+>;
+
+/** A serve-mode handle's sink, and the store its outbox recovery uses. */
+export interface ServeCommitSink extends OutboxCommitSink {
+  readonly upstream: ServeUpstreamCommitStore;
+}
+
+/** Builds the sink a serve-mode v3 handle gives every unit it opens. */
+export function createServeCommitSink(
+  options: ServeCommitSinkOptions,
+): ServeCommitSink {
+  const { client, commitStore, catchUp, chunkCache } = options;
+  // The txnIds whose last send serve never received: their recovery need
+  // not ask serve, which cannot hold them.
+  const neverSent = new Set<string>();
+
+  const chunksOf = async (
+    commit: Commit,
+    hashes: readonly string[],
+  ): Promise<CommitChunk[]> => {
+    const chunks: CommitChunk[] = [];
+    for (const sha256 of hashes) {
+      const bytes = await chunkCache.get(
+        storageNamespaceOf(commit.namespace),
+        sha256,
+        options.signal(),
+      );
+      if (bytes === null) {
+        throw new Error(
+          `Internal error: chunk ${sha256} of a commit to ` +
+            `${commit.partition} is not in this checkout's chunk cache`,
+        );
+      }
+      chunks.push({ sha256, bytes });
+    }
+    return chunks;
+  };
+
+  /** The commit's chunks serve lacks, uploading any past the frame's cap. */
+  const carried = async (
+    commit: Commit,
+    hashes: readonly string[],
+  ): Promise<CommitChunk[]> => {
+    const signal = options.signal();
+    const held = hashes.length === 0
+      ? new Set<string>()
+      : await client.hasChunks(hashes, signal);
+    const missing = hashes.filter((hash) => !held.has(hash));
+    const framed = missing.slice(0, MAX_CARRIED_CHUNKS);
+    for (const chunk of await chunksOf(commit, missing.slice(framed.length))) {
+      await client.putChunk(
+        chunk.sha256,
+        chunk.bytes,
+        signal,
+        commit.partition,
+      );
+    }
+    return await chunksOf(commit, framed);
+  };
+
+  const forward = async (commit: Commit): Promise<CommitStoreAppendResult> => {
+    const signal = options.signal();
+    const json = commit.toJSON() as { readonly ops: readonly unknown[] };
+    // Serve stamps the principal, writer and fence: the envelope names none.
+    const envelope = {
+      expectedSeq: commit.seq - 1,
+      txnId: commit.txnId,
+      ops: json.ops,
+    };
+    const refs = [...new Set(commit.chunkRefs())];
+    let chunks = await carried(commit, refs);
+    let reply;
+    try {
+      try {
+        reply = await client.postCommit(
+          commit.partition,
+          envelope,
+          chunks,
+          signal,
+        );
+      } catch (error) {
+        // A chunk serve held when asked was collected before the commit:
+        // send the named ones once more.
+        if (!(error instanceof ServeChunksMissingError)) throw error;
+        const named = new Set(error.missing);
+        chunks = await chunksOf(commit, refs.filter((hash) => named.has(hash)));
+        reply = await client.postCommit(
+          commit.partition,
+          envelope,
+          chunks,
+          signal,
+        );
+      }
+    } catch (error) {
+      if (error instanceof ServeStaleSeqError) {
+        catchUp.recordServeHead(commit.namespace, commit.partition, error.seq);
+        await catchUp.catchUpPartition(
+          commit.namespace,
+          commit.partition,
+          signal,
+        );
+        throw new CommitRejectedError(
+          "seq-gap",
+          `Serve's partition ${commit.partition} is at seq ${error.seq}, ` +
+            `past the ${commit.seq - 1} this commit was built on`,
+        );
+      }
+      if (error instanceof ServeUnreachableError && error.sent === "never") {
+        neverSent.add(commit.txnId);
+      }
+      throw error;
+    }
+    neverSent.delete(commit.txnId);
+    // The copy stores serve's commit as serve stamped it. A read that fails
+    // here leaves the copy behind; the next catch-up brings it.
+    try {
+      await catchUp.catchUpPartition(
+        commit.namespace,
+        commit.partition,
+        signal,
+      );
+    } catch {
+      catchUp.recordServeHead(commit.namespace, commit.partition, reply.seq);
+    }
+    return reply.duplicate
+      ? { kind: "duplicate", seq: reply.seq }
+      : { kind: "appended", seq: reply.seq };
+  };
+
+  const head = async (namespace: string, partition: PartitionKey) => {
+    const local = await commitStore.head(namespace, partition);
+    return {
+      seq: await catchUp.headOf(namespace, partition),
+      highestFence: local.highestFence,
+    };
+  };
+
+  const upstream: ServeUpstreamCommitStore = {
+    head,
+    headIdentity: async (namespace, partition) => {
+      const local = await commitStore.headIdentity(namespace, partition);
+      const seq = await catchUp.headOf(namespace, partition);
+      return seq > local.seq ? { seq, txnId: undefined } : local;
+    },
+    dataHighWater: (namespace, partition, name) =>
+      commitStore.dataHighWater(namespace, partition, name),
+    landedSeq: async (namespace, partition, txnId) => {
+      const local = await commitStore.landedSeq(namespace, partition, txnId);
+      if (local !== undefined || neverSent.delete(txnId)) return local;
+      // It may have landed at serve after the reply was lost: read the
+      // partition. A failure is the caller's: the commit may land later.
+      await catchUp.catchUpPartition(namespace, partition, options.signal());
+      return await commitStore.landedSeq(namespace, partition, txnId);
+    },
+    append: forward,
+  };
+  const sink = createOutboxCommitSink({
+    commitStore: upstream,
+    outbox: options.outbox,
+    ...(options.sweepBatch !== undefined
+      ? { sweepBatch: options.sweepBatch }
+      : {}),
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+  });
+  return { ...sink, seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS, upstream };
+}

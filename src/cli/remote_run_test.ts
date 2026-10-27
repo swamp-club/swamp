@@ -30,10 +30,12 @@ import {
   describeStatuslessFailure,
   diagnoseTlsMessage,
   formatCommandTarget,
+  implicitServeUrl,
   probeHandshakeStatus,
   readTokenFile,
   requestNewerServerResponse,
   requestServerResponse,
+  resetImplicitServeRouting,
   resetMarkerServerAddress,
   resolveCaCertPath,
   resolveServerToken,
@@ -44,6 +46,7 @@ import {
   runWorkflowOverServer,
   serverReloadCommand,
   ServerResponseError,
+  setImplicitServeRouting,
   setMarkerServerAddress,
   subscribeServerEvents,
   toWebSocketUrl,
@@ -3210,4 +3213,27 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+Deno.test("resolveServeUrl: with implicit routing off only the --server flag routes; implicitServeUrl still reads env and marker (swamp-club#3985)", () => {
+  try {
+    withMockedEnv({
+      SWAMP_SERVE_URL: "http://env.example.com",
+      SWAMP_SERVER_URL: undefined,
+    }, () => {
+      setMarkerServerAddress("http://marker.example.com");
+      setImplicitServeRouting(false);
+      assertEquals(resolveServeUrl(undefined), undefined);
+      assertEquals(
+        resolveServeUrl("http://flag.example.com"),
+        "http://flag.example.com",
+      );
+      assertEquals(implicitServeUrl(), "http://env.example.com");
+      resetImplicitServeRouting();
+      assertEquals(resolveServeUrl(undefined), "http://env.example.com");
+    });
+  } finally {
+    resetImplicitServeRouting();
+    resetMarkerServerAddress();
+  }
 });

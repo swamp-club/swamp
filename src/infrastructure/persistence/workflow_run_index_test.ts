@@ -22,6 +22,7 @@ import { join, relative } from "@std/path";
 import {
   countYamlRunFiles,
   deleteRunIndex,
+  dropRunIndexEntries,
   fingerprintMatches,
   getIndexPath,
   INDEX_SCHEMA_VERSION,
@@ -352,5 +353,44 @@ Deno.test("removeStaleRunIndexes: removes the checkout's run indexes, and a remo
     await Deno.mkdir(join(repo, ".swamp"), { recursive: true });
     await Deno.writeTextFile(join(repo, ".swamp", "workflow-runs"), "x");
     await removeStaleRunIndexes(repo);
+  });
+});
+
+Deno.test("dropRunIndexEntries: drops the entries of the run records named, keeps the rest, and leaves an absent or other-version index (swamp-club#3985)", async () => {
+  await withTempDir(async (repo) => {
+    const runs = join(repo, ".swamp", "workflow-runs");
+    const entry = SAMPLE_INDEX["run-1"];
+    await Deno.mkdir(join(runs, "wf-a"), { recursive: true });
+    await writeRunIndex(join(runs, "wf-a"), {
+      "run-1": entry,
+      "run-2": entry,
+    });
+    await Deno.mkdir(join(runs, "wf-b"), { recursive: true });
+    await writeRunIndex(join(runs, "wf-b"), { "run-1": entry });
+    await Deno.mkdir(join(runs, "wf-old"), { recursive: true });
+    const oldIndex = JSON.stringify({ version: 1, entries: { "run-1": {} } });
+    await Deno.writeTextFile(getIndexPath(join(runs, "wf-old")), oldIndex);
+
+    await dropRunIndexEntries(repo, [
+      "workflow-runs/wf-a/workflow-run-run-1.yaml",
+      // Not run records: a log, another directory, a nested path.
+      "workflow-runs/wf-b/workflow-run-run-1.log",
+      "data/wf-b/workflow-run-run-1.yaml",
+      "workflow-runs/wf-b/x/workflow-run-run-1.yaml",
+      "workflow-runs/wf-old/workflow-run-run-1.yaml",
+      "workflow-runs/wf-none/workflow-run-run-1.yaml",
+    ]);
+
+    assertEquals((await readRunIndex(join(runs, "wf-a")))?.entries, {
+      "run-2": entry,
+    });
+    assertEquals((await readRunIndex(join(runs, "wf-b")))?.entries, {
+      "run-1": entry,
+    });
+    assertEquals(
+      await Deno.readTextFile(getIndexPath(join(runs, "wf-old"))),
+      oldIndex,
+    );
+    assertEquals(await readRunIndex(join(runs, "wf-none")), null);
   });
 });

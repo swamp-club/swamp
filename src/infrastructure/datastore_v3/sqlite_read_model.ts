@@ -350,6 +350,26 @@ export interface SqliteReadModelOptions {
    * directory (swamp-club#3939). For tests.
    */
   readonly spellingFolding?: SpellingFolding;
+  /**
+   * Follower mode (swamp-club#3985), for a read model over a follower
+   * commit store (`SqliteCommitStoreOptions.follower`): a partition's
+   * seqs there can have holes where serve left out commits the caller may
+   * not read, so a commit past the partition's applied seq applies, not
+   * only the next one. Off by default: the solo read model refuses a gap.
+   */
+  readonly follower?: boolean;
+  /**
+   * Told the record keys whose files a page of commits rewrote or removed,
+   * by namespace, once the page is applied (swamp-club#3985): what the
+   * checkout's repositories index beside those files, such as a workflow's
+   * run index, no longer describes them. A file left as it was (the writer's
+   * own, or one already holding the content) is not told. A failure is a
+   * warning: the page has landed.
+   */
+  readonly recordsChanged?: (
+    namespace: string,
+    keys: readonly string[],
+  ) => Promise<void>;
 }
 
 /** Where a guarded change comes from, for {@link CheckoutCopyAtRiskError}. */
@@ -384,6 +404,14 @@ export class SqliteReadModel implements ReadModel {
   readonly #syncFile: (path: string) => Promise<void>;
   readonly #atRiskCopyBytes: number;
   readonly #netReplay: boolean;
+  /** {@link SqliteReadModelOptions.follower}. */
+  readonly #follower: boolean;
+  /** {@link SqliteReadModelOptions.recordsChanged}. */
+  readonly #recordsChanged:
+    | ((namespace: string, keys: readonly string[]) => Promise<void>)
+    | undefined;
+  /** The keys the page in flight rewrote or removed, by namespace. */
+  #pageChanges: Map<string, Set<string>> | undefined;
   readonly #checkout: ReadModelCheckout | undefined;
   readonly #forcedFolding: SpellingFolding | undefined;
   /** What the probe of the state directory found, once it ran. */
@@ -462,6 +490,8 @@ export class SqliteReadModel implements ReadModel {
     this.#atRiskCopyBytes = options.atRiskCopyBytes ??
       DEFAULT_AT_RISK_COPY_BYTES;
     this.#netReplay = options.netReplay ?? true;
+    this.#follower = options.follower === true;
+    this.#recordsChanged = options.recordsChanged;
     this.#forcedFolding = options.spellingFolding;
   }
 
@@ -1430,6 +1460,8 @@ export class SqliteReadModel implements ReadModel {
     // Set only once the batch is open, so the finally below always clears it.
     const settled = Promise.withResolvers<void>();
     this.#pageInFlight = settled.promise;
+    const changes = new Map<string, Set<string>>();
+    this.#pageChanges = changes;
     try {
       let applied = 0;
       try {
@@ -1442,6 +1474,9 @@ export class SqliteReadModel implements ReadModel {
           await batch.barrier();
           this.#catalog.commitBatch();
           this.#state.commitBatch();
+          // The commits before the failure are kept, with their files.
+          this.#pageChanges = undefined;
+          await this.#tellRecordsChanged(changes);
         } catch {
           // The page rolls back below; the apply failure is the one to report.
         }
@@ -1457,13 +1492,41 @@ export class SqliteReadModel implements ReadModel {
         this.#stats.pages++;
         this.#stats.commits += applied;
       }
+      this.#pageChanges = undefined;
+      await this.#tellRecordsChanged(changes);
       return applied;
     } finally {
+      this.#pageChanges = undefined;
       batch.discard();
       this.#catalog.rollbackBatch();
       this.#state.rollbackBatch();
       this.#pageInFlight = undefined;
       settled.resolve();
+    }
+  }
+
+  /** Notes that the page in flight rewrote or removed `key`'s file. */
+  #notePageChange(namespace: string, key: string): void {
+    const changes = this.#pageChanges;
+    if (changes === undefined || this.#recordsChanged === undefined) return;
+    let keys = changes.get(namespace);
+    if (keys === undefined) changes.set(namespace, keys = new Set());
+    keys.add(key);
+  }
+
+  /** {@link SqliteReadModelOptions.recordsChanged}, for an applied page. */
+  async #tellRecordsChanged(
+    changes: ReadonlyMap<string, ReadonlySet<string>>,
+  ): Promise<void> {
+    const tell = this.#recordsChanged;
+    if (tell === undefined) return;
+    for (const [namespace, keys] of changes) {
+      try {
+        await tell(namespace, [...keys]);
+      } catch (error) {
+        logger
+          .warn`Telling the checkout which records of namespace ${namespace} a catch-up changed failed: ${error}`;
+      }
     }
   }
 
@@ -1491,7 +1554,7 @@ export class SqliteReadModel implements ReadModel {
       new ReadModelApplyError(namespace, partition, commit.seq, detail, {
         cause,
       });
-    if (commit.seq !== appliedSeq + 1) {
+    if (!this.#follower && commit.seq !== appliedSeq + 1) {
       throw fail(
         `the read model has applied seq ${appliedSeq} of this partition, so the next commit must be seq ${
           appliedSeq + 1
@@ -2267,6 +2330,7 @@ export class SqliteReadModel implements ReadModel {
     await removeRecordFile(path, batch);
     this.#state.forgetWrittenFile(namespace, key);
     this.#stats?.noteRemoved(namespace, key);
+    this.#notePageChange(namespace, key);
     await cleanupEmptyParentDirs(path, root);
     this.#paths.clear();
     if (!batch.syncs) return;
@@ -2411,6 +2475,7 @@ export class SqliteReadModel implements ReadModel {
       if (stats !== undefined) stats.contentMs += performance.now() - started;
     }
     stats?.noteWritten(namespace, key, intended?.size ?? 0);
+    this.#notePageChange(namespace, key);
     // It holds the chunks' content now: never hashed again this section.
     this.#guarded.add(path);
     if (intended !== undefined && written.info !== undefined) {

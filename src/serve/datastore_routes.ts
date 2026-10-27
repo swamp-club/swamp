@@ -39,7 +39,13 @@ export type DatastoreRoute =
     readonly namespace: string;
     readonly partition: string;
   }
-  | { readonly kind: "changes"; readonly namespace: string };
+  | { readonly kind: "changes"; readonly namespace: string }
+  | { readonly kind: "locks"; readonly namespace: string }
+  | {
+    readonly kind: "lease";
+    readonly namespace: string;
+    readonly leaseId: string;
+  };
 
 /**
  * The datastore route a path is, or undefined. Segments are decoded once:
@@ -72,6 +78,12 @@ export function matchDatastoreRoute(
   if (rest.length === 1 && rest[0] === "changes") {
     return { kind: "changes", namespace };
   }
+  if (rest.length === 1 && rest[0] === "locks") {
+    return { kind: "locks", namespace };
+  }
+  if (rest.length === 2 && rest[0] === "locks") {
+    return { kind: "lease", namespace, leaseId: rest[1] };
+  }
   return undefined;
 }
 
@@ -86,5 +98,9 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
       return "/api/v1/datastore/{namespace}/partitions/{partition}/commits";
     case "changes":
       return "/api/v1/datastore/{namespace}/changes";
+    case "locks":
+      return "/api/v1/datastore/{namespace}/locks";
+    case "lease":
+      return "/api/v1/datastore/{namespace}/locks/{leaseId}";
   }
 }

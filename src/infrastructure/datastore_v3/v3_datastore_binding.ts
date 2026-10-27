@@ -79,6 +79,7 @@ import {
 } from "../persistence/datastore_lock_target.ts";
 import { swampPath } from "../persistence/paths.ts";
 import { datastoreWriterLeaseStore } from "./datastore_writer_lease_store.ts";
+import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { LITESTREAM_PIN } from "./litestream/litestream_pin.ts";
 import {
   replicaRootOf,
@@ -167,6 +168,9 @@ export function v3BucketBindingAt(
 export function v3ReplicaFor(
   datastorePath: string,
 ): V3ReplicaSetting | undefined {
+  // A copy of serve's log is never replicated: serve's own is
+  // (swamp-club#3985).
+  if (serveUpstreamAt(datastorePath) !== undefined) return undefined;
   return v3BucketBindingAt(datastorePath)?.replica ?? v3ReplicaSetting();
 }
 

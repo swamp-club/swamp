@@ -34,7 +34,11 @@ import type { RepositoryContext } from "../../infrastructure/persistence/reposit
 import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
 import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../../domain/datastore_v3/litestream_replication.ts";
-import { WRITER_FENCED_CODE } from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  V3_STORAGE_UNREACHABLE_CODE,
+  V3_WRITER_BUSY_CODE,
+  WRITER_FENCED_CODE,
+} from "../../domain/datastore_v3/writer_lease.ts";
 import {
   COMMIT_PARTLY_COMMITTED_CODE,
   COMMIT_UNREACHABLE_CODE,
@@ -2553,8 +2557,9 @@ export function withCommittedUnknownSteps(
 
 /**
  * The error reply for a write whose commit or replication failed: the
- * CLI's codes for an unconfirmed sync, a fenced lease and a commit that
- * could not reach the storage, otherwise `fallbackCode`.
+ * CLI's codes for an unconfirmed sync, a fenced lease, a commit that could
+ * not reach the storage, a writer cut off from the storage before it wrote
+ * and a writer lease another process holds, otherwise `fallbackCode`.
  */
 export function replicationErrorForClient(
   error: unknown,
@@ -2567,7 +2572,9 @@ export function replicationErrorForClient(
       error.code === WRITER_FENCED_CODE ||
       error.code === COMMIT_UNREACHABLE_CODE ||
       error.code === COMMIT_PARTLY_COMMITTED_CODE ||
-      error.code === RUN_PARTLY_COMMITTED_CODE)
+      error.code === RUN_PARTLY_COMMITTED_CODE ||
+      error.code === V3_STORAGE_UNREACHABLE_CODE ||
+      error.code === V3_WRITER_BUSY_CODE)
   ) {
     return { code: error.code, message };
   }

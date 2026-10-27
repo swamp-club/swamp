@@ -133,9 +133,14 @@ export async function runRetentionAtCommandEnd(
       return undefined;
     }
 
-    const { datastoreConfig, engine } = await resolveDatastoreForRepo(
-      repoDir,
-    );
+    const { datastoreConfig, engine, serveUpstream } =
+      await resolveDatastoreForRepo(repoDir);
+    // A datastore written through serve is kept by serve: its retention pass
+    // runs there, and this checkout holds only a copy (swamp-club#3985).
+    if (serveUpstream !== undefined) {
+      takeRetentionCandidate();
+      return undefined;
+    }
     const repo = await requireInitializedRepo({
       repoDir,
       outputMode: "log",

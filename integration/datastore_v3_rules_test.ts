@@ -106,6 +106,12 @@
  *    under `ns/` in its control plane, built only by the binding, and its
  *    format marker is confirmed before every lease taken and every copy
  *    made current.
+ * 13. **Follower mode is serve's** (swamp-club#3985). A commit store or read
+ *    model opened with `follower` takes gapped seqs: a copy of serve's log
+ *    with the commits the caller may not read left out. Only
+ *    `v3_datastore.ts` and the `serve_*.ts` files in
+ *    `src/infrastructure/datastore_v3/` may pass it, so a solo checkout's
+ *    own log never loses its gapless rule.
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
@@ -312,6 +318,18 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/content_bindings.ts",
   "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/op.ts",
   "src/serve/forwarded_run_content.ts -> src/domain/datastore_v3/partition_key.ts",
+  // swamp-club#3985: a v3 checkout with a serve address resolves serve as
+  // its datastore upstream (the address, its bound token, CA certificates
+  // and pass-through headers) into a pure value object.
+  "src/cli/serve_upstream.ts -> src/domain/datastore_v3/serve_upstream.ts",
+  // swamp-club#3985: the repo context binds a v3 datastore written through
+  // serve to its follower copy, from the serve address it resolved.
+  "src/cli/repo_context.ts -> src/domain/datastore_v3/serve_upstream.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_binding.ts",
+  // swamp-club#3985: a serve-mode checkout's per-model and workflow-run
+  // locks are serve's own, held through its lock routes, so two machines
+  // never allocate the same data version.
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -362,7 +380,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2137",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2203",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
@@ -430,6 +448,9 @@ const PINNED_FS_STORAGE_IMPORTERS: readonly string[] = [
   // swamp-club#3617: `doctor datastores` stats a filesystem v3 datastore's
   // chunks for torn ones; it never reads, writes or deletes one.
   "src/infrastructure/datastore_v3/v3_content_inspection.ts -> src/infrastructure/persistence/fs_datastore_storage.ts",
+  // swamp-club#3985: a checkout whose upstream is serve caches chunks in a
+  // filesystem storage under its own .swamp/, with serve behind it.
+  "src/infrastructure/datastore_v3/serve_datastore_storage.ts -> src/infrastructure/persistence/fs_datastore_storage.ts",
 ];
 
 Deno.test("datastore v3: no production code imports the filesystem storage", async () => {
@@ -459,7 +480,7 @@ const PINNED_STORAGE_CALLS: readonly string[] = [
   // swamp-club#3534: setup checks a bucket holds no chunk, and the binding
   // gives a bucket v3 datastore its chunk storage.
   "src/infrastructure/datastore_v3/v3_bucket_setup.ts:131",
-  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:347",
+  "src/infrastructure/datastore_v3/v3_datastore_binding.ts:351",
 ];
 
 Deno.test("datastore v3: no production code calls a provider's storage()", async () => {
@@ -1086,4 +1107,55 @@ Deno.test("datastore v3: Litestream runs only with its replica's environment", a
     "Each Litestream run gets litestreamChildEnv(...) with clearEnv: only\n" +
       "what its replica needs (swamp-club#3534).",
   );
+});
+
+/**
+ * A `follower` option passed (swamp-club#3985): an object property, not the
+ * stores' own `#follower` field or constructor parameter.
+ */
+const FOLLOWER_OPTION = /(?<![#\w.])follower\s*:(?!\s*boolean\b)/;
+
+/** Where follower mode may be turned on: serve's team-mode plumbing. */
+function mayOpenFollower(rel: string): boolean {
+  if (rel === "src/infrastructure/datastore_v3/v3_datastore.ts") return true;
+  const dir = "src/infrastructure/datastore_v3/";
+  if (!rel.startsWith(dir)) return false;
+  const name = rel.slice(dir.length);
+  return !name.includes("/") && name.startsWith("serve_");
+}
+
+/** Production files outside {@link mayOpenFollower} passing `follower`. */
+const PINNED_FOLLOWER_OPENERS: readonly string[] = [];
+
+Deno.test("datastore v3: only serve's team-mode plumbing opens a follower commit store or read model", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (mayOpenFollower(rel)) continue;
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    if (lines.some((line) => FOLLOWER_OPTION.test(line))) found.push(rel);
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_FOLLOWER_OPENERS,
+    "Production files passing a follower option outside v3_datastore.ts and serve_*.ts",
+    "Follower mode accepts gapped seqs, which only a copy of serve's log\n" +
+      "may hold (swamp-club#3985). Open the store or read model in follower\n" +
+      "mode from v3_datastore.ts or a src/infrastructure/datastore_v3/serve_*.ts\n" +
+      "file, never elsewhere.",
+  );
+});
+
+Deno.test("datastore v3: the follower rule sees a follower option and nothing else", () => {
+  assert(FOLLOWER_OPTION.test("  follower: true,"));
+  assert(FOLLOWER_OPTION.test("{ follower: isTeam }"));
+  assert(!FOLLOWER_OPTION.test("  readonly #follower: boolean;"));
+  assert(!FOLLOWER_OPTION.test("    follower: boolean,"));
+  assert(!FOLLOWER_OPTION.test("  readonly follower?: boolean;"));
+  assert(!FOLLOWER_OPTION.test("this.#follower = options.follower === true;"));
+  assert(mayOpenFollower("src/infrastructure/datastore_v3/v3_datastore.ts"));
+  assert(mayOpenFollower("src/infrastructure/datastore_v3/serve_feed.ts"));
+  assert(!mayOpenFollower("src/infrastructure/datastore_v3/solo_feed.ts"));
+  assert(!mayOpenFollower("src/serve/serve_feed.ts"));
+  assert(!mayOpenFollower("src/infrastructure/datastore_v3/x/serve_feed.ts"));
 });

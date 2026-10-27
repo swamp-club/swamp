@@ -89,6 +89,110 @@ Deno.test("Partition.append: accepts only the next seq", async () => {
   assertRejected(() => partition.append(modelCommit(3, [op])), "seq-gap");
 });
 
+Deno.test("Partition.appendObserved: accepts any later seq and takes it as the partition's (swamp-club#3985)", async () => {
+  const partition = Partition.empty(modelPartition());
+  assertEquals(
+    partition.appendObserved(modelCommit(3, [await savePut("vpc", 1)])),
+    { kind: "appended", seq: 3 },
+  );
+  assertEquals(partition.seq, 3);
+  assertEquals(
+    partition.appendObserved(modelCommit(4, [await savePut("vpc", 2)])),
+    { kind: "appended", seq: 4 },
+  );
+  assertEquals(
+    partition.appendObserved(modelCommit(9, [await savePut("vpc", 3)])),
+    { kind: "appended", seq: 9 },
+  );
+  assertEquals(partition.seq, 9);
+  assertEquals(partition.recordKeys().length, 3);
+});
+
+Deno.test("Partition.appendObserved: refuses a seq at or below the partition's under a new txnId", async () => {
+  const partition = Partition.empty(modelPartition());
+  const op = await savePut("vpc", 1);
+  partition.appendObserved(modelCommit(5, [op]));
+  const before = snapshot(partition);
+  assertRejected(
+    () => partition.appendObserved(modelCommit(5, [op], { txnId: "other" })),
+    "seq-gap",
+  );
+  assertRejected(
+    () => partition.appendObserved(modelCommit(2, [op], { txnId: "older" })),
+    "seq-gap",
+  );
+  assertEquals(snapshot(partition), before);
+});
+
+Deno.test("Partition.appendObserved: a repeated txnId is still a no-op", async () => {
+  const partition = Partition.empty(modelPartition());
+  const commit = modelCommit(4, [await savePut("vpc", 1), versionOp("vpc", 1)]);
+  partition.appendObserved(commit);
+  const before = snapshot(partition);
+  assertEquals(partition.appendObserved(commit), { kind: "duplicate" });
+  assertEquals(
+    partition.appendObserved(
+      modelCommit(9, [versionOp("vpc", 9)], { txnId: "txn-4" }),
+    ),
+    { kind: "duplicate" },
+  );
+  assertEquals(snapshot(partition), before);
+});
+
+Deno.test("Partition.appendObserved: keeps the partition and fence rules", () => {
+  const partition = Partition.empty(modelPartition());
+  assertRejected(
+    () =>
+      Partition.empty(partitionOf({ kind: "lockfile" })).appendObserved(
+        modelCommit(1, [versionOp("vpc", 1)]),
+      ),
+    "partition-mismatch",
+  );
+  partition.appendObserved(
+    modelCommit(2, [versionOp("vpc", 1)], { fence: 3 }),
+  );
+  assertRejected(
+    () =>
+      partition.appendObserved(modelCommit(5, [versionOp("vpc", 2)], {
+        fence: 2,
+      })),
+    "stale-fence",
+  );
+  assertRejected(
+    () => partition.appendObserved(modelCommit(5, [versionOp("vpc", 2)])),
+    "unfenced",
+  );
+  assertEquals(partition.seq, 2);
+});
+
+Deno.test("Partition.appendObserved: leaves expect and data-version rules to serve, which judged them with the commits a follower cannot see", async () => {
+  const partition = Partition.empty(modelPartition());
+  partition.appendObserved(
+    modelCommit(2, [versionOp("vpc", 1)], { fence: 3 }),
+  );
+  // A hidden commit may have recorded the version again or changed the
+  // record the expect names: serve accepted these, so the copy takes them.
+  partition.appendObserved(
+    modelCommit(5, [versionOp("vpc", 1)], { fence: 3 }),
+  );
+  const mismatched = await savePut("vpc", 1, "x", {
+    sha256: await sha256Of("other"),
+  });
+  partition.appendObserved(modelCommit(7, [mismatched], { fence: 3 }));
+  assertEquals(partition.seq, 7);
+  // The plain append still refuses both.
+  const solo = Partition.empty(modelPartition());
+  solo.append(modelCommit(1, [versionOp("vpc", 1)], { fence: 3 }));
+  assertRejected(
+    () => solo.append(modelCommit(2, [versionOp("vpc", 1)], { fence: 3 })),
+    "version-live",
+  );
+  assertRejected(
+    () => solo.append(modelCommit(2, [mismatched], { fence: 3 })),
+    "expect-failed",
+  );
+});
+
 Deno.test("Partition.append: a repeated txnId is a no-op, even with a stale seq", async () => {
   const partition = Partition.empty(modelPartition());
   const commit = modelCommit(1, [await savePut("vpc", 1), versionOp("vpc", 1)]);

@@ -928,7 +928,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     if (dispatcher === null) {
       throw new UserError(
         `Step requests remote placement but no worker dispatcher is active — ` +
-          `remote execution requires running under 'swamp serve' with enrolled workers`,
+          `remote execution requires running under 'swamp serve' with enrolled workers: ` +
+          `pass --server <url> to run the workflow on serve`,
       );
     }
 

@@ -196,6 +196,12 @@ export type CommitSink = Pick<CommitStore, "append" | "head"> & {
   ) => Promise<number>;
   /** Makes each commit durable until it has landed (swamp-club#3490). */
   readonly outbox?: SinkOutbox;
+  /**
+   * How many times one flush tries a partition's append through seq gaps;
+   * 2 when absent. Serve's sink catches up and retries a stale seq, which
+   * other writers can move more than once (swamp-club#3985).
+   */
+  readonly seqGapAttempts?: number;
 };
 
 /**
@@ -1271,7 +1277,7 @@ async function appendGroup(
           return;
         } catch (error) {
           if (
-            attempt < SEQ_GAP_ATTEMPTS &&
+            attempt < (options.sink.seqGapAttempts ?? SEQ_GAP_ATTEMPTS) &&
             error instanceof CommitRejectedError && error.reason === "seq-gap"
           ) {
             continue;

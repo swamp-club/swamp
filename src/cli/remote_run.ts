@@ -48,6 +48,7 @@ import {
 } from "../domain/auth/server_url.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
+import { serverLoginHint } from "../domain/auth/server_login_hint.ts";
 import { quoteShellWord } from "../domain/shell_word.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import {
@@ -68,13 +69,42 @@ export function resetMarkerServerAddress(): void {
 }
 
 /**
+ * Whether an address from the environment or `.swamp.yaml` sends this
+ * command to serve over its WebSocket API. Off for a command that runs
+ * locally with serve as its v3 datastore's upstream (swamp-club#3985):
+ * only an explicit `--server` then runs it remotely.
+ */
+let _implicitServeRouting = true;
+
+/** Called once from the CLI entry point once the command is known. */
+export function setImplicitServeRouting(on: boolean): void {
+  _implicitServeRouting = on;
+}
+
+/** Test-only: restores implicit routing between test cases. */
+export function resetImplicitServeRouting(): void {
+  _implicitServeRouting = true;
+}
+
+/**
  * Precedence: flag > SWAMP_SERVE_URL > SWAMP_SERVER_URL > .swamp.yaml serverAddress.
+ * Only the flag counts for a command that runs locally with serve as its
+ * datastore upstream ({@link setImplicitServeRouting}).
  */
 export function resolveServeUrl(
   flagValue: string | undefined,
   markerValue?: string,
 ): string | undefined {
-  return flagValue ?? Deno.env.get("SWAMP_SERVE_URL") ??
+  if (flagValue !== undefined) return flagValue;
+  return _implicitServeRouting ? implicitServeUrl(markerValue) : undefined;
+}
+
+/**
+ * The serve address the environment or `.swamp.yaml` configures, whether or
+ * not it routes this command: SWAMP_SERVE_URL > SWAMP_SERVER_URL > marker.
+ */
+export function implicitServeUrl(markerValue?: string): string | undefined {
+  return Deno.env.get("SWAMP_SERVE_URL") ??
     Deno.env.get("SWAMP_SERVER_URL") ?? markerValue ??
     _cachedMarkerServerAddress;
 }
@@ -888,7 +918,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
   return command
     .option(
       "--server <url:string>",
-      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL or SWAMP_SERVER_URL). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.",
+      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL or SWAMP_SERVER_URL; in a checkout whose datastore is format 3, only this flag runs it on serve, and the env makes serve its datastore's upstream). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.",
     )
     .option(
       "--token <token:string>",
@@ -999,7 +1029,7 @@ function describeHandshakeStatus(
 }
 
 function authFailedMessage(wsUrl: string): string {
-  return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+  return serverLoginHint(wsUrl);
 }
 
 /**

@@ -32,6 +32,9 @@
  * | `POST partitions/{p}/commits` | one commit and its missing chunks, framed: `{seq}` or a conflict |
  * | `GET partitions/{p}/commits?after=` | a partition's commits after a seq |
  * | `GET changes?cursor=` | every commit since a cursor the caller may read |
+ * | `POST locks` | take serve's model or workflow-run lock for the caller: a lease |
+ * | `PUT locks/{leaseId}` | renew a lease |
+ * | `DELETE locks/{leaseId}` | release a lease |
  *
  * Every commit is authorised op by op on its intents
  * ({@link authorizeCommit}), its chunks are hashed as they arrive, the
@@ -42,6 +45,7 @@
  */
 
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
+import { unresolvedAccessResource } from "../domain/access/access_resources.ts";
 import type { Action } from "../domain/access/action.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
@@ -63,11 +67,15 @@ import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
 import { CommitsCompactedError } from "../domain/datastore_v3/commit_store.ts";
 import { type Op, opFromJSON } from "../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../domain/datastore_v3/partition.ts";
-import { PartitionKey } from "../domain/datastore_v3/partition_key.ts";
+import {
+  PartitionKey,
+  partitionOf,
+} from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
 import { findDefinitionByIdGlobal } from "../domain/models/model_lookup.ts";
-import type { ModelType } from "../domain/models/model_type.ts";
+import { ModelType } from "../domain/models/model_type.ts";
+import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import { findWorkflowById } from "../domain/workflows/workflow_lookup.ts";
 import {
   ChunkIngestError,
@@ -111,6 +119,13 @@ import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
 import type { DatastoreRoute } from "./datastore_routes.ts";
 import { ForwardedContentAuthority } from "./forwarded_content_authorization.ts";
+import {
+  type DatastoreLockLeases,
+  DEFAULT_LOCK_TTL_MS,
+  type LeaseView,
+  type LockTarget,
+  parseLockKey,
+} from "./datastore_locks.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
 
@@ -144,6 +159,8 @@ export interface DatastoreApiDeps {
     sourceIp: string,
   ) => Promise<ServerTokenAuthResult>;
   readonly ledger: UploadLedger;
+  /** The model and workflow-run locks serve holds for callers. */
+  readonly locks: DatastoreLockLeases;
   readonly now?: () => number;
 }
 
@@ -220,6 +237,18 @@ export async function handleDatastoreRequest(
         return req.method === "GET"
           ? await api.changes(req)
           : methodNotAllowed("GET");
+      case "locks":
+        return req.method === "POST"
+          ? await api.acquireLock(req)
+          : methodNotAllowed("POST");
+      case "lease":
+        if (req.method === "PUT") {
+          return await api.renewLock(req, route.leaseId);
+        }
+        if (req.method === "DELETE") {
+          return await api.releaseLock(route.leaseId);
+        }
+        return methodNotAllowed("DELETE, PUT");
     }
   } catch (error) {
     return datastoreErrorResponse(error);
@@ -725,6 +754,178 @@ class DatastoreApi {
     // The next cursor moves past filtered rows too, so a caller who may
     // read nothing still makes progress.
     return Response.json({ changes: kept, cursor: next, more });
+  }
+
+  /**
+   * `POST locks`: `{lockKey, ttlMs?, waitMs?}`. Takes serve's own lock for
+   * a behavior (`data/{type}/{id}/.lock`) or a workflow run's claim
+   * (`workflow-run-claims/{runId}/.lock`) for the caller, waiting up to
+   * `waitMs` at serve while it is held. The key is parsed and made
+   * canonical before it is authorised: `run` on the behavior or on the
+   * run's workflow, as a write to its partition needs (swamp-club#3985).
+   */
+  async acquireLock(req: Request): Promise<Response> {
+    const body = await readJson(req, 16 * 1024);
+    const fields = typeof body === "object" && body !== null &&
+        !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : undefined;
+    const target = parseLockKey(fields?.lockKey);
+    if (fields === undefined || target === undefined) {
+      return failure(
+        400,
+        "invalid_request",
+        'Body must be {"lockKey": "data/{type}/{id}/.lock" or "workflow-run-claims/{runId}/.lock", "ttlMs"?, "waitMs"?}',
+      );
+    }
+    const ttlMs = this.#ttlOf(fields.ttlMs);
+    if (ttlMs instanceof Response) return ttlMs;
+    const waitMs = fields.waitMs ?? 0;
+    if (
+      typeof waitMs !== "number" || !Number.isSafeInteger(waitMs) || waitMs < 0
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        "waitMs must be a non-negative integer",
+      );
+    }
+    const refused = await this.#authorizeLock(target);
+    if (refused !== undefined) return refused;
+    const outcome = await this.#deps.locks.acquire({
+      principal: this.#caller.principal,
+      target,
+      ttlMs,
+      waitMs,
+      signal: req.signal,
+    });
+    switch (outcome.kind) {
+      case "acquired":
+        return Response.json(outcome.lease, { status: 201 });
+      case "too-many":
+        return failure(
+          429,
+          "too_many_leases",
+          "This caller holds too many locks: release some before taking another",
+        );
+      case "held":
+        // Who holds it is said only as far as the caller may know: itself,
+        // another caller, or serve's own work. Never another's identity.
+        return Response.json({
+          code: "lock_held",
+          heldBy: outcome.heldBy,
+          message: outcome.heldBy === "caller"
+            ? `${fields.lockKey} is held by another of this caller's commands`
+            : outcome.heldBy === "other"
+            ? `${fields.lockKey} is held by another caller`
+            : `${fields.lockKey} is held by serve's own work`,
+        }, { status: 409, headers: { "Retry-After": "1" } });
+    }
+  }
+
+  /**
+   * `PUT locks/{leaseId}`: `{ttlMs?}`. Extends the caller's lease, after
+   * authorising its lock again: a caller whose grant was revoked loses the
+   * lease at its next renewal.
+   */
+  async renewLock(req: Request, leaseId: string): Promise<Response> {
+    const body = await readJson(req, 16 * 1024);
+    const fields = typeof body === "object" && body !== null &&
+        !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : {};
+    const ttlMs = this.#ttlOf(fields.ttlMs);
+    if (ttlMs instanceof Response) return ttlMs;
+    const principal = this.#caller.principal;
+    const held = this.#deps.locks.lease(principal, leaseId);
+    if (held === undefined) return leaseNotFound();
+    const refused = await this.#authorizeLock(held.target);
+    if (refused !== undefined) {
+      await this.#deps.locks.release(principal, leaseId);
+      return refused;
+    }
+    const renewed: LeaseView | undefined = this.#deps.locks.renew(
+      principal,
+      leaseId,
+      ttlMs,
+    );
+    return renewed === undefined ? leaseNotFound() : Response.json(renewed);
+  }
+
+  /** `DELETE locks/{leaseId}`: releases the caller's lease. */
+  async releaseLock(leaseId: string): Promise<Response> {
+    return await this.#deps.locks.release(this.#caller.principal, leaseId)
+      ? Response.json({ released: true })
+      : leaseNotFound();
+  }
+
+  /** A TTL within the leases' bounds, or the 400 refusing it. */
+  #ttlOf(value: unknown): number | Response {
+    const { min, max } = this.#deps.locks.ttlBounds;
+    const ttlMs = value ?? Math.min(Math.max(DEFAULT_LOCK_TTL_MS, min), max);
+    if (
+      typeof ttlMs !== "number" || !Number.isSafeInteger(ttlMs) ||
+      ttlMs < min || ttlMs > max
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        `ttlMs must be an integer between ${min} and ${max}`,
+      );
+    }
+    return ttlMs;
+  }
+
+  /**
+   * Undefined when the caller may hold `target`'s lock, else the 403. A
+   * lock is held to write the aggregate, so it needs what a write to the
+   * aggregate's partition needs at least (`partitionWriteAccessOf`): `run`
+   * on the behavior, admin for a control-plane or restricted type, and for
+   * a run `run` on its workflow. A behavior or run serve does not know is
+   * decided on its id, so only a wildcard grant matches it.
+   */
+  async #authorizeLock(target: LockTarget): Promise<Response | undefined> {
+    await this.#catchUp();
+    let required: RequiredAccess;
+    if (target.kind === "model") {
+      required = await partitionWriteAccessOf(
+        partitionOf({
+          kind: "model",
+          type: ModelType.create(target.modelType),
+          id: target.modelId,
+        }),
+        this.#resolver,
+      );
+    } else {
+      // A run's claim is taken only for a run whose record serve already
+      // holds (a resume or take-over: the client's run.create commit lands
+      // first). A run serve does not know is decided on its id, so only a
+      // wildcard grant holds it; claiming before the record lands would
+      // need the record's workflow here instead (swamp-club#3985).
+      const found = await this.#deps.ctx.repoContext.workflowRunRepo
+        .findGlobalById(createWorkflowRunId(target.runId));
+      required = found === null
+        ? {
+          action: "run",
+          resource: unresolvedAccessResource("workflow", target.runId),
+        }
+        : await partitionWriteAccessOf(
+          partitionOf({
+            kind: "run",
+            workflowId: found.workflowId,
+            runId: target.runId,
+          }),
+          this.#resolver,
+        );
+    }
+    if (this.#writeAuthority().allows(required.action, required.resource)) {
+      return undefined;
+    }
+    return failure(
+      403,
+      "forbidden",
+      `Holding this lock needs ${required.action} on ${required.resource.kind}:${required.resource.name}`,
+    );
   }
 
   /**
@@ -1355,6 +1556,14 @@ function bearerToken(req: Request): string | null {
 
 function failure(status: number, code: string, message: string): Response {
   return Response.json({ code, message }, { status });
+}
+
+function leaseNotFound(): Response {
+  return failure(
+    404,
+    "lease_not_found",
+    "No such lease: it was released, or expired without a renewal",
+  );
 }
 
 function uploadQuotaExceeded(): Response {

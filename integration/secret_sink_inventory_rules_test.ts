@@ -319,6 +319,10 @@ const AUTHORED_SOURCE = "Persists authored source, where secrets appear only " +
 /** Scanned sites that are not sinks, with the reason. */
 const NOT_A_SINK: Record<string, Record<string, string>> = {
   "sqlite": {
+    // swamp-club#3985: a serve-mode checkout's feed cursor and serve's
+    // partition heads, which are integers and partition keys only.
+    "src/infrastructure/datastore_v3/serve_upstream_state.ts: openStateDatabase":
+      "Holds only serve's feed cursor and partition heads: integers and partition keys, never a value derived from an expression.",
     "src/infrastructure/datastore_v3/litestream/litestream_restorer.ts: checkDatabase":
       READ_ONLY_DB,
     "src/infrastructure/datastore_v3/litestream/v3_copy.ts: commitsIn":

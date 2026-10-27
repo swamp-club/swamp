@@ -65,6 +65,7 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
+import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { ReadModelBusyError } from "../../domain/datastore_v3/read_model.ts";
 import {
   flushAuthGateWarning,
@@ -686,6 +687,18 @@ Deno.test("exitCodeForError: returns 75 for v3 writer lease contention, 1 for a 
   assertEquals(exitCodeForError(busy), 75);
   assertEquals(buildErrorJson(busy).code, "datastore_v3_writer_busy");
   assertEquals(exitCodeForError(new WriterFencedError(1, 2)), 1);
+});
+
+Deno.test("exitCodeForError: returns 75 when the serve a v3 datastore is written through is unreachable (swamp-club#3985)", () => {
+  for (const sent of ["never", "maybe"] as const) {
+    const err = new ServeUnreachableError(
+      "https://serve.example.com",
+      sent,
+      new TypeError("fetch failed"),
+    );
+    assertEquals(exitCodeForError(err), 75);
+    assertEquals(buildErrorJson(err).code, "datastore_v3_serve_unreachable");
+  }
 });
 
 Deno.test("buildErrorJson: reports an extension LOCK_TIMEOUT code as lock_timeout", () => {

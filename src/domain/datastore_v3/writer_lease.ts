@@ -83,6 +83,13 @@ export const V3_WRITER_BUSY_CODE = "datastore_v3_writer_busy";
 export const V3_STORAGE_UNREACHABLE_CODE = "datastore_v3_storage_unreachable";
 
 /**
+ * Error code for a v3 datastore written through serve's datastore API
+ * whose serve could not be reached (swamp-club#3985). Writes are refused,
+ * never sent to the storage instead: a temporary failure, so it exits 75.
+ */
+export const V3_SERVE_UNREACHABLE_CODE = "datastore_v3_serve_unreachable";
+
+/**
  * A command could not reach a v3 datastore's storage while it took the
  * datastore's writer lease and readied its checkout, before it changed
  * anything (swamp-club#3802): a temporary failure, so it exits 75 and can be

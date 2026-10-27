@@ -428,6 +428,7 @@ Deno.test({
           ctx: server.ctx,
           v3: undefined,
           ledger: new UploadLedger(),
+          locks: server.locks,
           authenticate: () =>
             Promise.resolve({
               ok: true,

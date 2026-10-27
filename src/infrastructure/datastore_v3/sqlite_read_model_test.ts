@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
@@ -39,10 +44,14 @@ import {
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
+import { ReadModelApplyError } from "../../domain/datastore_v3/read_model.ts";
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
-import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import {
+  SqliteCommitStore,
+  type SqliteCommitStoreOptions,
+} from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
   SqliteReadModel,
@@ -65,10 +74,13 @@ interface Env {
   catalogRows(): unknown[][];
 }
 
-async function withEnv(fn: (env: Env) => Promise<void>): Promise<void> {
+async function withEnv(
+  fn: (env: Env) => Promise<void>,
+  storeOptions: SqliteCommitStoreOptions = {},
+): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-read-model-unit-" });
   const repoDir = join(dir, "repo");
-  const store = SqliteCommitStore.open(join(dir, "commits.db"));
+  const store = SqliteCommitStore.open(join(dir, "commits.db"), storeOptions);
   const chunkStore = new ChunkStore(new MemoryStorage());
   const stateDir = readModelStateDir(repoDir);
   const env: Env = {
@@ -1284,3 +1296,118 @@ for (const tombstone of [false, true]) {
     });
   });
 }
+
+// Follower mode (swamp-club#3985): serve leaves out commits the caller may
+// not read, so the follower store's seqs have holes.
+
+/** The fixture model's seqs a follower saw, with holes. */
+const FOLLOWER_SEQS = [2, 5, 9];
+
+/** Appends a gapped commit per seq, each saving its own version of `a`. */
+async function appendGapped(env: Env): Promise<string[]> {
+  for (const seq of FOLLOWER_SEQS) {
+    await env.append(seq, "", [await savePut("a", seq), versionOp("a", seq)]);
+  }
+  return FOLLOWER_SEQS.map((seq) => dataKey("a", seq).toString());
+}
+
+Deno.test("SqliteReadModel follower: catchUp applies gapped commits (swamp-club#3985)", async () => {
+  await withEnv(async (env) => {
+    const keys = await appendGapped(env);
+    const readModel = env.open({ follower: true });
+    try {
+      await readModel.catchUp(signal());
+      const live = await liveKeys(readModel, "");
+      for (const key of keys) assert(live.includes(key), key);
+      for (const seq of FOLLOWER_SEQS) {
+        assertEquals(
+          await readOrAbsent(env.contentPath("", "a", seq)),
+          `a@${seq}`,
+        );
+      }
+      // A later gapped commit applies too.
+      await env.append(14, "", [await savePut("a", 14), versionOp("a", 14)]);
+      await readModel.catchUp(signal());
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 14)), "a@14");
+    } finally {
+      await readModel.close();
+    }
+  }, { follower: true });
+});
+
+Deno.test("SqliteReadModel follower: catchUpPartition reads past the gaps", async () => {
+  await withEnv(async (env) => {
+    const keys = await appendGapped(env);
+    const readModel = env.open({ follower: true });
+    try {
+      const result = await readModel.catchUpPartition(
+        "",
+        modelPartition(),
+        signal(),
+      );
+      assertEquals(result.applied, FOLLOWER_SEQS.length);
+      await env.append(11, "", [await savePut("a", 11), versionOp("a", 11)]);
+      assertEquals(
+        (await readModel.catchUpPartition("", modelPartition(), signal()))
+          .applied,
+        1,
+      );
+      await readModel.catchUp(signal());
+      const live = await liveKeys(readModel, "");
+      for (const key of [...keys, dataKey("a", 11).toString()]) {
+        assert(live.includes(key), key);
+      }
+    } finally {
+      await readModel.close();
+    }
+  }, { follower: true });
+});
+
+Deno.test("SqliteReadModel: a solo read model still refuses a gap", async () => {
+  await withEnv(async (env) => {
+    await appendGapped(env);
+    const readModel = env.open();
+    try {
+      const error = await assertRejects(
+        () => readModel.catchUp(signal()),
+        ReadModelApplyError,
+      );
+      assertStringIncludes(error.message, "next commit must be seq 1");
+    } finally {
+      await readModel.close();
+    }
+  }, { follower: true });
+});
+
+Deno.test("SqliteReadModel: recordsChanged is told the keys each applied page wrote or removed, and its failure never fails the catch-up (swamp-club#3985)", async () => {
+  await withEnv(async (env) => {
+    const told: [string, string[]][] = [];
+    let fail = false;
+    const readModel = env.open({
+      recordsChanged: (namespace, keys) => {
+        told.push([namespace, [...keys]]);
+        return fail
+          ? Promise.reject(new Error("index unwritable"))
+          : Promise.resolve();
+      },
+    });
+    try {
+      const key = dataKey("a", 1).toString();
+      await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+      await readModel.catchUp(signal());
+      assertEquals(told, [["", [key]]]);
+
+      // Nothing new: nothing told.
+      await readModel.catchUp(signal());
+      assertEquals(told.length, 1);
+
+      fail = true;
+      await env.append(2, "", [deleteVersion("a", 1)]);
+      await readModel.catchUp(signal());
+      assertEquals(told.at(-1), ["", [key]]);
+      assertEquals(await readOrAbsent(env.contentPath("", "a", 1)), undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});

@@ -103,7 +103,15 @@ import {
 } from "./context.ts";
 import { registerCompletionTypes } from "./completion_types.ts";
 import { isTransientError } from "../infrastructure/persistence/io_errors.ts";
-import { setMarkerServerAddress } from "./remote_run.ts";
+import {
+  setImplicitServeRouting,
+  setMarkerServerAddress,
+} from "./remote_run.ts";
+import {
+  serveUpstreamCommandPath,
+  serveUpstreamRunsLocally,
+  setServeUpstreamCommandPath,
+} from "./serve_upstream.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
@@ -284,7 +292,10 @@ import { modelsDirEnvConflict } from "../infrastructure/persistence/resolve_mode
 import {
   enableV3RecoveryProgress,
   ensureManagedConfigBase,
+  markerSaysV3,
   resolveManagedConfigPaths,
+  serveUpstreamConfigOptions,
+  serveUpstreamOf,
   setLockProgressOutputMode,
   setLockProgressQuiet,
 } from "./repo_context.ts";
@@ -742,11 +753,17 @@ export async function configureStartupExtensions(
         await ensureResolvedForLoaders();
         if (!isManagedConfigBaseResolved(repoDir)) return undefined;
       }
+      // A datastore written through serve never reaches its extension, on
+      // this path as on the command's (swamp-club#3985).
+      const serveOptions = serveUpstreamConfigOptions(
+        repoDir,
+        await serveUpstreamOf(marker),
+      );
       resolverPromise ??= resolveDatastoreConfig(
         marker,
         undefined,
         repoDir,
-        extensionBacked ? { autoResolve: false } : undefined,
+        serveOptions ?? (extensionBacked ? { autoResolve: false } : undefined),
       )
         .then((config) =>
           new DefaultDatastorePathResolver(
@@ -1001,12 +1018,34 @@ export async function configureStartupExtensions(
  * itself never counts, and a `serverAddress` in `.swamp.yaml` is not
  * considered here (such checkouts still resolve at startup).
  */
+/**
+ * Whether this invocation runs locally with serve as its v3 datastore's
+ * upstream (swamp-club#3985): a data-plane command in a format-3 checkout.
+ * `--detach` asks serve to keep a run going, which only a run on serve can
+ * do, so an address from the environment or `.swamp.yaml` still sends it
+ * there.
+ */
+export function runsLocallyWithServeUpstream(
+  marker: RepoMarkerData | null,
+  commandInfo: { optionKeys: string[] },
+): boolean {
+  if (commandInfo.optionKeys.includes("--detach")) return false;
+  return markerSaysV3(marker) &&
+    serveUpstreamRunsLocally(serveUpstreamCommandPath());
+}
+
 export function isThinClientCommand(
   commandInfo: { command: string; optionKeys: string[] },
   readEnv: (name: string) => string | undefined = (name) => Deno.env.get(name),
+  /**
+   * The command runs locally with serve as its v3 datastore's upstream
+   * (swamp-club#3985): only an explicit `--server` makes it a thin client.
+   */
+  servesUpstreamLocally = false,
 ): boolean {
   if (commandInfo.command === "serve") return false;
   if (commandInfo.optionKeys.includes("--server")) return true;
+  if (servesUpstreamLocally) return false;
   return Boolean(readEnv("SWAMP_SERVE_URL") || readEnv("SWAMP_SERVER_URL"));
 }
 
@@ -2367,6 +2406,13 @@ export async function runCli(args: string[]): Promise<void> {
   // and it is also how `--no-color` is found: a real parse that tracks the flag
   // wherever it appears and skips option values, rather than a bare scan.
   const commandInfo = extractCommandInfo(args);
+  // Which commands take serve as their v3 datastore upstream is decided by
+  // these words (swamp-club#3985).
+  setServeUpstreamCommandPath(
+    [commandInfo.command, commandInfo.subcommand].filter((
+      word,
+    ): word is string => typeof word === "string" && word !== ""),
+  );
 
   // swamp.cli is the root span of the whole invocation — bootstrap, the
   // command, and teardown all nest under it, so one invocation is one trace
@@ -2599,6 +2645,10 @@ async function runInvocation(
     }
   }
   setMarkerServerAddress(marker?.serverAddress);
+  // A v3 checkout written through serve runs its data-plane commands here,
+  // with serve as the datastore's upstream: only an explicit --server sends
+  // them to serve (swamp-club#3985).
+  setImplicitServeRouting(!runsLocallyWithServeUpstream(marker, commandInfo));
 
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
@@ -2643,7 +2693,11 @@ async function runInvocation(
             deferredWarnings,
             quiet: isQuietFromArgs(args),
             extensionsDir,
-            thinClient: isThinClientCommand(commandInfo),
+            thinClient: isThinClientCommand(
+              commandInfo,
+              undefined,
+              runsLocallyWithServeUpstream(marker, commandInfo),
+            ),
             deferCatalog: defersExtensionCatalog(commandInfo),
             suppressWarning: (warning) =>
               shouldSuppressMissingExtensionsWarning(commandInfo, warning),

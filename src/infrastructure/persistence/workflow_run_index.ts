@@ -28,6 +28,10 @@ export const RUNS_INDEX_FILENAME = ".runs-index.json";
 // old on-disk indices are rebuilt instead of serving stale data.
 export const INDEX_SCHEMA_VERSION = 4;
 
+/** A run record's file name: `workflow-run-<runId>.yaml`. */
+const RUN_FILE_PREFIX = "workflow-run-";
+const RUN_FILE_SUFFIX = ".yaml";
+
 export interface WorkflowRunIndexEntry {
   status: string;
   workflowId: string;
@@ -121,6 +125,63 @@ export async function removeStaleRunIndexes(repoDir: string): Promise<void> {
   }
 }
 
+/**
+ * Drops the index entries of the run records `keys` name, in the checkout at
+ * `repoDir` (swamp-club#3985). `keys` are record keys a v3 catch-up rewrote
+ * or removed: another writer's commits, which reach the record files but not
+ * the index beside them. The index is trusted while it lists as many runs as
+ * there are records, so a run another writer changed would keep the status
+ * it was indexed with. Without its entry the count disagrees, and the next
+ * read repairs the index, reading only the records it does not list or that
+ * changed since their entry was written (swamp-club#3443).
+ *
+ * Each index is rewritten in the queue of its own updates, so a save in this
+ * process cannot write the dropped entries back. An index that is absent, or
+ * of another schema version, is left: its next read rebuilds it anyway.
+ */
+export async function dropRunIndexEntries(
+  repoDir: string,
+  keys: readonly string[],
+): Promise<void> {
+  const runsByWorkflow = new Map<string, Set<string>>();
+  for (const key of keys) {
+    const segments = key.split("/");
+    if (segments.length !== 3 || segments[0] !== SWAMP_SUBDIRS.workflowRuns) {
+      continue;
+    }
+    const [, workflowId, name] = segments;
+    if (
+      workflowId === "" || workflowId === "." || workflowId === ".." ||
+      !name.startsWith(RUN_FILE_PREFIX) || !name.endsWith(RUN_FILE_SUFFIX)
+    ) continue;
+    const runId = name.slice(
+      RUN_FILE_PREFIX.length,
+      name.length - RUN_FILE_SUFFIX.length,
+    );
+    let runIds = runsByWorkflow.get(workflowId);
+    if (runIds === undefined) {
+      runsByWorkflow.set(workflowId, runIds = new Set());
+    }
+    runIds.add(runId);
+  }
+  const root = swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
+  for (const [workflowId, runIds] of runsByWorkflow) {
+    const indexDir = join(root, workflowId);
+    await withIndexQueue(indexDir, async () => {
+      const result = await readRunIndex(indexDir);
+      if (!result || result.version !== INDEX_SCHEMA_VERSION) return;
+      let dropped = false;
+      for (const runId of runIds) {
+        if (Object.hasOwn(result.entries, runId)) {
+          delete result.entries[runId];
+          dropped = true;
+        }
+      }
+      if (dropped) await writeRunIndex(indexDir, result.entries);
+    });
+  }
+}
+
 export async function readRunIndex(
   workflowRunsDir: string,
 ): Promise<ReadIndexResult | null> {
@@ -175,8 +236,8 @@ export async function deleteRunIndex(
 
 /** Whether a directory entry is a workflow run record. */
 export function isYamlRunFile(entry: Deno.DirEntry): boolean {
-  return entry.isFile && entry.name.startsWith("workflow-run-") &&
-    entry.name.endsWith(".yaml");
+  return entry.isFile && entry.name.startsWith(RUN_FILE_PREFIX) &&
+    entry.name.endsWith(RUN_FILE_SUFFIX);
 }
 
 export function countYamlRunFiles(entries: Deno.DirEntry[]): number {

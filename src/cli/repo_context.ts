@@ -25,6 +25,16 @@
  * - Throwing clear errors when not initialized
  */
 
+import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
+import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
+import {
+  bindV3ServeUpstream,
+  serveUpstreamLocalRoot,
+} from "../infrastructure/datastore_v3/serve_upstream_binding.ts";
+import {
+  resolveServeUpstream,
+  serveUpstreamCommandPath,
+} from "./serve_upstream.ts";
 import { noteRetentionCandidate } from "./retention_candidate.ts";
 import type { RetentionWatermarkRepository } from "../domain/retention/retention_watermark.ts";
 import { ControlPlaneRetentionWatermarkRepository } from "../infrastructure/persistence/control_plane_retention_watermark_repository.ts";
@@ -72,7 +82,10 @@ import {
 } from "../libswamp/datastores/lock.ts";
 import type { WorkflowRunClaims } from "../domain/workflows/run_claim.ts";
 import { isUuid } from "../domain/models/model_lookup.ts";
-import { resolveDatastoreConfig } from "./resolve_datastore.ts";
+import {
+  resolveDatastoreConfig,
+  type ResolveDatastoreOptions,
+} from "./resolve_datastore.ts";
 import { RENAMED_DATASTORE_TYPES } from "../domain/datastore/renamed_datastore_types.ts";
 import {
   extensionCandidateNames,
@@ -145,6 +158,7 @@ import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
   isCustomDatastoreConfig,
+  readDatastoreFormatKey,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
@@ -252,7 +266,9 @@ import {
 import { lockingConfigOf } from "../infrastructure/persistence/datastore_lock_target.ts";
 import { setV3RecoveryProgress } from "../infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
+import { createServeLock } from "../infrastructure/datastore_v3/serve_lock.ts";
 import {
+  catchUpV3HandlesAt,
   holdV3Writer,
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
@@ -809,6 +825,87 @@ export interface DatastoreResolutionResult {
   marker: RepoMarkerData | null;
   /** The engine the datastore's format marker chose (swamp-club#3279). */
   engine: DatastoreEngine;
+  /**
+   * Serve, when this checkout's v3 datastore is written through it
+   * (swamp-club#3985): the config says format 3, the command takes serve
+   * mode, and a serve address is configured. Its storage is then never read.
+   */
+  serveUpstream?: ServeUpstreamTarget;
+}
+
+/**
+ * Whether `.swamp.yaml` names a format-3 datastore, with no
+ * `SWAMP_DATASTORE` override: the only checkouts serve mode applies to
+ * (swamp-club#3985). An override names the datastore to open directly.
+ */
+export function markerSaysV3(marker: RepoMarkerData | null): boolean {
+  const ds = marker?.datastore;
+  if (ds === undefined || Deno.env.get("SWAMP_DATASTORE")) return false;
+  try {
+    return readDatastoreFormatKey(ds.type, ds.format) === 3;
+  } catch {
+    // The config's own resolution reports a bad format key.
+    return false;
+  }
+}
+
+/**
+ * Serve, when this command in the checkout `marker` describes writes its
+ * v3 datastore through it (swamp-club#3985); undefined otherwise.
+ */
+export async function serveUpstreamOf(
+  marker: RepoMarkerData | null,
+): Promise<ServeUpstreamTarget | undefined> {
+  if (!markerSaysV3(marker)) return undefined;
+  return await resolveServeUpstream({
+    engine: "v3",
+    commandPath: serveUpstreamCommandPath(),
+    ...(marker?.serverAddress !== undefined
+      ? { markerServerAddress: marker.serverAddress }
+      : {}),
+  });
+}
+
+/**
+ * How `resolveDatastoreConfig` resolves a datastore written through
+ * `upstream`: its extension type never resolved, installed or built, its
+ * paths the checkout's local root. Undefined without serve. Every resolver
+ * of a serve-mode checkout's config passes it, the extension loaders'
+ * included, so none of them reaches the datastore's extension.
+ */
+export function serveUpstreamConfigOptions(
+  repoDir: string,
+  upstream: ServeUpstreamTarget | undefined,
+): ResolveDatastoreOptions | undefined {
+  if (upstream === undefined) return undefined;
+  return {
+    autoResolve: false,
+    serveUpstreamRoot: (namespace) =>
+      serveUpstreamLocalRoot(repoDir, upstream.serverUrl, namespace ?? ""),
+  };
+}
+
+/**
+ * The v3 location the resolved datastore opens at: serve's follower copy
+ * when its upstream is serve (swamp-club#3985), else the datastore's own.
+ */
+export async function v3LocationOf(
+  resolution: Pick<
+    DatastoreResolutionResult,
+    "repoDir" | "datastoreConfig" | "serveUpstream"
+  >,
+): Promise<V3DatastoreConfig> {
+  return resolution.serveUpstream !== undefined
+    ? await bindV3ServeUpstream(
+      resolution.repoDir,
+      resolution.datastoreConfig,
+      resolution.serveUpstream,
+      VERSION,
+    )
+    : await v3DatastoreConfigOf(
+      resolution.repoDir,
+      resolution.datastoreConfig,
+    );
 }
 
 function redactHomePath(path: string): string {
@@ -861,11 +958,43 @@ export async function resolveDatastoreForRepo(
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
 
+  // A v3 datastore written through serve (swamp-club#3985): setup writes
+  // `format: 3` for every v3 datastore and clones carry it, so a v2
+  // datastore with a serve address for --server runs never comes here.
+  // Decided from `.swamp.yaml` before the config resolves, so an extension
+  // datastore's type is never installed nor its provider built.
+  const serveUpstream = await serveUpstreamOf(marker);
+
   const datastoreConfig = await withSpan(
     "swamp.repo.datastore.config",
     {},
-    () => resolveDatastoreConfig(marker, undefined, repoPath.value),
+    () =>
+      resolveDatastoreConfig(
+        marker,
+        undefined,
+        repoPath.value,
+        serveUpstreamConfigOptions(repoPath.value, serveUpstream),
+      ),
   );
+  if (serveUpstream !== undefined) {
+    // Says where the command runs and why, for a user who expected the
+    // serve address to send it to serve (swamp-club#3985).
+    getSwampLogger(["cli", "datastore"])
+      .debug`Running locally with serve at ${serveUpstream.serverUrl} as the datastore's upstream: this checkout's datastore is format 3, so its data is read and written through serve. Pass --server to run the command on serve instead.`;
+    recordServeUpstreamFormat(datastoreConfig);
+    await withSpan(
+      "swamp.datastore.v3.join_check",
+      {},
+      () => assertV3CheckoutJoinable(repoPath.value, datastoreConfig.namespace),
+    );
+    return {
+      repoDir: repoPath.value,
+      datastoreConfig,
+      marker,
+      engine: "v3",
+      serveUpstream,
+    };
+  }
 
   // Before any caller locks, pulls, pushes or writes: refuse a datastore
   // marked with a format this binary cannot read (swamp-club#3189).
@@ -975,18 +1104,19 @@ export async function requireInitializedRepoReadOnly(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const { repoDir, datastoreConfig, marker, engine } = await withSpan(
+  const resolution = await withSpan(
     "swamp.repo.datastore.resolve",
     {},
     () => resolveDatastoreForRepo(options.repoDir),
   );
+  const { repoDir, datastoreConfig, marker, engine } = resolution;
   // A v3 datastore's location: the filesystem datastore, or a bucket
   // datastore's local root (swamp-club#3534).
   const v3 = engine === "v3"
     ? await withSpan(
       "swamp.datastore.v3.bind",
       {},
-      () => v3DatastoreConfigOf(repoDir, datastoreConfig),
+      () => v3LocationOf(resolution),
     )
     : undefined;
 
@@ -1303,19 +1433,15 @@ export function requireInitializedRepo(
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
   return withSpan("swamp.repo.init", {}, async () => {
-    const { repoDir, datastoreConfig, marker, engine } =
-      await resolveDatastoreForRepo(
-        options.repoDir,
-      );
+    const resolution = await resolveDatastoreForRepo(options.repoDir);
+    const { repoDir, datastoreConfig, marker, engine } = resolution;
     // Teardown may run a retention pass on a repository opened to write
     // (swamp-club#3473).
     noteRetentionCandidate(repoDir);
     // A v3 datastore takes one writing process at a time; join this
     // process's hold before any other lock (swamp-club#3279). A bucket
     // datastore's is at its local root (swamp-club#3534).
-    const v3 = engine === "v3"
-      ? await v3DatastoreConfigOf(repoDir, datastoreConfig)
-      : undefined;
+    const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
     if (v3 !== undefined) {
       await holdV3Writer(v3, repoDir);
     }
@@ -1624,19 +1750,15 @@ export async function requireInitializedRepoUnlocked(
     syncService?: DatastoreSyncService;
   }
 > {
-  const { repoDir, datastoreConfig, marker, engine } =
-    await resolveDatastoreForRepo(
-      options.repoDir,
-    );
+  const resolution = await resolveDatastoreForRepo(options.repoDir);
+  const { repoDir, datastoreConfig, marker, engine } = resolution;
   // Teardown may run a retention pass on a repository opened to write
   // (swamp-club#3473).
   noteRetentionCandidate(repoDir);
   // A v3 datastore takes one writing process at a time; join this process's
   // hold before any model lock (swamp-club#3279). A bucket datastore's is
   // at its local root (swamp-club#3534).
-  const v3 = engine === "v3"
-    ? await v3DatastoreConfigOf(repoDir, datastoreConfig)
-    : undefined;
+  const v3 = engine === "v3" ? await v3LocationOf(resolution) : undefined;
   if (v3 !== undefined) {
     await holdV3Writer(v3, repoDir, {
       ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
@@ -1832,6 +1954,30 @@ export const MODEL_LOCK_RETRY_INTERVAL_MS = 25;
 export const MODEL_LOCK_MAX_BACKOFF_MS = 250;
 
 /**
+ * The lock serve takes for `serveKey`, when `config` (a locking config) is
+ * the local root of a checkout whose datastore is written through serve
+ * (swamp-club#3985); undefined otherwise. Checkouts on other machines pick
+ * data versions from their own copies, so only serve's own lock keeps them
+ * and serve's runs apart. Once it is held the checkout catches up from
+ * serve, so the work under it reads every version written before it.
+ */
+function serveLockOf(
+  config: DatastoreConfig,
+  serveKey: string,
+  displayKey: string,
+  maxWaitMs: number,
+): DistributedLock | undefined {
+  if (isCustomDatastoreConfig(config)) return undefined;
+  const root = config.path;
+  return createServeLock(root, {
+    lockKey: serveKey,
+    displayKey,
+    maxWaitMs,
+    onAcquired: () => catchUpV3HandlesAt(root),
+  });
+}
+
+/**
  * Creates a per-model distributed lock.
  *
  * Lock key: `data/{modelType}/{modelId}/.lock`
@@ -1845,6 +1991,14 @@ export async function createModelLock(
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = modelLockKey(config.namespace, modelType, modelId);
   const maxWaitMs = resolveLockTimeoutMs();
+  // One written through serve locks at serve (swamp-club#3985).
+  const atServe = serveLockOf(
+    config,
+    modelLockKey(undefined, modelType, modelId),
+    lockKey,
+    maxWaitMs,
+  );
+  if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
@@ -1876,6 +2030,14 @@ export async function createWorkflowRunLock(
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = workflowRunLockKey(config.namespace, runId);
   const maxWaitMs = resolveLockTimeoutMs();
+  // One written through serve locks at serve (swamp-club#3985).
+  const atServe = serveLockOf(
+    config,
+    workflowRunLockKey(undefined, runId),
+    lockKey,
+    maxWaitMs,
+  );
+  if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
     const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });

@@ -6102,7 +6102,9 @@ two recoveries disagree in between (swamp-club#3586).
 
 **Phase 5.** Team mode's outbox forwards commits to serve's leader. It fits
 the same `CommitSink` seam. Serve's side, which appends a forwarded commit
-through this outbox, is "Team mode: serve's datastore API" below.
+through this outbox, is "Team mode: serve's datastore API" below. The CLI's
+side, `createServeCommitSink`, wraps this sink over a store that forwards to
+serve: "Team mode: the CLI's serve upstream" below.
 
 ### Team mode: serve's datastore API (datastore rework Phase 5)
 
@@ -6111,6 +6113,8 @@ the writer lease. Laptops and CI hold a serve token, not storage credentials.
 swamp-club#3915 adds serve's side, `src/serve/datastore_api.ts`. It is the
 security boundary for the rest of team mode: the CLI's serve upstream and
 `swamp datastore claim`/`release` are later issues and build on it.
+The lock routes are "Model locks" under "Team mode: the CLI's serve
+upstream" (swamp-club#3985).
 
 **The endpoints.** Every route is under `/api/v1/datastore/{namespace}/`.
 `{namespace}` is the storage namespace: the slug, or `_default` for an
@@ -6128,6 +6132,9 @@ are stamped `@anonymous`.
 | `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
 | `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
 | `GET changes?cursor=&limit=` | Commits after a feed cursor in this namespace, filtered to what the caller may read |
+| `POST locks` | `{lockKey, ttlMs?, waitMs?}`: serve's own lock on a behavior or a workflow run's claim, held for the caller: `201 {leaseId, lockKey, ttlMs, expiresAt}`, or `409 lock_held` |
+| `PUT locks/{leaseId}` | `{ttlMs?}`: renews the caller's lease, authorised again; `404 lease_not_found` once it ended |
+| `DELETE locks/{leaseId}` | Releases the caller's lease; `404 lease_not_found` when it already ended |
 
 `{p}` is a canonical partition key, percent-encoded once more in the path.
 
@@ -6443,12 +6450,360 @@ touched the key (its writer's host when it has none). Any other failure is a
   catch-up, changes, stamping, every 409 shape, a hash mismatch, a hash-only
   reference, a plain-data grant, the policy reload and a non-v3 server.
 - The mapped error codes are unit-tested in `src/serve/datastore_api_test.ts`.
+- The lock routes are driven in `integration/serve_datastore_locks_test.ts`
+  (authorisation, keys, TTLs, holder privacy, serve's own lock behind a
+  lease); the leases' expiry, renewal, caps and shutdown are unit-tested in
+  `src/serve/datastore_locks_test.ts`.
 - The authoriser has unit tests for every intent kind and for each binding,
   plus a property test that no key of another aggregate binds.
 
 When the CLI drives this API (the serve-upstream issue), its UAT should
 cover three adversarial cases: a forged principal, a hash-only chunk
 reference and a revoked grant.
+
+The CLI's side, which drives this API, is "Team mode: the CLI's serve
+upstream" below. Its UAT, including these three cases, belongs to the
+team-mode UAT item (`p5-uat`).
+
+### Team mode: the CLI's serve upstream (datastore rework Phase 5)
+
+swamp-club#3985 makes a checkout write a v3 datastore through serve's
+datastore API instead of its storage. A laptop or a CI job then holds a serve
+token and no storage credentials. Everything above the datastore service is
+unchanged: commands, output, the projection with real file paths, the catalog,
+the outbox and the read model's catch-up.
+
+**When it applies.** `resolveDatastoreForRepo` (`src/cli/repo_context.ts`)
+picks serve mode when all three hold:
+
+- the checkout's `.swamp.yaml` datastore says `format: 3`, which setup writes
+  for every v3 datastore and clones carry, so a v2 datastore with a serve
+  address for `--server` runs never changes. A `SWAMP_DATASTORE` override
+  names a datastore to open directly, so it never takes serve mode
+  (`markerSaysV3`);
+- a serve address resolves as `--server` runs resolve it (`SWAMP_SERVE_URL`,
+  `SWAMP_SERVER_URL`, then `serverAddress` in `.swamp.yaml`);
+- the command takes serve mode. `SERVE_UPSTREAM_COMMANDS`
+  (`src/cli/serve_upstream.ts`) answers for every top-level command, and a
+  rules test fails when a command has no row. `serve`, `worker`, `init`,
+  `repo`, `doctor datastores` and the `datastore` family (except `type`) bind
+  storage on purpose and keep today's path.
+
+With no serve address, the path is exactly today's.
+
+**Routing.** An address from the environment or `.swamp.yaml` used to send
+every command with a `--server` flag to serve over its WebSocket API. In a
+serve-mode checkout, the data-plane families (`SERVE_UPSTREAM_LOCAL_FAMILIES`:
+`model`, `behavior`, `data`, `workflow`, `vault`, `report`, `summarise`) now
+run locally, with serve as the datastore's upstream (`setImplicitServeRouting`
+in `src/cli/remote_run.ts`, set at startup). Only an explicit `--server` still
+runs them on serve. The control plane (`access`, `audit`, `doctor`,
+`datastore`, …) administers serve itself and keeps that routing. A v2 checkout
+is unchanged.
+
+**Tokens.** The token comes only from sources bound to the address:
+`servers.json`'s entry for it, `SWAMP_SERVER_TOKEN` when `SWAMP_SERVER_URL`
+names it, and `SWAMP_SERVER_TOKEN_FILE` only when an environment address names
+it. A `serverAddress` in a cloned repository's `.swamp.yaml` never receives a
+token that was meant for another server. A missing token sends no header, so
+serve's 401 gives the `swamp auth server-login` hint, and `--auth-mode none`
+works without one.
+
+**The binding.** Serve mode is decided from `.swamp.yaml` before the config
+resolves, so an extension datastore's type is never resolved or installed and
+its provider is never built (`serveUpstreamRoot` in `resolveDatastoreConfig`).
+Its credentials are never read. `bindV3ServeUpstream`
+(`src/infrastructure/datastore_v3/serve_upstream_binding.ts`) binds the
+checkout's local root. The format guard
+records the config as v3 (`recordServeUpstreamFormat`); serve's `409
+datastore_not_v3` stands in for the marker check. The checkout gets a local
+root, `.swamp/_datastore_v3_copies/serve-<hash of address and namespace>`,
+which the v3 helpers open as they open a filesystem datastore. Its locks are
+file locks under the root, whatever the datastore's type
+(`setV3BucketLockRoot`). It holds:
+
+- `commits.db`, a **follower copy** of serve's commit log;
+- `serve_upstream.db`, serve-mode state: the changes-feed cursor and the head
+  serve last reported per partition. It is a file of its own, so the commit
+  store's schema is unchanged and a solo checkout never opens it;
+- `_blobs/`, the chunk cache.
+
+**One copy per checkout, reset when the token changes.** Serve filters what
+each caller may read, so a copy is one caller's view. `serve_upstream.db`
+records a fingerprint of the token the copy was built with (its SHA-256, never
+the token). Binding with another token resets the copy before anything
+catches up from it (`resetCopyForCaller`), under the root's writer lease,
+which every writer of the checkout holds for its whole command; a read-only
+command takes it too, waiting up to the lock timeout and otherwise failing as
+writer-busy:
+
+1. An outbox that still holds entries refuses the switch
+   (`datastore_v3_serve_copy_holds_unlanded`): they are the previous caller's
+   writes, not yet settled with serve. A writing command with the previous
+   token settles them.
+2. The serve-mode state forgets its cursor and serve's heads and is marked
+   resetting, so a reset cut short runs again on the next bind.
+3. `commits.db` and the outbox are removed, and the new fingerprint recorded.
+
+The chunk cache stays: it is content-addressed, and only chunks the new copy's
+commits name, which serve let this caller reference, are read from it.
+
+**The projection follows the view.** The projection, the v3 catalog and the
+read model's state are one per checkout, while the log they are built from
+changes with the token, the serve address or namespace (another root), or a
+switch between serve mode and the solo datastore. Built from one log and
+caught up from another, a projection shows records the new view does not
+hold, and its cursor is the other log's, so the new log's commits may never
+apply. So the checkout records the view its projection was built from in
+`checkout_view.json` in its read-model state directory: a serve root and the
+token fingerprint, or the solo datastore's path and namespace.
+`v3RepositoryFactoryConfig` opens the handle (after the copy is current) and,
+before any recovery or catch-up, rebuilds the projection when the recorded
+view differs or a rebuild did not finish (`alignCheckoutView`):
+
+1. When the recorded view was a serve copy at another root, that copy's outbox
+   must be empty, or the switch is refused with the same code: a writing
+   command with the previous address, namespace and token settles it. A solo
+   datastore's outbox is landed by any writer of that datastore, so it does
+   not hold the switch.
+2. The record is marked rebuilding.
+3. `recoverInterruptedWriter(0)` on the new view's handle clears the catalog,
+   resets the read model's state, replays the new log and removes every
+   projected file no commit owns; the run indexes are removed.
+4. The new view is recorded.
+
+It runs under the writer lease of the new view's datastore: a writer already
+holds it, and a read-only command takes it, waiting up to the lock timeout,
+since it must never read another view's projection. On a solo datastore that
+lease is datastore-wide, so the rebuild waits for any checkout's writer. The
+rebuild only reads the commit log; it writes nothing but this checkout's
+files, catalog and read-model state. A checkout with no view recorded keeps
+its projection when it opens solo (every checkout from before this change)
+and is rebuilt once when it opens through serve.
+
+Known limits: the lease keeps writers out, not readers. A process of this
+checkout already reading under the old view keeps its own handle on the old
+`commits.db` (POSIX keeps a removed file for open handles), and its catch-up
+can put the old view's files back into the projection. Two processes of one
+checkout under different tokens or views at once are not supported. The read
+model's `at-risk/` copies (swamp-club#3617) survive a rebuild, so they may
+hold bytes of the previous view; no command reads them as records.
+
+The registry (`serve_upstream_registry.ts`) tells the helpers the root's
+upstream is serve. `v3ReplicaFor` answers none for it, so there is no restore,
+lineage or Litestream sidecar. The local root's own lease serialises this
+machine's processes; it is never the bucket's writer lease. The end-of-command
+retention pass is skipped, because serve keeps the datastore.
+
+**Follower mode.** Serve filters single commits a caller may not read, so the
+seqs a caller sees of a partition can have permanent holes. A store opened
+with `follower: true` (`SqliteCommitStore`, `SqliteReadModel`, which only the
+serve binding opens: a rules test pins it) appends through
+`Partition.appendObserved`:
+
+- it accepts any later seq;
+- it leaves `expect`, `version-live` and `version-reused` to serve, which
+  judged them against the commits the follower cannot see;
+- it skips the local writer-fence check, because serve's commits carry serve's
+  fences.
+
+Duplicates, the partition rule and the fence ordering still hold. One file is
+always opened in the same mode.
+
+**Writing.** `createServeCommitSink` (`serve_commit_sink.ts`) is the outbox
+sink over a commit store whose append forwards to serve, so the outbox still
+makes each commit durable until it lands.
+
+1. A commit is built on the higher of the copy's head and serve's recorded
+   head.
+2. `chunks/has` names what serve lacks. Up to 1,024 of those ride in the
+   frame from the cache; any more go first as `PUT chunks/{sha256}?partition=`.
+   No checkout upload ever omits the partition, so none needs `admin`.
+3. The envelope carries `expectedSeq`, `txnId` and `ops` only.
+4. On `{seq}`, or a duplicate's, the copy reads the partition from serve and
+   stores serve's stamped commit, never the one built locally.
+5. On `409 stale_seq`, serve's head is recorded and the partition read, and
+   the unit builds the commit again on the new head under the same txnId (up
+   to `SERVE_SEQ_GAP_ATTEMPTS`).
+6. On `chunk_missing`, the named chunks are sent once more.
+
+`holdV3Writer` catches the copy up from serve before a command writes.
+
+**Model locks.** A checkout picks a behavior's next data version from its
+own copy. Two machines' local file locks therefore let both pick the same
+version: the second commit meets `409 stale_seq`, is rebuilt on the new head
+with the same version numbers, and serve refuses it as `version-live`, after
+the method's side effects have run. So in serve mode `createModelLock`,
+`createWorkflowRunLock` and `acquireModelLocks`' per-model locks are serve's
+own locks, held through its lock routes (`ServeLock`,
+`src/infrastructure/datastore_v3/serve_lock.ts`; serve's side is
+`DatastoreLockLeases`, `src/serve/datastore_locks.ts`). The global datastore
+lock stays a local file lock.
+
+These routes are the base model leases (`p5-leases`) extend, not a second
+mechanism beside them. Leases add a fencing token that serve checks on each
+commit the holder forwards, and a lapse that cancels the holder's run, on the
+same `locks` routes and the same lease records.
+
+- **The lock.** A lease is the lock serve's own handlers take for the key
+  (`createModelLock` or `createWorkflowRunLock` on serve's datastore), taken
+  without waiting (`FileLock.tryAcquire`) and held for the caller until it is
+  released, its TTL passes without a renewal, or serve shuts down
+  (`dispose`, after the run drain). A checkout's work and serve's own runs on
+  one behavior therefore exclude each other. One lease per key at most.
+- **The key.** `lockKey` is `data/{type}/{id}/.lock` or
+  `workflow-run-claims/{runId}/.lock`, without a namespace (the route names
+  it). It is parsed and made canonical before anything is decided: the type
+  normalized, ids lowercase UUIDs, and a type holding a control character or
+  a path character (`\`, `:`, `%`, …) refused. Anything else is `400`.
+- **Authorisation.** What a write to the aggregate's partition needs at least
+  (`partitionWriteAccessOf`), through serve's decision service with its audit
+  on refusal: `run` on `model:<name>` (`admin` for a control-plane or
+  `--restricted-model-types` type), and for a run's claim `run` on its
+  workflow. A behavior or run serve does not know is decided on its id, so
+  only a wildcard grant holds it. A renewal is authorised again, and a
+  refused one ends the lease. Only the principal holding a lease renews or
+  releases it; to anyone else it is `404`.
+- **Bounds.** `ttlMs` between 5 s and 120 s (30 s by default); one request
+  waits at serve at most 10 s (`waitMs`), so a waiting client asks again
+  rather than polls; at most 256 leases per principal (`429
+  too_many_leases`). The routes are rate-limited like the others.
+- **What a refusal tells.** `409 lock_held` says only `heldBy`: `caller`
+  (another command of the same principal), `other` (another principal) or
+  `serve` (serve's own work), never who. `swamp datastore lock status` on
+  serve shows serve's process as the holder of every lease, as for its own
+  runs.
+- **The client.** `ServeLock` asks with `waitMs` up to the time left (at most
+  half the request timeout) until the lock timeout, then throws
+  `LockTimeoutError`. It renews at a third of the TTL; a renewal serve
+  answers `404` stops the heartbeat and logs that the lease expired. Release
+  is idempotent, and a release serve cannot be told of is left to the TTL.
+  `inspect` reports only this process's own hold, and `forceRelease` is
+  always false: serve's locks are never broken from a checkout. Serve
+  unreachable while acquiring is `ServeUnreachableError` (exit 75), before
+  the command's action runs.
+- **Catch-up under the lock.** Once the lease is taken, every handle the
+  process opened on the copy catches up from serve, read model included
+  (`catchUpV3HandlesAt`), before `acquire` resolves; `holdV3Writer`'s
+  catch-up ran before the lock was taken. The work under the lock therefore
+  allocates versions after every version another machine wrote.
+- **Held until the commit lands.** `model method run` releases its locks in
+  `runCommandInRootUnit` after the root unit has ended, and the root's commit
+  appends through the serve sink, which forwards it and waits for serve's
+  `{seq}`. The lock is therefore held until the commit is at serve. A commit
+  left in the outbox (the connection lost after the request may have reached
+  serve) is re-sent by a later recovery outside any lock.
+
+`integration/serve_upstream_lock_test.ts` runs two checkouts, each in a
+Worker as a machine of its own, saving ten versions each of one behavior's
+data at once under its lock, and a checkout's saves interleaved with serve's
+own: every version lands, numbered 1 to N. With the serve lock replaced by the
+local one both fail with `version-live`, as the live test did.
+
+**Catch-up.** `ServeCatchUp` (`serve_catch_up.ts`) pages `GET changes` from
+the stored cursor and appends each commit verbatim. The cursor moves only once
+a page is in the copy, so a crash between the two re-reads a page, whose
+commits are then duplicates. When a commit arrives past the copy's head + 1,
+the partition is read from serve first (`partitions/{p}/commits?after=`). That
+brings back commits hidden from the caller before a grant changed, and records
+serve's head. A page that is filtered to nothing still moves on by its size,
+because serve's own log has no holes.
+
+**Run index.** The read model's catch-up rewrites run records directly, and
+the run index trusted itself while its count matched. So a run another
+writer changed kept its old status in `workflow run search`, on serve after a
+forwarded commit and in any catching-up checkout. The read model now reports
+the record keys each page rewrote or removed (`recordsChanged`), and the
+checkout drops those runs' index entries (`dropRunIndexEntries`), which the
+next read repairs.
+
+**Chunks.** `CachedServeStorage` is the cache, a `FileSystemStorage`, with
+`ServeChunkStorage` (serve's chunk endpoints as `storage/1`) behind it.
+
+- Puts land in the cache with its staging and barrier.
+- `get` and `has` fall back to serve, and a chunk read from serve is kept.
+  `GET chunks/{sha256}` is hash-checked.
+- `list` and `delete` are the cache's, so the local sweep keeps the cache
+  bounded.
+
+`ServeChunkStorage` passes `storage_conformance.ts`
+(`integration/serve_datastore_storage_conformance_test.ts`) with these
+declared unsupported, each with its reason:
+
+- `list` and `delete`: serve has no route for them, and chunk collection is
+  serve's;
+- other namespaces: one API is bound to its datastore's namespace.
+
+It also differs from a bucket's storage in four ways, which the checkout path
+never relies on:
+
+- an uncommitted chunk is visible only to the principal that uploaded it;
+- it is visible only while its upload-ledger entry lasts;
+- puts count against the caller's upload quota;
+- a put with no partition needs `admin`.
+
+**Errors.** Each reply maps to the error the solo path gives the same failure
+(`serve_upstream_errors.ts`):
+
+| Serve's reply | The CLI's error | Exit |
+|---|---|---|
+| Unreachable, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed | 75 |
+| Unreachable after the request may have reached serve | outbox entry kept; the next recovery settles or re-sends it | 1 (may land) |
+| `401` | the `swamp auth server-login --server …` hint | 1 |
+| `409 stale_seq` | caught up and retried | — |
+| `409 precondition_failed` | serve's "changed by … at …" message, as a local expect-failed | 1 |
+| `409 datastore_v3_writer_fenced` | the same code | 1 |
+| `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
+| `403` | serve's message and the op's index | 1 |
+| `410 commits_compacted` | refused; see the limits | 1 |
+
+A read that cannot reach serve uses the copy as it is and warns that it may be
+out of date. A write never falls back to storage.
+
+**Recovery.** `recoverV3Outbox` lands a serve-mode checkout's entries through
+the sink's forwarding store (`forwardedAttempts`). An entry whose txnId has
+landed at serve is settled once the partition is read. One whose base moved is
+sent on the new head, because serve judges it against its own log, rather
+than dropped as `head-moved`.
+
+**Limits (later items).**
+
+- A copy behind serve's compaction point cannot catch up. Serve has no route
+  for the compacted base yet, so a fresh checkout of a compacted datastore is
+  refused with a clear error until it has one (swamp-club#4006).
+- Offline writes are refused, not queued (`p5-offline`).
+- Per-model and workflow-run locks are serve's ("Model locks" above).
+  `p5-leases` builds on those routes (fencing tokens, a lapse cancelling the
+  run) and closes what stays open here:
+  - A lease that cannot be renewed (serve away past its TTL, or a revoked
+    grant) lets the work continue unlocked. Serve's seq check is then the
+    only backstop, so a `version-live` refusal can return.
+  - The catch-up after the lock sees only what the caller may read. A caller
+    with `run` on a behavior but no `read` on its data picks versions from a
+    stale floor.
+  - `swamp datastore lock status` in a checkout does not show serve-held
+    locks.
+  - An outbox entry re-sent by a later recovery is sent outside any lock.
+- Behavior definitions are repository files (`models/`), not datastore
+  records. Serve judges a forwarded run's step outputs against its own
+  checkout's definitions, so a workflow run on a behavior defined only in the
+  client is refused (`403`). The run serve already recorded then stays
+  `running` until serve's next start marks it `interrupted`. Teams sync
+  `models/` to serve's checkout (git) first, until per-file config moves
+  through serve (`p5-config`).
+- Per-file config and the live feed are `p5-config` and `p5-feed`.
+- `swamp datastore claim` and `release` are the next issue.
+
+**Testing.**
+
+- Each adapter has unit tests: the client, the errors, the sink, catch-up,
+  the storage and the serve-mode state.
+- Property tests cover `appendObserved` and the follower stores, against
+  gapped sequences.
+- `integration/serve_upstream_test.ts` drives real checkouts against a port-0
+  serve with admin and member tokens, compares them with a solo checkout, and
+  proves storage and its lease are never touched.
+- The error rules are each red-checked.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
