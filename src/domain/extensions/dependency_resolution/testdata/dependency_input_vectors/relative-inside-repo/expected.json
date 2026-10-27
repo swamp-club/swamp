@@ -28,6 +28,7 @@
   },
   "record": {
     "recordVersion": 2,
+    "bundleFormat": 1,
     "bundles": {
       "bundles/m.js": "sha256 of the bundle"
     },

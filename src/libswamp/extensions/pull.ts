@@ -39,9 +39,11 @@ import {
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   bundleDependencyWarnings,
+  checkBundleRecord,
   describeBundleErrors,
   scanExtractedBundles,
 } from "./bundle_safety_scan.ts";
+import { DEPENDENCY_AUDIT_RECORD_FILENAME } from "@swamp-club/extension-scoring/dependency-audit";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -197,6 +199,13 @@ export interface InstallResult {
    * empty when no local source shadows the pulled extension's types.
    */
   shadowedTypes?: ShadowedTypeInfo[];
+  /**
+   * The archive's bundles, staged with this install, are the ones to run:
+   * {@link InstallExtensionService} indexes them instead of rebuilding them
+   * from source (swamp-club#3972). False when the archive's bundle format
+   * is not one this swamp runs; absent reads as false.
+   */
+  keepArchiveBundles?: boolean;
   /**
    * Repo-relative paths this install created. Equals `extractedFiles`
    * except for skills: a skill dir that already existed before
@@ -1103,6 +1112,7 @@ interface PreparedInstallFields {
   publishedChannel: string | null;
   knownChannels: ReadonlyMap<string, string>;
   rootSources: string[];
+  keepArchiveBundles: boolean;
 }
 
 /**
@@ -1141,6 +1151,11 @@ class PreparedInstall {
    * below `extension/` (swamp-club#3384), already safety-checked.
    */
   readonly rootSources: string[];
+  /**
+   * Run the archive's bundles, already scanned and checked against its
+   * record, rather than rebuilding them from source (swamp-club#3972).
+   */
+  readonly keepArchiveBundles: boolean;
   readonly #tmpDir: string;
   #disposed = false;
 
@@ -1158,6 +1173,7 @@ class PreparedInstall {
     this.publishedChannel = fields.publishedChannel;
     this.knownChannels = fields.knownChannels;
     this.rootSources = fields.rootSources;
+    this.keepArchiveBundles = fields.keepArchiveBundles;
   }
 
   /** Removes the temp dir. Idempotent and best-effort. */
@@ -1575,6 +1591,25 @@ export async function prepareInstall(
       safetyWarnings.push(warning);
     }
 
+    // The bundles kept are the ones just scanned: check them against the
+    // hashes push recorded with them (swamp-club#3972).
+    const recordCheck = checkBundleRecord(
+      bundleScan.hashes,
+      await Deno.readTextFile(
+        join(extractDir, DEPENDENCY_AUDIT_RECORD_FILENAME),
+      ).catch((error: unknown) => {
+        if (error instanceof Deno.errors.NotFound) return undefined;
+        throw error;
+      }),
+    );
+    if (recordCheck.refusals.length > 0) {
+      throw new UserError(
+        `Extension bundles do not match the archive's dependency audit record. Install aborted.\n${
+          recordCheck.refusals.map((r) => `  ${r}`).join("\n")
+        }`,
+      );
+    }
+
     return new PreparedInstall({
       ref,
       version,
@@ -1589,6 +1624,7 @@ export async function prepareInstall(
       publishedChannel,
       knownChannels,
       rootSources,
+      keepArchiveBundles: recordCheck.keepArchiveBundles,
     });
   } catch (error) {
     try {
@@ -2651,6 +2687,7 @@ export async function applyInstall(
       ],
       channel: followedChannel,
       publishedChannel: prepared.publishedChannel,
+      keepArchiveBundles: prepared.keepArchiveBundles,
       previous: replacement?.current ?? null,
       ...(replacement
         ? {

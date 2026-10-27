@@ -317,6 +317,7 @@ for (
 ) {
   Deno.test(`dependency audit vectors: push ships ${v.name} only in the canonical form`, () => {
     const record = v.record === null ? null : buildDependencyAuditRecordV2({
+      bundleFormat: 1,
       imports: v.record.map((e) => ({
         registry: e.registry,
         name: e.name,
