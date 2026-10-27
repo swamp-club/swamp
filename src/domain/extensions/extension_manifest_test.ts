@@ -411,7 +411,7 @@ Deno.test("parseExtensionManifest: refuses a manifest over MAX_MANIFEST_BYTES be
   assertThrows(
     () => parseExtensionManifest(yaml),
     Error,
-    `Extension manifest is larger than ${MAX_MANIFEST_BYTES} bytes.`,
+    "Extension manifest is larger than 1 MiB.",
   );
 });
 

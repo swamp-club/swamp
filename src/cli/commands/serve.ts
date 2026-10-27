@@ -984,8 +984,8 @@ export async function readCancelRequestReason(
 
 /**
  * Reads a bulk cancel request body, at most {@link MAX_CANCEL_BODY_BYTES}
- * (swamp-club#3862). A body that is not JSON filters nothing, as it always
- * has.
+ * (swamp-club#3862). A body that is not a JSON object filters nothing, as it
+ * always has.
  */
 export async function readBulkCancelBody(
   req: Request,
@@ -1001,14 +1001,15 @@ export async function readBulkCancelBody(
       message: `Request body exceeds ${MAX_CANCEL_BODY_BYTES} bytes`,
     };
   }
+  let parsed: unknown;
   try {
-    return {
-      ok: true,
-      body: JSON.parse(new TextDecoder().decode(bytes)) ?? {},
-    };
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return { ok: true, body: {} };
   }
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? { ok: true, body: parsed as Record<string, unknown> }
+    : { ok: true, body: {} };
 }
 
 /**

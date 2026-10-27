@@ -176,6 +176,8 @@ function unboundedRecords(
         ),
         ...(def.rest ? child(def.rest, `${path}[]`) : []),
       ];
+    case "lazy":
+      return child((def.getter as () => unknown)(), path, guarded);
     case "optional":
     case "nullable":
     case "default":
@@ -231,6 +233,13 @@ Deno.test("the record walker flags a bare typed-value record and passes a bounde
   assertEquals(
     unboundedRecords(
       z.object({ tags: z.record(z.string(), z.string()).optional() }),
+      "s",
+    ),
+    ["s.tags"],
+  );
+  assertEquals(
+    unboundedRecords(
+      z.object({ tags: z.lazy(() => z.record(z.string(), z.string())) }),
       "s",
     ),
     ["s.tags"],

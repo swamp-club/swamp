@@ -733,6 +733,8 @@ check rejects, since it refuses any tar entry containing `..` or starting with
   `["darwin-aarch64", "linux-x86_64"]`). Informational only; shown during pull.
 - `labels`: categorization labels (e.g., `["aws", "kubernetes"]`), at most
   `MAX_LABELS = 20` (`src/domain/extensions/extension_manifest.ts`).
+- `dependencies`: extension names (`@collective/name`) this extension needs.
+  They are pulled automatically.
 
 A pulled manifest is another author's, so `parseExtensionManifest` bounds it
 before it parses anything (swamp-club#3862). The file may be at most
@@ -741,8 +743,6 @@ before it parses anything (swamp-club#3862). The file may be at most
 `additionalFiles`, `binaries`, `platforms` and `dependencies`) may hold at most
 `MAX_MANIFEST_LIST_ENTRIES` (1000) entries. A refusal lists at most
 `MAX_REPORTED_MANIFEST_ISSUES` (20) issues, then a count of the rest.
-- `dependencies`: extension names (`@collective/name`) this extension needs.
-  They are pulled automatically.
 
 ### Example
 

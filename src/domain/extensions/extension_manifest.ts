@@ -31,7 +31,7 @@ const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 export const MAX_LABELS = 20;
 
 /**
- * Largest manifest.yaml parsed, in bytes. A pulled manifest is another
+ * Largest manifest.yaml parsed, in bytes (1 MiB, as the refusal says). A pulled manifest is another
  * author's, so its size is bounded before the YAML parse (swamp-club#3862).
  */
 export const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -243,7 +243,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     new TextEncoder().encode(content).byteLength > MAX_MANIFEST_BYTES
   ) {
     throw new UserError(
-      `Extension manifest is larger than ${MAX_MANIFEST_BYTES} bytes.`,
+      "Extension manifest is larger than 1 MiB.",
     );
   }
   const raw = parseYaml(content);

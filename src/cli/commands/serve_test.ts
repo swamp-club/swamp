@@ -1407,7 +1407,7 @@ function bulkCancelRequest(body?: string): Request {
   });
 }
 
-Deno.test("readBulkCancelBody: returns the JSON body, or no filter when it is not JSON", async () => {
+Deno.test("readBulkCancelBody: returns the JSON object, or no filter when the body is not one", async () => {
   assertEquals(
     await readBulkCancelBody(
       bulkCancelRequest(JSON.stringify({ executionType: "method-run" })),
@@ -1418,10 +1418,12 @@ Deno.test("readBulkCancelBody: returns the JSON body, or no filter when it is no
     ok: true,
     body: {},
   });
-  assertEquals(await readBulkCancelBody(bulkCancelRequest("not json")), {
-    ok: true,
-    body: {},
-  });
+  for (const body of ["not json", "null", "5", '"text"', '["method-run"]']) {
+    assertEquals(await readBulkCancelBody(bulkCancelRequest(body)), {
+      ok: true,
+      body: {},
+    }, body);
+  }
 });
 
 Deno.test("readBulkCancelBody: refuses a body over the cap with 413", async () => {
