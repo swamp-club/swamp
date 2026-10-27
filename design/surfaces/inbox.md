@@ -114,8 +114,24 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   and each added field must be safe to lose, since an older swamp drops fields
   it does not know when it saves. A breaking change moves to a new directory,
   so two installed versions never share a file.
-- **The notice.** After a command finishes, the CLI prints a one-line notice
-  when there are unread messages newer than the last one it announced. A notice
-  retires after 24 hours, whether or not the user reads the message.
+- **The notice.** After a command finishes, the CLI prints a notice when there
+  are unread messages newer than the last one it announced. It goes to stderr,
+  in log mode only, after the command's output:
+
+  ```
+  ℹ A new message from Swamp Club is waiting for you.
+    To read it:  swamp inbox read
+  ```
+
+  With more than one unread message, the first line reads
+  `ℹ 3 new messages from Swamp Club are waiting for you.` The second line never
+  changes; its `To …:` label matches `To approve:` and `To signal:` in the
+  workflow renderer. The text is fixed: no message title or other server text
+  appears in it, so an agent's context holds nothing Swamp Club wrote until the
+  user asks to read the inbox. The notice never appears in `--json` mode, so an
+  agent running commands with `--json` never sees it, and JSON output never
+  carries it. The `swamp` skill quotes the second line, so the two must change
+  together. A notice retires after 24 hours, whether or not the user reads the
+  message.
 - **The commands.** `swamp inbox` lists messages and `swamp inbox read` shows
   one and marks it read.
