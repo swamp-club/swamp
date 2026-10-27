@@ -28,6 +28,7 @@
 
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
+import { pairExpressionJobs, workflowJobOf } from "./job_pairing.ts";
 import type { Workflow } from "./workflow.ts";
 import {
   type FailedStepRef,
@@ -53,22 +54,24 @@ export function entryTemplateOf(step: FailedStepRef): string {
 /**
  * The `--job` that, with `--from <template>`, re-enters the step `template`
  * of the stored job `jobName`, as `--from` resolves it against the current
- * workflow: undefined when the step name is in at most one workflow job, or
- * when the stored job cannot be told apart. A job named with an expression
- * is stored evaluated, so a stored job matches a workflow job by name, or
- * else the one expression-named job that has the step.
+ * workflow: the workflow job that stored job belongs to (see
+ * {@link workflowJobOf}), named as the workflow writes it. Undefined when
+ * the step name is in at most one workflow job, or when the stored job
+ * cannot be paired with a workflow job that has the step.
  */
 export function fromJobFor(
   workflow: Workflow,
+  run: WorkflowRun,
   jobName: string,
   template: string,
 ): string | undefined {
-  const holders = workflow.jobs.filter((j) => j.getStep(template));
-  if (holders.length < 2) return undefined;
-  const literal = holders.find((j) => j.name === jobName);
-  if (literal) return literal.name;
-  const expressionNamed = holders.filter((j) => j.name.includes("${{"));
-  return expressionNamed.length === 1 ? expressionNamed[0].name : undefined;
+  if (workflow.jobs.filter((j) => j.getStep(template)).length < 2) {
+    return undefined;
+  }
+  const jobRun = run.getJob(jobName);
+  const job = jobRun &&
+    workflowJobOf(workflow, jobRun, pairExpressionJobs(workflow, run));
+  return job?.getStep(template) ? job.name : undefined;
 }
 
 /**
@@ -78,17 +81,19 @@ export function fromJobFor(
  */
 function fromArguments(
   workflow: Workflow,
+  run: WorkflowRun,
   jobName: string,
   template: string,
 ): string {
   const from = `--from ${quoteShellWord(template)}`;
-  const job = fromJobFor(workflow, jobName, template);
+  const job = fromJobFor(workflow, run, jobName, template);
   return job !== undefined ? `${from} --job ${quoteShellWord(job)}` : from;
 }
 
 /**
  * Returns the distinct entry templates of the run's failed steps, each with
- * its job, in stored order, or throws a UserError naming the job or step that
+ * the workflow job it is a step of (named as the workflow writes it), in
+ * stored order, or throws a UserError naming the job or step that
  * makes the run ineligible for retry. Mutates nothing.
  *
  * A run is eligible when:
@@ -118,7 +123,12 @@ export function selectRetryTemplates(
     throw new UserError(
       `Step "${rejected.stepName}" in job "${rejected.jobName}" was rejected; ` +
         `retry won't re-open it. Add ${
-          fromArguments(workflow, rejected.jobName, entryTemplateOf(rejected))
+          fromArguments(
+            workflow,
+            run,
+            rejected.jobName,
+            entryTemplateOf(rejected),
+          )
         } to ask again. ${history}`,
     );
   }
@@ -140,6 +150,7 @@ export function selectRetryTemplates(
         ? ` Add ${
           fromArguments(
             workflow,
+            run,
             job.jobName,
             step.forEachTemplate ?? step.stepName,
           )
@@ -169,10 +180,17 @@ export function selectRetryTemplates(
     }
   }
 
+  // A stored job belongs to the workflow job of its name, or to the
+  // expression-named job it evaluated to (see workflowJobOf).
+  const pairs = pairExpressionJobs(workflow, run);
+  const entries = new Map<string, StepRunRef>();
   for (const step of failed) {
     const template = entryTemplateOf(step);
-    const job = workflow.jobs.find((j) => j.name === step.jobName);
-    if (!job?.steps.some((s) => s.name === template)) {
+    const job = workflowJobOf(workflow, run.getJob(step.jobName)!, pairs);
+    if (job?.getStep(template)) {
+      const entry = { jobName: job.name, stepName: template };
+      entries.set(stepRunKey(entry), entry);
+    } else {
       // No --from hint: --from refuses a renamed step and a step moved to
       // another job too (see planFailedRunResume), so only a new run can be
       // suggested.
@@ -193,11 +211,6 @@ export function selectRetryTemplates(
     }
   }
 
-  const entries = new Map<string, StepRunRef>();
-  for (const step of failed) {
-    const entry = { jobName: step.jobName, stepName: entryTemplateOf(step) };
-    entries.set(stepRunKey(entry), entry);
-  }
   return [...entries.values()];
 }
 

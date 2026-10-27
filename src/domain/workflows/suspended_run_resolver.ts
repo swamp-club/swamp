@@ -370,7 +370,12 @@ function rejectedGateOf(
   const rejected = run.failedSteps().find((s) => s.approvalRejected);
   if (!rejected) return {};
   const rejectedStep = entryTemplateOf(rejected);
-  const rejectedJob = fromJobFor(workflow, rejected.jobName, rejectedStep);
+  const rejectedJob = fromJobFor(
+    workflow,
+    run,
+    rejected.jobName,
+    rejectedStep,
+  );
   return rejectedJob !== undefined
     ? { rejectedStep, rejectedJob }
     : { rejectedStep };

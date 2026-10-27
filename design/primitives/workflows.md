@@ -2103,7 +2103,9 @@ the job or step and points to `swamp workflow history logs <id>`
    pending, running, waiting and unknown work. It also excludes a job left
    running by a `forEach` expansion error.
 4. At least one failed step exists, and every failed job contains one.
-5. Each entry template is a step of the same job in the current workflow. The
+5. Each entry template is a step of the same job in the current workflow: the
+   workflow job its stored job belongs to (by name, or for an expression-named
+   job by [position](#resume-from-failed-step---from)). The
    refusal suggests only a new run, because `--from` refuses a renamed or moved
    step too (the [structure check](#resume-from-failed-step---from)). `--from`
    does still work from a remaining step after a removal. It also works from
@@ -2254,12 +2256,18 @@ the step name is in more than one job of the current workflow, naming the job
 as the workflow writes it (`fromJobFor` in
 `src/domain/workflows/failed_step_retry.ts`).
 
-A job named with an expression is stored evaluated, so the reset cannot match
-it by name: a stored job named like a literal workflow job belongs to that job,
-and any other stored job is matched by step name against the expression-named
-jobs in the reset set (`candidateJobs` in `src/domain/workflows/resume_reset.ts`).
-This is the one case where a reset still reaches across jobs: two
-expression-named jobs that share a step name reset each other's record of it.
+A job named with an expression is stored evaluated (`site-${{ inputs.region }}`
+becomes `site-west`), so the reset cannot match it by name. Evaluation keeps
+every job and their order, so the run stores job `i` of the workflow as its job
+`i`. While the workflow's jobs still line up with the run's (the same number,
+every literal job at its stored position, and each stored name fitting the
+literal text around the expressions), each expression-named job is paired with
+the stored job at its position (`pairExpressionJobs` in
+`src/domain/workflows/job_pairing.ts`). Reset, retry and the `--job` hints use
+that pairing, so `--job 'site-${{ inputs.b }}'` resets only the job it
+evaluated to, and a retry re-runs a failed step of an expression-named job. A
+reset that reaches an expression-named job once the jobs no longer line up is
+refused with `Start a new run.`
 
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without

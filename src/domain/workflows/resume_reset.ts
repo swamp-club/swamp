@@ -33,6 +33,11 @@
 
 import { UserError } from "../errors.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
+import {
+  evaluatedName as evaluated,
+  pairExpressionJobs,
+  workflowJobOf,
+} from "./job_pairing.ts";
 import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
 import {
@@ -121,8 +126,9 @@ function jobsNoun(names: readonly string[]): string {
 }
 
 function stepNotFound(workflow: Workflow, step: string): UserError {
-  const allStepNames = workflow.jobs
-    .flatMap((j) => j.steps.map((s) => s.name));
+  const allStepNames = [
+    ...new Set(workflow.jobs.flatMap((j) => j.steps.map((s) => s.name))),
+  ];
   return new UserError(
     `Step "${step}" not found in workflow "${workflow.name}". ` +
       `Available steps: ${allStepNames.join(", ")}`,
@@ -224,27 +230,38 @@ function templatesToReset(
 }
 
 /**
- * The workflow jobs a stored job's records can belong to. A stored job named
- * after a literal workflow job belongs to that job. Any other stored job may
- * be one an expression-named job evaluated to: those names are stored
- * evaluated and cannot be compared before evaluation, so it is matched
- * against every expression-named job, by step name.
+ * Why the reset cannot be applied to the run: it reaches an expression-named
+ * job, and the workflow's jobs no longer line up with the run's, so which
+ * stored job that job evaluated to cannot be told (see
+ * {@link pairExpressionJobs}).
  */
-function candidateJobs(workflow: Workflow, jobRun: JobRun): Job[] {
-  const literal = workflow.jobs.find((j) =>
-    !evaluated(j.name) && j.name === jobRun.jobName
+function unpairedExpressionJob(
+  workflow: Workflow,
+  pairs: ReadonlyMap<string, string> | undefined,
+  templateKeysToReset: ReadonlySet<string>,
+): string | undefined {
+  if (pairs !== undefined) return undefined;
+  const job = workflow.jobs.find((j) =>
+    evaluated(j.name) &&
+    j.steps.some((s) =>
+      templateKeysToReset.has(stepRunKey({ jobName: j.name, stepName: s.name }))
+    )
   );
-  return literal ? [literal] : workflow.jobs.filter((j) => evaluated(j.name));
+  return job
+    ? `Job "${job.name}" cannot be matched to a job of the run: the workflow's jobs changed since the run.`
+    : undefined;
 }
 
 /**
  * Maps the keyed template steps to the stored step records they reset,
  * recording why each record was selected. A record is matched only against
- * the template steps of the job it belongs to (see {@link candidateJobs}).
+ * the template steps of the workflow job its stored job belongs to (see
+ * {@link workflowJobOf}).
  */
 function selectResetRecords(
   workflow: Workflow,
   run: WorkflowRun,
+  pairs: ReadonlyMap<string, string> | undefined,
   templateKeysToReset: ReadonlySet<string>,
 ): SelectedRecord[] {
   // Map template steps to persisted step names. For forEach steps, the
@@ -255,10 +272,10 @@ function selectResetRecords(
   // only apply prefix matching for steps that have forEach configured.
   const selected: SelectedRecord[] = [];
   for (const jobRun of run.jobs) {
-    const jobs = candidateJobs(workflow, jobRun);
+    const job = workflowJobOf(workflow, jobRun, pairs);
+    if (!job) continue;
     for (const stepRun of jobRun.steps) {
-      const branch = jobs.map((job) => matchRecord(job, stepRun))
-        .find((b) => b !== undefined);
+      const branch = matchRecord(job, stepRun);
       if (branch === undefined) continue;
       selected.push({
         jobName: jobRun.jobName,
@@ -311,23 +328,18 @@ export function computeStepsToReset(
   run: WorkflowRun,
   from: ResumeFrom,
 ): StepRunRef[] {
-  const stepsToReset = selectResetRecords(
-    workflow,
-    run,
-    templatesToReset(workflow, [resolveFrom(workflow, from)]),
-  ).map(({ jobName, stepName }) => ({ jobName, stepName }));
+  const pairs = pairExpressionJobs(workflow, run);
+  const keys = templatesToReset(workflow, [resolveFrom(workflow, from)]);
+  const unpaired = unpairedExpressionJob(workflow, pairs, keys);
+  if (unpaired !== undefined) {
+    throw new UserError(`${unpaired} Start a new run.`);
+  }
+  const stepsToReset = selectResetRecords(workflow, run, pairs, keys)
+    .map(({ jobName, stepName }) => ({ jobName, stepName }));
   if (stepsToReset.length === 0) {
     throw zeroStepsError(from.step);
   }
   return stepsToReset;
-}
-
-/**
- * A name written with an expression is stored evaluated, so it cannot be
- * compared with a stored record before the workflow is evaluated.
- */
-function evaluated(name: string): boolean {
-  return name.includes("${{");
 }
 
 function moved(step: string, stored: string, current: string): string {
@@ -350,24 +362,29 @@ function movedOrChanged(workflow: Workflow, step: string, job: string): string {
  * Why the `--from` step `entry` has no record in its own stored job, when
  * another stored job holds its records (by name, or as iterations) and the
  * workflow no longer has the step there: the step moved. A job missing from
- * the run is left to rule (a), and a stored job an expression-named job may
- * have evaluated to cannot be compared by name, so it is not searched.
+ * the run is left to rule (a). A stored job no workflow job can be paired
+ * with is searched only when the workflow has no expression-named job that
+ * may have evaluated to it.
  */
 function movedEntry(
   workflow: Workflow,
   run: WorkflowRun,
+  pairs: ReadonlyMap<string, string> | undefined,
   entry: StepRunRef,
 ): string | undefined {
   const name = entry.stepName;
   const holds = (jobRun: JobRun) =>
     jobRun.steps.some((s) => s.stepName === name || s.forEachTemplate === name);
-  const own = run.getJob(entry.jobName);
+  const ownName = evaluated(entry.jobName)
+    ? pairs?.get(entry.jobName)
+    : entry.jobName;
+  const own = ownName !== undefined ? run.getJob(ownName) : undefined;
   if (!own || holds(own)) return undefined;
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
   const storedIn = run.jobs.find((j) => {
-    const job = workflow.getJob(j.jobName);
-    if (!job && hasEvaluatedJob) return false;
-    return j.jobName !== entry.jobName && !job?.getStep(name) && holds(j);
+    const job = workflowJobOf(workflow, j, pairs);
+    if (!job && hasEvaluatedJob && pairs === undefined) return false;
+    return j !== own && !job?.getStep(name) && holds(j);
   })?.jobName;
   return storedIn !== undefined
     ? moved(name, storedIn, entry.jobName)
@@ -556,23 +573,32 @@ export function planFailedRunResume(
   const refuse = (problem: string) =>
     new UserError(`${problem} Start a new run. ${history}`);
 
+  const pairs = pairExpressionJobs(workflow, run);
   const entries = from !== undefined
     ? [resolveFrom(workflow, from)]
     : selectRetryTemplates(workflow, run);
+
+  // (a) Resume looks up a stored record for every job it walks. (d) It walks
+  // only the workflow's jobs, so a removed job it reopens would stay pending.
+  // Checked before the reset is selected, so a --from step in a job the run
+  // does not have is refused for that, not as matching nothing.
+  const noJob = missingJob(workflow, run) ??
+    removedUnfinishedJob(workflow, run);
+  if (noJob !== undefined) throw refuse(noJob);
+
   if (from !== undefined) {
     // A --from step moved into its job since the run left its records in the
     // job it came from, where nothing walks them.
-    const problem = movedEntry(workflow, run, entries[0]);
+    const problem = movedEntry(workflow, run, pairs, entries[0]);
     if (problem !== undefined) throw refuse(problem);
   }
+  const keys = templatesToReset(workflow, entries);
+  const unpaired = unpairedExpressionJob(workflow, pairs, keys);
+  if (unpaired !== undefined) throw refuse(unpaired);
   // One pass over the union of the template sets selects the same records as
   // the union of computeStepsToReset per entry template, with one branch per
   // record.
-  const selected = selectResetRecords(
-    workflow,
-    run,
-    templatesToReset(workflow, entries),
-  );
+  const selected = selectResetRecords(workflow, run, pairs, keys);
   if (selected.length === 0) {
     // A retry's entry templates always match their failed records.
     throw from !== undefined
@@ -608,17 +634,11 @@ export function planFailedRunResume(
 
   const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
 
-  // (a) Resume looks up a stored record for every job it walks. (d) It walks
-  // only the workflow's jobs, so a removed job it reopens would stay pending.
-  const noJob = missingJob(workflow, run) ??
-    removedUnfinishedJob(workflow, run);
-  if (noJob !== undefined) throw refuse(noJob);
-
   // (c) A record reset by name or template must be walked in its own job.
   const tracked: StepRunRef[] = [];
   for (const record of selected) {
     if (record.branch === "prefix") continue;
-    const ownJob = workflow.getJob(record.jobName);
+    const ownJob = workflowJobOf(workflow, run.getJob(record.jobName)!, pairs);
     if (!ownJob && hasEvaluatedJob) continue;
     const ownStep = (name: string) => ownJob?.getStep(name);
     const fromTemplate = record.forEachTemplate !== undefined &&

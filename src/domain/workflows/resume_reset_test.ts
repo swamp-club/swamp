@@ -23,6 +23,7 @@ import { Job } from "./job.ts";
 import {
   checkSuspendedRunResume,
   planFailedRunResume,
+  type ResumeFrom,
 } from "./resume_reset.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -662,6 +663,108 @@ Deno.test("planFailedRunResume: --job selects an expression-named job by its nam
   const inMain = planFailedRunResume(wf, run, { step: "s", job: "main" });
   assertEquals(sortRefs(inMain.steps), ["main/s"]);
 });
+
+/**
+ * Two expression-named jobs and a literal one, all with a step "restart",
+ * stored as site-west, site-east and literal. site-east's restart failed.
+ */
+function siteRun(): { wf: Workflow; run: WorkflowRun } {
+  const wf = workflow([
+    { name: "site-${{ inputs.a }}", steps: [plain("restart")] },
+    { name: "site-${{ inputs.b }}", steps: [plain("restart")] },
+    { name: "literal", steps: [plain("restart")] },
+  ]);
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: wf.id,
+    workflowName: wf.name,
+    status: "failed",
+    jobs: [
+      {
+        jobName: "site-west",
+        status: "succeeded",
+        steps: [{ stepName: "restart", status: "succeeded" }],
+      },
+      {
+        jobName: "site-east",
+        status: "failed",
+        steps: [{ stepName: "restart", status: "failed" }],
+      },
+      {
+        jobName: "literal",
+        status: "succeeded",
+        steps: [{ stepName: "restart", status: "succeeded" }],
+      },
+    ],
+  });
+  return { wf, run };
+}
+
+Deno.test("planFailedRunResume: --job into an expression-named job resets only the job it evaluated to", () => {
+  const { wf, run } = siteRun();
+  const plan = planFailedRunResume(wf, run, {
+    step: "restart",
+    job: "site-${{ inputs.b }}",
+  });
+  assertEquals(sortRefs(plan.steps), ["site-east/restart"]);
+  assertEquals(sortRefs(plan.tracked), ["site-east/restart"]);
+});
+
+Deno.test("planFailedRunResume: a retry re-runs a failed step of an expression-named job in that job only", () => {
+  const { wf, run } = siteRun();
+  const plan = planFailedRunResume(wf, run);
+  assertEquals(sortRefs(plan.steps), ["site-east/restart"]);
+});
+
+Deno.test("planFailedRunResume: refuses a reset into an expression-named job once the jobs no longer line up", () => {
+  const { run } = siteRun();
+  const reordered = workflow([
+    { name: "literal", steps: [plain("restart")] },
+    { name: "site-${{ inputs.a }}", steps: [plain("restart")] },
+    { name: "site-${{ inputs.b }}", steps: [plain("restart")] },
+  ]);
+  assertStringIncludes(
+    refusalOfPlan(reordered, run, {
+      step: "restart",
+      job: "site-${{ inputs.b }}",
+    }),
+    'Job "site-${{ inputs.b }}" cannot be matched to a job of the run: ' +
+      "the workflow's jobs changed since the run.",
+  );
+});
+
+Deno.test("planFailedRunResume: a --from step moved into a job the run does not have names that job", () => {
+  const before = workflow([
+    { name: "host-a", steps: [plain("restart"), plain("check")] },
+  ]);
+  const run = failedRun(before, ["restart"]);
+  const moved = workflow([
+    { name: "host-a", steps: [plain("check")] },
+    { name: "host-c", steps: [plain("restart")] },
+  ]);
+  assertStringIncludes(
+    refusalOfPlan(moved, run, { step: "restart", job: "host-c" }),
+    `Job "host-c" is not in the run.`,
+  );
+});
+
+Deno.test("planFailedRunResume: an unknown --from step lists each step name once", () => {
+  const { wf, run } = sharedNameRun();
+  assertStringIncludes(
+    refusalOf(() => planFailedRunResume(wf, run, { step: "nope" })),
+    "Available steps: s, t",
+  );
+});
+
+function refusalOfPlan(
+  wf: Workflow,
+  run: WorkflowRun,
+  from: ResumeFrom,
+): string {
+  const message = refusalOf(() => planFailedRunResume(wf, run, from));
+  assertStringIncludes(message, "Start a new run.");
+  return message;
+}
 
 Deno.test("planFailedRunResume: a retry classifies records once across several entry templates", () => {
   // Two failed forEach steps in different jobs: one pass over the union
