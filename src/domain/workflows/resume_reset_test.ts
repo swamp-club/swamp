@@ -817,6 +817,84 @@ function refusalOfPlan(
   return message;
 }
 
+/** A step whose task input reads `expression`. */
+function reading(name: string, expression: string, dependsOn: string[] = []) {
+  return Step.create({
+    name,
+    task: StepTask.model("test-model", "run", { target: expression }),
+    dependsOn: dependsOn.map((dep) => ({
+      step: dep,
+      condition: TriggerCondition.succeeded(),
+    })),
+  });
+}
+
+/**
+ * Jobs host-a and host-b each run fetch, then deploy reading `read`.
+ * host-a's deploy failed.
+ */
+function hostsRun(read: string): { wf: Workflow; run: WorkflowRun } {
+  const wf = workflow(["host-a", "host-b"].map((name) => ({
+    name,
+    steps: [plain("fetch"), reading("deploy", read, ["fetch"])],
+  })));
+  const run = WorkflowRun.create(wf);
+  run.start();
+  for (const job of run.jobs) {
+    job.getStep("fetch")!.succeed();
+    if (job.jobName === "host-a") {
+      job.getStep("deploy")!.fail("exit 1");
+      job.fail();
+    } else {
+      job.getStep("deploy")!.succeed();
+      job.succeed();
+    }
+  }
+  run.complete();
+  return { wf, run };
+}
+
+Deno.test("planFailedRunResume: refuses to re-run a step that reads steps.<name> for a name used in more than one job", () => {
+  const { wf, run } = hostsRun("${{ steps.fetch.output }}");
+  const message =
+    `Step "deploy" in job "host-a" reads steps.fetch, and a step named "fetch" is in more than one job, so re-running it could read another job's output.`;
+  assertStringIncludes(refusal(wf, run), message);
+  assertStringIncludes(
+    refusalOfPlan(wf, run, { step: "deploy", job: "host-a" }),
+    message,
+  );
+});
+
+Deno.test("planFailedRunResume: refuses to re-run a step that reads the steps map by a computed key while a name is shared", () => {
+  const { wf, run } = hostsRun("${{ steps['fe' + 'tch'].output }}");
+  assertStringIncludes(
+    refusal(wf, run),
+    `Step "deploy" in job "host-a" reads the steps map by a computed key`,
+  );
+});
+
+Deno.test("planFailedRunResume: re-runs a step that reads only a step name used in one job", () => {
+  const wf = workflow([
+    {
+      name: "host-a",
+      steps: [
+        plain("fetch-a"),
+        reading("deploy", "${{ steps['fetch-a'].output }}", ["fetch-a"]),
+      ],
+    },
+    {
+      name: "host-b",
+      steps: [
+        plain("fetch-b"),
+        reading("deploy", "${{ steps['fetch-b'].output }}", ["fetch-b"]),
+      ],
+    },
+  ]);
+  const run = failedRun(wf, ["deploy"]);
+  const plan = planFailedRunResume(wf, run, { step: "deploy", job: "host-a" });
+  assertEquals(sortRefs(plan.steps), ["host-a/deploy"]);
+});
+
 Deno.test("planFailedRunResume: a retry classifies records once across several entry templates", () => {
   // Two failed forEach steps in different jobs: one pass over the union
   // selects each iteration by its own template.

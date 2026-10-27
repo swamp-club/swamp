@@ -158,7 +158,10 @@ or step, when:
   changed (its `failureKind` is `workflow_changed`; start a new run).
 
 Step names need be unique only within a job: retry re-runs a failed step in its
-own job and never a same-named step of another job.
+own job and never a same-named step of another job. Retry and `--from` refuse
+(start a new run) when a step they would re-run reads `steps.<name>` for a name
+used in more than one job: `steps.*` keys outputs by name alone, so the re-run
+could read another job's output.
 
 Retry can repeat external effects: a method may have changed something and then
 failed. Successful dependents of a failed step, such as cleanup, run again, and

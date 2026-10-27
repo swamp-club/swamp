@@ -171,6 +171,7 @@ Deno.test("evaluatedJobMismatch: accepts jobs that evaluate to the stored jobs t
       workflowOf("site-west", "literal"),
       run,
       new Set(["site-west"]),
+      pairExpressionJobs(wf, run),
     ),
     undefined,
   );
@@ -186,6 +187,7 @@ Deno.test("evaluatedJobMismatch: refuses a reset job that now evaluates to anoth
       workflowOf("site-east", "site-east"),
       stored,
       new Set(["site-north"]),
+      pairExpressionJobs(two, stored),
     ),
     'Job "site-${{ env.REGION }}" now evaluates to "site-east", but the run stored it as "site-north".',
   );
@@ -197,6 +199,7 @@ Deno.test("evaluatedJobMismatch: refuses a reset job that now evaluates to anoth
       workflowOf("site-south", "site-other"),
       run,
       new Set(),
+      pairExpressionJobs(wf, run),
     ),
     'Job "site-${{ env.REGION }}" now evaluates to "site-south", which is not in the run.',
   );
@@ -211,12 +214,31 @@ Deno.test("evaluatedJobMismatch: a job the reset does not reach is walked by the
   const swapped = workflowOf(eb, ea, "literal");
   const run = runOf(swapped, "site-west", "site-east", "literal");
   const resolved = workflowOf("site-east", "site-west", "literal");
+  const pairs = pairExpressionJobs(swapped, run);
   assertEquals(
-    evaluatedJobMismatch(swapped, resolved, run, new Set()),
+    evaluatedJobMismatch(swapped, resolved, run, new Set(), pairs),
     undefined,
   );
   assertEquals(
-    evaluatedJobMismatch(swapped, resolved, run, new Set(["literal"])),
+    evaluatedJobMismatch(swapped, resolved, run, new Set(["literal"]), pairs),
     undefined,
+  );
+});
+
+Deno.test("evaluatedJobMismatch: holds a reset job to the pairing the reset was planned with", () => {
+  // Planned by position against site-west; the run's inputs, merged at
+  // resume, now name site-east. The planned pairing is the one checked.
+  const wf = workflowOf(A, B);
+  const run = runWithInputs(wf, { a: "east" }, "site-west", "site-east");
+  const planned = new Map([[A, "site-west"], [B, "site-east"]]);
+  assertEquals(
+    evaluatedJobMismatch(
+      wf,
+      workflowOf("site-east", "site-east"),
+      run,
+      new Set(["site-west"]),
+      planned,
+    ),
+    'Job "site-${{ inputs.a }}" now evaluates to "site-east", but the run stored it as "site-west".',
   );
 });

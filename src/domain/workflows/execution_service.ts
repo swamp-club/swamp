@@ -126,7 +126,7 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
-import { evaluatedJobMismatch } from "./job_pairing.ts";
+import { evaluatedJobMismatch, pairExpressionJobs } from "./job_pairing.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   FROM_JOB_WITHOUT_FROM,
@@ -4555,6 +4555,11 @@ export class WorkflowExecutionService {
     claim: ContinuationClaim | undefined;
     /** The stored jobs a failed run's reset reaches; empty otherwise. */
     resetJobs: ReadonlySet<string>;
+    /**
+     * The expression-named jobs paired with stored jobs, from the run as
+     * taken over, before resume-time inputs are merged into it.
+     */
+    jobPairs: ReadonlyMap<string, string> | undefined;
   }> {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
@@ -4761,7 +4766,10 @@ export class WorkflowExecutionService {
       throw error;
     }
     const resetJobs = new Set(reset?.steps.map((ref) => ref.jobName) ?? []);
-    return { existingRun, snapshot, resumeInputs, claim, resetJobs };
+    const jobPairs = reset !== undefined
+      ? reset.pairs
+      : pairExpressionJobs(workflow, existingRun);
+    return { existingRun, snapshot, resumeInputs, claim, resetJobs, jobPairs };
   }
 
   /**
@@ -4944,8 +4952,14 @@ export class WorkflowExecutionService {
     // Taken over under the run's claim, which is released before anything
     // executes: a cancel either lands first and is seen here, or finds the
     // run running under this process (swamp-club#2919).
-    const { existingRun, snapshot, resumeInputs, claim, resetJobs } = await this
-      .runClaims
+    const {
+      existingRun,
+      snapshot,
+      resumeInputs,
+      claim,
+      resetJobs,
+      jobPairs,
+    } = await this.runClaims
       .withClaim(
         located.id,
         () =>
@@ -5098,6 +5112,7 @@ export class WorkflowExecutionService {
         resolvedWorkflow,
         existingRun,
         resetJobs,
+        jobPairs,
       );
       if (mismatch !== undefined) {
         throw new UserError(

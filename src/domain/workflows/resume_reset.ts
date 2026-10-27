@@ -32,6 +32,7 @@
  */
 
 import { UserError } from "../errors.ts";
+import { analyzeContentExpressions } from "../expressions/expression_references.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
 import {
   evaluatedName as evaluated,
@@ -75,6 +76,13 @@ export interface ResumeReset {
    * forEach prefix are not tracked: that match can over-select.
    */
   readonly tracked: readonly StepRunRef[];
+  /**
+   * The expression-named jobs paired with their stored jobs when the reset
+   * was planned (see {@link pairExpressionJobs}); undefined when they could
+   * not be paired. resume() holds the jobs the reset reaches to this pairing
+   * after it evaluates the workflow.
+   */
+  readonly pairs: ReadonlyMap<string, string> | undefined;
 }
 
 /** Stored statuses resume() treats as finished: it skips a job or step in one. */
@@ -250,6 +258,71 @@ function unpairedExpressionJob(
   return job
     ? `Job "${job.name}" cannot be matched to a job of the run: the workflow's jobs changed since the run.`
     : undefined;
+}
+
+const STEP_PATH = /^jobs\[(\d+)\]\.steps\[(\d+)\]/;
+
+/**
+ * Why the reset cannot re-run one of its steps: the step reads
+ * `steps.<name>` for a step name used in more than one job, or reads the
+ * `steps` map by a computed key or whole while such a name exists. The
+ * `steps.*` context keys outputs by step name alone, and a resume fills it
+ * in stored job order, so the re-run step could read another job's output
+ * (swamp-club#3815).
+ */
+function sharedStepRead(
+  workflow: Workflow,
+  templateKeysToReset: ReadonlySet<string>,
+): string | undefined {
+  const jobsWithName = new Map<string, number>();
+  for (const job of workflow.jobs) {
+    for (const name of new Set(job.steps.map((s) => s.name))) {
+      jobsWithName.set(name, (jobsWithName.get(name) ?? 0) + 1);
+    }
+  }
+  const shared = new Set(
+    [...jobsWithName].filter(([, n]) => n > 1).map(([name]) => name),
+  );
+  if (shared.size === 0) return undefined;
+  // A workflow assert's bare predicate is evaluated without `${{ }}`.
+  const asserts: { raw: string; celExpression: string; path: string }[] = [];
+  workflow.jobs.forEach((job, j) =>
+    job.steps.forEach((step, k) => {
+      const task = step.task.data;
+      if (task.type === "assert") {
+        asserts.push({
+          raw: task.expr,
+          celExpression: task.expr,
+          path: `jobs[${j}].steps[${k}].task.expr`,
+        });
+      }
+    })
+  );
+  for (
+    const { paths, references } of analyzeContentExpressions(
+      workflow.toData(),
+      asserts,
+    )
+  ) {
+    const read = [...references.stepTargets].find((name) => shared.has(name));
+    if (read === undefined && !references.stepsWide) continue;
+    for (const path of paths) {
+      const at = STEP_PATH.exec(path);
+      if (!at) continue;
+      const job = workflow.jobs[Number(at[1])];
+      const step = job?.steps[Number(at[2])];
+      if (
+        !step ||
+        !templateKeysToReset.has(
+          stepRunKey({ jobName: job.name, stepName: step.name }),
+        )
+      ) continue;
+      return read !== undefined
+        ? `Step "${step.name}" in job "${job.name}" reads steps.${read}, and a step named "${read}" is in more than one job, so re-running it could read another job's output.`
+        : `Step "${step.name}" in job "${job.name}" reads the steps map by a computed key, and a step name is used in more than one job, so re-running it could read another job's output.`;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -609,6 +682,8 @@ export function planFailedRunResume(
   const keys = templatesToReset(workflow, entries);
   const unpaired = unpairedExpressionJob(workflow, pairs, keys);
   if (unpaired !== undefined) throw refuse(unpaired);
+  const shared = sharedStepRead(workflow, keys);
+  if (shared !== undefined) throw refuse(shared);
   // One pass over the union of the template sets selects the same records as
   // the union of computeStepsToReset per entry template, with one branch per
   // record.
@@ -687,7 +762,7 @@ export function planFailedRunResume(
   );
   if (noStep !== undefined) throw refuse(noStep);
 
-  return { steps, tracked };
+  return { steps, tracked, pairs };
 }
 
 /**

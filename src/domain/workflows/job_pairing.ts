@@ -174,7 +174,9 @@ export function workflowJobOf(
  * the resume: an expression-named job of `workflow` evaluated to a name the
  * run does not have, or, for a job paired with a stored job in `resetJobs`
  * (the stored jobs a failed run's reset reaches), to a name other than that
- * job (a value its name reads, other than an input, changed since the run).
+ * job. `pairs` is the pairing the reset was planned with
+ * ({@link pairExpressionJobs} over the run as taken over), not one made
+ * again from inputs a resume has since merged in (a value its name reads, other than an input, changed since the run).
  * Resume finds each job's record by its evaluated name, so it would reset
  * one job and walk another. A job the reset does not reach is walked by
  * whatever stored job its name evaluates to, as before; position alone
@@ -187,8 +189,8 @@ export function evaluatedJobMismatch(
   resolved: Workflow,
   run: WorkflowRun,
   resetJobs: ReadonlySet<string>,
+  pairs: ReadonlyMap<string, string> | undefined,
 ): string | undefined {
-  const pairs = pairExpressionJobs(workflow, run);
   for (const [i, job] of workflow.jobs.entries()) {
     if (!evaluatedName(job.name)) continue;
     const now = resolved.jobs[i]?.name;
