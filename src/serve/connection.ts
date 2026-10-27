@@ -25,6 +25,7 @@
 import { z } from "zod";
 import {
   SERVE_CAPABILITY_LITERAL_INPUTS,
+  SERVE_CAPABILITY_RESUME_FROM_JOB,
   type ServerRequest,
 } from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -950,6 +951,7 @@ const WorkflowResumeRequestSchema = z.object({
     workflowIdOrName: z.string(),
     runId: z.string().optional(),
     from: z.string().optional(),
+    fromJob: z.string().optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
@@ -1986,7 +1988,10 @@ export function handleMessage(
             payload: {
               version: SERVER_VERSION,
               gitSha: SERVER_GIT_SHA,
-              capabilities: [SERVE_CAPABILITY_LITERAL_INPUTS],
+              capabilities: [
+                SERVE_CAPABILITY_LITERAL_INPUTS,
+                SERVE_CAPABILITY_RESUME_FROM_JOB,
+              ],
             },
           }),
         ),

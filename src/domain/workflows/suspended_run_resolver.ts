@@ -27,7 +27,7 @@ import { createWorkflowRunId } from "./workflow_id.ts";
 import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
-import { entryTemplateOf } from "./failed_step_retry.ts";
+import { entryTemplateOf, fromJobFor } from "./failed_step_retry.ts";
 import { assertNestedWaitsSettled } from "./nested_run_link.ts";
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import {
@@ -114,9 +114,12 @@ export async function resolveSuspendedRun(
     if (run.status !== "suspended") {
       throw new RunNotSuspendedError(
         `Run ${runId} is not suspended (status: ${run.status}).` +
-          nextActionForStatus(run.status, workflow.name, run.id, {
-            rejectedStep: rejectedGateOf(run),
-          }),
+          nextActionForStatus(
+            run.status,
+            workflow.name,
+            run.id,
+            rejectedGateOf(workflow, run),
+          ),
       );
     }
     return {
@@ -133,7 +136,7 @@ export async function resolveSuspendedRun(
   if (suspendedRuns.length === 0) {
     throw new UserError(
       noRunsInStateMessage(
-        workflow.name,
+        workflow,
         "suspended",
         allRuns,
         lookup.ownerIsDead,
@@ -158,9 +161,18 @@ export async function resolveSuspendedRun(
 
 export type ResumableRunInfo = SuspendedRunInfo;
 
+/**
+ * The refusal of a `--job` without `--from`: it names the job of the `--from`
+ * step, so alone it would be ignored and a retry would re-run every job.
+ */
+export const FROM_JOB_WITHOUT_FROM =
+  "--job requires --from: it names the job of the --from step.";
+
 export interface ResolveResumableRunOptions extends ResolveSuspendedRunOptions {
   /** The --from step; when set, only a failed run is resumable. */
   fromStep?: string;
+  /** The --job naming the job of the --from step. */
+  fromJob?: string;
   /**
    * Accept only a suspended run, as auto-resume after an approval needs.
    * Takes precedence over `fromStep`.
@@ -199,6 +211,10 @@ export async function resolveResumableRun(
   runId?: string,
   options: ResolveResumableRunOptions = {},
 ): Promise<ResumableRunInfo> {
+  // The CLI refuses --job without --from too; serve's payload does not.
+  if (options.fromJob !== undefined && !options.fromStep) {
+    throw new UserError(FROM_JOB_WITHOUT_FROM);
+  }
   if (options.suspendedOnly || (!options.fromStep && !runId)) {
     const resolved = await resolveSuspendedRun(
       workflowRepo,
@@ -249,7 +265,10 @@ export async function resolveResumableRun(
           `--from requires a failed run, but run ${runId} has status "${run.status}"`,
         );
       }
-      planFailedRunResume(workflow, run, options.fromStep);
+      planFailedRunResume(workflow, run, {
+        step: options.fromStep,
+        job: options.fromJob,
+      });
     } else if (run.status === "failed") {
       planFailedRunResume(workflow, run);
     } else if (run.status === "suspended") {
@@ -277,7 +296,7 @@ export async function resolveResumableRun(
 
   if (failedRuns.length === 0) {
     throw new UserError(
-      noRunsInStateMessage(workflow.name, "failed", allRuns),
+      noRunsInStateMessage(workflow, "failed", allRuns),
     );
   }
   if (failedRuns.length > 1) {
@@ -288,7 +307,13 @@ export async function resolveResumableRun(
     );
   }
 
-  planFailedRunResume(workflow, failedRuns[0], options.fromStep);
+  planFailedRunResume(
+    workflow,
+    failedRuns[0],
+    options.fromStep !== undefined
+      ? { step: options.fromStep, job: options.fromJob }
+      : undefined,
+  );
   return {
     workflowName: workflow.name,
     workflowId: workflow.id,
@@ -303,11 +328,12 @@ function deadOwnerNextAction(workflowName: string, runId: string): string {
 }
 
 function noRunsInStateMessage(
-  workflowName: string,
+  workflow: Workflow,
   expectedStatus: string,
   allRuns: readonly WorkflowRun[],
   ownerIsDead?: (run: WorkflowRun) => boolean,
 ): string {
+  const workflowName = workflow.name;
   const base = `No ${expectedStatus} runs found for workflow "${workflowName}"`;
   if (allRuns.length === 0) {
     return `${base}. No runs exist — run the workflow first with 'swamp workflow run ${workflowName}'.`;
@@ -323,7 +349,7 @@ function noRunsInStateMessage(
     latest.id,
     {
       nestedWait: latest.findNestedWaits().length > 0,
-      rejectedStep: rejectedGateOf(latest),
+      ...rejectedGateOf(workflow, latest),
     },
   );
   // A failed run's hint already names the run id, so it is not repeated
@@ -334,23 +360,42 @@ function noRunsInStateMessage(
 
 /**
  * The step to re-ask when `run` failed on a rejected approval gate — the
- * same step `swamp workflow resume` names when it refuses to retry the run.
+ * same step `swamp workflow resume` names when it refuses to retry the run —
+ * and its `--job` when the step name needs one (see {@link fromJobFor}).
  */
-function rejectedGateOf(run: WorkflowRun): string | undefined {
+function rejectedGateOf(
+  workflow: Workflow,
+  run: WorkflowRun,
+): { rejectedStep?: string; rejectedJob?: string } {
   const rejected = run.failedSteps().find((s) => s.approvalRejected);
-  return rejected ? entryTemplateOf(rejected) : undefined;
+  if (!rejected) return {};
+  const rejectedStep = entryTemplateOf(rejected);
+  const rejectedJob = fromJobFor(
+    workflow,
+    run,
+    rejected.jobName,
+    rejectedStep,
+  );
+  return rejectedJob !== undefined
+    ? { rejectedStep, rejectedJob }
+    : { rejectedStep };
 }
 
 /**
  * A sentence, with a leading space, naming the command to run next for a
  * run in `status`. A failed run with a `rejectedStep` is retried from that
- * gate, since a plain retry never re-opens it.
+ * gate, since a plain retry never re-opens it; `rejectedJob` names the gate's
+ * job when its step name is used in more than one job.
  */
 export function nextActionForStatus(
   status: string,
   workflowName: string,
   runId: string,
-  options: { nestedWait?: boolean; rejectedStep?: string } = {},
+  options: {
+    nestedWait?: boolean;
+    rejectedStep?: string;
+    rejectedJob?: string;
+  } = {},
 ): string {
   if (status === "suspended" && options.nestedWait) {
     // It has no gate of its own to approve (swamp-club#2736).
@@ -364,9 +409,12 @@ export function nextActionForStatus(
     case "failed":
       // A full command, since approve, reject and auto-resume show this too.
       if (options.rejectedStep !== undefined) {
+        const job = options.rejectedJob !== undefined
+          ? ` --job ${quoteShellWord(options.rejectedJob)}`
+          : "";
         return ` Ask again with 'swamp workflow resume ${workflowName} --run ${runId} --from ${
           quoteShellWord(options.rejectedStep)
-        }'.`;
+        }${job}'.`;
       }
       return ` Retry it with 'swamp workflow resume ${workflowName} --run ${runId}'.`;
     case "suspended":

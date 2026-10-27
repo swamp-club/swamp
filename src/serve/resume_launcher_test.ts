@@ -441,6 +441,51 @@ Deno.test("startDetachedResume: registers a retry of a failed run named by id", 
   await waitFor(() => registry.get(run.id) === undefined, "resume finished");
 });
 
+Deno.test("startDetachedResume: --from passes fromJob through to pick the job of a shared step name", async () => {
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: ["one", "two"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "s", task: StepTask.model("deployer", "run") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.getJob("one")!.getStep("s")!.succeed();
+  run.getJob("one")!.succeed();
+  run.getJob("two")!.getStep("s")!.fail("s failed");
+  run.getJob("two")!.fail();
+  run.complete();
+  const { ctx, registry } = makeHarness(workflow, run);
+
+  const refused = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: "gated",
+    runId: run.id,
+    from: "s",
+    principalId: null,
+  });
+  assertEquals(refused.ok, false);
+  if (!refused.ok) {
+    assertStringIncludes(refused.message, `Step "s" is in more than one job`);
+  }
+  assertEquals(registry.registered.length, 0);
+
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: "gated",
+    runId: run.id,
+    from: "s",
+    fromJob: "two",
+    principalId: null,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(registry.registered.length, 1);
+  await waitFor(() => registry.get(run.id) === undefined, "resume finished");
+});
+
 Deno.test("startDetachedResume: refuses an ineligible failed run before registering it", async () => {
   const workflow = makeWorkflow();
   const run = makeFailedRun(workflow);

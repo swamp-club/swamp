@@ -288,6 +288,16 @@ Deno.test("nextActionForStatus: a failed run with a rejected step resumes from i
   );
 });
 
+Deno.test("nextActionForStatus: a rejected step's job is named when given, shell-quoted", () => {
+  assertEquals(
+    nextActionForStatus("failed", "wf", "r1", {
+      rejectedStep: "gate",
+      rejectedJob: "host b",
+    }),
+    " Ask again with 'swamp workflow resume wf --run r1 --from gate --job 'host b''.",
+  );
+});
+
 Deno.test("nextActionForStatus: rejectedStep is ignored for a run that is not failed", () => {
   assertEquals(
     nextActionForStatus("succeeded", "wf", "r1", { rejectedStep: "gate" }),
@@ -397,6 +407,56 @@ Deno.test("resolveResumableRun: --run with --from rejects non-failed run", async
     () => resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id, FROM),
     Error,
     "--from requires a failed run",
+  );
+});
+
+/** Jobs one and two each have a step "s"; one's s failed. */
+function sharedNameFailedRun(): { wf: Workflow; run: WorkflowRun } {
+  const wf = Workflow.create({
+    name: "test-wf",
+    jobs: ["one", "two"].map((name) =>
+      Job.create({
+        name,
+        steps: [Step.create({ name: "s", task: StepTask.model("m", "run") })],
+      })
+    ),
+  });
+  const run = createFailedRun(wf);
+  return { wf, run };
+}
+
+Deno.test("resolveResumableRun: --from refuses a step name used in two jobs unless --job names one", async () => {
+  const { wf, run } = sharedNameFailedRun();
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  for (const runId of [undefined, run.id]) {
+    await assertRejects(
+      () => resolveResumableRun(workflowRepo, runRepo, "test-wf", runId, FROM),
+      UserError,
+      `Step "s" is in more than one job: "one", "two".`,
+    );
+    const result = await resolveResumableRun(
+      workflowRepo,
+      runRepo,
+      "test-wf",
+      runId,
+      { fromStep: "s", fromJob: "one" },
+    );
+    assertEquals(result.run.id, run.id);
+  }
+});
+
+Deno.test("resolveResumableRun: refuses --job without --from rather than retrying every job", async () => {
+  const { wf, run } = sharedNameFailedRun();
+  const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+
+  await assertRejects(
+    () =>
+      resolveResumableRun(workflowRepo, runRepo, "test-wf", run.id, {
+        fromJob: "one",
+      }),
+    UserError,
+    "--job requires --from",
   );
 });
 

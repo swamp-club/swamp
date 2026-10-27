@@ -126,8 +126,10 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
+import { evaluatedJobMismatch, pairExpressionJobs } from "./job_pairing.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
+  FROM_JOB_WITHOUT_FROM,
   nextActionForStatus,
   RunNotSuspendedError,
 } from "./suspended_run_resolver.ts";
@@ -4540,6 +4542,7 @@ export class WorkflowExecutionService {
     options?: {
       inputs?: Record<string, unknown>;
       fromStep?: string;
+      fromJob?: string;
       suspendedOnly?: boolean;
       instanceId?: string;
       continuation?: ContinuationMode;
@@ -4550,6 +4553,13 @@ export class WorkflowExecutionService {
     snapshot: WorkflowRunData;
     resumeInputs: Record<string, unknown>;
     claim: ContinuationClaim | undefined;
+    /** The stored jobs a failed run's reset reaches; empty otherwise. */
+    resetJobs: ReadonlySet<string>;
+    /**
+     * The expression-named jobs paired with stored jobs, from the run as
+     * taken over, before resume-time inputs are merged into it.
+     */
+    jobPairs: ReadonlyMap<string, string> | undefined;
   }> {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
@@ -4599,6 +4609,9 @@ export class WorkflowExecutionService {
 
     // Every check runs before the first mutation, so a refusal persists
     // nothing and invokes no method.
+    if (options?.fromJob !== undefined && !fromStep) {
+      throw new UserError(FROM_JOB_WITHOUT_FROM);
+    }
     let reset: ResumeReset | undefined;
     if (fromStep) {
       if (existingRun.status !== "failed") {
@@ -4606,7 +4619,10 @@ export class WorkflowExecutionService {
           `--from requires a failed run, but run ${runId} has status "${existingRun.status}"`,
         );
       }
-      reset = planFailedRunResume(workflow, existingRun, fromStep);
+      reset = planFailedRunResume(workflow, existingRun, {
+        step: fromStep,
+        job: options?.fromJob,
+      });
     } else if (
       existingRun.status === "failed" && !options?.suspendedOnly
     ) {
@@ -4718,7 +4734,7 @@ export class WorkflowExecutionService {
 
       // Work the run's abort left unfinished runs now, as it would have had the
       // abort left it pending. Reopened per record before a failed run's reset
-      // set, which resets by name in every job.
+      // set is applied.
       existingRun.reopenAbortedWork();
       // This process now drives the run. Recorded before the save below, so
       // cancel sees the live process from the start.
@@ -4749,7 +4765,11 @@ export class WorkflowExecutionService {
       await this.releaseSuspension(claim);
       throw error;
     }
-    return { existingRun, snapshot, resumeInputs, claim };
+    const resetJobs = new Set(reset?.steps.map((ref) => ref.jobName) ?? []);
+    const jobPairs = reset !== undefined
+      ? reset.pairs
+      : pairExpressionJobs(workflow, existingRun);
+    return { existingRun, snapshot, resumeInputs, claim, resetJobs, jobPairs };
   }
 
   /**
@@ -4828,6 +4848,11 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       /** Re-enter the DAG at this step (template name from the workflow YAML). */
       fromStep?: string;
+      /**
+       * The job of `fromStep`, as named in the workflow YAML. Needed when the
+       * step name is used in more than one job.
+       */
+      fromJob?: string;
       /**
        * Accept only a suspended run. Auto-resume after an approval sets it so
        * an approval can never start a retry of a failed run.
@@ -4927,7 +4952,14 @@ export class WorkflowExecutionService {
     // Taken over under the run's claim, which is released before anything
     // executes: a cancel either lands first and is seen here, or finds the
     // run running under this process (swamp-club#2919).
-    const { existingRun, snapshot, resumeInputs, claim } = await this.runClaims
+    const {
+      existingRun,
+      snapshot,
+      resumeInputs,
+      claim,
+      resetJobs,
+      jobPairs,
+    } = await this.runClaims
       .withClaim(
         located.id,
         () =>
@@ -5071,6 +5103,22 @@ export class WorkflowExecutionService {
       );
       warnForeignTaskArguments(workflow.name, evaluated.foreignTaskArguments);
       const resolvedWorkflow = evaluated.workflow;
+      // An expression-named job the reset reaches must evaluate to the
+      // stored job it was planned against, and every one to a job the run
+      // has: resume walks records by evaluated name. Refused here, before
+      // execution, so the run is restored as it was.
+      const mismatch = evaluatedJobMismatch(
+        workflow,
+        resolvedWorkflow,
+        existingRun,
+        resetJobs,
+        jobPairs,
+      );
+      if (mismatch !== undefined) {
+        throw new UserError(
+          `${mismatch} Start a new run. See 'swamp workflow history logs ${existingRun.id}'.`,
+        );
+      }
       const sanitizedTasks = evaluated.sanitizedTasks;
       const stepProvenance = evaluated.stepProvenance;
       const workflowProvenance = evaluated.provenance;

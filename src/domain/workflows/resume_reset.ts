@@ -32,14 +32,21 @@
  */
 
 import { UserError } from "../errors.ts";
+import { analyzeContentExpressions } from "../expressions/expression_references.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
+import {
+  evaluatedName as evaluated,
+  pairExpressionJobs,
+  workflowJobOf,
+} from "./job_pairing.ts";
 import type { Job } from "./job.ts";
 import type { Workflow } from "./workflow.ts";
-import type {
-  JobRun,
-  StepRun,
-  StepRunRef,
-  WorkflowRun,
+import {
+  type JobRun,
+  type StepRun,
+  stepRunKey,
+  type StepRunRef,
+  type WorkflowRun,
 } from "./workflow_run.ts";
 
 /**
@@ -60,8 +67,8 @@ interface SelectedRecord {
  * The outcome of planning a failed-run resume.
  */
 export interface ResumeReset {
-  /** Stored step names to reset, as `WorkflowRun.resetForResumeFrom` takes. */
-  readonly steps: ReadonlySet<string>;
+  /** Stored step records to reset, as `WorkflowRun.resetForResumeFrom` takes. */
+  readonly steps: readonly StepRunRef[];
   /**
    * Reset records selected by name or `forEachTemplate`. The current workflow
    * walks each one in its own job, so one its job finishes without running
@@ -69,6 +76,13 @@ export interface ResumeReset {
    * forEach prefix are not tracked: that match can over-select.
    */
   readonly tracked: readonly StepRunRef[];
+  /**
+   * The expression-named jobs paired with their stored jobs when the reset
+   * was planned (see {@link pairExpressionJobs}); undefined when they could
+   * not be paired. resume() holds the jobs the reset reaches to this pairing
+   * after it evaluates the workflow.
+   */
+  readonly pairs: ReadonlyMap<string, string> | undefined;
 }
 
 /** Stored statuses resume() treats as finished: it skips a job or step in one. */
@@ -97,143 +111,285 @@ function finishedJob(jobRun: JobRun): boolean {
 }
 
 /**
- * Validates `fromStep` and returns it plus every template step downstream of
- * it, across all jobs.
+ * Where a `--from` resume re-enters: a template step name, and the job it is
+ * in. The job may be left out when the name is used in only one job.
  */
-function templatesToReset(workflow: Workflow, fromStep: string): Set<string> {
-  // Validate that fromStep is a template step name in the workflow definition.
-  let foundInJob: string | undefined;
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
-      if (step.name === fromStep) {
-        foundInJob = job.name;
-        break;
-      }
+export interface ResumeFrom {
+  readonly step: string;
+  readonly job?: string;
+}
+
+/** Job names a refusal lists before it counts the rest. */
+const LISTED_JOBS = 3;
+
+function jobList(names: readonly string[]): string {
+  const listed = names.slice(0, LISTED_JOBS).map((n) => `"${n}"`).join(", ");
+  const rest = names.length - LISTED_JOBS;
+  return rest > 0 ? `${listed} and ${rest} more` : listed;
+}
+
+/** "job" or "jobs" before {@link jobList} of `names`. */
+function jobsNoun(names: readonly string[]): string {
+  return names.length === 1 ? "job" : "jobs";
+}
+
+function stepNotFound(workflow: Workflow, step: string): UserError {
+  const allStepNames = [
+    ...new Set(workflow.jobs.flatMap((j) => j.steps.map((s) => s.name))),
+  ];
+  return new UserError(
+    `Step "${step}" not found in workflow "${workflow.name}". ` +
+      `Available steps: ${allStepNames.join(", ")}`,
+  );
+}
+
+/**
+ * Resolves `--from` to the workflow step it names. Step names are unique only
+ * within a job, so a name used in more than one job needs `--job`.
+ */
+function resolveFrom(workflow: Workflow, from: ResumeFrom): StepRunRef {
+  const jobsWithStep = workflow.jobs
+    .filter((j) => j.getStep(from.step) !== undefined)
+    .map((j) => j.name);
+  if (from.job !== undefined) {
+    const job = workflow.getJob(from.job);
+    if (!job) {
+      throw new UserError(
+        `Job "${from.job}" not found in workflow "${workflow.name}". ` +
+          `Available jobs: ${jobList(workflow.jobs.map((j) => j.name))}.`,
+      );
     }
-    if (foundInJob) break;
+    if (!job.getStep(from.step)) {
+      if (jobsWithStep.length === 0) throw stepNotFound(workflow, from.step);
+      throw new UserError(
+        `Step "${from.step}" is not in job "${from.job}". ` +
+          `It is in ${jobsNoun(jobsWithStep)} ${jobList(jobsWithStep)}.`,
+      );
+    }
+    return { jobName: job.name, stepName: from.step };
   }
-  if (!foundInJob) {
-    const allStepNames = workflow.jobs
-      .flatMap((j) => j.steps.map((s) => s.name));
+  if (jobsWithStep.length === 0) throw stepNotFound(workflow, from.step);
+  if (jobsWithStep.length > 1) {
     throw new UserError(
-      `Step "${fromStep}" not found in workflow "${workflow.name}". ` +
-        `Available steps: ${allStepNames.join(", ")}`,
+      `Step "${from.step}" is in more than one job: ${
+        jobList(jobsWithStep)
+      }. ` +
+        `Add --job <job> to choose one.`,
     );
   }
+  return { jobName: jobsWithStep[0], stepName: from.step };
+}
 
-  // Build a combined dependency graph across all jobs and steps.
-  // Job-level dependencies create edges from every step in the upstream job
-  // to the dependent job's steps.
+/**
+ * Returns the keys ({@link stepRunKey}) of the entry steps plus every
+ * template step downstream of them, across all jobs. A step's `dependsOn`
+ * names steps of its own job; a job dependency puts every step of the
+ * upstream job upstream of every step of the dependent job.
+ */
+function templatesToReset(
+  workflow: Workflow,
+  entries: readonly StepRunRef[],
+): Set<string> {
   const downstreamOf = new Map<string, Set<string>>();
+  const edge = (from: string, to: string) => {
+    let downstream = downstreamOf.get(from);
+    if (!downstream) {
+      downstream = new Set();
+      downstreamOf.set(from, downstream);
+    }
+    downstream.add(to);
+  };
 
   for (const job of workflow.jobs) {
     for (const step of job.steps) {
-      if (!downstreamOf.has(step.name)) {
-        downstreamOf.set(step.name, new Set());
-      }
-      // Step-level dependencies (within a job)
+      const key = stepRunKey({ jobName: job.name, stepName: step.name });
       for (const dep of step.getDependencyNames()) {
-        if (!downstreamOf.has(dep)) {
-          downstreamOf.set(dep, new Set());
-        }
-        downstreamOf.get(dep)!.add(step.name);
+        edge(stepRunKey({ jobName: job.name, stepName: dep }), key);
       }
     }
-    // Job-level dependencies: if job B depends on job A, then all steps in
-    // job A are upstream of all steps in job B (for the purpose of --from
-    // reset propagation).
     for (const depJobName of job.getDependencyNames()) {
       const depJob = workflow.jobs.find((j) => j.name === depJobName);
       if (!depJob) continue;
       for (const depStep of depJob.steps) {
         for (const step of job.steps) {
-          if (!downstreamOf.has(depStep.name)) {
-            downstreamOf.set(depStep.name, new Set());
-          }
-          downstreamOf.get(depStep.name)!.add(step.name);
+          edge(
+            stepRunKey({ jobName: depJob.name, stepName: depStep.name }),
+            stepRunKey({ jobName: job.name, stepName: step.name }),
+          );
         }
       }
     }
   }
 
-  // BFS from fromStep to collect all transitive downstream template names.
-  const templateNamesToReset = new Set<string>();
-  const queue = [fromStep];
+  // BFS from the entry steps to collect all transitive downstream templates.
+  const templateKeysToReset = new Set<string>();
+  const queue = entries.map(stepRunKey);
   while (queue.length > 0) {
     const current = queue.shift()!;
-    if (templateNamesToReset.has(current)) continue;
-    templateNamesToReset.add(current);
+    if (templateKeysToReset.has(current)) continue;
+    templateKeysToReset.add(current);
     for (const downstream of downstreamOf.get(current) ?? []) {
-      if (!templateNamesToReset.has(downstream)) {
+      if (!templateKeysToReset.has(downstream)) {
         queue.push(downstream);
       }
     }
   }
-  return templateNamesToReset;
+  return templateKeysToReset;
 }
 
 /**
- * Maps template names to the stored step records they reset, recording why
- * each record was selected.
+ * Why the reset cannot be applied to the run: it reaches an expression-named
+ * job, and the workflow's jobs no longer line up with the run's, so which
+ * stored job that job evaluated to cannot be told (see
+ * {@link pairExpressionJobs}).
+ */
+function unpairedExpressionJob(
+  workflow: Workflow,
+  pairs: ReadonlyMap<string, string> | undefined,
+  templateKeysToReset: ReadonlySet<string>,
+): string | undefined {
+  if (pairs !== undefined) return undefined;
+  const job = workflow.jobs.find((j) =>
+    evaluated(j.name) &&
+    j.steps.some((s) =>
+      templateKeysToReset.has(stepRunKey({ jobName: j.name, stepName: s.name }))
+    )
+  );
+  return job
+    ? `Job "${job.name}" cannot be matched to a job of the run: the workflow's jobs changed since the run.`
+    : undefined;
+}
+
+const STEP_PATH = /^jobs\[(\d+)\]\.steps\[(\d+)\]/;
+
+/** The names that `jobs` (each a list of step names) share. */
+function sharedNames(jobs: Iterable<readonly string[]>): Set<string> {
+  const jobsWithName = new Map<string, number>();
+  for (const names of jobs) {
+    for (const name of new Set(names)) {
+      jobsWithName.set(name, (jobsWithName.get(name) ?? 0) + 1);
+    }
+  }
+  return new Set(
+    [...jobsWithName].filter(([, n]) => n > 1).map(([name]) => name),
+  );
+}
+
+/**
+ * Why the resume cannot re-run one of the steps in `rerunKeys` (the reset's
+ * template steps and those of records the run's abort settled): the step
+ * reads `steps.<name>` for a step name used in more than one job, or reads
+ * the `steps` map by a computed key or whole while such a name exists. A name
+ * counts as used in a job when the workflow job has that step or the stored
+ * job has a record of it (a `forEach` iteration is stored under its expanded
+ * name). The `steps.*` context keys outputs by those stored names alone, and
+ * a resume fills it in stored job order, so the re-run step could read
+ * another job's output (swamp-club#3815).
+ */
+function sharedStepRead(
+  workflow: Workflow,
+  run: WorkflowRun,
+  rerunKeys: ReadonlySet<string>,
+): string | undefined {
+  const shared = new Set([
+    ...sharedNames(workflow.jobs.map((j) => j.steps.map((s) => s.name))),
+    ...sharedNames(run.jobs.map((j) => j.steps.map((s) => s.stepName))),
+  ]);
+  if (shared.size === 0) return undefined;
+  // A workflow assert's bare predicate is evaluated without `${{ }}`.
+  const asserts: { raw: string; celExpression: string; path: string }[] = [];
+  workflow.jobs.forEach((job, j) =>
+    job.steps.forEach((step, k) => {
+      const task = step.task.data;
+      if (task.type === "assert") {
+        asserts.push({
+          raw: task.expr,
+          celExpression: task.expr,
+          path: `jobs[${j}].steps[${k}].task.expr`,
+        });
+      }
+    })
+  );
+  for (
+    const { paths, references } of analyzeContentExpressions(
+      workflow.toData(),
+      asserts,
+    )
+  ) {
+    const read = [...references.stepTargets].find((name) => shared.has(name));
+    if (read === undefined && !references.stepsWide) continue;
+    for (const path of paths) {
+      const at = STEP_PATH.exec(path);
+      if (!at) continue;
+      const job = workflow.jobs[Number(at[1])];
+      const step = job?.steps[Number(at[2])];
+      if (
+        !step ||
+        !rerunKeys.has(stepRunKey({ jobName: job.name, stepName: step.name }))
+      ) continue;
+      return read !== undefined
+        ? `Step "${step.name}" in job "${job.name}" reads steps.${read}, and a step named "${read}" is in more than one job, so re-running it could read another job's output.`
+        : `Step "${step.name}" in job "${job.name}" reads the steps map by a computed key, and a step name is used in more than one job, so re-running it could read another job's output.`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Maps the keyed template steps to the stored step records they reset,
+ * recording why each record was selected. A record is matched only against
+ * the template steps of the workflow job its stored job belongs to (see
+ * {@link workflowJobOf}).
  */
 function selectResetRecords(
   workflow: Workflow,
   run: WorkflowRun,
-  templateNamesToReset: ReadonlySet<string>,
+  pairs: ReadonlyMap<string, string> | undefined,
+  templateKeysToReset: ReadonlySet<string>,
 ): SelectedRecord[] {
-  // Map template names to persisted step names. For forEach steps, the
+  // Map template steps to persisted step names. For forEach steps, the
   // template entry was replaced by expanded entries during the original run.
   // We match by checking if a persisted step name equals the template name
   // (non-forEach) or starts with the template name followed by a separator
   // (forEach-expanded). We also check against the workflow definition to
   // only apply prefix matching for steps that have forEach configured.
-  const allTemplateNames = new Set<string>();
-  const forEachTemplates = new Set<string>();
-  for (const job of workflow.jobs) {
-    for (const step of job.steps) {
-      allTemplateNames.add(step.name);
-      if (step.forEach) {
-        forEachTemplates.add(step.name);
-      }
-    }
-  }
-
   const selected: SelectedRecord[] = [];
   for (const jobRun of run.jobs) {
+    const job = workflowJobOf(workflow, jobRun, pairs);
+    if (!job) continue;
     for (const stepRun of jobRun.steps) {
-      const name = stepRun.stepName;
-      const select = (branch: ResetBranch) =>
-        selected.push({
-          jobName: jobRun.jobName,
-          stepName: name,
-          forEachTemplate: stepRun.forEachTemplate,
-          branch,
-        });
-      if (templateNamesToReset.has(name)) {
-        select("name");
-      } else if (
-        stepRun.forEachTemplate &&
-        templateNamesToReset.has(stepRun.forEachTemplate)
-      ) {
-        select("template");
-      } else if (!allTemplateNames.has(name)) {
-        // Backward-compat fallback for runs persisted before forEachTemplate
-        // was recorded: prefix-match against forEach templates. Only applies
-        // to steps that are NOT themselves template names (prevents a forEach
-        // template "read" from matching a non-forEach step "read-plate").
-        for (const tmpl of templateNamesToReset) {
-          if (
-            forEachTemplates.has(tmpl) &&
-            name.startsWith(tmpl + "-")
-          ) {
-            select("prefix");
-            break;
-          }
-        }
-      }
+      const branch = matchRecord(job, stepRun);
+      if (branch === undefined) continue;
+      selected.push({
+        jobName: jobRun.jobName,
+        stepName: stepRun.stepName,
+        forEachTemplate: stepRun.forEachTemplate,
+        branch,
+      });
     }
   }
   return selected;
+
+  function matchRecord(job: Job, stepRun: StepRun): ResetBranch | undefined {
+    const resets = (stepName: string) =>
+      templateKeysToReset.has(stepRunKey({ jobName: job.name, stepName }));
+    const name = stepRun.stepName;
+    if (resets(name)) return "name";
+    if (stepRun.forEachTemplate && resets(stepRun.forEachTemplate)) {
+      return "template";
+    }
+    if (job.getStep(name)) return undefined;
+    // Backward-compat fallback for runs persisted before forEachTemplate
+    // was recorded: prefix-match against the job's forEach templates. Only
+    // applies to steps that are NOT themselves template names (prevents a
+    // forEach template "read" from matching a non-forEach step "read-plate").
+    return job.steps.some((step) =>
+        step.forEach !== undefined && resets(step.name) &&
+        name.startsWith(step.name + "-")
+      )
+      ? "prefix"
+      : undefined;
+  }
 }
 
 function zeroStepsError(fromStep: string): UserError {
@@ -244,33 +400,29 @@ function zeroStepsError(fromStep: string): UserError {
 }
 
 /**
- * Computes the set of persisted step names (including forEach-expanded names)
- * to reset when re-entering a failed run at `fromStep`. The result includes
- * the fromStep itself and all its transitive downstream dependents across all
- * jobs. Used by a `--from` resume, and once per entry template by a retry
- * (a resume of a failed run without `--from`).
+ * Computes the persisted step records (including forEach-expanded names) to
+ * reset when re-entering a failed run at `from`. The result includes the
+ * `from` step itself and all its transitive downstream dependents across all
+ * jobs, each by the job that holds it. Used by a `--from` resume; a retry
+ * plans through {@link planFailedRunResume}.
  */
 export function computeStepsToReset(
   workflow: Workflow,
   run: WorkflowRun,
-  fromStep: string,
-): Set<string> {
-  const stepsToReset = new Set(
-    selectResetRecords(workflow, run, templatesToReset(workflow, fromStep))
-      .map((record) => record.stepName),
-  );
-  if (stepsToReset.size === 0) {
-    throw zeroStepsError(fromStep);
+  from: ResumeFrom,
+): StepRunRef[] {
+  const pairs = pairExpressionJobs(workflow, run);
+  const keys = templatesToReset(workflow, [resolveFrom(workflow, from)]);
+  const unpaired = unpairedExpressionJob(workflow, pairs, keys);
+  if (unpaired !== undefined) {
+    throw new UserError(`${unpaired} Start a new run.`);
+  }
+  const stepsToReset = selectResetRecords(workflow, run, pairs, keys)
+    .map(({ jobName, stepName }) => ({ jobName, stepName }));
+  if (stepsToReset.length === 0) {
+    throw zeroStepsError(from.step);
   }
   return stepsToReset;
-}
-
-/**
- * A name written with an expression is stored evaluated, so it cannot be
- * compared with a stored record before the workflow is evaluated.
- */
-function evaluated(name: string): boolean {
-  return name.includes("${{");
 }
 
 function moved(step: string, stored: string, current: string): string {
@@ -287,6 +439,53 @@ function movedOrChanged(workflow: Workflow, step: string, job: string): string {
   return now !== undefined && now !== job
     ? moved(step, job, now)
     : `Step "${step}" in job "${job}" is no longer a forEach step.`;
+}
+
+/**
+ * Why the `--from` step `entry` has no record in its own stored job, when
+ * another stored job holds its records (by name, or as iterations) and the
+ * workflow no longer has the step there: the step moved. A job missing from
+ * the run is left to rule (a). A stored job no workflow job can be paired
+ * with is searched only when the workflow has no expression-named job that
+ * may have evaluated to it.
+ */
+function movedEntry(
+  workflow: Workflow,
+  run: WorkflowRun,
+  pairs: ReadonlyMap<string, string> | undefined,
+  entry: StepRunRef,
+): string | undefined {
+  const name = entry.stepName;
+  const holds = (jobRun: JobRun) =>
+    jobRun.steps.some((s) => s.stepName === name || s.forEachTemplate === name);
+  const ownName = evaluated(entry.jobName)
+    ? pairs?.get(entry.jobName)
+    : entry.jobName;
+  const own = ownName !== undefined ? run.getJob(ownName) : undefined;
+  if (!own || holds(own)) return undefined;
+  // Iterations of a forEach entry step stored before forEachTemplate was
+  // recorded are named after it, as the legacy prefix match in
+  // selectResetRecords reads them: a record that is not itself a step of the
+  // job.
+  const ownJob = workflow.getJob(entry.jobName);
+  if (
+    ownJob?.getStep(name)?.forEach !== undefined &&
+    own.steps.some((s) =>
+      s.forEachTemplate === undefined && s.stepName.startsWith(`${name}-`) &&
+      !ownJob.getStep(s.stepName)
+    )
+  ) {
+    return undefined;
+  }
+  const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
+  const storedIn = run.jobs.find((j) => {
+    const job = workflowJobOf(workflow, j, pairs);
+    if (!job && hasEvaluatedJob && pairs === undefined) return false;
+    return j !== own && !job?.getStep(name) && holds(j);
+  })?.jobName;
+  return storedIn !== undefined
+    ? moved(name, storedIn, entry.jobName)
+    : undefined;
 }
 
 /** Rule (a): resume looks up a stored record for every job it walks. */
@@ -426,13 +625,16 @@ export function suspendedWayOut(
 }
 
 /**
- * Plans a resume of a failed run: re-entering at `fromStep`, or, without it,
+ * Plans a resume of a failed run: re-entering at `from`, or, without it,
  * retrying the entry template of every failed step (see
- * {@link selectRetryTemplates}). Either way every record the run's abort
- * settled without starting (`settledByAbort`) is tracked when its own job
- * still has the step; it is not in the reset set, which resets by name in
- * every job, but is reopened record by record (`WorkflowRun.reopenAbortedWork`)
- * before the reset set is applied. Returns the reset set, or
+ * {@link selectRetryTemplates}). Steps are identified by job and name: a step
+ * name is unique only within a job, so `from` names the job when its step
+ * name is used in more than one, and a reset never reaches a same-named step
+ * of another job. Either way every record the run's abort settled without
+ * starting (`settledByAbort`) is tracked when its own job still has the step;
+ * it is not in the reset set but is reopened record by record
+ * (`WorkflowRun.reopenAbortedWork`) before the reset set is applied. Returns
+ * the reset set, or
  * throws a UserError that names the job or step when the run cannot be
  * resumed against the current workflow. Mutates nothing.
  *
@@ -462,41 +664,60 @@ export function suspendedWayOut(
 export function planFailedRunResume(
   workflow: Workflow,
   run: WorkflowRun,
-  fromStep?: string,
+  from?: ResumeFrom,
 ): ResumeReset {
-  const entryTemplates = fromStep !== undefined
-    ? [fromStep]
+  const history = `See 'swamp workflow history logs ${run.id}'.`;
+  const refuse = (problem: string) =>
+    new UserError(`${problem} Start a new run. ${history}`);
+
+  const pairs = pairExpressionJobs(workflow, run);
+  const entries = from !== undefined
+    ? [resolveFrom(workflow, from)]
     : selectRetryTemplates(workflow, run);
+
+  // (a) Resume looks up a stored record for every job it walks. (d) It walks
+  // only the workflow's jobs, so a removed job it reopens would stay pending.
+  // Checked before the reset is selected, so a --from step in a job the run
+  // does not have is refused for that, not as matching nothing.
+  const noJob = missingJob(workflow, run) ??
+    removedUnfinishedJob(workflow, run);
+  if (noJob !== undefined) throw refuse(noJob);
+
+  if (from !== undefined) {
+    // A --from step moved into its job since the run left its records in the
+    // job it came from, where nothing walks them.
+    const problem = movedEntry(workflow, run, pairs, entries[0]);
+    if (problem !== undefined) throw refuse(problem);
+  }
+  const keys = templatesToReset(workflow, entries);
+  const unpaired = unpairedExpressionJob(workflow, pairs, keys);
+  if (unpaired !== undefined) throw refuse(unpaired);
   // One pass over the union of the template sets selects the same records as
   // the union of computeStepsToReset per entry template, with one branch per
   // record.
-  const templateNames = new Set<string>();
-  for (const template of entryTemplates) {
-    for (const name of templatesToReset(workflow, template)) {
-      templateNames.add(name);
-    }
-  }
-  const selected = selectResetRecords(workflow, run, templateNames);
+  const selected = selectResetRecords(workflow, run, pairs, keys);
   if (selected.length === 0) {
     // A retry's entry templates always match their failed records.
-    throw fromStep !== undefined
-      ? zeroStepsError(fromStep)
+    throw from !== undefined
+      ? zeroStepsError(from.step)
       : new UserError(`Retry matched no persisted steps in run ${run.id}.`);
   }
-  // The reset set is by name, so it holds only the records selected above.
-  const steps = new Set(selected.map((record) => record.stepName));
+  const steps = selected.map(({ jobName, stepName }) => ({
+    jobName,
+    stepName,
+  }));
   // Work the run's abort settled without starting runs too, as on a
   // suspended-run resume: queued siblings of the entry step never ran. It is
-  // reopened per record (WorkflowRun.reopenAbortedWork), so a same-named step
-  // another job finished is not reset with it; it is only tracked here.
-  const reached = new Set(
-    selected.map((record) => `${record.jobName}\0${record.stepName}`),
-  );
+  // reopened per record (WorkflowRun.reopenAbortedWork), so it is not in the
+  // reset set; it is only tracked here.
+  const reached = new Set(selected.map(stepRunKey));
   for (const jobRun of run.jobs) {
     for (const stepRun of jobRun.steps) {
       if (
         stepRun.settledByAbort &&
-        !reached.has(`${jobRun.jobName}\0${stepRun.stepName}`)
+        !reached.has(
+          stepRunKey({ jobName: jobRun.jobName, stepName: stepRun.stepName }),
+        )
       ) {
         selected.push({
           jobName: jobRun.jobName,
@@ -508,22 +729,30 @@ export function planFailedRunResume(
     }
   }
 
-  const history = `See 'swamp workflow history logs ${run.id}'.`;
-  const refuse = (problem: string) =>
-    new UserError(`${problem} Start a new run. ${history}`);
-  const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
+  // Every step that will run again: the reset's template steps, and the
+  // workflow step of each record the abort settled, which resume reopens.
+  const rerun = new Set(keys);
+  for (const record of selected) {
+    if (record.branch !== "settled") continue;
+    const job = workflowJobOf(workflow, run.getJob(record.jobName)!, pairs);
+    const template = record.forEachTemplate !== undefined &&
+        job?.getStep(record.forEachTemplate)
+      ? record.forEachTemplate
+      : record.stepName;
+    if (job?.getStep(template)) {
+      rerun.add(stepRunKey({ jobName: job.name, stepName: template }));
+    }
+  }
+  const shared = sharedStepRead(workflow, run, rerun);
+  if (shared !== undefined) throw refuse(shared);
 
-  // (a) Resume looks up a stored record for every job it walks. (d) It walks
-  // only the workflow's jobs, so a removed job it reopens would stay pending.
-  const noJob = missingJob(workflow, run) ??
-    removedUnfinishedJob(workflow, run);
-  if (noJob !== undefined) throw refuse(noJob);
+  const hasEvaluatedJob = workflow.jobs.some((j) => evaluated(j.name));
 
   // (c) A record reset by name or template must be walked in its own job.
   const tracked: StepRunRef[] = [];
   for (const record of selected) {
     if (record.branch === "prefix") continue;
-    const ownJob = workflow.getJob(record.jobName);
+    const ownJob = workflowJobOf(workflow, run.getJob(record.jobName)!, pairs);
     if (!ownJob && hasEvaluatedJob) continue;
     const ownStep = (name: string) => ownJob?.getStep(name);
     const fromTemplate = record.forEachTemplate !== undefined &&
@@ -548,18 +777,17 @@ export function planFailedRunResume(
     tracked.push({ jobName: record.jobName, stepName: record.stepName });
   }
 
-  // (b) resetForResumeFrom resets records by name in every job, so a job is
-  // re-entered when any of its records is, or when it holds aborted work.
+  // (b) A job is re-entered when any of its records is reset, or when it
+  // holds aborted work.
+  const resetJobs = new Set(steps.map((ref) => ref.jobName));
   const noStep = missingStep(
     workflow,
     run,
-    (jobRun) =>
-      !finishedJob(jobRun) ||
-      jobRun.steps.some((s) => steps.has(s.stepName)),
+    (jobRun) => !finishedJob(jobRun) || resetJobs.has(jobRun.jobName),
   );
   if (noStep !== undefined) throw refuse(noStep);
 
-  return { steps, tracked };
+  return { steps, tracked, pairs };
 }
 
 /**

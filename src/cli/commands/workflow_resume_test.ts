@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
@@ -54,6 +54,78 @@ function runEventServer(
     url: `ws://127.0.0.1:${server.addr.port}`,
     shutdown: () => server.shutdown(),
   };
+}
+
+/**
+ * A serve that answers `server.version` with `capabilities` (none when
+ * undefined) and records each `workflow.resume` payload it receives.
+ */
+function versionedResumeServer(capabilities: string[] | undefined): {
+  url: string;
+  shutdown: () => Promise<void>;
+  resumes: Record<string, unknown>[];
+} {
+  const resumes: Record<string, unknown>[] = [];
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (message) => {
+        const request = JSON.parse(message.data as string) as {
+          type: string;
+          id: string;
+          payload: Record<string, unknown>;
+        };
+        if (request.type === "server.version") {
+          socket.send(JSON.stringify({
+            type: "server.version",
+            id: request.id,
+            payload: {
+              version: "test",
+              gitSha: "test",
+              ...(capabilities ? { capabilities } : {}),
+            },
+          }));
+          return;
+        }
+        resumes.push(request.payload);
+        socket.send(JSON.stringify({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", run: { status: "succeeded" } },
+        }));
+        socket.send(JSON.stringify({ type: "done", id: request.id }));
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+    resumes,
+  };
+}
+
+async function resumeFromJobOverServer(url: string): Promise<void> {
+  const { workflowResumeCommand } = await import("./workflow_resume.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("resume", workflowResumeCommand);
+  await root.parse([
+    "resume",
+    "rollout",
+    "--json",
+    "--run",
+    "run-1",
+    "--from",
+    "restart",
+    "--job",
+    "host-b",
+    "--server",
+    url,
+    "--token",
+    "test.token",
+  ]);
 }
 
 /** Runs `workflow resume` against a scripted run result; returns Deno.exitCode. */
@@ -121,6 +193,14 @@ Deno.test("workflowResumeCommand has --from option", async () => {
     fromOpt!.description,
     "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
   );
+});
+
+Deno.test("workflowResumeCommand has a --job option that needs --from", async () => {
+  const { workflowResumeCommand } = await import("./workflow_resume.ts");
+  const options = workflowResumeCommand.getOptions();
+  const jobOpt = options.find((o) => o.name === "job");
+  assertEquals(jobOpt !== undefined, true);
+  assertEquals(jobOpt!.depends, ["from"]);
 });
 
 Deno.test("workflowResumeCommand: help describes retrying a failed run by id", async () => {
@@ -222,5 +302,50 @@ Deno.test({
       lines.join("\n"),
       `swamp workflow resume deploy-with-gate --run run-9 --server ${server.url}`,
     );
+  },
+});
+
+Deno.test({
+  name:
+    "workflowResumeCommand: --job is refused by a server that does not list resume-from-job (swamp-club#3815)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (const capabilities of [undefined, ["literal-inputs"]]) {
+      const server = versionedResumeServer(capabilities);
+      try {
+        await assertRejects(
+          () => resumeFromJobOverServer(server.url),
+          Error,
+          "does not support --job",
+        );
+        // Nothing was asked to resume: an older serve would drop fromJob
+        // and reset the step in every job.
+        assertEquals(server.resumes, []);
+      } finally {
+        await server.shutdown();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "workflowResumeCommand: --job sends fromJob to a server that lists resume-from-job (swamp-club#3815)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = versionedResumeServer(["resume-from-job"]);
+    const previousExitCode = Deno.exitCode;
+    try {
+      await resumeFromJobOverServer(server.url);
+      assertEquals(server.resumes.length, 1);
+      assertEquals(server.resumes[0].from, "restart");
+      assertEquals(server.resumes[0].fromJob, "host-b");
+      assertEquals(server.resumes[0].runId, "run-1");
+    } finally {
+      Deno.exitCode = previousExitCode;
+      await server.shutdown();
+    }
   },
 });

@@ -1295,7 +1295,7 @@ Deno.test("WorkflowRun.resetForResumeFrom: resets target steps and their contain
   assertEquals(job.steps[1].status, "failed");
 
   // Reset step2 only
-  run.resetForResumeFrom(new Set(["step2"]));
+  run.resetForResumeFrom([{ jobName: "job1", stepName: "step2" }]);
 
   // step1 untouched
   assertEquals(job.steps[0].status, "succeeded");
@@ -1351,7 +1351,7 @@ Deno.test("WorkflowRun.resetForResumeFrom: does not reset jobs without target st
   run.complete();
 
   // Only reset stepB
-  run.resetForResumeFrom(new Set(["stepB"]));
+  run.resetForResumeFrom([{ jobName: "jobB", stepName: "stepB" }]);
 
   // jobA untouched
   assertEquals(run.jobs[0].status, "succeeded");
@@ -2296,10 +2296,25 @@ function createSharedNameRun(): WorkflowRun {
   return run;
 }
 
-Deno.test("WorkflowRun.resetForResumeFrom: marks only the tracked records, by job", () => {
+Deno.test("WorkflowRun.resetForResumeFrom: resets and marks only the named records, by job", () => {
   const run = createSharedNameRun();
-  run.resetForResumeFrom(new Set(["x"]), [{ jobName: "a", stepName: "x" }]);
+  const ax = { jobName: "a", stepName: "x" };
+  run.resetForResumeFrom([ax], [ax]);
   assertEquals(run.getJob("a")!.getStep("x")!.status, "pending");
+  assertEquals(run.getJob("a")!.status, "pending");
+  assertEquals(run.getJob("a")!.getStep("x")!.resetByResume, true);
+  // Step names are unique only within a job: b's x is another step.
+  assertEquals(run.getJob("b")!.getStep("x")!.status, "failed");
+  assertEquals(run.getJob("b")!.status, "failed");
+  assertEquals(run.getJob("b")!.getStep("x")!.resetByResume, false);
+});
+
+Deno.test("WorkflowRun.resetForResumeFrom: tracks a record by job even when another job resets a same-named one", () => {
+  const run = createSharedNameRun();
+  run.resetForResumeFrom(
+    [{ jobName: "a", stepName: "x" }, { jobName: "b", stepName: "x" }],
+    [{ jobName: "a", stepName: "x" }],
+  );
   assertEquals(run.getJob("b")!.getStep("x")!.status, "pending");
   assertEquals(run.getJob("a")!.getStep("x")!.resetByResume, true);
   assertEquals(run.getJob("b")!.getStep("x")!.resetByResume, false);
@@ -2307,8 +2322,10 @@ Deno.test("WorkflowRun.resetForResumeFrom: marks only the tracked records, by jo
 
 Deno.test("WorkflowRun.resetForResumeFrom: clears markers an earlier resume left", () => {
   const run = createSharedNameRun();
-  run.resetForResumeFrom(new Set(["x"]), [{ jobName: "b", stepName: "x" }]);
-  run.resetForResumeFrom(new Set(["y"]), [{ jobName: "a", stepName: "y" }]);
+  const bx = { jobName: "b", stepName: "x" };
+  const ay = { jobName: "a", stepName: "y" };
+  run.resetForResumeFrom([bx], [bx]);
+  run.resetForResumeFrom([ay], [ay]);
   assertEquals(run.getJob("b")!.getStep("x")!.resetByResume, false);
   assertEquals(run.getJob("a")!.getStep("y")!.resetByResume, true);
 });
@@ -2333,10 +2350,11 @@ Deno.test("StepRun: every transition out of pending clears the reset marker", ()
 
 Deno.test("JobRun.failStrandedResetSteps: fails marked steps as workflow_changed, never allowed", () => {
   const run = createSharedNameRun();
-  run.resetForResumeFrom(new Set(["x", "y"]), [
+  const refs = [
     { jobName: "a", stepName: "x" },
     { jobName: "a", stepName: "y" },
-  ]);
+  ];
+  run.resetForResumeFrom(refs, refs);
   const job = run.getJob("a")!;
   job.getStep("y")!.succeed();
   job.getStep("x")!.markAllowedFailure();

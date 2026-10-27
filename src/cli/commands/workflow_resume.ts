@@ -92,11 +92,13 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import {
   formatCommandTarget,
+  requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   resumeWorkflowOverServer,
   withRemoteOptions,
 } from "../remote_run.ts";
+import { SERVE_CAPABILITY_RESUME_FROM_JOB } from "../../serve/protocol.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
@@ -125,6 +127,10 @@ export const workflowResumeCommand = withRemoteOptions(
       "Resume a failed run from a specific step",
       "swamp workflow resume plate-assay --from read-plate",
     )
+    .example(
+      "Resume from a step whose name is used in more than one job",
+      "swamp workflow resume rollout --from restart --job host-b",
+    )
     .arguments("<workflow_id_or_name:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -137,6 +143,11 @@ export const workflowResumeCommand = withRemoteOptions(
     .option(
       "--from <step:string>",
       "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
+    )
+    .option(
+      "--job <job:string>",
+      "Select the job of the --from step, as named in the workflow, when its step name is used in more than one job",
+      { depends: ["from"] },
     )
     .option(
       "--input <value:string>",
@@ -234,6 +245,25 @@ export const workflowResumeCommand = withRemoteOptions(
         ? abortOnTimeout(abort, timeoutMs)
         : undefined;
       try {
+        // An older server ignores fromJob and resets the --from step in every
+        // job that has it, so --job is only sent to one that says it honours
+        // it (swamp-club#3815). The probe runs only under --job, inside the
+        // try so --timeout bounds it and the shutdown handler is disposed.
+        if (options.job !== undefined) {
+          const version = await requestServerResponse<
+            { version: string; capabilities?: string[] }
+          >(
+            { server, token, signal: abort.signal },
+            { type: "server.version" },
+          );
+          if (
+            !version.capabilities?.includes(SERVE_CAPABILITY_RESUME_FROM_JOB)
+          ) {
+            throw new UserError(
+              `The server (swamp ${version.version}) does not support --job, so it would resume the --from step in every job that has it. Upgrade swamp serve, or run without --server.`,
+            );
+          }
+        }
         await consumeStream(
           resumeWorkflowOverServer({
             server,
@@ -243,6 +273,7 @@ export const workflowResumeCommand = withRemoteOptions(
               workflowIdOrName,
               runId: options.run as string | undefined,
               from: options.from as string | undefined,
+              fromJob: options.job as string | undefined,
               inputs: Object.keys(resumeInputs).length > 0
                 ? resumeInputs
                 : undefined,
@@ -319,6 +350,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const runRepo = repoContext.workflowRunRepo;
 
     const fromStep = options.from as string | undefined;
+    const fromJob = options.job as string | undefined;
     const signalWaits = signalWaitsOf(unlocked.repoContext);
     const tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
     const liveness = localOwnerLiveness();
@@ -329,6 +361,7 @@ export const workflowResumeCommand = withRemoteOptions(
       options.run,
       {
         fromStep,
+        fromJob,
         ownerIsDead: (candidate) =>
           runHasDeadOwner(candidate, tracker, liveness),
         signalWaits,
@@ -515,6 +548,7 @@ export const workflowResumeCommand = withRemoteOptions(
               swampSha: GIT_SHA,
               inputs: resumeInputs,
               fromStep,
+              fromJob,
             })
           ) {
             yield mapWorkflowExecutionEvent(event, runRepo);

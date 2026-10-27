@@ -31,7 +31,7 @@ import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 import { Workflow } from "./workflow.ts";
-import { WorkflowRun } from "./workflow_run.ts";
+import { stepRunKey, WorkflowRun } from "./workflow_run.ts";
 
 /**
  * Step names chosen to overlap: a forEach 'build' prefix-matches the
@@ -193,11 +193,12 @@ Deno.test("planFailedRunResume: never refuses a resume of an unchanged workflow"
     fc.property(arbCase, ({ jobs, fromStep }) => {
       const workflow = buildWorkflow(jobs);
       const run = buildFailedRun(workflow, jobs);
-      const plan = planFailedRunResume(workflow, run, fromStep);
+      const plan = planFailedRunResume(workflow, run, { step: fromStep });
       // Every tracked record is walked in its own job: by name, or as an
       // iteration of one of that job's forEach steps.
+      const resetKeys = new Set(plan.steps.map(stepRunKey));
       for (const ref of plan.tracked) {
-        assert(plan.steps.has(ref.stepName));
+        assert(resetKeys.has(stepRunKey(ref)));
         const job = jobs.find((j) => j.name === ref.jobName)!;
         const record = run.getJob(ref.jobName)!.getStep(ref.stepName)!;
         assert(
@@ -212,12 +213,13 @@ Deno.test("planFailedRunResume: never refuses a resume of an unchanged workflow"
       // over every entry template selects exactly the per-template union.
       const retry = planFailedRunResume(workflow, run);
       const union = new Set<string>();
-      for (const template of selectRetryTemplates(workflow, run)) {
-        for (const name of computeStepsToReset(workflow, run, template)) {
-          union.add(name);
+      for (const entry of selectRetryTemplates(workflow, run)) {
+        const from = { step: entry.stepName, job: entry.jobName };
+        for (const ref of computeStepsToReset(workflow, run, from)) {
+          union.add(stepRunKey(ref));
         }
       }
-      assertEquals(retry.steps, union);
+      assertEquals(new Set(retry.steps.map(stepRunKey)), union);
     }),
   );
 });
@@ -246,7 +248,8 @@ Deno.test("planFailedRunResume: always refuses when the --from step moved to ano
         const step = jobs[from].steps.find((s) => s.name === fromStep)!;
         moved[to].steps.push({ ...step, dependsOn: undefined });
         assertThrows(
-          () => planFailedRunResume(buildWorkflow(moved), run, fromStep),
+          () =>
+            planFailedRunResume(buildWorkflow(moved), run, { step: fromStep }),
           UserError,
           "Start a new run.",
         );
@@ -269,7 +272,8 @@ Deno.test("planFailedRunResume: always refuses a renamed plain step in the job i
         ).map((s) => ({ ...s, dependsOn: undefined })),
       }));
       assertThrows(
-        () => planFailedRunResume(buildWorkflow(renamed), run, fromStep),
+        () =>
+          planFailedRunResume(buildWorkflow(renamed), run, { step: fromStep }),
         UserError,
         `Step "${
           victim!.name

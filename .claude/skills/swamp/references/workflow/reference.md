@@ -1162,7 +1162,12 @@ re-execution.
 ```
 swamp workflow resume <workflow-name> --from <step-name>
 swamp workflow resume <workflow-name> --from <step-name> --run <run-id>
+swamp workflow resume <workflow-name> --from <step-name> --job <job-name>
 ```
+
+Step names are unique only within a job. When the `--from` step name is used in
+more than one job, add `--job` to name the job; resume resets only that job's
+step and its dependents.
 
 If there is exactly one failed run, `--run` can be omitted. When multiple failed
 runs exist, the CLI prompts you to specify `--run`.

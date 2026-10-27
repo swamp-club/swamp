@@ -2074,11 +2074,11 @@ behaves the same way.
   `allowedFailure` is not true. The recorded value already reflects
   `allowFailure` and the assertion severity threshold in force when the run
   failed.
-- **Entry template:** the workflow step a failed step came from. This is its
-  `forEachTemplate`, or else its step name.
+- **Entry template:** the workflow step a failed step came from, in the failed
+  step's job. This is its `forEachTemplate`, or else its step name.
 - **Reset set:** the entry templates and their transitive dependents, as stored
-  step names. It is the union of `computeStepsToReset()` over each entry
-  template.
+  step records, each named by its job. It is the union of
+  `computeStepsToReset()` over each entry template.
 
 **Run selection:** a bare `resume`, with no `--run` and no `--from`, still
 matches only a suspended run. Failed runs are never superseded, so this keeps
@@ -2103,13 +2103,28 @@ the job or step and points to `swamp workflow history logs <id>`
    pending, running, waiting and unknown work. It also excludes a job left
    running by a `forEach` expansion error.
 4. At least one failed step exists, and every failed job contains one.
-5. Each entry template is a step of the same job in the current workflow. The
+5. Each entry template is a step of the same job in the current workflow: the
+   workflow job its stored job belongs to (by name, or for an expression-named
+   job by [position](#resume-from-failed-step---from)). The
    refusal suggests only a new run, because `--from` refuses a renamed or moved
    step too (the [structure check](#resume-from-failed-step---from)). `--from`
    does still work from a remaining step after a removal. It also works from
    the template for an older `forEach` record without `forEachTemplate`.
-6. Step names are unique across the workflow and across the stored run. The
-   reset helper and the `steps.*` expression context key steps by name alone.
+6. No stored job holds two records of the same name. Step names need be unique
+   only within a job (swamp-club#3815): the reset set names each record by its
+   job, so a retry re-runs a failed step without touching a same-named step of
+   another job. The `steps.*` expression context still keys steps by name
+   alone, so a step that reads `steps.<name>` for a name used in more than one
+   job sees the record written last. A run writes them as steps finish; a
+   resume first fills the context in stored job order, so a re-run step could
+   read another job's output. A retry or `--from` therefore refuses, with
+   `Start a new run.`, when a step it would re-run (a reset step, or one the
+   run's abort settled, which resume reopens) reads `steps.<name>` for a name
+   used in more than one job, or reads the `steps` map by a computed key
+   or whole while any name is shared. A name is used in a job when the
+   workflow job has the step or the stored job has a record of it, so a
+   `forEach` iteration name two jobs both stored counts (`sharedStepRead` in
+   `src/domain/workflows/resume_reset.ts`).
 7. Step and job names hold any printable character, with space as the only
    whitespace: the schema refuses control characters, tab and newline
    (`nodeName` in `src/domain/workflows/node_name.ts`, swamp-club#3027).
@@ -2228,6 +2243,52 @@ the workflow YAML, not forEach-expanded iteration names. All iterations of a
 forEach step are reset and re-evaluated: completed ones with truthy guards are
 skipped, failed or unstarted ones run.
 
+Step names are unique only within a job, so the reset identifies every step by
+its job and name, and never reaches a same-named step of another job. When the
+`--from` name is used in more than one job, resume refuses before any change:
+
+```
+Step "restart" is in more than one job: "host-a", "host-b". Add --job <job> to choose one.
+```
+
+`--job <job>` names the job of the `--from` step as written in the workflow
+YAML (an expression-named job by its unevaluated name). Serve's
+`workflow.resume` takes it as `fromJob`. An older serve strips the unknown
+field and would reset the step in every job, so with `--server` the CLI first
+asks `server.version` and refuses `--job` unless the reply lists the
+`resume-from-job` capability (`SERVE_CAPABILITY_RESUME_FROM_JOB`). It requires
+`--from`: alone it would
+be ignored and a retry would re-run every job, so the CLI, `resolveResumableRun`
+and `resume()` all refuse it. A step name used in one job needs no `--job`. The
+`--from` hints a retry refusal or `nextActionForStatus` prints add `--job` when
+the step name is in more than one job of the current workflow, naming the job
+as the workflow writes it (`fromJobFor` in
+`src/domain/workflows/failed_step_retry.ts`).
+
+A job named with an expression is stored evaluated (`site-${{ inputs.region }}`
+becomes `site-west`), so the reset cannot match it by name. A name whose
+expressions only read scalar inputs is evaluated against the inputs the run
+stored, and paired with the stored job of that name wherever the job now
+stands. Any other is paired by position: evaluation keeps every job and their
+order, so the run stores job `i` of the workflow as its job `i`, which holds
+while the workflow's jobs still line up with the run's (the same number, every
+literal job at its stored position, and each stored name fitting the literal
+text around the expressions). Two jobs that would share one stored job are not
+paired (`pairExpressionJobs` in `src/domain/workflows/job_pairing.ts`). Reset, retry and the `--job` hints use
+that pairing, so `--job 'site-${{ inputs.b }}'` resets only the job it
+evaluated to, and a retry re-runs a failed step of an expression-named job. A
+reset that reaches an expression-named job once the jobs no longer line up is
+refused with `Start a new run.` Resume then re-evaluates the workflow and finds
+each job's record by its evaluated name, so after that evaluation, and before
+any step runs, it refuses (restoring the run as stored) when an
+expression-named job now evaluates to a name the run lacks, or when a job the
+reset reaches evaluates to another stored job than the one it was paired with,
+as when a non-input value its name reads changed since the run
+(`evaluatedJobMismatch`). A job the reset does not reach, and every job of a
+suspended run, is walked by whichever stored job its name evaluates to: a
+positional pairing cannot tell two expression-named jobs of the same shape
+apart, so it is not held against them.
+
 **Status restriction:** `--from` works only on failed runs, not succeeded or
 suspended ones (use the gate-approval resume path for suspended runs). Without
 `--from`, a failed run named with `--run` is retried (see
@@ -2263,6 +2324,12 @@ resume (`--from` or retry) refuses with `Start a new run.` when:
   abort settled without starting. Resume reopens that work but walks only the
   workflow's jobs, so the job would stay `pending` and the run could never
   finish.
+
+Since the reset selects records by job, a `--from` step moved into another job
+since the run has no record in the job it now belongs to. When another stored
+job holds its records and the workflow no longer has the step there, resume
+refuses it as moved (`Step "test" is in job "build" in the run, job "release"
+in the workflow.`) rather than resetting nothing in the job it left.
 
 The check leaves alone records selected only by the legacy `forEach` prefix
 match, which can over-select (for example `deploy-canary-x` when `deploy` is
@@ -2320,10 +2387,10 @@ step added to a finished job, which resume never walks; a `forEach` step moved
 into a job that has started; and job and step names written with an
 expression. So a step added with an expression in its name, or to a job named
 with one, still crashes mid-run with `Step run not found`, as it does for a
-failed run. Unlike the failed-run check, it lets through a step removed from
-one job but kept in another. A failed-run resume selected that record for
-reset, so leaving it `pending` would falsely report success. Nothing resets a
-suspended run's record, which is the removed shape that already works.
+failed run. Like the failed-run check, it lets through a step removed from one
+job but kept in another: a failed-run resume resets each record in its own job,
+so it never selects the removed one, and nothing resets a suspended run's
+record.
 
 **Stranded steps:** a record the reset selected by name or `forEachTemplate` is
 a **tracked reset step**. `resetForResumeFrom()` marks it `resetByResume` on the

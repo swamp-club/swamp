@@ -54,6 +54,9 @@ export interface WorkflowRunPayload {
 /** `server.version` capability: the server honours `literalInputs`. */
 export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 
+/** `server.version` capability: the server honours `fromJob` on a resume. */
+export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
+
 export interface ModelMethodRunPayload {
   modelIdOrName: string;
   methodName: string;
@@ -405,6 +408,13 @@ export interface WorkflowResumePayload {
   workflowIdOrName: string;
   runId?: string;
   from?: string;
+  /**
+   * The job of the `from` step, when its name is used in more than one job
+   * (swamp-club#3815). Only send to a server whose `server.version` reply
+   * lists {@link SERVE_CAPABILITY_RESUME_FROM_JOB}; an older server ignores
+   * the field and resets the `from` step in every job that has it.
+   */
+  fromJob?: string;
   inputs?: Record<string, unknown>;
   traceparent?: string;
   tracestate?: string;
