@@ -63,7 +63,7 @@ const AREA_PHASES = {
     "definition_adopt",
     "definition_save",
   ],
-  step_outputs: [],
+  step_outputs: ["catalog_open", "output_walk", "owner_index"],
   worker_delete: [],
   output_retention: [],
   access_poll: [],
@@ -82,15 +82,26 @@ function exportsPhase(area: DiagnosticArea, phase: DiagnosticPhase): boolean {
   return sharedPhases.has(phase) || areaPhases.get(area)!.has(phase);
 }
 
+/** A running {@link PhaseTally} measurement, and the one it runs inside. */
+interface TallyFrame {
+  readonly tally: PhaseTally;
+  nested: number;
+  readonly outer: TallyFrame | undefined;
+}
+
+const tallyFrames = new AsyncLocalStorage<TallyFrame>();
+
 /**
  * Bounded counters and cumulative work for a phase that loops over items.
  * Counts export as `swamp.diagnostic.<key>`, work as
  * `swamp.diagnostic.<key>_work_ms`.
  *
- * Work is summed across items, so it is not elapsed time. A measurement
- * nested inside another is exclusive: the outer one excludes it. That holds
- * only for sequential work; concurrent measurements in one tally would each
- * see the other as nested.
+ * Work is summed across items, so it is not elapsed time: measurements that
+ * run concurrently (reads in parallel batches) each add their own time. A
+ * measurement nested inside another in the same async path is exclusive:
+ * the outer one excludes it. Concurrent measurements under one outer
+ * measurement are all excluded from it, so its work can be understated, never
+ * negative.
  *
  * A tally whose phase is not recording does nothing, so callers may gate
  * costly inputs (a byte count) on {@link PhaseTally.recording}.
@@ -98,7 +109,6 @@ function exportsPhase(area: DiagnosticArea, phase: DiagnosticPhase): boolean {
 export class PhaseTally {
   readonly #counts = new Map<string, number>();
   readonly #work = new Map<string, number>();
-  #active: { nested: number } | undefined;
 
   constructor(readonly recording: boolean) {}
 
@@ -109,9 +119,9 @@ export class PhaseTally {
 
   async measure<T>(key: string, fn: () => Promise<T>): Promise<T> {
     if (!this.recording) return await fn();
-    const finish = this.#begin(key);
+    const { frame, finish } = this.#begin(key);
     try {
-      return await fn();
+      return await tallyFrames.run(frame, fn);
     } finally {
       finish();
     }
@@ -120,28 +130,31 @@ export class PhaseTally {
   /** {@link measure} for synchronous work, such as a parse. */
   measureSync<T>(key: string, fn: () => T): T {
     if (!this.recording) return fn();
-    const finish = this.#begin(key);
+    const { frame, finish } = this.#begin(key);
     try {
-      return fn();
+      return tallyFrames.run(frame, fn);
     } finally {
       finish();
     }
   }
 
-  #begin(key: string): () => void {
-    const parent = this.#active;
-    const frame = { nested: 0 };
-    this.#active = frame;
+  #begin(key: string): { frame: TallyFrame; finish: () => void } {
+    // The innermost measurement of this tally in the current async path, so
+    // concurrent measurements never take each other for their parent.
+    const outer = tallyFrames.getStore();
+    let parent = outer;
+    while (parent && parent.tally !== this) parent = parent.outer;
+    const frame: TallyFrame = { tally: this, nested: 0, outer };
     const started = performance.now();
-    return () => {
+    const finish = () => {
       const elapsed = performance.now() - started;
-      this.#active = parent;
       if (parent) parent.nested += elapsed;
       this.#work.set(
         key,
         (this.#work.get(key) ?? 0) + Math.max(0, elapsed - frame.nested),
       );
     };
+    return { frame, finish };
   }
 
   attributes(): Record<string, number> {

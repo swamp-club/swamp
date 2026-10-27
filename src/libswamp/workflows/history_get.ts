@@ -59,6 +59,10 @@ import {
 import { withReapedHint } from "../retention/reaped.ts";
 import type { RetentionWatermarkRepository } from "../../domain/retention/retention_watermark.ts";
 import {
+  startDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
   setActiveSpanAttributes,
   withGeneratorSpan,
   withSpan,
@@ -240,57 +244,131 @@ export function createWorkflowHistoryGetDeps(
     findLatestRun: (workflowId) => runRepo.findLatestByWorkflowId(workflowId),
     getRunPath: (workflowId, runId) =>
       runRepo.getPath(workflowId, createWorkflowRunId(runId)),
-    resolveStepOutputs: async (run, signal) => {
-      // Opened per call: only callers that render outputs pay for it.
-      const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-      try {
-        const dataRepo = new FileSystemUnifiedDataRepository(
-          repoDir,
-          dsPath(SWAMP_SUBDIRS.data),
-          catalogStore,
-          undefined,
-          undefined,
-          namespaceFromResolver(datastoreResolver),
-          undefined,
-          undefined,
-          undefined,
-          unreadableContent,
-        );
-        // Counted for the step outputs span (swamp-club#3741).
-        let resourcesRead = 0;
-        let resourcesDenied = 0;
-        let childRunsRead = 0;
-        const readAttributes = createDataRepositoryAttributeReader(dataRepo);
-        const resolver = new StepOutputResolver({
-          readAttributes: (ref) => {
-            resourcesRead++;
-            return readAttributes(ref);
-          },
-          findChildRun: (workflowId, runId) => {
-            childRunsRead++;
-            return runRepo.findById(
-              createWorkflowId(workflowId),
-              createWorkflowRunId(runId),
+    // Exported as the step_outputs diagnostic area's phases
+    // (design/enablers/serve-phase-telemetry.md); they observe only.
+    resolveStepOutputs: (run, signal) =>
+      withDiagnosticArea("step_outputs", async () => {
+        // Opened per call: only callers that render outputs pay for it.
+        const opening = startDiagnosticPhase("catalog_open");
+        let catalogStore: ReturnType<typeof createCatalogStore> | undefined;
+        let dataRepo: FileSystemUnifiedDataRepository;
+        try {
+          catalogStore = createCatalogStore(repoDir, datastoreResolver);
+          dataRepo = new FileSystemUnifiedDataRepository(
+            repoDir,
+            dsPath(SWAMP_SUBDIRS.data),
+            catalogStore,
+            undefined,
+            undefined,
+            namespaceFromResolver(datastoreResolver),
+            undefined,
+            undefined,
+            undefined,
+            unreadableContent,
+          );
+          opening.end();
+        } catch (error) {
+          opening.fail(error);
+          catalogStore?.close();
+          throw error;
+        }
+        try {
+          // Counted for the step outputs span (swamp-club#3741).
+          let resourcesRead = 0;
+          let resourcesDenied = 0;
+          let childRunsRead = 0;
+          const walk = startDiagnosticPhase("output_walk");
+          const tally = walk.tally;
+          const childRuns = new Set<string>();
+          const readAttributes = createDataRepositoryAttributeReader(dataRepo);
+          const resolver = new StepOutputResolver({
+            readAttributes: (ref) => {
+              resourcesRead++;
+              return readAttributes(ref);
+            },
+            findChildRun: async (workflowId, runId) => {
+              childRunsRead++;
+              if (walk.recording) {
+                childRuns.add(JSON.stringify([workflowId, runId]));
+              }
+              const found = await tally.measure(
+                "child_run_lookup",
+                () =>
+                  runRepo.findById(
+                    createWorkflowId(workflowId),
+                    createWorkflowRunId(runId),
+                  ),
+              );
+              if (!found) tally.add("child_runs_missing");
+              return found;
+            },
+            canRead: canRead && (async (ref) => {
+              let allowed: boolean;
+              try {
+                // The owner lookup inside measures itself into this tally,
+                // so it is not counted as authorization too.
+                allowed = await tally.measure("authorize", () => canRead(ref));
+              } catch (error) {
+                // A cancel is the walk's outcome, not a failed decision.
+                if (!signal?.aborted) tally.add("authorize_errors");
+                throw error;
+              }
+              tally.add(allowed ? "authorize_allowed" : "authorize_denied");
+              if (!allowed) resourcesDenied++;
+              return allowed;
+            }),
+            signal,
+          });
+          // Counted on every exit, zeros included, so a failed or cancelled
+          // walk reports what it reached and a branch it skipped reads 0.
+          const countWalk = (result: "completed" | "partial") => {
+            tally.add("resources_attempted", resourcesRead);
+            tally.add("child_run_lookups", childRunsRead);
+            tally.add("child_runs_unique", childRuns.size);
+            for (
+              const key of [
+                "reads_succeeded",
+                "reads_missing",
+                "reads_failed",
+                "parse_failed",
+                "parse_not_object",
+                "content_bytes",
+                "child_runs_missing",
+                ...(canRead
+                  ? [
+                    "authorize_allowed",
+                    "authorize_denied",
+                    "authorize_errors",
+                    "owner_lookups",
+                    "owner_lookups_reused",
+                  ]
+                  : []),
+              ]
+            ) tally.add(key, 0);
+            walk.attributes({ "swamp.diagnostic.result": result });
+          };
+          try {
+            const outputs = await walk.run(() =>
+              resolveRunStepOutputs(run, resolver)
             );
-          },
-          canRead: canRead && (async (ref) => {
-            const allowed = await canRead(ref);
-            if (!allowed) resourcesDenied++;
-            return allowed;
-          }),
-          signal,
-        });
-        const outputs = await resolveRunStepOutputs(run, resolver);
-        setActiveSpanAttributes({
-          "step_outputs.resources_read": resourcesRead,
-          "step_outputs.resources_denied": resourcesDenied,
-          "step_outputs.child_runs_read": childRunsRead,
-        });
-        return outputs;
-      } finally {
-        catalogStore.close();
-      }
-    },
+            countWalk("completed");
+            walk.end();
+            return outputs;
+          } catch (error) {
+            countWalk("partial");
+            walk.fail(error);
+            throw error;
+          } finally {
+            setActiveSpanAttributes({
+              "step_outputs.resources_read": resourcesRead,
+              "step_outputs.resources_denied": resourcesDenied,
+              "step_outputs.child_runs_read": childRunsRead,
+            });
+          }
+        } finally {
+          catalogStore.close();
+        }
+      }, signal),
   };
 }
 

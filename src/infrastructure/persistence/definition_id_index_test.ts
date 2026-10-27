@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -27,7 +27,14 @@ import {
 } from "./definition_id_index.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { statRecord } from "./workflow_run_index.ts";
-import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
+import {
+  diagnosticPhases,
+  findSpan,
+  isChildOf,
+  withCapturedSpans,
+  withObservedSpans,
+} from "../tracing/span_test_helpers.ts";
+import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -553,5 +560,149 @@ Deno.test("DefinitionIdIndex: an already cancelled request reads nothing", async
       "request cancelled",
     );
     assertEquals(counter.reads, 0);
+  });
+});
+
+Deno.test("DefinitionIdIndex: inside the step_outputs area a check is an owner_index phase over its validate span, cold, then warm, then refreshed", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    for (let i = 0; i < 3; i++) {
+      await writeDefinition(
+        join(primary, "test", "a", `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    await withObservedSpans(async (spans) => {
+      const check = () =>
+        withDiagnosticArea("step_outputs", () => index.begin());
+      await check();
+      await check();
+      await writeDefinition(
+        join(primary, "test", "a", "d3.yaml"),
+        crypto.randomUUID(),
+        "d3",
+      );
+      await check();
+
+      const phases = diagnosticPhases(spans, "owner_index");
+      const validates = spans.filter((s) =>
+        s.name === "swamp.serve.definition_index.validate"
+      );
+      assertEquals(phases.length, 3);
+      assertEquals(validates.length, 3);
+      for (const [i, phase] of phases.entries()) {
+        assert(isChildOf(validates[i], phase));
+        assertEquals(phase.attributes["swamp.diagnostic.area"], "step_outputs");
+        assertEquals(phase.attributes["swamp.outcome"], "ok");
+      }
+      assertEquals(
+        phases.map((p) => [
+          p.attributes["swamp.diagnostic.cache"],
+          p.attributes["swamp.diagnostic.files_parsed"],
+          p.attributes["swamp.diagnostic.definitions"],
+          p.attributes["swamp.diagnostic.dirs_joined"],
+        ]),
+        [["cold", 3, 3, 0], ["warm", 0, 3, 0], ["refreshed", 1, 4, 0]],
+      );
+      // The validate span keeps what it exported before, and adds to it.
+      assertEquals(validates[0].attributes["definition_index.files_parsed"], 3);
+      assertEquals(validates[0].attributes["definition_index.files_joined"], 0);
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex: outside a diagnostic area a check exports its validate span alone", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    await writeDefinition(
+      join(primary, "test", "a", "d.yaml"),
+      crypto.randomUUID(),
+      "d",
+    );
+    await withObservedSpans(async (spans) => {
+      await index.begin();
+      assertEquals(spans.map((s) => s.name), [
+        "swamp.serve.definition_index.validate",
+      ]);
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex: a check that joins another's listing counts it as joined once and links to the check that ran it", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, counter, index } = fixture(dir);
+    for (let i = 0; i < 5; i++) {
+      await writeDefinition(
+        join(primary, "test", "a", `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    await withObservedSpans(async (spans) => {
+      await Promise.all(
+        [1, 2].map(() =>
+          withDiagnosticArea("step_outputs", () => index.begin())
+        ),
+      );
+      assertEquals(counter.reads, 5);
+      const validates = spans.filter((s) =>
+        s.name === "swamp.serve.definition_index.validate"
+      );
+      assertEquals(validates.length, 2);
+      const num = (s: (typeof validates)[number], key: string) =>
+        s.attributes[`definition_index.${key}`] as number;
+      // Every file was parsed once: what one check joined, the other read.
+      assertEquals(
+        validates.reduce(
+          (sum, s) => sum + num(s, "files_parsed") - num(s, "files_joined"),
+          0,
+        ),
+        5,
+      );
+      const joiners = validates.filter((s) => num(s, "dirs_joined") > 0);
+      assert(joiners.length > 0);
+      for (const joiner of joiners) {
+        const other = validates.find((s) => s !== joiner)!;
+        assertEquals(
+          joiner.links.map((l) => l.context.spanId),
+          [other.spanContext().spanId],
+        );
+      }
+      const phases = diagnosticPhases(spans, "owner_index");
+      assertEquals(
+        phases.map((p) => p.attributes["swamp.diagnostic.files_joined"])
+          .sort(),
+        validates.map((s) => s.attributes["definition_index.files_joined"])
+          .sort(),
+      );
+    });
+  });
+});
+
+Deno.test("DefinitionIdIndex: a cancelled check ends its owner_index phase cancelled with the counts it reached", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, index } = fixture(dir);
+    await writeDefinition(
+      join(primary, "test", "a", "d.yaml"),
+      crypto.randomUUID(),
+      "d",
+    );
+    await withObservedSpans(async (spans) => {
+      const cancelled = new AbortController();
+      const leaving = withDiagnosticArea(
+        "step_outputs",
+        () => index.begin(cancelled.signal),
+      );
+      cancelled.abort();
+      await assertRejects(() => leaving);
+      const [phase] = diagnosticPhases(spans, "owner_index");
+      assertEquals(phase.attributes["swamp.outcome"], "cancelled");
+      assertEquals(phase.attributes["swamp.diagnostic.cache"], "cold");
+      assertEquals(
+        typeof phase.attributes["swamp.diagnostic.dirs_checked"],
+        "number",
+      );
+    });
   });
 });

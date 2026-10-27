@@ -34,6 +34,14 @@ import { StepTask } from "./step_task.ts";
 import { type StepRun, WorkflowRun } from "./workflow_run.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../diagnostics/diagnostic_phase.ts";
+import {
+  diagnosticPhases,
+  withObservedSpans,
+} from "../../infrastructure/tracing/span_test_helpers.ts";
 
 const REF = "${{ vault.get('prod', 'A') }}";
 const PASSWORD_TAG = { "_swamp.sensitiveFields": JSON.stringify(["password"]) };
@@ -674,4 +682,108 @@ Deno.test("StepOutputResolver.resolveChildOutputs: a step name repeated across j
     resolved.sources!.map((g) => [g.path, g.records.map((r) => r.name)]),
     [[["deploy"], ["b-deploy"]], [["__proto__"], ["b-__proto__"]]],
   );
+});
+
+function attributeRef(name: string): StepResourceRef {
+  return {
+    dataId: `data-${name}`,
+    modelType: "command/shell",
+    modelId: "model-1",
+    modelName: "writer",
+    specName: "result",
+    contentType: "application/json",
+    name,
+    version: 1,
+    tags: {},
+  };
+}
+
+Deno.test("createDataRepositoryAttributeReader: inside a diagnostic phase, times the read and the parse apart and counts each result", async () => {
+  const encode = (text: string) => new TextEncoder().encode(text);
+  const contents: Record<string, Uint8Array | null> = {
+    good: encode(JSON.stringify({ stdout: "hi" })),
+    broken: encode("{not json"),
+    list: encode("[1,2]"),
+    gone: null,
+  };
+  const dataRepo = {
+    getContent: (_type: string, _id: string, name: string) =>
+      name === "failing"
+        ? Promise.reject(new Error("disk"))
+        : Promise.resolve(contents[name]),
+  } as unknown as UnifiedDataRepository;
+  const read = createDataRepositoryAttributeReader(dataRepo);
+
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea(
+      "step_outputs",
+      () =>
+        observeDiagnosticPhase("output_walk", {}, async () => {
+          assertEquals(await read(attributeRef("good")), { stdout: "hi" });
+          assertEquals(await read(attributeRef("broken")), undefined);
+          assertEquals(await read(attributeRef("list")), undefined);
+          assertEquals(await read(attributeRef("gone")), undefined);
+          await assertRejects(() => read(attributeRef("failing")));
+        }),
+    );
+    const [walk] = diagnosticPhases(spans, "output_walk");
+    const a = walk.attributes;
+    assertEquals(a["swamp.diagnostic.reads_succeeded"], 3);
+    assertEquals(a["swamp.diagnostic.reads_missing"], 1);
+    assertEquals(a["swamp.diagnostic.reads_failed"], 1);
+    assertEquals(a["swamp.diagnostic.parse_failed"], 1);
+    assertEquals(a["swamp.diagnostic.parse_not_object"], 1);
+    assertEquals(
+      a["swamp.diagnostic.content_bytes"],
+      contents.good!.length + contents.broken!.length + contents.list!.length,
+    );
+    // Definition-file names belong to owner lookups, never to content.
+    assertEquals(a["swamp.diagnostic.bytes_read"], undefined);
+    assertEquals(typeof a["swamp.diagnostic.content_read_work_ms"], "number");
+    assertEquals(typeof a["swamp.diagnostic.json_parse_work_ms"], "number");
+  });
+});
+
+Deno.test("createDataRepositoryAttributeReader: outside a diagnostic phase it reads as before and exports nothing", async () => {
+  const dataRepo = {
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify({ a: 1 }))),
+  } as unknown as UnifiedDataRepository;
+  await withObservedSpans(async (spans) => {
+    const read = createDataRepositoryAttributeReader(dataRepo);
+    assertEquals(await read(attributeRef("result")), { a: 1 });
+    assertEquals(spans.length, 0);
+  });
+});
+
+Deno.test("StepOutputResolver.resolve: inside a diagnostic phase, times the merge of a step's outputs as assembly", async () => {
+  const run = runWithSteps([{
+    name: "write",
+    output: modelMethodOutput({ result: { a: resourceRecord("a", 1) } }),
+  }]);
+  const resolver = new StepOutputResolver({
+    readAttributes: readerFrom({ "a@1": { stdout: "hi" } }),
+  });
+  await withObservedSpans(async (spans) => {
+    const resolved = await withDiagnosticArea(
+      "step_outputs",
+      () =>
+        observeDiagnosticPhase(
+          "output_walk",
+          {},
+          () => resolver.resolve(stepOf(run, "write")),
+        ),
+    );
+    const [walk] = diagnosticPhases(spans, "output_walk");
+    assertEquals(
+      typeof walk.attributes["swamp.diagnostic.assemble_work_ms"],
+      "number",
+    );
+    // Timing changes nothing it measures.
+    assertEquals(
+      resolved,
+      await resolver.resolve(stepOf(run, "write")),
+    );
+    assertEquals(resolved.outputs, { stdout: "hi" });
+  });
 });

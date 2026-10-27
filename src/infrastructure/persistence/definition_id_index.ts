@@ -26,7 +26,8 @@ import type {
   DefinitionOwnerView,
 } from "../../domain/definitions/repositories.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { withSpan } from "../tracing/mod.ts";
+import { observeDiagnosticPhase } from "../../domain/diagnostics/diagnostic_phase.ts";
+import { activeSpanLink, type Link, withSpan } from "../tracing/mod.ts";
 import { RUN_INDEX_RACY_WINDOW_MS } from "./run_index_cache.ts";
 import { SharedIndexRead } from "./shared_index_read.ts";
 import { Semaphore } from "../stream/semaphore.ts";
@@ -110,8 +111,17 @@ interface IndexedDir {
 interface ValidationCounts {
   dirsChecked: number;
   dirsRelisted: number;
+  /** Of those relisted, listings another request had started. */
+  dirsJoined: number;
   filesParsed: number;
+  /** Of those parsed, files the joined listings read. */
+  filesJoined: number;
+  /** The spans that started the joined listings, one per span. */
+  readonly joinedFrom: Map<string, Link>;
 }
+
+/** At most this many links from one check to the listings it joined. */
+const MAX_JOIN_LINKS = 8;
 
 /**
  * Which file declares which definition id, kept between requests by `swamp
@@ -162,6 +172,8 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       /** The stat it lists from, when it was settled as it was taken. */
       stamp: RecordFingerprint | undefined;
       read: SharedIndexRead<number>;
+      /** The span of the check that started it, for checks that join it. */
+      owner: Link | undefined;
     }
   >();
   #ticket = 0;
@@ -183,34 +195,72 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
    */
   async begin(signal?: AbortSignal): Promise<DefinitionOwnerView> {
     signal?.throwIfAborted();
-    await withSpan(
-      "swamp.serve.definition_index.validate",
-      {},
-      async (span) => {
-        const counts: ValidationCounts = {
-          dirsChecked: 0,
-          dirsRelisted: 0,
-          filesParsed: 0,
-        };
-        const roots = this.#source.definitionRoots();
-        for (const [root, path] of roots.entries()) {
-          const relisted = counts.dirsRelisted;
-          await this.#validateDir(path, root, [], counts, signal);
-          // A scan of every definition names the auto-definitions the
-          // datastore could not materialise (swamp-club#3617); so does a
-          // listing of them.
-          if (root > 0 && counts.dirsRelisted > relisted) {
-            await warnUnreadableLeftOut(this.#source.unreadableContent, path);
-          }
-        }
-        span.setAttributes({
-          "definition_index.definitions": this.#definitions,
-          "definition_index.dirs_checked": counts.dirsChecked,
-          "definition_index.dirs_relisted": counts.dirsRelisted,
-          "definition_index.files_parsed": counts.filesParsed,
+    // Inside a diagnostic area that lists it, the check is its owner_index
+    // phase, so definition files it reads are counted apart from the
+    // request's other work (design/enablers/serve-phase-telemetry.md).
+    await observeDiagnosticPhase("owner_index", {}, async (phase) => {
+      const cold = this.#dirs.size === 0;
+      const counts: ValidationCounts = {
+        dirsChecked: 0,
+        dirsRelisted: 0,
+        dirsJoined: 0,
+        filesParsed: 0,
+        filesJoined: 0,
+        joinedFrom: new Map(),
+      };
+      try {
+        await withSpan(
+          "swamp.serve.definition_index.validate",
+          {},
+          async (span) => {
+            try {
+              const roots = this.#source.definitionRoots();
+              for (const [root, path] of roots.entries()) {
+                const relisted = counts.dirsRelisted;
+                await this.#validateDir(path, root, [], counts, signal);
+                // A scan of every definition names the auto-definitions the
+                // datastore could not materialise (swamp-club#3617); so does
+                // a listing of them.
+                if (root > 0 && counts.dirsRelisted > relisted) {
+                  await warnUnreadableLeftOut(
+                    this.#source.unreadableContent,
+                    path,
+                  );
+                }
+              }
+              span.setAttributes({
+                "definition_index.definitions": this.#definitions,
+                "definition_index.dirs_checked": counts.dirsChecked,
+                "definition_index.dirs_relisted": counts.dirsRelisted,
+                "definition_index.dirs_joined": counts.dirsJoined,
+                "definition_index.files_parsed": counts.filesParsed,
+                "definition_index.files_joined": counts.filesJoined,
+              });
+            } finally {
+              // A joined listing ran under the request that started it;
+              // the link names that request without reparenting its work.
+              if (counts.joinedFrom.size > 0) {
+                span.addLinks([...counts.joinedFrom.values()]);
+              }
+            }
+          },
+        );
+      } finally {
+        phase.attributes({
+          "swamp.diagnostic.cache": cold
+            ? "cold"
+            : counts.dirsRelisted === 0 && counts.filesParsed === 0
+            ? "warm"
+            : "refreshed",
+          "swamp.diagnostic.definitions": this.#definitions,
+          "swamp.diagnostic.dirs_checked": counts.dirsChecked,
+          "swamp.diagnostic.dirs_relisted": counts.dirsRelisted,
+          "swamp.diagnostic.dirs_joined": counts.dirsJoined,
+          "swamp.diagnostic.files_parsed": counts.filesParsed,
+          "swamp.diagnostic.files_joined": counts.filesJoined,
         });
-      },
-    );
+      }
+    });
     return { findAllById: (id) => this.#findAllById(id, signal) };
   }
 
@@ -241,6 +291,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         segments,
         stamp,
         checkedAt,
+        counts,
         signal,
       );
       counts.dirsRelisted++;
@@ -271,6 +322,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
     segments: readonly string[],
     stamp: RecordFingerprint | undefined,
     checkedAt: number,
+    counts: ValidationCounts,
     signal: AbortSignal | undefined,
   ): Promise<number> {
     const running = this.#listing.get(path);
@@ -278,7 +330,15 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
       running && !running.read.signal.aborted &&
       (running.ticket > checkedAt || this.#trusted(running.stamp, stamp))
     ) {
-      return await running.read.get(signal);
+      const files = await running.read.get(signal);
+      counts.dirsJoined++;
+      counts.filesJoined += files;
+      // Linked only once joined, so links and dirs_joined agree.
+      const owner = running.owner;
+      if (owner && counts.joinedFrom.size < MAX_JOIN_LINKS) {
+        counts.joinedFrom.set(owner.context.spanId, owner);
+      }
+      return files;
     }
     const ticket = ++this.#ticket;
     const read = new SharedIndexRead(
@@ -288,7 +348,7 @@ export class DefinitionIdIndex implements DefinitionOwnerIndex {
         if (this.#listing.get(path)?.read === read) this.#listing.delete(path);
       },
     );
-    this.#listing.set(path, { ticket, stamp, read });
+    this.#listing.set(path, { ticket, stamp, read, owner: activeSpanLink() });
     return await read.get(signal);
   }
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import { currentDiagnosticTally } from "../diagnostics/diagnostic_phase.ts";
 
 import { isUnreadableContentError } from "../datastore/unreadable_content.ts";
 import type {
@@ -355,11 +356,12 @@ export class StepOutputResolver {
       records.push(outputRecordOf(ref, attributes, this.namespace));
       if (ref.dataId) attributesByDataId[ref.dataId] = attributes;
     }
-    return {
+    // Inside a diagnostic phase, merging is timed as the step's assembly.
+    return currentDiagnosticTally().measureSync("assemble", () => ({
       outputs: mergeStepOutputs(attributeSets),
       attributesByDataId,
       sources: ownSources(records),
-    };
+    }));
   }
 }
 
@@ -374,20 +376,43 @@ export function createDataRepositoryAttributeReader(
   dataRepo: UnifiedDataRepository,
 ): ResourceAttributeReader {
   return async (ref) => {
-    const content = await dataRepo.getContent(
-      ref.modelType,
-      ref.modelId,
-      ref.name,
-      ref.version,
-    );
-    if (!content) return undefined;
-    let parsed: unknown;
+    // Inside a diagnostic phase, the read and the parse are timed and
+    // counted apart. Content names never reuse the definition-file ones
+    // (`bytes_read`, `read_work_ms`) an owner lookup counts in the same phase.
+    const tally = currentDiagnosticTally();
+    let content: Uint8Array | null;
     try {
-      parsed = JSON.parse(new TextDecoder().decode(content));
-    } catch {
+      content = await tally.measure("content_read", () =>
+        dataRepo.getContent(
+          ref.modelType,
+          ref.modelId,
+          ref.name,
+          ref.version,
+        ));
+    } catch (error) {
+      tally.add("reads_failed");
+      throw error;
+    }
+    if (!content) {
+      tally.add("reads_missing");
       return undefined;
     }
-    if (!isRecord(parsed)) return undefined;
+    tally.add("reads_succeeded");
+    tally.add("content_bytes", content.length);
+    let parsed: unknown;
+    try {
+      parsed = tally.measureSync(
+        "json_parse",
+        () => JSON.parse(new TextDecoder().decode(content)),
+      );
+    } catch {
+      tally.add("parse_failed");
+      return undefined;
+    }
+    if (!isRecord(parsed)) {
+      tally.add("parse_not_object");
+      return undefined;
+    }
     return parsed;
   };
 }

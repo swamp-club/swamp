@@ -30,6 +30,7 @@
  */
 
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 import {
   modelAccessResource,
   type ModelResourceKind,
@@ -702,6 +703,10 @@ export class CanonicalResources {
   }
 
   #definitionsById(id: string): Promise<DefinitionLookupResult[]> {
+    // Inside a diagnostic phase, every lookup is counted, and those this
+    // instance answers without a new lookup or scan count as reused.
+    const tally = currentDiagnosticTally();
+    tally.add("owner_lookups");
     const ownerIndex = this.#ownerIndex;
     if (ownerIndex) {
       let found = this.#definitions.get(id);
@@ -709,6 +714,8 @@ export class CanonicalResources {
         this.#view ??= ownerIndex.begin(this.#signal);
         found = this.#view.then((view) => view.findAllById(id as DefinitionId));
         this.#definitions.set(id, found);
+      } else {
+        tally.add("owner_lookups_reused");
       }
       return found;
     }
@@ -716,6 +723,7 @@ export class CanonicalResources {
     // repository offers it; a scan per id would make a collection of N items
     // cost N full scans.
     if (this.#definitionRepo.findAllIncludingAutoGlobal) {
+      if (this.#index) tally.add("owner_lookups_reused");
       this.#index ??= this.#definitionRepo.findAllIncludingAutoGlobal().then(
         (all) => {
           const index = new Map<string, DefinitionLookupResult[]>();
@@ -734,6 +742,8 @@ export class CanonicalResources {
     if (!found) {
       found = findDefinitionsByIdGlobal(this.#definitionRepo, id);
       this.#definitions.set(id, found);
+    } else {
+      tally.add("owner_lookups_reused");
     }
     return found;
   }
@@ -802,10 +812,15 @@ export class CanonicalResources {
   /** The workflows something recorded as workflow `id` named `name` belongs to. */
   workflowOwners(id: string, name: string): Promise<AccessResource[]> {
     const key = JSON.stringify([id, name]);
+    // Counted as {@link #definitionsById} counts its lookups.
+    const tally = currentDiagnosticTally();
+    tally.add("owner_lookups");
     let found = this.#workflows.get(key);
     if (!found) {
       found = recordedWorkflowOwners(this.#workflowRepo, id, name);
       this.#workflows.set(key, found);
+    } else {
+      tally.add("owner_lookups_reused");
     }
     return found;
   }

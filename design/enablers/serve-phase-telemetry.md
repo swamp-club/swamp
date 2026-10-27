@@ -12,10 +12,10 @@ OpenTelemetry spans on the existing pipeline. They observe only: no phase
 changes what the work does, and a phase that cannot be exported is dropped
 without failing the work.
 
-Worker enrollment preparation is instrumented (lab #3986). Four more areas use
-the same contract as they are added: run-detail output resolution (#4002),
-worker deletion and prune (#4003), output retention (#4004) and access-data
-polling (#4005).
+Worker enrollment preparation (lab #3986) and run-detail output resolution
+(#4002) are instrumented. Three more areas use the same contract as they are
+added: worker deletion and prune (#4003), output retention (#4004) and
+access-data polling (#4005).
 
 Phases are observations of the
 [remote telemetry contract](./remote-execution-telemetry.md)
@@ -57,8 +57,10 @@ that already carry them.
 Loops over files or records are one phase with counters and summed work, never a
 span per item, so the span count of an operation does not grow with the number
 of files it reads. `*_work_ms` excludes nested measurements of other kinds
-within it, and holds only for sequential work. It includes failed attempts:
-`read_work_ms` counts a read that found no file.
+within it on the same async path. Measurements running concurrently (reads in
+parallel batches) each add their own time, so their sum can exceed the phase's
+duration. It includes failed attempts: `read_work_ms` counts a read that found
+no file.
 
 ### Where phases come from
 
@@ -152,6 +154,65 @@ Cancellation is observed, never acted on by these fields:
 What enrollment does with a cancel is unchanged: a worker that gave up while
 queued is skipped, and one that gave up during redeem stops before it is
 recorded (outcome `closed`). Work already under way finishes.
+
+## Run-detail output resolution
+
+Parent: `swamp.workflow.step_outputs.resolve`, under
+`swamp.workflow.history.get`, when a `workflow.history.get` request (or
+`swamp workflow history outputs`) renders step outputs (lab #4002). The area
+carries the request's cancellation, so every phase records `cancel_observed`.
+
+| Phase          | Parent                                | Attributes                                                                                                                                  |
+| -------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog_open` | `swamp.workflow.step_outputs.resolve` | Opening the data catalog and the data repository                                                                                            |
+| `output_walk`  | `swamp.workflow.step_outputs.resolve` | The walk over every step's resources and child runs; counters below                                                                         |
+| `owner_index`  | `output_walk`                         | The definition index check (lab #3968) on the request's first owner lookup; the `swamp.serve.definition_index.validate` span nests under it |
+
+`output_walk` handles one resource at a time, so its `*_work_ms` values are
+disjoint shares of its duration. Per resource it authorizes, then reads, then
+parses:
+
+| Attribute                                                                   | Meaning                                                                                                                                          |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `result`                                                                    | `completed`, or `partial` when the walk failed or was cancelled; the counters then hold what it reached                                          |
+| `authorize_allowed`, `authorize_denied`, `authorize_errors`                 | Read decisions on each resource. A cancel during a decision is the walk's outcome, not an error                                                  |
+| `authorize_work_ms`                                                         | The decisions, without the owner lookups inside them                                                                                             |
+| `owner_lookups`, `owner_lookups_reused`                                     | Owner lookups (model by id, or workflow), and those the request's memo answered without a new lookup or scan. Distinct owners are the difference |
+| `owner_lookup_work_ms`                                                      | Finding owners. Includes the `owner_index` phase when it ran in this request, and time spent waiting on another request's listing                |
+| `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms`, `broken_files` | Definition files the per-id owner lookups read, as the definition repository counts them. Excluded from `owner_lookup_work_ms`                   |
+| `resources_attempted`                                                       | Reads attempted after an allow; equals `step_outputs.resources_read`. Not unique resources and not successful reads                              |
+| `reads_succeeded`, `reads_missing`, `reads_failed`                          | Content reads that returned content, found none, or threw                                                                                        |
+| `content_bytes`, `content_read_work_ms`                                     | Bytes of content read, and the time reading it                                                                                                   |
+| `json_parse_work_ms`, `parse_failed`, `parse_not_object`                    | Decoding and parsing content; content that did not parse, or parsed to something other than an object                                            |
+| `child_run_lookups`, `child_runs_unique`, `child_runs_missing`              | Child-run lookups for workflow steps, the distinct runs among them, and lookups that found no run. Lookups are not cached                        |
+| `child_run_lookup_work_ms`                                                  | Reading child run records. Their resources are counted with the rest                                                                             |
+| `assemble_work_ms`                                                          | Merging each step's attributes into outputs and grouping sources                                                                                 |
+
+Counters are exported as `0` when nothing was counted. Without a read policy
+(the CLI, or serve with authorization off) the `authorize_*` and `owner_*`
+fields are absent.
+
+`owner_index` carries `cache` (`cold` for the first check of an empty index,
+`warm` when nothing was listed or read again, `refreshed` otherwise),
+`definitions`, `dirs_checked`, `dirs_relisted`, `files_parsed`, and
+`dirs_joined` and `files_joined`: the part of the relisting that came from a
+listing another request had started. A joined listing runs under the request
+that started it, and its files are counted there; the joiner counts them only as
+joined, so `files_parsed - files_joined` summed over requests is the number of
+files parsed. The joiner's validate span links to the validate span of the
+request that started the listing. The validate span also gains
+`definition_index.dirs_joined` and `definition_index.files_joined`, with its
+other attributes unchanged. Definition files the index check reads are counted
+in `owner_index`'s tally (`files_read`, `bytes_read`, `broken_files`,
+`read_work_ms`, `parse_work_ms`); the work is cumulative across up to 32
+parallel reads.
+
+Supported branches: serve with its definition index (every `swamp serve`), the
+full scan a `CanonicalResources` without an index falls back to (no
+`owner_index`; the definition repository's shared `definition_scan` and
+`definition_lookup` phases appear under `output_walk` where that branch runs
+them), and the CLI (no read policy). The datastore engine does not change the
+phases.
 
 ## Queries
 
@@ -323,6 +384,90 @@ Cancellations as the server saw them, against how long the request ran:
 Rows with `instrumented=false` came from builds without the field; their
 `cancelled` is meaningless.
 
+Run-detail outputs: what each slow history request spent its walk on. The walk
+is sequential, so its `*_work_ms` values are disjoint and may be compared with
+its duration; the remainder is `unattributed`:
+
+```apl
+let from = datetime(2026-10-26T00:00:00Z);
+let to = datetime(2026-10-27T00:00:00Z);
+['swamp-serve-traces']
+| where _time between (from .. to)
+| where ['service.name'] == 'swamp-serve-vm'
+| where name == 'swamp.diagnostic.output_walk'
+| extend a=['attributes.custom']
+| extend outcome=tostring(a['swamp.outcome']),
+         result=tostring(a['swamp.diagnostic.result']),
+         walk_ms=duration/1ms,
+         ownership_ms=todouble(a['swamp.diagnostic.owner_lookup_work_ms'])
+           + coalesce(todouble(a['swamp.diagnostic.read_work_ms']), 0.0)
+           + coalesce(todouble(a['swamp.diagnostic.parse_work_ms']), 0.0),
+         decision_ms=todouble(a['swamp.diagnostic.authorize_work_ms']),
+         read_ms=todouble(a['swamp.diagnostic.content_read_work_ms']),
+         parse_ms=todouble(a['swamp.diagnostic.json_parse_work_ms']),
+         child_ms=todouble(a['swamp.diagnostic.child_run_lookup_work_ms']),
+         assemble_ms=todouble(a['swamp.diagnostic.assemble_work_ms'])
+| extend ownership_ms=coalesce(ownership_ms, 0.0), decision_ms=coalesce(decision_ms, 0.0),
+         read_ms=coalesce(read_ms, 0.0), parse_ms=coalesce(parse_ms, 0.0),
+         child_ms=coalesce(child_ms, 0.0), assemble_ms=coalesce(assemble_ms, 0.0)
+| extend top_ms=max_of(ownership_ms, decision_ms, read_ms, parse_ms, child_ms, assemble_ms)
+| extend unattributed_ms=walk_ms - (ownership_ms + decision_ms + read_ms + parse_ms + child_ms + assemble_ms)
+| extend dominant=case(
+    unattributed_ms > top_ms, 'unattributed',
+    ownership_ms == top_ms, 'ownership',
+    decision_ms == top_ms, 'permission_decisions',
+    read_ms == top_ms, 'content_reads',
+    parse_ms == top_ms, 'parsing',
+    child_ms == top_ms, 'nested_runs',
+    'assembly')
+| summarize n=count(), p50_ms=percentile(walk_ms,50), p95_ms=percentile(walk_ms,95),
+            max_ms=max(walk_ms)
+  by dominant, outcome, result
+```
+
+The sum is valid only within one `output_walk`, whose measurements never
+overlap; never add `owner_index` or child spans to it, since
+`owner_lookup_work_ms` already contains them.
+
+Run-detail outputs: owner index cost and cache state against the resources and
+bytes a request read:
+
+```apl
+let from = datetime(2026-10-26T00:00:00Z);
+let to = datetime(2026-10-27T00:00:00Z);
+let index = ['swamp-serve-traces']
+  | where _time between (from .. to)
+  | where ['service.name'] == 'swamp-serve-vm'
+  | where name == 'swamp.diagnostic.owner_index'
+  | extend a=['attributes.custom']
+  | project trace_id, index_ms=duration/1ms,
+            cache=tostring(a['swamp.diagnostic.cache']),
+            definitions=toint(a['swamp.diagnostic.definitions']),
+            files_parsed=toint(a['swamp.diagnostic.files_parsed']),
+            joined=toint(a['swamp.diagnostic.dirs_joined']) > 0;
+['swamp-serve-traces']
+| where _time between (from .. to)
+| where ['service.name'] == 'swamp-serve-vm'
+| where name == 'swamp.diagnostic.output_walk'
+| extend a=['attributes.custom']
+| project trace_id, walk_ms=duration/1ms,
+          outcome=tostring(a['swamp.outcome']),
+          owner_ms=todouble(a['swamp.diagnostic.owner_lookup_work_ms']),
+          owners=toint(a['swamp.diagnostic.owner_lookups']) - toint(a['swamp.diagnostic.owner_lookups_reused']),
+          resources=toint(a['swamp.diagnostic.resources_attempted']),
+          content_bytes=toint(a['swamp.diagnostic.content_bytes'])
+| join kind=leftouter (index) on trace_id
+| extend cache=iff(isnull(cache), 'no_index_check', cache)
+| summarize n=count(), p95_walk_ms=percentile(walk_ms,95), p95_owner_ms=percentile(owner_ms,95),
+            p95_index_ms=percentile(index_ms,95), avg_files_parsed=avg(files_parsed),
+            max_definitions=max(definitions), avg_owners=avg(owners),
+            avg_resources=avg(resources), p95_content_bytes=percentile(content_bytes,95)
+  by cache, joined, outcome
+```
+
+A request with no `owner_index` row had no owner lookup, or ran without the
+index; `joined` requests waited on another request's listing.
+
 ## What this does not establish
 
 `integration/worker_enroll_phase_telemetry_test.ts` drives a real gateway
@@ -330,6 +475,17 @@ through the real OTLP exporter. It checks that names, parent ids, value types,
 outcomes and statuses survive export for new, existing, contended, cancelled and
 failed enrollments, and that an enrollment's phase count is the same with a
 small and a large worker catalog.
+
+`integration/step_outputs_phase_telemetry_test.ts` drives the real
+`workflow.history.get` handler, policy authorization and definition index
+through the real OTLP exporter. It checks names, parent ids, value types,
+outcomes, statuses and known counts for allowed, denied, missing, unparseable
+and non-object outputs, nested and missing child runs, two requests sharing one
+index listing (and its span link), cancellation before and during the walk, a
+failed owner lookup, that the span count does not grow with 200 definitions or
+40 outputs, and that a request answers the same with tracing off. The run-detail
+queries have not been run against Axiom; that is evidence collected after
+deployment.
 
 Against production `swamp-serve-traces` (2026-10-27, build `b4dd513d`, before
 these phases shipped), the field paths and types above were confirmed on real
