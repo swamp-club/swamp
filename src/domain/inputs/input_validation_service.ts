@@ -21,6 +21,7 @@ import type {
   InputsSchema,
   JsonSchemaProperty,
 } from "../definitions/definition.ts";
+import { stopsAtFirstFailingArgument } from "../untrusted_parse.ts";
 
 /**
  * Individual validation error.
@@ -40,6 +41,10 @@ export interface InputValidationResult {
 
 /**
  * Domain service for validating inputs against JSON Schema.
+ *
+ * Under serve's untrusted argument policy each array and object walk stops
+ * after its first failing entry, so a remote client's oversized input cannot
+ * make it collect one error per entry (swamp-club#3862).
  */
 export class InputValidationService {
   /**
@@ -124,6 +129,7 @@ export class InputValidationService {
           message: `${key} is not a valid input property`,
         });
       }
+      if (errors.length > 0 && stopsAtFirstFailingArgument()) break;
     }
 
     return errors;
@@ -340,6 +346,7 @@ export class InputValidationService {
           schema.items,
         );
         for (const error of itemErrors) errors.push(error);
+        if (errors.length > 0 && stopsAtFirstFailingArgument()) break;
       }
     }
 
@@ -400,6 +407,7 @@ export class InputValidationService {
           );
           for (const error of propErrors) errors.push(error);
         }
+        if (errors.length > 0 && stopsAtFirstFailingArgument()) break;
       }
     } else if (
       typeof schema.additionalProperties === "object" &&
@@ -413,6 +421,7 @@ export class InputValidationService {
           schema.additionalProperties,
         );
         for (const error of propErrors) errors.push(error);
+        if (errors.length > 0 && stopsAtFirstFailingArgument()) break;
       }
     }
 

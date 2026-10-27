@@ -73,6 +73,7 @@ import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { isHiddenFromWorker } from "./worker_control_plane_visibility.ts";
 import { type BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
+import { parseUntrusted } from "../domain/untrusted_parse.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   extractTraceContext,
@@ -128,7 +129,7 @@ function parseOverrides<T>(
   if (raw === undefined) {
     return { ok: true, value: undefined };
   }
-  const parsed = schema.safeParse(raw);
+  const parsed = parseUntrusted(schema, raw);
   if (parsed.success) {
     return { ok: true, value: parsed.data };
   }

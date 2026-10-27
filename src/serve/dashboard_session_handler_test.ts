@@ -24,7 +24,10 @@ import {
 } from "./dashboard_session_handler.ts";
 import { ControlPlaneDashboardSessionStore } from "./dashboard_session_store.ts";
 import { DASHBOARD_SESSION_COOKIE } from "./token_auth.ts";
-import type { DeviceAuthDeps } from "./device_auth_handler.ts";
+import {
+  type DeviceAuthDeps,
+  MAX_AUTH_BODY_BYTES,
+} from "./device_auth_handler.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 
@@ -181,6 +184,19 @@ Deno.test("handleDashboardSession: rejects an invalid credential", async () => {
     deps,
   );
   assertEquals(response?.status, 401);
+});
+
+Deno.test("handleDashboardSession: refuses a body over the cap with 413", async () => {
+  const deps = createDeps();
+  const response = await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/session", {
+      method: "POST",
+      headers: { origin: "https://serve.test" },
+      body: JSON.stringify({ token: "x".repeat(MAX_AUTH_BODY_BYTES) }),
+    }),
+    deps,
+  );
+  assertEquals(response?.status, 413);
 });
 
 Deno.test("handleDashboardSession: rejects cross-origin session changes", async () => {

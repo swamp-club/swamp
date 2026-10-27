@@ -81,6 +81,7 @@ import {
 } from "../domain/diagnostics/diagnostic_phase.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
 import { TransitionTail } from "./transition_tail.ts";
+import { parseUntrustedOrThrow } from "../domain/untrusted_parse.ts";
 
 const logger = getSwampLogger(["serve", "worker-gateway"]);
 
@@ -664,7 +665,7 @@ export class WorkerGateway {
           waitForPeerOnCancel: true,
         },
       );
-      const result = DispatchResultSchema.parse(raw);
+      const result = parseUntrustedOrThrow(DispatchResultSchema, raw);
       logger.info(
         "Dispatch {dispatchId} on worker {worker} {status} in {durationMs}ms",
         {
@@ -759,7 +760,7 @@ export class WorkerGateway {
     rawParams: unknown,
     signal: AbortSignal,
   ): Promise<EnrollResult> {
-    const params = EnrollParamsSchema.parse(rawParams);
+    const params = parseUntrustedOrThrow(EnrollParamsSchema, rawParams);
 
     if (params.protocolVersion !== REMOTE_PROTOCOL_VERSION) {
       throw new RpcError({

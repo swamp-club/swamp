@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { isZodSchemaLike } from "../zod_compat.ts";
+import { boundedRecord } from "../untrusted_parse.ts";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Environment } from "cel-js";
 import { getLogger, type Logger } from "@logtape/logtape";
@@ -153,7 +154,7 @@ export interface FileWriterOverrides {
 export const ResourceWriteOverridesSchema = z.object({
   lifetime: LifetimeSchema.optional(),
   garbageCollection: GarbageCollectionSchema.optional(),
-  tags: z.record(z.string(), z.string()).optional(),
+  tags: boundedRecord(z.string(), z.string()).optional(),
 });
 
 /**
@@ -165,7 +166,7 @@ export const FileWriterOverridesSchema = z.object({
   lifetime: LifetimeSchema.optional(),
   garbageCollection: GarbageCollectionSchema.optional(),
   streaming: z.boolean().optional(),
-  tags: z.record(z.string(), z.string()).optional(),
+  tags: boundedRecord(z.string(), z.string()).optional(),
 });
 
 // Compile-time guards: each schema must parse to its interface and cover

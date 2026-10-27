@@ -22,6 +22,9 @@ import { assertStringIncludes } from "@std/assert/string-includes";
 import {
   isSafeRelativePath,
   MAX_LABELS,
+  MAX_MANIFEST_BYTES,
+  MAX_MANIFEST_LIST_ENTRIES,
+  MAX_REPORTED_MANIFEST_ISSUES,
   parseExtensionManifest,
   resolvePublishVisibility,
 } from "./extension_manifest.ts";
@@ -400,6 +403,88 @@ labels:
 `;
   const manifest = parseExtensionManifest(yaml);
   assertEquals(manifest.labels, ["aws", "kubernetes", "security"]);
+});
+
+Deno.test("parseExtensionManifest: refuses a manifest over MAX_MANIFEST_BYTES before parsing it", () => {
+  // Not YAML at all, so the refusal can only come from the size check.
+  const yaml = `manifestVersion: 1\n${"{".repeat(MAX_MANIFEST_BYTES)}`;
+  assertThrows(
+    () => parseExtensionManifest(yaml),
+    Error,
+    "Extension manifest is larger than 1 MiB.",
+  );
+});
+
+Deno.test("parseExtensionManifest: counts multi-byte characters toward MAX_MANIFEST_BYTES", () => {
+  const description = "é".repeat(MAX_MANIFEST_BYTES / 2);
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+description: "${description}"
+models:
+  - foo.ts
+`;
+  assertThrows(
+    () => parseExtensionManifest(yaml),
+    Error,
+    "larger than",
+  );
+});
+
+Deno.test("parseExtensionManifest: refuses a list over MAX_MANIFEST_LIST_ENTRIES with one issue", () => {
+  const entries = Array.from(
+    { length: MAX_MANIFEST_LIST_ENTRIES + 1 },
+    () => "  - ../escape.ts",
+  );
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+${entries.join("\n")}
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml), Error);
+  assertEquals(
+    error.message,
+    `Invalid extension manifest:\n  - models: Too many models (max ${MAX_MANIFEST_LIST_ENTRIES})`,
+  );
+});
+
+Deno.test("parseExtensionManifest: accepts a list of exactly MAX_MANIFEST_LIST_ENTRIES", () => {
+  const entries = Array.from(
+    { length: MAX_MANIFEST_LIST_ENTRIES },
+    (_, i) => `  - models/m${i}.ts`,
+  );
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+${entries.join("\n")}
+`;
+  assertEquals(
+    parseExtensionManifest(yaml).models.length,
+    MAX_MANIFEST_LIST_ENTRIES,
+  );
+});
+
+Deno.test("parseExtensionManifest: lists at most MAX_REPORTED_MANIFEST_ISSUES issues, then a count", () => {
+  const entries = Array.from({ length: 50 }, () => "  - ../escape.ts");
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+${entries.join("\n")}
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml), Error);
+  const lines = error.message.split("\n").slice(1);
+  assertEquals(lines.length, MAX_REPORTED_MANIFEST_ISSUES + 1);
+  assertEquals(
+    lines.at(-1),
+    `  - and ${50 - MAX_REPORTED_MANIFEST_ISSUES} more`,
+  );
 });
 
 Deno.test("parseExtensionManifest accepts manifest with exactly MAX_LABELS labels", () => {

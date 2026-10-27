@@ -47,6 +47,7 @@ import { BlobRef, type BlobRefJSON, isSha256Hex } from "./blob_ref.ts";
 import { type FileAccess, readFileAccess } from "./file_access.ts";
 import { createIntent, type Intent } from "./intent.ts";
 import { RecordKey } from "./record_key.ts";
+import { formatUntrustedIssues, parseUntrusted } from "../untrusted_parse.ts";
 
 /** The most content a put may inline, in decoded bytes. */
 export const MAX_INLINE_BYTES = 8 * 1024;
@@ -320,6 +321,9 @@ export function tombstoneOp(props: {
   );
 }
 
+/** Most metadata issues a refused data-version op names. */
+const MAX_REPORTED_METADATA_ISSUES = 10;
+
 /**
  * Builds a data-version op. The metadata is checked against
  * DataMetadataSchema; its parsed form is what the op keeps.
@@ -328,10 +332,14 @@ export function dataVersionOp(props: {
   key: RecordKey;
   metadata: unknown;
 }): DataVersionOp {
-  const parsed = DataMetadataSchema.safeParse(props.metadata);
+  // A commit envelope carries this from its caller, so the parse stops at
+  // the first failure in each container (swamp-club#3862).
+  const parsed = parseUntrusted(DataMetadataSchema, props.metadata);
   if (!parsed.success) {
     throw new Error(
-      `A data-version op needs valid data metadata: ${parsed.error.message}`,
+      `A data-version op needs valid data metadata: ${
+        formatUntrustedIssues(parsed.error.issues, MAX_REPORTED_METADATA_ISSUES)
+      }`,
     );
   }
   // Tags in key order, so equal metadata serializes equally; frozen, so the

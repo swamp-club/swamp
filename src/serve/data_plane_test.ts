@@ -635,6 +635,14 @@ Deno.test("DataPlane: malformed resource overrides are refused before anything i
   for (
     const [overrides, field] of [
       [{ tags: { exitCode: 0 } }, "overrides.tags.exitCode"],
+      [
+        {
+          tags: Object.fromEntries(
+            Array.from({ length: 100_000 }, (_, i) => [`k${i}`, 0]),
+          ),
+        },
+        "overrides.tags: Too many entries",
+      ],
       [{ lifetime: "forever" }, "overrides.lifetime"],
       [{ garbageCollection: -1 }, "overrides.garbageCollection"],
       ["7d", "overrides"],

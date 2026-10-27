@@ -38,6 +38,7 @@ import {
 } from "../datastore/lock_holder_marker.ts";
 import { errorPaths, userErrorCode } from "../errors.ts";
 import { z } from "zod";
+import { boundedRecord } from "../untrusted_parse.ts";
 import { SENTINEL_EXACT } from "../vaults/secret_bag_registry.ts";
 
 /**
@@ -229,7 +230,7 @@ export const EnrollParamsSchema = z.object({
   platform: z.string(),
   arch: z.string(),
   /** Scheduling selectors (region, gpu, sandbox tier, ...). */
-  labels: z.record(z.string(), z.string()).default({}),
+  labels: boundedRecord(z.string(), z.string()).default({}),
   resourceLimits: z.record(z.string(), z.unknown()).optional(),
   /**
    * Set by a worker without a swamp-club credential, which passes the auth

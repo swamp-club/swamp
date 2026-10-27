@@ -30,6 +30,28 @@ const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 export const MAX_LABELS = 20;
 
+/**
+ * Largest manifest.yaml parsed, in bytes (1 MiB, as the refusal says). A pulled manifest is another
+ * author's, so its size is bounded before the YAML parse (swamp-club#3862).
+ */
+export const MAX_MANIFEST_BYTES = 1024 * 1024;
+
+/** Most entries one manifest list may hold; an extension has at most 150 files. */
+export const MAX_MANIFEST_LIST_ENTRIES = 1000;
+
+/** Most validation issues a refused manifest lists. */
+export const MAX_REPORTED_MANIFEST_ISSUES = 20;
+
+/**
+ * A manifest list, refused before its entries are parsed when it holds more
+ * than {@link MAX_MANIFEST_LIST_ENTRIES}.
+ */
+function manifestList<T extends z.ZodType>(field: string, entry: T) {
+  return z.array(entry).max(MAX_MANIFEST_LIST_ENTRIES, {
+    message: `Too many ${field} (max ${MAX_MANIFEST_LIST_ENTRIES})`,
+  });
+}
+
 /** Public selects registry defaults; private requires private publication. */
 export type PublishVisibility = "public" | "private";
 
@@ -129,26 +151,27 @@ const ExtensionManifestSchemaV1 = z.object({
     },
   ).url().optional(),
   paths: PathsConfigSchema.optional(),
-  workflows: z.array(safePathString).optional(),
-  models: z.array(safePathString).optional(),
+  workflows: manifestList("workflows", safePathString).optional(),
+  models: manifestList("models", safePathString).optional(),
   // The behavior spelling of `models` (swamp-club#3338); merged into
   // `models` on parse.
-  behaviors: z.array(safePathString).optional(),
-  vaults: z.array(safePathString).optional(),
-  drivers: z.array(safePathString).optional(),
-  datastores: z.array(safePathString).optional(),
-  reports: z.array(safePathString).optional(),
-  webhooks: z.array(safePathString).optional(),
-  skills: z.array(safePathString).optional(),
-  include: z.array(safePathString).optional(),
-  additionalFiles: z.array(safePathString).optional(),
-  binaries: z.array(safePathString).optional(),
-  platforms: z.array(z.string().min(1)).optional(),
+  behaviors: manifestList("behaviors", safePathString).optional(),
+  vaults: manifestList("vaults", safePathString).optional(),
+  drivers: manifestList("drivers", safePathString).optional(),
+  datastores: manifestList("datastores", safePathString).optional(),
+  reports: manifestList("reports", safePathString).optional(),
+  webhooks: manifestList("webhooks", safePathString).optional(),
+  skills: manifestList("skills", safePathString).optional(),
+  include: manifestList("include", safePathString).optional(),
+  additionalFiles: manifestList("additionalFiles", safePathString).optional(),
+  binaries: manifestList("binaries", safePathString).optional(),
+  platforms: manifestList("platforms", z.string().min(1)).optional(),
   labels: z.array(z.string().min(1)).max(MAX_LABELS, {
     message: `Too many labels (max ${MAX_LABELS})`,
   }).optional(),
   releaseNotes: z.string().max(5000).optional(),
-  dependencies: z.array(
+  dependencies: manifestList(
+    "dependencies",
     z.string().refine((dep) => dep.includes("/"), {
       message: "Dependencies must include a slash (e.g., @collective/name)",
     }),
@@ -213,6 +236,16 @@ export interface ExtensionManifest {
  * @throws UserError for missing/unsupported manifest version or validation failures
  */
 export function parseExtensionManifest(content: string): ExtensionManifest {
+  // A string's length never exceeds its UTF-8 size, so the first test refuses
+  // an oversized manifest without encoding it.
+  if (
+    content.length > MAX_MANIFEST_BYTES ||
+    new TextEncoder().encode(content).byteLength > MAX_MANIFEST_BYTES
+  ) {
+    throw new UserError(
+      "Extension manifest is larger than 1 MiB.",
+    );
+  }
   const raw = parseYaml(content);
 
   if (typeof raw !== "object" || raw === null) {
@@ -237,10 +270,18 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
   const result = ExtensionManifestSchemaV1.safeParse(raw);
 
   if (!result.success) {
-    const messages = result.error.issues.map((issue) => {
-      const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
-      return `  - ${path}${issue.message}`;
-    });
+    const issues = result.error.issues;
+    const messages = issues.slice(0, MAX_REPORTED_MANIFEST_ISSUES).map(
+      (issue) => {
+        const path = issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+        return `  - ${path}${issue.message}`;
+      },
+    );
+    if (issues.length > MAX_REPORTED_MANIFEST_ISSUES) {
+      messages.push(
+        `  - and ${issues.length - MAX_REPORTED_MANIFEST_ISSUES} more`,
+      );
+    }
     throw new UserError(
       `Invalid extension manifest:\n${messages.join("\n")}`,
     );

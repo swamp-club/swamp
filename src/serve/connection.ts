@@ -28,6 +28,11 @@ import {
   SERVE_CAPABILITY_RESUME_FROM_JOB,
   type ServerRequest,
 } from "./protocol.ts";
+import {
+  boundedRecord,
+  formatUntrustedIssues,
+  parseUntrusted,
+} from "../domain/untrusted_parse.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
@@ -249,7 +254,7 @@ const WorkflowRunRequestSchema = z.object({
     inputs: z.record(z.string(), z.unknown()).optional(),
     lastEvaluated: z.boolean().optional(),
     verbose: z.boolean().optional(),
-    runtimeTags: z.record(z.string(), z.string()).optional(),
+    runtimeTags: boundedRecord(z.string(), z.string()).optional(),
     skipAllReports: z.boolean().optional(),
     skipReportNames: z.array(z.string()).optional(),
     skipReportLabels: z.array(z.string()).optional(),
@@ -275,7 +280,7 @@ const ModelMethodRunRequestSchema = z.object({
     inputs: z.record(z.string(), z.unknown()).optional(),
     literalInputs: z.boolean().optional(),
     lastEvaluated: z.boolean().optional(),
-    runtimeTags: z.record(z.string(), z.string()).optional(),
+    runtimeTags: boundedRecord(z.string(), z.string()).optional(),
     typeArg: z.string().optional(),
     definitionName: z.string().optional(),
     skipAllReports: z.boolean().optional(),
@@ -405,7 +410,7 @@ const DataSearchRequestSchema = z.object({
     output: z.string().optional(),
     run: z.string().optional(),
     streaming: z.boolean().optional(),
-    tags: z.record(z.string(), z.string()).optional(),
+    tags: boundedRecord(z.string(), z.string()).optional(),
     limit: z.number().int().positive().max(10_000).optional(),
   }).optional(),
 });
@@ -492,7 +497,7 @@ const VaultPutRequestSchema = z.object({
     refreshFrom: z.string().optional(),
     refreshTtlMs: z.number().optional(),
     clearRefresh: z.boolean().optional(),
-    labels: z.record(z.string().min(1), z.string()).optional(),
+    labels: boundedRecord(z.string().min(1), z.string()).optional(),
   }),
 });
 
@@ -795,7 +800,7 @@ const WorkflowHistorySearchRequestSchema = z.object({
   payload: z.object({
     query: z.string().optional(),
     workflow: z.string().optional(),
-    inputs: z.record(z.string(), z.string()).optional(),
+    inputs: boundedRecord(z.string(), z.string()).optional(),
     filter: z.string().max(1024).optional(),
   }).optional(),
 });
@@ -813,8 +818,8 @@ const WorkflowRunSearchRequestSchema = z.object({
     triggerSource: z.string().max(256).optional(),
     statuses: z.array(z.string().max(64)).max(32).optional(),
     triggerSources: z.array(z.string().max(256)).max(32).optional(),
-    tags: z.record(z.string(), z.string()).optional(),
-    inputs: z.record(z.string(), z.string()).optional(),
+    tags: boundedRecord(z.string(), z.string()).optional(),
+    inputs: boundedRecord(z.string(), z.string()).optional(),
     limit: z.number().int().positive().max(10_000).optional(),
     offset: z.number().int().nonnegative().optional(),
   }).optional(),
@@ -1004,7 +1009,7 @@ const VaultAnnotateRequestSchema = z.object({
     key: z.string(),
     url: z.string().optional(),
     notes: z.string().optional(),
-    labels: z.record(z.string().min(1), z.string()).optional(),
+    labels: boundedRecord(z.string().min(1), z.string()).optional(),
     removeLabels: z.array(z.string()).optional(),
     clear: z.boolean().optional(),
   }),
@@ -1041,7 +1046,7 @@ const WorkerVerifyRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     workerName: z.string().optional(),
-    labels: z.record(z.string(), z.string()).optional(),
+    labels: boundedRecord(z.string(), z.string()).optional(),
   }).optional(),
 });
 
@@ -1629,6 +1634,14 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
 export type ValidatedServerRequest = z.infer<typeof ServerRequestSchema>;
 
 /**
+ * Every request type's schema, for the fitness test that checks each record a
+ * client can send is bounded (swamp-club#3862).
+ */
+export function serverRequestSchemas(): readonly z.ZodType[] {
+  return ServerRequestSchema.options;
+}
+
+/**
  * Each request type's payload field names, read from the schemas above. The
  * serve id-deny conformance test uses it to find every request that names a
  * resource, so a new one cannot ship without authorization coverage.
@@ -1654,19 +1667,24 @@ export function serverRequestPayloadFields(): ReadonlyMap<
 /**
  * Validates a parsed JSON value against the ServerRequest schema.
  * Returns the validated request on success, or a human-readable error string on failure.
+ * The message is any token holder's to provoke, so the parse stops at the
+ * first failure in each container and the message names at most
+ * {@link MAX_REPORTED_REQUEST_ISSUES} issues (swamp-club#3862).
  */
 export function validateServerRequest(
   data: unknown,
 ): ServerRequest | string {
-  const result = ServerRequestSchema.safeParse(data);
+  const result = parseUntrusted(ServerRequestSchema, data);
   if (result.success) {
     return result.data as ServerRequest;
   }
-  const issues = result.error.issues.map((i) =>
-    `${i.path.join(".")}: ${i.message}`
-  ).join("; ");
-  return `Invalid request: ${issues}`;
+  return `Invalid request: ${
+    formatUntrustedIssues(result.error.issues, MAX_REPORTED_REQUEST_ISSUES)
+  }`;
 }
+
+/** Most schema issues an `invalid_request` error names. */
+export const MAX_REPORTED_REQUEST_ISSUES = 10;
 
 /**
  * Best-effort extraction of the request `id` from a parsed message

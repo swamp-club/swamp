@@ -353,6 +353,7 @@ import { RemoteAuditStore } from "../../infrastructure/persistence/remote_audit_
 import { resolveDatastoreExpressions } from "../datastore_expression_resolver.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { setProcessGroupIsolation } from "../../infrastructure/process/process_group_policy.ts";
+import { setProcessArgumentParsePolicy } from "../../domain/untrusted_parse.ts";
 import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
 import {
   runShutdownDrain,
@@ -979,6 +980,36 @@ export async function readCancelRequestReason(
     };
   }
   return reason === "" ? { ok: true } : { ok: true, reason };
+}
+
+/**
+ * Reads a bulk cancel request body, at most {@link MAX_CANCEL_BODY_BYTES}
+ * (swamp-club#3862). A body that is not a JSON object filters nothing, as it
+ * always has.
+ */
+export async function readBulkCancelBody(
+  req: Request,
+): Promise<
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; status: 413; message: string }
+> {
+  const bytes = await readBodyWithLimit(req, MAX_CANCEL_BODY_BYTES);
+  if (bytes === null) {
+    return {
+      ok: false,
+      status: 413,
+      message: `Request body exceeds ${MAX_CANCEL_BODY_BYTES} bytes`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return { ok: true, body: {} };
+  }
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? { ok: true, body: parsed as Record<string, unknown> }
+    : { ok: true, body: {} };
 }
 
 /**
@@ -2938,6 +2969,10 @@ export const serveCommand = new Command()
     // step's prompts, so aborting a run must reach every process it started
     // even when serve runs in the foreground.
     setProcessGroupIsolation("always");
+    // The same remote callers choose run arguments and inputs, so a refusal
+    // stops at the first failing element rather than growing with what they
+    // sent (swamp-club#3862).
+    setProcessArgumentParsePolicy("untrusted");
     const isJson = ctx.outputMode === "json";
     if (!isJson) {
       enableServeOutput();
@@ -6875,7 +6910,14 @@ export const serveCommand = new Command()
             return Response.json(cancelSuccessBody(result, reason));
           }
           if (url.pathname === "/api/v1/cancel") {
-            const body = await req.json().catch(() => ({}));
+            const requested = await readBulkCancelBody(req);
+            if (!requested.ok) {
+              return Response.json({
+                status: "error",
+                message: requested.message,
+              }, { status: requested.status });
+            }
+            const body = requested.body;
             const typeFilter = typeof body.executionType === "string"
               ? body.executionType
               : undefined;
@@ -6902,7 +6944,7 @@ export const serveCommand = new Command()
                   ? (r) => webhookService!.cancelAllRuns(r)
                   : undefined,
               },
-              typeFilter,
+              typeFilter as ExecutionType | undefined,
               reason,
             );
             emitRunCancelAudit(connectionCtx, {

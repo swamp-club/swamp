@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { z } from "zod";
+import { setProcessArgumentParsePolicy } from "../untrusted_parse.ts";
 import {
   DefaultModelValidationService,
   FOREIGN_TEMPLATE_WARNING_NAME,
@@ -4318,4 +4319,50 @@ Deno.test("validateModel: pre-flight checks receive defaults of the upgraded glo
     steamcmd: "/opt/steamcmd/steamcmd.sh",
     region: "AP-SOUTH-1",
   });
+});
+
+// ── Serve's untrusted argument policy (swamp-club#3862) ─────────────────
+
+const listArgsModel: ModelDefinition = defineModel({
+  type: ModelType.create("test/untrusted-list-args"),
+  version: "2026.10.27.1",
+  globalArguments: z.object({}),
+  resources: {},
+  methods: {
+    run: {
+      description: "Takes a list of names",
+      arguments: z.object({ names: z.array(z.string()) }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+});
+
+async function methodArgumentsError(count: number): Promise<string> {
+  const { results } = await new DefaultModelValidationService().validateModel(
+    Definition.create({
+      name: "names",
+      methods: { run: { arguments: { names: Array(count).fill({}) } } },
+    }),
+    listArgsModel,
+  );
+  const result = results.find((r) => r.name === "Method arguments")!;
+  assertEquals(result.passed, false);
+  return result.error!;
+}
+
+Deno.test("validateModel: method argument issues are all named under the trusted policy", async () => {
+  const error = await methodArgumentsError(3);
+  assertStringIncludes(error, "names.0");
+  assertStringIncludes(error, "names.2");
+});
+
+Deno.test("validateModel: under the untrusted policy method arguments stop at the first failing element", async () => {
+  const restore = setProcessArgumentParsePolicy("untrusted");
+  try {
+    const error = await methodArgumentsError(100_000);
+    assertStringIncludes(error, "names.0");
+    assertEquals(error.includes("names.1"), false);
+  } finally {
+    restore();
+  }
 });
