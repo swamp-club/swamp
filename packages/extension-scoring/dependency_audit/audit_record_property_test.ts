@@ -106,30 +106,36 @@ const importArb: fc.Arbitrary<ShippedImport> = fc.record({
 
 Deno.test("buildDependencyAuditRecordV2: one entry per shipped version, order-independent, and it reads back", () => {
   fc.assert(
-    fc.property(fc.array(importArb, { maxLength: 12 }), (imports) => {
-      const record = buildDependencyAuditRecordV2({
-        imports,
-        bundles: {},
-        unaudited: [],
-      });
-      const keys = record.dependencies.map((e) =>
-        `${e.registry}:${e.name}@${e.version}`
-      );
-      assertEquals(new Set(keys).size, keys.length);
-      for (const e of record.dependencies) assertEquals(e.spec, e.version);
-      const text = serializeDependencyAuditRecordV2(record);
-      assertEquals(
-        serializeDependencyAuditRecordV2(
-          buildDependencyAuditRecordV2({
-            imports: [...imports].reverse(),
-            bundles: {},
-            unaudited: [],
-          }),
-        ),
-        text,
-      );
-      assertEquals(parseDependencyAuditRecordV2(text), record);
-    }),
+    fc.property(
+      fc.array(importArb, { maxLength: 12 }),
+      fc.integer({ min: 1, max: 1000 }),
+      (imports, bundleFormat) => {
+        const record = buildDependencyAuditRecordV2({
+          bundleFormat,
+          imports,
+          bundles: {},
+          unaudited: [],
+        });
+        const keys = record.dependencies.map((e) =>
+          `${e.registry}:${e.name}@${e.version}`
+        );
+        assertEquals(new Set(keys).size, keys.length);
+        for (const e of record.dependencies) assertEquals(e.spec, e.version);
+        const text = serializeDependencyAuditRecordV2(record);
+        assertEquals(
+          serializeDependencyAuditRecordV2(
+            buildDependencyAuditRecordV2({
+              bundleFormat,
+              imports: [...imports].reverse(),
+              bundles: {},
+              unaudited: [],
+            }),
+          ),
+          text,
+        );
+        assertEquals(parseDependencyAuditRecordV2(text), record);
+      },
+    ),
   );
 });
 
@@ -137,6 +143,7 @@ Deno.test("canonicalShippedSpecifierIssue: every version a v2 record lists ships
   fc.assert(
     fc.property(fc.array(importArb, { maxLength: 12 }), (imports) => {
       const record = buildDependencyAuditRecordV2({
+        bundleFormat: 1,
         imports,
         bundles: {},
         unaudited: [],

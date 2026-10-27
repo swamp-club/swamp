@@ -2538,7 +2538,11 @@ export class ExtensionLoader {
     }
   }
 
-  private getBundlePath(relativePath: string, baseDir: string): string {
+  /**
+   * Where the bundle of `relativePath` under `baseDir` lives, or "" without
+   * a repo dir.
+   */
+  getBundlePath(relativePath: string, baseDir: string): string {
     if (!this.repoDir) return "";
     return this.resolveBundlePath(
       bundleNamespace(baseDir, this.repoDir),

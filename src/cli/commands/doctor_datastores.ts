@@ -36,7 +36,10 @@ import {
   type RepairUnmigratedDataDeps,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
-import { createLibSwampContext } from "../../libswamp/context.ts";
+import {
+  createLibSwampContext,
+  type LibSwampContext,
+} from "../../libswamp/context.ts";
 import {
   createCatalogDuplicateLatestRepairRenderer,
   createCatalogIndexRepairRenderer,
@@ -46,9 +49,11 @@ import {
   createRepairDatastoresRenderer,
   createUnmigratedDataRepairRenderer,
   type DatastoreFormatMarkerRepairStatus,
+  DatastoreRepairJsonReport,
   type PreV3RecordsRepairStatus,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import {
+  type CommandContext,
   createContext,
   type GlobalOptions,
   resolveRepoDir,
@@ -634,6 +639,116 @@ async function createUnmigratedRepairDeps(
   };
 }
 
+/**
+ * Runs the v2 `doctor datastores --repair` stages in order, each reporting
+ * through its renderer; under --json they record into `report`, which the
+ * caller prints. Resolves true when any stage failed or was skipped for a
+ * reason the user must act on, so the command exits 1.
+ */
+async function runDatastoreRepairs(
+  repoDir: string,
+  cliCtx: CommandContext,
+  libCtx: LibSwampContext,
+  report: DatastoreRepairJsonReport,
+  confirm: boolean,
+): Promise<boolean> {
+  let failed = false;
+
+  let unmigratedDeps: RepairUnmigratedDataDeps | null = null;
+  try {
+    unmigratedDeps = await createUnmigratedRepairDeps(repoDir);
+  } catch (error) {
+    if (error instanceof UserError) {
+      cliCtx.logger.debug`Skipping unmigrated data repair: ${error.message}`;
+    } else {
+      throw error;
+    }
+  }
+
+  // A namespace named after a layout directory cannot have this repair run
+  // against it; skip it here so the repairs below still run.
+  if (
+    unmigratedDeps &&
+    namespaceCollidesWithLayout(
+      unmigratedDeps.getNamespace(),
+      unmigratedDeps.getDatastoreDirectories(),
+    )
+  ) {
+    cliCtx.logger
+      .warn`Skipping unmigrated data repair: namespace ${unmigratedDeps.getNamespace()} has the same name as a datastore layout directory. Run 'swamp doctor datastores' for how to move it.`;
+    failed = true;
+    unmigratedDeps = null;
+  }
+
+  if (unmigratedDeps) {
+    const unmigratedRenderer = createUnmigratedDataRepairRenderer(
+      cliCtx.outputMode,
+      report,
+    );
+
+    await consumeStream(
+      repairUnmigratedData(libCtx, unmigratedDeps, { confirm }),
+      unmigratedRenderer.handlers(),
+    );
+
+    if (unmigratedRenderer.overallStatus === "fail") {
+      failed = true;
+    }
+  }
+
+  // Catalog repair runs before contamination repair: contamination repair
+  // ends by invalidating the catalog itself, so running it first would leave
+  // the completeness check comparing against a catalog that no longer exists.
+  const catalogRenderer = createCatalogIndexRepairRenderer(
+    cliCtx.outputMode,
+    report,
+  );
+  await consumeStream(
+    repairCatalogIndex(libCtx, createCatalogRepairDeps(repoDir), { confirm }),
+    catalogRenderer.handlers(),
+  );
+  if (catalogRenderer.overallStatus === "fail") {
+    failed = true;
+  }
+
+  const dupLatestRenderer = createCatalogDuplicateLatestRepairRenderer(
+    cliCtx.outputMode,
+    report,
+  );
+  await consumeStream(
+    repairCatalogDuplicateLatest(
+      libCtx,
+      createDuplicateLatestRepairDeps(repoDir),
+      { confirm },
+    ),
+    dupLatestRenderer.handlers(),
+  );
+  if (dupLatestRenderer.overallStatus === "fail") {
+    failed = true;
+  }
+
+  let contaminationDeps: RepairDatastoresDeps | null = null;
+  try {
+    contaminationDeps = await createRepairDeps(repoDir);
+  } catch (error) {
+    if (error instanceof UserError) {
+      cliCtx.logger
+        .debug`Skipping namespace contamination repair: ${error.message}`;
+    } else {
+      throw error;
+    }
+  }
+
+  if (!contaminationDeps) return failed;
+
+  const renderer = createRepairDatastoresRenderer(cliCtx.outputMode, report);
+  await consumeStream(
+    repairDatastoreContamination(libCtx, contaminationDeps, { confirm }),
+    renderer.handlers(),
+  );
+  return failed || renderer.overallStatus === "fail";
+}
+
 export const doctorDatastoresCommand = withRemoteOptions(
   new Command()
     .description(
@@ -768,112 +883,26 @@ export const doctorDatastoresCommand = withRemoteOptions(
   }
 
   if (options.repair) {
-    let exitCode = 0;
-
-    let unmigratedDeps: RepairUnmigratedDataDeps | null = null;
+    // Each stage records its result here, and under --json the report is
+    // printed once, so the output is one JSON document (swamp-club#4011). It
+    // prints in the finally so a stage that throws still reports the stages
+    // that finished; Deno.exit skips pending finally blocks, so the exit
+    // comes after it.
+    const report = new DatastoreRepairJsonReport();
+    let failed: boolean;
     try {
-      unmigratedDeps = await createUnmigratedRepairDeps(repoDir);
-    } catch (error) {
-      if (error instanceof UserError) {
-        cliCtx.logger.debug`Skipping unmigrated data repair: ${error.message}`;
-      } else {
-        throw error;
-      }
-    }
-
-    // A namespace named after a layout directory cannot have this repair run
-    // against it; skip it here so the repairs below still run.
-    if (
-      unmigratedDeps &&
-      namespaceCollidesWithLayout(
-        unmigratedDeps.getNamespace(),
-        unmigratedDeps.getDatastoreDirectories(),
-      )
-    ) {
-      cliCtx.logger
-        .warn`Skipping unmigrated data repair: namespace ${unmigratedDeps.getNamespace()} has the same name as a datastore layout directory. Run 'swamp doctor datastores' for how to move it.`;
-      exitCode = 1;
-      unmigratedDeps = null;
-    }
-
-    if (unmigratedDeps) {
-      const unmigratedRenderer = createUnmigratedDataRepairRenderer(
-        cliCtx.outputMode,
-      );
-
-      await consumeStream(
-        repairUnmigratedData(libCtx, unmigratedDeps, {
-          confirm: Boolean(options.yes),
-        }),
-        unmigratedRenderer.handlers(),
-      );
-
-      if (unmigratedRenderer.overallStatus === "fail") {
-        exitCode = 1;
-      }
-    }
-
-    // Catalog repair runs before contamination repair: contamination repair
-    // ends by invalidating the catalog itself, so running it first would leave
-    // the completeness check comparing against a catalog that no longer exists.
-    const catalogRenderer = createCatalogIndexRepairRenderer(cliCtx.outputMode);
-    await consumeStream(
-      repairCatalogIndex(libCtx, createCatalogRepairDeps(repoDir), {
-        confirm: Boolean(options.yes),
-      }),
-      catalogRenderer.handlers(),
-    );
-    if (catalogRenderer.overallStatus === "fail") {
-      exitCode = 1;
-    }
-
-    const dupLatestRenderer = createCatalogDuplicateLatestRepairRenderer(
-      cliCtx.outputMode,
-    );
-    await consumeStream(
-      repairCatalogDuplicateLatest(
+      failed = await runDatastoreRepairs(
+        repoDir,
+        cliCtx,
         libCtx,
-        createDuplicateLatestRepairDeps(repoDir),
-        { confirm: Boolean(options.yes) },
-      ),
-      dupLatestRenderer.handlers(),
-    );
-    if (dupLatestRenderer.overallStatus === "fail") {
-      exitCode = 1;
+        report,
+        Boolean(options.yes),
+      );
+    } finally {
+      if (cliCtx.outputMode === "json") report.print();
     }
-
-    let contaminationDeps: RepairDatastoresDeps | null = null;
-    try {
-      contaminationDeps = await createRepairDeps(repoDir);
-    } catch (error) {
-      if (error instanceof UserError) {
-        cliCtx.logger
-          .debug`Skipping namespace contamination repair: ${error.message}`;
-      } else {
-        throw error;
-      }
-    }
-
-    if (!contaminationDeps) {
-      if (exitCode !== 0) Deno.exit(1);
-      return;
-    }
-
-    const deps = contaminationDeps;
-    const renderer = createRepairDatastoresRenderer(cliCtx.outputMode);
-
-    await consumeStream(
-      repairDatastoreContamination(libCtx, deps, {
-        confirm: Boolean(options.yes),
-      }),
-      renderer.handlers(),
-    );
-
     cliCtx.logger.debug("doctor datastores repair completed");
-
-    if (renderer.overallStatus === "fail" || exitCode !== 0) {
-      Deno.exit(1);
-    }
+    if (failed) Deno.exit(1);
     return;
   }
 

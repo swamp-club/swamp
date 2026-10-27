@@ -84,6 +84,7 @@ import { agentCommand } from "./commands/agent_setup.ts";
 import { workerCommand } from "./commands/worker.ts";
 import { questCommand } from "./commands/quest.ts";
 import { subscriptionCommand } from "./commands/subscription.ts";
+import { inboxCommand } from "./commands/inbox.ts";
 import { startCommand } from "./commands/start.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
 import { workspaceCommand } from "./commands/workspace.ts";
@@ -415,6 +416,7 @@ const NON_REPO_COMMANDS = new Set([
   "issue",
   "quest",
   "subscription",
+  "inbox",
   // Manages its own home workspace by path; never runs a model.
   "start",
   // Manages the workspace registry; never runs inside one.
@@ -2172,6 +2174,7 @@ export function registerCommands(cli: AnyCommand): void {
     .command("worker", workerCommand)
     .command("quest", questCommand)
     .command("subscription", subscriptionCommand)
+    .command("inbox", inboxCommand)
     .command("start", startCommand)
     .command("dashboard", dashboardCommand)
     .command("workspace", workspaceCommand);

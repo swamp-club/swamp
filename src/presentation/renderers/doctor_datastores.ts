@@ -335,6 +335,44 @@ export function createDoctorDatastoresRenderer(
 }
 
 // ============================================================================
+// Repair --json document (swamp-club#4011)
+// ============================================================================
+
+/** A v2 repair stage's key in the `--repair --json` document. */
+export type DatastoreRepairStage =
+  | "unmigrated"
+  | "catalog"
+  | "duplicateLatest"
+  | "contamination";
+
+/**
+ * The one JSON document `doctor datastores --repair --json` prints. Each v2
+ * repair stage's json renderer records its result object under the stage's
+ * key, and the command prints the report once; a stage that did not run is
+ * null. Printing per stage gave several documents back to back
+ * (swamp-club#4011).
+ */
+export class DatastoreRepairJsonReport {
+  readonly #stages: Record<
+    DatastoreRepairStage,
+    Record<string, unknown> | null
+  > = {
+    unmigrated: null,
+    catalog: null,
+    duplicateLatest: null,
+    contamination: null,
+  };
+
+  record(stage: DatastoreRepairStage, result: Record<string, unknown>): void {
+    this.#stages[stage] = result;
+  }
+
+  print(): void {
+    console.log(JSON.stringify(this.#stages, null, 2));
+  }
+}
+
+// ============================================================================
 // Repair renderer
 // ============================================================================
 
@@ -427,6 +465,12 @@ class LogRepairDatastoresRenderer implements RepairDatastoresRenderer {
 
 class JsonRepairDatastoresRenderer implements RepairDatastoresRenderer {
   overallStatus: RepairDatastoresStatus = "pass";
+
+  readonly #report: DatastoreRepairJsonReport;
+
+  constructor(report: DatastoreRepairJsonReport) {
+    this.#report = report;
+  }
   #steps: Array<{ step: number; total: number; description: string }> = [];
 
   handlers(): EventHandlers<RepairDatastoresEvent> {
@@ -434,17 +478,11 @@ class JsonRepairDatastoresRenderer implements RepairDatastoresRenderer {
       scanning: () => {},
       preview: (e) => {
         this.overallStatus = "preview";
-        console.log(
-          JSON.stringify(
-            {
-              status: "preview",
-              namespace: e.namespace,
-              contamination: e.contamination,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("contamination", {
+          status: "preview",
+          namespace: e.namespace,
+          contamination: e.contamination,
+        });
       },
       step: (e) => {
         this.#steps.push({
@@ -455,24 +493,16 @@ class JsonRepairDatastoresRenderer implements RepairDatastoresRenderer {
       },
       completed: (e) => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify(
-            {
-              status: "completed",
-              namespace: e.namespace,
-              result: e.result,
-              steps: this.#steps,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("contamination", {
+          status: "completed",
+          namespace: e.namespace,
+          result: e.result,
+          steps: this.#steps,
+        });
       },
       not_needed: () => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify({ status: "not_needed" }, null, 2),
-        );
+        this.#report.record("contamination", { status: "not_needed" });
       },
       error: (e) => {
         this.overallStatus = "fail";
@@ -484,10 +514,11 @@ class JsonRepairDatastoresRenderer implements RepairDatastoresRenderer {
 
 export function createRepairDatastoresRenderer(
   mode: OutputMode,
+  report: DatastoreRepairJsonReport,
 ): RepairDatastoresRenderer {
   switch (mode) {
     case "json":
-      return new JsonRepairDatastoresRenderer();
+      return new JsonRepairDatastoresRenderer(report);
     case "log":
       return new LogRepairDatastoresRenderer();
   }
@@ -554,43 +585,35 @@ class LogUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
 class JsonUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
   overallStatus: UnmigratedDataRepairStatus = "pass";
 
+  readonly #report: DatastoreRepairJsonReport;
+
+  constructor(report: DatastoreRepairJsonReport) {
+    this.#report = report;
+  }
+
   handlers(): EventHandlers<RepairUnmigratedDataEvent> {
     return {
       scanning: () => {},
       preview: (e) => {
         this.overallStatus = "preview";
-        console.log(
-          JSON.stringify(
-            {
-              status: "unmigrated_preview",
-              namespace: e.namespace,
-              directories: e.directories,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("unmigrated", {
+          status: "unmigrated_preview",
+          namespace: e.namespace,
+          directories: e.directories,
+        });
       },
       step: () => {},
       completed: (e) => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify(
-            {
-              status: "unmigrated_completed",
-              namespace: e.namespace,
-              result: e.result,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("unmigrated", {
+          status: "unmigrated_completed",
+          namespace: e.namespace,
+          result: e.result,
+        });
       },
       not_needed: () => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify({ status: "unmigrated_not_needed" }, null, 2),
-        );
+        this.#report.record("unmigrated", { status: "unmigrated_not_needed" });
       },
       error: (e) => {
         this.overallStatus = "fail";
@@ -602,10 +625,11 @@ class JsonUnmigratedDataRepairRenderer implements UnmigratedDataRepairRenderer {
 
 export function createUnmigratedDataRepairRenderer(
   mode: OutputMode,
+  report: DatastoreRepairJsonReport,
 ): UnmigratedDataRepairRenderer {
   switch (mode) {
     case "json":
-      return new JsonUnmigratedDataRepairRenderer();
+      return new JsonUnmigratedDataRepairRenderer(report);
     case "log":
       return new LogUnmigratedDataRepairRenderer();
   }
@@ -681,43 +705,35 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
 class JsonCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
   overallStatus: CatalogIndexRepairStatus = "pass";
 
+  readonly #report: DatastoreRepairJsonReport;
+
+  constructor(report: DatastoreRepairJsonReport) {
+    this.#report = report;
+  }
+
   handlers(): EventHandlers<RepairCatalogIndexEvent> {
     return {
       scanning: () => {},
       preview: (e) => {
         this.overallStatus = "preview";
-        console.log(
-          JSON.stringify(
-            {
-              status: "catalog_preview",
-              completeness: e.completeness,
-              foreignRowsNotice: FOREIGN_ROWS_NOTICE,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("catalog", {
+          status: "catalog_preview",
+          completeness: e.completeness,
+          foreignRowsNotice: FOREIGN_ROWS_NOTICE,
+        });
       },
       step: () => {},
       completed: (e) => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify(
-            {
-              status: "catalog_completed",
-              result: e.result,
-              foreignRowsNotice: FOREIGN_ROWS_NOTICE,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("catalog", {
+          status: "catalog_completed",
+          result: e.result,
+          foreignRowsNotice: FOREIGN_ROWS_NOTICE,
+        });
       },
       not_needed: () => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify({ status: "catalog_not_needed" }, null, 2),
-        );
+        this.#report.record("catalog", { status: "catalog_not_needed" });
       },
       error: (e) => {
         this.overallStatus = "fail";
@@ -729,10 +745,11 @@ class JsonCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
 
 export function createCatalogIndexRepairRenderer(
   mode: OutputMode,
+  report: DatastoreRepairJsonReport,
 ): CatalogIndexRepairRenderer {
   switch (mode) {
     case "json":
-      return new JsonCatalogIndexRepairRenderer();
+      return new JsonCatalogIndexRepairRenderer(report);
     case "log":
       return new LogCatalogIndexRepairRenderer();
   }
@@ -796,45 +813,35 @@ class JsonCatalogDuplicateLatestRepairRenderer
   implements CatalogDuplicateLatestRepairRenderer {
   overallStatus: CatalogDuplicateLatestRepairStatus = "pass";
 
+  readonly #report: DatastoreRepairJsonReport;
+
+  constructor(report: DatastoreRepairJsonReport) {
+    this.#report = report;
+  }
+
   handlers(): EventHandlers<RepairCatalogDuplicateLatestEvent> {
     return {
       scanning: () => {},
       preview: (e) => {
         this.overallStatus = "preview";
-        console.log(
-          JSON.stringify(
-            {
-              status: "duplicate_latest_preview",
-              duplicateCount: e.duplicateCount,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("duplicateLatest", {
+          status: "duplicate_latest_preview",
+          duplicateCount: e.duplicateCount,
+        });
       },
       step: () => {},
       completed: (e) => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify(
-            {
-              status: "duplicate_latest_completed",
-              result: e.result,
-            },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("duplicateLatest", {
+          status: "duplicate_latest_completed",
+          result: e.result,
+        });
       },
       not_needed: () => {
         this.overallStatus = "pass";
-        console.log(
-          JSON.stringify(
-            { status: "duplicate_latest_not_needed" },
-            null,
-            2,
-          ),
-        );
+        this.#report.record("duplicateLatest", {
+          status: "duplicate_latest_not_needed",
+        });
       },
       error: (e) => {
         this.overallStatus = "fail";
@@ -846,10 +853,11 @@ class JsonCatalogDuplicateLatestRepairRenderer
 
 export function createCatalogDuplicateLatestRepairRenderer(
   mode: OutputMode,
+  report: DatastoreRepairJsonReport,
 ): CatalogDuplicateLatestRepairRenderer {
   switch (mode) {
     case "json":
-      return new JsonCatalogDuplicateLatestRepairRenderer();
+      return new JsonCatalogDuplicateLatestRepairRenderer(report);
     case "log":
       return new LogCatalogDuplicateLatestRepairRenderer();
   }

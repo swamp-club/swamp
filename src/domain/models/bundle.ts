@@ -50,6 +50,18 @@ declare global {
 }
 
 /**
+ * What a bundle built by {@link bundleExtension} (not self-contained)
+ * expects from the swamp that imports it: an ES module that takes zod 4
+ * from `globalThis.__swamp_zod` rather than inlining it, and holds no zod 3
+ * import. Push records it in the archive's dependency audit record, and a
+ * consumer keeps the archive's bundles only when it matches; otherwise it
+ * rebuilds them from the pinned source (swamp-club#3972). Bump it when that
+ * contract changes. It is unrelated to `BUNDLE_LAYOUT_VERSION`, which names
+ * where a repo keeps its bundles on disk.
+ */
+export const BUNDLE_FORMAT_VERSION = 1;
+
+/**
  * Installs swamp's Zod module on globalThis so that extension bundles
  * with externalized `import { z } from "npm:zod@4"` (rewritten to
  * `const { z } = globalThis.__swamp_zod`) share the same Zod instance.

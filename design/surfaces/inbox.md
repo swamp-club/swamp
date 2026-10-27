@@ -72,6 +72,10 @@ translate it into swamp's own values, so nothing past them sees raw server text:
   is never shortened, because a shortened command would not run.
 - **A link is always `https:`, with no username or password.** Any other link is
   dropped; the message is kept.
+- **The page cursor is a message id.** `nextCursor` must be a ULID or null, as
+  the server builds it from the oldest listed message's id. Any other value
+  refuses the page as malformed, so the older-page command swamp suggests
+  never holds server text.
 - **Ids are ULIDs and dates are ISO 8601.** A message that breaks either, or
   whose body is over 8 KiB, is dropped and the rest of the list is kept. The
   page reports how many it dropped, so a server that drifts from this contract
@@ -133,5 +137,15 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   carries it. The `swamp` skill quotes the second line, so the two must change
   together. A notice retires after 24 hours, whether or not the user reads the
   message.
-- **The commands.** `swamp inbox` lists messages and `swamp inbox read` shows
-  one and marks it read.
+- **The commands.** `swamp inbox` lists messages, newest first: unread ones by
+  default, read ones too with `--all`. `--limit` takes 1 to 100 (default 20,
+  always sent, since the server's default is 50) and `--before <id>` lists the
+  page older than that message. Each row shows only the date, kind and title,
+  with a marker on unread ones; `--json` prints
+  `{ status, messages, nextCursor, dropped }` with the same fields. The body,
+  link and action never appear, so no other Swamp Club text reaches an agent's
+  context, and the command never marks anything read. When the page has
+  another one after it, the list ends with
+  `To see older:  swamp inbox --before <id>` (repeating `--all`). Messages the
+  client left out are reported on stderr in log mode. `swamp inbox read`, to
+  come, shows one message and marks it read.

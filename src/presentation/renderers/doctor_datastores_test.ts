@@ -30,8 +30,13 @@ import type {
   V3ContentSummary,
 } from "../../libswamp/datastores/doctor_datastores.ts";
 import {
+  createCatalogDuplicateLatestRepairRenderer,
+  createCatalogIndexRepairRenderer,
   createDatastoreFormatMarkerRepairRenderer,
   createPreV3RecordsRepairRenderer,
+  createRepairDatastoresRenderer,
+  createUnmigratedDataRepairRenderer,
+  DatastoreRepairJsonReport,
 } from "./doctor_datastores.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { RetentionCheckSummary } from "../../libswamp/datastores/retention_check.ts";
@@ -423,4 +428,51 @@ Deno.test("createDoctorDatastoresRenderer: json mode carries the replica check's
     finding,
   );
   assertEquals(render(data()).v3ReplicaRestorableFinding, null);
+});
+
+Deno.test("DatastoreRepairJsonReport: the json repair renderers record their stage instead of printing, and print() writes one document (swamp-club#4011)", () => {
+  const report = new DatastoreRepairJsonReport();
+  const unmigrated = createUnmigratedDataRepairRenderer("json", report);
+  const catalog = createCatalogIndexRepairRenderer("json", report);
+  const duplicates = createCatalogDuplicateLatestRepairRenderer(
+    "json",
+    report,
+  );
+  const printed = captureStdout(() => {
+    unmigrated.handlers().preview({
+      kind: "preview",
+      namespace: "team",
+      directories: ["data"],
+    });
+    catalog.handlers().not_needed({ kind: "not_needed" });
+    duplicates.handlers().preview({ kind: "preview", duplicateCount: 2 });
+  });
+  assertEquals(printed, "");
+  assertEquals(unmigrated.overallStatus, "preview");
+
+  assertEquals(JSON.parse(captureStdout(() => report.print())), {
+    unmigrated: {
+      status: "unmigrated_preview",
+      namespace: "team",
+      directories: ["data"],
+    },
+    catalog: { status: "catalog_not_needed" },
+    duplicateLatest: { status: "duplicate_latest_preview", duplicateCount: 2 },
+    contamination: null,
+  });
+});
+
+Deno.test("DatastoreRepairJsonReport: log mode renderers leave the report empty (swamp-club#4011)", () => {
+  const report = new DatastoreRepairJsonReport();
+  const repair = createRepairDatastoresRenderer("log", report);
+  const printed = captureStdout(() =>
+    repair.handlers().not_needed({ kind: "not_needed" })
+  );
+  assertStringIncludes(stripAnsiCode(printed), "No namespace contamination");
+  assertEquals(JSON.parse(captureStdout(() => report.print())), {
+    unmigrated: null,
+    catalog: null,
+    duplicateLatest: null,
+    contamination: null,
+  });
 });

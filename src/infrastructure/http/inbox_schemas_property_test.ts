@@ -19,7 +19,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { parseInboxMessage, sanitizeInboxBody } from "./inbox_schemas.ts";
+import {
+  parseInboxMessage,
+  parseInboxMessagePage,
+  sanitizeInboxBody,
+} from "./inbox_schemas.ts";
 
 // deno-lint-ignore no-control-regex
 const ANY_CONTROL_RE = /[\x00-\x1f\x7f-\x9f]/;
@@ -135,5 +139,25 @@ Deno.test("sanitizeInboxBody: is idempotent", () => {
       const once = sanitizeInboxBody(text);
       assertEquals(sanitizeInboxBody(once), once);
     }),
+  );
+});
+
+const ULID_ONLY_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+Deno.test("parseInboxMessagePage: a kept nextCursor is always an upper-case ULID", () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(
+        arbHostileText,
+        fc.stringMatching(/^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/),
+      ),
+      (cursor) => {
+        const page = parseInboxMessagePage({
+          messages: [],
+          nextCursor: cursor,
+        });
+        if (page) assert(ULID_ONLY_RE.test(page.nextCursor ?? ""));
+      },
+    ),
   );
 });

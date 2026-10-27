@@ -45,6 +45,15 @@ import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extensi
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
+import { BUNDLE_FORMAT_VERSION } from "../src/domain/models/bundle.ts";
+import { modelRegistry } from "../src/domain/models/model.ts";
+import { ExtensionLoader } from "../src/domain/extensions/extension_loader.ts";
+import { modelKindAdapter } from "../src/domain/extensions/model_kind_adapter.ts";
+import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
+import {
+  buildDependencyAuditRecordV2,
+  serializeDependencyAuditRecordV2,
+} from "@swamp-club/extension-scoring/dependency-audit";
 
 import "../src/domain/models/models.ts";
 
@@ -125,6 +134,50 @@ function modelSource(name: string, label: string, imports = ""): string {
     "};",
     "",
   ].join("\n");
+}
+
+/** `modelSource` as push bundles it: zod comes from the host. */
+function publishedBundle(name: string, label: string): string {
+  return `// extensions/models/thing.ts\n${
+    modelSource(name, label).replace(
+      'import { z } from "npm:zod@4";',
+      "const { z } = globalThis.__swamp_zod;",
+    )
+  }`;
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
+  );
+  return `sha256:${
+    Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")
+  }`;
+}
+
+/**
+ * `files` plus the v2 dependency audit record push writes for them, at
+ * `bundleFormat`, hashing every bundle unless `hashes` overrides it.
+ */
+async function withRecord(
+  files: Record<string, string>,
+  bundleFormat: number,
+  hashes: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const bundles: Record<string, string> = {};
+  for (const [path, body] of Object.entries(files)) {
+    if (path.startsWith("bundles/")) bundles[path] = await sha256(body);
+  }
+  const record = buildDependencyAuditRecordV2({
+    imports: [],
+    bundleFormat,
+    bundles: { ...bundles, ...hashes },
+    unaudited: [],
+  });
+  return {
+    ...files,
+    "dependency-audit.json": serializeDependencyAuditRecordV2(record),
+  };
 }
 
 /** A model extension archive at `version` holding `files` under `extension/`. */
@@ -417,23 +470,31 @@ Deno.test("extension pull: eval in a dependency's code pulls, with one warning n
 /**
  * An archive at `version` whose bundle is clean but whose model imports a
  * module under `files/`, which pull's source scan does not cover, holding
- * eval. Only the bundle pull rebuilds from the source holds it.
+ * eval. Only a bundle rebuilt from the source holds it. Its record names
+ * `bundleFormat`: by default one this swamp does not run, so pull rebuilds
+ * (swamp-club#3972).
  */
-async function rebuildOnlyArchive(name: string, version: string) {
-  return await modelArchive(name, version, {
-    "models/thing.ts": modelSource(
-      name,
-      "rebuilt",
-      'import { run } from "../files/helper.js";\nconsole.log(run);',
-    ),
-    "files/helper.js": "export const run = (s) => eval(s);\n",
-    "bundles/thing.js": `// extensions/models/thing.ts\n${
-      modelSource(name, "clean")
-    }`,
-  });
+async function rebuildOnlyArchive(
+  name: string,
+  version: string,
+  bundleFormat = BUNDLE_FORMAT_VERSION + 1,
+) {
+  return await modelArchive(
+    name,
+    version,
+    await withRecord({
+      "models/thing.ts": modelSource(
+        name,
+        "rebuilt",
+        'import { run } from "../files/helper.js";\nconsole.log(run);',
+      ),
+      "files/helper.js": "export const run = (s) => eval(s);\n",
+      "bundles/thing.js": publishedBundle(name, "clean"),
+    }, bundleFormat),
+  );
 }
 
-Deno.test("extension pull: a rebuilt bundle pulling in eval from an unscanned module is refused before it runs, and nothing stays installed (swamp-club#3383)", async () => {
+Deno.test("extension pull: a bundle of a format this swamp does not run is rebuilt, and a rebuild pulling in eval from an unscanned module is refused before it runs, and nothing stays installed (swamp-club#3383, swamp-club#3972)", async () => {
   await using repo = await tempRepo();
   const name = `@test/bundle-rebuilt-${crypto.randomUUID().slice(0, 8)}`;
   await using registry = await serveRegistry(name, {
@@ -505,4 +566,228 @@ Deno.test("extension pull: an upgrade refused in phase 8 leaves the previous ver
   );
   assertEquals(JSON.stringify(lockfile).includes(V1), true);
   assertEquals(JSON.stringify(lockfile).includes(V2), false);
+});
+
+/** The bundle file `repoDir` holds for its one pulled model. */
+async function installedBundle(repoDir: string): Promise<string> {
+  const bundles = (await treeOf(swampPath(repoDir))).filter((p) =>
+    p.endsWith("thing.js")
+  );
+  assertEquals(bundles.length, 1, bundles.join("\n"));
+  return await Deno.readTextFile(bundles[0]);
+}
+
+Deno.test("extension pull: keeps the archive's bundle of the format this swamp runs, so code only a rebuild would hold never runs, and leaves the bytes extension install leaves (swamp-club#3972)", async () => {
+  await using pulled = await tempRepo();
+  await using installed = await tempRepo();
+  const name = `@test/bundle-kept-${crypto.randomUUID().slice(0, 8)}`;
+  await using registry = await serveRegistry(name, {
+    [V1]: await rebuildOnlyArchive(name, V1, BUNDLE_FORMAT_VERSION),
+  });
+  // Through phase 8, as `extension pull` runs.
+  assertEquals(
+    await pull(name, registry.url, pulled.repoDir, "log", { phase8: true }),
+    undefined,
+  );
+  // Without phase 8, as `extension install` restores it.
+  assertEquals(
+    await pull(name, registry.url, installed.repoDir, "log"),
+    undefined,
+  );
+  const bundle = publishedBundle(name, "clean");
+  assertEquals(await installedBundle(pulled.repoDir), bundle);
+  assertEquals(await installedBundle(installed.repoDir), bundle);
+  const lockfile = await Deno.readTextFile(
+    join(pulled.repoDir, "upstream_extensions.json"),
+  );
+  assertStringIncludes(lockfile, name);
+});
+
+Deno.test("extension pull: an archive with no dependency audit record keeps its bundle, as extension install does (swamp-club#3972)", async () => {
+  await using repo = await tempRepo();
+  const name = `@test/bundle-v1-${crypto.randomUUID().slice(0, 8)}`;
+  const bundle = publishedBundle(name, "clean");
+  await using registry = await serveRegistry(name, {
+    [V1]: await modelArchive(name, V1, {
+      "models/thing.ts": modelSource(name, "source"),
+      "bundles/thing.js": bundle,
+    }),
+  });
+  assertEquals(
+    await pull(name, registry.url, repo.repoDir, "log", { phase8: true }),
+    undefined,
+  );
+  assertEquals(await installedBundle(repo.repoDir), bundle);
+});
+
+for (const outputMode of ["log", "json"] as const) {
+  Deno.test(`extension pull (${outputMode}): a bundle that does not match the hash its record holds is refused, and nothing lands (swamp-club#3972)`, async () => {
+    await using repo = await tempRepo();
+    const name = `@test/bundle-hash-${crypto.randomUUID().slice(0, 8)}`;
+    await using registry = await serveRegistry(name, {
+      [V1]: await modelArchive(
+        name,
+        V1,
+        await withRecord(
+          {
+            "models/thing.ts": modelSource(name, "clean"),
+            "bundles/thing.js": publishedBundle(name, "swapped"),
+          },
+          BUNDLE_FORMAT_VERSION,
+          {
+            "bundles/thing.js": await sha256(publishedBundle(name, "clean")),
+          },
+        ),
+      ),
+    });
+    const before = await treeOf(repo.root);
+    const message = await refusalMessage(
+      await pull(name, registry.url, repo.repoDir, outputMode, {
+        phase8: true,
+      }),
+      outputMode,
+    );
+    assertStringIncludes(
+      message,
+      "Extension bundles do not match the archive's dependency audit " +
+        "record. Install aborted.",
+    );
+    assertStringIncludes(
+      message,
+      "bundles/thing.js: does not match the SHA-256 dependency-audit.json " +
+        "records for it",
+    );
+    assertEquals(
+      (await treeOf(repo.root)).filter((p) =>
+        !before.includes(p) && !p.endsWith("_extension_catalog.db") &&
+        !p.endsWith(".swamp")
+      ),
+      [],
+    );
+  });
+}
+
+Deno.test("extension pull: a rebuild of a bundle format this swamp does not run reads no Deno config from the consumer's repo (swamp-club#3972)", async () => {
+  await using repo = await tempRepo();
+  // Deno would refuse to bundle under this config if it read it.
+  await Deno.writeTextFile(join(repo.repoDir, "deno.json"), "{ not json");
+  const name = `@test/bundle-format-${crypto.randomUUID().slice(0, 8)}`;
+  const archiveBundle = publishedBundle(name, "archive");
+  await using registry = await serveRegistry(name, {
+    [V1]: await modelArchive(
+      name,
+      V1,
+      await withRecord({
+        "models/thing.ts": modelSource(name, "source"),
+        "bundles/thing.js": archiveBundle,
+      }, BUNDLE_FORMAT_VERSION + 1),
+    ),
+  });
+  assertEquals(
+    await pull(name, registry.url, repo.repoDir, "log", { phase8: true }),
+    undefined,
+  );
+  const bundle = await installedBundle(repo.repoDir);
+  assertStringIncludes(bundle, '"source"');
+  assertEquals(bundle.includes('"archive"'), false);
+});
+
+Deno.test("extension pull: after a pull that kept the archive's bundle, the bundle shipped to workers is built from source with zod inlined (swamp-club#3972)", async () => {
+  await using repo = await tempRepo();
+  const name = `@test/bundle-worker-${crypto.randomUUID().slice(0, 8)}`;
+  const archiveBundle = publishedBundle(name, "archive");
+  await using registry = await serveRegistry(name, {
+    [V1]: await modelArchive(
+      name,
+      V1,
+      await withRecord({
+        "models/thing.ts": modelSource(name, "source"),
+        "bundles/thing.js": archiveBundle,
+      }, BUNDLE_FORMAT_VERSION),
+    ),
+  });
+  assertEquals(
+    await pull(name, registry.url, repo.repoDir, "log", { phase8: true }),
+    undefined,
+  );
+  assertEquals(await installedBundle(repo.repoDir), archiveBundle);
+
+  // Load the pulled type as a command does, then build the worker bundle.
+  const catalog = new ExtensionCatalogStore(
+    swampPath(repo.repoDir, "_extension_catalog.db"),
+  );
+  const modelsDir = join(repo.repoDir, "extensions", "models");
+  await Deno.mkdir(modelsDir, { recursive: true });
+  const loader = new ExtensionLoader(
+    denoRuntime,
+    modelKindAdapter,
+    repo.repoDir,
+    undefined,
+    new ExtensionRepository({
+      catalog,
+      lockfileRepository: await LockfileRepository.create(
+        join(repo.repoDir, "upstream_extensions.json"),
+      ),
+      repoRoot: repo.repoDir,
+    }),
+  );
+  try {
+    modelRegistry.setTypeLoader((t, entry) => loader.loadSingleType(t, entry));
+    await loader.buildIndex(modelsDir, {
+      additionalDirs: [
+        join(swampPath(repo.repoDir, "pulled-extensions"), name, "models"),
+      ],
+      indexOnly: true,
+    });
+    await modelRegistry.ensureTypeLoaded(name);
+    const definition = modelRegistry.get(name);
+    assert(definition?.bundleSourceFactory, "the pulled type is registered");
+    const workerBundle = await definition.bundleSourceFactory();
+    assertStringIncludes(workerBundle, '"source"');
+    assertEquals(workerBundle.includes("__swamp_zod"), false);
+    assertEquals(workerBundle.includes('"archive"'), false);
+    // zod is inlined: its own error class ships in the bundle.
+    assertStringIncludes(workerBundle, "ZodError");
+  } finally {
+    modelRegistry.invalidateType(name);
+    modelRegistry.clearLoadersForTesting();
+    catalog.close();
+  }
+});
+
+Deno.test("extension pull: an upgrade keeps the new version's archive bundle, as update and serve upgrade do through the same service (swamp-club#3972)", async () => {
+  await using repo = await tempRepo();
+  const name = `@test/bundle-upgrade-kept-${crypto.randomUUID().slice(0, 8)}`;
+  const archive = async (version: string, label: string) =>
+    await modelArchive(
+      name,
+      version,
+      await withRecord({
+        "models/thing.ts": modelSource(name, `${label} source`),
+        "bundles/thing.js": publishedBundle(name, label),
+      }, BUNDLE_FORMAT_VERSION),
+    );
+  await using registry = await serveRegistry(name, {
+    [V1]: await archive(V1, "v1"),
+    [V2]: await archive(V2, "v2"),
+  });
+  assertEquals(
+    await pull(name, registry.url, repo.repoDir, "log", {
+      phase8: true,
+      version: V1,
+    }),
+    undefined,
+  );
+  assertEquals(
+    await installedBundle(repo.repoDir),
+    publishedBundle(name, "v1"),
+  );
+  assertEquals(
+    await pull(name, registry.url, repo.repoDir, "log", { phase8: true }),
+    undefined,
+  );
+  assertEquals(
+    await installedBundle(repo.repoDir),
+    publishedBundle(name, "v2"),
+  );
 });
