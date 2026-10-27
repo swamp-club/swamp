@@ -13,9 +13,8 @@ changes what the work does, and a phase that cannot be exported is dropped
 without failing the work.
 
 Worker enrollment preparation (lab #3986), run-detail output resolution
-(#4002), output retention (#4004) and access-data polling (#4005) are
-instrumented. One more area uses the same contract as it is added: worker
-deletion and prune (#4003).
+(#4002), worker deletion and prune (#4003), output retention (#4004) and
+access-data polling (#4005) are instrumented.
 
 Phases are observations of the
 [remote telemetry contract](./remote-execution-telemetry.md)
@@ -79,6 +78,13 @@ awaited work being measured, never a call that arms timers or starts background
 work, since that work would inherit it. Work an area schedules but does not own,
 such as the policy snapshot rebuild a change event sets off, is armed outside
 any area.
+
+An operation written as an async generator binds the area to each step of the
+generator, so the consumer's code between steps is outside it. A phase that
+spans such steps ends `cancelled` when the consumer stops the generator early.
+`swamp.outcome` says whether a phase raised. Where the work reports a failure
+as an event rather than raising one, the phase ends `error` all the same, and
+`swamp.diagnostic.result` says what a phase that did not fail achieved.
 
 ### Sampling and opt-out
 
@@ -223,6 +229,108 @@ full scan a `CanonicalResources` without an index falls back to (no
 `definition_lookup` phases appear under `output_walk` where that branch runs
 them), and the CLI (no read policy). The datastore engine does not change the
 phases.
+
+## Worker deletion
+
+Worker **record** deletion: the worker's definition, outputs and data in the
+repository. It is not machine or VM teardown. The serve worker GC sweep, the
+`worker.prune` admin request and `swamp worker prune` from the CLI all run the
+same prune, so all export these phases when tracing is on; the CLI's spans carry
+the CLI's service name.
+
+Parent: `swamp.worker.prune`. Each eligible worker is deleted through
+`modelDelete`, whose `swamp.model.delete` span (with `model.name`, `model.type`
+and `model.id`) nests under `delete_loop`. A plain `swamp model delete` runs
+outside the area and exports none of these phases. The GC sweep's wait for the
+exclusive sync gate happens before the prune, as the existing
+`swamp.serve.sync_gate.wait` span (`sync_gate.mode=exclusive`) in a trace of its
+own; it is not a phase of this area.
+
+| Phase                      | Parent               | Attributes                                                                                                                                                                                       |
+| -------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `prune_pass`               | `swamp.worker.prune` | `workers_deleted`, `workers_failed`, `bindings_pruned`, `tokens_cleaned`; `result` `completed`, `partial` (a delete or binding prune failed), `no_change` (nothing eligible), `skipped` (dry run) |
+| `worker_listing`           | `prune_pass`         | `workers`; outcome `error` when the list cannot be read, and the pass with it                                                                                                                    |
+| `eligibility`              | `prune_pass`         | `considered`, `eligible`, and one of `skipped_not_disconnected`, `skipped_no_disconnect_time`, `skipped_within_grace` per kept worker                                                             |
+| `delete_loop`              | `prune_pass`         | `sequential=true`, `batch_size`, `attempted`, `deleted`, `failed`; `result` `completed` or `partial`                                                                                             |
+| `model_delete`             | `swamp.model.delete` | One per worker. `definition_type`; a refused delete ends `error` with `refusal` (`not_found`, `workflow_referenced`, `live_data`)                                                                |
+| `definition_resolve`       | `model_delete`       | `hit`; `name_hint_hits`, `primary_walks`, `secondary_walks`; `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms` for the definitions a walk read                                         |
+| `workflow_reference_check` | `model_delete`       | `workflows` (every workflow, loaded), `referencing`, `reference_match_work_ms`                                                                                                                   |
+| `data_discovery`           | `model_delete`       | `artifacts`                                                                                                                                                                                      |
+| `expiry_check`             | `model_delete`       | `checker` (whether expiry is checked at all), `checked`, `expired`, `live`, `check_failed`                                                                                                       |
+| `output_discovery`         | `model_delete`       | `outputs` (this worker's); `files_read`, `bytes_read`, `read_work_ms`, `parse_work_ms` for every output record of the type                                                                       |
+| `output_removal`           | `model_delete`       | `attempted`, `deleted`; `search_files_read`, `search_work_ms`, `remove_work_ms`, `dir_cleanup_work_ms`, `tombstone_work_ms`                                                                      |
+| `data_removal`             | `model_delete`       | `expired_deleted`, `live_deleted`, `versions_removed`; `version_list_work_ms`, `file_remove_work_ms`, `catalog_update_work_ms`, `latest_update_work_ms`, `change_stage_work_ms`                  |
+| `evaluated_removal`        | `model_delete`       | `lookup_work_ms`, `file_remove_work_ms`, `change_stage_work_ms`                                                                                                                                  |
+| `definition_removal`       | `model_delete`       | `lookup_work_ms`, `file_remove_work_ms`, `event_publish_work_ms`, `change_stage_work_ms`                                                                                                         |
+| `binding_cleanup`          | `prune_pass`         | `affected_tokens`, `tokens_checked`, `attempted`, `bindings_pruned`, `tokens_cleaned`, `failed`; `token_list_work_ms`, `worker_relist_work_ms`, `stale_resolve_work_ms`, `binding_prune_work_ms` |
+
+`binding_cleanup` runs after `delete_loop`, as its sibling, so its time is never
+part of the deletions'. Its `result` is `no_change` when no worker was deleted
+or no binding was stale, `skipped` when there is no binding resolver (the CLI)
+or the worker list could not be read again, and `partial` when a binding prune
+failed. Its binding prune is a `swamp.model.method.run` of the token's
+`prune_bindings`, nested under it.
+
+Counters: `attempted` counts tries, `deleted` and `bindings_pruned` successes,
+`failed` failures. On a `delete_loop` that was not cancelled,
+`attempted = deleted + failed`. Counts of a list (`workers`, `considered`,
+`artifacts`, `outputs`, `workflows`, `referencing`, `versions_removed`) are set,
+zero included, whenever their phase ran to its end, as are `binding_cleanup`'s
+`bindings_pruned`, `tokens_cleaned` and `failed` when it did not raise. The
+`prune_pass` totals are set only on a pass that reached its result: they are
+missing when the worker list could not be read, the consumer stopped the prune
+early, or `binding_cleanup` raised. Counters bumped per item or event
+(`eligible`, `skipped_*`, `attempted`, `deleted`, `checked`, `*_walks`) are
+missing, not zero, when nothing happened.
+
+Repeated discovery shows in the per-worker counters. Resolving a worker's
+definition by name walks every definition in the repository until a hint from an
+earlier lookup spares it (`primary_walks`, `files_read` against
+`name_hint_hits`). The reference check loads every workflow. Output discovery
+reads every output record of the worker type to find one worker's (`files_read`
+against `outputs`). Removing one output reads its method's records until it
+finds the file (`search_files_read`). All of these repeat for each worker in a
+pass.
+
+Index, catalog and staging upkeep is not a separate span: it happens per record,
+between the file removals, so it is reported as `*_work_ms` on the removal phase
+it belongs to. `catalog_update` is the data catalog rows, `latest_update` the
+data latest markers, `change_stage` the datastore change signals and typed
+staging (including the definition repository's reads of the files it stages),
+`tombstone` an output's typed tombstone, `event_publish` the definition-deleted
+event, and `file_remove` the file and empty-directory removal itself. Outputs
+are removed by the code output retention uses, so `output_removal` reports that
+removal under retention's keys: `remove` (the staged removal, signal included)
+and `dir_cleanup`. Each key excludes the others nested in it, so the removal
+keys plus the upkeep keys are at most the phase's duration; the rest of the
+phase is in neither.
+
+Bytes deleted are not exported: knowing them would cost a stat per file the
+delete does not otherwise need. `bytes_read` counts what discovery read.
+
+The deletes run one worker at a time, and each delete's stages run in order, so
+within one prune the phases of a kind do not overlap and their durations can be
+summed per trace. Phases of different kinds nest (`model_delete` holds the
+stages under it), so sum only one level.
+
+Cancellation is observed only. The admin request's cancel is recorded as each
+phase's `cancel_observed`; the prune carries on and finishes. A consumer that
+stops the prune early ends the open phases `cancelled`, and a worker whose
+delete had finished keeps its `ok` phases.
+
+The area covers everything the prune awaits, not only the stages above. The
+worker list is a data query and a binding prune runs the token's method, so a
+shared phase (`definition_lookup`, `definition_scan`, `lock_wait`, `lock_held`,
+`gate_wait`) or a repository tally they reach is exported under
+`worker_listing` or `binding_cleanup`, with keys this table does not list.
+
+Datastores: the phases cover the filesystem repositories every datastore uses
+for these records. A datastore extension's own `markDirty` runs inside
+`change_stage`. Work it schedules for later (a timer, a detached promise)
+still carries the area through async context: a phase it starts is exported
+under whatever phase is open when it runs, and a measurement it makes after its
+phase ended is lost. No first-party datastore schedules such work; this
+affects only telemetry, never the deletion.
 
 ## Output retention
 
@@ -643,6 +751,107 @@ let index = ['swamp-serve-traces']
 A request with no `owner_index` row had no owner lookup, or ran without the
 index; `joined` requests waited on another request's listing.
 
+Worker deletion latency by phase, outcome and build:
+
+```apl
+['swamp-serve-traces']
+| where _time between (datetime(2026-10-26T00:00:00Z) .. datetime(2026-10-27T00:00:00Z))
+| where ['service.name'] == 'swamp-serve-vm'
+| extend area=tostring(['attributes.custom']['swamp.diagnostic.area']),
+         phase=tostring(['attributes.custom']['swamp.diagnostic.phase']),
+         outcome=tostring(['attributes.custom']['swamp.outcome']),
+         version=tostring(['resource.custom']['swamp.version']),
+         ms=duration/1ms
+| where area == 'worker_delete'
+| summarize n=count(), p50_ms=percentile(ms,50), p95_ms=percentile(ms,95), max_ms=max(ms)
+  by phase, outcome, version
+| sort by p95_ms desc
+```
+
+Where each prune pass spent its time: selection, discovery and reference scans,
+removal I/O, index and staging upkeep within the removals, or binding cleanup,
+with the counts that explain them:
+
+```apl
+let from = datetime(2026-10-26T00:00:00Z);
+let to = datetime(2026-10-27T00:00:00Z);
+let service = 'swamp-serve-vm';
+let stages = ['swamp-serve-traces']
+  | where _time between (from .. to)
+  | where ['service.name'] == service
+  | extend a=['attributes.custom']
+  | where tostring(a['swamp.diagnostic.area']) == 'worker_delete'
+  | extend phase=tostring(a['swamp.diagnostic.phase']),
+           ms=duration/1ms,
+           upkeep=coalesce(todouble(a['swamp.diagnostic.catalog_update_work_ms']), 0.0)
+                   + coalesce(todouble(a['swamp.diagnostic.latest_update_work_ms']), 0.0)
+                   + coalesce(todouble(a['swamp.diagnostic.change_stage_work_ms']), 0.0)
+                   + coalesce(todouble(a['swamp.diagnostic.tombstone_work_ms']), 0.0)
+                   + coalesce(todouble(a['swamp.diagnostic.event_publish_work_ms']), 0.0)
+  | summarize
+      selection_ms=sumif(ms, phase in ('worker_listing','eligibility')),
+      resolve_ms=sumif(ms, phase == 'definition_resolve'),
+      reference_ms=sumif(ms, phase == 'workflow_reference_check'),
+      data_discovery_ms=sumif(ms, phase in ('data_discovery','expiry_check')),
+      output_discovery_ms=sumif(ms, phase == 'output_discovery'),
+      removal_ms=sumif(ms, phase in ('output_removal','data_removal','evaluated_removal','definition_removal')),
+      upkeep_ms=sumif(upkeep, phase in ('output_removal','data_removal','evaluated_removal','definition_removal')),
+      binding_ms=sumif(ms, phase == 'binding_cleanup'),
+      workers=sumif(toint(a['swamp.diagnostic.attempted']), phase == 'delete_loop'),
+      definitions_read=sumif(toint(a['swamp.diagnostic.files_read']), phase == 'definition_resolve'),
+      workflows_loaded=sumif(toint(a['swamp.diagnostic.workflows']), phase == 'workflow_reference_check'),
+      outputs_read=sumif(toint(a['swamp.diagnostic.files_read']), phase == 'output_discovery'),
+      outputs_deleted=sumif(toint(a['swamp.diagnostic.deleted']), phase == 'output_removal')
+    by trace_id;
+['swamp-serve-traces']
+| where _time between (from .. to)
+| where ['service.name'] == service
+| where name == 'swamp.diagnostic.prune_pass'
+| extend a=['attributes.custom']
+| project trace_id, pass_ms=duration/1ms,
+          outcome=tostring(a['swamp.outcome']),
+          result=tostring(a['swamp.diagnostic.result'])
+| join kind=leftouter (stages) on trace_id
+| extend discovery_ms=resolve_ms + reference_ms + data_discovery_ms + output_discovery_ms
+| extend top_ms=max_of(selection_ms, discovery_ms, removal_ms, binding_ms)
+| extend dominant=case(
+    top_ms == 0, 'unattributed',
+    discovery_ms == top_ms, 'discovery',
+    removal_ms == top_ms, 'removal',
+    binding_ms == top_ms, 'binding_cleanup',
+    'selection')
+| project trace_id, outcome, result, dominant, pass_ms, workers,
+          selection_ms, resolve_ms, reference_ms, data_discovery_ms, output_discovery_ms,
+          removal_ms, upkeep_ms, binding_ms,
+          definitions_read, workflows_loaded, outputs_read, outputs_deleted
+| sort by pass_ms desc
+```
+
+The selection is by the pass's start, so a pass that runs past the window's end
+is kept whole with the window it started in. Every column but `upkeep_ms` sums
+spans of one kind that never overlap within a pass, so each is that kind's share
+of the pass's wall time, and `discovery_ms` adds kinds that run one after
+another. `upkeep_ms` is summed `*_work_ms` inside the removal phases: it is part
+of `removal_ms`, never added to it. The four compared columns leave out the
+per-worker time outside the stages, which is each `model_delete`'s
+`swamp.phase.uncovered_ms`. Failed, cancelled and partial passes stay separate
+rows through `outcome` and `result`. `definitions_read`, `workflows_loaded` and
+`outputs_read` divided by `workers` show discovery repeated per worker.
+
+Refused and failed worker deletes, by reason:
+
+```apl
+['swamp-serve-traces']
+| where _time between (datetime(2026-10-26T00:00:00Z) .. datetime(2026-10-27T00:00:00Z))
+| where ['service.name'] == 'swamp-serve-vm'
+| where name == 'swamp.diagnostic.model_delete'
+| extend a=['attributes.custom']
+| extend outcome=tostring(a['swamp.outcome']),
+         refusal=tostring(a['swamp.diagnostic.refusal']),
+         ms=duration/1ms
+| summarize n=count(), p95_ms=percentile(ms,95), max_ms=max(ms) by outcome, refusal
+```
+
 Output retention, scan against deletion: one row per batch, with its stages'
 elapsed time and the scan's eligibility and deletion work. The stages of a
 batch are sequential, so their sum is part of the batch's wall time, and
@@ -837,6 +1046,14 @@ failed owner lookup, that the span count does not grow with 200 definitions or
 queries have not been run against Axiom; that is evidence collected after
 deployment.
 
+`integration/worker_delete_phase_telemetry_test.ts` drives a real prune over
+real worker definitions, data, outputs and a referencing workflow through the
+same exporter. It checks parentage, value types, outcomes and statuses, the
+fixture counts for eligible, skipped, deleted and refused workers, a consumer
+stopping part way, that no phase carries a worker name, token name or path, and
+that a prune's span count is the same with 1 and with 25 outputs. The token
+listing and binding prune are stubbed there; the deletions are real.
+
 `integration/output_retention_phase_telemetry_test.ts` runs real retention
 passes, each batch wrapped as serve wraps it, through the real OTLP exporter.
 It checks that names, parent ids, value types, outcomes and statuses survive
@@ -854,11 +1071,17 @@ record content. Overhead was not measured, and the access poll queries have not
 been run against a dataset.
 
 Against production `swamp-serve-traces` (2026-10-27, build `b4dd513d`, before
-these phases shipped), the field paths and types above were confirmed on real
-enrollment spans. The phase-latency, single-trace, worker-lookup and
+the enrollment phases shipped), the field paths and types above were confirmed
+on real enrollment spans. The phase-latency, single-trace, worker-lookup and
 cancellation queries parsed and ran. The dominance query is too complex for
 Axiom's legacy result format and needs the tabular format (the query editor or
 `format=tabular`). The output-retention queries have not been run against
 Axiom. Running these queries on exported phase spans in a test
 dataset, and measuring overhead on a deployed server, is evidence collected
 after deployment.
+
+The worker deletion queries have not been run against any dataset: there is no
+Axiom test dataset or test environment, and no worker deletion phase has been
+exported to Axiom yet. They use only the field paths, casts and constructs of
+the enrollment queries above. No production trace ID is given for them. Whether
+they answer the 50-minute prune is evidence collected after deployment.

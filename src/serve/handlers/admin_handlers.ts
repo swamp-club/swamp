@@ -2763,7 +2763,12 @@ export async function handleWorkerPrune(
         let result: Record<string, unknown> | undefined;
         let preview: unknown[] | undefined;
         await consumeStream(
-          workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun }),
+          // The signal is observed only: a cancelled prune still finishes.
+          workerPrune(libCtx, pruneDeps, {
+            gracePeriodMs,
+            dryRun,
+            signal: controller.signal,
+          }),
           withDefaults({
             previewing: (e: { workers: unknown[] }) => {
               preview = e.workers;

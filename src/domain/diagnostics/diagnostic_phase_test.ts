@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  bindGeneratorToDiagnosticArea,
   currentDiagnosticArea,
   currentDiagnosticTally,
   diagnosticSpanAttributes,
@@ -29,6 +30,7 @@ import {
   utf8ByteLength,
   withDiagnosticArea,
   withDiagnosticAttributes,
+  withGeneratorDiagnosticPhase,
 } from "./diagnostic_phase.ts";
 import {
   type ExecutionObserver,
@@ -439,5 +441,132 @@ Deno.test("outsideDiagnosticArea: work scheduled from inside an area carries no 
     assertEquals(inside, "access_poll");
     assertEquals(outside, undefined);
     assertEquals(diagnosticPhases(spans, "snapshot_build").length, 0);
+  });
+});
+
+Deno.test("bindGeneratorToDiagnosticArea: the body runs in the area, the consumer does not", async () => {
+  const seen: (string | undefined)[] = [];
+  async function* body() {
+    seen.push(currentDiagnosticArea());
+    yield 1;
+    await Promise.resolve();
+    seen.push(currentDiagnosticArea());
+    yield 2;
+  }
+  for await (
+    const _ of bindGeneratorToDiagnosticArea("worker_delete", body())
+  ) {
+    seen.push(currentDiagnosticArea());
+  }
+  assertEquals(seen, [
+    "worker_delete",
+    undefined,
+    "worker_delete",
+    undefined,
+  ]);
+});
+
+Deno.test("bindGeneratorToDiagnosticArea: an early stop runs the body's finally in the area", async () => {
+  let finalArea: string | undefined = "unset";
+  async function* body() {
+    try {
+      yield 1;
+      yield 2;
+    } finally {
+      finalArea = currentDiagnosticArea();
+    }
+  }
+  for await (
+    const _ of bindGeneratorToDiagnosticArea("worker_delete", body())
+  ) break;
+  assertEquals(finalArea, "worker_delete");
+});
+
+Deno.test("bindGeneratorToDiagnosticArea: phases record the signal as cancel_observed", async () => {
+  await withObservedSpans(async (spans) => {
+    const controller = new AbortController();
+    async function* body() {
+      startDiagnosticPhase("worker_listing").end();
+      controller.abort();
+      yield 1;
+      startDiagnosticPhase("eligibility").end();
+    }
+    for await (
+      const _ of bindGeneratorToDiagnosticArea(
+        "worker_delete",
+        body(),
+        controller.signal,
+      )
+    ) { /* drain */ }
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.worker_listing")
+        .attributes["swamp.diagnostic.cancel_observed"],
+      false,
+    );
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.eligibility")
+        .attributes["swamp.diagnostic.cancel_observed"],
+      true,
+    );
+  });
+});
+
+Deno.test("withGeneratorDiagnosticPhase: ends ok, with the error's outcome, or cancelled on an early stop", async () => {
+  await withObservedSpans(async (spans) => {
+    async function* steps(fail: boolean) {
+      await observeDiagnosticPhase(
+        "output_removal",
+        {},
+        () => Promise.resolve(),
+      );
+      yield 1;
+      if (fail) throw new Error("boom");
+      yield 2;
+    }
+    const run = (fail: boolean) =>
+      bindGeneratorToDiagnosticArea(
+        "worker_delete",
+        withGeneratorDiagnosticPhase("model_delete", {}, () => steps(fail)),
+      );
+    for await (const _ of run(false)) { /* drain */ }
+    await assertRejects(async () => {
+      for await (const _ of run(true)) { /* drain */ }
+    });
+    for await (const _ of run(false)) break;
+
+    const deletes = diagnosticPhases(spans, "model_delete");
+    assertEquals(deletes.map((s) => s.attributes["swamp.outcome"]), [
+      "ok",
+      "error",
+      "cancelled",
+    ]);
+    const removals = diagnosticPhases(spans, "output_removal");
+    assertEquals(removals.length, 3);
+    for (const [i, removal] of removals.entries()) {
+      assert(isChildOf(removal, deletes[i]));
+    }
+  });
+});
+
+Deno.test("withGeneratorDiagnosticPhase: an outcome the body set first is kept", async () => {
+  await withObservedSpans(async (spans) => {
+    const phases = bindGeneratorToDiagnosticArea(
+      "worker_delete",
+      withGeneratorDiagnosticPhase(
+        "model_delete",
+        {},
+        (phase) =>
+          (async function* () {
+            phase.end("error");
+            yield "refused";
+          })(),
+      ),
+    );
+    for await (const _ of phases) { /* drain */ }
+    assertEquals(
+      findSpan(spans, "swamp.diagnostic.model_delete")
+        .attributes["swamp.outcome"],
+      "error",
+    );
   });
 });

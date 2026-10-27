@@ -65,7 +65,23 @@ const AREA_PHASES = {
     "definition_save",
   ],
   step_outputs: ["catalog_open", "output_walk", "owner_index"],
-  worker_delete: [],
+  worker_delete: [
+    "prune_pass",
+    "worker_listing",
+    "eligibility",
+    "delete_loop",
+    "binding_cleanup",
+    "model_delete",
+    "definition_resolve",
+    "workflow_reference_check",
+    "data_discovery",
+    "expiry_check",
+    "output_discovery",
+    "output_removal",
+    "data_removal",
+    "evaluated_removal",
+    "definition_removal",
+  ],
   output_retention: [
     "retention_batch",
     "candidate_enumeration",
@@ -304,6 +320,50 @@ export function withDiagnosticAttributes<T>(
 }
 
 /**
+ * Runs a generator in `area`. Each `next()` runs inside the area, since a
+ * generator body runs in the context of whoever advances it; the consumer's
+ * code between steps does not. `signal` is as for {@link withDiagnosticArea}.
+ */
+export function bindGeneratorToDiagnosticArea<T, TReturn>(
+  area: DiagnosticArea,
+  generator: AsyncGenerator<T, TReturn>,
+  signal?: AbortSignal,
+): AsyncGenerator<T, TReturn> {
+  const store = { area, signal };
+  return runEachStep((step) => scope.run(store, step), generator);
+}
+
+/**
+ * Advances `source` only inside `within`, including the `return()` that runs
+ * its `finally` blocks when the consumer stops early.
+ */
+async function* runEachStep<T, TReturn>(
+  within: <R>(step: () => R) => R,
+  source: AsyncIterable<T, TReturn>,
+): AsyncGenerator<T, TReturn> {
+  const iterator = source[Symbol.asyncIterator]();
+  let done = false;
+  try {
+    while (true) {
+      let result: IteratorResult<T, TReturn>;
+      try {
+        result = await within(() => iterator.next());
+      } catch (error) {
+        done = true;
+        throw error;
+      }
+      if (result.done) {
+        done = true;
+        return result.value;
+      }
+      yield result.value;
+    }
+  } finally {
+    if (!done) await within(() => iterator.return?.());
+  }
+}
+
+/**
  * Starts `phase` as a `swamp.diagnostic.<phase>` span in the current area,
  * parented on the active span. Outside any area it returns a silent handle,
  * so shared code (a repository, a lock) is exported only when a diagnostic
@@ -394,6 +454,32 @@ export async function observeDiagnosticPhase<T>(
   } catch (error) {
     handle.fail(error);
     throw error;
+  }
+}
+
+/**
+ * Runs the generator `make` returns as `phase`, each step inside it. The
+ * phase ends `ok` when the generator finishes, with the error's outcome when
+ * it throws, and `cancelled` when the consumer stops it early. The body may
+ * end the phase itself first (a refusal reported as an event); the later end
+ * does nothing.
+ */
+export async function* withGeneratorDiagnosticPhase<T, TReturn>(
+  phase: DiagnosticPhase,
+  attributes: ObservationAttributes,
+  make: (phase: DiagnosticPhaseHandle) => AsyncGenerator<T, TReturn>,
+): AsyncGenerator<T, TReturn> {
+  const handle = startDiagnosticPhase(phase, attributes);
+  let outcome: ObservationOutcome = "cancelled";
+  try {
+    const result = yield* runEachStep(handle.run, make(handle));
+    outcome = "ok";
+    return result;
+  } catch (error) {
+    outcome = observationOutcome(error);
+    throw error;
+  } finally {
+    handle.end(outcome);
   }
 }
 

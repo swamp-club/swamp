@@ -212,6 +212,15 @@ export function activeSpanLink(): Link | undefined {
 }
 
 /**
+ * Returns a setter for the span active now, for values known only later when
+ * another span (such as a diagnostic phase) has become the active one.
+ */
+export function activeSpanAttributeSetter(): (attributes: Attributes) => void {
+  const span = trace.getActiveSpan();
+  return (attributes) => span?.setAttributes(attributes);
+}
+
+/**
  * Marks the active span ERROR with `message`, and does nothing when no span
  * is active.
  *

@@ -44,7 +44,10 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
-import { withDiagnosticArea } from "../../domain/diagnostics/diagnostic_phase.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 import {
   diagnosticPhases,
   findSpan,
@@ -2272,3 +2275,92 @@ Deno.test(
     });
   },
 );
+
+Deno.test("YamlOutputRepository: discovery and delete count their reads and measure removal into the running phase", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const definitionId = createDefinitionId(crypto.randomUUID());
+    // One method each: records of one definition and method started in the
+    // same millisecond would share a file name.
+    const methods = ["create", "update", "sync"];
+    const outputs = methods.map((methodName) =>
+      ModelOutput.create({
+        definitionId,
+        methodName,
+        provenance: defaultProvenance,
+      })
+    );
+    for (const [i, output] of outputs.entries()) {
+      await repo.save(testType, methods[i], output);
+    }
+    // Another definition's record of the same type is read too.
+    await repo.save(
+      testType,
+      "create",
+      ModelOutput.create({
+        definitionId: createDefinitionId(crypto.randomUUID()),
+        methodName: "create",
+        provenance: defaultProvenance,
+      }),
+    );
+
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("worker_delete", async () => {
+        const found = await observeDiagnosticPhase(
+          "output_discovery",
+          {},
+          () => repo.findByDefinition(testType, definitionId),
+        );
+        assertEquals(found.length, 3);
+        await observeDiagnosticPhase(
+          "output_removal",
+          {},
+          () => repo.delete(testType, "create", outputs[0].id),
+        );
+      });
+      const discovery = findSpan(spans, "swamp.diagnostic.output_discovery");
+      assertEquals(discovery.attributes["swamp.diagnostic.files_read"], 4);
+      assert(
+        (discovery.attributes["swamp.diagnostic.bytes_read"] as number) > 0,
+      );
+      for (const work of ["read", "parse"]) {
+        assertEquals(
+          typeof discovery.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+      const removal = findSpan(spans, "swamp.diagnostic.output_removal");
+      // The create directory holds this record and the other definition's.
+      const searched = removal.attributes[
+        "swamp.diagnostic.search_files_read"
+      ] as number;
+      assert(searched >= 1 && searched <= 2);
+      for (const work of ["search", "remove", "dir_cleanup", "tombstone"]) {
+        assertEquals(
+          typeof removal.attributes[`swamp.diagnostic.${work}_work_ms`],
+          "number",
+          work,
+        );
+      }
+    });
+    assertEquals(await repo.findById(testType, "create", outputs[0].id), null);
+  });
+});
+
+Deno.test("YamlOutputRepository: reads outside a diagnostic area export nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const output = ModelOutput.create({
+      definitionId: createDefinitionId(crypto.randomUUID()),
+      methodName: "create",
+      provenance: defaultProvenance,
+    });
+    await repo.save(testType, "create", output);
+    await withObservedSpans(async (spans) => {
+      await repo.findByDefinition(testType, output.definitionId);
+      await repo.delete(testType, "create", output.id);
+      assertEquals(spans.length, 0);
+    });
+  });
+});

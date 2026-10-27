@@ -91,6 +91,7 @@ import {
 } from "../../domain/data/repositories.ts";
 import { garbageCollectionToColumn } from "../../domain/data/data_metadata.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+import { currentDiagnosticTally } from "../../domain/diagnostics/diagnostic_phase.ts";
 
 /**
  * The latest marker's value when a data name has versions on disk but none
@@ -1743,101 +1744,128 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<void> {
+    // File removal, catalog rows, latest-marker upkeep and change staging
+    // are measured apart into the running diagnostic phase, if any. Staging
+    // wraps the removal it signals; the nested measurement is exclusive.
+    const tally = currentDiagnosticTally();
     if (version !== undefined) {
       // Delete specific version
       const versionDir = this.getPath(type, modelId, dataName, version);
-      await this.staged({
-        kind: "remove",
-        path: this.getPath(type, modelId, dataName, version),
-      }, async () => {
-        try {
-          await Deno.remove(versionDir, { recursive: true });
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            throw error;
-          }
-        }
-      });
+      let removed = false;
+      await tally.measure("change_stage", () =>
+        this.staged({
+          kind: "remove",
+          path: this.getPath(type, modelId, dataName, version),
+        }, () =>
+          tally.measure("file_remove", async () => {
+            try {
+              await Deno.remove(versionDir, { recursive: true });
+              removed = true;
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) {
+                throw error;
+              }
+            }
+          })));
+      tally.add("versions_removed", removed ? 1 : 0);
 
       // Drop the deleted version's catalog row before touching the latest
       // marker — leaves the catalog in a valid state even if the follow-up
       // latest update fails.
-      this.catalogStore.removeVersion(
-        this.namespace,
-        type.normalized,
-        modelId,
-        dataName,
-        version,
-        computeLatestFlags,
-      );
-      this.catalogStore.recordLocalWrite();
+      tally.measureSync("catalog_update", () => {
+        this.catalogStore.removeVersion(
+          this.namespace,
+          type.normalized,
+          modelId,
+          dataName,
+          version,
+          computeLatestFlags,
+        );
+        this.catalogStore.recordLocalWrite();
+      });
 
       // Update latest marker if needed
-      const { onDisk, promoted } = await this.listPromotedVersions(
-        type,
-        modelId,
-        dataName,
-      );
-
-      const newLatest = maxOf(promoted);
-      if (newLatest !== undefined) {
-        await this.updateLatestMarker(type, modelId, dataName, newLatest);
-        // Update catalog to reflect new latest version
-        const latestData = await this.findByName(
+      await tally.measure("latest_update", async () => {
+        const { onDisk, promoted } = await this.listPromotedVersions(
           type,
           modelId,
           dataName,
-          newLatest,
         );
-        if (latestData?.isRenamed && latestData.renamedTo) {
-          // The rename marker stays latest: the name still forwards, and a
-          // marker is not a catalog row.
-          this.catalogRemove(type, modelId, dataName);
-          this.recordRenameForward(
+
+        const newLatest = maxOf(promoted);
+        if (newLatest !== undefined) {
+          await this.updateLatestMarker(type, modelId, dataName, newLatest);
+          // Update catalog to reflect new latest version
+          const latestData = await this.findByName(
             type,
             modelId,
             dataName,
-            latestData.renamedTo,
+            newLatest,
           );
-        } else if (latestData) {
-          this.catalogUpsert(type, modelId, latestData);
+          if (latestData?.isRenamed && latestData.renamedTo) {
+            // The rename marker stays latest: the name still forwards, and a
+            // marker is not a catalog row.
+            const forwardTo = latestData.renamedTo;
+            tally.measureSync("catalog_update", () => {
+              this.catalogRemove(type, modelId, dataName);
+              this.recordRenameForward(type, modelId, dataName, forwardTo);
+            });
+          } else if (latestData) {
+            tally.measureSync(
+              "catalog_update",
+              () => this.catalogUpsert(type, modelId, latestData),
+            );
+          }
+        } else if (onDisk.length > 0) {
+          // Only in-flight deferred writes are left. Point the marker at
+          // NO_PROMOTED_VERSION, which no write is ever allocated, so reads
+          // find nothing instead of falling back to the highest version on
+          // disk; the write's promotion moves the marker forward again.
+          await this.updateLatestMarker(
+            type,
+            modelId,
+            dataName,
+            NO_PROMOTED_VERSION,
+          );
+        } else {
+          // No versions left, remove the data name directory. The latest
+          // marker goes with it, so its removal is staged too: unstaged, a
+          // synced datastore kept a remote `latest` naming a version no
+          // longer there (swamp-club#3473).
+          const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+          await tally.measure("change_stage", () =>
+            this.staged(
+              { kind: "remove", path: join(dataNameDir, "latest") },
+              () =>
+                tally.measure(
+                  "file_remove",
+                  () =>
+                    Deno.remove(dataNameDir, { recursive: true }).catch(
+                      () => {},
+                    ),
+                ),
+            ));
+          tally.measureSync(
+            "catalog_update",
+            () => this.catalogRemove(type, modelId, dataName),
+          );
         }
-      } else if (onDisk.length > 0) {
-        // Only in-flight deferred writes are left. Point the marker at
-        // NO_PROMOTED_VERSION, which no write is ever allocated, so reads
-        // find nothing instead of falling back to the highest version on
-        // disk; the write's promotion moves the marker forward again.
-        await this.updateLatestMarker(
+      });
+      await tally.measure("change_stage", async () => {
+        await this.stageRemovedVersion(
+          "data.delete",
           type,
           modelId,
           dataName,
-          NO_PROMOTED_VERSION,
+          version,
         );
-      } else {
-        // No versions left, remove the data name directory. The latest
-        // marker goes with it, so its removal is staged too: unstaged, a
-        // synced datastore kept a remote `latest` naming a version no
-        // longer there (swamp-club#3473).
-        const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-        await this.staged(
-          { kind: "remove", path: join(dataNameDir, "latest") },
-          () => Deno.remove(dataNameDir, { recursive: true }).catch(() => {}),
+        await this.stageLatestAfterRemoval(
+          "data.delete",
+          type,
+          modelId,
+          dataName,
         );
-        this.catalogRemove(type, modelId, dataName);
-      }
-      await this.stageRemovedVersion(
-        "data.delete",
-        type,
-        modelId,
-        dataName,
-        version,
-      );
-      await this.stageLatestAfterRemoval(
-        "data.delete",
-        type,
-        modelId,
-        dataName,
-      );
+      });
     } else {
       // Delete all versions. Emit per-version-directory signals so the
       // sync service sees individual absent paths it can match against
@@ -1848,7 +1876,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       let versions: number[] = [];
       let removals: StagedChange[];
       try {
-        versions = await this.listVersions(type, modelId, dataName);
+        versions = await tally.measure(
+          "version_list",
+          () => this.listVersions(type, modelId, dataName),
+        );
         removals = versions.map((v) => ({
           kind: "remove",
           path: this.getPath(type, modelId, dataName, v),
@@ -1859,34 +1890,45 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         // back to the data-name directory signal.
         removals = [{ kind: "remove", path: dataNameDir }];
       }
-      await this.staged(removals, async () => {
-        try {
-          await Deno.remove(dataNameDir, { recursive: true });
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) {
-            throw error;
-          }
-        }
-      });
-      this.catalogRemove(type, modelId, dataName);
+      await tally.measure(
+        "change_stage",
+        () =>
+          this.staged(removals, () =>
+            tally.measure("file_remove", async () => {
+              try {
+                await Deno.remove(dataNameDir, { recursive: true });
+              } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) {
+                  throw error;
+                }
+              }
+            })),
+      );
+      tally.add("versions_removed", versions.length);
+      tally.measureSync(
+        "catalog_update",
+        () => this.catalogRemove(type, modelId, dataName),
+      );
       // Each version seen is its own versioned tombstone, so a version
       // written concurrently survives; one batch each, so a name with many
       // versions splits across commits.
-      for (const v of versions) {
-        await this.stageRemovedVersion(
-          "data.delete",
+      await tally.measure("change_stage", async () => {
+        for (const v of versions) {
+          await this.stageRemovedVersion(
+            "data.delete",
+            type,
+            modelId,
+            dataName,
+            v,
+          );
+        }
+        await this.stageTypedChanges(
           type,
           modelId,
-          dataName,
-          v,
+          (changes) =>
+            Promise.resolve([changes.removeLatest("data.delete", dataName)]),
         );
-      }
-      await this.stageTypedChanges(
-        type,
-        modelId,
-        (changes) =>
-          Promise.resolve([changes.removeLatest("data.delete", dataName)]),
-      );
+      });
     }
   }
 
