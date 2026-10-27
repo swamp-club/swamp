@@ -731,6 +731,26 @@ async function foldsSpellings(dir: string): Promise<boolean> {
   }
 }
 
+/**
+ * Whether the filesystem holding `dir` reaches a file under the decomposed
+ * spelling of its name. NTFS folds case but not normalization, so this is
+ * the oracle for keys that differ only in normalization.
+ */
+async function foldsNormalization(dir: string): Promise<boolean> {
+  await Deno.mkdir(dir, { recursive: true });
+  const name = "oracle-é";
+  await Deno.writeTextFile(join(dir, name), "");
+  try {
+    await Deno.lstat(join(dir, name.normalize("NFD")));
+    return true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return false;
+  } finally {
+    await Deno.remove(join(dir, name));
+  }
+}
+
 /** Catches `readModel` up, and returns its catch-up span's attributes. */
 async function catchUpAttributes(
   readModel: SqliteReadModel,
@@ -1256,7 +1276,7 @@ for (const tombstone of [false, true]) {
           await readOrAbsent(env.contentPath("", composed, 1)),
           `${composed}@1`,
         );
-        const folds = await foldsSpellings(v3CacheRoot(env.repoDir, ""));
+        const folds = await foldsNormalization(v3CacheRoot(env.repoDir, ""));
         assertEquals(attributes[ALIASED], folds ? 1 : undefined);
       } finally {
         await readModel.close();
