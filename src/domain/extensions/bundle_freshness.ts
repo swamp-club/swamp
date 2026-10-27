@@ -92,6 +92,11 @@ export type BundleResult =
   | {
     readonly js: string;
     readonly fromCache: true;
+    readonly cacheReason: "fresh-indexed";
+  }
+  | {
+    readonly js: string;
+    readonly fromCache: true;
     readonly cacheReason: "rebundle-failed";
     readonly expectedFailure: boolean;
   };

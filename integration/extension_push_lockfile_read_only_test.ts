@@ -68,6 +68,7 @@ import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../src/infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../src/infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
+import { ReconcileFromDiskService } from "../src/libswamp/extensions/reconcile_from_disk_service.ts";
 import {
   createDenoInfoModuleGraphReader,
   DenoInfoModuleGraphReader,
@@ -515,6 +516,12 @@ async function loadModels(
   modelsDir: string,
   catalog: ExtensionCatalogStore,
   env: Record<string, string>,
+  options?: {
+    /** Run the startup reconcile first, as the first command in a repo does. */
+    reconcileFirst?: boolean;
+    /** Runs between the reconcile and the index. */
+    afterReconcile?: () => Promise<void>;
+  },
 ): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
@@ -530,18 +537,29 @@ async function loadModels(
       ensureDeno: () => Promise.resolve(Deno.execPath()),
       getDenoEnv: () => env,
     };
+    const lockfileRepository = new LockfileRepository(
+      join(dir, "upstream_extensions.json"),
+    );
+    const repository = new ExtensionRepository({
+      catalog,
+      lockfileRepository,
+      repoRoot: dir,
+    });
+    if (options?.reconcileFirst) {
+      await new ReconcileFromDiskService({
+        denoRuntime: runtime,
+        repository,
+        lockfileRepository,
+        repoDir: dir,
+      }).execute();
+      await options.afterReconcile?.();
+    }
     await new ExtensionLoader(
       runtime,
       modelKindAdapter,
       dir,
       undefined,
-      new ExtensionRepository({
-        catalog,
-        lockfileRepository: new LockfileRepository(
-          join(dir, "upstream_extensions.json"),
-        ),
-        repoRoot: dir,
-      }),
+      repository,
       undefined,
       createDenoInfoModuleGraphReader,
     ).buildIndex(modelsDir);
@@ -638,6 +656,37 @@ Deno.test("loader lockfile: a stale deno.lock in the loaded dir loads, warns onc
     assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
     const data = await fmtExtension(dir, manifestPath, ENV, true);
     assertEquals(data.staleLockfiles.map((s) => s.lockPath), [lockPath]);
+    assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
+  });
+});
+
+Deno.test("loader lockfile: the first command's startup reconcile and model load bundle a stale-locked extension once and warn once (swamp-club#3869)", async () => {
+  await withProject({}, async (dir) => {
+    const type = loadedType();
+    const { entry, modelsDir } = await writeLoadedLockExtension(
+      dir,
+      "^2.1.0",
+      type,
+    );
+    const lockPath = join(modelsDir, "deno.lock");
+    await Deno.writeTextFile(lockPath, MS_LOCK);
+    await withCatalog(dir, async (catalog) => {
+      const epoch = new Date(0);
+      let bundlePath = "";
+      const warnings = await loadModels(dir, modelsDir, catalog, ENV, {
+        reconcileFirst: true,
+        afterReconcile: async () => {
+          // The model load reuses the bundle reconcile indexed rather than
+          // building it again.
+          bundlePath = catalog.findBySourcePath(entry)?.bundle_path ?? "";
+          await Deno.utime(bundlePath, epoch, epoch);
+        },
+      });
+      assertEquals(warnings.length, 1, warnings.join("\n"));
+      assertStringIncludes(warnings[0], "is out of date with");
+      assertEquals(catalog.findBySourcePath(entry)?.type_normalized, type);
+      assertEquals((await Deno.stat(bundlePath)).mtime, epoch);
+    });
     assertEquals(await Deno.readTextFile(lockPath), MS_LOCK);
   });
 });

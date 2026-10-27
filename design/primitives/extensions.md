@@ -1492,7 +1492,11 @@ Cold-start indexing defers to rows written by the import-based reconcile. When
 keeps that row instead of re-reading the type from source text. That keeps
 exports the static extractor cannot read, such as
 `export const extension = withOptions(definition)`, from warning on every
-catalog rebuild.
+catalog rebuild. The cold load before it reuses the same rows' bundles: a local
+source whose indexed row names its bundle at the current fingerprint, with its
+module graph recorded, is imported from that bundle rather than bundled again.
+So a repository's first command bundles each local extension once, in
+reconcile, and a stale-lock warning prints once (swamp-club#3869).
 
 The static extractor only reads a declaration that sits in code. An
 `export const model = { type: ... }` inside a string, template literal or

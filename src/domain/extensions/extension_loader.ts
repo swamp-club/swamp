@@ -645,7 +645,7 @@ export class ExtensionLoader {
             file,
             denoPath,
             baseDir,
-            { trustPulledCache: true },
+            { trustPulledCache: true, reuseFreshIndexed: true },
           );
           this.logTrustedPulledBundle(bundled, file);
           result.loaded.push(file);
@@ -694,7 +694,7 @@ export class ExtensionLoader {
           file,
           denoPath,
           baseDir,
-          { trustPulledCache: true },
+          { trustPulledCache: true, reuseFreshIndexed: true },
         );
         this.logTrustedPulledBundle(bundled, file);
         const module = await this.importBundle(bundled.js, file, baseDir);
@@ -2566,6 +2566,38 @@ export class ExtensionLoader {
     );
   }
 
+  /**
+   * True when the catalog row for `absolutePath` indexes the bundle at
+   * `bundlePath` at the source's current fingerprint, by the tests the warm
+   * scan applies. Startup reconcile writes such a row before the first full
+   * load of a kind, so that load reuses its bundle instead of building the
+   * same one again.
+   */
+  private async isFreshIndexedBundle(
+    absolutePath: string,
+    boundaryDir: string,
+    bundlePath: string,
+  ): Promise<boolean> {
+    const catalog = this.repository?.getCatalogStore();
+    if (!catalog) return false;
+    const row = catalog.findBySourcePath(absolutePath);
+    if (
+      !row || !isIndexedRow(row) || !row.source_fingerprint ||
+      !this.adapter.catalogKinds.includes(row.kind) ||
+      row.bundle_path !== bundlePath ||
+      catalog.findSourceModules(absolutePath) === undefined ||
+      catalog.isSourceGraphPending(absolutePath)
+    ) {
+      return false;
+    }
+    const fingerprint = await computeSourceFingerprint(
+      absolutePath,
+      boundaryDir,
+      catalog,
+    ).catch(() => undefined);
+    return fingerprint === row.source_fingerprint;
+  }
+
   private async bundleWithCache(
     absolutePath: string,
     relativePath: string,
@@ -2575,6 +2607,11 @@ export class ExtensionLoader {
       trustPulledCache?: boolean;
       /** This bundle is the one retry of a graph-pending source. */
       graphRetry?: boolean;
+      /**
+       * Reuse a local source's bundle that its catalog row already
+       * indexes at the source's current fingerprint.
+       */
+      reuseFreshIndexed?: boolean;
     },
   ): Promise<BundleResult> {
     if (this.repoDir) {
@@ -2601,6 +2638,16 @@ export class ExtensionLoader {
           js: await Deno.readTextFile(bundlePath),
           fromCache: true,
           cacheReason: "trusted-pulled",
+        };
+      }
+      if (
+        bundleExists && !isPulled && options?.reuseFreshIndexed &&
+        await this.isFreshIndexedBundle(absolutePath, boundaryDir, bundlePath)
+      ) {
+        return {
+          js: await Deno.readTextFile(bundlePath),
+          fromCache: true,
+          cacheReason: "fresh-indexed",
         };
       }
 
