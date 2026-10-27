@@ -24,7 +24,9 @@ import {
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
+  MAX_AUTH_BODY_BYTES,
 } from "./device_auth_handler.ts";
+import { readBodyWithLimit } from "./webhook.ts";
 import {
   type DashboardSession,
   DashboardSessionCapacityError,
@@ -186,9 +188,16 @@ export async function handleDashboardSession(
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
+  const bytes = await readBodyWithLimit(req, MAX_AUTH_BODY_BYTES);
+  if (bytes === null) {
+    return new Response("Request body too large", { status: 413 });
+  }
   let body: Record<string, unknown>;
   try {
-    body = await req.json() as Record<string, unknown>;
+    body = JSON.parse(new TextDecoder().decode(bytes)) as Record<
+      string,
+      unknown
+    >;
   } catch {
     return new Response("Invalid JSON", { status: 400 });
   }

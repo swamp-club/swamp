@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { z } from "zod";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   installExecutionObserver,
@@ -243,6 +244,20 @@ Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", 
   assertEquals(h.gateway.workers().length, 0);
 });
 
+Deno.test("WorkerGateway: oversized enrollment labels are refused before the token is redeemed", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const labels: Record<string, unknown> = {};
+  for (let i = 0; i < 100_000; i++) labels[`k${i}`] = 0;
+  const error = await assertRejects(
+    () => enroll(workerChannel, { ...enrollParams, labels }),
+    RpcError,
+  );
+  assertStringIncludes(error.message, "Too many entries");
+  assertEquals(h.transitions.length, 0);
+  assertEquals(h.gateway.workers().length, 0);
+});
+
 Deno.test("WorkerGateway: malformed token is rejected", async () => {
   const h = createHarness();
   const { workerChannel } = connectWorkerSocket(h.gateway);
@@ -446,6 +461,27 @@ Deno.test("WorkerGateway: dispatch streams events and records busy → idle", as
   assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
   // Idle fires at enrollment and again after the dispatch completes.
   assertEquals(h.idle.length, 2);
+});
+
+Deno.test("WorkerGateway: a dispatch result with oversized malformed logs is refused with one issue", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  workerChannel.register(WorkerMethod.dispatch, () =>
+    Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: Array(100_000).fill(0),
+      durationMs: 5,
+    }));
+
+  const error = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams()),
+    z.ZodError,
+  );
+  assertEquals(error.issues.length, 1);
+  assertEquals(error.issues[0].path, ["logs", 0]);
 });
 
 Deno.test("WorkerGateway: dispatch to a busy worker rejects", async () => {

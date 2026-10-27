@@ -22,6 +22,7 @@ import {
   BEHAVIOR_OWNER_TYPE,
   MODEL_OWNER_TYPE,
 } from "../terminology/behavior_aliases.ts";
+import { boundedRecord } from "../untrusted_parse.ts";
 
 /**
  * Lifetime determines how long data should be retained.
@@ -211,6 +212,9 @@ export const OwnerDefinitionSchema = z.object({
 
 export type OwnerDefinition = z.infer<typeof OwnerDefinitionSchema>;
 
+/** Most tags one data version may carry. */
+export const MAX_DATA_TAGS = 10_000;
+
 /**
  * Complete metadata schema for Data entity.
  * Tags must include a 'type' key for categorization.
@@ -231,7 +235,9 @@ export const DataMetadataSchema = z.object({
   lifetime: LifetimeSchema,
   garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().default(false),
-  tags: z.record(z.string(), z.string()).refine(
+  // Bounded because a datastore commit carries it from a caller; generous
+  // because this schema also reads stored versions (swamp-club#3862).
+  tags: boundedRecord(z.string(), z.string(), MAX_DATA_TAGS).refine(
     (tags) => "type" in tags,
     { message: "tags must include 'type' key" },
   ),

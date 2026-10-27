@@ -77,6 +77,7 @@ import {
 } from "../expressions/schema_path_validator.ts";
 import { freeRoots, typeChecksAsConstant } from "../expressions/cel_grammar.ts";
 import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
+import { argumentParseContext } from "../untrusted_parse.ts";
 import {
   markModelWording,
   type WordedText,
@@ -1197,7 +1198,10 @@ export class DefaultModelValidationService implements ModelValidationService {
       // is reported as a run reports it (swamp-club#3681).
       let result: ReturnType<typeof methodArgsSchema.safeParse>;
       try {
-        result = methodArgsSchema.safeParse(coercedArgs, { reportInput: true });
+        result = methodArgsSchema.safeParse(
+          coercedArgs,
+          argumentParseContext(),
+        );
       } catch (error) {
         errors.push(
           `Method "${methodName}": ${

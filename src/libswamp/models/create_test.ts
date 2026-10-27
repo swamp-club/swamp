@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
+import { setProcessArgumentParsePolicy } from "../../domain/untrusted_parse.ts";
 import { collect } from "../testing.ts";
 import {
   findSpan,
@@ -815,4 +816,45 @@ Deno.test("modelCreate: a schema that throws while parsing a sensitive global ar
     "the schema threw TypeError while parsing them, and its message is withheld",
   );
   assertEquals(last.error.message.includes("HUNTER2-LONG"), false);
+});
+
+// ── Serve's untrusted argument policy (swamp-club#3862) ─────────────────
+
+async function globalArgumentsError(count: number): Promise<string> {
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/list-globals" },
+      version: "1.0.0",
+      globalArguments: z.object({ names: z.array(z.string()) }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/list-globals",
+      name: "my-model",
+      globalArguments: { names: Array(count).fill({}) },
+    }),
+  );
+  const last = events.at(-1) as Extract<ModelCreateEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  return last.error.message;
+}
+
+Deno.test("modelCreate: global argument issues are all named under the trusted policy", async () => {
+  const message = await globalArgumentsError(3);
+  assertStringIncludes(message, "names.0");
+  assertStringIncludes(message, "names.2");
+});
+
+Deno.test("modelCreate: under the untrusted policy global arguments stop at the first failing element", async () => {
+  const restore = setProcessArgumentParsePolicy("untrusted");
+  try {
+    const message = await globalArgumentsError(100_000);
+    assertStringIncludes(message, "names.0");
+    assertEquals(message.includes("names.1"), false);
+  } finally {
+    restore();
+  }
 });

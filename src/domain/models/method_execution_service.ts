@@ -104,6 +104,7 @@ import {
 import type { SecretLoader } from "../vaults/secret_loader.ts";
 import type { SecretReference } from "../vaults/secret_bag_registry.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { argumentParseContext } from "../untrusted_parse.ts";
 import {
   type SecretOccurrences,
   secretOccurrencesOf,
@@ -617,9 +618,11 @@ function parseMethodArguments(
   const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
   // Each issue carries what its failing check received, so a refusal under
   // a transform can register the transformed spelling before it is shown.
+  // Under serve's untrusted policy the parse also stops at the first failure
+  // in each container (swamp-club#3862).
   let argsResult: z.ZodSafeParseResult<unknown>;
   try {
-    argsResult = method.arguments.safeParse(methodArgs, { reportInput: true });
+    argsResult = method.arguments.safeParse(methodArgs, argumentParseContext());
   } catch (error) {
     throw schemaThrew(error, method.arguments, "Method arguments");
   }

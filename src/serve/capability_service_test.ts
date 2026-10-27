@@ -41,6 +41,8 @@ import {
   type UnscopedChange,
   useUnscopedChangeReporterForTesting,
 } from "../infrastructure/persistence/unit_of_work_scope.ts";
+import { RpcChannel } from "../domain/remote/rpc_channel.ts";
+import { RemoteMethod } from "../domain/remote/protocol.ts";
 
 function stubRepoContext(
   queryResult: unknown[] = [],
@@ -107,6 +109,21 @@ function withDispatch(dispatches: DispatchRegistry, workerName = "worker-1") {
     definitionTags: {},
   });
 }
+
+Deno.test("registerHandlers: refuses malformed capability params before the verb runs", async () => {
+  const workerSide: RpcChannel = new RpcChannel({
+    send: (data) =>
+      void Promise.resolve().then(() => serveSide.handleRaw(data)),
+  });
+  const serveSide: RpcChannel = new RpcChannel({
+    send: (data) =>
+      void Promise.resolve().then(() => workerSide.handleRaw(data)),
+  });
+  createService().registerHandlers(serveSide, "worker-1");
+  await assertRejects(() =>
+    workerSide.call(RemoteMethod.getData, { modelType: 1, modelId: 2 })
+  );
+});
 
 // ── queryData post-query filter tests ───────────────────────────────────
 

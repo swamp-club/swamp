@@ -51,6 +51,7 @@ import {
 } from "../../domain/models/sensitive_field_extractor.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { argumentParseContext } from "../../domain/untrusted_parse.ts";
 /**
  * Data structure for the model create output.
  */
@@ -251,9 +252,10 @@ export async function* modelCreate(
             // while parsing is reported as a run reports it (swamp-club#3681).
             let result: ReturnType<typeof globalArgsSchema.safeParse>;
             try {
-              result = globalArgsSchema.safeParse(globalArguments, {
-                reportInput: true,
-              });
+              result = globalArgsSchema.safeParse(
+                globalArguments,
+                argumentParseContext(),
+              );
             } catch (error) {
               yield {
                 kind: "error",

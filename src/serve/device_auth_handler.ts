@@ -58,6 +58,7 @@ import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
+import { readBodyWithLimit } from "./webhook.ts";
 import {
   displayPrincipal,
   usernameFromLogin,
@@ -264,14 +265,29 @@ async function handleStartDeviceGrant(
   }
 }
 
+/**
+ * Largest body the unauthenticated sign-in routes read: each carries one
+ * device code or token (swamp-club#3862).
+ */
+export const MAX_AUTH_BODY_BYTES = 16 * 1024;
+
 async function handleDeviceToken(
   req: Request,
   deps: DeviceAuthDeps,
   onAuthenticated?: (token: string) => Promise<Response>,
 ): Promise<Response> {
+  const bytes = await readBodyWithLimit(req, MAX_AUTH_BODY_BYTES);
+  if (bytes === null) {
+    return jsonResponse(413, {
+      error: `Request body exceeds ${MAX_AUTH_BODY_BYTES} bytes`,
+    });
+  }
   let body: Record<string, unknown>;
   try {
-    body = await req.json() as Record<string, unknown>;
+    body = JSON.parse(new TextDecoder().decode(bytes)) as Record<
+      string,
+      unknown
+    >;
   } catch {
     return jsonResponse(400, { error: "Invalid JSON body" });
   }

@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { InputValidationService } from "./input_validation_service.ts";
 import type { InputsSchema } from "../definitions/definition.ts";
+import { setProcessArgumentParsePolicy } from "../untrusted_parse.ts";
 
 const validationService = new InputValidationService();
 
@@ -617,4 +618,76 @@ Deno.test("InputValidationService.validate does not treat Object.prototype names
       message: "detail.toString is not a valid property",
     }],
   );
+});
+
+// Untrusted argument policy (swamp-club#3862)
+
+function withUntrustedPolicy(fn: () => void): void {
+  const restore = setProcessArgumentParsePolicy("untrusted");
+  try {
+    fn();
+  } finally {
+    restore();
+  }
+}
+
+const arrayOfStrings: InputsSchema = {
+  properties: { names: { type: "array", items: { type: "string" } } },
+};
+
+Deno.test("InputValidationService.validate reports every failing item under the trusted policy", () => {
+  const result = validationService.validate(
+    { names: Array(1000).fill(0) },
+    arrayOfStrings,
+  );
+  assertEquals(result.errors.length, 1000);
+});
+
+Deno.test("InputValidationService.validate stops at the first failing item under the untrusted policy", () => {
+  withUntrustedPolicy(() => {
+    const result = validationService.validate(
+      { names: Array(100_000).fill(0) },
+      arrayOfStrings,
+    );
+    assertEquals(result.valid, false);
+    assertEquals(result.errors, [
+      { path: "names[0]", message: "names[0] must be a string" },
+    ]);
+  });
+});
+
+Deno.test("InputValidationService.validate stops at the first failing entry of an object under the untrusted policy", () => {
+  const schema: InputsSchema = {
+    properties: {
+      tags: { type: "object", additionalProperties: { type: "string" } },
+    },
+  };
+  const tags = Object.fromEntries(
+    Array.from({ length: 100_000 }, (_, i) => [`k${i}`, 0]),
+  );
+  withUntrustedPolicy(() => {
+    assertEquals(validationService.validate({ tags }, schema).errors.length, 1);
+  });
+});
+
+Deno.test("InputValidationService.validate stops at the first undeclared input under the untrusted policy", () => {
+  const schema: InputsSchema = {
+    properties: { name: { type: "string" } },
+    additionalProperties: false,
+  };
+  const inputs = Object.fromEntries(
+    Array.from({ length: 100_000 }, (_, i) => [`k${i}`, "x"]),
+  );
+  withUntrustedPolicy(() => {
+    assertEquals(validationService.validate(inputs, schema).errors.length, 1);
+  });
+});
+
+Deno.test("InputValidationService.validate passes valid input under the untrusted policy", () => {
+  withUntrustedPolicy(() => {
+    assertEquals(
+      validationService.validate({ names: ["a", "b"] }, arrayOfStrings).valid,
+      true,
+    );
+  });
 });

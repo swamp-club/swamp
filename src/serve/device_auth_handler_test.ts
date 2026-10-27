@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
+  MAX_AUTH_BODY_BYTES,
   oauthPrincipalId,
 } from "./device_auth_handler.ts";
 import { DeviceGrantPollError } from "./oauth_client.ts";
@@ -235,6 +236,17 @@ Deno.test("handleDeviceAuth: POST /auth/device/token returns 400 for invalid JSO
   assertEquals(result?.status, 400);
   const body = await result!.json();
   assertEquals(body.error, "Invalid JSON body");
+});
+
+Deno.test("handleDeviceAuth: POST /auth/device/token refuses a body over the cap with 413", async () => {
+  const deps = makeMockDeps();
+  const req = new Request("http://localhost:8080/auth/device/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceCode: "x".repeat(MAX_AUTH_BODY_BYTES) }),
+  });
+  const result = await handleDeviceAuth(req, deps);
+  assertEquals(result?.status, 413);
 });
 
 // ── POST /auth/device/token — poll errors ─────────────────────────────
