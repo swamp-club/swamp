@@ -36,7 +36,6 @@ export interface InboxSnapshot {
 
 /** The poll outcomes that stop polling for a key. */
 export const POLL_STOP_REASONS = [
-  "unsupported",
   "unavailable",
   "rejected",
 ] as const;

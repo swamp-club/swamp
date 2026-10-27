@@ -136,6 +136,14 @@ Deno.test("InboxCacheFileRepository: a field outside its bounds loads as empty",
           stop: { reason: "bored", at: valid.schedule.stop.at },
         },
       },
+      // A 404 no longer stops a key, so a stored one reads as never polled.
+      {
+        ...valid,
+        schedule: {
+          ...valid.schedule,
+          stop: { reason: "unsupported", at: valid.schedule.stop.at },
+        },
+      },
       { ...valid, announcement: { id: ID_A, at: 12345 } },
     ];
     for (const variant of variants) {

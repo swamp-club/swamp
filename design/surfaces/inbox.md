@@ -100,8 +100,9 @@ applied; marking read is idempotent, so retrying the whole call is safe.
   the `ETag` from the last answer, and no sooner than `pollAfterSeconds` after
   it. The gap is at least 900 seconds and at most 7 days, whatever the server
   sends, so a misbehaving server cannot silence the inbox for good. Every poll
-  counts, a failed one included. A `backoff` waits out `Retry-After`;
-  `unsupported`, `unavailable` and `rejected` stop the poll for that key, and
+  counts, a failed one included. A `backoff` waits out `Retry-After`.
+  `unsupported` asks again 24 hours later, since a server can add the inbox in
+  a later upgrade. `unavailable` and `rejected` stop the poll for that key, and
   the cache records why and when.
 - **The cache.** The last summary and its `ETag` are cached locally, so a `304`
   costs nothing and the notice needs no network call. Each API key has its own
