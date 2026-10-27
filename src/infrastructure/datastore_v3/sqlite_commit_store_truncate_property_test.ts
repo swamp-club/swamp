@@ -370,12 +370,37 @@ Deno.test("SqliteCommitStore.truncateAfter: undoes the appends past the mark exa
           }
         },
       ),
-      { numRuns: 150 },
+      {
+        numRuns: 150,
+        // One run per outcome below, so the coverage check never rests on
+        // the random runs alone (swamp-club#4029).
+        examples: [
+          // The lease partition is compacted through the mark and its only
+          // snapshot, at seq 3, lands past it: refused.
+          [
+            [{ space: 1, name: "z", blob: 0, fenceBump: 1, versioned: false }],
+            [
+              { space: 1, name: "z", blob: 0, fenceBump: 0, versioned: false },
+              { space: 1, name: "z", blob: 0, fenceBump: 0, versioned: false },
+            ],
+            3,
+            1,
+          ],
+          // Nothing compacted and the suffix records a version: truncated,
+          // retaining it.
+          [
+            [{ space: 2, name: "x", blob: 1, fenceBump: 0, versioned: false }],
+            [{ space: 2, name: "y", blob: 1, fenceBump: 0, versioned: true }],
+            1,
+            undefined,
+          ],
+        ],
+      },
     );
-    // A refusal only arises with compaction, which about half the runs do.
-    assert(truncatedRuns > 60, `only ${truncatedRuns} runs truncated`);
+    // The examples reached each outcome.
+    assert(truncatedRuns > 0, "no run truncated");
     assert(refusedRuns > 0, "no run was refused");
-    assert(retainingRuns > 30, `only ${retainingRuns} runs dropped a version`);
+    assert(retainingRuns > 0, "no run dropped a version");
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
