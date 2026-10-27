@@ -272,6 +272,9 @@ Deno.test({
         workerStop.abort();
         if (workerDone) await workerDone.catch(() => {});
         await server.shutdown();
+        // A pending dispatch's end is recorded without waiting
+        // (swamp-club#4038).
+        await dispatchService.settled();
       }
       // The worker's disconnect saves its state in a root that may still be
       // committing after the server stops: wait for the checkouts to agree,
