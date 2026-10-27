@@ -155,7 +155,7 @@ Deno.test("checkBundleRecord: another bundle format is rebuilt, still checked ag
   );
 });
 
-Deno.test("checkBundleRecord: refuses a changed hash, an unlisted bundle and a listed one that is missing, in path order", () => {
+Deno.test("checkBundleRecord: refuses a changed hash, an unlisted bundle and a listed one that is missing: scanned paths first, then missing ones, each in path order", () => {
   assertEquals(
     checkBundleRecord(
       HASHES,

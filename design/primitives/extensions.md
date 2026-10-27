@@ -1294,20 +1294,19 @@ as `files/`. So pull also scans bundles (swamp-club#3383), at two points:
   scanning it again.
 - **Each bundle phase 8 rebuilds** (a bundle format this swamp does not run, a
   source with no archive bundle, or a kept bundle that failed to load), through
-  the loader's `checkBundle` hook,
-  after it is built and before it is probed or imported. The probe host runs a
-  bundle's top-level code with full permissions, so a scan after it would be too
-  late. A refusal here rolls the install back, as a type collision does; any
-  other phase-8 fault commits the half-installed state. A source that fails for
-  another reason does not stop the rest: every source is still rebuilt and
-  scanned, and a refusal anywhere in the set (the extension or a dependency)
-  decides ahead of any other failure. The rebuilt bundle is deleted, because a
-  bundle dir the archive had nothing for is not staged; if it cannot be, the
-  refusal names the file to delete. On a refused upgrade whose archive had no
-  bundle at that path, the previous version's bundle is gone too and is rebuilt
-  from its source on the next load. As with a collision, the catalog's recorded
-  source modules for the refused sources stay until the next bundle rewrites
-  them.
+  the loader's `checkBundle` hook, after it is built and before it is probed or
+  imported. The probe host runs a bundle's top-level code with full permissions,
+  so a scan after it would be too late. A refusal here rolls the install back,
+  as a type collision does; any other phase-8 fault commits the half-installed
+  state. A source that fails for another reason does not stop the rest: every
+  source is still rebuilt and scanned, and a refusal anywhere in the set (the
+  extension or a dependency) decides ahead of any other failure. The rebuilt
+  bundle is deleted, because a bundle dir the archive had nothing for is not
+  staged; if it cannot be, the refusal names the file to delete. On a refused
+  upgrade whose archive had no bundle at that path, the previous version's
+  bundle is gone too and is rebuilt from its source on the next load. As with a
+  collision, the catalog's recorded source modules for the refused sources stay
+  until the next bundle rewrites them.
 
 Only the `dynamic-code` rule runs on a bundle (`analyzeBundleSafety`). It is the
 one hard-error rule that reads content. The file rules (type, size, count) are
@@ -1339,12 +1338,12 @@ are cut to 200 characters.
 An archive bundle's comments are the publisher's text. A publisher can put a
 dependency's path above their own code and turn its findings into warnings. That
 gap is accepted until signing ties the bundle to its publisher; the bundle hash
-in the record cannot, since the publisher writes both. The rebuilt-bundle scan does not
-have the gap: its comments are written by this machine's esbuild, and a rebuilt
-bundle that does not parse counts as the extension's own throughout, since
-without a parse a module comment cannot be told from text in a string. Code in a
-real npm or remote dependency, chosen by the author, still only warns in either
-scan: findings in dependency code are reported, not refused.
+in the record cannot, since the publisher writes both. The rebuilt-bundle scan
+does not have the gap: its comments are written by this machine's esbuild, and a
+rebuilt bundle that does not parse counts as the extension's own throughout,
+since without a parse a module comment cannot be told from text in a string.
+Code in a real npm or remote dependency, chosen by the author, still only warns
+in either scan: findings in dependency code are reported, not refused.
 
 Two gaps remain outside this scan (swamp-club#3996): an archive bundle can
 import a file the scan does not read (a sibling under `bundles/`, or a file
