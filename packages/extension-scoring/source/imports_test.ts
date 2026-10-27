@@ -109,3 +109,9 @@ Deno.test("importedSpecifiersAt: offsets are UTF-16 offsets", () => {
   const [site] = importedSpecifiersAt(source, { path: "m.ts" }) ?? [];
   assertEquals(source.slice(site.start, site.end), '"npm:a@1"');
 });
+
+Deno.test("importedSpecifiers: a .cts module's imports are read", () => {
+  const source = 'import x = require("npm:x@1");\nimport y from "npm:y@1";\n' +
+    "var mode = 0755;\nexport = [x, y, mode];\n";
+  assertEquals(importedSpecifiers(source, { path: "m.cts" }), ["npm:y@1"]);
+});

@@ -955,7 +955,8 @@ flags for the read. The scan reads each module's syntax tree
 `@swamp-club/extension-scoring/source`, serves the import scan, the
 quality-ignore directive reader and the bundler's own parse, and picks the
 syntax from the file: TypeScript, JavaScript (without the TypeScript plugin,
-which refuses some valid JavaScript) or JSX. Push and quality refuse a code
+which refuses some valid JavaScript) or JSX, reading CommonJS (`.cjs`, `.cts`)
+as a script and other modules as modules. Push and quality refuse a code
 file that does not parse, naming it (the `source-syntax` gate), and a bundle
 push built that does not parse fails as a swamp bug; the registry reads such a
 module as having no imports, and the loader reads it the same way, so the

@@ -3146,7 +3146,9 @@ function auditedCodeFiles(input: ExtensionPushPrepareInput): string[] {
  * Refuses a bundle the import scan cannot read. `deno bundle` writes valid
  * JavaScript, so one that does not parse with the shared parse means
  * swamp's parse is wrong, not the extension: the registry, reading the
- * bundle the same way, would see no imports in it (swamp-club#3983).
+ * bundle the same way, would see no imports in it (swamp-club#3983). The
+ * bundle is read as a `.js` file, as the registry reads it, not with the
+ * bundle-output variant `bundle.ts` uses to rewrite imports.
  */
 function assertBundlesParse(bundles: ReadonlyMap<string, string>[]): void {
   for (const group of bundles) {

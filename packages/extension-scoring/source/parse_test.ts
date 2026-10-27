@@ -109,3 +109,34 @@ Deno.test("parseExtensionModule: bundle output reads TC39 decorators", () => {
   const source = "@dec class A {}\nexport { A };\n";
   assert(parseExtensionModule(source, { bundle: true }).ok);
 });
+
+Deno.test("parseExtensionModule: CommonJS reads as a sloppy-mode script", () => {
+  const source = "var fs = require('fs');\nfs.chmodSync('p', 0755);\n" +
+    "with (Math) { x = PI; }\nvar package = 1;\nmodule.exports = {};\n";
+  for (const path of ["files/helper.cjs", "m.cts"]) {
+    const parsed = parseExtensionModule(source, { path });
+    assert(parsed.ok, path);
+    assertEquals(parsed.program.sourceType, "script");
+  }
+  assert(!parseExtensionModule(source, { path: "m.js" }).ok);
+});
+
+Deno.test("parseExtensionModule: legacy and TC39 decorators both read", () => {
+  for (
+    const source of [
+      "export @dec class A {}\n",
+      "@dec export class A {}\n",
+      "class A { constructor(@inject() x: number) {} }\n",
+    ]
+  ) {
+    assert(parseExtensionModule(source, { path: "m.ts" }).ok, source);
+  }
+});
+
+Deno.test("parseExtensionModule: a module neither decorator form reads reports the error", () => {
+  const parsed = parseExtensionModule(
+    "@dec export const broken = ;\n",
+    { path: "m.ts" },
+  );
+  assert(!parsed.ok);
+});

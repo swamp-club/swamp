@@ -149,9 +149,11 @@ function prepareDeps(): ExtensionPushPrepareDeps {
       Promise.resolve({ errors: [], warnings: [], passed: true }),
     // A bundle that keeps the entry point's text, so the export name the
     // author wrote travels into the archive as it would through deno bundle.
+    // Like deno bundle it erases the types, so push can parse it as
+    // JavaScript: the fixtures' type-only imports and export annotations.
     indexArchive: emptyArchiveIndex,
     bundleEntryPoint: async (entryPoint) =>
-      `// bundle\n${await Deno.readTextFile(entryPoint)}`,
+      `// bundle\n${eraseFixtureTypes(await Deno.readTextFile(entryPoint))}`,
     ensureDenoPath: () => Promise.resolve("/unused/deno"),
     getDenoEnv: () => ({}),
     findPublishedVersion: () => Promise.resolve(null),
@@ -271,4 +273,12 @@ export async function snapshotFixture(
   } finally {
     await Deno.remove(root, { recursive: true }).catch(() => {});
   }
+}
+
+function eraseFixtureTypes(source: string): string {
+  return source
+    .split("\n")
+    .filter((line) => !line.startsWith("import type "))
+    .join("\n")
+    .replace(/^(export const \w+): [\w.<>]+ =/gm, "$1 =");
 }

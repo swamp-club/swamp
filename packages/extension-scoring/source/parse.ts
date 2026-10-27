@@ -84,12 +84,19 @@ export interface ParseModuleOptions {
 }
 
 // Syntax extension source is written in, beside the language itself.
+// Decorators are read in their legacy form first: TypeScript's
+// `experimentalDecorators` allows parameter decorators, which the TC39
+// plugin refuses.
 const SOURCE_PLUGINS: ParserPlugin[] = [
   "decorators-legacy",
   "explicitResourceManagement",
   "decoratorAutoAccessors",
   "importAttributes",
 ];
+
+// A module the legacy form refuses is read again with TC39 decorators,
+// which Deno also runs and which allow `export @dec class`.
+const TC39_DECORATORS: ParserPlugin = "decorators";
 
 // Syntax esbuild can leave in a bundle that Babel does not parse by default.
 // `decorators` and `decorators-legacy` cannot be combined, so a bundle is
@@ -105,12 +112,19 @@ const BUNDLE_PLUGINS: ParserPlugin[] = [
 
 const JAVASCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".jsx"]);
 
+// CommonJS runs as a script, in sloppy mode.
+const COMMONJS_EXTENSIONS = new Set([".cjs", ".cts"]);
+
+function extensionOf(path?: string): string {
+  return path === undefined ? ".ts" : extname(path).toLowerCase();
+}
+
 /**
  * The Babel plugins a module at `path` is parsed with. JavaScript is read
  * without the TypeScript plugin, which refuses some valid JavaScript.
  */
 export function parserPluginsFor(path?: string): ParserPlugin[] {
-  const ext = path === undefined ? ".ts" : extname(path).toLowerCase();
+  const ext = extensionOf(path);
   const plugins: ParserPlugin[] = JAVASCRIPT_EXTENSIONS.has(ext)
     ? [...SOURCE_PLUGINS]
     : ["typescript", ...SOURCE_PLUGINS];
@@ -121,16 +135,36 @@ export function parserPluginsFor(path?: string): ParserPlugin[] {
 /**
  * Parses `source` as a module. Never throws: a syntax error, and a stack
  * overflow on extreme nesting, come back as an {@link UnparsedModule}.
- * Module only: Deno runs extensions as modules, and a script-mode retry
- * would read `<!--` as a comment, which in a module is live code.
+ * Module only, apart from CommonJS (`.cjs`, `.cts`), which is read as a
+ * script: Deno runs extensions as modules, and a script-mode retry would
+ * read `<!--` as a comment, which in a module is live code.
  */
 export function parseExtensionModule(
   source: string,
   options: ParseModuleOptions = {},
 ): ParsedModule | UnparsedModule {
+  if (options.bundle) return parseWith(source, BUNDLE_PLUGINS, options);
+  const plugins = parserPluginsFor(options.path);
+  const parsed = parseWith(source, plugins, options);
+  if (parsed.ok || !source.includes("@")) return parsed;
+  const tc39 = plugins.map((plugin) =>
+    plugin === "decorators-legacy" ? TC39_DECORATORS : plugin
+  );
+  const retried = parseWith(source, tc39, options);
+  // A module neither form reads reports the legacy form's reason.
+  return retried.ok ? retried : parsed;
+}
+
+function parseWith(
+  source: string,
+  plugins: ParserPlugin[],
+  options: ParseModuleOptions,
+): ParsedModule | UnparsedModule {
+  const commonJs = !options.bundle &&
+    COMMONJS_EXTENSIONS.has(extensionOf(options.path));
   const parserOptions: ParserOptions = {
-    sourceType: "module",
-    plugins: options.bundle ? BUNDLE_PLUGINS : parserPluginsFor(options.path),
+    sourceType: commonJs ? "script" : "module",
+    plugins,
     allowReturnOutsideFunction: true,
     allowAwaitOutsideFunction: true,
     allowImportExportEverywhere: true,
