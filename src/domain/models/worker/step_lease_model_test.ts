@@ -17,8 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  endedLease,
+  parseStoredLease,
+  recordLeaseWrites,
+  startLease,
   STEP_LEASE_INSTANCE_NAME,
   STEP_LEASE_MODEL_TYPE,
   stepLeaseModel,
@@ -137,5 +141,70 @@ Deno.test("stepLeaseModel: operations on unknown leases fail loudly", async () =
     () => stepLeaseModel.methods.complete.execute({ leaseId: "nope" }, context),
     Error,
     "does not exist",
+  );
+});
+
+const NOW = new Date("2026-10-27T12:00:00.000Z");
+
+Deno.test("startLease: an active lease with no writes, stamped with now", () => {
+  const lease = startLease(acquireArgs, null, NOW);
+  assertEquals(lease.state, "active");
+  assertEquals(lease.hasWrites, false);
+  assertEquals(lease.createdAt, NOW.toISOString());
+  assertEquals(lease.dispatchId, "d-1");
+});
+
+Deno.test("startLease: refuses a lease id that is already stored", () => {
+  assertThrows(
+    () => startLease(acquireArgs, { anything: true }, NOW),
+    Error,
+    "Step lease 'l-1' already exists",
+  );
+});
+
+Deno.test("recordLeaseWrites: marks an active lease once, then returns null", () => {
+  const marked = recordLeaseWrites("l-1", startLease(acquireArgs, null, NOW));
+  assertEquals(marked?.hasWrites, true);
+  assertEquals(recordLeaseWrites("l-1", marked!), null);
+});
+
+Deno.test("recordLeaseWrites: refuses an ended lease", () => {
+  const ended = endedLease(
+    "l-1",
+    startLease(acquireArgs, null, NOW),
+    "completed",
+    undefined,
+    NOW,
+  );
+  assertThrows(
+    () => recordLeaseWrites("l-1", ended),
+    Error,
+    "Step lease 'l-1' is completed; only active leases record writes",
+  );
+});
+
+Deno.test("endedLease: ends an active lease with its error, never one already ended", () => {
+  const failed = endedLease(
+    "l-1",
+    startLease(acquireArgs, null, NOW),
+    "failed",
+    "boom",
+    NOW,
+  );
+  assertEquals(failed.state, "failed");
+  assertEquals(failed.error, "boom");
+  assertEquals(failed.endedAt, NOW.toISOString());
+  assertThrows(
+    () => endedLease("l-1", failed, "expired", undefined, NOW),
+    Error,
+    "Step lease 'l-1' is already failed",
+  );
+});
+
+Deno.test("parseStoredLease: a missing lease fails loudly", () => {
+  assertThrows(
+    () => parseStoredLease("nope", null),
+    Error,
+    "Step lease 'nope' does not exist",
   );
 });

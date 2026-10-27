@@ -544,10 +544,30 @@ conditional save that rejects unless `latest` matches an expected version.)
 `TransitionTail` (`src/serve/transition_tail.ts`) is that serialization: the
 dispatch service and the gateway each keep one, and each transition runs in a
 `swamp.serve.transition` span recording its queue wait and the transitions
-ahead of it. Because transitions run one at a time, each must cost the same
-however many records its instance holds: an update method's deleted-resource
-check stops at the first live resource rather than reading every lease the
-`leases` instance keeps (swamp-club#3755). The CLI:
+ahead of it on its chain. The gateway runs its token and worker transitions
+on one chain. The dispatch service orders transitions per record instead
+(swamp-club#4038): each step lease and each pending dispatch is its own data
+item, so the record is the consistency boundary. A lease's acquire,
+`mark_writes` and end run in order, but no lease waits on another lease's
+transitions or on a pending dispatch. Leases and pending dispatches are
+deliberately not ordered relative to each other, since nothing reads one to
+decide the other. So a finished step's `complete` waits only for that lease's
+own earlier transitions, and on the dispatch tail `queue_depth` counts
+transitions ahead on the same record.
+
+Lease transitions are written by `StepLeaseLedger`
+(`src/serve/step_lease_ledger.ts`), not run as `swamp/step-lease` methods. Each
+one reads the lease, applies the lifecycle the model's methods also use (the
+pure functions in `step_lease_model.ts`) and writes the next version through
+the same resource reader and writer a method run uses. It writes in a root
+unit of work with no push, as the data plane does. Until the `leases`
+definition exists, a transition runs as the method, which creates it. A method
+run resolves, evaluates and records a whole run around that one read and
+write. The model's methods stay the interface for `swamp behavior run` and
+still run each transition at the same cost however many leases the instance
+holds: an update method's deleted-resource check stops at the first live
+resource rather than reading every lease the `leases` instance keeps
+(swamp-club#3755). The CLI:
 
 ```bash
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once
@@ -698,11 +718,11 @@ left stale by a crash or unclean shutdown:
 - **Workers** not in `disconnected` status → `disconnected` (no live WebSocket
   session backs them).
 
-The sweep runs through the method runner (`createWorkerModelRunDeps` +
-`modelMethodRun` with `skipAllReports`), so transitions go through the
-transition tail rather than direct datastore writes, keeping the sole-writer
-invariant. A failed transition logs a warning and startup continues; one
-corrupted record cannot stop the orchestrator from serving.
+The sweep writes each record's next version directly
+(`sweepStaleRecords` in `src/serve/boot_reconciliation.ts`), in a root unit of
+work with no push, before any transition can run, so it keeps the sole-writer
+invariant. A failed write logs a warning and startup continues; one corrupted
+record cannot stop the orchestrator from serving.
 
 The sweep finishes before `Deno.serve` accepts traffic. A worker that
 reconnects during the sweep re-enrolls normally afterwards: the sweep
@@ -1715,7 +1735,7 @@ In scope:
   native multiplexing and flow control.
 - Worker/token/lease state as queryable swamp data with declared retention
   (`garbageCollection`/`lifetime`); token/lease transitions serialized in the
-  orchestrator process.
+  orchestrator process, per record for leases and pending dispatches.
 - Versioned-handle read caching on the worker.
 - Label + platform scheduling and direct targeting by name/uuid over the
   data-backed pool; step-level `target:`/`labels:`/`platform:` fields; `forEach`

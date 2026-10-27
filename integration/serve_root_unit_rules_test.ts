@@ -329,6 +329,10 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/capability_service.ts: CapabilityService",
   "src/serve/data_plane.ts: DataPlane",
   "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
+  // Step-lease transitions, written directly rather than as method runs
+  // (swamp-club#4038): staged into the dispatching run's root, whose push
+  // carries them, as the method run's unit did.
+  "src/serve/step_lease_ledger.ts: StepLeaseLedger",
   // model.validate: model checks receive the hooked repositories.
   "src/serve/handlers/model_handlers.ts: handleModelValidate",
   // The extension handlers' managed lockfile transaction: one root with no

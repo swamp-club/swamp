@@ -48,10 +48,7 @@ import { modelMethodRun } from "../libswamp/models/run.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
-import {
-  STEP_LEASE_INSTANCE_NAME,
-  STEP_LEASE_MODEL_TYPE,
-} from "../domain/models/worker/step_lease_model.ts";
+import type { EndedLeaseState } from "../domain/models/worker/step_lease_model.ts";
 import {
   PENDING_DISPATCH_INSTANCE_NAME,
   PENDING_DISPATCH_MODEL_TYPE,
@@ -93,6 +90,12 @@ import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
 import { TransitionTail } from "./transition_tail.ts";
+import {
+  LEASE_END_METHODS,
+  methodRunnerLeaseStore,
+  StepLeaseLedger,
+  type StepLeaseStore,
+} from "./step_lease_ledger.ts";
 
 export { hasPlacement };
 
@@ -150,7 +153,11 @@ export interface DispatchServiceOptions {
   dispatches: DispatchRegistry;
   bundles: BundleRegistry;
   queueTimeoutMs?: number;
-  /** Test seam: overrides the modelMethodRun-backed lease transitions. */
+  /**
+   * Test seam: overrides the modelMethodRun-backed pending-dispatch
+   * transitions, and runs lease transitions as method runs through it
+   * instead of writing them with the lease ledger.
+   */
   runModelMethod?: ModelMethodRunner;
   /**
    * Serve's `dispatch-env-allow`: the only variables the environment
@@ -189,6 +196,7 @@ export class DispatchService {
   readonly #options: DispatchServiceOptions;
   readonly #queueTimeoutMs: number;
   readonly #runModelMethod: ModelMethodRunner;
+  readonly #stepLeases: StepLeaseStore;
   readonly #captureEnvironment: () => Record<string, string>;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
@@ -206,7 +214,11 @@ export class DispatchService {
   readonly #writesByDispatch = new Set<string>();
   /** Steps waiting for the pool to change (a worker idled or expired). */
   #poolWaiters: Array<() => void> = [];
-  /** Serializes lease transitions (sole-writer rule, like the gateway). */
+  /**
+   * Orders the transitions of each lease and each pending dispatch
+   * (sole-writer rule, like the gateway). Different records do not wait on
+   * each other (swamp-club#4038).
+   */
   readonly #transitions = new TransitionTail("dispatch");
   /**
    * Worker affinity pins: maps an affinity key to the worker that
@@ -226,6 +238,12 @@ export class DispatchService {
     this.#queueTimeoutMs = options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
+    this.#stepLeases = options.runModelMethod
+      ? methodRunnerLeaseStore(options.runModelMethod)
+      : new StepLeaseLedger(
+        options.repoContext,
+        methodRunnerLeaseStore(this.#runModelMethod),
+      );
     this.#captureEnvironment = options.captureEnvironment ??
       (() =>
         captureEnvironmentSnapshot(
@@ -320,7 +338,11 @@ export class DispatchService {
       return;
     }
     this.#writesByDispatch.add(dispatch.dispatchId);
-    await this.#leaseTransition("mark_writes", { leaseId: dispatch.leaseId });
+    await this.#leaseTransition(
+      "mark_writes",
+      dispatch.leaseId,
+      (leases) => leases.markWrites(dispatch.leaseId),
+    );
   }
 
   /**
@@ -729,22 +751,27 @@ export class DispatchService {
       "swamp.dispatch.id": dispatchId,
     }, () => this.#ensureBundle(request.modelDef));
 
-    await this.#leaseTransition("acquire", {
-      leaseId,
-      dispatchId,
-      workerName,
-      modelType: request.modelType.normalized,
-      modelId: request.modelId,
-      methodName: request.methodName,
-      workflowName: request.workflowName,
-      workflowRunId: request.workflowRunId,
-      jobName: request.jobName,
-      stepName: request.stepName,
-    });
+    await this.#leaseTransition("acquire", leaseId, (leases) =>
+      leases.acquire({
+        leaseId,
+        dispatchId,
+        workerName,
+        modelType: request.modelType.normalized,
+        modelId: request.modelId,
+        methodName: request.methodName,
+        workflowName: request.workflowName,
+        workflowRunId: request.workflowRunId,
+        jobName: request.jobName,
+        stepName: request.stepName,
+      }));
 
     if (request.declaredWrites) {
       this.#writesByDispatch.add(dispatchId);
-      await this.#leaseTransition("mark_writes", { leaseId });
+      await this.#leaseTransition(
+        "mark_writes",
+        leaseId,
+        (leases) => leases.markWrites(leaseId),
+      );
     }
 
     this.#options.dispatches.register({
@@ -868,10 +895,11 @@ export class DispatchService {
         )?.redactor;
         const scrub = (text: string) => redactor?.redact(text) ?? text;
         leaseSettled = true;
-        await this.#leaseTransition("fail", {
+        await this.#endLease(
           leaseId,
-          error: scrub(result.error ?? "remote execution failed"),
-        });
+          "failed",
+          scrub(result.error ?? "remote execution failed"),
+        );
         // A coded UserError the worker's method threw comes back as one, its
         // code scrubbed like the message (swamp-club#3773).
         const message = scrub(result.error ?? "Remote execution failed");
@@ -889,7 +917,7 @@ export class DispatchService {
           "swamp.dispatch.id": dispatchId,
           "swamp.lease.id": leaseId,
         },
-        () => this.#leaseTransition("complete", { leaseId }),
+        () => this.#endLease(leaseId, "completed"),
         dispatchTraceCarrier(params.execution.traceHeaders, result.trace),
       );
       return {
@@ -939,10 +967,7 @@ export class DispatchService {
       (error instanceof RpcError && error.code === "cancelled") ||
       (error instanceof DOMException && error.name === "AbortError")
     ) {
-      await this.#leaseTransition("fail", {
-        leaseId,
-        error: "dispatch cancelled",
-      });
+      await this.#endLease(leaseId, "failed", "dispatch cancelled");
       return new DOMException(
         `Dispatch of step '${
           request.stepName ?? request.methodName
@@ -954,17 +979,19 @@ export class DispatchService {
       const hadWrites = this.#writesByDispatch.has(dispatchId);
       const fate = await this.#awaitWorkerFate(workerName, request.signal);
       if (hadWrites) {
-        await this.#leaseTransition("fail", {
+        await this.#endLease(
           leaseId,
-          error: "worker disconnected after writing (write-then-drop)",
-        });
+          "failed",
+          "worker disconnected after writing (write-then-drop)",
+        );
       } else {
-        await this.#leaseTransition("expire", {
+        await this.#endLease(
           leaseId,
-          error: `worker ${
+          "expired",
+          `worker ${
             fate === "reconnected" ? "reconnected after drop" : "lost"
           }; no writes had occurred`,
-        });
+        );
       }
       return new WorkerLostError(workerName, hadWrites, dispatchId);
     }
@@ -973,10 +1000,11 @@ export class DispatchService {
     // cannot leak as 'active', then let executeRemote decide. Leases the
     // try block already settled (fail/complete) are left alone.
     if (!leaseSettled) {
-      await this.#leaseTransition("expire", {
+      await this.#endLease(
         leaseId,
-        error: error instanceof Error ? error.message : String(error),
-      }).catch(() => {});
+        "expired",
+        error instanceof Error ? error.message : String(error),
+      ).catch(() => {});
     }
     return error;
   }
@@ -1169,27 +1197,43 @@ export class DispatchService {
           inputs,
         })
       );
-    this.#transitions.run(`pending_dispatch.${methodName}`, run).catch(
-      () => {},
-    );
+    // Ordered per queue entry: each one is its own record.
+    this.#transitions.run(
+      `pending_dispatch.${methodName}`,
+      run,
+      `pending:${String(inputs.queueId)}`,
+    ).catch(() => {});
   }
 
+  /**
+   * Runs one lease's transition after that lease's earlier ones. Each lease
+   * is its own record, so a lease never waits on another's (swamp-club#4038).
+   */
   #leaseTransition(
     methodName: string,
-    inputs: Record<string, unknown>,
+    leaseId: string,
+    transition: (leases: StepLeaseStore) => Promise<void>,
   ): Promise<void> {
     // Control-plane bookkeeping: chained from inside the dispatching run, it
     // must not be held to that run's vault scope (swamp-club#2676).
-    const run = () =>
-      withoutVaultAccess(() =>
-        this.#runModelMethod({
-          typeArg: STEP_LEASE_MODEL_TYPE.normalized,
-          definitionName: STEP_LEASE_INSTANCE_NAME,
-          methodName,
-          inputs,
-        })
-      );
-    return this.#transitions.run(`step_lease.${methodName}`, run);
+    const run = () => withoutVaultAccess(() => transition(this.#stepLeases));
+    return this.#transitions.run(
+      `step_lease.${methodName}`,
+      run,
+      `lease:${leaseId}`,
+    );
+  }
+
+  #endLease(
+    leaseId: string,
+    state: EndedLeaseState,
+    error?: string,
+  ): Promise<void> {
+    return this.#leaseTransition(
+      LEASE_END_METHODS[state],
+      leaseId,
+      (leases) => leases.end(leaseId, state, error),
+    );
   }
 
   async #defaultRunModelMethod(input: {

@@ -86,18 +86,28 @@ export function leaseDataName(leaseId: string): string {
   return `lease-${leaseId}`;
 }
 
-async function readLease(
-  context: MethodContext,
-  leaseId: string,
-): Promise<StepLease> {
-  const raw = await context.readResource!(leaseDataName(leaseId));
+/**
+ * The stored lease, parsed; throws when the lease does not exist. Shared by
+ * the model's methods and serve's lease ledger.
+ */
+export function parseStoredLease(leaseId: string, raw: unknown): StepLease {
   if (raw === null) {
     throw new Error(`Step lease '${leaseId}' does not exist`);
   }
   return StepLeaseSchema.parse(raw);
 }
 
-const AcquireArgsSchema = z.object({
+async function readLease(
+  context: MethodContext,
+  leaseId: string,
+): Promise<StepLease> {
+  return parseStoredLease(
+    leaseId,
+    await context.readResource!(leaseDataName(leaseId)),
+  );
+}
+
+export const AcquireArgsSchema = z.object({
   leaseId: z.string().min(1),
   dispatchId: z.string().min(1),
   workerName: z.string().min(1),
@@ -110,20 +120,79 @@ const AcquireArgsSchema = z.object({
   stepName: z.string().optional(),
 });
 
-async function acquire(
-  args: z.infer<typeof AcquireArgsSchema>,
-  context: MethodContext,
-): Promise<MethodResult> {
-  const existing = await context.readResource!(leaseDataName(args.leaseId));
+export type AcquireLeaseArgs = z.infer<typeof AcquireArgsSchema>;
+
+/**
+ * The lease `acquire` records: active, with no writes. `existing` is what is
+ * stored under the lease's data name; a lease is never acquired twice.
+ */
+export function startLease(
+  args: AcquireLeaseArgs,
+  existing: unknown,
+  now: Date,
+): StepLease {
   if (existing !== null) {
     throw new Error(`Step lease '${args.leaseId}' already exists`);
   }
-  const lease: StepLease = {
+  return {
     ...args,
     state: "active",
     hasWrites: false,
-    createdAt: new Date().toISOString(),
+    createdAt: now.toISOString(),
   };
+}
+
+/**
+ * The lease with its first durable write recorded, or null when it already
+ * records one. Only an active lease records writes.
+ */
+export function recordLeaseWrites(
+  leaseId: string,
+  lease: StepLease,
+): StepLease | null {
+  if (lease.state !== "active") {
+    throw new Error(
+      `Step lease '${leaseId}' is ${lease.state}; only active leases record writes`,
+    );
+  }
+  if (lease.hasWrites) return null;
+  return { ...lease, hasWrites: true };
+}
+
+/** The states that end a lease. */
+export type EndedLeaseState = Extract<
+  LeaseState,
+  "completed" | "failed" | "expired"
+>;
+
+/** The lease ended in `state`; a lease that already ended is never rewritten. */
+export function endedLease(
+  leaseId: string,
+  lease: StepLease,
+  state: EndedLeaseState,
+  error: string | undefined,
+  now: Date,
+): StepLease {
+  if (lease.state !== "active") {
+    throw new Error(`Step lease '${leaseId}' is already ${lease.state}`);
+  }
+  return {
+    ...lease,
+    state,
+    endedAt: now.toISOString(),
+    ...(error !== undefined ? { error } : {}),
+  };
+}
+
+async function acquire(
+  args: AcquireLeaseArgs,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const lease = startLease(
+    args,
+    await context.readResource!(leaseDataName(args.leaseId)),
+    new Date(),
+  );
   const handle = await context.writeResource!(
     "lease",
     leaseDataName(args.leaseId),
@@ -140,19 +209,17 @@ async function markWrites(
   args: z.infer<typeof LeaseIdArgsSchema>,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const lease = await readLease(context, args.leaseId);
-  if (lease.state !== "active") {
-    throw new Error(
-      `Step lease '${args.leaseId}' is ${lease.state}; only active leases record writes`,
-    );
-  }
-  if (lease.hasWrites) {
+  const marked = recordLeaseWrites(
+    args.leaseId,
+    await readLease(context, args.leaseId),
+  );
+  if (marked === null) {
     return { dataHandles: [] };
   }
   const handle = await context.writeResource!(
     "lease",
     leaseDataName(args.leaseId),
-    { ...lease, hasWrites: true },
+    marked,
   );
   return { dataHandles: [handle] };
 }
@@ -162,25 +229,18 @@ const EndArgsSchema = z.object({
   error: z.string().optional(),
 });
 
-function endLease(
-  state: Extract<LeaseState, "completed" | "failed" | "expired">,
-) {
+function endLease(state: EndedLeaseState) {
   return async (
     args: z.infer<typeof EndArgsSchema>,
     context: MethodContext,
   ): Promise<MethodResult> => {
-    const lease = await readLease(context, args.leaseId);
-    if (lease.state !== "active") {
-      throw new Error(
-        `Step lease '${args.leaseId}' is already ${lease.state}`,
-      );
-    }
-    const ended: StepLease = {
-      ...lease,
+    const ended = endedLease(
+      args.leaseId,
+      await readLease(context, args.leaseId),
       state,
-      endedAt: new Date().toISOString(),
-      ...(args.error !== undefined ? { error: args.error } : {}),
-    };
+      args.error,
+      new Date(),
+    );
     const handle = await context.writeResource!(
       "lease",
       leaseDataName(args.leaseId),

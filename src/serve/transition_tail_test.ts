@@ -164,3 +164,124 @@ Deno.test("TransitionTail: a transition's span nests under the work that enqueue
     );
   });
 });
+
+Deno.test("TransitionTail: transitions of different keys run at once, and one key's run in order (swamp-club#4038)", async () => {
+  const tail = new TransitionTail("dispatch");
+  const order: string[] = [];
+  const held = Promise.withResolvers<void>();
+
+  const slow = tail.run("step_lease.complete", async () => {
+    await held.promise;
+    order.push("a:complete");
+  }, "a");
+  const sameKey = tail.run("step_lease.fail", () => {
+    order.push("a:fail");
+    return Promise.resolve();
+  }, "a");
+  // Another key finishes while "a" is still held.
+  await tail.run("step_lease.complete", () => {
+    order.push("b:complete");
+    return Promise.resolve();
+  }, "b");
+  assertEquals(order, ["b:complete"]);
+
+  held.resolve();
+  await Promise.all([slow, sameKey]);
+  assertEquals(order, ["b:complete", "a:complete", "a:fail"]);
+});
+
+Deno.test("TransitionTail: an unkeyed transition does not wait for a keyed one", async () => {
+  const tail = new TransitionTail("dispatch");
+  const held = Promise.withResolvers<void>();
+  const keyed = tail.run("step_lease.complete", () => held.promise, "a");
+  assertEquals(await tail.run("unkeyed", () => Promise.resolve(1)), 1);
+  held.resolve();
+  await keyed;
+});
+
+Deno.test("TransitionTail: a keyed span counts only the transitions ahead on its key", async () => {
+  await withCapturedSpans(async (spans) => {
+    const tail = new TransitionTail("dispatch");
+    const held = Promise.withResolvers<void>();
+    const first = tail.run("step_lease.acquire", () => held.promise, "a");
+    const second = tail.run(
+      "step_lease.complete",
+      () => Promise.resolve(),
+      "a",
+    );
+    await tail.run("step_lease.acquire", () => Promise.resolve(), "b");
+    held.resolve();
+    await Promise.all([first, second]);
+
+    assertEquals(
+      spans
+        .filter((s) => s.name === "swamp.serve.transition")
+        .map((s) => [
+          s.attributes["swamp.transition.operation"],
+          s.attributes["swamp.transition.queue_depth"],
+        ]),
+      [
+        ["step_lease.acquire", 0],
+        ["step_lease.acquire", 0],
+        ["step_lease.complete", 1],
+      ],
+    );
+  });
+});
+
+Deno.test("TransitionTail: a key's chain is dropped once it drains, including after a failure", async () => {
+  const tail = new TransitionTail("dispatch");
+  await tail.run("ok", () => Promise.resolve(), "a");
+  await assertRejects(
+    () => tail.run("rejects", () => Promise.reject(new Error("boom")), "b"),
+    Error,
+    "boom",
+  );
+  await assertRejects(
+    () =>
+      tail.run("throws", () => {
+        throw new Error("sync boom");
+      }, "c"),
+    Error,
+    "sync boom",
+  );
+  assertEquals(tail.keyedChainCountForTesting, 0);
+
+  // A key reused after its chain was dropped still runs.
+  assertEquals(await tail.run("again", () => Promise.resolve(2), "a"), 2);
+  assertEquals(tail.keyedChainCountForTesting, 0);
+});
+
+Deno.test("TransitionTail: settled waits for every key, including a key first enqueued while waiting", async () => {
+  const tail = new TransitionTail("dispatch");
+  const order: string[] = [];
+  const gateA = Promise.withResolvers<void>();
+  const gateB = Promise.withResolvers<void>();
+  let late: Promise<void> | undefined;
+
+  const a = tail.run("a", async () => {
+    await gateA.promise;
+    order.push("a");
+    late = tail.run("c", () => {
+      order.push("c");
+      return Promise.resolve();
+    }, "c");
+  }, "a");
+  const b = tail.run("b", async () => {
+    await gateB.promise;
+    order.push("b");
+  }, "b");
+  const settled = tail.settled().then(() => order.push("settled"));
+
+  gateB.resolve();
+  await b;
+  // A full turn, so every microtask settled() could resolve on has run.
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(order, ["b"]);
+
+  gateA.resolve();
+  await settled;
+  await a;
+  await late;
+  assertEquals(order, ["b", "a", "c", "settled"]);
+});
