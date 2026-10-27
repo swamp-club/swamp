@@ -1516,6 +1516,188 @@ Deno.test(
   },
 );
 
+// ===== Bundle safety scan (swamp-club#3383) =====
+
+const CLEAN_MODEL = "export const model = { type: 'thing' };\n";
+
+Deno.test(
+  "prepareInstall: refuses a bundle whose own module holds eval the source copy lacks",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive({
+          name,
+          skills: { guide: { "SKILL.md": "guide" } },
+          files: {
+            "models/thing.ts": CLEAN_MODEL,
+            "bundles/thing.js": [
+              "// extensions/models/_lib/helper.ts",
+              "const run = (s) => eval(s);",
+              "// extensions/models/thing.ts",
+              "export const model = { type: 'thing', run };",
+            ].join("\n"),
+          },
+        });
+        const error = await assertRejects(
+          () =>
+            prepareInstall(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }),
+              { tempRoot },
+            ),
+          UserError,
+        );
+        assertStringIncludes(error.message, "bundle has safety errors");
+        assertStringIncludes(
+          error.message,
+          "bundles/thing.js line 2: Module extensions/models/_lib/helper.ts " +
+            "contains eval()",
+        );
+        assertEquals(errorPaths(error), ["bundles/thing.js"]);
+        assertEquals(await listDir(tempRoot), []);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "prepareInstall: a dependency's eval in a bundle is a warning, once per dependency",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const bundle = [
+          "// ../../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+          "const f = new Function('return 1');",
+          "// extensions/models/thing.ts",
+          "export const model = { type: 'thing', f };",
+        ].join("\n");
+        const archive = await buildSkillArchive({
+          name,
+          skills: { guide: { "SKILL.md": "guide" } },
+          files: {
+            "models/thing.ts": CLEAN_MODEL,
+            "models/other.ts": CLEAN_MODEL,
+            "bundles/thing.js": bundle,
+            "bundles/other.js": bundle,
+          },
+        });
+        const prepared = await prepareInstall(
+          { name, version: null },
+          skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          { tempRoot },
+        );
+        try {
+          assertEquals(prepared.safetyWarnings, [{
+            file: "npm:dep/1.0.0/index.js",
+            message: "Dependency code uses eval() or new Function(), in 2 " +
+              "bundles. Findings in dependency code are reported, not refused.",
+          }]);
+        } finally {
+          await prepared.dispose();
+        }
+      });
+    });
+  },
+);
+
+Deno.test(
+  "prepareInstall: scans every bundle dir, not only bundles/",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive({
+          name,
+          skills: { guide: { "SKILL.md": "guide" } },
+          files: {
+            "vaults/v.ts": "export const vault = { type: 'v' };\n",
+            "vault-bundles/v.js": "// extensions/vaults/v.ts\neval('1');\n",
+          },
+        });
+        const error = await assertRejects(
+          () =>
+            prepareInstall(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }),
+              { tempRoot },
+            ),
+          UserError,
+        );
+        assertStringIncludes(
+          error.message,
+          "vault-bundles/v.js line 2: Module extensions/vaults/v.ts contains",
+        );
+      });
+    });
+  },
+);
+
+for (const bundleName of ["thing.JS", "thing.js.", "thing.mjs", "notes.txt"]) {
+  Deno.test(
+    `prepareInstall: scans a bundle-dir file named ${bundleName}, which a loader may open as thing.js`,
+    async () => {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        await withTempRoot(async (tempRoot) => {
+          const name = uniqueExtName();
+          const archive = await buildSkillArchive({
+            name,
+            skills: { guide: { "SKILL.md": "guide" } },
+            files: {
+              "models/thing.ts": CLEAN_MODEL,
+              [`bundles/${bundleName}`]:
+                "// extensions/models/thing.ts\neval('1');\n",
+            },
+          });
+          const error = await assertRejects(
+            () =>
+              prepareInstall(
+                { name, version: null },
+                skillInstallContext(repoDir, lockfile, { [name]: archive }),
+                { tempRoot },
+              ),
+            UserError,
+          );
+          assertStringIncludes(
+            error.message,
+            `bundles/${bundleName} line 2: Module extensions/models/thing.ts`,
+          );
+        });
+      });
+    },
+  );
+}
+
+Deno.test(
+  "prepareInstall: a clean bundle adds no warning",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withTempRoot(async (tempRoot) => {
+        const name = uniqueExtName();
+        const archive = await buildSkillArchive({
+          name,
+          skills: { guide: { "SKILL.md": "guide" } },
+          files: {
+            "models/thing.ts": CLEAN_MODEL,
+            "bundles/thing.js": `// extensions/models/thing.ts\n${CLEAN_MODEL}`,
+          },
+        });
+        const prepared = await prepareInstall(
+          { name, version: null },
+          skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          { tempRoot },
+        );
+        try {
+          assertEquals(prepared.safetyWarnings, []);
+        } finally {
+          await prepared.dispose();
+        }
+      });
+    });
+  },
+);
+
 Deno.test(
   "applyInstall: a conflict throws ConflictError and changes nothing",
   async () => {

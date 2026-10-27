@@ -26,7 +26,16 @@ import {
   type DynamicCodeFinding,
   findDynamicCodeExecution,
 } from "./dynamic_code_detector.ts";
-import { parseExtensionSource } from "./extension_source_ast.ts";
+import {
+  parseExtensionSource,
+  parseExtensionSourceWithComments,
+} from "./extension_source_ast.ts";
+import {
+  type BundleModule,
+  BundleModuleMap,
+  dependencyLabel,
+} from "./bundle_module_map.ts";
+import { escapeControlCharacters } from "../control_characters.ts";
 import { remediationFor } from "./extension_rule_catalog.ts";
 import { directiveSpans, withoutDirective } from "./extension_acceptances.ts";
 
@@ -479,6 +488,145 @@ export async function analyzeExtensionSafety(
   }
 
   return { errors, warnings };
+}
+
+/** A dependency module's dynamic-code findings in one bundle. */
+export interface BundleDependencyIssue {
+  /** The dependency module, as {@link dependencyLabel} names it, printable. */
+  dependency: string;
+  /** The warning, its file being the bundle. */
+  issue: SafetyIssue;
+}
+
+/** What {@link analyzeBundleSafety} found in one bundle. */
+export interface BundleSafetyResult {
+  /**
+   * Findings in the extension's own modules, above the first module
+   * comment, or in a bundle without module comments: one per module.
+   */
+  errors: SafetyIssue[];
+  /** Findings in dependency modules: one per module, not blocking. */
+  dependencyIssues: BundleDependencyIssue[];
+}
+
+/**
+ * Whether a bundle module's findings are a dependency's: its comment names a
+ * dependency path, and this machine does not know the path to be the
+ * extension's own.
+ */
+function isDependencyCode(
+  module: BundleModule,
+  isExtensionModule: ((path: string) => boolean) | undefined,
+): boolean {
+  if (module.origin !== "dependency" || module.path === undefined) return false;
+  return isExtensionModule?.(module.path) !== true;
+}
+
+/** The longest module path a bundle finding prints. */
+const MAX_PRINTED_MODULE_PATH = 200;
+
+/**
+ * A module path from a bundle comment, safe to print: control characters
+ * escaped and the length capped, since whoever built the bundle wrote it.
+ */
+function printableModulePath(path: string): string {
+  const escaped = escapeControlCharacters(path);
+  return escaped.length > MAX_PRINTED_MODULE_PATH
+    ? `${escaped.slice(0, MAX_PRINTED_MODULE_PATH)}...`
+    : escaped;
+}
+
+/**
+ * Runs the dynamic-code rule, the one hard-error rule that reads content,
+ * over a bundle, and attributes each finding to the module it is in through
+ * the module comments `deno bundle` writes. The file rules (type, size,
+ * count) are for sources and do not apply to a bundle.
+ *
+ * Findings in the extension's own modules are errors. So are findings above
+ * the first module comment and, in a bundle without module comments, every
+ * finding: that code cannot be shown to be a dependency's. Findings in a
+ * dependency module are reported, not refused.
+ *
+ * @param source - The bundle's text
+ * @param bundleFile - How to name the bundle in findings, e.g. `bundles/foo.js`
+ * @param options.isExtensionModule - Says a module path is the extension's
+ *   own even where it reads like a dependency's. A bundle built on this
+ *   machine knows where the extension is installed; a module there under a
+ *   `node_modules` directory is still the extension's code. Given only for
+ *   such a bundle, which is then attributed through parsed comments alone.
+ */
+export function analyzeBundleSafety(
+  source: string,
+  bundleFile: string,
+  options: { isExtensionModule?: (path: string) => boolean } = {},
+): BundleSafetyResult {
+  const parsed = parseExtensionSourceWithComments(source);
+  const findings = findDynamicCodeExecution(source, parsed?.program ?? null);
+  if (findings.length === 0) return { errors: [], dependencyIssues: [] };
+  // Without a parse, module comments cannot be told from text in a string.
+  // A bundle built here may only be attributed through real comments, so an
+  // unparsed one counts as the extension's own throughout.
+  const modules = parsed
+    ? BundleModuleMap.fromComments(source, parsed.comments)
+    : options.isExtensionModule
+    ? BundleModuleMap.fromText("")
+    : BundleModuleMap.fromText(source);
+
+  // Grouped by module, in the order each module's first finding appears.
+  const groups = new Map<
+    string,
+    { path?: string; dependency: boolean; findings: DynamicCodeFinding[] }
+  >();
+  for (const finding of findings) {
+    const module = modules.moduleAt(finding.line);
+    const dependency = isDependencyCode(module, options.isExtensionModule);
+    const key = `${dependency}\0${module.origin}\0${module.path ?? ""}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { path: module.path, dependency, findings: [] };
+      groups.set(key, group);
+    }
+    group.findings.push(finding);
+  }
+
+  const errors: SafetyIssue[] = [];
+  const dependencyIssues: BundleDependencyIssue[] = [];
+  for (const group of groups.values()) {
+    const what = `eval() or new Function() (${
+      describeDynamicCode(group.findings)
+    })`;
+    const line = group.findings[0].line;
+    if (group.dependency && group.path !== undefined) {
+      const dependency = printableModulePath(dependencyLabel(group.path));
+      dependencyIssues.push({
+        dependency,
+        issue: issue(
+          "dynamic-code",
+          bundleFile,
+          `Dependency ${dependency} uses ${what}. Findings in dependency ` +
+            "code are reported, not refused.",
+          line,
+        ),
+      });
+      continue;
+    }
+    const where = group.path !== undefined
+      ? `Module ${printableModulePath(group.path)}`
+      : modules.moduleCount > 0
+      ? "Code above the bundle's first module"
+      : parsed
+      ? "The bundle has no module comments, so all of its code is treated " +
+        "as the extension's own. It"
+      : "The bundle does not parse, so all of its code is treated as the " +
+        "extension's own. It";
+    errors.push(issue(
+      "dynamic-code",
+      bundleFile,
+      `${where} contains ${what}, which are not allowed.`,
+      line,
+    ));
+  }
+  return { errors, dependencyIssues };
 }
 
 function formatBytes(bytes: number): string {

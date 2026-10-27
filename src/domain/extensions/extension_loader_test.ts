@@ -1280,7 +1280,13 @@ Deno.test("buildIndex: a layout-version eviction keeps install staging (swamp-cl
  * imports it, so the returned `imported` is true only if the loader
  * imported it in-process.
  */
-async function indexWithProbeResult(result: BundleProbeResult): Promise<{
+async function indexWithProbeResult(
+  result: BundleProbeResult,
+  options: {
+    trustPulledCache?: boolean;
+    checkBundle?: (js: string, bundlePath: string) => void | Promise<void>;
+  } = {},
+): Promise<{
   index: () => ReturnType<ExtensionLoader["bundleAndIndexOne"]>;
   requests: BundleProbeRequest[];
   imported: () => boolean;
@@ -1332,7 +1338,8 @@ async function indexWithProbeResult(result: BundleProbeResult): Promise<{
         absolutePath: sourcePath,
         relativePath: "probed.ts",
         baseDir: modelsDir,
-        trustPulledCache: true,
+        trustPulledCache: options.trustPulledCache ?? true,
+        checkBundle: options.checkBundle,
       }),
     requests,
     imported: () => (globalThis as Record<string, unknown>)[marker] === true,
@@ -1414,6 +1421,39 @@ for (
       assertStringIncludes(error.message, "probed.ts was not indexed");
       assertStringIncludes(error.message, "Upgrade or re-pull the extension");
       assertEquals(probed.imported(), false);
+    } finally {
+      await probed.cleanup();
+    }
+  });
+}
+
+// -- Bundle check (swamp-club#3383) ---------------------------------------
+
+for (
+  const [label, trustPulledCache] of [
+    ["a trusted pulled bundle", true],
+    ["the bundle on disk after a failed rebuild", false],
+  ] as const
+) {
+  Deno.test(`bundleAndIndexOne: checkBundle is not given ${label}`, async () => {
+    const checked: string[] = [];
+    const probed = await indexWithProbeResult({
+      tag: "primary",
+      typeNormalized: "@test/probed",
+      version: "1",
+      description: "d",
+    }, {
+      trustPulledCache,
+      checkBundle: (_js, bundlePath) => {
+        checked.push(bundlePath);
+      },
+    });
+    try {
+      assertEquals((await probed.index())?.typeNormalized, "@test/probed");
+      // Only a bundle built here is new; the one on disk came with the
+      // archive, which pull scans before installing it.
+      assertEquals(checked, []);
+      assertEquals(probed.requests.length, 1);
     } finally {
       await probed.cleanup();
     }

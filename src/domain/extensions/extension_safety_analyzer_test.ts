@@ -24,6 +24,7 @@ import {
   parseAcceptanceDirectives,
 } from "./extension_acceptances.ts";
 import {
+  analyzeBundleSafety,
   analyzeExtensionSafety,
   type ContentRule,
   symlinkIssue,
@@ -855,5 +856,138 @@ Deno.test("symlinkIssue: a file that is itself a symlink keeps the rule's messag
   assertEquals(
     symlinkIssue(file, file).message,
     "Symlinks are not allowed in extensions. Copy the file into the extension tree instead.",
+  );
+});
+
+// ===== analyzeBundleSafety (swamp-club#3383) =====
+
+Deno.test("analyzeBundleSafety: eval in the extension's own module is an error naming the module", () => {
+  const result = analyzeBundleSafety(
+    [
+      "// extensions/models/_lib/helper.ts",
+      "const a = eval('1');",
+      "const b = new Function('return 2');",
+      "// extensions/models/thing.ts",
+      "export const model = { a, b };",
+    ].join("\n"),
+    "bundles/thing.js",
+  );
+  assertEquals(result.dependencyIssues, []);
+  assertEquals(result.errors.length, 1);
+  assertEquals(result.errors[0].ruleId, "dynamic-code");
+  assertEquals(result.errors[0].file, "bundles/thing.js");
+  assertEquals(result.errors[0].line, 2);
+  assertEquals(
+    result.errors[0].message,
+    "Module extensions/models/_lib/helper.ts contains eval() or new " +
+      "Function() (line 2:11 eval, line 3:15 Function constructor), which " +
+      "are not allowed.",
+  );
+});
+
+Deno.test("analyzeBundleSafety: eval in a dependency module is reported, not an error", () => {
+  const result = analyzeBundleSafety(
+    [
+      "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+      "const f = new Function('return 1');",
+      "// extensions/models/thing.ts",
+      "export const model = { f };",
+    ].join("\n"),
+    "bundles/thing.js",
+  );
+  assertEquals(result.errors, []);
+  assertEquals(result.dependencyIssues.map((d) => d.dependency), [
+    "npm:dep/1.0.0/index.js",
+  ]);
+  assertEquals(result.dependencyIssues[0].issue.file, "bundles/thing.js");
+});
+
+Deno.test("analyzeBundleSafety: eval above the first module comment is an error", () => {
+  const result = analyzeBundleSafety(
+    "const x = eval('1');\n// extensions/models/thing.ts\nexport const y = x;\n",
+    "bundles/thing.js",
+  );
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "Code above the bundle's first module contains eval()",
+  );
+});
+
+Deno.test("analyzeBundleSafety: in a bundle without module comments every finding is an error", () => {
+  const result = analyzeBundleSafety(
+    "export const x = eval('1');\n",
+    "bundles/thing.js",
+  );
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "The bundle has no module comments, so all of its code is treated as " +
+      "the extension's own. It contains eval()",
+  );
+});
+
+Deno.test("analyzeBundleSafety: a bundle that does not parse is checked as text, line by line", () => {
+  const result = analyzeBundleSafety(
+    [
+      "// ../node_modules/dep/index.js",
+      "const ok = 1;",
+      "// extensions/models/thing.ts",
+      "const broken = eval('1') +;",
+    ].join("\n"),
+    "bundles/thing.js",
+  );
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "Module extensions/models/thing.ts contains eval()",
+  );
+});
+
+Deno.test("analyzeBundleSafety: a clean bundle has no findings", () => {
+  assertEquals(
+    analyzeBundleSafety(
+      "// extensions/models/thing.ts\nexport const model = { type: 'thing' };\n",
+      "bundles/thing.js",
+    ),
+    { errors: [], dependencyIssues: [] },
+  );
+});
+
+Deno.test("analyzeBundleSafety: a module path's control characters are escaped and its length capped", () => {
+  const long = `${"a/".repeat(150)}x.ts`;
+  const result = analyzeBundleSafety(
+    [
+      "// extensions/\x1b[2Jevil.ts",
+      "const a = eval('1');",
+      `// ${long}`,
+      "const b = eval('2');",
+    ].join("\n"),
+    "bundles/thing.js",
+  );
+  assertEquals(result.errors.length, 2);
+  assertStringIncludes(result.errors[0].message, "extensions/\\x1b[2Jevil.ts");
+  assertEquals(result.errors[0].message.includes("\x1b"), false);
+  assertStringIncludes(result.errors[1].message, `${long.slice(0, 200)}...`);
+  assertEquals(result.errors[1].message.includes(long), false);
+});
+
+Deno.test("analyzeBundleSafety: a bundle built here that does not parse is the extension's own throughout", () => {
+  const result = analyzeBundleSafety(
+    [
+      "// .swamp/pulled-extensions/@x/y/models/thing.ts",
+      "const text = `",
+      "// ../.swamp/deno-cache/npm/registry.npmjs.org/dep/1.0.0/index.js",
+      "`; const broken = eval('1') +;",
+    ].join("\n"),
+    "bundle rebuilt from models/thing.ts",
+    { isExtensionModule: () => false },
+  );
+  assertEquals(result.dependencyIssues, []);
+  assertEquals(result.errors.length, 1);
+  assertStringIncludes(
+    result.errors[0].message,
+    "The bundle does not parse, so all of its code is treated as the " +
+      "extension's own. It contains eval()",
   );
 });

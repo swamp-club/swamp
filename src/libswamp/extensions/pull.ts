@@ -37,6 +37,11 @@ import {
   parseExtensionManifest,
 } from "../../domain/extensions/extension_manifest.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
+import {
+  bundleDependencyWarnings,
+  describeBundleErrors,
+  scanExtractedBundles,
+} from "./bundle_safety_scan.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -1549,6 +1554,25 @@ export async function prepareInstall(
       }
 
       safetyWarnings.push(...safetyResult.warnings);
+    }
+
+    // The bundles are what runs: scan them as well as the source copy,
+    // which may lack modules a bundle holds (swamp-club#3383).
+    const bundleScan = await scanExtractedBundles(extractDir, listFiles);
+    if (bundleScan.errors.length > 0) {
+      throw markErrorPaths(
+        new UserError(
+          `Extension bundle has safety errors. Install aborted.\n${
+            describeBundleErrors(bundleScan.errors)
+          }`,
+        ),
+        bundleScan.errors.map((e) => e.file),
+      );
+    }
+    for (
+      const warning of bundleDependencyWarnings(bundleScan.dependencyIssues)
+    ) {
+      safetyWarnings.push(warning);
     }
 
     return new PreparedInstall({

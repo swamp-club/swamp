@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative, resolve as resolvePath } from "@std/path";
+import {
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  SEPARATOR,
+} from "@std/path";
 import {
   type ExtensionRef,
   type InstallContext,
@@ -40,7 +46,16 @@ import {
   DuplicateTypeUserError,
   type InstallRollbackOutcome,
 } from "../../domain/extensions/duplicate_type_user_error.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { BundleSafetyRefusal } from "../../domain/extensions/bundle_safety_refusal.ts";
+import {
+  analyzeBundleSafety,
+  type BundleDependencyIssue,
+} from "../../domain/extensions/extension_safety_analyzer.ts";
+import {
+  bundleDependencyWarnings,
+  describeBundleErrors,
+} from "./bundle_safety_scan.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
@@ -206,11 +221,22 @@ export class InstallExtensionService {
             this.buildExtensionFromDisk(r, ctx.repoDir)
           ),
         );
+        // A refusal anywhere in the set decides, ahead of any other
+        // failure: committing would keep the refused extension.
+        const refusals = settled.flatMap((outcome) =>
+          outcome.status === "rejected" &&
+            outcome.reason instanceof BundleSafetyRefusal
+            ? [outcome.reason]
+            : []
+        );
+        if (refusals.length > 0) throw BundleSafetyRefusal.merge(refusals);
         newExtensions = settled.map((outcome) => {
           if (outcome.status === "rejected") throw outcome.reason;
           return outcome.value;
         });
       } catch (error) {
+        // A refused bundle never ran; the install is undone below.
+        if (error instanceof BundleSafetyRefusal) throw error;
         throw new UserError(
           `Install partially applied for ${ref.name} — files extracted but ` +
             `bundling/importing the extension failed (${
@@ -240,6 +266,9 @@ export class InstallExtensionService {
         }));
       }
     } catch (error) {
+      if (error instanceof BundleSafetyRefusal) {
+        throw bundleRefusalError(ref.name, error, await pending.rollback());
+      }
       if (error instanceof DuplicateTypeError) {
         const rollback = await pending.rollback();
         const ghostRow = await isGhostRow(error);
@@ -284,18 +313,59 @@ export class InstallExtensionService {
       resolvePulledExtensionsRoot(absoluteRepoDir);
     const extRoot = join(effectivePulledRoot, result.name);
     const sources: ReturnType<typeof makeSource>[] = [];
+    const dependencyIssues: BundleDependencyIssue[] = [];
 
+    // A source that fails for any other reason does not stop the rest:
+    // each must still be rebuilt and scanned, or a failure ahead of it
+    // would let it be committed unscanned. The first failure is thrown
+    // once every source has been tried; a refusal is thrown at once.
+    let failure: { error: unknown } | undefined;
     for (const kindDir of KIND_DIRS) {
       const dir = join(extRoot, kindDir);
       const tsFiles = await collectTsFiles(dir);
       const loader = this.makeLoaderForKind(kindDir, repoDir);
       for (const absolutePath of tsFiles) {
         const relativePath = relative(dir, absolutePath);
-        const out = await loader.bundleAndIndexOne({
-          absolutePath,
-          relativePath,
-          baseDir: dir,
-        });
+        let out: Awaited<ReturnType<typeof loader.bundleAndIndexOne>>;
+        try {
+          out = await loader.bundleAndIndexOne({
+            absolutePath,
+            relativePath,
+            baseDir: dir,
+            // The bundle built here runs, not the archive's: scan it before
+            // it is imported (swamp-club#3383).
+            checkBundle: async (js, bundlePath) => {
+              const name = `bundle rebuilt from ${
+                relative(extRoot, absolutePath).split(SEPARATOR).join("/")
+              }`;
+              const scanned = analyzeBundleSafety(js, name, {
+                isExtensionModule: (path) =>
+                  isUnderPulledExtensions(path, effectivePulledRoot),
+              });
+              if (scanned.errors.length > 0) {
+                // The loader has written it; a bundle dir the archive had
+                // nothing for is not staged, so the rollback would leave it.
+                // A failed removal must not replace the refusal, which is
+                // what rolls the install back; the refusal names the file.
+                const leftBehind = bundlePath === "" ? [] : await Deno.remove(
+                  bundlePath,
+                ).then(
+                  () => [],
+                  (error: unknown) =>
+                    error instanceof Deno.errors.NotFound ? [] : [bundlePath],
+                );
+                throw new BundleSafetyRefusal(scanned.errors, leftBehind);
+              }
+              for (const issue of scanned.dependencyIssues) {
+                dependencyIssues.push(issue);
+              }
+            },
+          });
+        } catch (error) {
+          if (error instanceof BundleSafetyRefusal) throw error;
+          failure ??= { error };
+          continue;
+        }
         if (!out) continue;
         const stat = await Deno.stat(absolutePath);
         sources.push(
@@ -312,6 +382,18 @@ export class InstallExtensionService {
           }),
         );
       }
+    }
+
+    if (failure) throw failure.error;
+
+    // A dependency warning's file is the dependency's label, the same from
+    // the archive's bundle and from this rebuild, so one already reported
+    // is not reported again.
+    const reported = new Set(result.safetyWarnings.map((w) => w.file));
+    for (
+      const warning of bundleDependencyWarnings(dependencyIssues, reported)
+    ) {
+      result.safetyWarnings.push(warning);
     }
 
     return makeExtension({
@@ -336,6 +418,7 @@ export class InstallExtensionService {
       absolutePath: string;
       relativePath: string;
       baseDir: string;
+      checkBundle?: (js: string, bundlePath: string) => void | Promise<void>;
     }) => Promise<
       | {
         kind:
@@ -408,6 +491,56 @@ export class InstallExtensionService {
 }
 
 /**
+ * Whether a module path in a bundle built on this machine is under a
+ * pulled-extensions root, so installed extension code: the install path is
+ * this machine's, which no archive chooses. esbuild writes the path relative
+ * to the working directory or its output file, so the path is matched by its
+ * `pulled-extensions` segment, and also resolved against the working
+ * directory, which may itself be inside the root.
+ */
+function isUnderPulledExtensions(path: string, pulledRoot: string): boolean {
+  if (/(?:^|\/)pulled-extensions\//.test(path.replaceAll("\\", "/"))) {
+    return true;
+  }
+  const fromRoot = relative(pulledRoot, resolvePath(path));
+  return fromRoot !== "" && !fromRoot.startsWith("..") &&
+    !isAbsolute(fromRoot);
+}
+
+/**
+ * The error for an install refused because a bundle built during it holds
+ * a safety error, saying how undoing the install ended.
+ */
+function bundleRefusalError(
+  name: string,
+  refusal: BundleSafetyRefusal,
+  rollback: InstallRollbackOutcome,
+): UserError {
+  const outcome = rollback.status === "rolled-back"
+    ? "The install was rolled back to the previously installed version, " +
+      "if there was one."
+    : rollback.status === "kept"
+    ? "The install could not be rolled back (the lockfile could not be " +
+      `restored), so it is still installed: remove it with \`swamp ` +
+      `extension rm ${name}\` before running anything from it.`
+    : "The rollback could not finish: the next `swamp extension` install " +
+      "or removal will finish it.";
+  const leftBehind = refusal.leftBehind.length === 0
+    ? ""
+    : `\nThe refused bundle could not be deleted; delete it by hand: ${
+      refusal.leftBehind.join(", ")
+    }`;
+  return markErrorPaths(
+    new UserError(
+      `Extension bundle has safety errors. Install aborted.\n${
+        describeBundleErrors(refusal.errors)
+      }\n${outcome}${leftBehind}`,
+    ),
+    refusal.errors.map((e) => e.file),
+  );
+}
+
+/**
  * Flattens an {@link InstallResult} tree into a depth-first list:
  * `[topLevel, ...deps, ...transitiveDeps]`. Used to drive phase 8
  * across the entire install operation atomically.
@@ -429,7 +562,11 @@ function flattenInstallResults(result: InstallResult): InstallResult[] {
 async function collectTsFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   try {
-    for await (const entry of Deno.readDir(dir)) {
+    // In name order, so phase 8 builds and scans sources in the same order
+    // on every filesystem.
+    const entries = await Array.fromAsync(Deno.readDir(dir));
+    entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const entry of entries) {
       const path = join(dir, entry.name);
       if (entry.isFile && entry.name.endsWith(".ts")) {
         out.push(path);
