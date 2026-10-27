@@ -93,6 +93,8 @@ Deno.test("InboxCacheFileRepository: corrupt, over-size and unrecognised files l
     const bad: string[] = [
       "not json",
       JSON.stringify({ ...valid, padding: "x".repeat(5000) }),
+      // Under the limit in characters, over it in bytes.
+      JSON.stringify({ ...valid, padding: "é".repeat(2100) }),
       JSON.stringify({ ...valid, version: 2 }),
       JSON.stringify({ ...valid, version: undefined }),
       JSON.stringify([valid]),

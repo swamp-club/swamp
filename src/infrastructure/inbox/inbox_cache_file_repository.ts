@@ -140,8 +140,9 @@ export class InboxCacheFileRepository implements InboxCacheRepository {
       if (!info.isFile || info.size > MAX_FILE_BYTES) {
         return InboxState.empty();
       }
-      const content = await Deno.readTextFile(path);
-      if (content.length > MAX_FILE_BYTES) return InboxState.empty();
+      const bytes = await Deno.readFile(path);
+      if (bytes.length > MAX_FILE_BYTES) return InboxState.empty();
+      const content = new TextDecoder().decode(bytes);
       const parsed = cacheFileSchema.safeParse(JSON.parse(content));
       return parsed.success ? fromCacheFile(parsed.data) : InboxState.empty();
     } catch {
@@ -160,7 +161,11 @@ export class InboxCacheFileRepository implements InboxCacheRepository {
     } catch {
       // A time outside the range a Date can hold.
     }
-    if (content === undefined || content.length > MAX_FILE_BYTES) {
+    // Measured in bytes, as load measures the file, so whatever saves loads.
+    if (
+      content === undefined ||
+      new TextEncoder().encode(content).length > MAX_FILE_BYTES
+    ) {
       throw new Error("Inbox state is outside what the cache can store");
     }
     await Deno.mkdir(this.dir, { recursive: true });
