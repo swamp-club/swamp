@@ -39,6 +39,7 @@ import { v3ReplicatesAt } from "../src/infrastructure/datastore_v3/v3_repo_conte
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { datastoreRecords } from "./usecase_v3_fixtures.ts";
+import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import type { GrantSpec } from "./serve_upstream_server_worker.ts";
 import {
   type Client,
@@ -767,6 +768,19 @@ Deno.test({
         await upstreamOf(["datastore", "type", "search"]),
         "http://127.0.0.1:9",
       );
+
+      // A serve-mode command says, at debug, that it runs here with serve
+      // as the upstream; an excluded one says nothing.
+      const said = async (path: readonly string[]) =>
+        (await captureLogs(async () => {
+          await upstreamOf(path);
+        })).some((log) =>
+          log.level === "debug" &&
+          log.text.includes("Running locally with serve at") &&
+          log.text.includes("http://127.0.0.1:9")
+        );
+      assertEquals(await said(["data", "get"]), true);
+      assertEquals(await said(["serve"]), false);
     });
   },
 });

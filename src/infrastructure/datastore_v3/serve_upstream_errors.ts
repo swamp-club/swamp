@@ -58,8 +58,8 @@ export type ServeRequestSent = "never" | "maybe";
  * (refused, a failed lookup, a failed TLS handshake), so serve changed
  * nothing; with `"maybe"` the request may have reached serve. `cause` is
  * the transport's error, so `isNetworkFailure` recognises this error.
- * Writes are refused rather than sent to the datastore's storage: a
- * datastore written through serve is never written around it.
+ * Nothing goes around serve to the datastore's storage: a datastore
+ * reached through serve is never reached any other way.
  */
 export class ServeUnreachableError extends UserError {
   declare readonly code: typeof V3_SERVE_UNREACHABLE_CODE;
@@ -75,11 +75,13 @@ export class ServeUnreachableError extends UserError {
         `datastore was not changed.`
       : `Swamp lost its connection to serve at ${serveUrl} (${reason}) ` +
         `after the request may have reached it, so serve may or may not ` +
-        `have made the change.`;
+        `have made the change. The change is kept: the next command that ` +
+        `writes in this checkout sends it again, and serve records it once ` +
+        `whether or not it already landed.`;
     super(
-      `${outcome} This datastore is written through serve, so swamp ` +
-        `refuses the write rather than write the datastore's storage ` +
-        `directly. Run the command again once serve is reachable.`,
+      `${outcome} This datastore is reached only through serve, so swamp ` +
+        `never goes around serve to the datastore's storage. Run the ` +
+        `command again once serve is reachable.`,
       V3_SERVE_UNREACHABLE_CODE,
     );
     this.name = "ServeUnreachableError";

@@ -977,6 +977,10 @@ export async function resolveDatastoreForRepo(
       ),
   );
   if (serveUpstream !== undefined) {
+    // Says where the command runs and why, for a user who expected the
+    // serve address to send it to serve (swamp-club#3985).
+    getSwampLogger(["cli", "datastore"])
+      .debug`Running locally with serve at ${serveUpstream.serverUrl} as the datastore's upstream: this checkout's datastore is format 3, so its data is read and written through serve. Pass --server to run the command on serve instead.`;
     recordServeUpstreamFormat(datastoreConfig);
     await withSpan(
       "swamp.datastore.v3.join_check",

@@ -61,6 +61,7 @@ Deno.test("ServeUnreachableError: says nothing changed when the request was neve
   });
   const error = new ServeUnreachableError(SERVE_URL, "never", cause);
   assertInstanceOf(error, UserError);
+  assertEquals(error.message.includes("sends it again"), false);
   assertEquals(error.code, V3_SERVE_UNREACHABLE_CODE);
   assertEquals(error.code, "datastore_v3_serve_unreachable");
   assertEquals(error.sent, "never");
@@ -69,10 +70,12 @@ Deno.test("ServeUnreachableError: says nothing changed when the request was neve
   assertEquals(error.message.includes("the datastore was not changed"), true);
   assertEquals(
     error.message.includes(
-      "refuses the write rather than write the datastore's storage",
+      "never goes around serve to the datastore's storage",
     ),
     true,
   );
+  // Read for a lock or a read as much as a write: it names no write.
+  assertEquals(error.message.includes("refuses the write"), false);
   assertEquals(isNetworkFailure(error), true);
 });
 
@@ -82,6 +85,12 @@ Deno.test("ServeUnreachableError: a request that may have been sent does not cla
   assertEquals(error.sent, "maybe");
   assertEquals(error.message.includes("the datastore was not changed"), false);
   assertEquals(error.message.includes("may or may not"), true);
+  assertEquals(
+    error.message.includes(
+      "the next command that writes in this checkout sends it again",
+    ),
+    true,
+  );
   assertEquals(isNetworkFailure(error), true);
 });
 
