@@ -64,6 +64,7 @@ import type { WorkerGateway } from "../worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import type { ServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
+import { displayPrincipal } from "../known_usernames.ts";
 import {
   parsePrincipal,
   type Principal,
@@ -1756,10 +1757,7 @@ export function resolveDisplayPrincipal(
   principal: Principal,
   ctx: Pick<ConnectionContext, "resolvedUserNames">,
 ): string {
-  if (principal.kind === "user" && ctx.resolvedUserNames?.[principal.id]) {
-    return `user:${ctx.resolvedUserNames[principal.id]}`;
-  }
-  return principalToString(principal);
+  return displayPrincipal(principal, ctx.resolvedUserNames);
 }
 
 /**

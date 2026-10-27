@@ -37,6 +37,7 @@ import {
   rateLimitKey,
 } from "./rate_limiter.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
+import type { UsernamesResolved } from "./known_usernames.ts";
 
 export interface AdminAuthDeps {
   readonly authMode: string;
@@ -47,6 +48,7 @@ export interface AdminAuthDeps {
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
+  readonly onUsernamesResolved?: UsernamesResolved;
 }
 
 type AuthenticatedPrincipal = Omit<
@@ -180,6 +182,7 @@ export async function authenticateToken(
       sourceIp: clientAddr,
       ingress: new URL(req.url).pathname,
       resolvedUserNames: deps.resolvedUserNames,
+      onUsernamesResolved: deps.onUsernamesResolved,
     },
   );
 
@@ -239,6 +242,7 @@ export async function authenticateDashboardSessionToken(
       sourceIp: clientAddr,
       ingress: new URL(req.url).pathname,
       resolvedUserNames: deps.resolvedUserNames,
+      onUsernamesResolved: deps.onUsernamesResolved,
     },
   );
   if (!authResult.ok) {

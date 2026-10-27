@@ -21,6 +21,10 @@ import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OAuthUserInfo } from "./oauth_client.ts";
 import { oauthPrincipalId } from "./device_auth_handler.ts";
+import {
+  usernameFromLogin,
+  type UsernamesResolved,
+} from "./known_usernames.ts";
 
 const logger = getSwampLogger(["serve", "collective-refresh"]);
 
@@ -55,6 +59,9 @@ export interface CollectiveRefreshDeps {
   ): void;
 
   closeConnectionsForPrincipal(principalId: string): void;
+
+  /** Told the user name the provider now gives for each token's user. */
+  onUsernamesResolved?: UsernamesResolved;
 }
 
 export interface ActiveTokenInfo {
@@ -155,6 +162,13 @@ export class CollectiveRefreshService {
           { sub: userInfo.sub, principal: token.principalId, name: token.name },
         );
         return;
+      }
+
+      // A token minted before logins recorded a username names its user
+      // once the provider has given one here.
+      const learned = usernameFromLogin(token.principalId, userInfo);
+      if (Object.keys(learned).length > 0) {
+        this.#deps.onUsernamesResolved?.(learned);
       }
 
       const collectivesChanged = !setsEqual(

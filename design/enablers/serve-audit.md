@@ -218,13 +218,22 @@ an operator can tell who acted without looking up the sub:
   `oauthIdentity`, which is set only by OAuth login and kept across rotation.
   A token's `principalEmail` is never used: `swamp access token mint` sets it
   to anything the operator types, or to the principal itself.
-- When the login gave no username, `principalUsername` falls back to the name
-  configured for the sub in `admins` or `allowed-users`.
+- When the token has no username, `principalUsername` falls back to the name
+  serve knows for the sub (swamp-club#4013). Serve learns names from the
+  configuration (`admins`, `allowed-users`, `username:` grant subjects), from
+  each OAuth login, from each token whose login recorded `oauthIdentity`
+  (read again at startup), and from the collective refresh, which reads
+  userinfo for the token's own sub. A manually minted token for a user who has
+  logged in is named that way, though it never gets their email.
+- `initiatedBy` and access-denied messages name a user the same way:
+  `user:<username>` when serve knows the name, `user:<sub>` otherwise.
+  `principalId` keeps the sub.
 - Each field is present only when known. Worker, service, system and anonymous
-  events, events from manually minted tokens, and events written before this
-  change have neither. An OAuth token minted before the change has no
-  `oauthIdentity`, so its user's events get the email only after they log in
-  again.
+  events, and events written before swamp-club#3076, have neither. A user who
+  has never done an OAuth login has neither: Swamp Club has no lookup from sub
+  to username. An OAuth token minted before swamp-club#3076 has no
+  `oauthIdentity`, so its user gets a username after their next login, or the
+  next collective refresh, and an email only after they log in again.
 - The values are what was true at login. A later rename on the provider
   appears after the user's next login.
 - Like `principalId` and `initiatedBy`, they are stored in clear and are not

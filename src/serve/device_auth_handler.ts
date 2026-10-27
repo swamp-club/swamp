@@ -58,6 +58,11 @@ import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
+import {
+  displayPrincipal,
+  usernameFromLogin,
+  type UsernamesResolved,
+} from "./known_usernames.ts";
 
 const logger = getSwampLogger(["serve", "device-auth"]);
 
@@ -113,8 +118,10 @@ export interface DeviceAuthDeps {
   readonly auditEmitter?: AuditEmitter;
   readonly instanceId?: string;
   readonly sourceIp?: string;
-  /** Configured user names by id, for login events' username fallback. */
+  /** Known user names by id, for login events' username fallback. */
   readonly resolvedUserNames?: Readonly<Record<string, string>>;
+  /** Told the user name the provider gave for each user it admits. */
+  readonly onUsernamesResolved?: UsernamesResolved;
 }
 
 /** Route and response customizations for a browser-specific device flow. */
@@ -144,7 +151,14 @@ function emitAuthAuditEvent(
     resourceName: tokenName ?? deps.instanceId ?? "unknown",
     principalKind: principalId ? "user" : "anonymous",
     principalId: principalId ?? "anonymous",
-    initiatedBy: principalId ? `user:${principalId}` : "anonymous",
+    initiatedBy: principalId
+      ? displayPrincipal(
+        { kind: "user", id: principalId },
+        userInfo?.username
+          ? { [principalId]: userInfo.username }
+          : deps.resolvedUserNames,
+      )
+      : "anonymous",
     actor: principalId && userInfo
       ? resolveActorIdentity(
         { kind: "user", id: principalId },
@@ -369,6 +383,8 @@ async function handleDeviceToken(
     logger.info("OAuth device flow completed for {principal}", {
       principal: principalId,
     });
+    const learned = usernameFromLogin(principalId, userInfo);
+    if (Object.keys(learned).length > 0) deps.onUsernamesResolved?.(learned);
     emitAuthAuditEvent(
       deps,
       "auth.login.completed",
@@ -611,6 +627,7 @@ export function createDeviceAuthDeps(
   sourceIp?: string,
   resolvedUserNames?: Readonly<Record<string, string>>,
   confirmReplicated?: () => Promise<void>,
+  onUsernamesResolved?: UsernamesResolved,
 ): DeviceAuthDeps {
   return {
     authConfig,
@@ -667,5 +684,6 @@ export function createDeviceAuthDeps(
     instanceId,
     sourceIp,
     resolvedUserNames,
+    onUsernamesResolved,
   };
 }
