@@ -366,7 +366,7 @@ export async function analyzeExtensionSafety(
 
       // Both code rules read one parse; a file that does not parse falls
       // back to each rule's text check.
-      const program = parseExtensionSource(content);
+      const program = parseExtensionSource(content, { path: file });
 
       // Hard errors: dangerous patterns
       const dynamicCode = findDynamicCodeExecution(content, program);
@@ -560,7 +560,9 @@ export function analyzeBundleSafety(
   bundleFile: string,
   options: { isExtensionModule?: (path: string) => boolean } = {},
 ): BundleSafetyResult {
-  const parsed = parseExtensionSourceWithComments(source);
+  const parsed = parseExtensionSourceWithComments(source, {
+    path: bundleFile,
+  });
   const findings = findDynamicCodeExecution(source, parsed?.program ?? null);
   if (findings.length === 0) return { errors: [], dependencyIssues: [] };
   // Without a parse, module comments cannot be told from text in a string.

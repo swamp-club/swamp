@@ -20,12 +20,12 @@
 /**
  * Parsing and syntax-tree helpers shared by the extension safety rules that
  * read source as code rather than text (`dynamic_code_detector.ts`,
- * `deno_command_detector.ts`). Extension source is parsed once with
- * `@babel/parser` in module mode; a file that does not parse yields `null`,
- * and each rule falls back to its own text check.
+ * `deno_command_detector.ts`). Extension source is parsed once with the
+ * shared configuration (`parseExtensionModule`); a file that does not parse
+ * yields `null`, and each rule falls back to its own text check.
  */
 
-import { parse, type ParserPlugin } from "@babel/parser";
+import { parseExtensionModule } from "@swamp-club/extension-scoring/source";
 
 /** The parts of a Babel AST node the safety rules read. */
 export interface AstNode {
@@ -111,15 +111,6 @@ export const TS_WRAPPERS = new Set([
   "ParenthesizedExpression",
 ]);
 
-/** The Babel plugins extension source is parsed with. */
-export const BABEL_PLUGINS: ParserPlugin[] = [
-  "typescript",
-  "decorators-legacy",
-  "explicitResourceManagement",
-  "decoratorAutoAccessors",
-  "importAttributes",
-];
-
 export function isNode(value: unknown): value is AstNode {
   return typeof value === "object" && value !== null &&
     typeof (value as { type?: unknown }).type === "string";
@@ -135,11 +126,12 @@ function isTypeOnly(node: AstNode): boolean {
 
 /**
  * Parses extension source as a module, or returns null when it does not
- * parse. `jsx` adds JSX syntax, for a `.tsx` or `.jsx` module.
+ * parse. `path` picks the syntax (see `parseExtensionModule`); without one
+ * the source is read as TypeScript.
  */
 export function parseExtensionSource(
   source: string,
-  options?: { jsx?: boolean },
+  options?: { path?: string },
 ): AstNode | null {
   return parseModule(source, options)?.program ?? null;
 }
@@ -161,7 +153,7 @@ export interface SourceComment {
  */
 export function parseExtensionSourceWithComments(
   source: string,
-  options?: { jsx?: boolean },
+  options?: { path?: string },
 ): { program: AstNode; comments: SourceComment[] } | null {
   const parsed = parseModule(source, options);
   if (!parsed) return null;
@@ -179,7 +171,7 @@ export function parseExtensionSourceWithComments(
 
 function parseModule(
   source: string,
-  options?: { jsx?: boolean },
+  options?: { path?: string },
 ):
   | {
     program: AstNode;
@@ -190,29 +182,16 @@ function parseModule(
     }>;
   }
   | null {
-  // Module only: Deno runs extensions as modules. A script-mode retry would
-  // read `<!--` as a comment, which in a module is live code.
-  try {
-    const file = parse(source, {
-      sourceType: "module",
-      plugins: options?.jsx ? [...BABEL_PLUGINS, "jsx"] : BABEL_PLUGINS,
-      allowReturnOutsideFunction: true,
-      allowAwaitOutsideFunction: true,
-      allowImportExportEverywhere: true,
-      allowUndeclaredExports: true,
-      allowNewTargetOutsideFunction: true,
-      allowSuperOutsideMethod: true,
-      errorRecovery: false,
-    });
-    return {
-      program: file.program as unknown as AstNode,
-      comments: file.comments ?? [],
-    };
-  } catch {
-    // Syntax errors, and stack overflow on extreme nesting, fall back to
-    // the text check.
-    return null;
-  }
+  const parsed = parseExtensionModule(source, { path: options?.path });
+  if (!parsed.ok) return null;
+  return {
+    program: parsed.program as AstNode,
+    comments: parsed.comments.map((comment) => ({
+      type: String(comment.type),
+      value: String(comment.value),
+      start: comment.start,
+    })),
+  };
 }
 
 export function str(
