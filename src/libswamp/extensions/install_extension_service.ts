@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative, resolve as resolvePath } from "@std/path";
+import { join, relative, resolve as resolvePath, SEPARATOR } from "@std/path";
 import {
   type ExtensionRef,
   type InstallContext,
@@ -40,7 +40,16 @@ import {
   DuplicateTypeUserError,
   type InstallRollbackOutcome,
 } from "../../domain/extensions/duplicate_type_user_error.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
+import { BundleSafetyRefusal } from "../../domain/extensions/bundle_safety_refusal.ts";
+import {
+  analyzeBundleSafety,
+  type BundleDependencyIssue,
+} from "../../domain/extensions/extension_safety_analyzer.ts";
+import {
+  bundleDependencyWarnings,
+  describeBundleErrors,
+} from "./bundle_safety_scan.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import type { BundleProber } from "../../domain/extensions/bundle_prober.ts";
@@ -211,6 +220,8 @@ export class InstallExtensionService {
           return outcome.value;
         });
       } catch (error) {
+        // A refused bundle never ran; the install is undone below.
+        if (error instanceof BundleSafetyRefusal) throw error;
         throw new UserError(
           `Install partially applied for ${ref.name} — files extracted but ` +
             `bundling/importing the extension failed (${
@@ -240,6 +251,9 @@ export class InstallExtensionService {
         }));
       }
     } catch (error) {
+      if (error instanceof BundleSafetyRefusal) {
+        throw bundleRefusalError(ref.name, error, await pending.rollback());
+      }
       if (error instanceof DuplicateTypeError) {
         const rollback = await pending.rollback();
         const ghostRow = await isGhostRow(error);
@@ -284,6 +298,7 @@ export class InstallExtensionService {
       resolvePulledExtensionsRoot(absoluteRepoDir);
     const extRoot = join(effectivePulledRoot, result.name);
     const sources: ReturnType<typeof makeSource>[] = [];
+    const dependencyIssues: BundleDependencyIssue[] = [];
 
     for (const kindDir of KIND_DIRS) {
       const dir = join(extRoot, kindDir);
@@ -295,6 +310,27 @@ export class InstallExtensionService {
           absolutePath,
           relativePath,
           baseDir: dir,
+          // The bundle built here runs, not the archive's: scan it before
+          // it is imported (swamp-club#3383).
+          checkBundle: async (js, bundlePath) => {
+            const name = `bundle rebuilt from ${
+              relative(extRoot, absolutePath).split(SEPARATOR).join("/")
+            }`;
+            const scanned = analyzeBundleSafety(js, name, {
+              isExtensionModule: isUnderPulledExtensions,
+            });
+            if (scanned.errors.length > 0) {
+              // The loader has written it; a bundle dir the archive had
+              // nothing for is not staged, so the rollback would leave it.
+              // Best effort: a failed removal must not replace the refusal,
+              // which is what rolls the install back.
+              await Deno.remove(bundlePath).catch(() => {});
+              throw new BundleSafetyRefusal(scanned.errors);
+            }
+            for (const issue of scanned.dependencyIssues) {
+              dependencyIssues.push(issue);
+            }
+          },
         });
         if (!out) continue;
         const stat = await Deno.stat(absolutePath);
@@ -312,6 +348,13 @@ export class InstallExtensionService {
           }),
         );
       }
+    }
+
+    const reported = new Set(result.safetyWarnings.map((w) => w.file));
+    for (
+      const warning of bundleDependencyWarnings(dependencyIssues, reported)
+    ) {
+      result.safetyWarnings.push(warning);
     }
 
     return makeExtension({
@@ -336,6 +379,7 @@ export class InstallExtensionService {
       absolutePath: string;
       relativePath: string;
       baseDir: string;
+      checkBundle?: (js: string, bundlePath: string) => void | Promise<void>;
     }) => Promise<
       | {
         kind:
@@ -405,6 +449,43 @@ export class InstallExtensionService {
         );
     }
   }
+}
+
+/**
+ * Whether a module path in a bundle built on this machine is under a
+ * pulled-extensions root, so installed extension code: the install path is
+ * this machine's, which no archive chooses.
+ */
+function isUnderPulledExtensions(path: string): boolean {
+  return /(?:^|\/)pulled-extensions\//.test(path.replaceAll("\\", "/"));
+}
+
+/**
+ * The error for an install refused because a bundle built during it holds
+ * a safety error, saying how undoing the install ended.
+ */
+function bundleRefusalError(
+  name: string,
+  refusal: BundleSafetyRefusal,
+  rollback: InstallRollbackOutcome,
+): UserError {
+  const outcome = rollback.status === "rolled-back"
+    ? "The install was rolled back; any previously installed version is " +
+      "still in place."
+    : rollback.status === "kept"
+    ? "The install could not be rolled back (the lockfile could not be " +
+      `restored), so it is still installed: remove it with \`swamp ` +
+      `extension rm ${name}\` before running anything from it.`
+    : "The rollback could not finish: the next `swamp extension` install " +
+      "or removal will finish it.";
+  return markErrorPaths(
+    new UserError(
+      `Extension bundle has safety errors. Install aborted.\n${
+        describeBundleErrors(refusal.errors)
+      }\n${outcome}`,
+    ),
+    refusal.errors.map((e) => e.file),
+  );
 }
 
 /**

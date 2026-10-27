@@ -1459,11 +1459,18 @@ export class ExtensionLoader {
     );
   }
 
+  /**
+   * Bundles one source and reads the type it declares, without writing to
+   * the catalog. `checkBundle`, when given, sees a freshly built bundle
+   * before it is imported or probed, and may throw to stop it running; a
+   * bundle reused from disk is not passed to it.
+   */
   public async bundleAndIndexOne(args: {
     absolutePath: string;
     relativePath: string;
     baseDir: string;
     trustPulledCache?: boolean;
+    checkBundle?: (js: string, bundlePath: string) => void | Promise<void>;
   }): Promise<BundleIndexResult | null> {
     const source = await Deno.readTextFile(args.absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
@@ -1479,6 +1486,12 @@ export class ExtensionLoader {
       args.baseDir,
       { trustPulledCache: args.trustPulledCache },
     );
+    if (args.checkBundle && !fromCache) {
+      await args.checkBundle(
+        js,
+        this.getBundlePath(args.relativePath, args.baseDir),
+      );
+    }
     const fingerprint = await computeSourceFingerprint(
       args.absolutePath,
       args.baseDir,

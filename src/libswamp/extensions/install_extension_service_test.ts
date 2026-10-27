@@ -842,3 +842,171 @@ Deno.test(
     );
   },
 );
+
+// ===== Rebuilt bundle safety (swamp-club#3383) =====
+
+/**
+ * Stages a model that imports `helperPath` (relative to the extension root)
+ * holding eval, which pull's source scan does not cover. The helper marks
+ * a global when imported, so a test sees whether the bundle ever ran.
+ */
+async function stageModelWithUnscannedHelper(
+  repoDir: string,
+  extName: string,
+  typeId: string,
+  helperPath: string,
+): Promise<{ marker: string; extractedFiles: string[] }> {
+  const marker = `__swamp_3383_${crypto.randomUUID().replaceAll("-", "_")}`;
+  const extRoot = join(swampPath(repoDir, "pulled-extensions"), extName);
+  await ensureDir(join(extRoot, helperPath, ".."));
+  await Deno.writeTextFile(
+    join(extRoot, helperPath),
+    `globalThis[${JSON.stringify(marker)}] = true;\n` +
+      "export const run = (s) => eval(s);\n",
+  );
+  const code = `import { run } from "../${helperPath}";\n` +
+    MINIMAL_MODEL_CODE(typeId).replace(
+      'description: "noop",',
+      'description: String(run("1")),',
+    );
+  await stageModel(repoDir, extName, "model.ts", code);
+  return {
+    marker,
+    extractedFiles: [
+      `.swamp/pulled-extensions/${extName}/models/model.ts`,
+      `.swamp/pulled-extensions/${extName}/${helperPath}`,
+    ],
+  };
+}
+
+for (
+  const [where, helperPath] of [
+    ["under files/", "files/helper.js"],
+    [
+      "under a node_modules dir inside the extension",
+      "models/node_modules/evil/index.js",
+    ],
+  ] as const
+) {
+  Deno.test(
+    `InstallExtensionService.execute: a rebuilt bundle with eval from a module ${where} is refused before it runs, and rolled back`,
+    async () => {
+      await withFixtureRepo(
+        async ({ repoDir, repository, lockfileRepository }) => {
+          const id = crypto.randomUUID().slice(0, 8);
+          const extName = `@test/bundle-scan-${id}`;
+          const { marker, extractedFiles } =
+            await stageModelWithUnscannedHelper(
+              repoDir,
+              extName,
+              `@test/bundle-scan-${id}`,
+              helperPath,
+            );
+          const calls = { commit: 0, rollback: 0 };
+          const service = new InstallExtensionService({
+            denoRuntime: testDenoRuntime,
+            repository,
+            installExtensionFn: stubInstallExtension(
+              () =>
+                Promise.resolve(
+                  makeStubInstallResult(extName, "1.0.0", extractedFiles),
+                ),
+              { calls },
+            ),
+          });
+
+          const thrown = await assertRejects(
+            () =>
+              service.execute(
+                { name: extName, version: "1.0.0" } as ExtensionRef,
+                makeInstallContext(repoDir, lockfileRepository),
+              ),
+            UserError,
+            "Extension bundle has safety errors. Install aborted.",
+          );
+          assertStringIncludes(
+            thrown.message,
+            "bundle rebuilt from models/model.ts line",
+          );
+          assertStringIncludes(thrown.message, `${helperPath} contains eval()`);
+          assertStringIncludes(thrown.message, "The install was rolled back");
+          assertEquals(calls, { commit: 0, rollback: 1 });
+          assertFalse(
+            (globalThis as Record<string, unknown>)[marker] === true,
+            "the refused bundle must never be imported",
+          );
+          assertEquals(repository.loadByName(extName).length, 0);
+          // The refused bundle was deleted, not left for a later load.
+          const bundles: string[] = [];
+          for await (
+            const entry of walkFiles(swampPath(repoDir, "bundles"))
+          ) bundles.push(entry);
+          assertEquals(bundles.filter((b) => b.endsWith("model.js")), []);
+        },
+      );
+    },
+  );
+}
+
+Deno.test(
+  "InstallExtensionService.execute: a refused rebuilt bundle whose rollback kept the install says to remove it",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const extName = `@test/bundle-kept-${id}`;
+        const { extractedFiles } = await stageModelWithUnscannedHelper(
+          repoDir,
+          extName,
+          `@test/bundle-kept-${id}`,
+          "files/helper.js",
+        );
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(
+            () =>
+              Promise.resolve(
+                makeStubInstallResult(extName, "1.0.0", extractedFiles),
+              ),
+            {
+              rollback: {
+                status: "kept",
+                kept: [{ name: extName, version: "1.0.0", priorVersion: null }],
+              },
+            },
+          ),
+        });
+        const thrown = await assertRejects(
+          () =>
+            service.execute(
+              { name: extName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          UserError,
+        );
+        assertStringIncludes(
+          thrown.message,
+          `remove it with \`swamp extension rm ${extName}\` before running ` +
+            "anything from it",
+        );
+      },
+    );
+  },
+);
+
+/** Every file under `dir`, recursively; nothing for a missing dir. */
+async function* walkFiles(dir: string): AsyncGenerator<string> {
+  let entries: Deno.DirEntry[];
+  try {
+    entries = await Array.fromAsync(Deno.readDir(dir));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) yield* walkFiles(path);
+    else yield path;
+  }
+}

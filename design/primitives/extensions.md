@@ -1221,6 +1221,57 @@ at a directory where its parent keeps shared sources, nor the parent installed
 over such a nested entry. Either install fails and names the extension to remove
 first.
 
+### Pull scans the bundles that run
+
+The bundle is what runs, and it can hold code the source copy lacks: an archive
+published before swamp-club#3376 can bundle local modules its source copy left
+out, and any archive can bundle code from directories pull does not scan, such
+as `files/`. So pull also scans bundles (swamp-club#3383), at two points:
+
+- **The archive's bundles**, in `prepareInstall`, after the source scan and
+  before anything is written. This is what `extension install` runs, what phase
+  8 falls back to when its rebuild fails, and what every pull will run once
+  consumers keep the publisher's bundle (swamp-club#3972).
+- **Each bundle phase 8 rebuilds**, through the loader's `checkBundle` hook,
+  after it is built and before it is probed or imported. The probe host runs a
+  bundle's top-level code with full permissions, so a scan after it would be
+  too late. A refusal here rolls the install back, as a type collision does;
+  any other phase-8 fault commits the half-installed state. The rebuilt bundle
+  is deleted, because a bundle dir the archive had nothing for is not staged.
+  As with a collision, the catalog's recorded source modules for the refused
+  sources stay until the next bundle rewrites them.
+
+Only the `dynamic-code` rule runs on a bundle (`analyzeBundleSafety`). It is
+the one hard-error rule that reads content. The file rules (type, size, count)
+are for sources and would refuse every `.js` file or any bundle over 1 MB, and
+links are refused for the whole archive already. The source scan is unchanged.
+
+A finding is attributed to the module whose path comment (`// <path>`, which
+esbuild writes above each module) is the closest one above it
+(`BundleModuleMap`). When the bundle parses, those comments come from the
+parser's comment list, so comment-like text in a string cannot start a module.
+A module whose path is in a Deno or npm cache, under `node_modules`, or at a
+remote specifier is a dependency. Its findings are pull warnings, one per
+dependency module (named by its registry part, such as `npm:ajv/...`), and do
+not block. Every other finding refuses the install and names the bundle, module
+and line: findings in the extension's own modules, above the first module
+comment (esbuild's runtime prelude has no eval), or anywhere in a bundle
+without module comments. In a rebuilt bundle, a module under a
+`pulled-extensions` root is the extension's own even under a `node_modules`
+directory, since this machine chose that path. Module paths are printed with
+control characters escaped and are cut to 200 characters.
+
+An archive bundle's comments are the publisher's text. A publisher can put a
+dependency's path above their own code and turn its findings into warnings.
+That gap is accepted until the bundle hash push records for swamp-club#3972,
+and later signing, tie the bundle to its source. The rebuilt-bundle scan does
+not have the gap.
+
+Measured on 2026-10-26 against the latest stable version of every published
+extension (7,330 bundles): none would be refused, and 58 extensions have
+dependency findings in well-known npm packages (cel-js, jsonpath-plus, ajv,
+typebox, zod when inlined, and others). Every bundle carries module comments.
+
 ### Bare imports in the shipped source
 
 The archive never holds the project's `deno.json` or `deno.lock`, and the

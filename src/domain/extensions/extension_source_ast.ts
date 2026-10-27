@@ -141,6 +141,57 @@ export function parseExtensionSource(
   source: string,
   options?: { jsx?: boolean },
 ): AstNode | null {
+  return parseModule(source, options)?.program ?? null;
+}
+
+/** A comment the parser found, with the 1-based line and 0-based column it starts at. */
+export interface SourceComment {
+  /** `CommentLine` for `// ...`, `CommentBlock` for a block comment. */
+  type: string;
+  /** The text after `//`, or between the block comment's delimiters. */
+  value: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * Parses source as {@link parseExtensionSource} does, and also returns the
+ * comments the parser found, so a caller can tell a real comment from
+ * comment-like text inside a string or template literal.
+ */
+export function parseExtensionSourceWithComments(
+  source: string,
+  options?: { jsx?: boolean },
+): { program: AstNode; comments: SourceComment[] } | null {
+  const parsed = parseModule(source, options);
+  if (!parsed) return null;
+  const comments: SourceComment[] = [];
+  for (const comment of parsed.comments) {
+    const start = comment.loc?.start;
+    if (!start) continue;
+    comments.push({
+      type: comment.type,
+      value: comment.value,
+      line: start.line,
+      column: start.column,
+    });
+  }
+  return { program: parsed.program, comments };
+}
+
+function parseModule(
+  source: string,
+  options?: { jsx?: boolean },
+):
+  | {
+    program: AstNode;
+    comments: Array<{
+      type: string;
+      value: string;
+      loc?: { start: { line: number; column: number } } | null;
+    }>;
+  }
+  | null {
   // Module only: Deno runs extensions as modules. A script-mode retry would
   // read `<!--` as a comment, which in a module is live code.
   try {
@@ -155,7 +206,10 @@ export function parseExtensionSource(
       allowSuperOutsideMethod: true,
       errorRecovery: false,
     });
-    return file.program as unknown as AstNode;
+    return {
+      program: file.program as unknown as AstNode,
+      comments: file.comments ?? [],
+    };
   } catch {
     // Syntax errors, and stack overflow on extreme nesting, fall back to
     // the text check.
