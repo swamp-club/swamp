@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative, resolve as resolvePath, SEPARATOR } from "@std/path";
+import {
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  SEPARATOR,
+} from "@std/path";
 import {
   type ExtensionRef,
   type InstallContext,
@@ -333,7 +339,8 @@ export class InstallExtensionService {
                 relative(extRoot, absolutePath).split(SEPARATOR).join("/")
               }`;
               const scanned = analyzeBundleSafety(js, name, {
-                isExtensionModule: isUnderPulledExtensions,
+                isExtensionModule: (path) =>
+                  isUnderPulledExtensions(path, effectivePulledRoot),
               });
               if (scanned.errors.length > 0) {
                 // The loader has written it; a bundle dir the archive had
@@ -486,10 +493,18 @@ export class InstallExtensionService {
 /**
  * Whether a module path in a bundle built on this machine is under a
  * pulled-extensions root, so installed extension code: the install path is
- * this machine's, which no archive chooses.
+ * this machine's, which no archive chooses. esbuild writes the path relative
+ * to the working directory or its output file, so the path is matched by its
+ * `pulled-extensions` segment, and also resolved against the working
+ * directory, which may itself be inside the root.
  */
-function isUnderPulledExtensions(path: string): boolean {
-  return /(?:^|\/)pulled-extensions\//.test(path.replaceAll("\\", "/"));
+function isUnderPulledExtensions(path: string, pulledRoot: string): boolean {
+  if (/(?:^|\/)pulled-extensions\//.test(path.replaceAll("\\", "/"))) {
+    return true;
+  }
+  const fromRoot = relative(pulledRoot, resolvePath(path));
+  return fromRoot !== "" && !fromRoot.startsWith("..") &&
+    !isAbsolute(fromRoot);
 }
 
 /**

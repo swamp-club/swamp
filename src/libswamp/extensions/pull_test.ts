@@ -1634,6 +1634,41 @@ Deno.test(
   },
 );
 
+for (const bundleName of ["thing.JS", "thing.js.", "thing.mjs", "notes.txt"]) {
+  Deno.test(
+    `prepareInstall: scans a bundle-dir file named ${bundleName}, which a loader may open as thing.js`,
+    async () => {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        await withTempRoot(async (tempRoot) => {
+          const name = uniqueExtName();
+          const archive = await buildSkillArchive({
+            name,
+            skills: { guide: { "SKILL.md": "guide" } },
+            files: {
+              "models/thing.ts": CLEAN_MODEL,
+              [`bundles/${bundleName}`]:
+                "// extensions/models/thing.ts\neval('1');\n",
+            },
+          });
+          const error = await assertRejects(
+            () =>
+              prepareInstall(
+                { name, version: null },
+                skillInstallContext(repoDir, lockfile, { [name]: archive }),
+                { tempRoot },
+              ),
+            UserError,
+          );
+          assertStringIncludes(
+            error.message,
+            `bundles/${bundleName} line 2: Module extensions/models/thing.ts`,
+          );
+        });
+      });
+    },
+  );
+}
+
 Deno.test(
   "prepareInstall: a clean bundle adds no warning",
   async () => {

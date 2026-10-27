@@ -46,8 +46,9 @@ export async function scanExtractedBundles(
 ): Promise<BundleScan> {
   const scan: BundleScan = { errors: [], dependencyIssues: [] };
   for (const { bundleKind } of EXTENSION_BUNDLE_KINDS) {
+    // Every file, whatever its name: on a case-insensitive filesystem the
+    // loader opens `thing.JS` (and on Windows `thing.js.`) as `thing.js`.
     for (const file of await listFiles(join(extractDir, bundleKind))) {
-      if (!file.endsWith(".js")) continue;
       // An archive path: printed, so escaped like every archive path pull
       // prints.
       const name = escapeControlCharacters(

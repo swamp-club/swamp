@@ -84,6 +84,8 @@ Deno.test("BundleModuleMap.moduleAt: a module comment the pattern does not recog
       "// .swamp/pulled-extensions/@x/y/files/helper.JSX2",
       "// .swamp/pulled-extensions/@x/y/files/a",
       "//no space before the path",
+      "// @scope/ext/files/helper.weird",
+      "// #scope/ext/files/helper.weird",
     ]
   ) {
     const source = [
