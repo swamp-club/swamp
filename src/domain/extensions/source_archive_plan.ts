@@ -26,10 +26,7 @@ import {
 } from "@std/path/posix";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { isZod4Specifier } from "../models/bundle.ts";
-import {
-  parsedImportOffsets,
-  scanImportSites,
-} from "./dependency_resolution/import_sites.ts";
+import { scanImportSites } from "./dependency_resolution/import_sites.ts";
 import { isBareSpecifier } from "./dependency_resolution/specifier.ts";
 import type { BareImportResolver } from "./bare_import_resolution.ts";
 import { QUALITY_SIDECAR_FILENAME } from "./extension_quality_sidecar.ts";
@@ -486,10 +483,10 @@ export interface BareImportPlan {
  * path is a local module edge {@link planSourceArchive} places. Every other
  * bare import ships as written.
  *
- * A site is rewritten only when Babel parses that exact literal as an
- * import's module specifier; a scanner site the parse shows is not one is
- * not an import at all. When the module does not parse, nothing is
- * rewritten and every bare import ships as written.
+ * Sites are the module's parsed import specifiers (see
+ * {@link scanImportSites}), so text in a comment, string, template or regex
+ * literal is never rewritten. A module that does not parse plans nothing:
+ * push refuses it before it plans any rewrite.
  */
 export function planBareImports(
   source: string,
@@ -501,23 +498,16 @@ export function planBareImports(
     shippedAsWritten: [],
     unsafe: [],
   };
-  const sites = scanImportSites(source).filter((site) =>
+  const sites = (scanImportSites(source, sourcePath) ?? []).filter((site) =>
     isBareSpecifier(site.specifier)
   );
-  const confirmed = parsedImportOffsets(
-    source,
-    /\.[jt]sx$/.test(sourcePath),
-  );
   const asWritten = new Set<string>();
-  for (const { specifier, span, offset } of sites) {
-    if (confirmed && !confirmed.has(offset)) continue;
+  for (const { specifier, span } of sites) {
     const target = resolver && isRewritableSpecifierText(specifier)
       ? resolver.resolve(sourcePath, specifier)
       : undefined;
     if (target !== undefined && isLocalTarget(target)) continue;
-    if (
-      !confirmed || target === undefined || !REWRITABLE_TARGET_RE.test(target)
-    ) {
+    if (target === undefined || !REWRITABLE_TARGET_RE.test(target)) {
       asWritten.add(specifier);
       continue;
     }
@@ -530,21 +520,6 @@ export function planBareImports(
       from: specifier,
       to: shippedTarget(target.replace(/^(npm|jsr):\//, "$1:")),
     });
-  }
-  // A bare import the parser sees but the scanner missed (a quote in a
-  // regex literal earlier on its line can hide it) is never rewritten —
-  // the dependency audit reads through the same scanner, so a rewrite would
-  // ship it unaudited — and ships as written, so the finding names it.
-  if (confirmed) {
-    const scanned = new Set(sites.map((site) => site.offset));
-    for (const [offset, specifier] of confirmed) {
-      if (scanned.has(offset) || !isBareSpecifier(specifier)) continue;
-      const target = resolver && isRewritableSpecifierText(specifier)
-        ? resolver.resolve(sourcePath, specifier)
-        : undefined;
-      if (target !== undefined && isLocalTarget(target)) continue;
-      asWritten.add(specifier);
-    }
   }
   plan.shippedAsWritten = [...asWritten].sort();
   return plan;

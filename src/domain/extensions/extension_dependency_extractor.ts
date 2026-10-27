@@ -37,14 +37,16 @@ export function extractSpecifiersFromSource(
   sourceFile: string,
   resolver?: BareImportResolver,
 ): DependencySpecifier[] {
-  const results = writtenSpecifiers(source, sourceFile);
+  // Push refuses a module that does not parse before it audits (the
+  // source-syntax gate), so one reaching here has none to report.
+  const results = writtenSpecifiers(source, sourceFile) ?? [];
   const seen = new Set(results.map(specifierKey));
 
   if (!resolver) return results;
 
-  // Bare names are read as the bare-specifiers rule reads them, with
-  // template literals blanked, so generated code is never audited.
-  for (const bare of importedSpecifiers(source)) {
+  // Bare names are read as the bare-specifiers rule reads them, from the
+  // module's syntax tree, so generated code is never audited.
+  for (const bare of importedSpecifiers(source, { path: sourceFile })) {
     if (!bare || !isBareSpecifier(bare)) continue;
     const target = resolver.resolve(sourceFile, bare);
     if (!target) continue;

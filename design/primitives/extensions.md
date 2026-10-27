@@ -931,9 +931,8 @@ config's own settings (`lock`, `lint.rules.exclude`) parses it as JSONC
 (`parseDenoConfig`).
 
 **Bare specifier gate:** a `package.json` is used only if an entry point
-imports a bare name with `from` (e.g., `from "zod"` rather than
-`from "npm:zod@4"`); a side-effect or dynamic import does not count yet
-(swamp-club#3983). This
+imports a bare name (e.g., `from "zod"` rather than `from "npm:zod@4"`), in any
+import form: static, side-effect, dynamic or re-export (swamp-club#3983). This
 keeps an unrelated `package.json` (e.g., one listing `@anthropic-ai/claude-code`
 for tooling) from being taken as the extension's project config.
 
@@ -951,8 +950,19 @@ the lock rules (`configuredLockPath`, `frozenLockPath`), the import sites
 does), the bare-specifier classifier (`isBareSpecifier`), the top-level
 import-map reader the package cache key and the zod fallback use, and
 `runDenoInfo`, the one way swamp runs `deno info`. Each caller keeps its own
-flags for the read. swamp-club#3983 moves the shared scanner to a syntax-tree
-read, ahead of the rubric v5 rescore. The input vectors
+flags for the read. The scan reads each module's syntax tree
+(swamp-club#3983): one parse configuration, `parseExtensionModule` in
+`@swamp-club/extension-scoring/source`, serves the import scan, the
+quality-ignore directive reader and the bundler's own parse, and picks the
+syntax from the file: TypeScript, JavaScript (without the TypeScript plugin,
+which refuses some valid JavaScript) or JSX, reading CommonJS (`.cjs`, `.cts`)
+as a script and other modules as modules. Push and quality refuse a code
+file that does not parse, naming it (the `source-syntax` gate), and a bundle
+push built that does not parse fails as a swamp bug. The registry's audit
+counts such a module as not audited (`writtenSpecifiers` returns null, and
+`scorecardResult` takes the module's path), so it costs the dependency-trust
+points; the loader reads it as having no imports, so the
+bundler reports its syntax error. The input vectors
 (`dependency_resolution/testdata/dependency_input_vectors/`, run by
 `integration/dependency_input_vectors_test.ts`) pin, per input form, what push
 ships, audits and records, what quality and fmt read and what the loader
@@ -1342,16 +1352,13 @@ beside the relative rewrites above:
   scope, a workspace root), so editing an import map file cannot reuse a stale
   archive while every config with plain top-level imports keeps its hash.
 - The imports are the ones the dependency audit reads (`scanImportSites`):
-  string literals in import position, with comments and template literals
-  blanked, so generated import text is never rewritten. Push audits every code
-  module it rewrites, JavaScript included. A site is rewritten only when Babel
-  parses that exact literal as an import's module specifier (static import,
-  `export ... from`, `import()` or `typeof import()`), since the token scanner
-  can read a quote inside a regex literal as a string (`parsedImportOffsets`).
-  A `.tsx` or `.jsx` module is parsed with JSX. A module that does not parse
-  gets no rewrite, and its bare imports count as shipping as written: the
-  rewrite and the `bare-specifiers` finding come from one plan
-  (`planBareImports`).
+  the string literals Babel parses as an import's module specifier (static
+  import, side-effect import, `export ... from`, `import()` or
+  `typeof import()`), so import text in a comment, string, template or regex
+  literal is never rewritten. Push audits every code module it rewrites,
+  JavaScript included. A `.tsx` or `.jsx` module is parsed with JSX. A module
+  that does not parse is refused before any rewrite is planned. The rewrite and
+  the `bare-specifiers` finding come from one plan (`planBareImports`).
 - The target is written as Deno reports it, version or range included,
   exactly as a specifier written out in source would ship. A `key/` target
   written `npm:/name@v/` is written `npm:name@v/`, which Deno reads the same and
@@ -2241,10 +2248,9 @@ package.json mode, one that resolves to an installed dependency
 exact key, else the longest `key/` prefix, where a key mapped to an `npm:` or
 `jsr:` package also covers its subpaths (`"@std/path"` resolves
 `@std/path/posix`) unless the map has its own `key/` entry. It reads the map as
-JSON, resolves only the bare imports the source uses, and takes only a string
-literal in import position (after `from`, a side-effect `import` or `import(`),
-with comments and template literals blanked, so import text inside a string,
-comment or template literal is never audited. These are the same imports push
+JSON, resolves only the bare imports the source uses, and takes only the
+module specifiers the module's syntax tree holds (swamp-club#3983), so import
+text inside a string, comment, template or regex literal is never audited. These are the same imports push
 rewrites to their targets in the shipped source (swamp-club#3637), and the audit
 reads every non-test code file the archive ships, JavaScript, include files and
 code under `files/` included, as the registry does, so nothing ships as an `npm:`/`jsr:` specifier

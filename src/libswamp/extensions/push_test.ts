@@ -3397,6 +3397,75 @@ Deno.test("extensionPushPrepare: collect mode with no failed gate reports none",
   });
 });
 
+Deno.test("extensionPushPrepare: collect mode names a code file that does not parse and leaves it out", async () => {
+  await withCollectFixture({
+    "README.md": "# hi\n",
+    "worker.ts": 'import a from "npm:a@1.0.0";\nexport const broken = ;\n',
+  }, async (_dir, input) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
+    assertEquals(result.gateFailures.map((f) => f.gate), ["source-syntax"]);
+    assertStringIncludes(
+      result.gateFailures[0].message,
+      "Cannot read the imports of worker.ts: it does not parse (Unexpected token (2:22)).",
+    );
+    const files = (await archiveEntries(result.archiveBytes))
+      .filter((e) => e.startsWith("extension/files/") && !e.endsWith("/"));
+    assertEquals(files, ["extension/files/README.md"]);
+  });
+});
+
+Deno.test("extensionPushPrepare: a code file that does not parse fails the push by name", async () => {
+  await withCollectFixture({
+    "worker.ts": "export const broken = ;\n",
+  }, async (_dir, input) => {
+    const error = await assertRejects(() =>
+      extensionPushPrepare(ctx, makePrepareDeps(), {
+        ...input,
+        localGates: "enforce",
+      })
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "Cannot read the imports of worker.ts: it does not parse",
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a module deno info cannot load because it does not parse is named by the gate", async () => {
+  await withCollectFixture({}, async (dir, input) => {
+    const broken = join(dir, "models", "broken.ts");
+    await Deno.writeTextFile(broken, "export const broken = ;\n");
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...input,
+      missingModules: [{
+        path: broken,
+        reason: "SyntaxError: Expression expected",
+      }],
+    });
+    assertEquals(result.gateFailures.map((f) => f.gate), ["source-syntax"]);
+    assertStringIncludes(
+      result.gateFailures[0].message,
+      `Cannot read the imports of ${join("models", "broken.ts")}`,
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a bundle the import scan cannot read fails as a swamp bug", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const deps = makePrepareDeps({
+      bundleEntryPoint: () => Promise.resolve("export const broken = ;\n"),
+    });
+    const error = await assertRejects(() =>
+      extensionPushPrepare(ctx, deps, input)
+    );
+    assertStringIncludes(
+      (error as Error).message,
+      "swamp built a bundle for echo that its import scan cannot read",
+    );
+    assertStringIncludes((error as Error).message, "This is a swamp bug");
+  });
+});
+
 Deno.test("extensionPushPrepare: collect mode rebuilds instead of reusing a cached archive when a check rejected files", async () => {
   await withCollectFixture(
     { "README.md": "# hi\n", "NOTES.md": "n\n" },

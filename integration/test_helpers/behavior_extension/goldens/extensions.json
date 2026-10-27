@@ -486,7 +486,7 @@
       ],
       "manifest": "manifestVersion: 1\nname: '@acme/annotated-export'\nversion: 2026.05.01.1\ndescription: Fixture annotated-export\nmodels:\n  - typed.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
       "sha256": {
-        "extension/bundles/typed.js": "a756b55e647c81d17e4bf89a67ef048b58fc451621d355d7385577938fad7a30",
+        "extension/bundles/typed.js": "a22d82a03e22c97790b03f6387be44f86eb438eb3ba0f59997ad6cbaf9bba16d",
         "extension/dependency-audit.json": "6919c5c2a980556ba21529ac717c6325d183285f56072935b8ec0dbd53cb1982",
         "extension/manifest.yaml": "df2eed3daa8bc529c37467b8bbc65970b912ec875a801ef784cdd5565ac10062",
         "extension/models/typed.ts": "45af5af9d36be57be7eb3ed0c9a1d83ca81e2337eb223e6881162f1c4bf35734"

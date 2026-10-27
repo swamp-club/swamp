@@ -2824,7 +2824,9 @@
       "packages/extension-scoring": {
         "dependencies": [
           "jsr:@std/assert@^1.0.19",
+          "jsr:@std/path@^1.1.4",
           "jsr:@std/semver@^1.0.8",
+          "npm:@babel/parser@^7.29.7",
           "npm:fast-check@^3.23.2"
         ]
       },

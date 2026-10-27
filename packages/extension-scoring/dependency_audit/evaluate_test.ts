@@ -31,6 +31,7 @@ import {
   pushResult,
   scorecardResult,
   type SpecifierAudit,
+  UNREADABLE_MODULE_REASON,
 } from "./evaluate.ts";
 import { monthsSince, parseNpmPackument } from "./npm.ts";
 import type { OsvVulnerability } from "./osv.ts";
@@ -334,4 +335,14 @@ Deno.test("groupForAudit: dependencies past the limit, in name order, are not lo
     "not queried: over the 50-dependency limit",
   );
   assertEquals(scorecard.earnedPoints, 0);
+});
+
+Deno.test("scorecardResult: a module that does not parse is not audited and costs the points", () => {
+  const scorecard = scorecardResult([], ["models/broken.ts"]);
+  assertEquals(scorecard.notAudited, [
+    { packageName: "models/broken.ts", reason: UNREADABLE_MODULE_REASON },
+  ]);
+  assertEquals(scorecard.passed, false);
+  assertEquals(scorecard.earnedPoints, 0);
+  assertEquals(scorecardResult([]).earnedPoints, 2);
 });

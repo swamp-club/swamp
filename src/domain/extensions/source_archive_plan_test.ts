@@ -599,14 +599,14 @@ Deno.test("planBareImports: names the bare imports that ship as written, never a
   );
 });
 
-Deno.test("planBareImports: a module that does not parse ships every bare import as written", () => {
+Deno.test("planBareImports: a module that does not parse plans nothing", () => {
+  // Push refuses the module before it plans a rewrite.
   const plan = planBareImports(
     'import ms from "ms";\nconst = ;\n',
     importMapResolver(IMPORTS),
     "/m.ts",
   );
-  assertEquals(plan.rewrites, []);
-  assertEquals(plan.shippedAsWritten, ["ms"]);
+  assertEquals(plan, { rewrites: [], shippedAsWritten: [], unsafe: [] });
 });
 
 Deno.test("planBareImports: a scanner site the parser shows is not an import is ignored", () => {
@@ -618,14 +618,14 @@ Deno.test("planBareImports: a scanner site the parser shows is not an import is 
   assertEquals(plan, { rewrites: [], shippedAsWritten: [], unsafe: [] });
 });
 
-Deno.test("planBareImports: a bare import the scanner misses ships as written and is named, never rewritten", () => {
+Deno.test("planBareImports: a quote in a regex literal does not hide a later import", () => {
   const plan = planBareImports(
     'const re = /"/; import ms from "ms";\nimport { posix } from "@std/path/posix";\n',
     importMapResolver(IMPORTS),
     "/m.ts",
   );
-  assertEquals(plan.rewrites.map((r) => r.from), ["@std/path/posix"]);
-  assertEquals(plan.shippedAsWritten, ["ms"]);
+  assertEquals(plan.rewrites.map((r) => r.from), ["ms", "@std/path/posix"]);
+  assertEquals(plan.shippedAsWritten, []);
 });
 
 Deno.test("planBareImports: a .tsx module with JSX is parsed and rewritten", () => {

@@ -27,7 +27,8 @@
 import { getLogger } from "@logtape/logtape";
 import { dirname, join, resolve, SEPARATOR } from "@std/path";
 import { DENO_CONFIG_FILE_NAMES, readDenoConfig } from "../deno_config.ts";
-import { bareFromImports } from "./import_sites.ts";
+import { scanImportSites } from "./import_sites.ts";
+import { isBareSpecifier } from "./specifier.ts";
 
 const logger = getLogger(["swamp", "extensions", "project"]);
 
@@ -171,11 +172,15 @@ export function findLoaderDenoConfig(
 }
 
 /**
- * Whether `source` imports a bare name with `import ... from` or
- * `export ... from` (see {@link bareFromImports}).
+ * Whether `source` imports a bare name in any import form: static,
+ * side-effect, dynamic or re-export (see {@link scanImportSites}). A module
+ * that does not parse imports none; the bundler reports its syntax error.
+ * `path` picks TypeScript, JavaScript or JSX.
  */
-export function hasBareImport(source: string): boolean {
-  return bareFromImports(source).length > 0;
+export function hasBareImport(source: string, path?: string): boolean {
+  return (scanImportSites(source, path) ?? []).some((site) =>
+    isBareSpecifier(site.specifier)
+  );
 }
 
 /** What {@link detectExtensionProject} reads of an extension. */
@@ -218,7 +223,7 @@ export async function detectExtensionProject(
   if (!candidateDir) return {};
   for (const entryPoint of input.entryPoints) {
     if (input.skip?.has(entryPoint)) continue;
-    if (hasBareImport(await Deno.readTextFile(entryPoint))) {
+    if (hasBareImport(await Deno.readTextFile(entryPoint), entryPoint)) {
       logger.debug`Found package.json project at ${candidateDir}`;
       return { packageJsonDir: candidateDir };
     }

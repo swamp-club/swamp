@@ -908,13 +908,27 @@ export function pushResult(
   };
 }
 
-/** The audit as the registry's scorecard stores it. */
+/**
+ * Why a module that does not parse is not audited: its imports cannot be
+ * read, so its dependencies are unknown (swamp-club#3983).
+ */
+export const UNREADABLE_MODULE_REASON =
+  "Its imports cannot be read: the module does not parse, so its dependencies were not audited.";
+
+/**
+ * The audit as the registry's scorecard stores it. `unreadable` lists the
+ * archive paths of code modules `writtenSpecifiers` could not read;
+ * each is not audited, under its path, so it costs the factor's points as
+ * an unaudited dependency does.
+ */
 export function scorecardResult(
   audits: readonly { spec: DependencySpecifier; audit: SpecifierAudit }[],
+  unreadable: readonly string[] = [],
 ): ScorecardDependencyTrust {
   const blockers: ScorecardDependencyFinding[] = [];
   const warnings: ScorecardDependencyFinding[] = [];
-  const notAudited: { packageName: string; reason: string }[] = [];
+  const notAudited: { packageName: string; reason: string }[] = unreadable
+    .map((path) => ({ packageName: path, reason: UNREADABLE_MODULE_REASON }));
   const audited: ScorecardDependencyAudited[] = [];
   for (const { spec, audit } of audits) {
     audited.push({

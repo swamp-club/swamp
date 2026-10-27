@@ -350,6 +350,7 @@ export type LocalGate =
   | "content-collectives"
   | "additional-files"
   | "safety"
+  | "source-syntax"
   | "dependency-trust"
   | "skills"
   | "fmt-lint"
@@ -687,6 +688,7 @@ import {
   secretDocsTargets,
 } from "@swamp-club/extension-scoring/secret-docs";
 import { isAuditedCodeFile } from "@swamp-club/extension-scoring/dependency-audit";
+import { parseExtensionModule } from "@swamp-club/extension-scoring/source";
 import { declaresExport } from "../../domain/extensions/export_declaration.ts";
 import {
   type ModelCatalogGap,
@@ -1329,6 +1331,40 @@ export async function extensionPushPrepare(
     );
   }
 
+  // 6b2. Every code file the archive ships must parse: push and the
+  // registry read its imports from its syntax tree, so a module that does
+  // not parse has no imports to audit or rewrite (swamp-club#3983). Such a
+  // module is missing from the source plan, which `deno info` builds:
+  // `deno info` reports it as a module it cannot load.
+  const unparsed: string[] = [];
+  const codeFiles = new Set([
+    ...auditedCodeFiles(input),
+    ...(input.missingModules ?? []).map((m) => m.path).filter((path) =>
+      isAuditedCodeFile(path.replaceAll("\\", "/"))
+    ),
+  ]);
+  for (const file of codeFiles) {
+    if (rejectedFiles.has(file) || symlinked.has(file)) continue;
+    let source: string;
+    try {
+      source = await Deno.readTextFile(file);
+    } catch {
+      continue;
+    }
+    const parsed = parseExtensionModule(source, { path: file });
+    if (!parsed.ok) {
+      rejectedFiles.add(file);
+      unparsed.push(
+        `Cannot read the imports of ${
+          relative(input.repoDir, file)
+        }: it does not parse (${parsed.reason}). Fix the syntax error and try again.`,
+      );
+    }
+  }
+  if (unparsed.length > 0) {
+    failGate("source-syntax", validationFailed(unparsed.join("\n")));
+  }
+
   // 6c. A file a check rejected (only `collect` mode gets this far with
   // one) is left out of every later gate as well as the archive: fmt, lint
   // and review read a symlink's target and would quote it (swamp-club#3420).
@@ -1339,20 +1375,7 @@ export async function extensionPushPrepare(
 
   // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
-  // Every non-test code file the archive ships, as the registry reads it
-  // (swamp-club#3781): the planned sources exist before the archive is
-  // built and on a cache hit alike; include and additional files ship
-  // beside them (a worker under files/ runs as code too).
-  const sourceFiles = [
-    ...new Set([
-      ...gated.sourcePlan.entries
-        .filter((e) => isAuditedCodeFile(e.archivePath))
-        .map((e) => e.sourcePath),
-      ...[...gated.includeFilePaths, ...gated.additionalFilePaths].filter((p) =>
-        isAuditedCodeFile(p.replaceAll("\\", "/"))
-      ),
-    ]),
-  ];
+  const sourceFiles = auditedCodeFiles(gated);
   const specifiers = await deps.extractDependencySpecifiers(
     sourceFiles,
     bareImportResolverFor(input),
@@ -1491,12 +1514,17 @@ export async function extensionPushPrepare(
 
   // 11a. A missing local module fails the push as a compilation error, the
   // way the bundler reported it before push read the module graph
-  // (swamp-club#3376); models that are never bundled are covered too.
-  if (input.missingModules && input.missingModules.length > 0) {
+  // (swamp-club#3376); models that are never bundled are covered too. A
+  // module a gate rejected is reported by that gate (a file that does not
+  // parse reads to `deno info` as a module it cannot load).
+  const missingModules = (input.missingModules ?? []).filter((m) =>
+    notRejected(m.path)
+  );
+  if (missingModules.length > 0) {
     throw validationFailed(
       "Bundle compilation failed. Fix the errors above and try again.",
       {
-        compilationErrors: input.missingModules.map((m) => ({
+        compilationErrors: missingModules.map((m) => ({
           file: m.importer ?? m.path,
           error: m.reason,
         })),
@@ -3095,6 +3123,48 @@ function buildResolvedData(
   };
 }
 
+/**
+ * Every non-test code file the archive ships, as the registry reads it
+ * (swamp-club#3781): the planned sources exist before the archive is built
+ * and on a cache hit alike; include and additional files ship beside them
+ * (a worker under files/ runs as code too).
+ */
+function auditedCodeFiles(input: ExtensionPushPrepareInput): string[] {
+  return [
+    ...new Set([
+      ...input.sourcePlan.entries
+        .filter((e) => isAuditedCodeFile(e.archivePath))
+        .map((e) => e.sourcePath),
+      ...[...input.includeFilePaths, ...input.additionalFilePaths].filter((
+        p,
+      ) => isAuditedCodeFile(p.replaceAll("\\", "/"))),
+    ]),
+  ];
+}
+
+/**
+ * Refuses a bundle the import scan cannot read. `deno bundle` writes valid
+ * JavaScript, so one that does not parse with the shared parse means
+ * swamp's parse is wrong, not the extension: the registry, reading the
+ * bundle the same way, would see no imports in it (swamp-club#3983). The
+ * bundle is read as a `.js` file, as the registry reads it, not with the
+ * bundle-output variant `bundle.ts` uses to rewrite imports.
+ */
+function assertBundlesParse(bundles: ReadonlyMap<string, string>[]): void {
+  for (const group of bundles) {
+    for (const [entryName, js] of group) {
+      const parsed = parseExtensionModule(js, { path: `${entryName}.js` });
+      if (parsed.ok) continue;
+      throw validationFailed(
+        `swamp built a bundle for ${entryName} that its import scan cannot ` +
+          `read (${parsed.reason}). This is a swamp bug, not a problem in ` +
+          `the extension: report it with \`swamp issue bug\` and include ` +
+          `this message.`,
+      );
+    }
+  }
+}
+
 async function bundleAndArchive(
   input: ExtensionPushPrepareInput,
   deps: ExtensionPushPrepareDeps,
@@ -3191,6 +3261,14 @@ async function bundleAndArchive(
       { compilationErrors },
     );
   }
+
+  assertBundlesParse([
+    bundles,
+    vaultBundles,
+    datastoreBundles,
+    reportBundles,
+    webhookBundles,
+  ]);
 
   const totalBundles = bundles.size + vaultBundles.size +
     datastoreBundles.size + reportBundles.size + webhookBundles.size;
