@@ -33,6 +33,7 @@ import {
   type YamlWorkflowRepository,
 } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import type { SwampError } from "../errors.ts";
+import { workflowNotLoadedMessage } from "./broken_workflow.ts";
 import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["doctor-workflows"]);
@@ -206,23 +207,6 @@ async function loadWorkflowFile(
 }
 
 /**
- * Explains why a file in a repo workflows dir is not loaded. Log mode labels
- * a result by its YAML name, so the message carries the full path; renaming
- * is only advised for a file that is a workflow.
- */
-function notLoadedMessage(filePath: string, parsed: unknown): string {
-  const rule = `swamp only reads files named workflow-<name>.yaml in ${
-    dirname(filePath)
-  }.`;
-  return isWorkflowDocument(parsed)
-    ? `Not loaded: ${rule} Rename ${filePath} to workflow-<name>.yaml, ` +
-      `or remove it if it is a stale copy of a workflow that already loads.`
-    : `Not loaded: ${rule} ${filePath} is not a workflow; move it out of ` +
-      `that directory, or rename it to workflow-<name>.yaml if it is ` +
-      `meant to be one.`;
-}
-
-/**
  * Checks one file under its mode, or returns null for an extension file that
  * is not a workflow.
  *
@@ -239,7 +223,13 @@ async function checkWorkflowFile(
   if (!loaded || mode !== "not-loaded") return loaded?.result ?? null;
 
   const { result, parsed } = loaded;
-  const notLoaded = notLoadedMessage(filePath, parsed);
+  // Log mode labels a result by its YAML name, so the file is named by its
+  // full path.
+  const notLoaded = workflowNotLoadedMessage(
+    filePath,
+    dirname(filePath),
+    parsed,
+  );
   if (result.status === "fail" && !filePath.endsWith(".yml")) {
     // The note leads, on the line log mode indents; a load error can span
     // several lines.

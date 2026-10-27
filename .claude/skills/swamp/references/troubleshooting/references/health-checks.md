@@ -216,10 +216,9 @@ source registration, `deno.json` discovery), see
 
 Checks that every workflow YAML file in the repo can be parsed and constructed
 into a valid Workflow domain object. This catches YAML syntax errors and schema
-construction failures that `findAll()` silently skips — meaning
-`swamp workflow
-validate` never sees these broken files. Exits 1 on any load
-failure. Warnings (`OVERALL: WARN`) exit 0.
+construction failures that `findAll()` silently skips, and YAML files the loader
+never reads because of their name. Exits 1 on any load failure. Warnings
+(`OVERALL: WARN`) exit 0.
 
 ```bash
 swamp doctor workflows
@@ -310,8 +309,11 @@ else `warn` if any file warned, else `pass`.
 These two commands are complementary:
 
 - `doctor workflows` catches files that **fail to load** (YAML syntax, missing
-  fields, invalid types). These files are silently dropped by the workflow
-  loader, so `workflow validate` never sees them.
+  fields, invalid types) and files the loader **skips for their name**, across
+  the whole repo. `workflow validate <name>` and `workflow run <name>` report
+  only the file that declares the requested name or id: a broken
+  `workflow-*.yaml` as its load error, a misnamed file as `Workflow not found`
+  followed by the same `Not loaded` sentence, naming the file by its base name.
 - `workflow validate` checks **loaded** workflows for semantic validity (DAG
   cycles, undefined behavior references, expression errors).
 
