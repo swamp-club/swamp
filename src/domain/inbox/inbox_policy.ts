@@ -27,6 +27,9 @@ import type { InboxState, PollOutcome } from "./inbox_state.ts";
 /** The server can lengthen the gap between polls but never shorten it below this. */
 export const MIN_POLL_INTERVAL_SECONDS = 900;
 
+/** A server with no inbox is asked again this long after it said so. */
+export const UNSUPPORTED_RETRY_SECONDS = 24 * 60 * 60;
+
 /** A misbehaving server cannot push the next poll further out than this. */
 export const MAX_POLL_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 
@@ -91,7 +94,15 @@ export function applyPollOutcome(
           nextPollAt: now + backoffMs(outcome.retryAfterSeconds),
         },
       };
+    // A server can gain the inbox later, so a 404 waits rather than stops.
     case "unsupported":
+      return {
+        ...state,
+        schedule: {
+          ...schedule,
+          nextPollAt: now + UNSUPPORTED_RETRY_SECONDS * 1000,
+        },
+      };
     case "unavailable":
     case "rejected":
       return {

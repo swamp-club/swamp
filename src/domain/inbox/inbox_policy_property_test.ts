@@ -35,6 +35,8 @@ const SECOND = 1000;
 const DAY = 24 * 60 * 60 * SECOND;
 const MIN_GAP_MS = MIN_POLL_INTERVAL_SECONDS * SECOND;
 const MAX_GAP_MS = MAX_POLL_INTERVAL_SECONDS * SECOND;
+/** Pinned rather than imported, so a change to the policy's retry fails here. */
+const RETRY_GAP_MS = DAY;
 
 /** Ascending ULIDs, so later entries are newer messages. */
 const IDS = ["A0", "A1", "A2", "A3", "A4"].map((s) =>
@@ -102,10 +104,11 @@ interface Coverage {
   outcomes: Record<string, number>;
   notices: Record<string, number>;
   blocked: number;
+  retried: number;
 }
 
 function newCoverage(): Coverage {
-  return { outcomes: {}, notices: {}, blocked: 0 };
+  return { outcomes: {}, notices: {}, blocked: 0, retried: 0 };
 }
 
 function noticeBranch(state: InboxState, now: number): NoticeBranch {
@@ -133,6 +136,7 @@ function play(
   let state = InboxState.empty();
   let now = T0;
   let lastPollTime: number | null = null;
+  let lastOutcome: PollOutcome["kind"] | null = null;
   const firstShown = new Map<string, number>();
   const superseded = new Set<string>();
   for (const step of sequence) {
@@ -153,6 +157,12 @@ function play(
         continue;
       }
       if (stop !== null) return "a stopped key polled";
+      if (lastOutcome === "unsupported" && lastPollTime !== null) {
+        if (monotonic && now - lastPollTime < RETRY_GAP_MS) {
+          return `polled ${now - lastPollTime} ms after unsupported`;
+        }
+        coverage.retried++;
+      }
       if (
         monotonic && lastPollTime !== null && now - lastPollTime < MIN_GAP_MS
       ) {
@@ -166,6 +176,7 @@ function play(
         (coverage.outcomes[step.outcome.kind] ?? 0) + 1;
       state = next;
       lastPollTime = now;
+      lastOutcome = step.outcome.kind;
     } else {
       const branch = noticeBranch(state, now);
       coverage.notices[branch] = (coverage.notices[branch] ?? 0) + 1;
@@ -223,6 +234,8 @@ function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
     JSON.stringify(coverage.notices),
     "polls not due:",
     coverage.blocked,
+    "polls after unsupported:",
+    coverage.retried,
   );
   for (
     const kind of [
@@ -241,6 +254,7 @@ function assertCovered(coverage: Coverage, notices: NoticeBranch[]): void {
     assert((coverage.notices[branch] ?? 0) > 0, `never tried: ${branch}`);
   }
   assert(coverage.blocked > 0, "never tried: a poll that was not due");
+  assert(coverage.retried > 0, "never tried: a poll after unsupported");
 }
 
 Deno.test("inbox policy (property): with a monotonic clock, polls stay 900 s apart and retired notices stay retired", () => {
@@ -265,4 +279,33 @@ Deno.test("inbox policy (property): when the clock goes back, stopped keys stay 
     { numRuns: 1000 },
   );
   assertCovered(coverage, ["new", "repeat", "silent"]);
+});
+
+Deno.test("inbox policy (property): a key that only ever sees unsupported keeps polling, once per 24 h", () => {
+  const advance = fc.oneof(
+    fc.constantFrom(0, MIN_GAP_MS, RETRY_GAP_MS - 1, RETRY_GAP_MS),
+    fc.integer({ min: 0, max: 3 * DAY }),
+  );
+  let retries = 0;
+  fc.assert(
+    fc.property(fc.array(advance, { minLength: 5, maxLength: 40 }), (steps) => {
+      let state = InboxState.empty();
+      let now = T0;
+      let lastPollTime: number | null = null;
+      for (const ms of steps) {
+        now += ms;
+        const due = shouldPoll(state, now);
+        const expected = lastPollTime === null ||
+          now - lastPollTime >= RETRY_GAP_MS;
+        assertEquals(due, expected, `due at ${now - (lastPollTime ?? now)} ms`);
+        if (!due) continue;
+        if (lastPollTime !== null) retries++;
+        state = applyPollOutcome(state, { kind: "unsupported" }, now);
+        assertEquals(state.schedule.stop, null);
+        lastPollTime = now;
+      }
+    }),
+    { numRuns: 500 },
+  );
+  assert(retries > 0, "never polled again after unsupported");
 });
