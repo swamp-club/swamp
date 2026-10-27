@@ -886,6 +886,43 @@ Deno.test("createModelLock - creates lock with correct path for filesystem", asy
   });
 });
 
+Deno.test("createModelLock - on a durable v2 filesystem datastore, syncs the directories it creates (swamp-club#4017)", async () => {
+  await withTempDir(async (dir) => {
+    const lockOf = async (config: DatastoreConfig) =>
+      (await createModelLock(config, "aws-ec2", "my-server")) as FileLock;
+    await withMockedEnv({ SWAMP_DATASTORE_DURABLE: undefined }, async () => {
+      // Durable writes are opt-in.
+      assertEquals(
+        (await lockOf({ type: "filesystem", path: dir }))
+          .syncCreatedDirectories,
+        false,
+      );
+      assertEquals(
+        (await lockOf({ type: "filesystem", path: dir, durable: true }))
+          .syncCreatedDirectories,
+        true,
+      );
+      // v3 does not sync its checkout's data directories.
+      assertEquals(
+        (await lockOf({
+          type: "filesystem",
+          path: dir,
+          durable: true,
+          format: 3,
+        })).syncCreatedDirectories,
+        false,
+      );
+    });
+    await withMockedEnv({ SWAMP_DATASTORE_DURABLE: "1" }, async () => {
+      assertEquals(
+        (await lockOf({ type: "filesystem", path: dir }))
+          .syncCreatedDirectories,
+        true,
+      );
+    });
+  });
+});
+
 Deno.test("createWorkflowRunLock - uses the per-model lock's short retry settings", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);

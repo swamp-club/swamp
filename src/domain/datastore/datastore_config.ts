@@ -151,6 +151,12 @@ export const DEFAULT_LOCK_TIMEOUT_MS = 60_000;
 export const LOCK_TIMEOUT_ENV_VAR = "SWAMP_LOCK_TIMEOUT_MS";
 
 /**
+ * Env var that sets whether data writes are durable when the datastore
+ * config does not say (swamp-club#4017). See {@link resolveDurableWrites}.
+ */
+export const DURABLE_WRITES_ENV_VAR = "SWAMP_DATASTORE_DURABLE";
+
+/**
  * Filesystem-based datastore configuration.
  * Data is stored at a specified filesystem path.
  */
@@ -171,6 +177,12 @@ export interface FilesystemDatastoreConfig {
    * a config that disagrees with its marker is refused.
    */
   readonly format?: 2 | 3;
+  /**
+   * Whether data writes are synced to disk before they are published, so
+   * they survive a power cut (swamp-club#4017). Absent means off: writes
+   * are atomic but unsynced. See {@link resolveDurableWrites}.
+   */
+  readonly durable?: boolean;
 }
 
 /**
@@ -220,6 +232,13 @@ export interface CustomDatastoreConfig {
   readonly hydrationStrategy?: "full" | "lazy";
   /** Namespace for giga-swamp multi-repo shared datastores */
   readonly namespace?: string;
+  /**
+   * Whether data writes to the local cache are synced to disk before they
+   * are published, so they survive a power cut (swamp-club#4017). Absent
+   * means off: writes are atomic but unsynced. See
+   * {@link resolveDurableWrites}.
+   */
+  readonly durable?: boolean;
 }
 
 /**
@@ -254,6 +273,8 @@ export interface DatastoreConfigData {
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
+  /** Whether data writes are synced to disk (swamp-club#4017); absent is off. */
+  durable?: boolean;
   /**
    * The format setup created the datastore in: 2 or 3 on a filesystem
    * datastore, 3 only on an extension datastore (absent means 2).
@@ -420,6 +441,7 @@ export function isAlwaysLocal(subdir: string): boolean {
 export const SETUP_PRESERVED_DATASTORE_KEYS = [
   "managedConfig",
   "exclude",
+  "durable",
 ] as const satisfies readonly (keyof DatastoreConfigData)[];
 
 /**
@@ -605,4 +627,31 @@ export function resolveLockTimeoutMs(overrideMs?: number): number {
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return DEFAULT_LOCK_TIMEOUT_MS;
+}
+
+const DURABLE_ENV_TRUE = new Set(["1", "true", "yes", "on"]);
+const DURABLE_ENV_FALSE = new Set(["0", "false", "no", "off"]);
+
+/**
+ * Resolve whether data writes are synced to disk before they are published
+ * (swamp-club#4017). Only a v2 local datastore, or the local cache of a v2
+ * extension datastore, syncs; v3 never does in the data repository.
+ *
+ * Resolution order:
+ *   1. `config.durable` (explicit per-datastore config in `.swamp.yaml`)
+ *   2. `SWAMP_DATASTORE_DURABLE` env var: `1`, `true`, `yes` or `on`, or
+ *      `0`, `false`, `no` or `off`, in any case
+ *   3. Off: durable writes are opt-in, since each write then costs several
+ *      fsyncs
+ *
+ * An env value that is neither is ignored, so writes stay unsynced.
+ */
+export function resolveDurableWrites(config?: DatastoreConfig): boolean {
+  if (config?.durable !== undefined) return config.durable;
+  const envValue = Deno.env.get(DURABLE_WRITES_ENV_VAR)?.trim().toLowerCase();
+  if (envValue !== undefined) {
+    if (DURABLE_ENV_FALSE.has(envValue)) return false;
+    if (DURABLE_ENV_TRUE.has(envValue)) return true;
+  }
+  return false;
 }

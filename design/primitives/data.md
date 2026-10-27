@@ -111,9 +111,10 @@ Methods write through two `MethodContext` functions
   spec's Zod schema (warns, does not throw), resolves tags and policy, moves
   sensitive fields to a vault, serialises JSON and calls `repo.save`.
 - `createFileWriter(specName, name, overrides?)` returns a `DataWriter` with:
-  `writeAll`/`writeText` (one-shot save), `writeLine` (append, durable per
-  line), `writeStream` (pipe a `ReadableStream`), and `getFilePath` + `finalize`
-  (give a subprocess the real `raw` path, then seal the version).
+  `writeAll`/`writeText` (one-shot save), `writeLine` (append; each line is
+  written at once, and the version is synced and published at `finalize`),
+  `writeStream` (pipe a `ReadableStream`), and `getFilePath` + `finalize` (give
+  a subprocess the real `raw` path, then seal the version).
 
 Both reject undeclared spec names, empty names and the reserved name `latest`.
 
@@ -122,16 +123,41 @@ Both reject undeclared spec names, empty names and the reserved name `latest`.
 1. Tell the sync layer the name directory is dirty.
 2. Check the existing owner matches (`OwnershipValidationError` otherwise).
 3. Claim the next version directory with `mkdir`, retrying up to 100 times on
-   `AlreadyExists`.
-4. Write `metadata.yaml` and `raw` via atomic temp-file rename.
-5. Rewrite the `latest` marker.
+   `AlreadyExists`. Missing directories above it are created one level at a
+   time; on v2 the parent of each one created is synced.
+4. Write `metadata.yaml` and `raw` via atomic temp-file rename. On v2 both are
+   synced before their rename, then the version directory, then the data-name
+   and model directories that reach it.
+5. Rewrite the `latest` marker (on v2 synced, then its directory).
 6. Upsert the catalog row.
 
 Streaming writers split this into `allocateVersion` (claim the directory, return
-the path) and `finalizeVersion` (checksum, metadata, marker, catalog). A write
-is durable once `await` returns. Nothing is held back to commit at the end, so a
-method that writes and then throws keeps its writes
-([remote-execution.md](../enablers/remote-execution.md#writes-are-immediately-durable-not-staged)).
+the path, and say whether the writer must sync what it streams) and
+`finalizeVersion` (checksum, metadata, marker, catalog). `writeStream` syncs its
+own handle before closing it; content from `writeLine` or a `getFilePath`
+subprocess is synced by `finalizeVersion` (`contentSynced: false`).
+
+**Durable** means two things here (swamp-club#4017):
+
+- **It survives a process or worker crash.** Every write lands when its `await`
+  returns, in every format. Nothing is held back to commit at the end, so a
+  method that writes and then throws keeps its writes
+  ([remote-execution.md](../enablers/remote-execution.md#writes-are-immediately-durable-not-staged)).
+- **It survives a power cut.** A version's content, and the directory entries
+  that reach it, are on disk before anything publishes it: the `latest` marker
+  moving to it, a non-pending catalog row, or a settled one. On v2 the
+  repository syncs them first, as above, when the datastore's `durable` setting
+  is on; it is off by default
+  ([datastores.md](../enablers/datastores.md#filesystem)). A failed sync fails
+  the write before it is published, except the last one, of the moved marker's
+  directory, after which the catalog row is still written so the two agree. On
+  v3 the commit is durable and replay rewrites the checkout (swamp-club#3617),
+  except for data keys the checkout's datastore filter keeps local
+  (swamp-club#4019). Without the syncs, ext4's delayed allocation can keep the
+  renames, the marker and the catalog row across a power cut but lose the
+  bytes, leaving empty `raw` and `metadata.yaml` published as latest
+  (swamp-club#3955).
+
 The exception is a version whose path a file writer handed out with
 `getFilePath` and never finalised: it holds content but no metadata, so no later write or commit ever
 claims it, and a failed method rolls it back (`rollbackVersions`) rather than

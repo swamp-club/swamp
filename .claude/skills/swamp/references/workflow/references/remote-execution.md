@@ -186,9 +186,9 @@ authentication yet — same trust model as `swamp serve` itself.
 - Placement requires running under `swamp serve` (the orchestrator); a placed
   step outside it fails with a clear error.
 - All data reads/writes, vault secrets, and definition loads proxy to the
-  orchestrator — workers hold no credentials or repository. Writes are durable
-  at the orchestrator immediately; a step that wrote and then lost its worker
-  fails the run (no-write steps re-dispatch automatically).
+  orchestrator — workers hold no credentials or repository. Writes land at the
+  orchestrator immediately and survive a worker crash; a step that wrote and
+  then lost its worker fails the run (no-write steps re-dispatch automatically).
 - Steps that mutate external systems (API calls, `kubectl apply`, SSH) without
   calling `writeResource` should declare `writes: true` to prevent re-dispatch
   on worker disconnect. Without the declaration, the orchestrator classifies the

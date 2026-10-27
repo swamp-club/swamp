@@ -42,6 +42,7 @@ import {
 } from "../domain/extensions/extension_auto_resolver.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { z } from "zod";
+import { UserError } from "../domain/errors.ts";
 import {
   assertPathEquals,
   withMockedEnv,
@@ -187,6 +188,56 @@ Deno.test("resolveDatastoreConfig: marker config used when no env/cli", async ()
       assertPathEquals(config.path, "/marker-path");
       assertEquals(config.directories, ["data", "outputs"]);
     }
+  });
+});
+
+Deno.test("resolveDatastoreConfig: carries the datastore block's durable setting (swamp-club#4017)", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const markerWith = (durable?: boolean): RepoMarkerData => ({
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: {
+        type: "filesystem",
+        path: "/marker-path",
+        ...(durable === undefined ? {} : { durable }),
+      },
+    });
+    const off = await resolveDatastoreConfig(markerWith(false), undefined, "/");
+    assertEquals(off.durable, false);
+    const on = await resolveDatastoreConfig(markerWith(true), undefined, "/");
+    assertEquals(on.durable, true);
+    const unset = await resolveDatastoreConfig(markerWith(), undefined, "/");
+    assertEquals("durable" in unset, false);
+
+    ensureTestType("test-custom-durable");
+    const custom = await resolveDatastoreConfig(
+      {
+        swampVersion: "0.1.0",
+        initializedAt: "2024-01-01",
+        repoId: "test-repo",
+        datastore: { type: "test-custom-durable", durable: false },
+      },
+      undefined,
+      "/repo",
+    );
+    assertEquals(custom.durable, false);
+  });
+});
+
+Deno.test("resolveDatastoreConfig: refuses a durable setting that is not a boolean", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: { type: "filesystem", path: "/marker-path", durable: "no" },
+    } as unknown as RepoMarkerData;
+    await assertRejects(
+      () => resolveDatastoreConfig(marker, undefined, "/repo"),
+      UserError,
+      "Invalid 'durable'",
+    );
   });
 });
 

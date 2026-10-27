@@ -159,6 +159,7 @@ import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
   readDatastoreFormatKey,
+  resolveDurableWrites,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
@@ -1981,6 +1982,11 @@ function serveLockOf(
  * Creates a per-model distributed lock.
  *
  * Lock key: `data/{modelType}/{modelId}/.lock`
+ *
+ * The lock creates a new model's data directory, and any directory above
+ * it, before the data repository writes under it. On a durable v2
+ * filesystem datastore it syncs the parent of each one it creates, as the
+ * repository does for the directories it creates (swamp-club#4017).
  */
 export async function createModelLock(
   datastoreConfig: DatastoreConfig,
@@ -2008,6 +2014,8 @@ export async function createModelLock(
     maxWaitMs,
     retryIntervalMs: MODEL_LOCK_RETRY_INTERVAL_MS,
     maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
+    syncCreatedDirectories: config.format !== 3 &&
+      resolveDurableWrites(datastoreConfig),
   });
 }
 

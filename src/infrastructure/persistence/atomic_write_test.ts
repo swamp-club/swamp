@@ -17,9 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
-import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
+import {
+  atomicWriteFile,
+  type AtomicWriteSync,
+  atomicWriteTextFile,
+  syncExistingFile,
+  writeSyncedTempFile,
+} from "./atomic_write.ts";
+import { SyncFailedError } from "./sync_directory.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-atomic-write-test-" });
@@ -123,4 +135,169 @@ Deno.test("atomicWriteTextFile preserves original on directory error", async () 
     const tmpFiles = await listTmpFiles(dir);
     assertEquals(tmpFiles.length, 0);
   });
+});
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+/** Sync hooks that record each call, and whether the target existed then. */
+function recordingSync(
+  events: string[],
+  overrides: Partial<AtomicWriteSync> = {},
+): AtomicWriteSync {
+  return {
+    syncFile: async (file, paths) => {
+      await file.sync();
+      events.push(`file ${paths.target} exists=${await exists(paths.target)}`);
+    },
+    syncDirectory: (dir) => {
+      events.push(`dir ${dir}`);
+      return Promise.resolve();
+    },
+    ...overrides,
+  };
+}
+
+Deno.test("atomicWriteTextFile: with sync, syncs the file before the rename and the directory after", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "test.yaml");
+    const events: string[] = [];
+    await atomicWriteTextFile(filePath, "synced", {
+      sync: recordingSync(events, {
+        syncDirectory: async (d) => {
+          events.push(`dir ${d} exists=${await exists(filePath)}`);
+        },
+      }),
+    });
+    assertEquals(events, [
+      `file ${filePath} exists=false`,
+      `dir ${dir} exists=true`,
+    ]);
+    assertEquals(await Deno.readTextFile(filePath), "synced");
+    assertEquals(await listTmpFiles(dir), []);
+  });
+});
+
+Deno.test("atomicWriteFile: with sync and syncParent false, syncs the file but not the directory", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "raw");
+    const events: string[] = [];
+    await atomicWriteFile(filePath, new Uint8Array([1, 2, 3]), {
+      sync: { ...recordingSync(events), syncParent: false },
+    });
+    assertEquals(events, [`file ${filePath} exists=false`]);
+    assertEquals(await Deno.readFile(filePath), new Uint8Array([1, 2, 3]));
+  });
+});
+
+Deno.test("atomicWriteFile: with the default sync hooks, writes the content", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "raw");
+    await atomicWriteFile(filePath, new Uint8Array([9, 8]), { sync: {} });
+    assertEquals(await Deno.readFile(filePath), new Uint8Array([9, 8]));
+    assertEquals(await listTmpFiles(dir), []);
+  });
+});
+
+Deno.test({
+  name: "atomicWriteTextFile: with sync, honours mode",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const filePath = join(dir, "secret.json");
+      await atomicWriteTextFile(filePath, "{}", { mode: 0o600, sync: {} });
+      assertEquals((await Deno.stat(filePath)).mode! & 0o777, 0o600);
+    });
+  },
+});
+
+Deno.test("atomicWriteTextFile: with sync, a failed file sync removes the temp file and leaves the target", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "test.yaml");
+    await Deno.writeTextFile(filePath, "original");
+    const error = await assertRejects(
+      () =>
+        atomicWriteTextFile(filePath, "new", {
+          sync: {
+            syncFile: () => Promise.reject(new Error("EIO")),
+          },
+        }),
+      SyncFailedError,
+      "EIO",
+    );
+    // Named by where the file was going, not its temp name.
+    assertEquals(error.path, filePath);
+    assertStringIncludes(error.message, `Could not sync ${filePath} to disk`);
+    assertEquals(await Deno.readTextFile(filePath), "original");
+    assertEquals(await listTmpFiles(dir), []);
+  });
+});
+
+Deno.test("atomicWriteTextFile: with sync, a directory sync failing after the rename keeps the new target and rethrows", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "test.yaml");
+    await Deno.writeTextFile(filePath, "original");
+    const error = await assertRejects(
+      () =>
+        atomicWriteTextFile(filePath, "new", {
+          sync: {
+            syncDirectory: () => Promise.reject(new Error("dir EIO")),
+          },
+        }),
+      SyncFailedError,
+      "dir EIO",
+    );
+    assertEquals(error.path, dir);
+    assertEquals(await Deno.readTextFile(filePath), "new");
+    assertEquals(await listTmpFiles(dir), []);
+  });
+});
+
+Deno.test("writeSyncedTempFile: syncs the content into a temp file and leaves the target alone", async () => {
+  await withTempDir(async (dir) => {
+    const target = join(dir, "latest");
+    await Deno.writeTextFile(target, "1");
+    const events: string[] = [];
+    const tmp = await writeSyncedTempFile(
+      target,
+      new TextEncoder().encode("2"),
+      recordingSync(events),
+    );
+    assertEquals(events, [`file ${target} exists=true`]);
+    assertEquals(await Deno.readTextFile(tmp), "2");
+    assertEquals(await Deno.readTextFile(target), "1");
+  });
+});
+
+Deno.test("syncExistingFile: resolves false for a missing file", async () => {
+  await withTempDir(async (dir) => {
+    const events: string[] = [];
+    assertEquals(
+      await syncExistingFile(join(dir, "raw"), recordingSync(events)),
+      false,
+    );
+    assertEquals(events, []);
+  });
+});
+
+Deno.test({
+  name: "syncExistingFile: syncs a read-only file",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "raw");
+      await Deno.writeTextFile(path, "from a subprocess");
+      await Deno.chmod(path, 0o444);
+      const events: string[] = [];
+      assert(await syncExistingFile(path, recordingSync(events)));
+      assertEquals(events, [`file ${path} exists=true`]);
+    });
+  },
 });

@@ -63,6 +63,7 @@ import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
+import { resolveDurableWrites } from "../../domain/datastore/datastore_config.ts";
 import {
   type Namespace,
   restoreNamespace,
@@ -661,6 +662,7 @@ export function createRepositoryContext(
     undefined,
     config.fetchForeignContent,
     unreadableContent,
+    resolveDurableWrites(datastoreResolver?.config()),
   );
 
   // Construct the query service alongside its dependencies so consumers

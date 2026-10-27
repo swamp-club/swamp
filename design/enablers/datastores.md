@@ -33,6 +33,68 @@ datastore:
 
 An external path suits shared NFS mounts, or keeps runtime data out of git.
 
+**Durable v2 writes** (swamp-club#4017). On a v2 datastore (this backend, and
+the local cache of a v2 extension datastore) whose `durable` setting is on (it
+is off by default, below), a data version is synced before anything publishes
+it. `FileSystemUnifiedDataRepository` writes `metadata.yaml` and `raw` through
+the synced atomic write (`atomic_write.ts`: the temp file synced, renamed, the
+directory synced), syncs the version directory once, then the data-name and
+model directories, and only then moves the `latest` marker,
+itself written synced, and writes the catalog row. A writer that creates
+directories syncs the parent of each one (`make_directories.ts`). The per-model
+lock creates a new model's directories before the repository writes under
+them, so on a filesystem datastore `createModelLock` has its `FileLock` create
+them the same way (`syncCreatedDirectories`). Every sync is a full one
+(`FsFile.sync()`: fsync on Linux, `F_FULLFSYNC` on macOS, `FlushFileBuffers` on
+Windows, which cannot sync a directory). swamp-club#4032 tracks using the macOS
+ordering barrier for the default datastore instead, as v3 chunk storage does
+(below). On v3 the repository does not sync: the commit is durable and replay
+rewrites the checkout. See [data.md](../primitives/data.md#writing-data) for
+what durable means.
+
+A failed sync fails the write before anything publishes the version, with a
+`SyncFailedError` naming the file or directory (`Could not sync <path> to
+disk: <reason>`), its path marked for telemetry. Directory syncs go through
+`syncDirectoryStrict`, which skips only a directory that cannot be synced at
+all (Windows; `EACCES`, `EPERM` or `ENOENT` on open; `EINVAL`, `ENOTSUP` or
+`EBADF` on fsync, as PostgreSQL's `fsync_fname` does) and reports anything else,
+such as `EIO` or `ENOSPC`. The lenient `syncDirectory`, which swallows every
+failure, stays with the v3 read model and chunk storage. A file sync refused as
+unsupported adds a hint to turn durable writes off.
+
+One sync runs after publishing starts: the data-name directory's, which makes
+the renamed `latest` marker durable. The version's own files are already
+synced by then. If that sync fails, the marker already names the version, so
+`advanceLatestMarker` has the caller write the catalog row before the failure
+is rethrown. The write still fails, but the marker and the catalog agree on the
+latest version.
+
+The **`durable`** datastore setting turns the syncing on:
+
+```yaml
+# .swamp.yaml
+datastore:
+  type: filesystem
+  path: /mnt/shared/swamp-data
+  durable: true
+```
+
+`resolveDurableWrites` (`datastore_config.ts`) decides it: the block's
+`durable` when set (a non-boolean is refused when the config is resolved), else
+`SWAMP_DATASTORE_DURABLE` (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; any
+other value is ignored), else off. Durable writes are opt-in because each write
+then costs several fsyncs: about twice the write time on a local NVMe disk, and
+far more where a full sync is slow (macOS `F_FULLFSYNC`, network and spinning
+disks). It applies to the filesystem backend and to an extension datastore's
+local cache, and `datastore setup` keeps it across a re-run
+(`SETUP_PRESERVED_DATASTORE_KEYS`). Off, writes are as before swamp-club#4017:
+atomic, so they survive a process crash, but a power cut can publish an empty
+version (swamp-club#3955). The writing construction sites of
+`FileSystemUnifiedDataRepository` (the repository factory, the workflow
+execution service, and `data delete`, `rename`, `gc`, `prune` and
+`model delete`) pass the resolved setting; any other site keeps the
+constructor's default, off.
+
 ### S3 (via `@swamp/s3-datastore` extension)
 
 Stores runtime data in an S3 bucket. All reads and writes use a local cache at

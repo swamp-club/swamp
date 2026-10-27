@@ -800,7 +800,7 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 | `resolveModel`   | `findDefinitionByIdOrName` over the definition repository                             | ws        | Workflow step behavior resolution. Skips control-plane definitions, so one cannot shadow a behavior               |
 | resource write   | `POST /data/resource` → `writeResource`                                               | h2        | Durable immediately. Carries the method's `overrides` (tags, lifetime, garbageCollection), validated at serve     |
 | resource delete  | `DELETE /data/resource`                                                               | h2        |                                                                                                                   |
-| file write       | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2        | `writeLine` is durable per request (live logs). The open carries the writer's `overrides`, validated at serve     |
+| file write       | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2        | `writeLine` lands per request (live logs). The open carries the writer's `overrides`, validated at serve          |
 | extension assets | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`               | h2        | Cacheable by fingerprint                                                                                          |
 | `log` / `event`  | run-event stream                                                                      | ws        | `rpc.stream` frames; flows to client and the run log (below)                                                      |
 
@@ -1231,10 +1231,15 @@ that completes only once `repo.save()` has persisted at the orchestrator. There
 is no staging layer to build. A worker that writes 3 of 5 outputs then dies
 leaves 3 durable writes, as a local process crash does today.
 
+Durable in this section means surviving a process or worker crash. Surviving a
+power cut is the second sense, defined in
+[data.md](../primitives/data.md#writing-data): on v2 a version is synced before
+anything publishes it (swamp-club#4017).
+
 Two `DataWriter` modes need their own remote shape:
 
-- **`writeLine` (append)** promises per-line durability via `repo.append` (the
-  live-log contract). Remotely it maps to `POST /data/writers/{id}/line` on the
+- **`writeLine` (append)** promises that each line lands at once (the live-log
+  contract); the version is synced and published at `finalize`. Remotely it maps to `POST /data/writers/{id}/line` on the
   data plane. Each request is durable at the orchestrator once acknowledged, so
   a worker crash loses at most the unacknowledged tail, as today.
 - **`getFilePath` (direct file I/O)** gives the method a real path, typically
@@ -1727,7 +1732,7 @@ In scope:
 - One dispatch runner process per dispatch, for crash isolation and a clean
   environment; extension code fetched on a cache miss and loaded in the runner.
 - Remote `MethodContext`: nine capability verbs plus data-plane routes,
-  spool-on-finalize `getFilePath`, per-request-durable line appends. Checks
+  spool-on-finalize `getFilePath`, line appends that land per request. Checks
   skipped for remote steps; reports at the orchestrator.
 - The orchestrator's full env snapshot per dispatch, in worker memory only,
   applied to the method and its subprocesses.

@@ -455,14 +455,25 @@ export interface UnifiedDataRepository {
    *   finalizeVersionDeferred completes the pending row and
    *   advanceLatestMarkers or rollbackVersions settles it; if registering
    *   fails, the allocated version is removed before the error is thrown
-   * @returns The allocated version number and content file path
+   * @returns The allocated version number and content file path. `durable`
+   *   is a write-handling instruction (swamp-club#4017): when true, content
+   *   the caller writes to `contentPath` through a handle of its own is
+   *   synced on that handle before finalizing, and finalize is told so.
+   *   Absent means false.
    */
   allocateVersion(
     type: ModelType,
     modelId: string,
     data: Data,
     options?: { deferred?: boolean },
-  ): Promise<{ version: number; contentPath: string; priorVersions: number[] }>;
+  ): Promise<
+    {
+      version: number;
+      contentPath: string;
+      priorVersions: number[];
+      durable?: boolean;
+    }
+  >;
 
   /**
    * Finalizes a previously allocated version by writing metadata and updating symlinks.
@@ -473,6 +484,9 @@ export interface UnifiedDataRepository {
    * @param data - The data entity
    * @param version - The version number to finalize
    * @param priorVersions - Versions that existed before allocation (for write-time GC)
+   * @param options.contentSynced - The caller synced the content on the
+   *   handle that wrote it (see allocateVersion's `durable`); otherwise a
+   *   durable repository syncs it before publishing the version
    * @returns Size and checksum of the content
    */
   finalizeVersion(
@@ -481,6 +495,7 @@ export interface UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
+    options?: { contentSynced?: boolean },
   ): Promise<{ size: number; checksum: string }>;
 
   /**
@@ -501,7 +516,7 @@ export interface UnifiedDataRepository {
   /**
    * Finalizes a previously allocated version without advancing the latest
    * marker. Mirrors finalizeVersion but writes the catalog row with both
-   * latest flags 0.
+   * latest flags 0. `options.contentSynced` is as for finalizeVersion.
    *
    * @returns A receipt plus size and checksum
    */
@@ -511,6 +526,7 @@ export interface UnifiedDataRepository {
     data: Data,
     version: number,
     priorVersions?: number[],
+    options?: { contentSynced?: boolean },
   ): Promise<{ receipt: DeferredWriteReceipt; size: number; checksum: string }>;
 
   /**
