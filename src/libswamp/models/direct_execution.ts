@@ -63,6 +63,10 @@ import { validationFailed, wordedSwampError } from "../errors.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
 import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import {
+  observeDiagnosticPhase,
+  withDiagnosticAttributes,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 
 export interface DirectExecutionDeps {
   lookupDefinition: (
@@ -222,6 +226,7 @@ export function createAutoDefinitionLock(
 ): FileLock {
   return new FileLock(lockDir, {
     lockKey: autoDefinitionLockKey(name),
+    diagnosticKind: "auto_definition",
     ttlMs: 5_000,
     maxWaitMs: 10_000,
     retryIntervalMs: AUTO_DEFINITION_LOCK_RETRY_INTERVAL_MS,
@@ -290,9 +295,18 @@ function unvouchedGlobalArgsMessage(
  * applies the caller's routed global arguments to it (saving when they
  * differ) so the returned definition runs with the caller's own values.
  * Shared by the lookup fast path and the locked re-check, where a caller that
- * lost the auto-creation race adopts the winner's definition.
+ * lost the auto-creation race adopts the winner's definition. Exported as
+ * the `definition_adopt` diagnostic phase.
  */
-async function adoptExistingDefinition(
+function adoptExistingDefinition(
+  ...args: Parameters<typeof adoptDefinition>
+): Promise<DirectExecutionResult> {
+  return observeDiagnosticPhase("definition_adopt", {
+    "swamp.diagnostic.definition_outcome": "reused",
+  }, () => adoptDefinition(...args));
+}
+
+async function adoptDefinition(
   deps: DirectExecutionDeps,
   existing: { definition: Definition; type: ModelType },
   typeArg: string,
@@ -502,7 +516,10 @@ export async function resolveOrCreateDefinition(
     );
 
   // Look up existing definition
-  const existing = await deps.lookupDefinition(definitionName);
+  const existing = await withDiagnosticAttributes(
+    { "swamp.diagnostic.lookup_attempt": "initial" },
+    () => deps.lookupDefinition(definitionName),
+  );
 
   if (existing) {
     return await adoptExistingDefinition(
@@ -625,7 +642,9 @@ export async function resolveOrCreateDefinition(
       typeVersion: modelDef.version,
       globalArguments: persistedGlobal,
     });
-    await deps.saveDefinition(resolvedType, definition);
+    await observeDiagnosticPhase("definition_save", {
+      "swamp.diagnostic.definition_outcome": "created",
+    }, () => deps.saveDefinition(resolvedType, definition));
     return {
       ok: true,
       definition: withRealGlobals(definition, routed.globalArguments),
@@ -648,7 +667,10 @@ export async function resolveOrCreateDefinition(
         // then apply their own global arguments to it: forEach iterations
         // sharing one modelName can each pass different globalArgs, so a
         // loser must not run with the winner's.
-        const raceWinner = await deps.lookupDefinition(definitionName);
+        const raceWinner = await withDiagnosticAttributes(
+          { "swamp.diagnostic.lookup_attempt": "recheck" },
+          () => deps.lookupDefinition(definitionName),
+        );
         if (raceWinner) {
           return await adoptExistingDefinition(
             deps,

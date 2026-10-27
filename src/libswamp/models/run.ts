@@ -160,6 +160,11 @@ import {
   withRunPhase,
   withRunProgress,
 } from "../../domain/remote/run_progress.ts";
+import {
+  type DiagnosticPhaseHandle,
+  observeDiagnosticPhase,
+  startDiagnosticPhase,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -406,6 +411,10 @@ export async function* modelMethodRun(
   input: ModelMethodRunInput,
 ): AsyncGenerator<ModelMethodRunEvent> {
   let methodProgress: RunProgress | undefined;
+  // Everything before setup, as the `prepare` diagnostic phase. Ended when
+  // setup starts; ended here when the run stops before it.
+  let prepare: DiagnosticPhaseHandle | undefined;
+  let finished = false;
   try {
     yield* withUnitOfWork(ctx, () =>
       withGeneratorTraceContext(
@@ -418,6 +427,28 @@ export async function* modelMethodRun(
             "method.name": input.methodName,
           },
           (async function* (): AsyncGenerator<ModelMethodRunEvent> {
+            const preparing = startDiagnosticPhase("prepare");
+            prepare = preparing;
+            // An error reported before setup ends preparation as failed now:
+            // a consumer that stops on the event closes this generator, which
+            // must not then read as a cancellation.
+            const prepareFailed = <E>(event: E): E => {
+              preparing.end("error");
+              return event;
+            };
+            // Runs a preparation step as a child of `prepare`.
+            const inPrepare = <A extends unknown[], R>(
+              fn: (...args: A) => Promise<R>,
+            ) =>
+            (...args: A) => preparing.run(() => fn(...args));
+            const resolveModelDef = (type: ModelType) =>
+              preparing.run(() =>
+                observeDiagnosticPhase(
+                  "type_resolution",
+                  {},
+                  () => Promise.resolve(deps.getModelDef(type)),
+                )
+              );
             const ephemeral = createEphemeralStore(deps.dataRepo.namespace);
             if (deps.catalogStore) {
               const wrapped = wrapWithEphemeral(
@@ -434,12 +465,12 @@ export async function* modelMethodRun(
               // The cached evaluation may hold expressions an earlier run's
               // operator-written inputs vouched for; replaying it under
               // literal inputs would trust them.
-              yield {
+              yield prepareFailed({
                 kind: "error",
                 error: validationFailed(
                   "--literal-inputs cannot be combined with --last-evaluated: the cached evaluation may hold expressions an earlier run's inputs vouched for.",
                 ),
-              };
+              });
               return;
             }
             // Keys the caller supplied; under literalInputs they are data.
@@ -464,17 +495,13 @@ export async function* modelMethodRun(
               const typeArg = input.typeArg;
               let resolvedType = ModelType.create(typeArg);
 
-              let resolvedModelDef = await Promise.resolve(
-                deps.getModelDef(resolvedType),
-              );
+              let resolvedModelDef = await resolveModelDef(resolvedType);
 
               // Fallback: the @ prefix is the CLI syntax marker for direct execution
               // but repo-local extensions register types without @. Try stripping it.
               if (!resolvedModelDef && typeArg.startsWith("@")) {
                 const strippedType = ModelType.create(typeArg.slice(1));
-                const strippedDef = await Promise.resolve(
-                  deps.getModelDef(strippedType),
-                );
+                const strippedDef = await resolveModelDef(strippedType);
                 if (strippedDef) {
                   resolvedType = strippedType;
                   resolvedModelDef = strippedDef;
@@ -489,26 +516,26 @@ export async function* modelMethodRun(
               }
 
               if (!resolvedModelDef) {
-                yield {
+                yield prepareFailed({
                   kind: "error",
                   error: unknownModelType(resolvedType.normalized),
-                };
+                });
                 return;
               }
 
               if (!deps.createAndSaveDefinition || !deps.getDefinitionPath) {
-                yield {
+                yield prepareFailed({
                   kind: "error",
                   error: {
                     code: "missing_deps",
                     message:
                       "Direct type execution is not supported in this context",
                   },
-                };
+                });
                 return;
               }
 
-              const result = await resolveOrCreateDefinition(
+              const result = await inPrepare(resolveOrCreateDefinition)(
                 {
                   lookupDefinition: input.expectedDefinitionId === undefined
                     ? deps.lookupDefinition
@@ -562,7 +589,7 @@ export async function* modelMethodRun(
               );
 
               if (!result.ok) {
-                yield { kind: "error", error: result.error };
+                yield prepareFailed({ kind: "error", error: result.error });
                 return;
               }
 
@@ -608,25 +635,25 @@ export async function* modelMethodRun(
                 deps.lookupDefinitionById,
                 input.expectedName,
               );
-              const lookupResult = await lookupDefinition(input.modelIdOrName);
+              const lookupResult = await inPrepare(lookupDefinition)(
+                input.modelIdOrName,
+              );
               if (!lookupResult) {
-                yield {
+                yield prepareFailed({
                   kind: "error",
                   error: modelNotFound(input.modelIdOrName),
-                };
+                });
                 return;
               }
               definition = lookupResult.definition;
               modelType = lookupResult.type;
 
-              const resolvedModelDef = await Promise.resolve(
-                deps.getModelDef(modelType),
-              );
+              const resolvedModelDef = await resolveModelDef(modelType);
               if (!resolvedModelDef) {
-                yield {
+                yield prepareFailed({
                   kind: "error",
                   error: unknownModelType(modelType.normalized),
-                };
+                });
                 return;
               }
               modelDef = resolvedModelDef;
@@ -638,12 +665,12 @@ export async function* modelMethodRun(
               const leakedArgs = new DefaultModelValidationService()
                 .findLiteralSensitiveGlobals(definition, modelDef);
               if (leakedArgs.length > 0) {
-                yield {
+                yield prepareFailed({
                   kind: "error",
                   error: validationFailed(
                     literalSensitiveGlobalArgsMessage(leakedArgs),
                   ),
-                };
+                });
                 return;
               }
             }
@@ -652,14 +679,14 @@ export async function* modelMethodRun(
             const method = modelDef.methods[input.methodName];
             if (!method) {
               const availableMethods = Object.keys(modelDef.methods).join(", ");
-              yield {
+              yield prepareFailed({
                 kind: "error",
                 error: unknownMethod(
                   input.methodName,
                   modelType.normalized,
                   availableMethods,
                 ),
-              };
+              });
               return;
             }
 
@@ -693,10 +720,10 @@ export async function* modelMethodRun(
                 effectiveSchema,
               );
               if (!validationResult.valid) {
-                yield {
+                yield prepareFailed({
                   kind: "error",
                   error: inputValidationFailed(validationResult.errors),
-                };
+                });
                 return;
               }
               Object.assign(inputs, inputsWithDefaults);
@@ -729,6 +756,7 @@ export async function* modelMethodRun(
             }
 
             // --- Set up logging ---
+            preparing.end();
             const setupSpan = getTracer().startSpan("swamp.model.method.setup");
             const runLog = await deps.createRunLog(
               modelType,
@@ -1939,7 +1967,14 @@ export async function* modelMethodRun(
           })(),
         ),
       ));
+    finished = true;
+  } catch (error) {
+    prepare?.fail(error);
+    throw error;
   } finally {
+    // A run that finished before setup returned after an error event; one
+    // that did not finish was stopped by its consumer.
+    prepare?.end(finished ? "error" : "cancelled");
     if (methodProgress) removeRunProgress(methodProgress);
   }
 }
