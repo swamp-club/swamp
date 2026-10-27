@@ -27,6 +27,12 @@ import type {
   RetentionWatermarkRepository,
 } from "../../domain/retention/retention_watermark.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  type DiagnosticPhaseHandle,
+  observeDiagnosticPhase,
+  startDiagnosticPhase,
+  withDiagnosticArea,
+} from "../../domain/diagnostics/diagnostic_phase.ts";
 
 const logger = getLogger(["swamp", "retention"]);
 
@@ -54,6 +60,58 @@ export interface RetentionBatchResult {
 export interface RetentionCollector {
   kind: RetentionKind;
   collectBatch(cutoff: Date, limit: number): Promise<RetentionBatchResult>;
+}
+
+/**
+ * Runs one output-retention batch as the `retention_batch` phase
+ * (design/enablers/serve-phase-telemetry.md). Its `batch_commit` phase
+ * covers what `runBatch` does once the collector settles: ending the unit of
+ * work (the v2 push or the v3 commit) and releasing the gate.
+ */
+function observeOutputBatch(
+  runBatch: RetentionPassDeps["runBatch"],
+  collect: () => Promise<RetentionBatchResult>,
+  batchSize: number,
+): Promise<RetentionBatchResult> {
+  return observeDiagnosticPhase("retention_batch", {
+    "swamp.diagnostic.batch_size": batchSize,
+  }, async (phase) => {
+    let commit: DiagnosticPhaseHandle | undefined;
+    // A unit whose collector threw is abandoned, which still pushes: the
+    // commit then ends ok unless runBatch rejects with an error of its own.
+    let collectError: unknown;
+    let batch: RetentionBatchResult;
+    try {
+      batch = await runBatch(async () => {
+        // A runBatch that runs fn again ends the last attempt's commit here,
+        // before the retry's stages start, so stages never overlap.
+        commit?.end();
+        commit = undefined;
+        collectError = undefined;
+        try {
+          return await collect();
+        } catch (error) {
+          collectError = error;
+          throw error;
+        } finally {
+          commit = startDiagnosticPhase("batch_commit", {
+            "swamp.diagnostic.disposition": collectError === undefined
+              ? "commit"
+              : "abandon",
+          });
+        }
+      });
+    } catch (error) {
+      if (error === collectError) commit?.end();
+      else commit?.fail(error);
+      throw error;
+    }
+    commit?.end();
+    phase.tally.add("deleted", batch.deleted);
+    phase.tally.add("bytes_reclaimed", batch.bytesReclaimed);
+    phase.attributes({ "swamp.diagnostic.more": batch.more });
+    return batch;
+  });
 }
 
 export interface RetentionPassDeps {
@@ -171,10 +229,20 @@ export async function runRetentionPass(
               "swamp.retention.batch",
               { "retention.kind": collector.kind },
               async (batchSpan) => {
-                const batch = await deps.runBatch(() =>
-                  collector.collectBatch(cutoff, batchSize)
-                );
-                batchSpan.setAttribute("retention.deleted", batch.deleted);
+                const collect = () => collector.collectBatch(cutoff, batchSize);
+                // Output retention exports its phases, the gate wait in
+                // runBatch included; other kinds export none yet.
+                const batch = collector.kind === "outputs"
+                  ? await withDiagnosticArea(
+                    "output_retention",
+                    () => observeOutputBatch(deps.runBatch, collect, batchSize),
+                  )
+                  : await deps.runBatch(collect);
+                batchSpan.setAttributes({
+                  "retention.deleted": batch.deleted,
+                  "retention.bytes_reclaimed": batch.bytesReclaimed,
+                  "retention.more": batch.more,
+                });
                 return batch;
               },
             );

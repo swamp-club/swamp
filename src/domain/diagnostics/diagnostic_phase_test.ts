@@ -21,6 +21,7 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   currentDiagnosticArea,
   currentDiagnosticTally,
+  diagnosticSpanAttributes,
   observeDiagnosticPhase,
   PhaseTally,
   startDiagnosticPhase,
@@ -340,4 +341,40 @@ Deno.test("startDiagnosticPhase: an observer that throws never changes the work'
       setExecutionObserver(undefined);
     }
   }
+});
+
+Deno.test("startDiagnosticPhase: output retention exports its own phases and gate_wait", async () => {
+  await withObservedSpans(async (spans) => {
+    await withDiagnosticArea("output_retention", () => {
+      startDiagnosticPhase("candidate_scan").end();
+      startDiagnosticPhase("gate_wait").end();
+      startDiagnosticPhase("prepare").end();
+      return Promise.resolve();
+    });
+    await withDiagnosticArea("enrollment", () => {
+      startDiagnosticPhase("candidate_scan").end();
+      return Promise.resolve();
+    });
+    const scan = findSpan(spans, "swamp.diagnostic.candidate_scan");
+    assertEquals(scan.attributes["swamp.diagnostic.area"], "output_retention");
+    assertEquals(diagnosticPhases(spans, "gate_wait").length, 1);
+    assertEquals(diagnosticPhases(spans, "prepare").length, 0);
+  });
+});
+
+Deno.test("diagnosticSpanAttributes: tags a span as a phase only inside an area that exports it", async () => {
+  assertEquals(diagnosticSpanAttributes("gate_wait"), {});
+  await withDiagnosticArea(
+    "output_retention",
+    () =>
+      withDiagnosticAttributes({ "swamp.diagnostic.label": "x" }, () => {
+        assertEquals(diagnosticSpanAttributes("gate_wait"), {
+          "swamp.diagnostic.label": "x",
+          "swamp.diagnostic.area": "output_retention",
+          "swamp.diagnostic.phase": "gate_wait",
+        });
+        assertEquals(diagnosticSpanAttributes("prepare"), {});
+        return Promise.resolve();
+      }),
+  );
 });

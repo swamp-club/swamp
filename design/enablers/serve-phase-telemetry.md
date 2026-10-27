@@ -12,9 +12,9 @@ OpenTelemetry spans on the existing pipeline. They observe only: no phase
 changes what the work does, and a phase that cannot be exported is dropped
 without failing the work.
 
-Worker enrollment preparation (lab #3986) and run-detail output resolution
-(#4002) are instrumented. Three more areas use the same contract as they are
-added: worker deletion and prune (#4003), output retention (#4004) and
+Worker enrollment preparation (lab #3986), run-detail output resolution
+(#4002) and output retention (#4004) are instrumented. Two more areas use the
+same contract as they are added: worker deletion and prune (#4003) and
 access-data polling (#4005).
 
 Phases are observations of the
@@ -44,7 +44,10 @@ Every phase is a span named `swamp.diagnostic.<phase>` with:
 Areas and phases are closed vocabularies, never built from data. A phase is
 exported only inside an area that lists it, or when it is one of the shared
 phases any area may run (`definition_lookup`, `definition_scan`, `lock_wait`,
-`lock_held`). Attributes a caller sets around shared code, such as
+`lock_held`, `gate_wait`). A span that already existed can count as a phase
+instead of being duplicated: it carries the area and phase attributes but keeps
+its own name, and is not an observation, so it has no `swamp.outcome` and no
+coverage fields (the sync gate's wait span is `gate_wait`). Attributes a caller sets around shared code, such as
 `swamp.diagnostic.lookup_attempt`, are inherited by every phase under it.
 
 Values are counts, durations, booleans and fixed strings. One exception:
@@ -65,7 +68,8 @@ no file.
 ### Where phases come from
 
 The path that owns the work sets the area, and async context carries it. Shared
-code (the definition repository, the name index, file locks) exports phases only
+code (the definition repository, the name index, file locks, the output
+repository, the sync gate) exports phases only
 while an area is active, so other callers look as before. An area wraps only the
 awaited work being measured, never a call that arms timers or starts background
 work, since that work would inherit it.
@@ -214,6 +218,107 @@ full scan a `CanonicalResources` without an index falls back to (no
 them), and the CLI (no read policy). The datastore engine does not change the
 phases.
 
+## Output retention
+
+Parent: the `swamp.retention.batch` span with `retention.kind = outputs`. It
+keeps `retention.deleted` (the outputs that batch removed, as before) and now
+also carries `retention.bytes_reclaimed` and `retention.more` (the batch
+stopped at its limit and another follows). Batches of the other kinds carry
+the same three attributes and export no phases.
+
+`runRetentionPass` sets the area for each outputs batch, so serve's hourly
+pass and the CLI's end-of-command pass both export these phases. Serve takes
+the sync gate and a root unit of work for each batch; the CLI does neither, so
+it has no `gate_wait` and its `batch_commit` is near zero.
+
+```
+swamp.retention.batch                     retention.kind=outputs
+└─ swamp.diagnostic.retention_batch
+   ├─ swamp.serve.sync_gate.wait          phase=gate_wait (serve only)
+   ├─ swamp.diagnostic.candidate_enumeration
+   ├─ swamp.diagnostic.candidate_scan
+   ├─ swamp.diagnostic.orphan_log_sweep   (only on a batch that did not stop at its limit)
+   └─ swamp.diagnostic.batch_commit
+```
+
+The children run one after another, never overlapping, so within one batch
+their durations add up to at most the batch's. `retention_batch`'s
+`swamp.phase.uncovered_ms` is the rest: the gate wait (the tagged gate span is
+not an observation, so it is not counted as covered) and the collector's own
+setup. For outputs batches the gate span's parent is now `retention_batch`, not
+`swamp.retention.batch`: a query that joins the two by `parent_span_id` must
+go one level further up.
+
+| Phase                   | Attributes                                                                                                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retention_batch`       | `batch_size` (the pass's; an outputs batch removes up to ten times as many, see `limit`); on success `deleted`, `bytes_reclaimed`, `more`                     |
+| `gate_wait`             | The `swamp.serve.sync_gate.wait` span, tagged: `sync_gate.mode`, `sync_gate.acquired`. Waiting, not working                                                     |
+| `candidate_enumeration` | `scan_strategy` (`full_listing`: every batch lists every output record), `files`                                                                                 |
+| `candidate_scan`        | `limit`, `dry_run`, `stopped_at_limit`; counts and work below                                                                                                    |
+| `orphan_log_sweep`      | `dry_run`; `logs_listed`, `logs_skipped_recent`, `candidates`, `dirs_checked`, `dirs_unreadable`, `removed`, `bytes_reclaimed`; `list_work_ms`, `stat_work_ms`, `reference_read_work_ms`, `remove_work_ms` |
+| `batch_commit`          | `disposition` (`commit`, or `abandon` after the collector threw)                                                                                                 |
+
+`candidate_scan` is one span for the whole loop. Its counts, each the number
+of output records:
+
+| Count                    | Meaning                                                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `considered`             | Records the loop reached. A batch stopped at its limit does not reach the rest                       |
+| `skipped_recent_mtime`   | Modified after its cutoff, so not read                                                               |
+| `protected_not_terminal` | Read, and its run has not finished: retention never removes it, whatever its age                     |
+| `skipped_not_expired`    | Read, and its start time is missing, invalid or after its cutoff                                    |
+| `skipped_not_found`      | Gone between the listing and the read                                                                |
+| `eligible`               | Expired and inside the limit. The record that stopped a batch at its limit is not counted            |
+| `delete_attempted`       | Removals started; equal to `eligible`                                                                |
+| `deleted`                | Removals that finished (on a dry run, records that would have been removed)                          |
+| `failed`                 | A record whose check or removal threw anything but not-found. The batch stops there with `swamp.outcome=error` |
+| `bytes_reclaimed`        | Bytes of the removed records and the run logs they own, measured before removal                      |
+
+`considered`, `eligible`, `delete_attempted`, `deleted` and `failed` are always
+exported, zero included; the others only once they count something.
+A batch that fails partway keeps the counts it reached, so `deleted` on a
+failed `candidate_scan` is what was removed before the error. Two edge cases
+break `delete_attempted = deleted + failed`: a record that vanishes during its
+own removal counts `skipped_not_found` after `delete_attempted`, and a record
+whose files were removed but whose change signal or tombstone then failed
+counts `failed`, not `deleted`. On a dry run the sweep's `removed` and
+`bytes_reclaimed` count the logs it would have removed.
+
+Summed work on `candidate_scan`, in milliseconds. The first three are
+eligibility and the last three are deletion:
+
+| Work                  | Covers                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| `stat_work_ms`        | Stat of each record (the modification-time check)                                                |
+| `read_work_ms`        | Reading records that passed it                                                                   |
+| `parse_work_ms`       | Parsing them                                                                                     |
+| `remove_work_ms`      | Stat of the owned run log, then removing the record and its log, with the change signal that marks them for the datastore sync |
+| `dir_cleanup_work_ms` | Removing directories the removal left empty                                                      |
+| `tombstone_work_ms`   | Staging the record's typed `output.delete` change (the v3 index entry; on v2 it returns at once)            |
+
+A work field is missing when that work never ran: an empty batch has no
+`stat_work_ms`, and a dry run has no `tombstone_work_ms`. The cutoff of each
+record (its method's `outputLifetime` or the kind's retention) is computed in
+memory and not measured.
+
+`batch_commit` starts when the collector settles and ends when the batch's
+wrapper returns. On serve that is the end of the root unit of work (on v2 the
+flush that pushes changed files to the datastore; on v3 the commit-log commit)
+and the gate release. Its outcome is `error` only when the end of the unit
+throws. Serve logs a failed push to a remote datastore instead of throwing it,
+so such a push still ends `ok`: the log line, not the phase, records it. After
+a collector error the unit is abandoned, and the push still runs. `batch_commit` times the end of the unit but is not its context, since
+`runBatch` owns that work: a `lock_wait` or `lock_held` from a file lock the
+push or commit takes appears under `retention_batch`, beside `batch_commit`
+rather than inside it, and `batch_commit`'s `swamp.phase.child_covered_ms` is
+always zero. A shared phase run inside any other stage appears under that
+stage.
+
+Retention stops only between batches (shutdown, budget, back-off), so no batch
+is cut short: this area has no `cancelled` outcome and no `cancel_observed`. A
+pass stopped before a batch exports no phases for it. Output records are read
+through `YamlOutputRepository` on every datastore; there is no other branch.
+
 ## Queries
 
 The examples use Axiom APL against a dataset that receives these traces (here
@@ -249,11 +354,14 @@ Phase latency by phase, outcome and build:
          outcome=tostring(['attributes.custom']['swamp.outcome']),
          version=tostring(['resource.custom']['swamp.version']),
          ms=duration/1ms
-| where area == 'enrollment'
+| where isnotempty(area)
 | summarize n=count(), p50_ms=percentile(ms,50), p95_ms=percentile(ms,95), max_ms=max(ms)
-  by phase, outcome, version
+  by area, phase, outcome, version
 | sort by p95_ms desc
 ```
+
+`gate_wait` has no `swamp.outcome`, so it groups under an empty outcome; read
+`sync_gate.acquired` for whether the gate was taken.
 
 One operation's breakdown, by trace id:
 
@@ -468,6 +576,69 @@ let index = ['swamp-serve-traces']
 A request with no `owner_index` row had no owner lookup, or ran without the
 index; `joined` requests waited on another request's listing.
 
+Output retention, scan against deletion: one row per batch, with its stages'
+elapsed time and the scan's eligibility and deletion work. The stages of a
+batch are sequential, so their sum is part of the batch's wall time, and
+`other_ms` is the rest. Inside `candidate_scan` only the two work sums are
+compared; they are summed per item and never added to elapsed time.
+
+```apl
+let from = datetime(2026-10-26T00:00:00Z);
+let to = datetime(2026-10-27T00:00:00Z);
+let service = 'swamp-serve-vm';
+let stages = ['swamp-serve-traces']
+  | where _time between (from .. to)
+  | where ['service.name'] == service
+  | extend a=['attributes.custom']
+  | where tostring(a['swamp.diagnostic.area']) == 'output_retention'
+  | extend phase=tostring(a['swamp.diagnostic.phase']), ms=duration/1ms,
+           considered=toint(a['swamp.diagnostic.considered']),
+           scan_deleted=toint(a['swamp.diagnostic.deleted']),
+           eligibility_work=coalesce(todouble(a['swamp.diagnostic.stat_work_ms']), 0.0)
+             + coalesce(todouble(a['swamp.diagnostic.read_work_ms']), 0.0)
+             + coalesce(todouble(a['swamp.diagnostic.parse_work_ms']), 0.0),
+           deletion_work=coalesce(todouble(a['swamp.diagnostic.remove_work_ms']), 0.0)
+             + coalesce(todouble(a['swamp.diagnostic.dir_cleanup_work_ms']), 0.0)
+             + coalesce(todouble(a['swamp.diagnostic.tombstone_work_ms']), 0.0)
+  | where phase != 'retention_batch'
+  | summarize
+      gate_ms=sumif(ms, phase == 'gate_wait'),
+      listing_ms=sumif(ms, phase == 'candidate_enumeration'),
+      scan_ms=sumif(ms, phase == 'candidate_scan'),
+      sweep_ms=sumif(ms, phase == 'orphan_log_sweep'),
+      commit_ms=sumif(ms, phase == 'batch_commit'),
+      eligibility_work_ms=sumif(eligibility_work, phase == 'candidate_scan'),
+      deletion_work_ms=sumif(deletion_work, phase == 'candidate_scan'),
+      considered=sumif(considered, phase == 'candidate_scan'),
+      deleted=sumif(scan_deleted, phase == 'candidate_scan')
+    by batch=parent_span_id;
+['swamp-serve-traces']
+| where _time between (from .. to)
+| where ['service.name'] == service
+| where name == 'swamp.diagnostic.retention_batch'
+| project _time, trace_id, batch=span_id, batch_ms=duration/1ms,
+          outcome=tostring(['attributes.custom']['swamp.outcome'])
+| join kind=leftouter (stages) on batch
+| extend other_ms=batch_ms - gate_ms - listing_ms - scan_ms - sweep_ms - commit_ms
+| extend dominant=case(
+    gate_ms >= max_of(listing_ms, scan_ms, sweep_ms, commit_ms), 'gate_wait',
+    listing_ms >= max_of(scan_ms, sweep_ms, commit_ms), 'listing',
+    commit_ms >= max_of(scan_ms, sweep_ms), 'commit_push',
+    sweep_ms >= scan_ms, 'orphan_log_sweep',
+    eligibility_work_ms >= deletion_work_ms, 'scan_eligibility',
+    'scan_deletion')
+| project _time, trace_id, outcome, dominant, batch_ms, gate_ms, listing_ms, scan_ms,
+          eligibility_work_ms, deletion_work_ms, sweep_ms, commit_ms, other_ms,
+          considered, deleted
+| sort by batch_ms desc
+```
+
+`dominant` names a batch's largest stage, and splits the scan by which work
+sum is larger. A batch from a build without the phases has no
+`retention_batch` span and so no row; select its `swamp.retention.batch` span
+instead. To summarise a window, follow it with
+`| summarize n=count(), p50_ms=percentile(batch_ms,50), p95_ms=percentile(batch_ms,95), max_ms=max(batch_ms) by dominant, outcome`.
+
 ## What this does not establish
 
 `integration/worker_enroll_phase_telemetry_test.ts` drives a real gateway
@@ -487,11 +658,19 @@ failed owner lookup, that the span count does not grow with 200 definitions or
 queries have not been run against Axiom; that is evidence collected after
 deployment.
 
+`integration/output_retention_phase_telemetry_test.ts` runs real retention
+passes, each batch wrapped as serve wraps it, through the real OTLP exporter.
+It checks that names, parent ids, value types, outcomes and statuses survive
+export for a mixed batch (eligible, protected and unexpired outputs), an empty
+batch and one that fails after removing some outputs, and that a batch's span
+count is the same for 10 and 300 outputs.
+
 Against production `swamp-serve-traces` (2026-10-27, build `b4dd513d`, before
 these phases shipped), the field paths and types above were confirmed on real
 enrollment spans. The phase-latency, single-trace, worker-lookup and
 cancellation queries parsed and ran. The dominance query is too complex for
 Axiom's legacy result format and needs the tabular format (the query editor or
-`format=tabular`). Running these queries on exported phase spans in a test
+`format=tabular`). The output-retention queries have not been run against
+Axiom. Running these queries on exported phase spans in a test
 dataset, and measuring overhead on a deployed server, is evidence collected
 after deployment.

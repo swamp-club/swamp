@@ -46,6 +46,7 @@ const SHARED_PHASES = [
   "definition_scan",
   "lock_wait",
   "lock_held",
+  "gate_wait",
 ] as const;
 
 /**
@@ -65,7 +66,13 @@ const AREA_PHASES = {
   ],
   step_outputs: ["catalog_open", "output_walk", "owner_index"],
   worker_delete: [],
-  output_retention: [],
+  output_retention: [
+    "retention_batch",
+    "candidate_enumeration",
+    "candidate_scan",
+    "orphan_log_sweep",
+    "batch_commit",
+  ],
   access_poll: [],
 } as const satisfies Record<DiagnosticArea, readonly string[]>;
 
@@ -204,6 +211,23 @@ const silentPhase: DiagnosticPhaseHandle = {
 /** The area the current async context runs in, if any. */
 export function currentDiagnosticArea(): DiagnosticArea | undefined {
   return scope.getStore()?.area;
+}
+
+/**
+ * The area and phase attributes a span started outside this module carries
+ * to count as `phase`: lets an existing span (a sync gate wait) be selected
+ * with the phases instead of duplicating it. Empty outside any area.
+ */
+export function diagnosticSpanAttributes(
+  phase: DiagnosticPhase,
+): ObservationAttributes {
+  const current = scope.getStore();
+  if (!current || !exportsPhase(current.area, phase)) return {};
+  return {
+    ...current.attributes,
+    "swamp.diagnostic.area": current.area,
+    "swamp.diagnostic.phase": phase,
+  };
 }
 
 /**
