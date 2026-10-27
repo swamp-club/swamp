@@ -213,7 +213,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
-| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules and webhook endpoints, each with its queue state (see Cron and Webhooks below) |
+| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/` and `/health` answer `{ status: "ok", version: "1" }` in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
@@ -1125,8 +1125,8 @@ by name; both resolve to the same workflow. A fire that arrives while the same
 workflow is still queued (not yet running) is queued too. Two workflows that
 touch the same behavior still exclude each other through the per-behavior lock.
 
-Each schedule in the health snapshot, `/health` and the dashboard reports its
-queue state (`queueStatus`): `queued` (fires waiting to start),
+Each schedule in the health snapshot and the dashboard reports its queue
+state (`queueStatus`): `queued` (fires waiting to start),
 `oldestQueuedAt` (the oldest waiting fire's time, so a growing wait is
 visible) and `lastQueueDelayMs` (fire-to-start delay of the last run that
 started). `schedule_started` carries the same delay as `queueDelayMs`. Queue
@@ -1182,15 +1182,14 @@ workflow that must start long work without holding the queue submits it with
 Each launch starts detached from the request span and outside any vault
 scope, whether it comes from a delivery, boot replay or a run that just
 settled, so no run inherits another's trace or principal. Each webhook entry in
-the health snapshot, `/health` and the dashboard reports its queue state
+the health snapshot and the dashboard reports its queue state
 (`WebhookService.queueStatus`): `active` (runs of that route in flight,
 including ones waiting on a model lock), `queued` (deliveries waiting for a
 slot), `oldestQueuedAt` and `lastQueueDelayMs` (enqueue-to-start delay of the
 last run that started). A growing `queued` means the limit is the bottleneck;
 a high `active` with slow progress means the runs themselves are waiting. The
-state is per route, so the per-token health view filters it with its webhook;
-the unauthenticated `/health` exposes it as it does schedule queue state. The
-admin serve config reports the limit as `maxConcurrentWebhookRuns`.
+state is per route, so the per-token health view filters it with its webhook.
+The admin serve config reports the limit as `maxConcurrentWebhookRuns`.
 
 A verified request becomes a pending run before it executes, so a crash between
 receipt and completion is replayed at next boot (`src/serve/webhook.ts`). Each

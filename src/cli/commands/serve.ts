@@ -1002,6 +1002,15 @@ export function cancelSuccessBody(
   };
 }
 
+/**
+ * The body of the unauthenticated `/` and `/health` liveness routes. It names
+ * no schedule, webhook or setting: the dashboard and `/api/v1/health` show
+ * those to a caller who may read them (swamp-club#3842).
+ */
+export function legacyHealthBody(): { status: "ok"; version: "1" } {
+  return { status: "ok", version: "1" };
+}
+
 /** The nested-run lists of a persisted cancel, each defaulting to empty. */
 function nestedOf(
   cancelled: Partial<NestedCascadeResult>,
@@ -7196,34 +7205,7 @@ export const serveCommand = new Command()
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/" || url.pathname === "/health") {
-            const schedules = scheduledExecution?.listSchedules().map((s) => ({
-              workflowId: s.workflowId,
-              workflowName: s.workflowName,
-              cronExpression: s.cronExpression,
-              nextRun: s.nextRun?.toISOString() ?? null,
-              running: scheduledExecution!.isRunning(s.workflowId),
-              ...scheduledExecution!.queueStatus(s.workflowId),
-            })) ?? [];
-
-            const webhooks = webhookService
-              ? webhookService.listEndpoints().map((ep) => ({
-                route: ep.route,
-                workflow: ep.workflowIdOrName,
-                scheme: ep.scheme,
-                ...webhookService!.queueStatus(ep.route),
-              }))
-              : [];
-
-            return Response.json({
-              status: "ok",
-              version: "1",
-              remoteOnly: merged.remoteOnly,
-              scheduling: {
-                enabled: enableSchedule,
-                schedules,
-              },
-              webhooks,
-            });
+            return Response.json(legacyHealthBody());
           }
         }
 
