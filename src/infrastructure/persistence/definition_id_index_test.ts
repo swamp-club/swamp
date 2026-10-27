@@ -706,3 +706,225 @@ Deno.test("DefinitionIdIndex: a cancelled check ends its owner_index phase cance
     });
   });
 });
+
+/** What a lookup by name found, as a global scan by name reports it. */
+async function named(index: DefinitionIdIndex, name: string) {
+  const found = await index.findByName(name);
+  return found && {
+    name: found.definition.name,
+    id: found.definition.id,
+    type: found.type.normalized,
+  };
+}
+
+Deno.test("DefinitionIdIndex.findByName: finds what a scan by name finds, a definition shadowing an auto-definition and the first file in scan order winning", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, auto, repo, index } = fixture(dir);
+    // The same name in both roots, twice in one root, and across types.
+    await writeDefinition(
+      join(auto, "test", "a", "shared.yaml"),
+      crypto.randomUUID(),
+      "shared",
+    );
+    await writeDefinition(
+      join(primary, "test", "z", "shared.yaml"),
+      crypto.randomUUID(),
+      "shared",
+    );
+    await writeDefinition(
+      join(primary, "test", "b", "x.yaml"),
+      crypto.randomUUID(),
+      "twice",
+    );
+    await writeDefinition(
+      join(primary, "test", "b", "nested", "y.yaml"),
+      crypto.randomUUID(),
+      "twice",
+    );
+    await writeDefinition(
+      join(primary, "test", "a.yaml"),
+      crypto.randomUUID(),
+      "file-before-dir",
+    );
+    await writeDefinition(
+      join(primary, "test", "a", "z.yaml"),
+      crypto.randomUUID(),
+      "file-before-dir",
+    );
+    await writeDefinition(
+      join(auto, "other", "only-auto.yaml"),
+      crypto.randomUUID(),
+      "only-auto",
+    );
+    await Deno.writeTextFile(
+      join(primary, "test", "b", "broken.yaml"),
+      "id: [unclosed\n",
+    );
+
+    for (
+      const name of [
+        "shared",
+        "twice",
+        "file-before-dir",
+        "only-auto",
+        "missing",
+      ]
+    ) {
+      const scanned = await repo.findByNameGlobal(name);
+      assertEquals(
+        await named(index, name),
+        scanned && {
+          name: scanned.definition.name,
+          id: scanned.definition.id,
+          type: scanned.type.normalized,
+        },
+        name,
+      );
+    }
+    assertEquals((await named(index, "shared"))?.type, "test/z");
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: a miss once the index is warm reads no file, and a name another writer adds is found reading only its file", async () => {
+  await withTempDir(async (dir) => {
+    const { primary, auto, counter, index } = fixture(dir);
+    for (let i = 0; i < 5; i++) {
+      await writeDefinition(
+        join(auto, "test", "a", `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    assertEquals(await index.findByName("new"), null);
+    assertEquals(counter.reads, 5);
+    for (let i = 0; i < 10; i++) {
+      assertEquals(await index.findByName(`new-${i}`), null);
+    }
+    assertEquals(counter.reads, 5);
+
+    await writeDefinition(
+      join(auto, "test", "a", "new.yaml"),
+      crypto.randomUUID(),
+      "new",
+    );
+    assertEquals((await named(index, "new"))?.type, "test/a");
+    // The new file when listed, then again when found.
+    assertEquals(counter.reads, 7);
+
+    // A definition added later under models/ shadows the auto-definition.
+    await writeDefinition(
+      join(primary, "test", "a", "new.yaml"),
+      crypto.randomUUID(),
+      "new",
+    );
+    const found = await index.findByName("new");
+    assertEquals(found?.primary, true);
+    assertEquals(found?.path, join(primary, "test", "a", "new.yaml"));
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: sees a definition another writer removes, moves, and replaces with one declaring another name", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    const typeDir = join(auto, "test", "a");
+    await writeDefinition(
+      join(typeDir, "one.yaml"),
+      crypto.randomUUID(),
+      "one",
+    );
+    assertEquals((await named(index, "one"))?.name, "one");
+
+    await Deno.rename(join(typeDir, "one.yaml"), join(typeDir, "moved.yaml"));
+    await bump(typeDir);
+    assertEquals(
+      (await index.findByName("one"))?.path,
+      join(typeDir, "moved.yaml"),
+    );
+
+    // Rewritten through a rename, as editors and save() write.
+    const staged = join(auto, "staged.yaml");
+    await Deno.writeTextFile(staged, yamlOf(crypto.randomUUID(), "two"));
+    await Deno.rename(staged, join(typeDir, "moved.yaml"));
+    await bump(join(typeDir, "moved.yaml"));
+    await bump(typeDir);
+    assertEquals(await index.findByName("one"), null);
+    assertEquals((await named(index, "two"))?.name, "two");
+
+    await Deno.remove(join(typeDir, "moved.yaml"));
+    await bump(typeDir);
+    assertEquals(await index.findByName("two"), null);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: a file found rewritten in place at lookup is indexed under its new name", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    const path = join(auto, "test", "a", "file.yaml");
+    await writeDefinition(path, crypto.randomUUID(), "before");
+    assertEquals((await named(index, "before"))?.name, "before");
+
+    // Overwritten in place: the directory's stat does not move.
+    await Deno.writeTextFile(path, yamlOf(crypto.randomUUID(), "after"));
+    await bump(path);
+    assertEquals(await index.findByName("before"), null);
+    assertEquals((await named(index, "after"))?.name, "after");
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: a file that did not parse is found once fixed in place, and a read error is raised rather than taken for a miss", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, counter, index } = fixture(dir);
+    const path = join(auto, "test", "a", "fixed.yaml");
+    await ensureDir(dirname(path));
+    await Deno.writeTextFile(path, "id: [unclosed\n");
+    await bump(path);
+    assertEquals(await index.findByName("fixed"), null);
+
+    await Deno.writeTextFile(path, yamlOf(crypto.randomUUID(), "fixed"));
+    await bump(path);
+    assertEquals((await named(index, "fixed"))?.name, "fixed");
+
+    counter.failOn = path;
+    await assertRejects(() => index.findByName("fixed"));
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: concurrent lookups of new names share one listing", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, counter, index } = fixture(dir);
+    for (let i = 0; i < 5; i++) {
+      await writeDefinition(
+        join(auto, "test", "a", `d${i}.yaml`),
+        crypto.randomUUID(),
+        `d${i}`,
+      );
+    }
+    const found = await Promise.all(
+      Array.from({ length: 36 }, (_, i) => index.findByName(`new-${i}`)),
+    );
+    assertEquals(found.filter((f) => f !== null), []);
+    assertEquals(counter.reads, 5);
+  });
+});
+
+Deno.test("DefinitionIdIndex.findByName: inside a diagnostic area a lookup's check is a definition_scan phase with the global_index strategy", async () => {
+  await withTempDir(async (dir) => {
+    const { auto, index } = fixture(dir);
+    await writeDefinition(
+      join(auto, "test", "a", "d.yaml"),
+      crypto.randomUUID(),
+      "d",
+    );
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("enrollment", () => index.findByName("d"));
+      const [phase] = diagnosticPhases(spans, "definition_scan");
+      assertEquals(phase.attributes["swamp.diagnostic.scan_root"], "all");
+      assertEquals(
+        phase.attributes["swamp.diagnostic.scan_strategy"],
+        "global_index",
+      );
+      assertEquals(phase.attributes["swamp.diagnostic.cache"], "cold");
+      assertEquals(diagnosticPhases(spans, "owner_index"), []);
+    });
+  });
+});

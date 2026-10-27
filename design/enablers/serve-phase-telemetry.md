@@ -126,10 +126,18 @@ below.
 `secondary_index`, or `none` for a miss. New values may be added. Lookup is
 scoped to one type: a worker lookup reads only worker definitions.
 
+In `swamp serve`, a direct-type workflow step's lookup of its definition by name
+across every type is a `definition_lookup` with `lookup_method=global_index`
+(lab #4037). It sets `hit` and `source`, and runs under `prepare` for the first
+lookup and `lock_held` for the re-check under the creation lock. A hint from an
+earlier lookup of a definition under `models/` still answers before it, as the
+`name_hint_hits` counter. Every other lookup by name across every type, in serve
+or the CLI, walks every definition and opens no phase.
+
 `bytes_read` counts the UTF-8 length of the text read, which can differ from the
 file's size on disk when it holds invalid byte sequences.
 
-`definition_scan` comes in two strategies:
+`definition_scan` comes in three strategies:
 
 - `full_listing` (`scan_root=primary`): every definition file of the type under
   `models/`. `files_examined`, `files_read`, `bytes_read`, `broken_files`
@@ -145,6 +153,12 @@ file's size on disk when it holds invalid byte sequences.
   files the index read. The index's own `swamp.definition.name_index.validate`
   span (`name_index.entries`, `name_index.relisted`, `name_index.files_parsed`)
   nests under the scan of the lookup that ran it.
+- `global_index` (`scan_root=all`): the check of serve's definition index (lab
+  #3968) that a `global_index` lookup runs before it reads the files declaring
+  the name. It carries the same attributes as `owner_index` below (`cache`,
+  `definitions`, `dirs_checked`, `dirs_relisted`, `dirs_joined`,
+  `files_parsed`, `files_joined`), and the
+  `swamp.serve.definition_index.validate` span nests under it.
 
 The lookup under the creation lock is the `definition_lookup` with
 `lookup_attempt=recheck`. Its scans inherit the label, so a duplicate scan is

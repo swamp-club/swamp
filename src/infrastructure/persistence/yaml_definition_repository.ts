@@ -66,6 +66,7 @@ import {
 } from "./paths.ts";
 import { readDirSorted } from "./sorted_dir_entries.ts";
 import { AutoDefinitionNameIndex } from "./auto_definition_name_index.ts";
+import type { DefinitionNameIndex } from "./definition_id_index.ts";
 import {
   currentDiagnosticTally,
   startDiagnosticPhase,
@@ -159,6 +160,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     string,
     { path: string; pathSegments: string[]; primary: boolean }
   >();
+  /** Answers {@link findByNameGlobalFromIndex}: see {@link useNameIndex}. */
+  private nameIndex: DefinitionNameIndex | undefined;
 
   constructor(
     private readonly repoDir: string,
@@ -636,6 +639,39 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     }
   }
 
+  /**
+   * Answers {@link findByNameGlobalFromIndex} through `index` from now on,
+   * instead of walking every definition on each lookup that no hint answers
+   * (swamp-club#4037). `swamp serve` attaches the definition index it keeps
+   * for its lifetime, once, as it starts; a CLI command attaches none, as
+   * building an index reads every definition where a walk for an existing
+   * name stops at the first match. {@link findByNameGlobal} never consults
+   * it. Throws when an index is already attached.
+   */
+  useNameIndex(index: DefinitionNameIndex): void {
+    if (this.nameIndex) {
+      throw new Error("This definition repository already has a name index");
+    }
+    this.nameIndex = index;
+  }
+
+  /**
+   * {@link findByNameGlobal}'s answer from the name index attached with
+   * {@link useNameIndex}, or by the walk when none is. The index sees a
+   * definition file rewritten in place to declare another name only once
+   * its directory changes, so only a caller that accepts that uses this:
+   * serve's direct-type workflow steps, whose lookup and re-check under the
+   * creation lock would otherwise each walk every definition for a new name.
+   */
+  async findByNameGlobalFromIndex(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    if (!this.nameIndex) return await this.findByNameGlobal(name);
+    const hinted = await this.readPrimaryHint(name);
+    if (hinted) return hinted;
+    return await this.findByNameInIndex(this.nameIndex, name);
+  }
+
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
@@ -645,14 +681,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // answered; the walks count their reads (files_read, read_work_ms).
     const tally = currentDiagnosticTally();
     const hint = this.globalNameToActualPath.get(name);
-    if (hint?.primary) {
-      const hinted = await this.readHintedWithType(hint, name);
-      if (hinted) {
-        tally.add("name_hint_hits");
-        return hinted;
-      }
-      this.globalNameToActualPath.delete(name);
-    }
+    const hinted = await this.readPrimaryHint(name);
+    if (hinted) return hinted;
 
     tally.add("primary_walks");
     const result = await this.searchDefinitionByName(
@@ -686,6 +716,79 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     }
     return null;
+  }
+
+  /**
+   * The definition a recorded primary hint names, counted as a
+   * `name_hint_hits`, or null; a hint the file no longer answers is dropped.
+   */
+  private async readPrimaryHint(
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const hint = this.globalNameToActualPath.get(name);
+    if (!hint?.primary) return null;
+    const hinted = await this.readHintedWithType(hint, name);
+    if (hinted) {
+      currentDiagnosticTally().add("name_hint_hits");
+      return hinted;
+    }
+    this.globalNameToActualPath.delete(name);
+    return null;
+  }
+
+  /**
+   * {@link findByNameGlobal}'s answer from a name index, as a
+   * `definition_lookup` phase. A miss fails as the walk's does on an
+   * auto-definition the datastore could not materialise (swamp-club#3617).
+   */
+  private async findByNameInIndex(
+    index: DefinitionNameIndex,
+    name: string,
+  ): Promise<{ definition: Definition; type: ModelType } | null> {
+    const lookup = startDiagnosticPhase("definition_lookup", {
+      "swamp.diagnostic.lookup_method": "global_index",
+    });
+    try {
+      const found = await lookup.run(async () => {
+        const match = await index.findByName(name);
+        if (match) {
+          this.idToActualPath.set(
+            match.definition.id as DefinitionId,
+            match.path,
+          );
+          // Only a primary hint is read while an index is attached: a
+          // definition added since may shadow an auto-definition.
+          if (match.primary) {
+            this.globalNameToActualPath.set(name, {
+              path: match.path,
+              pathSegments: match.segments,
+              primary: true,
+            });
+          }
+          return match;
+        }
+        if (
+          this.secondaryBaseDir && this.unreadableContent &&
+          isFilenameSafeDefinitionName(name)
+        ) {
+          await this.throwIfUnreadableByName(this.secondaryBaseDir, name);
+        }
+        return null;
+      });
+      lookup.attributes({
+        "swamp.diagnostic.hit": found !== null,
+        "swamp.diagnostic.source": found === null
+          ? "none"
+          : found.primary
+          ? "primary"
+          : "auto",
+      });
+      lookup.end();
+      return found && { definition: found.definition, type: found.type };
+    } catch (error) {
+      lookup.fail(error);
+      throw error;
+    }
   }
 
   async isAutoDefinition(

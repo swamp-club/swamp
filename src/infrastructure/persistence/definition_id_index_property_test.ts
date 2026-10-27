@@ -28,6 +28,8 @@ import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 const IDS = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
 const TYPE_DIRS = ["test/a", "test/b", "test/a/nested"];
 const FILES = ["one.yaml", "two.yaml", "three.yaml"];
+/** Names a write may declare, so files of one name sit in both roots. */
+const NAMES = ["one", "two", "shared"];
 
 let clock = Date.UTC(2020, 0, 1);
 
@@ -57,8 +59,10 @@ type Op =
     typeDir: string;
     file: string;
     id: string;
+    name: string;
     tag: string;
   }
+  | { kind: "break"; root: number; typeDir: string; file: string }
   | { kind: "retag"; root: number; typeDir: string; file: string; tag: string }
   | { kind: "remove"; root: number; typeDir: string; file: string }
   | { kind: "removeDir"; root: number; typeDir: string };
@@ -70,7 +74,14 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
     typeDir: fc.constantFrom(...TYPE_DIRS),
     file: fc.constantFrom(...FILES),
     id: fc.constantFrom(...IDS),
+    name: fc.constantFrom(...NAMES),
     tag: fc.constantFrom("x", "y"),
+  }),
+  fc.record({
+    kind: fc.constant("break" as const),
+    root: fc.nat(1),
+    typeDir: fc.constantFrom(...TYPE_DIRS),
+    file: fc.constantFrom(...FILES),
   }),
   fc.record({
     kind: fc.constant("retag" as const),
@@ -94,8 +105,9 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
 
 /**
  * Applies `op` as another writer would: a write replaces the file by
- * renaming a new one over it, as swamp's saves and checkouts do; a retag
- * rewrites an existing file in place, keeping its id.
+ * renaming a new one over it, as swamp's saves and checkouts do, and a break
+ * does so with a file that does not parse; a retag rewrites an existing file
+ * in place, keeping its id and name.
  */
 async function apply(roots: string[], op: Op): Promise<void> {
   const root = roots[op.root];
@@ -104,7 +116,15 @@ async function apply(roots: string[], op: Op): Promise<void> {
     case "write": {
       const path = join(dir, op.file);
       await ensureDir(dir);
-      await Deno.writeTextFile(`${path}.tmp`, yamlOf(op.id, op.file, op.tag));
+      await Deno.writeTextFile(`${path}.tmp`, yamlOf(op.id, op.name, op.tag));
+      await Deno.rename(`${path}.tmp`, path);
+      await bumpUpTo(root, path);
+      return;
+    }
+    case "break": {
+      const path = join(dir, op.file);
+      await ensureDir(dir);
+      await Deno.writeTextFile(`${path}.tmp`, "id: [unclosed\n");
       await Deno.rename(`${path}.tmp`, path);
       await bumpUpTo(root, path);
       return;
@@ -162,8 +182,9 @@ function describe(
 
 /**
  * After any sequence of writes, removals and in-place edits, the index
- * answers every id as a scan of every definition does, with its clock at
- * `clockAhead` ms past the real one.
+ * answers every id as a scan of every definition does, and every name as
+ * the first definition a scan reads declaring it, as findByNameGlobal's walk
+ * finds it, with its clock at `clockAhead` ms past the real one.
  */
 async function assertMatchesScan(clockAhead: number, numRuns: number) {
   await fc.assert(
@@ -195,6 +216,17 @@ async function assertMatchesScan(clockAhead: number, numRuns: number) {
                 describe(all.filter((f) => f.definition.id === id)),
               );
             }
+            for (const name of [...NAMES, "missing"]) {
+              const found = await index.findByName(name);
+              assertEquals(
+                describe(found ? [found] : []),
+                describe(
+                  all.filter((f) => f.definition.name === name)
+                    .slice(0, 1),
+                ),
+                name,
+              );
+            }
           }
         } finally {
           if (Deno.build.os === "windows") {
@@ -211,7 +243,7 @@ async function assertMatchesScan(clockAhead: number, numRuns: number) {
   );
 }
 
-Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-place edits, answers every id as a scan of every definition does", async () => {
+Deno.test("DefinitionIdIndex: after any sequence of writes, removals and in-place edits, answers every id and name as a scan of every definition does", async () => {
   await assertMatchesScan(60_000, 50);
 });
 

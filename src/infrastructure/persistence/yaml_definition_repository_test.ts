@@ -23,12 +23,17 @@ import {
   assertNotEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
+import {
+  DefinitionIdIndex,
+  type DefinitionNameIndex,
+} from "./definition_id_index.ts";
 import {
   Definition,
   type DefinitionId,
@@ -3777,5 +3782,187 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal: counts its walk and its re
         undefined,
       );
     });
+  });
+});
+
+/**
+ * A repository over `dir` with a definition index over itself attached, as
+ * `swamp serve` wires it, with a count of the index's lookups.
+ */
+function indexedRepository(
+  dir: string,
+  unreadable?: ConstructorParameters<typeof YamlDefinitionRepository>[5],
+) {
+  const repo = new YamlDefinitionRepository(
+    dir,
+    undefined,
+    undefined,
+    join(dir, ".swamp", "auto-definitions"),
+    undefined,
+    unreadable,
+  );
+  const index = new DefinitionIdIndex(repo);
+  const calls = { lookups: 0 };
+  const counted: DefinitionNameIndex = {
+    findByName: (name) => {
+      calls.lookups++;
+      return index.findByName(name);
+    },
+  };
+  repo.useNameIndex(counted);
+  return { repo, calls };
+}
+
+async function writeYaml(path: string, id: string, name: string, type: string) {
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(
+    path,
+    `type: ${type}\nid: ${id}\nname: ${name}\nversion: 1\n`,
+  );
+}
+
+Deno.test("YamlDefinitionRepository.findByNameGlobalFromIndex: answers as the walk does, a definition shadowing an auto-definition, and a primary hit spares the next lookup the index", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const primaryId = crypto.randomUUID() as DefinitionId;
+    const autoId = crypto.randomUUID() as DefinitionId;
+    await writeYaml(
+      join(autoDir, "test", "a", "both.yaml"),
+      autoId,
+      "both",
+      "test/a",
+    );
+    await writeYaml(
+      join(autoDir, "test", "a", "auto.yaml"),
+      autoId,
+      "auto",
+      "test/a",
+    );
+    await writeYaml(
+      join(dir, "models", "test", "b", "both.yaml"),
+      primaryId,
+      "both",
+      "test/b",
+    );
+    const { repo, calls } = indexedRepository(dir);
+    const walked = new YamlDefinitionRepository(dir);
+
+    for (const name of ["both", "auto", "missing"]) {
+      const viaIndex = await repo.findByNameGlobalFromIndex(name);
+      const viaWalk = await walked.findByNameGlobal(name);
+      assertEquals(viaIndex?.definition.id, viaWalk?.definition.id, name);
+      assertEquals(viaIndex?.type.normalized, viaWalk?.type.normalized, name);
+    }
+    assertEquals(calls.lookups, 3);
+    assertEquals(
+      (await repo.findByNameGlobalFromIndex("both"))?.definition.id,
+      primaryId,
+    );
+    assertEquals(calls.lookups, 3);
+    // An auto-definition hit is not trusted to stay unshadowed.
+    assertEquals(
+      (await repo.findByNameGlobalFromIndex("auto"))?.definition.id,
+      autoId,
+    );
+    assertEquals(calls.lookups, 4);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobalFromIndex: a miss through the name index still fails on an auto-definition the datastore could not materialise (swamp-club#3617)", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const byName = join(autoDir, "test", "unregistered-type", "lost.yaml");
+    const { lookup, errors } = fakeUnreadableLookup([byName]);
+    const { repo, calls } = indexedRepository(dir, lookup);
+    assertEquals(
+      await assertRejects(() => repo.findByNameGlobalFromIndex("lost")),
+      errors.get(byName),
+    );
+    assertEquals(await repo.findByNameGlobalFromIndex("other"), null);
+    assertEquals(calls.lookups, 2);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.useNameIndex: refuses a second index", async () => {
+  await withTempDir((dir) => {
+    const { repo } = indexedRepository(dir);
+    assertThrows(
+      () => repo.useNameIndex({ findByName: () => Promise.resolve(null) }),
+      Error,
+      "already has a name index",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobalFromIndex: inside a diagnostic area a lookup through the name index is a definition_lookup phase over the index's definition_scan", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    await writeYaml(
+      join(autoDir, "test", "a", "d.yaml"),
+      crypto.randomUUID(),
+      "d",
+      "test/a",
+    );
+    const { repo } = indexedRepository(dir);
+    await withObservedSpans(async (spans) => {
+      await withDiagnosticArea("enrollment", async () => {
+        await repo.findByNameGlobalFromIndex("d");
+        await repo.findByNameGlobalFromIndex("missing");
+      });
+      const lookups = diagnosticPhases(spans, "definition_lookup");
+      assertEquals(
+        lookups.map((p) => [
+          p.attributes["swamp.diagnostic.lookup_method"],
+          p.attributes["swamp.diagnostic.hit"],
+          p.attributes["swamp.diagnostic.source"],
+        ]),
+        [["global_index", true, "auto"], ["global_index", false, "none"]],
+      );
+      const scans = diagnosticPhases(spans, "definition_scan");
+      assertEquals(scans.length, 2);
+      for (const [i, scan] of scans.entries()) {
+        assert(isChildOf(scan, lookups[i]));
+      }
+    });
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal: walks every definition even with a name index attached, so a rename written in place is seen at once", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "models", "test", "a", "file.yaml");
+    const id = crypto.randomUUID() as DefinitionId;
+    await writeYaml(path, id, "before", "test/a");
+    const { repo, calls } = indexedRepository(dir);
+    assertEquals(
+      (await repo.findByNameGlobalFromIndex("before"))?.definition.id,
+      id,
+    );
+    assertEquals(calls.lookups, 1);
+
+    // Rewritten in place: the index is not told until its directory moves.
+    await writeYaml(path, id, "after", "test/a");
+    assertEquals((await repo.findByNameGlobal("after"))?.definition.id, id);
+    assertEquals(await repo.findByNameGlobal("before"), null);
+    assertEquals(calls.lookups, 1);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobalFromIndex: walks as findByNameGlobal does when no index is attached", async () => {
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const id = crypto.randomUUID() as DefinitionId;
+    await writeYaml(join(autoDir, "test", "a", "d.yaml"), id, "d", "test/a");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      undefined,
+      autoDir,
+    );
+    assertEquals(
+      (await repo.findByNameGlobalFromIndex("d"))?.definition.id,
+      id,
+    );
+    assertEquals(await repo.findByNameGlobalFromIndex("missing"), null);
   });
 });

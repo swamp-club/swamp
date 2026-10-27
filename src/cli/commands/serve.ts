@@ -5037,6 +5037,10 @@ export const serveCommand = new Command()
     // Authorizing what a request reads finds the owning definitions here,
     // not by scanning every definition per request (swamp-club#3968).
     const definitionIndex = new DefinitionIdIndex(repoContext.definitionRepo);
+    // A direct-type workflow step looks its definition name up across every
+    // type, and a new name used to walk every definition twice
+    // (swamp-club#4037); only that lookup reads the index.
+    repoContext.definitionRepo.useNameIndex(definitionIndex);
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
