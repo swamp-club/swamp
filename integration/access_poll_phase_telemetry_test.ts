@@ -592,14 +592,20 @@ Deno.test("access poll phases: a sync pull exports the gate wait and the pull, i
     const skipped = traces.filter((t) =>
       str(t.cycle, d("result")) === "skipped"
     );
-    assertEquals(skipped.length, POLLER_ESCALATE_AFTER_SKIPS + 1);
-    for (const t of skipped.slice(0, -1)) {
+    // A cycle the interval queued before stop() cleared it also ends
+    // cancelled, so the count after the queued one is not pinned.
+    assert(skipped.length >= POLLER_ESCALATE_AFTER_SKIPS + 1);
+    for (const t of skipped.slice(0, POLLER_ESCALATE_AFTER_SKIPS)) {
       assertEquals(str(t.cycle, "swamp.outcome"), "ok");
+      assertEquals(int(t.cycle, d("changed")), undefined);
       const [busy] = underCycle(t, "gate_wait");
       assertEquals(bool(busy, d("acquired")), false);
       assertEquals(underCycle(t, "remote_pull").length, 0);
     }
-    const stopped = skipped[skipped.length - 1];
+    const stopped = skipped[POLLER_ESCALATE_AFTER_SKIPS];
+    for (const t of skipped.slice(POLLER_ESCALATE_AFTER_SKIPS + 1)) {
+      assertEquals(str(t.cycle, "swamp.outcome"), "cancelled");
+    }
     assertEquals(str(stopped.cycle, "swamp.outcome"), "cancelled");
     assertEquals(bool(stopped.cycle, d("cancel_observed")), true);
     const [queuedWait] = underCycle(stopped, "gate_wait");

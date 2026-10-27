@@ -1098,11 +1098,14 @@ Deno.test("AccessDataPoller: a busy gate skips the cycle, and stop() during a qu
     }
     assertEquals(sync.pullCalls.length, 0);
 
+    // A cycle the interval queued before stop() cleared it also ends
+    // cancelled, so the count after the queued one is not pinned.
     const all = cycles(spans);
-    assertEquals(all.length, POLLER_ESCALATE_AFTER_SKIPS + 1);
-    for (const skipped of all.slice(0, -1)) {
+    assert(all.length >= POLLER_ESCALATE_AFTER_SKIPS + 1);
+    for (const skipped of all.slice(0, POLLER_ESCALATE_AFTER_SKIPS)) {
       assertEquals(skipped.attributes["swamp.diagnostic.result"], "skipped");
       assertEquals(skipped.attributes["swamp.outcome"], "ok");
+      assertEquals(skipped.attributes["swamp.diagnostic.changed"], undefined);
       assertEquals(
         skipped.attributes["swamp.diagnostic.reload_reason"],
         "none",
@@ -1111,7 +1114,10 @@ Deno.test("AccessDataPoller: a busy gate skips the cycle, and stop() during a qu
       assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
       assertEquals(wait.attributes["swamp.outcome"], "ok");
     }
-    const cancelled = all[all.length - 1];
+    const cancelled = all[POLLER_ESCALATE_AFTER_SKIPS];
+    for (const late of all.slice(POLLER_ESCALATE_AFTER_SKIPS + 1)) {
+      assertEquals(late.attributes["swamp.outcome"], "cancelled");
+    }
     assertEquals(cancelled.attributes["swamp.diagnostic.result"], "skipped");
     assertEquals(cancelled.attributes["swamp.outcome"], "cancelled");
     assertEquals(
@@ -1206,5 +1212,59 @@ Deno.test("AccessDataPoller: a snapshot missing unreadable records is retried wi
     assertEquals(retry.attributes["swamp.diagnostic.unreadable_records"], 1);
     assertEquals(retry.attributes["swamp.diagnostic.result"], "applied");
     assertEquals(childPhases(spans, "catalog_invalidate", retry).length, 0);
+  });
+});
+
+Deno.test("AccessDataPoller: a cycle whose pull was skipped but whose pending reload applied ends ok, even once stopped", async () => {
+  await withObservedSpans(async (spans) => {
+    const gate = createSyncGate();
+    const sync = createMockSyncService({ pullResult: 1 });
+    let attempts = 0;
+    let stopping: Promise<void> | undefined;
+    const loader = {
+      loadCalls: 0,
+      unreadable: [],
+      async load(): Promise<void> {
+        attempts++;
+        if (attempts === 1) {
+          // The pull released the gate; holding it skips the next pull.
+          await gate.acquireShared();
+          throw new Error("transient");
+        }
+        // Stopped while the retry runs: the reload still applies.
+        stopping = poller.stop();
+        loader.loadCalls++;
+      },
+    };
+    const poller = new AccessDataPoller({
+      syncService: sync,
+      syncGate: gate,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate: () => {},
+      pollIntervalMs: 10,
+    });
+    await capturingPollerLogs(async () => {
+      poller.start();
+      try {
+        await waitFor(() => loader.loadCalls >= 1, "the pending reload");
+      } finally {
+        await stopping;
+        await poller.stop();
+        gate.releaseShared();
+      }
+    });
+    const retried = cycles(spans).find((s) =>
+      s.attributes["swamp.diagnostic.reload_reason"] === "pending_retry"
+    );
+    assert(retried, "a pending retry");
+    assertEquals(retried.attributes["swamp.diagnostic.result"], "applied");
+    assertEquals(retried.attributes["swamp.diagnostic.changed"], undefined);
+    assertEquals(retried.attributes["swamp.outcome"], "ok");
+    assertEquals(
+      retried.attributes["swamp.diagnostic.cancel_observed"],
+      true,
+    );
+    const [wait] = childPhases(spans, "gate_wait", retried);
+    assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
   });
 });

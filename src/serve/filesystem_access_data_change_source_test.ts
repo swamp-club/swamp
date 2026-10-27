@@ -586,3 +586,27 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "FilesystemAccessDataChangeSource.detect: a directory it could not list is not counted as a record",
+  ignore: IGNORE_CHMOD,
+  fn: async () => {
+    await withObservedSpans(async (spans) => {
+      await withSource(async ({ grantDir, groupDir, source }) => {
+        await writeVersion(grantDir, "g1", 1);
+        await writeVersion(groupDir, "grp1", 1);
+        await source.prime();
+        await whileUnreadable(grantDir, async () => {
+          assertEquals(await detectAsPhase(source), 2);
+        });
+      });
+      const [phase] = diagnosticPhases(spans, "change_detection");
+      assertEquals(phase.attributes["swamp.diagnostic.records"], 1);
+      assertEquals(
+        phase.attributes["swamp.diagnostic.unreadable_entries"],
+        1,
+      );
+    });
+  },
+});

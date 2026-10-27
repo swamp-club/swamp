@@ -483,6 +483,9 @@ export class PolicySnapshotLoader {
       .filter((failed) => !missingAndNeverRead(failed, this.#lastKnownGrants));
     const failedGroups = failedAccessData(skippedGroups, "group-main")
       .filter((failed) => !missingAndNeverRead(failed, this.#lastKnownGroups));
+    // Listed records whose listing entry could not be read are listed but
+    // never read, so records_listed - records_read counts them.
+    tally.add("records_listed", failedGrants.length + failedGroups.length);
 
     const lastKnownGrants = new Map<string, Grant>();
     const lastKnownGroups = new Map<string, Group>();

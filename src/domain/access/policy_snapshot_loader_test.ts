@@ -2005,3 +2005,30 @@ Deno.test("PolicySnapshotLoader: a rebuild an event schedules from inside the ac
     assertEquals(diagnosticSpans(spans).length, 0);
   });
 });
+
+Deno.test("PolicySnapshotLoader.load: a record the listing could not read is listed but not read", async () => {
+  await withObservedSpans(async (spans) => {
+    const records = new Map<string, FakeRecord>([
+      ["d", { kind: "grant", attrs: makeGrant({ effect: "deny" }) }],
+      ["ok", { kind: "grant", attrs: makeGrant() }],
+    ]);
+    const loader = new PolicySnapshotLoader(
+      createChangingDataRepo(records),
+      new EventBus(),
+      "manual",
+    );
+    try {
+      await loader.load();
+      records.set("d", { kind: "grant", unreadable: "metadata" });
+      await capturingLoaderLogs(async () => {
+        await withDiagnosticArea("access_poll", () => loader.load());
+      });
+    } finally {
+      await loader.dispose();
+    }
+    const [build] = diagnosticPhases(spans, "snapshot_build");
+    assertEquals(build.attributes["swamp.diagnostic.records_listed"], 2);
+    assertEquals(build.attributes["swamp.diagnostic.records_read"], 1);
+    assertEquals(build.attributes["swamp.diagnostic.unreadable"], 1);
+  });
+});

@@ -136,8 +136,10 @@ export class FilesystemAccessDataChangeSource {
     const tally = currentDiagnosticTally();
     const current = await this.#fingerprint();
     if (tally.recording) {
-      tally.add("records", current.size);
-      for (const record of current.values()) {
+      // A directory that could not be listed is keyed by itself, not a record.
+      const dirs = new Set(this.#dirs);
+      for (const [key, record] of current) {
+        if (!dirs.has(key)) tally.add("records");
         tally.add("entries", record.entries.size);
         tally.add("unreadable_entries", unreadableEntries(record.entries).size);
       }

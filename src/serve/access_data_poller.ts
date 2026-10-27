@@ -183,7 +183,8 @@ export class AccessDataPoller {
       const pending = this.#needsReload;
       const detected = await cycle.run(() => this.#changedCount());
       const count = detected ?? 0;
-      cycle.tally.add("changed", count);
+      // A pull that never ran checked nothing, so it reports no count.
+      if (detected !== null) cycle.tally.add("changed", count);
       if (count > 0) {
         if (this.#changeSource) {
           logger
@@ -219,7 +220,8 @@ export class AccessDataPoller {
         this.#needsReload = false;
       }
       // A pull that never ran (the gate was busy, or stop() ended the wait)
-      // is a skip; a stop is also the cycle's cancellation.
+      // is a skip; a stop is also the cycle's cancellation, unless a reload
+      // it still ran was applied.
       const result: DiagnosticResult = reason !== "none"
         ? "applied"
         : detected === null
@@ -232,7 +234,7 @@ export class AccessDataPoller {
       }
       this.#consecutiveFailures = 0;
       cycle.end(
-        detected === null && this.#stopController.signal.aborted
+        result === "skipped" && this.#stopController.signal.aborted
           ? "cancelled"
           : "ok",
       );
