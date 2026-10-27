@@ -230,7 +230,10 @@ interface Marks {
   abs: Array<string | undefined>;
   /** relPaths the hook forwarded to the sync service. */
   forwarded: Array<string | undefined>;
-  /** Whether each `abs` path existed on disk when its mark arrived. */
+  /**
+   * Whether each `abs` path existed on disk when its mark arrived, at the same
+   * index as the path in `abs`.
+   */
   existed: boolean[];
 }
 
@@ -249,10 +252,12 @@ async function withHarness(
     const abs: Array<string | undefined> = [];
     const existed: boolean[] = [];
     // Record the absolute path and whether it exists, then delegate to the
-    // real hook.
+    // real hook. The existence check is written at the path's index: marks
+    // from parallel tasks (collectGarbage) finish their checks out of order,
+    // and appending would pair a path with another mark's result.
     const markDirty: MarkDirtyHook = async (absPath?: string) => {
-      abs.push(absPath);
-      existed.push(absPath !== undefined && await pathExists(absPath));
+      const index = abs.push(absPath) - 1;
+      existed[index] = absPath !== undefined && await pathExists(absPath);
       await hook(absPath);
     };
     const resolver = new DefaultDatastorePathResolver(repoDir, {
