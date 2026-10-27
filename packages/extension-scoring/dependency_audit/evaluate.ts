@@ -753,6 +753,8 @@ export function evaluateJsrPackage(
   record?: RecordedDependencyVersions,
 ): SpecifierAudit[] {
   return specs.map((spec): SpecifierAudit => {
+    // checked here to name the issue; resolveShippedVersion repeats the
+    // check for any other caller that hands it a v2 record
     const issue = record?.canonicalIssue?.(specifierText(spec)) ?? null;
     if (issue !== null) return canonicalAudit(name, spec, "jsr", issue);
     const base = summaryBase(name, spec, "jsr");

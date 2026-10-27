@@ -30,6 +30,7 @@ import {
   type RecordedDependencyVersions,
   type ShippedVersion,
 } from "./resolution.ts";
+import { parseSpecifier } from "./specifiers.ts";
 
 // `npm:@scope/name@version[/subpath]`, `npm:name@version[/subpath]`
 const NPM_RE = /^npm:(?<name>(?:@[^/@]+\/)?[^/@]+)(?:@(?<version>[^/]*))?/;
@@ -105,8 +106,11 @@ export function canonicalRecordedVersions(
   };
 }
 
-/** Whether a spelling the author wrote names one exact version. */
+/**
+ * Whether a spelling the author wrote names one exact version; a subpath
+ * after the version does not count against it.
+ */
 function isExactWriting(written: string): boolean {
-  const at = written.lastIndexOf("@");
-  return at > 0 && exactVersion(written.slice(at + 1)) !== null;
+  const version = parseSpecifier(written)?.version ?? null;
+  return version !== null && exactVersion(version) !== null;
 }

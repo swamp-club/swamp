@@ -2506,22 +2506,23 @@ record also carries) is not audited either (swamp-club#4018).
 `withUnauditedCode` adds one warning per origin, with `dependency` set to the
 origin made safe for one line; push's prepare applies it to every run, so
 `extension quality` and push charge it as the registry does, through
-`scorecardResult`'s `unaudited` parameter. It still ships. Unaudited dependencies join the push
-warnings gate (an interactive push prompts; `--yes` waives them), never block on
-their own, and never change the exit code. `DependencyTrustResult.passed` keeps
-meaning "no blockers".
+`scorecardResult`'s `unaudited` parameter. It still ships. Unaudited
+dependencies join the push warnings gate (an interactive push prompts; `--yes`
+waives them), never block on their own, and never change the exit code.
+`DependencyTrustResult.passed` keeps meaning "no blockers".
 
 The summary and the warning both carry `notAuditedFix`, the fix their
 remediation gives: `outage` (a failed lookup; re-run), `specifier` (no published
-version matches), `name` (an invalid package name), `origin` (code from
-outside npm and JSR; replace it with an `npm:` or `jsr:` package),
-`canonical` (registry only: a v2 archive whose source breaks the canonical
-form; push again), `unexpected` (the audit threw) or `other`. Only an `outage` clears on a re-run, so `extension quality`'s
-dependency-trust row and the quality and push not-audited headers say to re-run
-only when every unaudited dependency's fix is `outage`. When `deno doc` fails
-and its output names nothing (one unpublished npm version fails all of deno's
-npm resolution, and deno names whichever import it was resolving), quality's
-`docAnalysisError` names the `specifier` dependencies instead.
+version matches), `name` (an invalid package name), `origin` (code from outside
+npm and JSR; replace it with an `npm:` or `jsr:` package), `canonical` (registry
+only: a v2 archive whose source breaks the canonical form; push again),
+`unexpected` (the audit threw) or `other`. Only an `outage` clears on a re-run,
+so `extension quality`'s dependency-trust row and the quality and push
+not-audited headers say to re-run only when every unaudited dependency's fix is
+`outage`. When `deno doc` fails and its output names nothing (one unpublished
+npm version fails all of deno's npm resolution, and deno names whichever import
+it was resolving), quality's `docAnalysisError` names the `specifier`
+dependencies instead.
 
 ### jsr Dependencies
 

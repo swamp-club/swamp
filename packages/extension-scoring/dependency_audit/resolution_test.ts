@@ -306,12 +306,20 @@ Deno.test("canonicalRecordedVersions: only an entry no valid lock fixed keeps th
       locked: false,
       writtenAs: ["npm:e@1.0.0"],
     },
+    // an exact spelling with a subpath is still exact
+    {
+      name: "f",
+      version: "1.0.0",
+      from: "registry",
+      locked: false,
+      writtenAs: ["npm:f@1.0.0/sub", "npm:f@^1"],
+    },
   ]);
   const looseOf = (name: string) =>
     record.recordedFor("npm", name, "1.0.0")?.looseAs;
   assertEquals(
-    ["a", "b", "c", "d", "e"].map(looseOf),
-    ["npm:a@^1", "b", undefined, undefined, undefined],
+    ["a", "b", "c", "d", "e", "f"].map(looseOf),
+    ["npm:a@^1", "b", undefined, undefined, undefined, "npm:f@^1"],
   );
   assertEquals(record.canonicalIssue?.("npm:zod@^4"), null);
 });

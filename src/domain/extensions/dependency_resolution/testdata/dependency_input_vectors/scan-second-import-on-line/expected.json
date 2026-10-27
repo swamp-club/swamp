@@ -62,7 +62,9 @@
   ],
   "trust": {
     "errors": [],
-    "warnings": []
+    "warnings": [
+      "{{ORIGIN}}/url/mod.ts [not-audited]: not audited: {{ORIGIN}}/url/mod.ts is a URL import, from outside npm and JSR, so no registry audit covers it"
+    ]
   },
   "reviewWarnings": [
     "testing-completeness: No sibling `_test.ts` found — cover both success and failure paths with unit tests before publishing.",
