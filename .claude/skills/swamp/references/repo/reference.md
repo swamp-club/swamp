@@ -274,8 +274,10 @@ datastore:
 ```
 
 With it on, a write whose sync fails exits with
-`Could not sync <path> to disk: <reason>` and is not published. Treat `EIO` or
-`ENOSPC` as a disk problem, not a reason to turn syncing off.
+`Could not sync <path> to disk: <reason>`. A version whose own files could not
+be synced is not published; when only the final sync of its `latest` marker
+fails, the version is already latest and the marker may not survive a power cut.
+Treat `EIO` or `ENOSPC` as a disk problem, not a reason to turn syncing off.
 
 ### Setting Up a v3 Filesystem Datastore
 

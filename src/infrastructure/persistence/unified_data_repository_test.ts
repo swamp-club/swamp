@@ -4256,6 +4256,77 @@ Deno.test("save: on v2, a failed directory sync stops the version before the mar
   );
 });
 
+/**
+ * Sync hooks that fail the data-name directory's sync once the latest
+ * marker names `version`: the sync after the marker's rename.
+ */
+function failSyncAfterMarkerMoves(
+  version: number,
+): (h: Omit<DurableHarness, "repo">) => Partial<AtomicWriteSync> {
+  return ({ dir, events, label }) => ({
+    syncDirectory: (d) => {
+      events.push(`dir ${label(d)}`);
+      if (label(d) !== `${dataDir}/state`) return Promise.resolve();
+      let marker: string | undefined;
+      try {
+        marker = Deno.readTextFileSync(join(dir, dataDir, "state", "latest"));
+      } catch {
+        // No marker yet
+      }
+      return marker === String(version)
+        ? Promise.reject(new Error("Input/output error (os error 5)"))
+        : Promise.resolve();
+    },
+  });
+}
+
+Deno.test("save: on v2, a failed sync after the marker moved still publishes the catalog row, so the two agree", async () => {
+  await withDurableRepo(
+    async ({ repo, events }) => {
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("1"));
+      events.length = 0;
+      const error = await assertRejects(
+        () => repo.save(testType, "m1", makeJsonData("state"), bytes("2")),
+        SyncFailedError,
+      );
+      assertStringIncludes(error.message, "Input/output error");
+      assertEquals(
+        await Deno.readTextFile(
+          join(repo.getDataNameDir(testType, "m1", "state"), "latest"),
+        ),
+        "2",
+      );
+      assertBefore(events, `file ${dataDir}/state/latest`, "catalog");
+    },
+    { hooks: failSyncAfterMarkerMoves(2) },
+  );
+});
+
+Deno.test("advanceLatestMarkers: on v2, a failed sync after the marker moved still publishes the catalog row", async () => {
+  await withDurableRepo(
+    async ({ repo, events }) => {
+      await repo.save(testType, "m1", makeJsonData("state"), bytes("1"));
+      const receipt = await repo.saveDeferred(
+        testType,
+        "m1",
+        makeJsonData("state"),
+        bytes("2"),
+      );
+      events.length = 0;
+      // A promotion failure is logged, as before.
+      await repo.advanceLatestMarkers([receipt]);
+      assertEquals(
+        await Deno.readTextFile(
+          join(repo.getDataNameDir(testType, "m1", "state"), "latest"),
+        ),
+        "2",
+      );
+      assertBefore(events, `file ${dataDir}/state/latest`, "catalog");
+    },
+    { hooks: failSyncAfterMarkerMoves(2) },
+  );
+});
+
 Deno.test("save: on v2, a failed file sync names the file it was writing", async () => {
   await withDurableRepo(
     async ({ repo }) => {

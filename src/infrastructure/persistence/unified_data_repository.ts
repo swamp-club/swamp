@@ -1350,7 +1350,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
 
       // Update latest marker
-      await this.advanceLatestMarker(type, modelId, data.name, newVersion);
+      await this.advanceLatestMarker(
+        type,
+        modelId,
+        data.name,
+        newVersion,
+        () => this.catalogUpsert(type, modelId, dataToSave),
+      );
 
       // Staged before the prune below, so a failed prune never leaves the
       // version local-only.
@@ -2428,7 +2434,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
 
       // Update latest marker
-      await this.advanceLatestMarker(type, modelId, data.name, version);
+      await this.advanceLatestMarker(
+        type,
+        modelId,
+        data.name,
+        version,
+        () => this.catalogUpsert(type, modelId, dataToSave),
+      );
 
       // The content was streamed in by the writer; it stages from the file.
       const why: DataWrite = { kind: "data.save" };
@@ -2586,17 +2598,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data !== null,
         );
         this.catalogStore.recordLocalWrite();
+        // Promoted once the marker moved, whatever fails after it.
+        const publish = () => {
+          promoted = { hasMetadata: data !== null };
+          if (data) {
+            this.catalogUpsert(receipt.type, receipt.modelId, data);
+          }
+        };
         await this.advanceLatestMarker(
           receipt.type,
           receipt.modelId,
           receipt.dataName,
           receipt.version,
+          publish,
         );
-        // Promoted once the marker moved, whatever fails after it.
-        promoted = { hasMetadata: data !== null };
-        if (data) {
-          this.catalogUpsert(receipt.type, receipt.modelId, data);
-        }
+        publish();
         if (
           data && this.enableWriteGc &&
           typeof data.garbageCollection === "number"
@@ -3597,12 +3613,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * lock. A marker naming a version that is gone from disk (a delete or GC
    * that stopped before rewriting it) is replaced. Paths that lower the
    * marker on purpose — delete, rename, GC — use {@link updateLatestMarker}.
+   *
+   * On v2 the data-name directory is synced after the rename. If that sync
+   * fails the marker already names the version, so `published` runs before
+   * the failure is rethrown: the caller publishes the version's catalog row
+   * there, keeping the catalog in step with the marker (swamp-club#4017).
    */
   private async advanceLatestMarker(
     type: ModelType,
     modelId: string,
     dataName: string,
     version: number,
+    published?: () => void,
   ): Promise<void> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     await assertSafePath(dataNameDir, this.baseDir);
@@ -3652,7 +3674,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       throw error;
     }
-    if (sync !== undefined) await this.syncDir(sync, dataNameDir);
+    if (sync === undefined) return;
+    try {
+      await this.syncDir(sync, dataNameDir);
+    } catch (error) {
+      published?.();
+      throw error;
+    }
   }
 
   /**

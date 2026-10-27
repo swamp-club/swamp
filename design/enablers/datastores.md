@@ -62,6 +62,13 @@ such as `EIO` or `ENOSPC`. The lenient `syncDirectory`, which swallows every
 failure, stays with the v3 read model and chunk storage. A file sync refused as
 unsupported adds a hint to turn durable writes off.
 
+One sync runs after publishing starts: the data-name directory's, which makes
+the renamed `latest` marker durable. The version's own files are already
+synced by then. If that sync fails, the marker already names the version, so
+`advanceLatestMarker` has the caller write the catalog row before the failure
+is rethrown. The write still fails, but the marker and the catalog agree on the
+latest version.
+
 The **`durable`** datastore setting turns the syncing on:
 
 ```yaml
