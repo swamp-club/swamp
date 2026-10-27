@@ -1263,3 +1263,55 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "InstallExtensionService.execute: an archive bundle of a format this swamp does not run never runs, even when its rebuild fails (swamp-club#3972)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID().slice(0, 8);
+        const extName = `@test/bundle-format-${id}`;
+        const typeId = `@test/bundle-format-${id}`;
+        // Source that cannot be bundled.
+        await stageModel(
+          repoDir,
+          extName,
+          "model.ts",
+          `${MINIMAL_MODEL_CODE(typeId)}\nexport const broken = ;\n`,
+        );
+        const bundlePath = await stageArchiveBundle(
+          repoDir,
+          extName,
+          ARCHIVE_BUNDLE(typeId, "archive"),
+        );
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension(() =>
+            Promise.resolve({
+              ...makeStubInstallResult(extName, "1.0.0", [
+                `.swamp/pulled-extensions/${extName}/models/model.ts`,
+              ]),
+              keepArchiveBundles: false,
+            })
+          ),
+        });
+
+        await assertRejects(
+          () =>
+            service.execute(
+              { name: extName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          UserError,
+          "Install partially applied",
+        );
+        assertFalse(
+          await Deno.stat(bundlePath).then(() => true, () => false),
+          "the archive bundle is not left to run",
+        );
+        assertEquals(repository.loadByName(extName).length, 0);
+      },
+    );
+  },
+);

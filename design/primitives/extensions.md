@@ -1267,10 +1267,13 @@ Phase 8 rebuilds a source from the pinned shipped source, with `--no-config` and
 through the `checkBundle` scan, only when:
 
 - the record's `bundleFormat` is not this swamp's, in which case every source of
-  that extension is rebuilt;
+  that extension is rebuilt. The staged archive bundle is removed first, so a
+  rebuild that fails, or that the loader would not try, leaves the source
+  unindexed instead of running a bundle of the wrong format;
 - the archive has no bundle for the source;
 - the kept bundle fails to load or index, in which case that source is rebuilt
-  once.
+  once. A source the archive had no bundle for was rebuilt on the first try and
+  is not tried again.
 
 Workers still build their own self-contained bundle, with zod inlined, from the
 registered source (`createBundleSourceFactory`), since no host provides zod

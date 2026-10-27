@@ -366,14 +366,24 @@ export class InstallExtensionService {
               }
             },
           });
-        const keep = result.keepArchiveBundles === true;
+        const bundlePath = loader.getBundlePath(relativePath, dir);
+        const archiveBundle = bundlePath !== "" &&
+          await Deno.stat(bundlePath).then(() => true, () => false);
+        // A bundle of a format this swamp does not run must not run: removed,
+        // the loader has no staged bundle to fall back to when the rebuild
+        // fails or cannot be tried.
+        if (result.keepArchiveBundles === false && archiveBundle) {
+          await Deno.remove(bundlePath);
+        }
+        const keep = result.keepArchiveBundles === true && archiveBundle;
         let out: Awaited<ReturnType<typeof loader.bundleAndIndexOne>>;
         try {
           try {
             out = await index(keep);
           } catch (error) {
             // An archive bundle this swamp cannot load is rebuilt from the
-            // pinned source, and scanned, once.
+            // pinned source, and scanned, once. A source the archive had no
+            // bundle for was rebuilt already.
             if (!keep || error instanceof BundleSafetyRefusal) throw error;
             out = await index(false);
           }
@@ -430,6 +440,7 @@ export class InstallExtensionService {
     kindDir: KindDir,
     repoDir: string,
   ): {
+    getBundlePath: (relativePath: string, baseDir: string) => string;
     bundleAndIndexOne: (args: {
       absolutePath: string;
       relativePath: string;
