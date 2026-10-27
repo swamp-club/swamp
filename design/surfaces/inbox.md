@@ -98,10 +98,21 @@ applied; marking read is idempotent, so retrying the whole call is safe.
 
 - **The poll.** Slow commands ask `/api/inbox/summary` in the background, with
   the `ETag` from the last answer, and no sooner than `pollAfterSeconds` after
-  it. A `backoff` waits out `Retry-After`; `unsupported`, `unavailable` and
-  `rejected` stop the poll for that key.
+  it. The gap is at least 900 seconds and at most 7 days, whatever the server
+  sends, so a misbehaving server cannot silence the inbox for good. Every poll
+  counts, a failed one included. A `backoff` waits out `Retry-After`;
+  `unsupported`, `unavailable` and `rejected` stop the poll for that key, and
+  the cache records why and when.
 - **The cache.** The last summary and its `ETag` are cached locally, so a `304`
-  costs nothing and the notice needs no network call.
+  costs nothing and the notice needs no network call. Each API key has its own
+  file, `inbox/<fingerprint>.json` in the swamp config directory, so a personal
+  key and a collective key never share or overwrite state; the file holds the
+  key's fingerprint, never the key. At most 8 keys are kept and the least
+  recently saved is dropped. A file that is missing, corrupt or out of bounds
+  reads as a key never polled. Changes to the file format are additive only,
+  and each added field must be safe to lose, since an older swamp drops fields
+  it does not know when it saves. A breaking change moves to a new directory,
+  so two installed versions never share a file.
 - **The notice.** After a command finishes, the CLI prints a one-line notice
   when there are unread messages newer than the last one it announced. A notice
   retires after 24 hours, whether or not the user reads the message.
